@@ -240,8 +240,15 @@ describe("chat scroll snapshots", function () {
     assert.include(validationTaskSource, "new Set([assistantMessage])");
     assert.notInclude(validationTaskSource, "changedMessages.add(");
     assert.include(refreshChatSource, "targetedMessageWrappers");
+    // Wrapper matching lives in the extracted targetedRerender module so it
+    // stays unit-testable; refreshChat must route through it.
+    assert.include(refreshChatSource, "resolveTargetedAssistantRerenders(");
+    const targetedRerenderSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/targetedRerender.ts"),
+      "utf8",
+    );
     assert.include(
-      refreshChatSource,
+      targetedRerenderSource,
       "candidate.dataset.messageIndex === `${messageIndex}`",
     );
     assert.include(

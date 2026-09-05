@@ -10,7 +10,12 @@ import {
   type CodexReasoningMode,
   type CodexRuntimeModel,
 } from "./constants";
-import { buildCodexLibraryStateKey, buildCodexPaperStateKey } from "./state";
+import { buildCodexLibraryStateKey } from "./state";
+import {
+  forgetPaperRestoreTarget,
+  getPaperRestoreTarget,
+  rememberPaperRestoreTarget,
+} from "../shared/paperConversationRestore";
 
 export type CodexNativeSkillRoutingMode =
   | "hybrid"
@@ -259,13 +264,6 @@ export function removeLastUsedCodexConversationMode(libraryID: number): void {
   setJsonStringPref("codexAppServerConversationModeMap", map);
 }
 
-function buildPaperConversationMapKey(
-  libraryID: number,
-  paperItemID: number,
-): string {
-  return buildCodexPaperStateKey(libraryID, paperItemID);
-}
-
 function buildGlobalConversationMapKey(libraryID: number): string {
   return buildCodexLibraryStateKey(libraryID);
 }
@@ -326,14 +324,11 @@ export function getLastUsedCodexPaperConversationKey(
   libraryID: number,
   paperItemID: number,
 ): number | null {
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
-  const map = getJsonPref("codexAppServerPaperConversationMap");
-  const value = Number(
-    map[buildPaperConversationMapKey(libraryID, paperItemID)],
-  );
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return isConversationKeyInRange(value, "paper") ? Math.floor(value) : null;
+  return getPaperRestoreTarget({
+    system: "codex",
+    libraryID,
+    paperItemID,
+  });
 }
 
 export function setLastUsedCodexPaperConversationKey(
@@ -345,10 +340,10 @@ export function setLastUsedCodexPaperConversationKey(
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
   if (!isConversationKeyInRange(conversationKey, "paper")) return;
-  const map = getJsonPref("codexAppServerPaperConversationMap");
-  map[buildPaperConversationMapKey(libraryID, paperItemID)] =
-    Math.floor(conversationKey);
-  setJsonPref("codexAppServerPaperConversationMap", map);
+  rememberPaperRestoreTarget(
+    { system: "codex", libraryID, paperItemID },
+    conversationKey,
+  );
 }
 
 export function removeLastUsedCodexPaperConversationKey(
@@ -357,9 +352,7 @@ export function removeLastUsedCodexPaperConversationKey(
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
-  const map = getJsonPref("codexAppServerPaperConversationMap");
-  delete map[buildPaperConversationMapKey(libraryID, paperItemID)];
-  setJsonPref("codexAppServerPaperConversationMap", map);
+  forgetPaperRestoreTarget({ system: "codex", libraryID, paperItemID });
 }
 
 function buildLastAllocatedMapKey(kind: "global" | "paper"): string {

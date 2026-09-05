@@ -3,7 +3,7 @@
  * Keeps one master item and merges children (attachments, notes, tags,
  * collections, related links) from duplicates into it, then trashes the rest.
  */
-import type { AgentToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type MergeItemsOperation,
@@ -16,7 +16,13 @@ import {
   normalizePositiveInt,
   normalizePositiveIntArray,
 } from "../shared";
-import { executeAndRecordUndo } from "./mutateLibraryShared";
+import {
+  executeAndRecordUndo,
+  normalizeChecklistItemIdsFromResolution,
+  planLibraryMutations,
+} from "./mutateLibraryShared";
+
+const DUPLICATES_CHECKLIST_FIELD_ID = "duplicatesChecklist";
 
 type MergeItemsInput = {
   operation: MergeItemsOperation;
@@ -24,7 +30,7 @@ type MergeItemsInput = {
 
 export function createMergeItemsTool(
   zoteroGateway: ZoteroGateway,
-): AgentToolDefinition<MergeItemsInput, unknown> {
+): AgentWriteToolDefinition<MergeItemsInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
@@ -129,7 +135,7 @@ export function createMergeItemsTool(
       return {
         toolName: "merge_items",
         title: `Merge ${operation.otherItemIds.length + 1} items`,
-        description: `Keep "${masterTitle}" as the master and merge ${operation.otherItemIds.length} duplicate${operation.otherItemIds.length === 1 ? "" : "s"} into it. Attachments, notes, tags, and collections will be moved to the master. Duplicates will be trashed.`,
+        description: `Keep "${masterTitle}" as the master and merge ${operation.otherItemIds.length} duplicate${operation.otherItemIds.length === 1 ? "" : "s"} into it. Attachments, notes, tags and collections move to the master, identical PDFs are deduplicated, and citations in your documents that point at the duplicates are repointed to the master. The duplicates go to the trash, but merging is not fully reversible: restoring them returns records without their attachments, notes or tags.`,
         confirmLabel: "Merge",
         cancelLabel: "Cancel",
         fields: [
@@ -141,7 +147,7 @@ export function createMergeItemsTool(
           },
           {
             type: "checklist" as const,
-            id: "duplicatesChecklist",
+            id: DUPLICATES_CHECKLIST_FIELD_ID,
             label: "Duplicates to merge & trash",
             items: operation.otherItemIds.map((id, i) => ({
               id: `${id}`,
@@ -153,9 +159,38 @@ export function createMergeItemsTool(
       };
     },
 
-    applyConfirmation(input, _resolutionData) {
-      return ok(input);
+    applyConfirmation(input, resolutionData) {
+      const selected = normalizeChecklistItemIdsFromResolution(
+        resolutionData,
+        DUPLICATES_CHECKLIST_FIELD_ID,
+      );
+      // No resolution — auto_approve / non-HITL path.
+      if (selected === undefined) {
+        return ok(input);
+      }
+      // Every duplicate unchecked means "merge nothing". The master is not on
+      // the checklist, so falling through here would merge and trash the full
+      // duplicate list the user just rejected.
+      if (!selected.length) {
+        return fail(
+          "No duplicates were left checked, so nothing was merged. Check the duplicates you want merged into the master, or cancel the operation.",
+        );
+      }
+      const requested = new Set(input.operation.otherItemIds);
+      const otherItemIds = selected.filter((id) => requested.has(id));
+      if (!otherItemIds.length) {
+        return fail(
+          "The confirmed selection did not match any of the duplicates in this request. Nothing was merged.",
+        );
+      }
+      return ok({
+        ...input,
+        operation: { ...input.operation, otherItemIds },
+      });
     },
+
+    planMutation: (input, context) =>
+      planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {
       return executeAndRecordUndo(

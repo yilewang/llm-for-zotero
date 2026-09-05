@@ -10,6 +10,7 @@ import type {
   AgentToolResult,
   AgentToolReviewResolution,
 } from "../types";
+import { describeLibraryMutationActions } from "../contracts/actionContract";
 import { fail, ok } from "./shared";
 
 type DelegatedInput<TInput> = {
@@ -103,6 +104,14 @@ export function createRenamedTool<TInput, TResult>(params: {
       : params.label
         ? { label: params.label }
         : undefined,
+    describeAction: (input, context) =>
+      tool.describeAction?.(input, context) ||
+      describeLibraryMutationActions(input),
+    execute: (input, context) =>
+      tool.execute(input, {
+        ...context,
+        journalToolName: context.journalToolName || params.name,
+      }),
     createPendingAction: tool.createPendingAction
       ? async (input, context) =>
           clonePendingAction(
@@ -152,12 +161,31 @@ export function createDelegatingTool<TResult = unknown>(params: {
       if (!choice.ok) return fail(choice.error);
       return validateDelegate(choice.value);
     },
+    describeAction: (input, context) =>
+      input.delegateTool.describeAction?.(input.delegateInput, context) ||
+      describeLibraryMutationActions(input.delegateInput),
     async shouldRequireConfirmation(input, context) {
       const tool = input.delegateTool;
       if (tool.shouldRequireConfirmation) {
         return tool.shouldRequireConfirmation(input.delegateInput, context);
       }
       return tool.spec.requiresConfirmation;
+    },
+    async planMutation(input, context) {
+      const tool = input.delegateTool;
+      if (tool.planMutation) {
+        return tool.planMutation(input.delegateInput, context);
+      }
+      const requiresConfirmation = tool.shouldRequireConfirmation
+        ? await tool.shouldRequireConfirmation(input.delegateInput, context)
+        : tool.spec.requiresConfirmation;
+      return {
+        effect: requiresConfirmation ? ("write" as const) : ("none" as const),
+        reversibility: "none" as const,
+        reason: requiresConfirmation
+          ? "The delegated operation did not provide a durable inverse plan."
+          : undefined,
+      };
     },
     async acceptInheritedApproval(input, approval, context) {
       const tool = input.delegateTool;
@@ -197,9 +225,10 @@ export function createDelegatingTool<TResult = unknown>(params: {
     },
     async execute(input, context): Promise<AgentToolExecutionOutput<TResult>> {
       const tool = input.delegateTool;
-      return tool.execute(input.delegateInput, context) as Promise<
-        AgentToolExecutionOutput<TResult>
-      >;
+      return tool.execute(input.delegateInput, {
+        ...context,
+        journalToolName: context.journalToolName || params.name,
+      }) as Promise<AgentToolExecutionOutput<TResult>>;
     },
     async buildFollowupMessage(
       result: AgentToolResult,

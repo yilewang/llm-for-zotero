@@ -50,6 +50,29 @@ export function spliceManagedBlock(
   return before + MANAGED_BEGIN_MARKER + newBlock + MANAGED_END_MARKER + after;
 }
 
+/**
+ * Prompt banner for skills that carry user customizations after the managed
+ * block. Returns the banner when non-whitespace content follows the managed
+ * block's END marker (the first one, matching extractManagedBlock and the
+ * upgrade splice), else null.
+ *
+ * User customizations are the user's own instructions and must win over the
+ * shipped defaults, but they sit at the bottom of a long skill file where
+ * models tend to under-weight them. Every prompt path that injects
+ * `skill.instruction` should surface this banner next to the skill header.
+ */
+export function getSkillCustomizationNotice(
+  instruction: string,
+): string | null {
+  const { block, after } = extractManagedBlock(instruction);
+  if (block === null || !after.trim()) return null;
+  return (
+    "NOTE: This skill file contains USER CUSTOMIZATIONS after the managed " +
+    "section. They are authoritative and OVERRIDE any conflicting defaults " +
+    "above them. Apply them absolutely."
+  );
+}
+
 /** Simple djb2 hash — fast, good distribution, not crypto. */
 export function hashBody(str: string): string {
   let h = 5381;

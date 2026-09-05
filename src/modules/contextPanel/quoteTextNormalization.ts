@@ -576,6 +576,17 @@ type TokenAlignmentStep = {
   lastMatchedSourceIndex: number;
 };
 
+export type QuoteTextAlignmentRun = {
+  sourceTokenStart: number;
+  sourceTokenEnd: number;
+  queryTokenStart: number;
+  queryTokenEnd: number;
+  sourceStart: number;
+  sourceEnd: number;
+};
+
+const MAX_QUOTE_ALIGNMENT_STATES = 200_000;
+
 type AttachedCitationToken = {
   sourceWord: string;
   lastCitationTokenIndex: number;
@@ -761,6 +772,199 @@ function matchTokenAlignmentStep(params: {
   }
 
   return null;
+}
+
+function tokensCanStartAlignmentRun(
+  sourceToken: QuoteTextToken | undefined,
+  queryToken: QuoteTextToken | undefined,
+): boolean {
+  if (!sourceToken || !queryToken) return false;
+  return (
+    sourceToken.text === queryToken.text ||
+    sourceToken.text.startsWith(queryToken.text) ||
+    queryToken.text.startsWith(sourceToken.text)
+  );
+}
+
+/**
+ * True when a source/query pair is too large for the alignment collector's
+ * state budget, in which case it returns no runs at all. Callers that need
+ * partial support above the budget must use a cheaper collector instead.
+ */
+export function quoteTextAlignmentBudgetExceeded(
+  sourceIndex: QuoteTextIndex,
+  queryIndex: QuoteTextIndex,
+): boolean {
+  const sourceTokenCount = sourceIndex.tokens.length;
+  const queryTokenCount = queryIndex.tokens.length;
+  return (
+    sourceTokenCount > 0 &&
+    queryTokenCount > 0 &&
+    sourceTokenCount > Math.floor(MAX_QUOTE_ALIGNMENT_STATES / queryTokenCount)
+  );
+}
+
+/**
+ * Collect maximal ordered runs that use the same character-preserving layout
+ * fragment rules as complete quote matching. A semantic mismatch ends a run;
+ * callers may combine the resulting query-token ranges as partial support,
+ * but no mismatch is ever treated as a match.
+ */
+export function collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+  sourceIndex: QuoteTextIndex,
+  queryIndex: QuoteTextIndex,
+): QuoteTextAlignmentRun[] {
+  if (!sourceIndex.tokens.length || !queryIndex.tokens.length) return [];
+  const sourceTokenCount = sourceIndex.tokens.length;
+  const queryTokenCount = queryIndex.tokens.length;
+  if (
+    sourceTokenCount > Math.floor(MAX_QUOTE_ALIGNMENT_STATES / queryTokenCount)
+  ) {
+    return [];
+  }
+
+  type AlignmentSuffix = {
+    sourceTokenEnd: number;
+    queryTokenEnd: number;
+    lastMatchedSourceIndex: number | null;
+  };
+  type AlignmentTransition = {
+    stateKey: number;
+    lastMatchedSourceIndex: number | null;
+  };
+
+  const sourceLayoutTokens = sourceIndex.tokens.map((_token, tokenIndex) =>
+    isLikelyLayoutNumberToken(sourceIndex, tokenIndex),
+  );
+  const queryLayoutTokens = queryIndex.tokens.map((_token, tokenIndex) =>
+    isLikelyLayoutNumberToken(queryIndex, tokenIndex),
+  );
+  const suffixes = new Map<number, AlignmentSuffix>();
+  const continuationStates = new Set<number>();
+  const stateKeyFor = (sourceTokenIndex: number, queryTokenIndex: number) =>
+    sourceTokenIndex * queryTokenCount + queryTokenIndex;
+
+  const resolveSuffix = (
+    sourceTokenStart: number,
+    queryTokenStart: number,
+  ): AlignmentSuffix => {
+    let sourceCursor = sourceTokenStart;
+    let queryCursor = queryTokenStart;
+    const path: AlignmentTransition[] = [];
+    let suffix: AlignmentSuffix | undefined;
+
+    while (sourceCursor < sourceTokenCount && queryCursor < queryTokenCount) {
+      const stateKey = stateKeyFor(sourceCursor, queryCursor);
+      if (path.length) continuationStates.add(stateKey);
+      const cached = suffixes.get(stateKey);
+      if (cached) {
+        suffix = cached;
+        break;
+      }
+
+      if (
+        queryLayoutTokens[queryCursor] &&
+        queryIndex.tokens[queryCursor]?.text !==
+          sourceIndex.tokens[sourceCursor]?.text
+      ) {
+        path.push({ stateKey, lastMatchedSourceIndex: null });
+        queryCursor += 1;
+        continue;
+      }
+      if (
+        sourceLayoutTokens[sourceCursor] &&
+        sourceIndex.tokens[sourceCursor]?.text !==
+          queryIndex.tokens[queryCursor]?.text
+      ) {
+        path.push({ stateKey, lastMatchedSourceIndex: null });
+        sourceCursor += 1;
+        continue;
+      }
+
+      const step = matchTokenAlignmentStep({
+        sourceIndex,
+        queryIndex,
+        sourceTokenIndex: sourceCursor,
+        queryTokenIndex: queryCursor,
+      });
+      if (!step) {
+        suffix = {
+          sourceTokenEnd: sourceCursor,
+          queryTokenEnd: queryCursor,
+          lastMatchedSourceIndex: null,
+        };
+        suffixes.set(stateKey, suffix);
+        break;
+      }
+      path.push({
+        stateKey,
+        lastMatchedSourceIndex: step.lastMatchedSourceIndex,
+      });
+      sourceCursor = step.nextSourceIndex;
+      queryCursor = step.nextQueryIndex;
+    }
+
+    suffix ||= {
+      sourceTokenEnd: sourceCursor,
+      queryTokenEnd: queryCursor,
+      lastMatchedSourceIndex: null,
+    };
+    for (let index = path.length - 1; index >= 0; index -= 1) {
+      const transition = path[index];
+      suffix = {
+        ...suffix,
+        lastMatchedSourceIndex:
+          suffix.lastMatchedSourceIndex ?? transition.lastMatchedSourceIndex,
+      };
+      suffixes.set(transition.stateKey, suffix);
+    }
+    return suffix;
+  };
+
+  const candidates: QuoteTextAlignmentRun[] = [];
+  for (
+    let sourceTokenStart = 0;
+    sourceTokenStart < sourceTokenCount;
+    sourceTokenStart += 1
+  ) {
+    if (sourceLayoutTokens[sourceTokenStart]) continue;
+    for (
+      let queryTokenStart = 0;
+      queryTokenStart < queryTokenCount;
+      queryTokenStart += 1
+    ) {
+      if (queryLayoutTokens[queryTokenStart]) continue;
+      const stateKey = stateKeyFor(sourceTokenStart, queryTokenStart);
+      if (continuationStates.has(stateKey)) continue;
+      if (
+        !tokensCanStartAlignmentRun(
+          sourceIndex.tokens[sourceTokenStart],
+          queryIndex.tokens[queryTokenStart],
+        )
+      ) {
+        continue;
+      }
+      const suffix = resolveSuffix(sourceTokenStart, queryTokenStart);
+      if (
+        suffix.queryTokenEnd <= queryTokenStart ||
+        suffix.lastMatchedSourceIndex === null
+      ) {
+        continue;
+      }
+      const firstSourceToken = sourceIndex.tokens[sourceTokenStart];
+      const lastSourceToken = sourceIndex.tokens[suffix.lastMatchedSourceIndex];
+      candidates.push({
+        sourceTokenStart,
+        sourceTokenEnd: suffix.sourceTokenEnd,
+        queryTokenStart,
+        queryTokenEnd: suffix.queryTokenEnd,
+        sourceStart: firstSourceToken.sourceStart,
+        sourceEnd: lastSourceToken.sourceEnd,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 /**

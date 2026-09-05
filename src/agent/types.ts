@@ -15,11 +15,43 @@ import type {
   TagContextRef,
 } from "../shared/types";
 import type {
+  ResolvedTurnSelectedTextAnchor,
+  ResolvedTurnSelectedTextContext,
+  TurnLocalDocument,
+  TurnPaperScope,
+  TurnPaperScopeWarning,
+} from "./context/turnPaperScope";
+import type { WebSourceAnchor } from "../webAccess/types";
+import type {
   ChatMessage,
   ReasoningConfig as LLMReasoningConfig,
   UsageStats,
 } from "../shared/llm";
 import type { ContextCachePlan } from "../contextCache/manager";
+import type { ZoteroTurnMetadataContext } from "../services/zoteroMetadata/types";
+import type {
+  AgentActionContract,
+  AgentActionEvidence,
+  AgentActionIntent,
+  AgentActionProgressLedger,
+  AgentActionReceipt,
+  AgentToolActionDescriptor,
+} from "./contracts/types";
+
+export type {
+  AgentActionCapability,
+  AgentActionContract,
+  AgentActionEvidence,
+  AgentActionIntent,
+  AgentActionObligation,
+  AgentActionOperation,
+  AgentActionParameters,
+  AgentActionProofDomain,
+  AgentActionProgressLedger,
+  AgentActionProposal,
+  AgentActionReceipt,
+  AgentToolActionDescriptor,
+} from "./contracts/types";
 
 export type AgentRequest = {
   conversationKey: number;
@@ -30,6 +62,8 @@ export type AgentRequest = {
   scopeId?: string;
   scopeLabel?: string;
   activeItemId?: number;
+  /** Input-only exact active paper/content-source identity from the UI. */
+  activePaperContext?: PaperContextRef;
   selectedTextContexts?: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
@@ -270,6 +304,11 @@ export type ToolSpec = {
    * shell commands, or direct Zotero scripts.
    */
   tier?: "normal" | "advanced";
+  /**
+   * Advertise the tool only to the in-plugin Agent runtime. External bridges,
+   * MCP, and public tool catalogs must not expose it.
+   */
+  localAgentOnly?: boolean;
 };
 
 export type AgentEvent =
@@ -296,6 +335,8 @@ export type AgentEvent =
       callId: string;
       name: string;
       ok: boolean;
+      effect?: AgentToolEffect;
+      actionReceipts: AgentActionReceipt[];
       content: unknown;
       artifacts?: AgentToolArtifact[];
     }
@@ -355,7 +396,12 @@ export type AgentEvent =
     }
   | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
-  | { type: "final"; text: string; answerStartedAt?: number };
+  | {
+      type: "final";
+      text: string;
+      answerStartedAt?: number;
+      webSourceAnchors?: WebSourceAnchor[];
+    };
 
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
 
@@ -382,14 +428,31 @@ export type AgentToolCall = {
   id: string;
   name: string;
   arguments: unknown;
+  /**
+   * Gemini thought signature attached to the functionCall part.  Gemini 3
+   * rejects continuations that omit it, so it must survive history rebuilds.
+   */
+  thoughtSignature?: string;
 };
 
 export type AgentTraceDetailKind = "text" | "code" | "json" | "url";
+
+export type AgentTraceTimelineIcon = "brain" | "paper" | "website";
+
+export type AgentTraceTimelineRow = {
+  icon: AgentTraceTimelineIcon;
+  /** Public HTTP(S) destination opened through Zotero when the row is clicked. */
+  href?: string;
+  /** Optional public favicon URL. Website rows fall back to the globe icon. */
+  faviconUrl?: string;
+};
 
 export type AgentTraceDetail = {
   label: string;
   value: string;
   kind?: AgentTraceDetailKind;
+  /** Render this detail as one row in the compact connected trace timeline. */
+  timeline?: AgentTraceTimelineRow;
 };
 
 export type AgentTraceChip = {
@@ -455,7 +518,6 @@ export type AgentUserMessage = {
 export type AgentAssistantMessage = {
   role: "assistant";
   content: string | AgentModelContentPart[];
-  reasoning_content?: string;
   tool_calls?: AgentToolCall[];
 };
 
@@ -489,7 +551,30 @@ export type ExhaustiveReadBackend =
   | "codex_responses"
   | "unavailable";
 
-export type AgentRuntimeRequest = AgentRequest & {
+/**
+ * Language-independent turn intent produced by the per-turn classifier LLM
+ * call, used as a default (never an override) by retrieval and routing.
+ */
+export type ClassifiedTurnIntent = {
+  retrievalIntent: "enumerate" | "verify" | "summarize" | "none";
+  paperTargetIntent?: "active" | "added" | "all_visible" | "unspecified";
+  externalSearchIntent?: "none" | "web" | "literature" | "both";
+  wantedSections: Array<"methods" | "results" | "limitations">;
+  queryLanguage?: string;
+  writeDisposition?: "none" | "required" | "uncertain";
+  actionInterpretationSource?: "classifier" | "deterministic_fallback";
+  actionIntents: AgentActionIntent[];
+};
+
+export type AgentRuntimeRequestInput = AgentRequest & {
+  /** Generation captured when this turn started; Clear advances it. */
+  conversationGeneration?: number;
+  /** Set by the runtime after per-turn classification; absent on fallback. */
+  classifiedIntent?: ClassifiedTurnIntent;
+  /** Internal per-turn action obligations. Persisted with transcript events. */
+  actionContract?: AgentActionContract;
+  /** Mutable completion state kept separate from the immutable contract. */
+  actionProgress?: AgentActionProgressLedger;
   item?: Zotero.Item | null;
   history?: ChatMessage[];
   authMode?: ModelProviderAuthMode;
@@ -508,6 +593,35 @@ export type AgentRuntimeRequest = AgentRequest & {
    */
   exhaustiveReadBackend?: ExhaustiveReadBackend;
 };
+
+export type LegacyPaperContextField =
+  | "selectedPaperContexts"
+  | "pdfPaperContexts"
+  | "fullTextPaperContexts"
+  | "citationPaperContexts"
+  | "pinnedPaperContexts"
+  | "selectedCollectionContexts"
+  | "selectedTagContexts"
+  | "selectedTextPaperContexts";
+
+export type ResolvedAgentRuntimeRequest = Omit<
+  AgentRuntimeRequestInput,
+  | LegacyPaperContextField
+  | "activePaperContext"
+  | "selectedTextContexts"
+  | "resolvedSelectedTextAnchors"
+  | "localDocuments"
+> & {
+  turnPaperScope: TurnPaperScope;
+  zoteroMetadataContext: ZoteroTurnMetadataContext;
+  selectedTextContexts?: readonly ResolvedTurnSelectedTextContext[];
+  resolvedSelectedTextAnchors?: readonly ResolvedTurnSelectedTextAnchor[];
+  localDocuments?: readonly TurnLocalDocument[];
+  turnPaperScopeWarnings?: readonly TurnPaperScopeWarning[];
+};
+
+/** Canonical request consumed after the one-way runtime boundary. */
+export type AgentRuntimeRequest = ResolvedAgentRuntimeRequest;
 
 export type AgentAttachmentReadableVia =
   | "read_attachment"
@@ -579,10 +693,31 @@ export type AgentToolArtifact =
       paperContext?: PaperContextRef;
     };
 
+/**
+ * `ok` means the tool RAN — it is not a report of whether anything changed.
+ *
+ * That distinction is load-bearing and easy to get wrong. `ok` gates the
+ * result-review loop (`runtime.ts`), counts toward the consecutive-error
+ * breaker that fails a run after three, and is mapped to MCP's `isError` for
+ * external backends. A write that legitimately changed nothing — every item
+ * already carried the tag — must therefore stay `ok: true`.
+ *
+ * `effect` carries what actually happened:
+ *   - `"applied"` — every targeted object changed
+ *   - `"partial"` — some changed, some were skipped or refused
+ *   - `"none"`    — nothing changed
+ *
+ * Absent `effect` means the tool does not mutate (reads) or does not report
+ * granular outcomes.
+ */
+export type AgentToolEffect = "applied" | "partial" | "none";
+
 export type AgentToolResult = {
   callId: string;
   name: string;
   ok: boolean;
+  effect?: AgentToolEffect;
+  actionReceipts: AgentActionReceipt[];
   content: unknown;
   artifacts?: AgentToolArtifact[];
 };
@@ -618,16 +753,64 @@ export type AgentToolExecutionOutput<TResult = unknown> =
   | {
       content: TResult;
       artifacts?: AgentToolArtifact[];
+      effect?: AgentToolEffect;
+      actionEvidence?: AgentActionEvidence[];
     };
+
+/** Explicit execution contract for tools whose validated operation can write. */
+export type AgentWriteToolOutput<TResult = unknown> = {
+  content: TResult;
+  effect: AgentToolEffect;
+  artifacts?: AgentToolArtifact[];
+  actionEvidence?: AgentActionEvidence[];
+};
+
+export type AgentJournalStepOutcome = {
+  effect: AgentToolEffect;
+  status:
+    | "applied"
+    | "partially_applied"
+    | "no_effect"
+    | "irreversible"
+    | "uncertain"
+    | "failed";
+  reversibility: "full" | "partial" | "none";
+  affectedCount: number;
+};
+
+/** Shared by nested tool calls that belong to one user-approved action. */
+export type AgentJournalActionScope = {
+  actionId: string;
+  allocateSequence: () => number;
+  recordStep: (outcome: AgentJournalStepOutcome) => void;
+};
 
 export type AgentToolContext = {
   request: AgentRuntimeRequest;
+  /** Durable identity of the execution that owns any journalled writes. */
+  runId?: string;
   item: Zotero.Item | null;
   currentAnswerText: string;
   modelName: string;
   modelProviderLabel?: string;
   resourceSignature?: string;
   signal?: AbortSignal;
+  /**
+   * Internal consent witness used only when journal initialization failed.
+   * The registry sets this after an explicit confirmation in safe/auto mode;
+   * direct tool/coordinator calls must not silently bypass durable recovery.
+   */
+  journalFallbackApproved?: boolean;
+  /**
+   * Internal identity of the outer semantic tool that the user invoked.
+   * Facades set this before delegating so durable history does not expose a
+   * legacy implementation-detail tool name.
+   */
+  journalToolName?: string;
+  /** Internal parent action used by composite tools such as library_batch. */
+  journalActionScope?: AgentJournalActionScope;
+  /** Persist the current contract ledger at a durable composite checkpoint. */
+  checkpointActionProgress?: () => Promise<void>;
 };
 
 export type AgentToolInputValidation<T> =
@@ -635,7 +818,10 @@ export type AgentToolInputValidation<T> =
   | { ok: false; error: string };
 
 export type AgentToolGuidance = {
-  matches: (request: AgentRuntimeRequest) => boolean;
+  matches: (
+    request: AgentRuntimeRequest,
+    context?: { matchedSkillIds: ReadonlyArray<string> },
+  ) => boolean;
   instruction: string;
 };
 
@@ -643,6 +829,7 @@ export type AgentToolPresentationSummaryInput = {
   label: string;
   args?: unknown;
   content?: unknown;
+  effect?: AgentToolEffect;
   request?: AgentTraceRequestSummary;
 };
 
@@ -670,6 +857,8 @@ export type AgentToolResultCard = {
 
 export type AgentToolPresentation = {
   label?: string;
+  /** Optional semantic icon for this tool's compact activity-summary row. */
+  traceIcon?: "library" | "web";
   summaries?: {
     onCall?: AgentToolPresentationSummary;
     onPending?: AgentToolPresentationSummary;
@@ -683,6 +872,16 @@ export type AgentToolPresentation = {
     args: unknown;
     request?: AgentTraceRequestSummary;
   }) => AgentTraceChip[];
+  buildTraceDetails?: (params: {
+    args: unknown;
+    content?: unknown;
+  }) => AgentTraceDetail[];
+  /** Merge a successful result into its expandable call row in the trace. */
+  mergeResultIntoCallTrace?: boolean;
+  buildTraceSummary?: (params: {
+    args: unknown;
+    content?: unknown;
+  }) => string | null;
   /**
    * When provided, the agent trace renders a read-only card list below the
    * tool's success row. Return `null` or an empty array to suppress cards.
@@ -690,16 +889,40 @@ export type AgentToolPresentation = {
   buildResultCards?: (content: unknown) => AgentToolResultCard[] | null;
 };
 
+/**
+ * The safety-relevant part of a tool's mutation plan.
+ *
+ * This is produced from the validated call, so confirmation policy consumes
+ * the same operation-specific answer that the durable coordinator will use
+ * instead of maintaining a second allowlist of supposedly reversible tools.
+ */
+export type AgentMutationPlan = {
+  effect: "none" | "write";
+  reversibility: "full" | "partial" | "none";
+  reason?: string;
+  /** Recovery resumes and privileged source review may require consent even
+   * when the selected write mode would otherwise auto-approve the call. */
+  requiresConfirmation?: boolean;
+};
+
 export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
   spec: ToolSpec;
   isAvailable?: (request: AgentRuntimeRequest) => boolean;
   guidance?: AgentToolGuidance;
   presentation?: AgentToolPresentation;
+  describeAction?: (
+    input: TInput,
+    context?: AgentToolContext,
+  ) => AgentToolActionDescriptor[] | Promise<AgentToolActionDescriptor[]>;
   validate: (args: unknown) => AgentToolInputValidation<TInput>;
   execute: (
     input: TInput,
     context: AgentToolContext,
   ) => Promise<AgentToolExecutionOutput<TResult>>;
+  planMutation?: (
+    input: TInput,
+    context: AgentToolContext,
+  ) => AgentMutationPlan | Promise<AgentMutationPlan>;
   shouldRequireConfirmation?: (
     input: TInput,
     context: AgentToolContext,
@@ -735,6 +958,21 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
   ) => AgentToolReviewResolution | Promise<AgentToolReviewResolution>;
 };
 
+/**
+ * Built-in write definitions use this narrower type so every successful
+ * execution reports its effect without registry-side result inspection.
+ */
+export type AgentWriteToolDefinition<
+  TInput = unknown,
+  TResult = unknown,
+> = Omit<AgentToolDefinition<TInput, TResult>, "spec" | "execute"> & {
+  spec: ToolSpec & { mutability: "write" };
+  execute: (
+    input: TInput,
+    context: AgentToolContext,
+  ) => Promise<AgentWriteToolOutput<TResult>>;
+};
+
 export type PreparedToolExecutionResult = {
   tool: AgentToolDefinition<any, any>;
   input: unknown;
@@ -744,6 +982,26 @@ export type PreparedToolExecutionResult = {
 export type PreparedToolExecutionOptions = {
   inheritedApproval?: AgentInheritedApproval;
   forceConfirmation?: boolean;
+  /**
+   * Who is driving this call.
+   *
+   * `prepareExecution` has three very different callers — the model's tool
+   * loop, the actions subsystem, and the public `runAction` API — and they
+   * carry different consent. A slash command or a plugin API call IS an
+   * explicit user gesture; a model tool call is not. Gates that exist to
+   * bound autonomy apply to `"model"` only. Defaults to `"model"` when
+   * absent, so a caller that forgets to declare itself gets the stricter
+   * treatment rather than the looser one.
+   */
+  callerKind?: "model" | "action" | "api";
+  /**
+   * Lifecycle fence checked immediately before any tool implementation runs.
+   * A tool may be prepared while a conversation is still live and execute only
+   * after Clear or deletion has frozen that conversation.
+   */
+  isExecutionAllowed?: () => boolean;
+  /** Serialize the actual side effect with Clear/deletion for this scope. */
+  executeWithLock?: <T>(task: () => Promise<T>) => Promise<T>;
 };
 
 export type PreparedToolExecution =

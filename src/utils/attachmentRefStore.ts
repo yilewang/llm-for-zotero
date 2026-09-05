@@ -4,6 +4,15 @@ import {
   removeAttachmentFile,
 } from "../modules/contextPanel/attachmentStorage";
 import { fileUrlToPath } from "./pathFileUrl";
+import {
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyRetiredInMemory,
+} from "../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "../shared/conversationWriteFence";
 
 export type AttachmentRefOwnerType = "conversation" | "note";
 
@@ -12,6 +21,23 @@ const ATTACHMENT_REFS_BLOB_INDEX = "llm_for_zotero_attachment_refs_blob_idx";
 export const ATTACHMENT_GC_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
 let refStoreInitTask: Promise<void> | null = null;
+let attachmentMutationChain: Promise<void> = Promise.resolve();
+
+async function withAttachmentMutationLock<T>(
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = attachmentMutationChain;
+  let release!: () => void;
+  attachmentMutationChain = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
 
 function normalizeOwnerId(ownerId: number): number | null {
   if (!Number.isFinite(ownerId)) return null;
@@ -55,6 +81,7 @@ async function ensureAttachmentRefTables(): Promise<void> {
           `CREATE INDEX IF NOT EXISTS ${ATTACHMENT_REFS_BLOB_INDEX}
          ON ${ATTACHMENT_REFS_TABLE} (blob_hash)`,
         );
+        await installConversationKeyLedgerAgentTriggers();
       } catch (err) {
         refStoreInitTask = null;
         throw err;
@@ -103,28 +130,69 @@ export async function replaceOwnerAttachmentRefs(
   ownerType: AttachmentRefOwnerType,
   ownerId: number,
   hashes: readonly string[],
+  expectedGeneration?: number,
 ): Promise<void> {
   const normalizedOwnerId = normalizeOwnerId(ownerId);
   if (!normalizedOwnerId) return;
-  await ensureAttachmentRefTables();
-  const normalizedHashes = await filterKnownBlobHashes(normalizeHashes(hashes));
-  await Zotero.DB.executeTransaction(async () => {
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${ATTACHMENT_REFS_TABLE}
-       WHERE owner_type = ?
-         AND owner_id = ?`,
-      [ownerType, normalizedOwnerId],
-    );
-    if (!normalizedHashes.length) return;
-    const now = Date.now();
-    for (const hash of normalizedHashes) {
-      await Zotero.DB.queryAsync(
-        `INSERT OR REPLACE INTO ${ATTACHMENT_REFS_TABLE}
-          (owner_type, owner_id, blob_hash, updated_at)
-         VALUES (?, ?, ?, ?)`,
-        [ownerType, normalizedOwnerId, hash, now],
-      );
+  const generation =
+    ownerType === "conversation"
+      ? Number.isFinite(Number(expectedGeneration))
+        ? Number(expectedGeneration)
+        : getConversationWriteGeneration(normalizedOwnerId)
+      : undefined;
+  if (
+    ownerType === "conversation" &&
+    (isConversationKeyRetiredInMemory(normalizedOwnerId) ||
+      areConversationWritesFrozen(normalizedOwnerId) ||
+      !isConversationWriteGenerationCurrent(normalizedOwnerId, generation || 0))
+  ) {
+    return;
+  }
+  await withAttachmentMutationLock(async () => {
+    await ensureAttachmentRefTables();
+    if (
+      ownerType === "conversation" &&
+      (isConversationKeyRetiredInMemory(normalizedOwnerId) ||
+        areConversationWritesFrozen(normalizedOwnerId) ||
+        !isConversationWriteGenerationCurrent(
+          normalizedOwnerId,
+          generation || 0,
+        ))
+    ) {
+      return;
     }
+    const normalizedHashes = await filterKnownBlobHashes(
+      normalizeHashes(hashes),
+    );
+    await Zotero.DB.executeTransaction(async () => {
+      if (
+        ownerType === "conversation" &&
+        (isConversationKeyRetiredInMemory(normalizedOwnerId) ||
+          areConversationWritesFrozen(normalizedOwnerId) ||
+          !isConversationWriteGenerationCurrent(
+            normalizedOwnerId,
+            generation || 0,
+          ))
+      ) {
+        return;
+      }
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${ATTACHMENT_REFS_TABLE}
+         WHERE owner_type = ?
+           AND owner_id = ?`,
+        [ownerType, normalizedOwnerId],
+      );
+      if (!normalizedHashes.length) return;
+      const now = Date.now();
+      for (const hash of normalizedHashes) {
+        await Zotero.DB.queryAsync(
+          `INSERT OR REPLACE INTO ${ATTACHMENT_REFS_TABLE}
+            (owner_type, owner_id, blob_hash, updated_at)
+           VALUES (?, ?, ?, ?)`,
+          [ownerType, normalizedOwnerId, hash, now],
+        );
+      }
+    });
   });
 }
 
@@ -141,6 +209,37 @@ export async function clearOwnerAttachmentRefs(
        AND owner_id = ?`,
     [ownerType, normalizedOwnerId],
   );
+}
+
+/**
+ * Remove owner references using the caller's active transaction.  The normal
+ * helper initializes the reference tables and is appropriate for ordinary
+ * writes; deletion coordination must not open a nested transaction or swallow
+ * a database failure after the catalog has been removed.
+ */
+export async function clearOwnerAttachmentRefsInTransaction(
+  ownerType: AttachmentRefOwnerType,
+  ownerId: number,
+): Promise<void> {
+  const normalizedOwnerId = normalizeOwnerId(ownerId);
+  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
+    .Zotero?.DB;
+  if (!normalizedOwnerId || typeof db?.queryAsync !== "function") return;
+  try {
+    await (
+      db.queryAsync as (sql: string, params?: unknown[]) => Promise<unknown>
+    )(
+      `DELETE FROM ${ATTACHMENT_REFS_TABLE}
+       WHERE owner_type = ?
+         AND owner_id = ?`,
+      [ownerType, normalizedOwnerId],
+    );
+  } catch (error) {
+    // The ref store is lazy; no table means there are no persisted refs. Any
+    // other error must abort the owning deletion transaction.
+    if (/no such table|no table/i.test(String(error))) return;
+    throw error;
+  }
 }
 
 export async function reconcileNoteAttachmentRefsFromNoteContent(): Promise<void> {
@@ -179,46 +278,51 @@ export async function reconcileNoteAttachmentRefsFromNoteContent(): Promise<void
 export async function collectAndDeleteUnreferencedBlobs(
   minAgeMs: number,
 ): Promise<void> {
-  await ensureAttachmentRefTables();
-  const minAge = Number.isFinite(minAgeMs)
-    ? Math.max(0, Math.floor(minAgeMs))
-    : ATTACHMENT_GC_MIN_AGE_MS;
-  const cutoff = Date.now() - minAge;
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT b.hash AS hash, b.path AS path
-     FROM ${ATTACHMENT_BLOBS_TABLE} b
-     LEFT JOIN ${ATTACHMENT_REFS_TABLE} r
-       ON r.blob_hash = b.hash
-     WHERE r.blob_hash IS NULL
-       AND b.created_at <= ?`,
-    [cutoff],
-  )) as Array<{ hash?: unknown; path?: unknown }> | undefined;
-  if (!rows?.length) return;
+  await withAttachmentMutationLock(async () => {
+    await ensureAttachmentRefTables();
+    const minAge = Number.isFinite(minAgeMs)
+      ? Math.max(0, Math.floor(minAgeMs))
+      : ATTACHMENT_GC_MIN_AGE_MS;
+    const cutoff = Date.now() - minAge;
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT b.hash AS hash, b.path AS path
+       FROM ${ATTACHMENT_BLOBS_TABLE} b
+       LEFT JOIN ${ATTACHMENT_REFS_TABLE} r
+         ON r.blob_hash = b.hash
+       WHERE r.blob_hash IS NULL
+         AND b.created_at <= ?`,
+      [cutoff],
+    )) as Array<{ hash?: unknown; path?: unknown }> | undefined;
+    if (!rows?.length) return;
 
-  for (const row of rows) {
-    const hash =
-      typeof row.hash === "string" && /^[a-f0-9]{64}$/i.test(row.hash.trim())
-        ? row.hash.trim().toLowerCase()
-        : "";
-    if (!hash) continue;
-    const path = typeof row.path === "string" ? row.path.trim() : "";
-    if (path) {
-      try {
-        await removeAttachmentFile(path);
-      } catch (err) {
-        ztoolkit.log("LLM: Failed to delete unreferenced attachment blob", err);
-        continue;
+    for (const row of rows) {
+      const hash =
+        typeof row.hash === "string" && /^[a-f0-9]{64}$/i.test(row.hash.trim())
+          ? row.hash.trim().toLowerCase()
+          : "";
+      if (!hash) continue;
+      const path = typeof row.path === "string" ? row.path.trim() : "";
+      if (path) {
+        try {
+          await removeAttachmentFile(path);
+        } catch (err) {
+          ztoolkit.log(
+            "LLM: Failed to delete unreferenced attachment blob",
+            err,
+          );
+          continue;
+        }
       }
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${ATTACHMENT_BLOBS_TABLE}
+         WHERE hash = ?
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ${ATTACHMENT_REFS_TABLE}
+             WHERE blob_hash = ?
+           )`,
+        [hash, hash],
+      );
     }
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${ATTACHMENT_BLOBS_TABLE}
-       WHERE hash = ?
-         AND NOT EXISTS (
-           SELECT 1
-           FROM ${ATTACHMENT_REFS_TABLE}
-           WHERE blob_hash = ?
-         )`,
-      [hash, hash],
-    );
-  }
+  });
 }

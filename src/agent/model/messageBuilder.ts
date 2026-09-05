@@ -1,14 +1,23 @@
+import { renderLibraryOverviewSection } from "../context/libraryOverview";
+
 import type {
   AgentContentInputCapabilities,
+  AgentActionObligation,
+  AgentModelContentPart,
   AgentModelMessage,
   AgentRuntimeRequest,
+  AgentSystemMessage,
   AgentToolDefinition,
+  AgentUserMessage,
 } from "../types";
+import { actionToolGuidanceForCapabilities } from "../contracts/actionEvaluation";
 import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { getAllSkills } from "../skills";
 import type { AgentSkill } from "../skills";
+import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { classifyWriteNoteDestination } from "../writeNoteDestination";
+import { WRITE_NOTE_SKILL_ID } from "../skills/noteIntent";
 
 import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
@@ -29,6 +38,7 @@ import {
 } from "../context/resourceContextPlan";
 import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
+import { getSelectedPassagePaper } from "../context/turnPaperScope";
 import {
   hasAgentContentInputs,
   normalizeAgentContentInputs,
@@ -39,6 +49,10 @@ import {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
 } from "../../modules/contextPanel/selectedTextAnchorFormatting";
+import {
+  buildInstructionInventory,
+  type InstructionInventory,
+} from "./instructionInventory";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -121,6 +135,15 @@ export function normalizeHistoryMessages(
     }));
 }
 
+function describeFrozenTargets(obligation: AgentActionObligation): string {
+  const boundary = obligation.targetBoundary;
+  if (!boundary) return "";
+  if (boundary.frozenTargetIds.length <= 50) {
+    return `frozen item IDs [${boundary.frozenTargetIds.join(", ")}]`;
+  }
+  return `${boundary.frozenTargetIds.length} frozen targets (scope digest ${boundary.scopeDigest})`;
+}
+
 function buildFullUserMessage(
   request: AgentRuntimeRequest,
   options: {
@@ -130,11 +153,46 @@ function buildFullUserMessage(
     turnGuidanceBlock?: string;
     contentInputs?: AgentContentInputCapabilities;
   } = {},
-): AgentModelMessage {
+): AgentUserMessage {
   const contextLines: string[] = [];
+  // Volatile by nature (collection ids and counts change as the agent works),
+  // so it lives here rather than in the cached system prefix.
+  const libraryOverview = renderLibraryOverviewSection(request.libraryID);
+  if (libraryOverview) {
+    contextLines.push(libraryOverview);
+  }
   const visibleTurnContext = buildVisibleTurnContextBlock(request);
   if (visibleTurnContext) {
     contextLines.push(visibleTurnContext);
+  }
+  if (request.actionContract?.obligations.length) {
+    const obligations = request.actionContract.obligations.map((obligation) => {
+      const scope = obligation.scope
+        ? obligation.scopeRole === "destination"
+          ? ` exact destination collection "${obligation.scope.collectionPath}" (ID ${obligation.scope.collectionId})`
+          : ` exact source collection "${obligation.scope.collectionPath}", direct members only, ${describeFrozenTargets(obligation)}`
+        : obligation.targetBoundary?.kind === "library"
+          ? ` frozen whole-library scope, ${describeFrozenTargets(obligation)}`
+          : obligation.targetBoundary?.kind === "selection"
+            ? ` frozen selected scope, ${describeFrozenTargets(obligation)}`
+            : "";
+      const constraint = obligation.constraints?.tagPrefix
+        ? `, required tag prefix "${obligation.constraints.tagPrefix}"`
+        : "";
+      return `- ${obligation.capability}; coverage=${obligation.coverage}; targets=${obligation.targetKind};${scope}${constraint}`;
+    });
+    contextLines.push(
+      [
+        "Action contract for this turn:",
+        ...obligations,
+        `Tool guidance: ${actionToolGuidanceForCapabilities(
+          request.actionContract.obligations.map(
+            (obligation) => obligation.capability,
+          ),
+        )}`,
+        "Do not widen an exact collection to its parent or descendants. A completion claim requires a verified tool receipt covering this contract; already-satisfied targets count, but prose and opaque script/command output do not.",
+      ].join("\n"),
+    );
   }
   if (request.activeNoteContext) {
     const note = request.activeNoteContext;
@@ -150,7 +208,10 @@ function buildFullUserMessage(
     selectedTextContexts: request.selectedTextContexts,
     selectedTexts: request.selectedTexts,
     selectedTextSources: request.selectedTextSources,
-    selectedTextPaperContexts: request.selectedTextPaperContexts,
+    selectedTextPaperContexts: (request.selectedTextContexts || []).map(
+      (_context, index) =>
+        getSelectedPassagePaper(request.turnPaperScope, index),
+    ),
     selectedTextNoteContexts: request.selectedTextNoteContexts,
   });
   const selectedTexts = selectedTextContexts.map((context) => context.text);
@@ -158,7 +219,7 @@ function buildFullUserMessage(
     (context) => context.source,
   );
   const selectedTextPaperContexts = selectedTextContexts.map(
-    (context) => context.paperContext,
+    (_context, index) => getSelectedPassagePaper(request.turnPaperScope, index),
   );
   const anchorsByIndex = new Map(
     (request.resolvedSelectedTextAnchors || []).map((anchor) => [
@@ -218,7 +279,7 @@ function buildFullUserMessage(
     );
     const anchorContext = renderSelectedTextAnchorContext({
       selectedTextContexts,
-      anchors: request.resolvedSelectedTextAnchors || [],
+      anchors: [...(request.resolvedSelectedTextAnchors || [])],
     });
     if (anchorContext) contextLines.push(anchorContext);
   }
@@ -307,7 +368,7 @@ function buildUserMessage(
     turnGuidanceBlock?: string;
     contentInputs?: AgentContentInputCapabilities;
   } = {},
-): AgentModelMessage {
+): AgentUserMessage {
   return buildFullUserMessage(request, {
     priorReadBlock: resourceContextPlan?.priorReadBlock,
     coverageBlock: options.coverageBlock,
@@ -323,6 +384,79 @@ type PromptSection = {
   lines: string[];
 };
 
+export type AgentPromptEnvelope = Readonly<{
+  systemMessages: readonly Readonly<AgentSystemMessage>[];
+  turnMessage: Readonly<AgentUserMessage>;
+}>;
+
+type AgentPromptInventoryState = Readonly<{
+  fixedPrompt: string;
+  tools: readonly AgentToolDefinition<any, any>[];
+  matchedSkillInstructions: readonly string[];
+  dynamicGuidance: string;
+  stableResourceBlock: string;
+  turnResource: string;
+}>;
+
+export type RenderedAgentPromptEnvelope = Readonly<{
+  envelope: AgentPromptEnvelope;
+  inventory: AgentPromptInventoryState;
+}>;
+
+function cloneContentPart(part: AgentModelContentPart): AgentModelContentPart {
+  if (part.type === "text") {
+    return { type: "text", text: part.text };
+  }
+  if (part.type === "image_url") {
+    return {
+      type: "image_url",
+      image_url: {
+        url: part.image_url.url,
+        detail: part.image_url.detail,
+      },
+    };
+  }
+  return {
+    type: "file_ref",
+    file_ref: {
+      name: part.file_ref.name,
+      mimeType: part.file_ref.mimeType,
+      storedPath: part.file_ref.storedPath,
+      contentHash: part.file_ref.contentHash,
+    },
+  };
+}
+
+function cloneModelMessage(message: AgentModelMessage): AgentModelMessage {
+  const content =
+    typeof message.content === "string"
+      ? message.content
+      : message.content.map(cloneContentPart);
+  if (message.role === "assistant") {
+    return {
+      ...message,
+      content,
+      tool_calls: message.tool_calls?.map((call) => ({ ...call })),
+    };
+  }
+  return { ...message, content } as AgentModelMessage;
+}
+
+function freezeEnvelopeMessage<
+  TMessage extends AgentSystemMessage | AgentUserMessage,
+>(message: TMessage): Readonly<TMessage> {
+  const cloned = cloneModelMessage(message) as TMessage;
+  if (typeof cloned.content !== "string") {
+    for (const part of cloned.content) {
+      if (part.type === "image_url") Object.freeze(part.image_url);
+      if (part.type === "file_ref") Object.freeze(part.file_ref);
+      Object.freeze(part);
+    }
+    Object.freeze(cloned.content);
+  }
+  return Object.freeze(cloned);
+}
+
 function buildSystemPrompt(sections: PromptSection[]): string {
   return sections
     .flatMap(({ lines }) => lines)
@@ -333,12 +467,13 @@ function buildSystemPrompt(sections: PromptSection[]): string {
 function collectToolGuidanceInstructions(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
+  matchedSkillIds: ReadonlyArray<string>,
 ): string[] {
   const instructions = new Set<string>();
   for (const tool of tools) {
     const guidance = tool.guidance;
     if (!guidance) continue;
-    if (!guidance.matches(request)) continue;
+    if (!guidance.matches(request, { matchedSkillIds })) continue;
     const instruction = guidance.instruction.trim();
     if (instruction) instructions.add(instruction);
   }
@@ -356,8 +491,10 @@ function formatSkillGuidanceBlock(
   skill: AgentSkill,
   activationSource: string,
 ): string {
+  const customizationNotice = getSkillCustomizationNotice(skill.instruction);
   const lines = [
     `### Skill: ${skill.id}`,
+    customizationNotice || "",
     `Description: ${skill.description || "No description provided."}`,
     `Activation: ${activationSource}`,
     "Instructions:",
@@ -401,7 +538,9 @@ function buildTurnGuidanceBlock(instructions: string[]): string {
 }
 
 function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
-  const fullTextPapers = request.fullTextPaperContexts || [];
+  const fullTextPapers = request.turnPaperScope.papers
+    .filter((entry) => entry.roles.includes("full_text"))
+    .map((entry) => entry.paper);
   if (!fullTextPapers.length) return "";
   if (detectExplicitFullReadIntent(request.userText || "")) {
     return (
@@ -430,22 +569,43 @@ function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
 }
 
 function getInScopePaperContexts(request: AgentRuntimeRequest) {
-  return [
-    ...(request.selectedPaperContexts || []),
-    ...(request.fullTextPaperContexts || []),
-    ...(request.pinnedPaperContexts || []),
-  ];
+  return request.turnPaperScope.papers.map((entry) => entry.paper);
+}
+
+function hasFigureTaskIntent(
+  request: AgentRuntimeRequest,
+  matchedSkillIds: ReadonlyArray<string>,
+): boolean {
+  const activeSkillIds = new Set([
+    ...matchedSkillIds,
+    ...(request.forcedSkillIds || []),
+  ]);
+  if (activeSkillIds.has("analyze-figures")) return true;
+  const text = request.userText || "";
+  if (
+    /\b(?:figure|fig\.?|table|diagram|chart|graph|plot|schematic|image|panel)\s*(?:[a-z]?\d+[a-z]?|[ivx]+)\b/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:analy[sz]e|interpret|inspect|describe|walk\s+me\s+through|explain)\s+(?:this|that|the)\s+(?:figure|fig\.?|table|diagram|chart|graph|plot|schematic|image|panel)\b/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:this|that|the)\s+(?:figure|fig\.?|table|diagram|chart|graph|plot|schematic|image|panel)\b.{0,80}\b(?:show|mean|indicate|depict|demonstrate)\b/i.test(
+    text,
+  );
 }
 
 function buildFigureMineruInstruction(
   request: AgentRuntimeRequest,
   matchedSkillIds: ReadonlyArray<string>,
 ): string {
-  const activeSkillIds = new Set([
-    ...matchedSkillIds,
-    ...(request.forcedSkillIds || []),
-  ]);
-  if (!activeSkillIds.has("analyze-figures")) return "";
+  if (!hasFigureTaskIntent(request, matchedSkillIds)) return "";
   const mineruPapers = getInScopePaperContexts(request).filter((entry) =>
     Boolean(entry.mineruCacheDir),
   );
@@ -476,7 +636,7 @@ function buildWriteNoteFileInstruction(
     ...matchedSkillIds,
     ...(request.forcedSkillIds || []),
   ]);
-  if (!activeSkillIds.has("write-note")) return "";
+  if (!activeSkillIds.has(WRITE_NOTE_SKILL_ID)) return "";
   const destination = classifyWriteNoteDestination(
     request.userText,
     getNotesDirectoryNickname(),
@@ -493,6 +653,12 @@ function buildWriteNoteFileInstruction(
       "Do not finish by placing the full note body in chat. If the notes directory is not configured or the target path cannot be resolved, give a brief setup error instead of dumping the note body."
     );
   }
+  if (destination === "both") {
+    return (
+      "TURN RULE: The user explicitly requested both a Zotero note and a filesystem export. " +
+      'Use `note_write` for the Zotero note and `file_io` with `action: "write"` for the external Markdown file. Both independently verified results are required before finishing.'
+    );
+  }
   return "";
 }
 
@@ -502,11 +668,9 @@ function buildForcedSkillWholeLibraryInstruction(
   if (!request.forcedSkillIds?.length) return "";
   if (request.conversationKind === "paper") return "";
   const hasExplicitContext = Boolean(
-    request.selectedPaperContexts?.length ||
-    request.fullTextPaperContexts?.length ||
-    request.pinnedPaperContexts?.length ||
-    request.selectedCollectionContexts?.length ||
-    request.selectedTagContexts?.length ||
+    request.turnPaperScope.papers.length ||
+    request.turnPaperScope.collections.length ||
+    request.turnPaperScope.tags.length ||
     request.selectedTextSources?.length ||
     request.attachments?.length ||
     request.screenshots?.length,
@@ -522,9 +686,17 @@ function buildRuntimePlatformSection(): string {
   return buildRuntimePlatformGuidanceText();
 }
 
-function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
+function buildTextOnlyModelInstruction(
+  request: AgentRuntimeRequest,
+  matchedSkillIds: ReadonlyArray<string>,
+): string {
   if (isMultimodalRequestSupported(request)) return "";
   const modelLabel = (request.model || "selected model").trim();
+  if (!hasFigureTaskIntent(request, matchedSkillIds)) {
+    return request.screenshots?.length
+      ? `MODEL LIMITATION: ${modelLabel} is text-only and cannot inspect the supplied screenshots.`
+      : "";
+  }
   return (
     `MODEL LIMITATION: ${modelLabel} is treated as text-only in this plugin. ` +
     "Do not rely on screenshots, PDF page images, or image-file visual inspection. " +
@@ -533,16 +705,15 @@ function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
   );
 }
 
-export async function buildAgentInitialMessages(
+export async function renderAgentPromptEnvelope(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
   matchedSkillIds: ReadonlyArray<string>,
   resourceContextPlan?: AgentResourceContextPlan,
   options: {
-    transcriptMessages?: AgentModelMessage[];
     contentInputs?: AgentContentInputCapabilities;
   } = {},
-): Promise<AgentModelMessage[]> {
+): Promise<RenderedAgentPromptEnvelope> {
   const memoryBlock = await buildAgentMemoryBlock(request.conversationKey);
   const autoReadInstruction = buildAutoReadInstruction(request);
   const workflowParityInstructions = [
@@ -550,11 +721,18 @@ export async function buildAgentInitialMessages(
     buildWriteNoteFileInstruction(request, matchedSkillIds),
     buildForcedSkillWholeLibraryInstruction(request),
   ].filter(Boolean);
-  const turnGuidanceBlock = buildTurnGuidanceBlock([
+  const dynamicGuidanceInstructions = [
     autoReadInstruction,
     ...workflowParityInstructions,
-    ...collectToolGuidanceInstructions(request, tools),
-    ...collectSkillGuidanceInstructions(request, matchedSkillIds),
+    ...collectToolGuidanceInstructions(request, tools, matchedSkillIds),
+  ];
+  const matchedSkillInstructions = collectSkillGuidanceInstructions(
+    request,
+    matchedSkillIds,
+  );
+  const turnGuidanceBlock = buildTurnGuidanceBlock([
+    ...dynamicGuidanceInstructions,
+    ...matchedSkillInstructions,
   ]);
   const coverageBlock = buildAgentCoverageContextBlock({
     conversationKey: request.conversationKey,
@@ -576,7 +754,7 @@ export async function buildAgentInitialMessages(
     },
     {
       id: "model-limitations",
-      lines: [buildTextOnlyModelInstruction(request)],
+      lines: [buildTextOnlyModelInstruction(request, matchedSkillIds)],
     },
     {
       id: "custom-instructions",
@@ -587,32 +765,122 @@ export async function buildAgentInitialMessages(
       lines: [buildNotesDirectoryConfigSection()],
     },
   ];
+  // The library overview is deliberately NOT a system section.
+  //
+  // The cache breakpoint sits at the last "stable-prefix" block, so every
+  // system section is inside the cached prefix. This section names collection
+  // ids and a collection count, both of which change the moment the agent
+  // creates a folder — which would invalidate the prompt cache on the next
+  // turn, for Anthropic's explicit caching and for the automatic prefix
+  // caching DeepSeek and Kimi do. It belongs with the other volatile
+  // per-turn context instead; see buildAgentTurnUserMessage.
   const stableResourceBlock =
     resourceContextPlan?.stableContextBlock ||
     buildAgentStableResourceContextBlock(request);
 
-  return [
-    {
+  const fixedPrompt = buildSystemPrompt(sections);
+  const turnMessage = buildUserMessage(request, resourceContextPlan, {
+    coverageBlock,
+    memoryBlock,
+    turnGuidanceBlock,
+    contentInputs: options.contentInputs,
+  });
+  const systemMessages = [
+    freezeEnvelopeMessage<AgentSystemMessage>({
       role: "system",
-      content: buildSystemPrompt(sections),
-    },
+      content: fixedPrompt,
+    }),
     ...(stableResourceBlock
       ? [
-          {
-            role: "system" as const,
+          freezeEnvelopeMessage<AgentSystemMessage>({
+            role: "system",
             content: stableResourceBlock,
-            cachePolicy: "stable-prefix" as const,
-          },
+            cachePolicy: "stable-prefix",
+          }),
         ]
       : []),
-    ...(options.transcriptMessages?.length
-      ? options.transcriptMessages
-      : normalizeHistoryMessages(request)),
-    buildUserMessage(request, resourceContextPlan, {
-      coverageBlock,
-      memoryBlock,
-      turnGuidanceBlock,
-      contentInputs: options.contentInputs,
-    }),
   ];
+  const frozenTurnMessage = freezeEnvelopeMessage(turnMessage);
+  const turnText = stringifyMessageContent(turnMessage.content);
+  return Object.freeze({
+    envelope: Object.freeze({
+      systemMessages: Object.freeze(systemMessages),
+      turnMessage: frozenTurnMessage,
+    }),
+    inventory: Object.freeze({
+      fixedPrompt,
+      tools: Object.freeze([...tools]),
+      matchedSkillInstructions: Object.freeze([...matchedSkillInstructions]),
+      dynamicGuidance: buildTurnGuidanceBlock(dynamicGuidanceInstructions),
+      stableResourceBlock,
+      turnResource: turnGuidanceBlock
+        ? turnText.replace(turnGuidanceBlock, "").trim()
+        : turnText,
+    }),
+  });
+}
+
+export function composeAgentModelInput(
+  envelope: AgentPromptEnvelope,
+  options: {
+    transcriptMessages?: readonly AgentModelMessage[];
+    postTurnMessages?: readonly AgentModelMessage[];
+  } = {},
+): AgentModelMessage[] {
+  return [
+    ...envelope.systemMessages.map((message) =>
+      cloneModelMessage(message as AgentSystemMessage),
+    ),
+    ...(options.transcriptMessages || []).map(cloneModelMessage),
+    cloneModelMessage(envelope.turnMessage as AgentUserMessage),
+    ...(options.postTurnMessages || []).map(cloneModelMessage),
+  ];
+}
+
+export function buildAgentPromptInstructionInventory(
+  rendered: RenderedAgentPromptEnvelope,
+  providerMessages: readonly AgentModelMessage[],
+): InstructionInventory {
+  return buildInstructionInventory({
+    fixed: rendered.inventory.fixedPrompt,
+    tools: rendered.inventory.tools,
+    matchedSkills: rendered.inventory.matchedSkillInstructions,
+    dynamicGuidance: rendered.inventory.dynamicGuidance,
+    stableResource: rendered.inventory.stableResourceBlock,
+    turnResource: rendered.inventory.turnResource,
+    providerMessages,
+  });
+}
+
+export async function buildAgentInitialMessages(
+  request: AgentRuntimeRequest,
+  tools: AgentToolDefinition<any, any>[],
+  matchedSkillIds: ReadonlyArray<string>,
+  resourceContextPlan?: AgentResourceContextPlan,
+  options: {
+    transcriptMessages?: AgentModelMessage[];
+    contentInputs?: AgentContentInputCapabilities;
+    onInstructionInventory?: (inventory: InstructionInventory) => void;
+  } = {},
+): Promise<AgentModelMessage[]> {
+  const rendered = await renderAgentPromptEnvelope(
+    request,
+    tools,
+    matchedSkillIds,
+    resourceContextPlan,
+    { contentInputs: options.contentInputs },
+  );
+  const transcriptMessages =
+    options.transcriptMessages === undefined
+      ? normalizeHistoryMessages(request)
+      : options.transcriptMessages;
+  const messages = composeAgentModelInput(rendered.envelope, {
+    transcriptMessages,
+  });
+  if (options.onInstructionInventory) {
+    options.onInstructionInventory(
+      buildAgentPromptInstructionInventory(rendered, messages),
+    );
+  }
+  return messages;
 }

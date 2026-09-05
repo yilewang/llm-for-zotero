@@ -7,6 +7,7 @@ import {
   formatAgentActivityDuration,
   getPendingActionButtonLayout,
   renderAgentTrace,
+  renderAgentTraceDetailsBodyForTests,
   renderPendingActionCard,
 } from "../src/modules/contextPanel/agentTrace/render";
 import {
@@ -57,6 +58,10 @@ class FakeClassList {
 
   contains(cls: string): boolean {
     return this.classes.has(cls);
+  }
+
+  remove(...classes: string[]) {
+    for (const cls of classes) this.classes.delete(cls);
   }
 
   toString(): string {
@@ -570,13 +575,25 @@ describe("Mermaid rendering helpers", function () {
     assert.include(normalized, "style A fill:#151515,stroke:#333333");
   });
 
-  it("adds SVG polish rules for the expanded Mermaid viewer", function () {
+  it("scopes SVG polish rules to the expanded Mermaid viewer", function () {
     const svg =
       '<svg viewBox="0 0 10 10"><g class="cluster"><rect /></g></svg>';
 
-    const polished = polishRenderedMermaidSvg(svg, "light");
+    for (const [theme, background] of [
+      ["light", "#ffffff"],
+      ["dark", "#151515"],
+    ] as const) {
+      const polished = polishRenderedMermaidSvg(svg, theme);
 
-    assert.include(polished, 'data-llm-mermaid-polished="true"');
+      assert.include(polished, 'data-llm-mermaid-polished="true"');
+      assert.include(
+        polished,
+        `svg[data-llm-mermaid-polished]{background:${background}`,
+      );
+      assert.notMatch(polished, /<style>\s*svg\s*\{/);
+    }
+
+    const polished = polishRenderedMermaidSvg(svg, "light");
     assert.include(polished, ".cluster rect{fill:#ffffff!important");
     assert.include(polished, ".flowchart-link{stroke:#6b7280!important");
   });
@@ -986,6 +1003,113 @@ describe("agentTrace render", function () {
     assert.equal(formatAgentActivityDuration(250), "1s");
     assert.equal(formatAgentActivityDuration(259_000), "4m 19s");
     assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
+  });
+
+  it("suppresses complete and partial web markers in streamed trace text", function () {
+    assert.equal(
+      buildAgentTraceMarkdownForRender(
+        "First.<!--llm-web-source:web_abc1234-->\n\nSecond.<!--llm-web-source:web_",
+      ),
+      "First.\n\nSecond.",
+    );
+  });
+
+  it("renders connected trace rows and launches their safe URLs", function () {
+    const globalScope = globalThis as typeof globalThis & {
+      Zotero?: { launchURL?: (url: string) => void };
+    };
+    const originalZotero = globalScope.Zotero;
+    let launchedUrl = "";
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      launchURL: (url: string) => {
+        launchedUrl = url;
+      },
+    };
+
+    try {
+      const body = renderAgentTraceDetailsBodyForTests(fakeDocument, [
+        { label: "Query", value: "representational drift" },
+        {
+          label: "Depth",
+          value: "Depth: basic",
+          timeline: { icon: "brain" },
+        },
+        {
+          label: "URL",
+          value: "https://example.com/a/long/result/url",
+          timeline: {
+            icon: "website",
+            href: "https://example.com/a/long/result/url",
+            faviconUrl: "https://example.com/favicon.ico",
+          },
+        },
+        {
+          label: "Paper",
+          value: "Alice Example, 2025, A useful paper",
+          timeline: {
+            icon: "paper",
+            href: "https://doi.org/10.1000/example",
+          },
+        },
+      ]) as unknown as FakeElement;
+
+      assert.isTrue(
+        body.classList.contains("llm-agent-process-details-with-timeline"),
+      );
+      assert.lengthOf(body.findAllByClass("llm-agent-trace-timeline"), 1);
+      assert.lengthOf(body.findAllByClass("llm-agent-trace-timeline-row"), 3);
+      assert.lengthOf(
+        body.findAllByClass("llm-agent-trace-timeline-icon-brain"),
+        1,
+      );
+      assert.lengthOf(
+        body.findAllByClass("llm-agent-trace-timeline-icon-website"),
+        1,
+      );
+      assert.lengthOf(
+        body.findAllByClass("llm-agent-trace-timeline-icon-paper"),
+        1,
+      );
+      const favicons = body.findAllByClass("llm-agent-trace-timeline-favicon");
+      assert.lengthOf(favicons, 1);
+      const websiteIcon = body.findAllByClass(
+        "llm-agent-trace-timeline-icon-website",
+      )[0];
+      assert.isTrue(
+        websiteIcon.classList.contains(
+          "llm-agent-trace-timeline-icon-has-favicon",
+        ),
+      );
+      assert.equal(
+        (favicons[0] as unknown as HTMLImageElement).src,
+        "https://example.com/favicon.ico",
+      );
+      favicons[0].dispatchFakeEvent("error");
+      assert.isTrue((favicons[0] as unknown as HTMLImageElement).hidden);
+      assert.isFalse(
+        websiteIcon.classList.contains(
+          "llm-agent-trace-timeline-icon-has-favicon",
+        ),
+      );
+      assert.deepEqual(
+        body
+          .findAllByClass("llm-agent-trace-timeline-value")
+          .map(collectFakeText),
+        [
+          "Depth: basic",
+          "https://example.com/a/long/result/url",
+          "Alice Example, 2025, A useful paper",
+        ],
+      );
+
+      const links = body.findAllByClass("llm-agent-trace-timeline-row-link");
+      assert.lengthOf(links, 2);
+      links[0].dispatchFakeEvent("click");
+      assert.equal(launchedUrl, "https://example.com/a/long/result/url");
+    } finally {
+      globalScope.Zotero = originalZotero;
+    }
   });
 
   it("expands activity while streaming and collapses it when complete", function () {
@@ -3605,6 +3729,60 @@ describe("agentTrace render", function () {
     assert.isFalse(chipLabels.some((label) => label.includes("...")));
   });
 
+  it("uses the shared Paper chip structure across agent providers", function () {
+    const providers = ["Claude Code", "Codex", "OpenAI", "Anthropic", "Gemini"];
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-provider-parity",
+        seq: 1,
+        eventType: "final",
+        payload: { type: "final", text: "Done." },
+        createdAt: 1,
+      },
+    ];
+
+    for (const modelProviderLabel of providers) {
+      const trace = renderAgentTrace({
+        doc: fakeDocument,
+        userMessage: {
+          role: "user",
+          text: "Use this paper.",
+          timestamp: 1,
+          paperContexts: [
+            {
+              itemId: 10,
+              contextItemId: 11,
+              title: "Provider parity paper",
+            },
+          ],
+        },
+        message: {
+          role: "assistant",
+          text: "Done.",
+          timestamp: 2,
+          runMode: "agent",
+          modelProviderLabel,
+        },
+        events,
+      }) as unknown as FakeElement;
+
+      const chips = trace.findAllByClass("llm-agent-process-chip");
+      assert.lengthOf(chips, 1, modelProviderLabel);
+      const icon = chips[0].findByClass("llm-agent-process-chip-icon");
+      const label = chips[0].findByClass("llm-agent-process-chip-label");
+      assert.isNotNull(icon, modelProviderLabel);
+      assert.isTrue(
+        icon?.classList.contains("llm-context-svg-icon"),
+        modelProviderLabel,
+      );
+      assert.isTrue(
+        icon?.classList.contains("llm-context-icon-paper"),
+        modelProviderLabel,
+      );
+      assert.equal(label ? collectFakeText(label) : "", "Paper");
+    }
+  });
+
   it("preserves custom chip title and long label values as details", function () {
     const longTitle =
       "https://example.org/articles/with/a/very/long/path/that/must/remain/recoverable";
@@ -3618,6 +3796,37 @@ describe("agentTrace render", function () {
     assert.deepEqual(buildAgentTraceChipDetails({ label: longLabel }), [
       { label: "Detail", value: longLabel, kind: "text" },
     ]);
+  });
+
+  it("keeps agent trace chip icons aligned to the first label line", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const chipRule =
+      css.match(/\.llm-agent-process-chip\s*\{[\s\S]*?\}/)?.[0] || "";
+    const chipIconRule =
+      css.match(/\.llm-agent-process-chip-icon\s*\{[\s\S]*?\}/)?.[0] || "";
+    const svgIconRule =
+      css.match(
+        /\.llm-agent-process-chip-icon\.llm-context-svg-icon\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const fallbackIconRule =
+      css.match(
+        /\.llm-agent-process-chip-icon:not\(\.llm-context-svg-icon\)\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    assert.include(chipRule, "align-items: flex-start");
+    assert.include(
+      chipIconRule,
+      "margin-block-start: calc(0.25px * var(--llm-font-scale, 1))",
+    );
+    assert.include(svgIconRule, "width: var(--llm-fs-12)");
+    assert.include(svgIconRule, "height: var(--llm-fs-12)");
+    assert.include(fallbackIconRule, "font-size: var(--llm-fs-12)");
+    assert.include(fallbackIconRule, "line-height: 1");
+
+    for (const fontScale of [0.8, 1.2, 1.8]) {
+      const labelLineCenter = (10 * fontScale * 1.25) / 2;
+      const iconCenter = 0.25 * fontScale + (12 * fontScale) / 2;
+      assert.approximately(iconCenter, labelLineCenter, 1e-9);
+    }
   });
 
   it("does not ellipsize agent trace chip labels in CSS", function () {

@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { OpenAICompatibleAgentAdapter } from "../src/agent/model/openaiCompatible";
 import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
 import { isMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
+import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -45,6 +46,7 @@ describe("OpenAICompatibleAgentAdapter", function () {
   }
 
   afterEach(function () {
+    adapter.resetState();
     (
       globalThis as typeof globalThis & { ztoolkit?: typeof originalToolkit }
     ).ztoolkit = originalToolkit;
@@ -68,6 +70,75 @@ describe("OpenAICompatibleAgentAdapter", function () {
       ),
     );
   });
+
+  for (const provider of [
+    {
+      name: "DeepSeek",
+      model: "deepseek-chat",
+      apiBase: "https://api.deepseek.com/anthropic",
+      endpoint: "https://api.deepseek.com/v1/chat/completions",
+    },
+    {
+      name: "MiniMax",
+      model: "MiniMax-M2.1",
+      apiBase: "https://api.minimax.io/anthropic",
+      endpoint: "https://api.minimax.io/v1/chat/completions",
+    },
+  ]) {
+    it(`serializes the canonical citation contract through ${provider.name}'s OpenAI-compatible protocol`, async function () {
+      let capturedUrl = "";
+      let capturedBody: Record<string, unknown> = {};
+      (
+        globalThis as typeof globalThis & {
+          ztoolkit: { getGlobal: (name: string) => unknown };
+        }
+      ).ztoolkit = {
+        getGlobal: (name: string) => {
+          if (name !== "fetch") return undefined;
+          return async (url: string, init?: RequestInit) => {
+            capturedUrl = url;
+            capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+              string,
+              unknown
+            >;
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              headers: { get: () => "application/json" },
+              json: async () => ({ choices: [{ message: { content: "OK" } }] }),
+              text: async () => "",
+            };
+          };
+        },
+      };
+
+      await adapter.runStep({
+        request: makeRequest({
+          model: provider.model,
+          apiBase: provider.apiBase,
+          apiKey: "provider-test",
+          providerProtocol: "openai_chat_compat",
+        }),
+        messages: [
+          { role: "system", content: PAPER_CITATION_CONTRACT },
+          { role: "user", content: "Explain the result." },
+        ],
+        tools: [],
+      });
+
+      const serializedMessages = (
+        capturedBody.messages as Array<{ content?: string }>
+      )
+        .map((message) => message.content || "")
+        .join("\n");
+      assert.equal(capturedUrl, provider.endpoint);
+      assert.equal(
+        serializedMessages.split(PAPER_CITATION_CONTRACT).length - 1,
+        1,
+      );
+    });
+  }
 
   it("keeps codex auth disabled for now", function () {
     assert.isFalse(
@@ -192,35 +263,52 @@ describe("OpenAICompatibleAgentAdapter", function () {
     });
     const firstStep = await adapter.runStep({
       request,
-      messages: [{ role: "user", content: "Summarize the paper" }],
+      messages: [
+        { role: "system", content: PAPER_CITATION_CONTRACT },
+        { role: "user", content: "Summarize the paper" },
+      ],
       tools,
     });
 
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
-    assert.equal(
-      firstStep.assistantMessage.reasoning_content,
+    assert.notInclude(
+      JSON.stringify(firstStep.assistantMessage),
       "Need the full text.",
     );
+    const firstMessages = requestBodies[0]?.messages as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    assert.equal(
+      firstMessages
+        .map((message) => message.content || "")
+        .join("\n")
+        .split(PAPER_CITATION_CONTRACT).length - 1,
+      1,
+    );
 
+    const toolResult = {
+      role: "tool" as const,
+      tool_call_id: "call_read",
+      name: "read_paper",
+      content: '{"text":"full paper"}',
+    };
     await adapter.runStep({
       request,
-      messages: [
-        firstStep.assistantMessage,
-        {
-          role: "tool",
-          tool_call_id: "call_read",
-          name: "read_paper",
-          content: '{"text":"full paper"}',
-        },
-      ],
+      messages: [firstStep.assistantMessage, toolResult],
+      continuationMessages: [toolResult],
       tools,
     });
 
     const secondMessages = requestBodies[1]?.messages as Array<
       Record<string, unknown>
     >;
-    assert.equal(secondMessages[0]?.reasoning_content, "Need the full text.");
+    assert.equal(
+      secondMessages.find((message) => message.role === "assistant")
+        ?.reasoning_content,
+      "Need the full text.",
+    );
   });
 
   it("round-trips provider-emitted reasoning_content for custom thinking models", async function () {
@@ -281,29 +369,32 @@ describe("OpenAICompatibleAgentAdapter", function () {
 
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
-    assert.equal(
-      firstStep.assistantMessage.reasoning_content,
+    assert.notInclude(
+      JSON.stringify(firstStep.assistantMessage),
       "Need the paper first.",
     );
 
+    const toolResult = {
+      role: "tool" as const,
+      tool_call_id: "call_read",
+      name: "read_paper",
+      content: '{"text":"full paper"}',
+    };
     await adapter.runStep({
       request,
-      messages: [
-        firstStep.assistantMessage,
-        {
-          role: "tool",
-          tool_call_id: "call_read",
-          name: "read_paper",
-          content: '{"text":"full paper"}',
-        },
-      ],
+      messages: [firstStep.assistantMessage, toolResult],
+      continuationMessages: [toolResult],
       tools,
     });
 
     const secondMessages = requestBodies[1]?.messages as Array<
       Record<string, unknown>
     >;
-    assert.equal(secondMessages[0]?.reasoning_content, "Need the paper first.");
+    assert.equal(
+      secondMessages.find((message) => message.role === "assistant")
+        ?.reasoning_content,
+      "Need the paper first.",
+    );
   });
 
   it("does not add reasoning_content to non-DeepSeek generic reasoning aliases", async function () {
@@ -366,23 +457,112 @@ describe("OpenAICompatibleAgentAdapter", function () {
 
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
-    assert.isUndefined(firstStep.assistantMessage.reasoning_content);
+    assert.notInclude(
+      JSON.stringify(firstStep.assistantMessage),
+      "Hidden reasoning.",
+    );
 
+    const toolResult = {
+      role: "tool" as const,
+      tool_call_id: "call_read",
+      name: "read_paper",
+      content: "{}",
+    };
     await adapter.runStep({
       request,
-      messages: [
-        firstStep.assistantMessage,
-        {
-          role: "tool",
-          tool_call_id: "call_read",
-          name: "read_paper",
-          content: "{}",
-        },
-      ],
+      messages: [firstStep.assistantMessage, toolResult],
+      continuationMessages: [toolResult],
       tools,
     });
 
     assert.notInclude(JSON.stringify(capturedSecondBody), "reasoning_content");
+  });
+
+  it("keeps final reasoning private while replaying it for a live correction", async function () {
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              headers: { get: () => "text/event-stream" },
+              body: makeSseStream([
+                'data: {"choices":[{"delta":{"reasoning_content":"Hidden final plan. "}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":"Premature answer."}}]}\n\n',
+                "data: [DONE]\n\n",
+              ]),
+              json: async () => ({}),
+              text: async () => "",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: { get: () => "application/json" },
+            body: undefined,
+            json: async () => ({
+              choices: [{ message: { content: "Corrected answer." } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const request = makeRequest({
+      model: "deepseek-v4-pro",
+      apiBase: "https://api.deepseek.com/v1",
+      providerProtocol: "openai_chat_compat",
+    });
+    const firstStep = await adapter.runStep({
+      request,
+      messages: [{ role: "user", content: "Answer from the full paper" }],
+      tools,
+    });
+    assert.equal(firstStep.kind, "final");
+    if (firstStep.kind !== "final") return;
+    assert.notInclude(
+      JSON.stringify(firstStep.assistantMessage),
+      "Hidden final plan.",
+    );
+
+    const correction = {
+      role: "user" as const,
+      content: "Correction for this turn: read the full paper first.",
+    };
+    await adapter.runStep({
+      request,
+      messages: [firstStep.assistantMessage, correction],
+      continuationMessages: [correction],
+      tools,
+    });
+
+    const secondMessages = requestBodies[1]?.messages as Array<
+      Record<string, unknown>
+    >;
+    const nativeFinal = secondMessages.find(
+      (message) => message.role === "assistant",
+    );
+    assert.equal(nativeFinal?.reasoning_content, "Hidden final plan.");
+    assert.equal(nativeFinal?.content, "Premature answer.");
+    assert.equal(
+      secondMessages.at(-1)?.content,
+      "Correction for this turn: read the full paper first.",
+    );
   });
 
   it("preserves high-detail image hints for OpenAI-compatible chat payloads", async function () {

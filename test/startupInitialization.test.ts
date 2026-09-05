@@ -57,6 +57,23 @@ describe("plugin startup initialization", function () {
     assert.include(source, "scheduleWebChatRelayRegistration();");
     assert.include(source, "scheduleMineruAutoWatchRegistration();");
   });
+
+  it("rerenders mounted conversations after the deferred agent runtime is ready", function () {
+    const source = readSource("../src/hooks.ts");
+    const startup = source.slice(
+      source.indexOf("function scheduleAgentSubsystemStartup()"),
+      source.indexOf("function scheduleUserSkillsLoad()"),
+    );
+    const initialized = startup.indexOf("await initAgentSubsystem();");
+    const refreshImport = startup.indexOf('"./modules/contextPanel/chat"');
+    const refresh = startup.indexOf("refreshAllActiveConversationPanels();");
+
+    assert.isAtLeast(initialized, 0);
+    assert.isAtLeast(refreshImport, 0);
+    assert.isAtLeast(refresh, 0);
+    assert.isBelow(initialized, refreshImport);
+    assert.isBelow(refreshImport, refresh);
+  });
 });
 
 describe("legacy startup migrations", function () {

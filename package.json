@@ -1,7 +1,7 @@
 {
   "name": "llm-for-zotero",
   "type": "module",
-  "version": "3.8.30",
+  "version": "3.9.5",
   "description": "AI research agent rooted in your Zotero library",
   "config": {
     "addonName": "llm-for-zotero",
@@ -24,6 +24,7 @@
     "start": "zotero-plugin serve",
     "build": "zotero-plugin build && npm run typecheck",
     "check:cycles": "node scripts/check-import-cycles.cjs",
+    "validate:model-registry": "node scripts/validate-model-capability-registry.mjs",
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
@@ -31,7 +32,9 @@
     "test": "npm run typecheck && npm run test:unit && npm run test:workflow",
     "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/**/*.test.ts'",
     "test:workflow": "node scripts/run-workflow-tests.mjs",
-    "update-deps": "npm update --save"
+    "test:webchat:live": "node scripts/run-workflow-tests.mjs --webchat-live",
+    "update-deps": "npm update --save",
+    "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live"
   },
   "dependencies": {
     "fflate": "^0.8.2",

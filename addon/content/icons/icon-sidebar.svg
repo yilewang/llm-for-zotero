@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-85 -85 682 682" fill="none">
+  <title>LLM for Zotero — sidebar line icon</title>
+  <style>
+    .ink { stroke: #4a4a4a; }
+    .body { fill: none; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #000; }
+      .body { fill: #CED8DC; }
+    }
+  </style>
+  <path class="body" d="M256 50 A88 88 0 0 0 100 104 A86 86 0 0 0 50 258 A120 120 0 0 0 104 412 A85.5 85.5 0 0 0 256 462 A85.5 85.5 0 0 0 408 412 A120 120 0 0 0 462 258 A86 86 0 0 0 412 104 A88 88 0 0 0 256 50 Z" />
+  <g class="ink" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="42" d="
+      M256 50
+      A88 88 0 0 0 100 104
+      A86 86 0 0 0 50 258
+      A120 120 0 0 0 104 412
+      A85.5 85.5 0 0 0 256 462
+      A85.5 85.5 0 0 0 408 412
+      A120 120 0 0 0 462 258
+      A86 86 0 0 0 412 104
+      A88 88 0 0 0 256 50
+      Z" />
+    <path stroke-width="34" d="M104 100 C130 110 146 128 149 148 C150 155 151 163 149 170" />
+    <path stroke-width="34" d="M412 102 C384 109 362 124 358 148 C355 170 364 187 382 193 C397 197 407 189 406 178" />
+    <path stroke-width="38" d="M255.5 236 L255.5 458 M173 335 L252 458 M338 335 L259 458" />
+    <circle stroke-width="26" cx="255.5" cy="192" r="30" />
+    <circle stroke-width="26" cx="149" cy="298" r="30" />
+    <circle stroke-width="26" cx="362" cy="298" r="30" />
+  </g>
+  <circle cx="255.5" cy="192" r="11.5" fill="#2196F3" />
+  <circle cx="149" cy="298" r="11.5" fill="#2196F3" />
+  <circle cx="362" cy="298" r="11.5" fill="#2196F3" />
+</svg>

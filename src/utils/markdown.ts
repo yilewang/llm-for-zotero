@@ -122,6 +122,19 @@ function escapeAttribute(text: string): string {
 
 type MarkdownRenderTarget = "chat" | "zotero-note";
 
+function getCurrentMarkdownRenderTarget(): MarkdownRenderTarget {
+  return zoteroNoteMode ? "zotero-note" : "chat";
+}
+
+function headingLevelForTarget(
+  depth: number,
+  target: MarkdownRenderTarget,
+): number {
+  const normalizedDepth = Math.min(6, Math.max(1, Math.trunc(depth)));
+  if (target === "zotero-note") return normalizedDepth;
+  return Math.min(5, Math.max(2, normalizedDepth + 1));
+}
+
 type MarkdownMathToken = Tokens.Generic & {
   type: "llmMathBlock" | "llmInlineMath";
   raw: string;
@@ -261,13 +274,18 @@ function renderSafeRawHtmlAttributes(
 function renderSafeRawHtmlTag(
   rawTag: string,
   state: RawHtmlRenderState,
+  target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget(),
 ): string | null {
   const tagMatch = rawTag.match(
     /^<\s*(\/?)\s*([a-z][a-z0-9-]*)([\s\S]*?)(\/?)\s*>$/i,
   );
   if (!tagMatch) return null;
 
-  const tagName = SAFE_RAW_HTML_TAG_ALIASES[tagMatch[2].toLowerCase()] || null;
+  const rawTagName = tagMatch[2].toLowerCase();
+  const tagName =
+    target === "zotero-note" && /^h[1-6]$/.test(rawTagName)
+      ? rawTagName
+      : SAFE_RAW_HTML_TAG_ALIASES[rawTagName] || null;
   if (!tagName) return null;
 
   if (tagMatch[1]) {
@@ -291,7 +309,10 @@ function renderSafeRawHtmlTag(
   return `<${tagName}${attrs}>`;
 }
 
-function renderSafeRawHtmlFragment(rawHtml: string): string {
+function renderSafeRawHtmlFragment(
+  rawHtml: string,
+  target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget(),
+): string {
   const state: RawHtmlRenderState = { stack: [] };
   const tagPattern = /<(?:"[^"]*"|'[^']*'|[^'">])*>/g;
   let result = "";
@@ -303,7 +324,7 @@ function renderSafeRawHtmlFragment(rawHtml: string): string {
       result += escapeHtml(rawHtml.slice(lastEnd, match.index));
     }
 
-    const safeTag = renderSafeRawHtmlTag(match[0], state);
+    const safeTag = renderSafeRawHtmlTag(match[0], state, target);
     result += safeTag === null ? escapeHtml(match[0]) : safeTag;
     lastEnd = match.index + match[0].length;
   }
@@ -322,17 +343,18 @@ function renderSafeRawHtmlFragment(rawHtml: string): string {
 function renderSafeRawHtml(
   rawHtml: string,
   rawHtmlState?: RawHtmlRenderState,
+  target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget(),
 ): string {
   const html = rawHtml.trim();
 
   if (RAW_HTML_SINGLE_TAG_PATTERN.test(html)) {
     const state = rawHtmlState || { stack: [] };
-    const safeTag = renderSafeRawHtmlTag(html, state);
+    const safeTag = renderSafeRawHtmlTag(html, state, target);
     if (safeTag !== null) return safeTag;
   }
 
   if (/<[^>]*>/.test(rawHtml)) {
-    return renderSafeRawHtmlFragment(rawHtml);
+    return renderSafeRawHtmlFragment(rawHtml, target);
   }
 
   return escapeHtml(rawHtml);
@@ -344,7 +366,10 @@ function decodeEscapedRawHtmlTagEntities(text: string): string {
     .replace(/&(apos|#39|#x27);/gi, "'");
 }
 
-function restoreEscapedSafeRawHtmlTagsInSegment(text: string): string {
+function restoreEscapedSafeRawHtmlTagsInSegment(
+  text: string,
+  target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget(),
+): string {
   const state: RawHtmlRenderState = { stack: [] };
   return text.replace(
     ESCAPED_RAW_HTML_TAG_PATTERN,
@@ -357,18 +382,21 @@ function restoreEscapedSafeRawHtmlTagsInSegment(text: string): string {
     ) => {
       const decodedAttrs = decodeEscapedRawHtmlTagEntities(rawAttrs || "");
       const rawTag = `<${closingSlash}${tagName}${decodedAttrs}${selfClosingSlash}>`;
-      return renderSafeRawHtmlTag(rawTag, state) ?? match;
+      return renderSafeRawHtmlTag(rawTag, state, target) ?? match;
     },
   );
 }
 
-function restoreEscapedSafeRawHtmlTags(text: string): string {
+function restoreEscapedSafeRawHtmlTags(
+  text: string,
+  target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget(),
+): string {
   if (!/&lt;\s*\/?\s*[a-z][a-z0-9-]*[\s\S]*?&gt;/i.test(text)) {
     return text;
   }
 
   if (!hasBalancedCodeBlocks(text)) {
-    return restoreEscapedSafeRawHtmlTagsInSegment(text);
+    return restoreEscapedSafeRawHtmlTagsInSegment(text, target);
   }
 
   const codeBlockRegex = /```[ \t]*([^\s`]*)[^\n`]*\n?([\s\S]*?)```/g;
@@ -380,6 +408,7 @@ function restoreEscapedSafeRawHtmlTags(text: string): string {
     if (match.index > lastEnd) {
       result += restoreEscapedSafeRawHtmlTagsInSegment(
         text.slice(lastEnd, match.index),
+        target,
       );
     }
     result += match[0];
@@ -387,7 +416,10 @@ function restoreEscapedSafeRawHtmlTags(text: string): string {
   }
 
   if (lastEnd < text.length) {
-    result += restoreEscapedSafeRawHtmlTagsInSegment(text.slice(lastEnd));
+    result += restoreEscapedSafeRawHtmlTagsInSegment(
+      text.slice(lastEnd),
+      target,
+    );
   }
 
   return result;
@@ -993,6 +1025,141 @@ function createMathExtensions() {
   ];
 }
 
+function findClosingDisplayDollarMath(text: string, openIndex: number): number {
+  for (let index = openIndex + 2; index < text.length - 1; index++) {
+    if (text.slice(index, index + 2) !== "$$") continue;
+    if (!isEscapedDelimiter(text, index)) return index;
+  }
+  return -1;
+}
+
+function countBacktickRun(text: string, start: number): number {
+  let length = 0;
+  while (text[start + length] === "`") length++;
+  return length;
+}
+
+function findClosingBacktickRun(
+  text: string,
+  openIndex: number,
+  runLength: number,
+): number {
+  for (let index = openIndex + runLength; index < text.length; index++) {
+    if (text[index] !== "`") continue;
+    const candidateLength = countBacktickRun(text, index);
+    if (candidateLength === runLength) return index;
+    index += candidateLength - 1;
+  }
+  return -1;
+}
+
+function renderMathPreviewToken(math: string, display: boolean): string | null {
+  const trimmed = math.trim();
+  if (!trimmed) return null;
+  const rendered = display
+    ? renderDisplayLatex(trimmed)
+    : renderLatex(trimmed, false);
+  if (
+    rendered.includes('class="math-error"') ||
+    rendered.includes('class="katex-error"')
+  ) {
+    return null;
+  }
+  const className = display ? "math-display-inline" : "math-inline";
+  return `<span class="${className}">${rendered}</span>`;
+}
+
+/**
+ * Render only delimited LaTeX for a compact quote preview.
+ *
+ * Everything outside a valid math span stays literal and escaped. In
+ * particular, Markdown, HTML, and math-like text inside code spans or fences
+ * are not interpreted by the preview renderer.
+ */
+export function renderMathPreviewHtml(text: string): string {
+  if (!text) return "";
+
+  const rendered: string[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] === "`") {
+      const runLength = countBacktickRun(text, cursor);
+      const closeIndex = findClosingBacktickRun(text, cursor, runLength);
+      if (closeIndex < 0) {
+        rendered.push(escapeHtml(text.slice(cursor)));
+        break;
+      }
+      const end = closeIndex + runLength;
+      rendered.push(escapeHtml(text.slice(cursor, end)));
+      cursor = end;
+      continue;
+    }
+
+    let source = "";
+    let math = "";
+    let display = false;
+    let end = cursor;
+
+    if (text.startsWith("$$", cursor) && !isEscapedDelimiter(text, cursor)) {
+      const closeIndex = findClosingDisplayDollarMath(text, cursor);
+      if (closeIndex > cursor + 2) {
+        end = closeIndex + 2;
+        source = text.slice(cursor, end);
+        math = text.slice(cursor + 2, closeIndex);
+        display = true;
+      }
+    } else if (
+      text.startsWith("\\(", cursor) &&
+      !isEscapedDelimiter(text, cursor)
+    ) {
+      const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\)");
+      if (closeIndex > cursor + 2) {
+        end = closeIndex + 2;
+        source = text.slice(cursor, end);
+        math = text.slice(cursor + 2, closeIndex);
+      }
+    } else if (
+      text.startsWith("\\[", cursor) &&
+      !isEscapedDelimiter(text, cursor)
+    ) {
+      const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\]");
+      if (closeIndex > cursor + 2) {
+        end = closeIndex + 2;
+        source = text.slice(cursor, end);
+        math = text.slice(cursor + 2, closeIndex);
+        display = true;
+      }
+    } else if (canOpenInlineDollarMath(text, cursor)) {
+      const closeIndex = findClosingInlineDollarMath(text, cursor);
+      if (closeIndex > cursor + 1) {
+        end = closeIndex + 1;
+        source = text.slice(cursor, end);
+        math = text.slice(cursor + 1, closeIndex);
+      }
+    }
+
+    if (source) {
+      const mathHtml = renderMathPreviewToken(math, display);
+      rendered.push(mathHtml || escapeHtml(source));
+      cursor = end;
+      continue;
+    }
+
+    // Do not reinterpret the second dollar in an escaped, empty, or unmatched
+    // display opener as the beginning of inline math.
+    if (text.startsWith("$$", cursor)) {
+      rendered.push("$$");
+      cursor += 2;
+      continue;
+    }
+
+    rendered.push(escapeHtml(text[cursor]));
+    cursor++;
+  }
+
+  return rendered.join("");
+}
+
 // =============================================================================
 // Delimiter Validation
 // =============================================================================
@@ -1078,9 +1245,9 @@ function splitIntoBlocks(text: string): TextBlock[] {
  * (headers, blockquotes) that the model emitted mid-line —
  * e.g. `...drift. (Zheng et al., 2026) ### 2. In the Results`
  *
- * For headers (`#{1,4} `): triggers whenever the marker appears mid-line
+ * For headers (`#{1,6} `): triggers whenever the marker appears mid-line
  * after any non-newline character followed by whitespace.  Multi-hash
- * headers (`## `, `### `, `#### `) are unambiguous markers that virtually
+ * headers (`## ` through `###### `) are unambiguous markers that virtually
  * never appear as legitimate inline text.
  *
  * For blockquotes (`> `): triggers only after unambiguous sentence-ending
@@ -1092,12 +1259,14 @@ function splitIntoBlocks(text: string): TextBlock[] {
 export function normalizeBlockBoundaries(text: string): string {
   let result = text;
 
-  // Header markers (#{1,4} ) mid-line after any content + whitespace.
-  // Safe because #{1,4} followed by a space is an unambiguous header marker
+  // Header markers (#{1,6} ) mid-line after any content + whitespace.
+  // Safe because #{1,6} followed by a space is an unambiguous header marker
   // and almost never appears as inline text outside code blocks (which are
-  // already extracted before this function is called).
+  // already extracted before this function is called). The depth must match
+  // the #{1,6} the rest of this module recognizes — a narrower bound here left
+  // a mid-line h5/h6 unsplit, so it rendered as literal "##### " text.
   result = result.replace(
-    /([^\n])([ \t]+)(#{1,4} )/g,
+    /([^\n])([ \t]+)(#{1,6} )/g,
     (match, before: string, spaces: string, marker: string, offset: number) => {
       const markerIndex = offset + before.length + spaces.length;
       return isInsidePipeTableCell(result, markerIndex)
@@ -1329,7 +1498,7 @@ function collectTableBlock(
     if (!trimmed) break;
     if (
       !currentRow &&
-      (/^#{1,4}\s+/.test(trimmed) ||
+      (/^#{1,6}\s+/.test(trimmed) ||
         /^>/.test(trimmed) ||
         /^---+$/.test(trimmed) ||
         /^\$\$/.test(trimmed) ||
@@ -1365,7 +1534,7 @@ function collectTableBlock(
 function isStructuralBlockStart(lines: string[], index: number): boolean {
   const trimmed = lines[index]?.trim() || "";
   return (
-    /^#{1,4}\s+/.test(trimmed) ||
+    /^#{1,6}\s+/.test(trimmed) ||
     /^>/.test(trimmed) ||
     /^---+$/.test(trimmed) ||
     /^\$\$/.test(trimmed) ||
@@ -1485,7 +1654,7 @@ function splitTextBlocks(text: string): TextBlock[] {
     }
 
     // Header
-    if (/^#{1,4}\s+/.test(trimmed)) {
+    if (/^#{1,6}\s+/.test(trimmed)) {
       blocks.push({ type: "header", content: trimmed, raw: line });
       i++;
       continue;
@@ -1533,7 +1702,7 @@ function splitTextBlocks(text: string): TextBlock[] {
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^#{1,4}\s+/.test(lines[i].trim()) &&
+      !/^#{1,6}\s+/.test(lines[i].trim()) &&
       !isUnorderedListLine(lines[i].trim()) &&
       !isOrderedListLine(lines[i].trim()) &&
       !/^>/.test(lines[i].trim()) &&
@@ -1697,17 +1866,13 @@ function renderMathBlock(content: string): string {
 /** Render header */
 function renderHeader(content: string): string {
   const trimmed = content.trim();
-  if (trimmed.startsWith("#### ")) {
-    return `<h5>${renderInline(trimmed.slice(5))}</h5>`;
-  }
-  if (trimmed.startsWith("### ")) {
-    return `<h4>${renderInline(trimmed.slice(4))}</h4>`;
-  }
-  if (trimmed.startsWith("## ")) {
-    return `<h3>${renderInline(trimmed.slice(3))}</h3>`;
-  }
-  if (trimmed.startsWith("# ")) {
-    return `<h2>${renderInline(trimmed.slice(2))}</h2>`;
+  const match = trimmed.match(/^(#{1,6})\s+([\s\S]*)$/);
+  if (match) {
+    const level = headingLevelForTarget(
+      match[1].length,
+      getCurrentMarkdownRenderTarget(),
+    );
+    return `<h${level}>${renderInline(match[2])}</h${level}>`;
   }
   return `<p>${renderInline(trimmed)}</p>`;
 }
@@ -2083,7 +2248,7 @@ function createMarkedRenderer(
   };
 
   renderer.html = function (token: Tokens.HTML | Tokens.Tag): string {
-    return renderSafeRawHtml(token.text, rawHtmlRenderState);
+    return renderSafeRawHtml(token.text, rawHtmlRenderState, target);
   };
 
   renderer.heading = function (token: Tokens.Heading): string {
@@ -2093,7 +2258,7 @@ function createMarkedRenderer(
     ) {
       return `<p>${parseInlineTokens(this.parser, token.tokens)}</p><hr/>`;
     }
-    const level = Math.min(5, Math.max(2, token.depth + 1));
+    const level = headingLevelForTarget(token.depth, target);
     return `<h${level}>${parseInlineTokens(this.parser, token.tokens)}</h${level}>`;
   };
 
@@ -2275,6 +2440,8 @@ export function renderMarkdown(
     return "";
   }
 
+  const target: MarkdownRenderTarget = getCurrentMarkdownRenderTarget();
+
   const prevResolver = activeImageResolver;
   if (options?.resolveImage) activeImageResolver = options.resolveImage;
 
@@ -2284,11 +2451,8 @@ export function renderMarkdown(
     }
 
     const normalized = normalizeMarkdownForMarked(
-      restoreEscapedSafeRawHtmlTags(text),
+      restoreEscapedSafeRawHtmlTags(text, target),
     );
-    const target: MarkdownRenderTarget = zoteroNoteMode
-      ? "zotero-note"
-      : "chat";
     const rendered = createMarkedMarkdownRenderer(target).parse(normalized);
     if (typeof rendered === "string") {
       return rendered.trim();

@@ -8,12 +8,17 @@ describe("normalChatFigureInputs", function () {
     title: "Figure Evidence Paper",
   };
 
-  it("keeps text-only providers on caption evidence without visual claims", async function () {
+  it("keeps explicit text-only mode on caption evidence without visual claims", async function () {
     const result = await resolveNormalChatFigureInputs({
       query: "请解释图1",
       papers: [paper],
       model: "deepseek-chat",
       apiBase: "https://api.deepseek.com/v1/chat/completions",
+      advanced: {
+        temperature: 0.3,
+        maxTokens: 4096,
+        inputMode: "text_only",
+      },
     });
 
     assert.deepEqual(result.images, []);

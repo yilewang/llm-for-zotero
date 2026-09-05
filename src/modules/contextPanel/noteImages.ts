@@ -12,6 +12,9 @@ export type NoteImageImportInput = {
   imagePath?: string;
   bytes?: Uint8Array;
   mimeType?: string;
+  saveOptions?: {
+    notifierQueue?: unknown;
+  };
 };
 
 export type NoteImageImporter = {
@@ -87,6 +90,7 @@ export async function importNoteImageAsset(
     const attachment = await Attachments.importEmbeddedImage({
       blob,
       parentItemID: params.noteItemId,
+      saveOptions: params.saveOptions,
     });
     return attachment?.key ? { key: String(attachment.key) } : null;
   } catch (error) {
@@ -101,6 +105,7 @@ export async function importLocalImagesIntoNote(
   content: string,
   noteItemId: number,
   importer: NoteImageImporter,
+  saveOptions?: NoteImageImportInput["saveOptions"],
 ): Promise<string> {
   const markdownPattern = /!\[([^\]]*)\]\((file:\/\/\/?[^)]+)\)/g;
   const htmlPattern = /<img\s+[^>]*src\s*=\s*"(file:\/\/\/?[^"]+)"[^>]*\/?>/gi;
@@ -116,6 +121,7 @@ export async function importLocalImagesIntoNote(
       const imported = await importer.importNoteImage({
         imagePath,
         noteItemId,
+        saveOptions,
       });
       if (imported?.key) {
         result = result.replace(
@@ -139,6 +145,7 @@ export async function importLocalImagesIntoNote(
       const imported = await importer.importNoteImage({
         imagePath,
         noteItemId,
+        saveOptions,
       });
       if (imported?.key) {
         result = result.replace(
@@ -180,6 +187,7 @@ export async function buildGeneratedImagesHtmlForNote(
   images: unknown,
   noteItemId: number,
   importer: NoteImageImporter = { importNoteImage: importNoteImageAsset },
+  saveOptions?: NoteImageImportInput["saveOptions"],
 ): Promise<string> {
   const normalized = normalizeEmbeddableGeneratedImages(images);
   if (!normalized.length) return "";
@@ -195,6 +203,7 @@ export async function buildGeneratedImagesHtmlForNote(
         imagePath: asset.path,
         bytes: asset.bytes,
         mimeType: asset.mimeType,
+        saveOptions,
       });
       if (!imported?.key) continue;
       const alt = image.label || `Generated image ${index + 1}`;

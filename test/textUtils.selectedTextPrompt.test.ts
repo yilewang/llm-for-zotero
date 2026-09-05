@@ -25,10 +25,7 @@ describe("textUtils selected text prompt composition", function () {
     );
     assert.include(prompt, "[paper=Smith et al., 2021]");
     assert.include(prompt, "[source_label=(Smith et al., 2021)]");
-    assert.include(
-      prompt,
-      "Paper-grounded citation format for the final answer:",
-    );
+    assert.include(prompt, "Paper citation data:");
     assert.include(prompt, "User question:\nWhat does this mean?");
   });
 

@@ -251,4 +251,21 @@ describe("standalone window layout CSS", function () {
     assert.include(tabGroupRule, "justify-self: center");
     assert.notInclude(css, ".llm-standalone-claude-toggle");
   });
+
+  it("grows the document title row with the font scale instead of clipping descenders", function () {
+    const css = readPanelCss();
+    const titleRule = extractCssRule(css, ".llm-standalone-content-title");
+
+    // The row carries no height and no vertical padding, so its line box is the
+    // row height. With a scaling font-size and a fixed line-height the glyphs
+    // outgrew the box and the title's descenders were sliced off — the child
+    // .llm-standalone-content-title-text clips, because it needs overflow
+    // hidden for its ellipsis.
+    assert.include(titleRule, "font-size: var(--llm-fs-12)");
+    assert.include(
+      titleRule,
+      "line-height: calc(20px * var(--llm-font-scale))",
+    );
+    assert.notInclude(titleRule, "line-height: 20px;");
+  });
 });

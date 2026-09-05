@@ -3,7 +3,6 @@ import type {
   AgentAttachmentResourceSummary,
   AgentRuntimeRequest,
 } from "../types";
-import { BALANCED_EVIDENCE_GUIDANCE } from "../../shared/quoteGuidance";
 import type { PaperContextRef, TagContextRef } from "../../shared/types";
 import {
   buildPaperQuoteCitationGuidance,
@@ -19,6 +18,7 @@ import {
   planAgentContextCache,
   type AgentCacheEvidenceActivity,
 } from "./cacheManagement";
+import { getSelectedPassagePaper } from "./turnPaperScope";
 
 export { hydrateAgentEvidenceCache };
 
@@ -176,7 +176,7 @@ function buildCollectionResourceRecords(
   request: AgentRuntimeRequest,
 ): AgentResourceRecord[] {
   return sortResourceRecords(
-    (request.selectedCollectionContexts || [])
+    request.turnPaperScope.collections
       .filter((entry) => normalizePositiveInt(entry.collectionId))
       .map((entry) => ({
         group: "collections" as const,
@@ -226,7 +226,7 @@ function buildTagResourceRecords(
   request: AgentRuntimeRequest,
 ): AgentResourceRecord[] {
   return sortResourceRecords(
-    (request.selectedTagContexts || []).map((entry, index) => ({
+    request.turnPaperScope.tags.map((entry, index) => ({
       group: "tags" as const,
       key: tagScopeKey(entry),
       signature: stableJson({
@@ -250,7 +250,7 @@ function buildSelectedTextResourceRecords(
   return sortResourceRecords(
     selectedTexts.map((text, index) => {
       const source = request.selectedTextSources?.[index] || "unknown";
-      const paper = request.selectedTextPaperContexts?.[index];
+      const paper = getSelectedPassagePaper(request.turnPaperScope, index);
       const textHash = hashText(text || "");
       const paperPart = paper ? `, paper=${paper.title}` : "";
       return {
@@ -467,12 +467,16 @@ export function buildAgentResourceSnapshot(
       selectedPapers: buildPaperResourceRecords({
         group: "selectedPapers",
         label: "Selected paper",
-        papers: request.selectedPaperContexts,
+        papers: request.turnPaperScope.papers
+          .filter((entry) => entry.roles.includes("selected"))
+          .map((entry) => entry.paper),
       }),
       fullTextPapers: buildPaperResourceRecords({
         group: "fullTextPapers",
         label: "Full-text paper",
-        papers: request.fullTextPaperContexts,
+        papers: request.turnPaperScope.papers
+          .filter((entry) => entry.roles.includes("full_text"))
+          .map((entry) => entry.paper),
       }),
       collections: buildCollectionResourceRecords(request),
       tags: buildTagResourceRecords(request),
@@ -595,37 +599,22 @@ function buildScopeIdentityLines(request: AgentRuntimeRequest): string[] {
 export function buildAgentStableResourceContextBlock(
   request: AgentRuntimeRequest,
 ): string {
+  const selectedPapers = request.turnPaperScope.papers
+    .filter((entry) => entry.roles.includes("selected"))
+    .map((entry) => entry.paper);
+  const fullTextPapers = request.turnPaperScope.papers
+    .filter((entry) => entry.roles.includes("full_text"))
+    .map((entry) => entry.paper);
   const fullTextPaperKeySet = new Set(
-    (request.fullTextPaperContexts || []).map((entry) => paperKey(entry)),
+    fullTextPapers.map((entry) => paperKey(entry)),
   );
-  const retrievalOnlyPapers = (request.selectedPaperContexts || []).filter(
+  const retrievalOnlyPapers = selectedPapers.filter(
     (entry) => !fullTextPaperKeySet.has(paperKey(entry)),
   );
-  const citationPaperRefs = [
-    ...(request.selectedTextPaperContexts || []).filter(
-      (entry): entry is PaperContextRef => Boolean(entry),
-    ),
-    ...retrievalOnlyPapers,
-    ...(request.fullTextPaperContexts || []),
-  ];
   const lines = [
     "Stable Zotero resource context:",
     ...buildScopeIdentityLines(request),
   ];
-
-  if (citationPaperRefs.length) {
-    lines.push(
-      BALANCED_EVIDENCE_GUIDANCE,
-      "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
-      "If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or sourceLabel.",
-      "Use `>` blockquotes only for direct original source text.",
-      "Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.",
-      "Put interpretation, emphasis, examples, opinion, or translation in normal prose or fenced `text` blocks, not in `>` blockquotes.",
-      "If no quote anchor is provided for a direct quote, keep the source label attached to the quote: put it on the next non-empty line after the blockquote, before any commentary.",
-      "Copy the Source label string exactly. Do not invent author/year/page/section labels.",
-      "Do not write [[source=...]], section=..., or chunk=... metadata in the final answer; those fields are internal context only.",
-    );
-  }
   if (retrievalOnlyPapers.length) {
     lines.push(
       "Retrieval-only paper refs:",
@@ -634,13 +623,13 @@ export function buildAgentStableResourceContextBlock(
       ),
     );
   }
-  if (request.fullTextPaperContexts?.length) {
+  if (fullTextPapers.length) {
     lines.push(
       "Full-text paper refs for this turn:",
-      ...request.fullTextPaperContexts.map((entry) =>
+      ...fullTextPapers.map((entry) =>
         formatPaperResourceLine("Full-text paper", entry),
       ),
-      ...request.fullTextPaperContexts
+      ...fullTextPapers
         .flatMap((entry) => buildPaperQuoteCitationGuidance(entry))
         .filter(Boolean),
     );
@@ -657,10 +646,10 @@ export function buildAgentStableResourceContextBlock(
       ...attachmentPoolRecords.map((record) => record.line),
     );
   }
-  if (request.selectedCollectionContexts?.length) {
+  if (request.turnPaperScope.collections.length) {
     lines.push(
       "Selected Zotero collection scopes:",
-      ...request.selectedCollectionContexts.map(
+      ...request.turnPaperScope.collections.map(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
@@ -671,10 +660,10 @@ export function buildAgentStableResourceContextBlock(
       "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.",
     );
   }
-  if (request.selectedTagContexts?.length) {
+  if (request.turnPaperScope.tags.length) {
     lines.push(
       "Selected Zotero tag scopes:",
-      ...request.selectedTagContexts.map((entry, index) =>
+      ...request.turnPaperScope.tags.map((entry, index) =>
         formatTagScopeLine(entry, index),
       ),
       "Treat tag membership as the scope boundary. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.",

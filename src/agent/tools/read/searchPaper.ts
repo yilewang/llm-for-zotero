@@ -184,7 +184,7 @@ export function createSearchPaperTool(
           apiKey: context.request.apiKey,
           authMode: context.request.authMode,
           providerProtocol: context.request.providerProtocol,
-          reasoning: context.request.reasoning,
+          profileOverride: context.request.advanced?.profileOverride,
           topK: input.topK,
           perPaperTopK: input.perPaperTopK,
         }),

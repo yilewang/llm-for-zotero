@@ -8,6 +8,7 @@
  */
 
 import {
+  ATTACHMENT_DELIVERY_CONTRACT_VERSION,
   relaySubmitQuery,
   relayPollResponse,
   relayNewChat,
@@ -21,6 +22,7 @@ import {
   type RelayCompletionReason,
   type RelayRunState,
   type RelayTurnStatus,
+  type RelayTurnDiagnostic,
   type ScrapedTranscriptSnapshot,
 } from "./relayServer";
 
@@ -153,6 +155,7 @@ export async function submitQuery(
     chatgpt_mode: chatgptMode || null,
     target: target || null,
     force_new_chat: forceNewChat === true,
+    delivery_contract_version: ATTACHMENT_DELIVERY_CONTRACT_VERSION,
   });
 
   if (!result.ok) {
@@ -191,6 +194,7 @@ type PollResponseData = {
     baseline_transcript_count?: number;
     baseline_transcript_hash?: string | null;
     turn_status?: RelayTurnStatus | null;
+    diagnostic?: RelayTurnDiagnostic | null;
   }>;
   partial_text: string | null;
   partial_thinking: string | null;
@@ -206,6 +210,7 @@ type PollResponseData = {
   baseline_transcript_count: number;
   baseline_transcript_hash: string | null;
   turn_status: RelayTurnStatus | null;
+  diagnostic: RelayTurnDiagnostic | null;
   current_seq: number;
 };
 
@@ -230,6 +235,7 @@ export type WebChatPollResult = WebChatTurnMetadata & {
   thinkingRevision: number;
   runState: RelayRunState;
   completionReason: RelayCompletionReason | null;
+  diagnostic: RelayTurnDiagnostic | null;
 };
 
 export type WebChatRemoteState = WebChatTurnMetadata;
@@ -387,6 +393,7 @@ export async function pollForResponse(
         match.turn_status ||
         data.turn_status ||
         (runState === "incomplete" ? "incomplete" : null),
+      diagnostic: match.diagnostic || data.diagnostic || null,
     });
 
     emitAnswerSnapshot(result.text, {

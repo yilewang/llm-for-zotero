@@ -13,11 +13,13 @@ import {
   openStandaloneChat,
 } from "./modules/contextPanel";
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
-import { invalidatePaperSearchCache } from "./modules/contextPanel/paperSearch";
+import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
 import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
+import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
+import { configurePendingDeletionSubsystem } from "./modules/contextPanel/pendingDeletionWiring";
 import {
   runDeferredLegacyMigrations,
   runStartupPreferenceMigrations,
@@ -26,11 +28,20 @@ import { createZToolkit } from "./utils/ztoolkit";
 import { clearAllState, initFontScale } from "./modules/contextPanel/state";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
+import {
+  initializePaperRestoreSelections,
+  shutdownPaperRestoreSelections,
+} from "./shared/paperConversationRestore";
+import {
+  registerPaperConversationRestoreNotifications,
+  unregisterPaperConversationRestoreNotifications,
+} from "./services/paperConversationRestoreNotifications";
 
 type ConversationStoreReadiness = {
   chatStoreReady: boolean;
   claudeStoreReady: boolean;
   codexStoreReady: boolean;
+  pendingDeletionReady: boolean;
 };
 
 let startupUserSkillsLoadTask: Promise<void> | null = null;
@@ -97,6 +108,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     chatStoreReady: false,
     claudeStoreReady: false,
     codexStoreReady: false,
+    pendingDeletionReady: false,
   };
 
   try {
@@ -120,6 +132,22 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   } catch (err) {
     ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
   }
+  try {
+    await measureStartupPhase("pending deletion store", async () => {
+      configurePendingDeletionSubsystem();
+      await pendingDeletionStore.init();
+      // Load durable deletion intents before any panel/window can mount. This
+      // re-establishes the process-local write fence synchronously on restart,
+      // so a user cannot send into a conversation while its persisted delete
+      // intent is still waiting for the deferred startup sweep.  Finalization
+      // stays deferred: it does destructive local work and provider cleanup,
+      // and must not be able to delay or block the UI.
+      await pendingDeletionStore.loadPersistedFence();
+      readiness.pendingDeletionReady = true;
+    });
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to initialize pending deletion store", err);
+  }
 
   return readiness;
 }
@@ -130,7 +158,8 @@ function allConversationStoresReady(
   return (
     readiness.chatStoreReady &&
     readiness.claudeStoreReady &&
-    readiness.codexStoreReady
+    readiness.codexStoreReady &&
+    readiness.pendingDeletionReady
   );
 }
 
@@ -166,6 +195,18 @@ function scheduleConversationIntegrityAudit(): void {
         report,
       );
     }
+    // Migration quarantines conflicting identities but nothing read that table
+    // back, so a conversation that landed there was neither deleted nor
+    // reachable and left no signal. Summarize it so a user reporting a
+    // vanished conversation has something actionable in the log.
+    const { logConversationKeyQuarantineSummary } =
+      await import("./shared/conversationKeyLedger");
+    const quarantined = await logConversationKeyQuarantineSummary();
+    if (quarantined) {
+      ztoolkit.log(
+        `LLM: ${quarantined} conversation identity conflict(s) are quarantined; see the ledger log entry for keys and reasons`,
+      );
+    }
   });
 }
 
@@ -183,6 +224,9 @@ function scheduleAgentSubsystemStartup(): void {
     const { getAgentApi, initAgentSubsystem } = await import("./agent");
     await initAgentSubsystem();
     addon.api.agent = getAgentApi();
+    const { refreshAllActiveConversationPanels } =
+      await import("./modules/contextPanel/chat");
+    refreshAllActiveConversationPanels();
     await ensureStartupUserSkillsLoaded();
   });
 }
@@ -221,6 +265,20 @@ function scheduleMineruAutoWatchRegistration(): void {
   });
 }
 
+function scheduleModelCapabilityRefresh(): void {
+  if (__env__ === "test") return;
+  runDeferredStartupTask("model capability registry", async () => {
+    const { refreshModelCapabilityRegistry } =
+      await import("./modelCapabilities");
+    await refreshModelCapabilityRegistry();
+  });
+  runDeferredStartupTask("provider model catalogs", async () => {
+    const { refreshConfiguredProviderModelCatalogs } =
+      await import("./utils/modelProviders");
+    await refreshConfiguredProviderModelCatalogs();
+  });
+}
+
 function scheduleDeferredStartupWork(
   readiness: ConversationStoreReadiness,
 ): void {
@@ -228,6 +286,12 @@ function scheduleDeferredStartupWork(
     "legacy cache migrations",
     runDeferredLegacyMigrations,
   );
+  // Finalize intents whose Undo window elapsed while Zotero was closed. The
+  // fence itself was already re-established during blocking startup; this is
+  // only the destructive/provider half, so it stays off the critical path.
+  runDeferredStartupTask("pending deletion sweep", async () => {
+    await pendingDeletionStore.sweepAllPersisted("startup-sweep");
+  });
   scheduleConversationMaintenance(readiness);
   scheduleConversationIntegrityAudit();
   scheduleClaudeProjectBootstrapIfEnabled();
@@ -236,6 +300,7 @@ function scheduleDeferredStartupWork(
   scheduleAttachmentMaintenance();
   scheduleWebChatRelayRegistration();
   scheduleMineruAutoWatchRegistration();
+  scheduleModelCapabilityRefresh();
 }
 
 async function onStartup() {
@@ -261,6 +326,24 @@ async function onStartup() {
 
   const conversationStoreReadiness =
     await initializeConversationStoresForStartup();
+
+  await measureStartupPhase("paper conversation restore selections", () =>
+    initializePaperRestoreSelections(conversationStoreReadiness),
+  );
+  registerPaperConversationRestoreNotifications();
+
+  // A durable deletion intent that was not loaded is an active write fence,
+  // but it must NOT abort startup. Throwing here skipped the preferences pane
+  // and every window, leaving the user with no plugin at all and no way to
+  // recover from the UI, over a failure in the least essential subsystem. The
+  // three conversation stores above already degrade rather than abort; this
+  // one now behaves the same way. The store retries the load on first write,
+  // so a transient database error self-heals instead of persisting.
+  if (!conversationStoreReadiness.pendingDeletionReady) {
+    ztoolkit.log(
+      "LLM: pending deletion fence not loaded at startup; will retry before the next conversation write",
+    );
+  }
 
   registerPrefsPane();
 
@@ -356,7 +439,7 @@ function registerPrefsPane() {
     id: PREFERENCES_PANE_ID,
     src: `chrome://${addon.data.config.addonRef}/content/preferences.xhtml`,
     label: "llm-for-zotero",
-    image: `chrome://${addon.data.config.addonRef}/content/icons/icon-20.png`,
+    image: `chrome://${addon.data.config.addonRef}/content/icons/icon.svg`,
   });
 }
 
@@ -369,11 +452,9 @@ async function onMainWindowUnload(win: Window): Promise<void> {
   win.document.getElementById("llmforzotero-key-standalone")?.remove();
 }
 
-function onShutdown(): void {
-  if (paperSearchInvalidateTimer !== null) {
-    clearTimeout(paperSearchInvalidateTimer);
-    paperSearchInvalidateTimer = null;
-  }
+async function onShutdown(): Promise<void> {
+  unregisterPaperConversationRestoreNotifications();
+  await shutdownPaperRestoreSelections();
   ztoolkit.unregisterAll();
   unregisterReaderSelectionTracking();
   unregisterAllNoteEditingSelectionTracking();
@@ -415,14 +496,8 @@ function onShutdown(): void {
  * This function is just an example of dispatcher for Notify events.
  * Any operations should be placed in a function to keep this funcion clear.
  */
-let paperSearchInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function flushPaperSearchInvalidationForTests(): void {
-  if (paperSearchInvalidateTimer !== null) {
-    clearTimeout(paperSearchInvalidateTimer);
-    paperSearchInvalidateTimer = null;
-  }
-  invalidatePaperSearchCache();
+export async function flushPaperSearchInvalidationForTests(): Promise<void> {
+  await zoteroChangeDispatcher.flush();
 }
 
 async function onNotify(
@@ -431,21 +506,7 @@ async function onNotify(
   ids: Array<string | number>,
   extraData: { [key: string]: any },
 ) {
-  const shouldInvalidatePaperSearch =
-    (type === "item" || type === "file") &&
-    ["add", "modify", "delete", "move", "remove", "trash", "refresh"].includes(
-      event,
-    );
-  if (shouldInvalidatePaperSearch) {
-    // Debounce: during bulk operations (import, sync) this fires hundreds
-    // of times — coalesce into a single invalidation after 500ms of quiet.
-    if (paperSearchInvalidateTimer !== null)
-      clearTimeout(paperSearchInvalidateTimer);
-    paperSearchInvalidateTimer = setTimeout(() => {
-      paperSearchInvalidateTimer = null;
-      invalidatePaperSearchCache();
-    }, 500);
-  }
+  await zoteroChangeDispatcher.dispatch({ event, type, ids, extraData });
   // You can add your code to the corresponding notify type
   ztoolkit.log("notify", event, type, ids, extraData);
   return;

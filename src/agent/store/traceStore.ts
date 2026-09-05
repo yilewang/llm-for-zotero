@@ -1,6 +1,16 @@
 import { config } from "../../../package.json";
 import { getClaudeRuntimeRootDir } from "../../claudeCode/projectSkills";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
+import {
+  getConversationKeyLedgerEntry,
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyLedgerStoreInitialized,
+  isConversationKeyRetiredInMemory,
+} from "../../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+} from "../../shared/conversationWriteFence";
 import type {
   AgentEvent,
   AgentRunEventRecord,
@@ -10,12 +20,33 @@ import type {
 
 const AGENT_RUNS_TABLE = "llm_for_zotero_agent_runs";
 const AGENT_RUN_EVENTS_TABLE = "llm_for_zotero_agent_run_events";
+const AGENT_TRACE_EXPORTS_TABLE = "llm_for_zotero_agent_trace_exports";
+const AGENT_TRACE_FILE_CLEANUP_TABLE =
+  "llm_for_zotero_agent_trace_file_cleanup";
 const AGENT_RUN_EVENTS_INDEX = "llm_for_zotero_agent_run_events_run_idx";
 const AGENT_TRACE_EXPORT_DIR_NAME = "trace-debug";
 const AGENT_TRACE_EXPORT_PREF_KEY = `${config.prefsPrefix}.agentTraceExportEnabled`;
+export const INTERRUPTED_AGENT_RUN_MARKER =
+  "Agent run interrupted before completion.";
+
+type AgentRunRow = {
+  runId?: unknown;
+  conversationKey?: unknown;
+  mode?: unknown;
+  modelName?: unknown;
+  status?: unknown;
+  createdAt?: unknown;
+  completedAt?: unknown;
+  finalText?: unknown;
+};
 
 const traceExportTimers = new Map<string, number>();
 const traceExportInFlight = new Map<string, Promise<void>>();
+const runConversationKeys = new Map<string, number>();
+const deletedRunIDsByConversation = new Map<
+  number,
+  { runIDs: string[]; generation: number }
+>();
 
 type IOUtilsLike = {
   write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
@@ -23,6 +54,8 @@ type IOUtilsLike = {
     path: string,
     options?: { createAncestors?: boolean; ignoreExisting?: boolean },
   ) => Promise<void>;
+  remove?: (path: string) => Promise<void>;
+  getChildren?: (path: string) => Promise<string[]>;
 };
 
 type OSFileLike = {
@@ -34,6 +67,7 @@ type OSFileLike = {
     path: string,
     options?: { from?: string; ignoreExisting?: boolean },
   ) => Promise<void>;
+  remove?: (path: string) => Promise<void>;
 };
 
 function getIOUtils(): IOUtilsLike | undefined {
@@ -138,6 +172,12 @@ function buildReadableTrace(events: AgentRunEventRecord[]): string {
 
 async function exportAgentRunTrace(runId: string): Promise<void> {
   const trace = await getAgentRunTrace(runId);
+  // A deletion can remove the run and its export manifest while an already
+  // scheduled timer is waiting.  Never turn that missing witness into an
+  // empty trace file after the conversation has been deleted.
+  if (!trace.run) return;
+  const ledger = await getConversationKeyLedgerEntry(trace.run.conversationKey);
+  if (!ledger || ledger.retiredAt) return;
   const payload = {
     exportedAt: Date.now(),
     exportPath: getAgentTraceExportPath(runId),
@@ -199,13 +239,161 @@ export async function initAgentTraceStore(): Promise<void> {
       )`,
     );
     await Zotero.DB.queryAsync(
+      `CREATE TABLE IF NOT EXISTS ${AGENT_TRACE_EXPORTS_TABLE} (
+        run_id TEXT PRIMARY KEY,
+        conversation_key INTEGER NOT NULL,
+        export_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+    await Zotero.DB.queryAsync(
+      `CREATE TABLE IF NOT EXISTS ${AGENT_TRACE_FILE_CLEANUP_TABLE} (
+        run_id TEXT PRIMARY KEY,
+        conversation_key INTEGER NOT NULL,
+        export_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+    await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${AGENT_RUN_EVENTS_INDEX}
        ON ${AGENT_RUN_EVENTS_TABLE} (run_id, seq, id)`,
     );
+    await Zotero.DB.queryAsync(
+      `UPDATE ${AGENT_RUNS_TABLE}
+       SET status = ?, completed_at = ?, final_text = ?
+       WHERE status = 'running'`,
+      ["failed", Date.now(), INTERRUPTED_AGENT_RUN_MARKER],
+    );
+    await installConversationKeyLedgerAgentTriggers();
   });
+  await sweepOrphanedAgentTraceExports();
+}
+
+/** Remove deterministic trace files whose manifest was deleted before the
+ * process crashed.  Only files produced by this store are considered. */
+export async function sweepOrphanedAgentTraceExports(): Promise<void> {
+  const io = getIOUtils();
+  if (!io?.getChildren || !io.remove) return;
+  let manifestRows: Array<{ runId?: unknown }> = [];
+  let cleanupRows: Array<{
+    runId?: unknown;
+    exportPath?: unknown;
+  }> = [];
+  try {
+    manifestRows = (await Zotero.DB.queryAsync(
+      `SELECT run_id AS runId FROM ${AGENT_TRACE_EXPORTS_TABLE}`,
+    )) as Array<{ runId?: unknown }>;
+    cleanupRows = (await Zotero.DB.queryAsync(
+      `SELECT run_id AS runId, export_path AS exportPath
+       FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE}`,
+    )) as typeof cleanupRows;
+  } catch {
+    return;
+  }
+  for (const row of cleanupRows) {
+    const runId = typeof row.runId === "string" ? row.runId.trim() : "";
+    const path =
+      typeof row.exportPath === "string" && row.exportPath.trim()
+        ? row.exportPath.trim()
+        : runId
+          ? getAgentTraceExportPath(runId)
+          : "";
+    if (!runId || !path) continue;
+    try {
+      await io.remove(path);
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE} WHERE run_id = ?`,
+        [runId],
+      );
+    } catch {
+      // Keep the durable row for the next startup/maintenance sweep.
+    }
+  }
+  const live = new Set(
+    manifestRows
+      .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+      .filter(Boolean)
+      .map((runId) => `${runId.replace(/[^a-zA-Z0-9._-]+/g, "_")}.json`),
+  );
+  let children: string[];
+  try {
+    children = await io.getChildren(getAgentTraceExportDir());
+  } catch {
+    return;
+  }
+  for (const path of children) {
+    const name = String(path).split(/[\\/]/).pop() || "";
+    if (!/^(?:agent-|bridge-error-)[a-zA-Z0-9._-]+\.json$/u.test(name)) {
+      continue;
+    }
+    if (live.has(name)) continue;
+    await io.remove(path).catch(() => {});
+  }
+}
+
+/** Remember run IDs before the deletion transaction removes their rows. */
+export function rememberAgentTraceRunIDsForDeletedConversation(
+  conversationKey: number,
+  runIDs: readonly string[],
+): void {
+  const key = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(key) || key <= 0) return;
+  const normalized = Array.from(
+    new Set(
+      runIDs
+        .map((runID) => (typeof runID === "string" ? runID.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+  if (normalized.length) {
+    const previous = deletedRunIDsByConversation.get(key);
+    deletedRunIDsByConversation.set(key, {
+      runIDs: Array.from(new Set([...(previous?.runIDs || []), ...normalized])),
+      generation: getConversationWriteGeneration(key),
+    });
+  }
+}
+
+/**
+ * Roll back a pre-commit trace deletion marker when the owning transaction
+ * fails.  The marker is intentionally process-local so late runs are rejected
+ * between the durable DELETE and post-commit cache cleanup, but it must never
+ * survive a rolled-back delete/Undo and suppress a legitimate new run.
+ */
+export function forgetAgentTraceRunIDsForDeletedConversation(
+  conversationKey: number,
+): void {
+  const key = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(key) || key <= 0) return;
+  deletedRunIDsByConversation.delete(key);
+}
+
+/** Queue trace files before their run/manifest rows are deleted. */
+export async function queueAgentTraceFileCleanupInTransaction(
+  conversationKey: number,
+  runIDs: readonly string[],
+): Promise<void> {
+  const key = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(key) || key <= 0) return;
+  for (const runID of Array.from(new Set(runIDs)).filter(Boolean)) {
+    await Zotero.DB.queryAsync(
+      `INSERT OR REPLACE INTO ${AGENT_TRACE_FILE_CLEANUP_TABLE}
+        (run_id, conversation_key, export_path, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [runID, key, getAgentTraceExportPath(runID), Date.now()],
+    );
+  }
 }
 
 export async function createAgentRun(record: AgentRunRecord): Promise<void> {
+  if (isConversationKeyRetiredInMemory(record.conversationKey)) return;
+  const ledgerInitialized = isConversationKeyLedgerStoreInitialized();
+  if (ledgerInitialized) {
+    const ledgerBeforeWrite = await getConversationKeyLedgerEntry(
+      record.conversationKey,
+    );
+    if (!ledgerBeforeWrite || ledgerBeforeWrite.retiredAt) return;
+  }
   await Zotero.DB.queryAsync(
     `INSERT OR REPLACE INTO ${AGENT_RUNS_TABLE}
       (run_id, conversation_key, mode, model_name, status, created_at, completed_at, final_text)
@@ -221,6 +409,41 @@ export async function createAgentRun(record: AgentRunRecord): Promise<void> {
       record.finalText || null,
     ],
   );
+  const ledger = ledgerInitialized
+    ? await getConversationKeyLedgerEntry(record.conversationKey)
+    : null;
+  if (
+    (ledgerInitialized && (!ledger || ledger.retiredAt)) ||
+    (() => {
+      const marker = deletedRunIDsByConversation.get(record.conversationKey);
+      return Boolean(
+        marker &&
+        (areConversationWritesFrozen(record.conversationKey) ||
+          marker.generation ===
+            getConversationWriteGeneration(record.conversationKey)),
+      );
+    })()
+  ) {
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${AGENT_RUNS_TABLE} WHERE run_id = ?`,
+      [record.runId],
+    );
+    runConversationKeys.delete(record.runId);
+    return;
+  }
+  runConversationKeys.set(record.runId, record.conversationKey);
+  if (!isAgentTraceExportEnabled()) return;
+  await Zotero.DB.queryAsync(
+    `INSERT OR REPLACE INTO ${AGENT_TRACE_EXPORTS_TABLE}
+      (run_id, conversation_key, export_path, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [
+      record.runId,
+      record.conversationKey,
+      getAgentTraceExportPath(record.runId),
+      record.createdAt,
+    ],
+  );
   scheduleAgentRunTraceExport(record.runId, 0);
 }
 
@@ -229,6 +452,10 @@ export async function finishAgentRun(
   status: AgentRunStatus,
   finalText?: string,
 ): Promise<void> {
+  const conversationKey = runConversationKeys.get(runId);
+  if (conversationKey && isConversationKeyRetiredInMemory(conversationKey)) {
+    return;
+  }
   await Zotero.DB.queryAsync(
     `UPDATE ${AGENT_RUNS_TABLE}
      SET status = ?,
@@ -237,7 +464,61 @@ export async function finishAgentRun(
      WHERE run_id = ?`,
     [status, Date.now(), finalText || null, runId],
   );
+  const trace = await getAgentRunTrace(runId);
+  if (!trace.run) {
+    runConversationKeys.delete(runId);
+    return;
+  }
+  const ledger = await getConversationKeyLedgerEntry(trace.run.conversationKey);
+  if (!ledger || ledger.retiredAt) {
+    runConversationKeys.delete(runId);
+    return;
+  }
   scheduleAgentRunTraceExport(runId, 0);
+}
+
+function toAgentRunRecord(row: AgentRunRow | undefined): AgentRunRecord | null {
+  return row &&
+    typeof row.runId === "string" &&
+    typeof row.mode === "string" &&
+    typeof row.status === "string" &&
+    Number.isFinite(Number(row.conversationKey)) &&
+    Number.isFinite(Number(row.createdAt))
+    ? {
+        runId: row.runId,
+        conversationKey: Math.floor(Number(row.conversationKey)),
+        mode: "agent",
+        model: typeof row.modelName === "string" ? row.modelName : undefined,
+        status: row.status as AgentRunStatus,
+        createdAt: Math.floor(Number(row.createdAt)),
+        completedAt: Number.isFinite(Number(row.completedAt))
+          ? Math.floor(Number(row.completedAt))
+          : undefined,
+        finalText:
+          typeof row.finalText === "string" ? row.finalText : undefined,
+      }
+    : null;
+}
+
+export async function getLatestAgentRunForConversation(
+  conversationKey: number,
+): Promise<AgentRunRecord | null> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId,
+            conversation_key AS conversationKey,
+            mode,
+            model_name AS modelName,
+            status,
+            created_at AS createdAt,
+            completed_at AS completedAt,
+            final_text AS finalText
+     FROM ${AGENT_RUNS_TABLE}
+     WHERE conversation_key = ?
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1`,
+    [conversationKey],
+  )) as AgentRunRow[] | undefined;
+  return toAgentRunRecord(rows?.[0]);
 }
 
 export async function appendAgentRunEvent(
@@ -245,6 +526,10 @@ export async function appendAgentRunEvent(
   seq: number,
   event: AgentEvent,
 ): Promise<void> {
+  const conversationKey = runConversationKeys.get(runId);
+  if (conversationKey && isConversationKeyRetiredInMemory(conversationKey)) {
+    return;
+  }
   await Zotero.DB.queryAsync(
     `INSERT INTO ${AGENT_RUN_EVENTS_TABLE}
       (run_id, seq, event_type, payload_json, created_at)
@@ -318,42 +603,108 @@ export async function getAgentRunTrace(runId: string): Promise<{
      WHERE run_id = ?
      LIMIT 1`,
     [runId],
-  )) as
-    | Array<{
-        runId?: unknown;
-        conversationKey?: unknown;
-        mode?: unknown;
-        modelName?: unknown;
-        status?: unknown;
-        createdAt?: unknown;
-        completedAt?: unknown;
-        finalText?: unknown;
-      }>
-    | undefined;
-  const row = rows?.[0];
-  const run =
-    row &&
-    typeof row.runId === "string" &&
-    typeof row.mode === "string" &&
-    typeof row.status === "string" &&
-    Number.isFinite(Number(row.conversationKey)) &&
-    Number.isFinite(Number(row.createdAt))
-      ? {
-          runId: row.runId,
-          conversationKey: Math.floor(Number(row.conversationKey)),
-          mode: "agent" as const,
-          model: typeof row.modelName === "string" ? row.modelName : undefined,
-          status: row.status as AgentRunStatus,
-          createdAt: Math.floor(Number(row.createdAt)),
-          completedAt: Number.isFinite(Number(row.completedAt))
-            ? Math.floor(Number(row.completedAt))
-            : undefined,
-          finalText:
-            typeof row.finalText === "string" ? row.finalText : undefined,
-        }
-      : null;
+  )) as AgentRunRow[] | undefined;
+  const run = toAgentRunRecord(rows?.[0]);
   return {
     run,
     events: await listAgentRunEvents(runId),
   };
+}
+
+/** Delete every persisted trace row and export owned by a conversation. */
+export async function clearAgentTraceState(
+  conversationKey: number,
+): Promise<string[]> {
+  const normalizedKey = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(normalizedKey) || normalizedKey <= 0) return [];
+  if (typeof Zotero?.DB?.executeTransaction !== "function") return [];
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId
+     FROM ${AGENT_RUNS_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  )) as Array<{ runId?: unknown }> | undefined;
+  const exportRows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId
+     FROM ${AGENT_TRACE_EXPORTS_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  ).catch((error: unknown) => {
+    if (/no such table|no table/i.test(String(error))) return [];
+    throw error;
+  })) as Array<{ runId?: unknown }> | undefined;
+  const runIds = (rows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const exportRunIDs = (exportRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const cleanupRows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId
+     FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  ).catch((error: unknown) => {
+    if (/no such table|no table/i.test(String(error))) return [];
+    throw error;
+  })) as Array<{ runId?: unknown }> | undefined;
+  const queuedRunIDs = (cleanupRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const rememberedRunIDs =
+    deletedRunIDsByConversation.get(normalizedKey)?.runIDs || [];
+  deletedRunIDsByConversation.delete(normalizedKey);
+  const cleanupRunIDs = Array.from(
+    new Set([...runIds, ...exportRunIDs, ...rememberedRunIDs, ...queuedRunIDs]),
+  );
+  await Zotero.DB.executeTransaction(async () => {
+    if (runIds.length) {
+      const placeholders = runIds.map(() => "?").join(", ");
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id IN (${placeholders})`,
+        runIds,
+      );
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${AGENT_RUNS_TABLE} WHERE run_id IN (${placeholders})`,
+        runIds,
+      );
+    }
+  });
+  let firstFileError: unknown;
+  for (const runId of cleanupRunIDs) {
+    runConversationKeys.delete(runId);
+    const timer = traceExportTimers.get(runId);
+    if (typeof timer === "number") {
+      clearTimeout(timer);
+      traceExportTimers.delete(runId);
+    }
+    const inFlight = traceExportInFlight.get(runId);
+    if (inFlight) await inFlight.catch(() => {});
+    traceExportInFlight.delete(runId);
+    const path = getAgentTraceExportPath(runId);
+    try {
+      const io = getIOUtils();
+      if (io?.remove) await io.remove(path);
+      else await getOSFile()?.remove?.(path);
+    } catch (error) {
+      // Preserve the durable cleanup row and surface the failure so the
+      // conversation deletion obligation remains pending.
+      firstFileError ??= error;
+      continue;
+    }
+    try {
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${AGENT_TRACE_EXPORTS_TABLE} WHERE run_id = ?`,
+        [runId],
+      );
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE} WHERE run_id = ?`,
+        [runId],
+      );
+    } catch (error) {
+      if (!/no such table|no table/i.test(String(error))) throw error;
+    }
+  }
+  if (firstFileError) throw firstFileError;
+  return cleanupRunIDs;
 }

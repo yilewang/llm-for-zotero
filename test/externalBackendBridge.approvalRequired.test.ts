@@ -1,6 +1,12 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import { createExternalBackendBridgeRuntime } from "../src/agent/externalBackendBridge";
+import {
+  AGENT_ACTION_CONTRACT,
+  CORE_RESEARCH_CONTRACT,
+  PAPER_CITATION_CONTRACT,
+  RUNTIME_CAPABILITY_CONTEXT,
+} from "../src/shared/instructionContracts";
 
 describe("external bridge action approval handling", function () {
   function createRuntime() {
@@ -30,6 +36,145 @@ describe("external bridge action approval handling", function () {
       getBridgeUrl: () => "http://127.0.0.1:19787",
     });
   }
+
+  it("fails closed to a fresh session when cleanup readiness cannot be read", async function () {
+    const originalFetch = globalThis.fetch;
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    let capturedBody: Record<string, any> | null = null;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get(key: string) {
+          if (key.endsWith("enableClaudeCodeMode")) return true;
+          if (key.endsWith("agentClaudeConfigSource")) return "default";
+          if (key.endsWith("agentPermissionMode")) return "safe";
+          if (key.endsWith("conversationSystem")) return "claude_code";
+          if (key.endsWith("codexAppServerZoteroMcpToolsEnabled")) return false;
+          return "";
+        },
+      },
+      Profile: { dir: "/tmp/llm-for-zotero-test-profile" },
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (sql.includes("conversation_cleanup_jobs")) {
+            throw new Error("database is temporarily locked");
+          }
+          return [];
+        },
+      },
+    };
+
+    globalThis.fetch = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      capturedBody = JSON.parse(String(init?.body || "{}"));
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 }) as Response;
+    }) as typeof fetch;
+
+    try {
+      const runtime = createRuntime();
+      await runtime.runTurn({
+        request: {
+          conversationKey: 99,
+          metadata: { conversationInstanceID: "instance-99" },
+          mode: "agent",
+          userText: "hello",
+          model: "claude-sonnet",
+          authMode: "api_key",
+          apiBase: "",
+          apiKey: "",
+          libraryID: 1,
+        },
+      });
+
+      assert.equal(capturedBody?.metadata?.forceFreshSession, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+    }
+  });
+
+  it("checks an empty cleanup witness by permanent key when the registry instance is unavailable", async function () {
+    const originalFetch = globalThis.fetch;
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    let capturedBody: Record<string, any> | null = null;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get(key: string) {
+          if (key.endsWith("enableClaudeCodeMode")) return true;
+          if (key.endsWith("agentClaudeConfigSource")) return "default";
+          if (key.endsWith("agentPermissionMode")) return "safe";
+          if (key.endsWith("conversationSystem")) return "claude_code";
+          if (key.endsWith("codexAppServerZoteroMcpToolsEnabled")) return false;
+          return "";
+        },
+      },
+      Profile: { dir: "/tmp/llm-for-zotero-test-profile" },
+      DB: {
+        queryAsync: async (sql: string) =>
+          sql.includes("SELECT 1") && sql.includes("conversation_cleanup_jobs")
+            ? [{ exists: 1 }]
+            : [],
+      },
+    };
+
+    globalThis.fetch = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      capturedBody = JSON.parse(String(init?.body || "{}"));
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              '{"type":"outcome","outcome":{"kind":"completed","runId":"r2","text":"ok","usedFallback":false}}\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 }) as Response;
+    }) as typeof fetch;
+
+    try {
+      const runtime = createRuntime();
+      await runtime.runTurn({
+        request: {
+          conversationKey: 100,
+          mode: "agent",
+          userText: "hello",
+          model: "claude-sonnet",
+          authMode: "api_key",
+          apiBase: "",
+          apiKey: "",
+          libraryID: 1,
+        },
+      });
+
+      assert.equal(capturedBody?.metadata?.forceFreshSession, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+    }
+  });
 
   it("shows native confirmation even when cached tool metadata is absent", async function () {
     const originalFetch = globalThis.fetch;
@@ -310,7 +455,11 @@ describe("external bridge action approval handling", function () {
       );
       assert.include(
         customInstruction,
-        "Do not append Default folder to Default target path again",
+        "Default target path is the default destination, not a constraint",
+      );
+      assert.include(
+        customInstruction,
+        "do not append Default folder to Default target path again",
       );
       assert.include(
         customInstruction,
@@ -321,11 +470,25 @@ describe("external bridge action approval handling", function () {
         "Do not create a Papers, papers, Notes, or other alternate subfolder",
       );
       assert.include(customInstruction, "Original agent-mode Zotero behavior");
-      assert.include(customInstruction, "NEVER output rewritten");
+      assert.include(
+        customInstruction,
+        "a prose plan or unwritten note body is not completion",
+      );
       assert.include(customInstruction, "library_retrieve");
       assert.include(customInstruction, "zotero_script");
       assert.include(customInstruction, '"this folder"');
       assert.include(customInstruction, "selected Zotero scopes");
+      assert.equal(
+        customInstruction.split(PAPER_CITATION_CONTRACT).length - 1,
+        1,
+      );
+      for (const contract of [
+        CORE_RESEARCH_CONTRACT,
+        AGENT_ACTION_CONTRACT,
+        RUNTIME_CAPABILITY_CONTEXT,
+      ]) {
+        assert.include(customInstruction, contract);
+      }
       const mcpServers = capturedBody?.mcpServers as
         | Record<
             string,

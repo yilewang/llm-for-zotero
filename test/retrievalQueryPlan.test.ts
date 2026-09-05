@@ -1,7 +1,12 @@
 import { assert } from "chai";
 import {
+  buildRetrievalPlannerPrompt,
   buildRetrievalQueryPlan,
+  callLLMWithTimeout,
+  generateRetrievalProbeReformulation,
+  classifyPaperReadIntent,
   detectExplicitFullReadIntent,
+  RETRIEVAL_QUERY_PLAN_TIMEOUT_MS,
   RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT,
   reconcilePlannerReadIntent,
   resolveRetrievalQueryPlan,
@@ -82,7 +87,7 @@ describe("retrievalQueryPlan", function () {
   });
 
   it("recognizes explicit full-reading intent without treating ordinary summaries as full reads", function () {
-    assert.isTrue(
+    assert.isFalse(
       detectExplicitFullReadIntent("Read the full text before answering."),
     );
     assert.isTrue(
@@ -145,6 +150,11 @@ describe("retrievalQueryPlan", function () {
       assert.isTrue(detectExplicitFullReadIntent(query), query);
     }
     assert.isFalse(detectExplicitFullReadIntent("Summarize this paper."));
+    assert.isFalse(
+      detectExplicitFullReadIntent(
+        "Use the actual PDF/full text to explain the method.",
+      ),
+    );
     assert.isFalse(
       detectExplicitFullReadIntent(
         "Provide a complete explanation of Figure 2.",
@@ -285,6 +295,27 @@ describe("retrievalQueryPlan", function () {
     );
   });
 
+  it("classifies paper evidence source independently from read coverage", function () {
+    assert.deepEqual(
+      classifyPaperReadIntent(
+        "Use the actual PDF/full text to explain the method.",
+      ),
+      { source: "document_text", coverage: "targeted" },
+    );
+    assert.deepEqual(classifyPaperReadIntent("Summarize the actual PDF."), {
+      source: "document_text",
+      coverage: "overview",
+    });
+    assert.deepEqual(classifyPaperReadIntent("Read the entire actual PDF."), {
+      source: "document_text",
+      coverage: "exhaustive",
+    });
+    assert.deepEqual(classifyPaperReadIntent("Inspect the layout of page 5."), {
+      source: "rendered_pages",
+      coverage: "targeted",
+    });
+  });
+
   it("does not let model planning promote a non-explicit request to a full read", function () {
     assert.equal(
       reconcilePlannerReadIntent(
@@ -308,5 +339,167 @@ describe("retrievalQueryPlan", function () {
       reconcilePlannerReadIntent("Read the complete Lee paper.", "targeted"),
       "targeted",
     );
+  });
+});
+
+describe("retrieval planner prompt", function () {
+  it("includes bounded source samples and the bilingual-probe instruction", function () {
+    const prompt = buildRetrievalPlannerPrompt({
+      query: "哪些论文讨论了表征漂移？",
+      sourceSamples: [
+        "Representational drift in neocortex\nNeurons change tuning across days.",
+      ],
+    });
+
+    assert.include(prompt, "Representational drift in neocortex");
+    assert.include(prompt, "include at least one probe in each language");
+    assert.include(prompt, "哪些论文讨论了表征漂移？");
+  });
+
+  it("omits the samples block when no samples are supplied", function () {
+    const prompt = buildRetrievalPlannerPrompt({ query: "calcium imaging" });
+
+    assert.notInclude(prompt, "Bounded document samples:");
+  });
+
+  it("uses a ten second default planner timeout", function () {
+    assert.equal(RETRIEVAL_QUERY_PLAN_TIMEOUT_MS, 10_000);
+  });
+});
+
+describe("probe reformulation", function () {
+  it("degrades to empty variants with a note when no model config is available", async function () {
+    const result = await generateRetrievalProbeReformulation({
+      query: "neuromorphic hardware",
+      triedProbes: ["neuromorphic hardware"],
+      matchedProbes: [],
+      scopeTitles: [],
+    });
+
+    assert.deepEqual(result.variants, []);
+    assert.isTrue(
+      result.notes.some((note) => note.includes("Probe reformulation failed")),
+    );
+  });
+
+  it("uses the profile on a provider-safe planner call without inheriting main reasoning", async function () {
+    let captured: Record<string, unknown> = {};
+    const plan = await resolveRetrievalQueryPlan({
+      query: "How does representational drift change across development?",
+      hasRetrievalContext: true,
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1",
+      apiKey: "key",
+      providerProtocol: "openai_chat_compat",
+      profileOverride: {
+        forModel: "gpt-5.4",
+        limits: { outputTokens: 2_000 },
+      },
+      llmCall: async (params) => {
+        captured = params as unknown as Record<string, unknown>;
+        return '{"readIntent":"targeted","variants":["developmental representational drift"]}';
+      },
+    });
+
+    assert.deepEqual(plan.variants, ["developmental representational drift"]);
+    assert.deepEqual(captured.reasoning, {
+      provider: "openai",
+      level: "low",
+    });
+    assert.equal(captured.maxTokens, 1_284);
+    assert.deepEqual(captured.profileOverride, {
+      forModel: "gpt-5.4",
+      limits: { outputTokens: 2_000 },
+    });
+  });
+
+  it("re-prompts once when the planner's first response comes back blank", async function () {
+    let calls = 0;
+    const plan = await resolveRetrievalQueryPlan({
+      query: "How does representational drift change across development?",
+      hasRetrievalContext: true,
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1",
+      apiKey: "key",
+      providerProtocol: "openai_chat_compat",
+      llmCall: async () => {
+        calls += 1;
+        // A budget-truncated first response is exactly what the second
+        // attempt exists for; treating it as terminal wastes the retry.
+        return calls === 1
+          ? "   "
+          : '{"readIntent":"targeted","variants":["developmental representational drift"]}';
+      },
+    });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(plan.variants, ["developmental representational drift"]);
+  });
+
+  it("does not burn the second attempt on a transport failure", async function () {
+    let calls = 0;
+    const plan = await resolveRetrievalQueryPlan({
+      query: "How does representational drift change across development?",
+      hasRetrievalContext: true,
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1",
+      apiKey: "key",
+      providerProtocol: "openai_chat_compat",
+      llmCall: async () => {
+        calls += 1;
+        throw new Error("401 Unauthorized - bad key");
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(plan.variants, []);
+  });
+});
+
+describe("callLLMWithTimeout runtime safety", function () {
+  it("enforces the timeout even when AbortController is unavailable", async function () {
+    const globalRef = globalThis as {
+      AbortController?: typeof AbortController;
+    };
+    const originalCtor = globalRef.AbortController;
+    delete globalRef.AbortController;
+    try {
+      const started = Date.now();
+      let timedOut = false;
+      try {
+        await callLLMWithTimeout({
+          prompt: "x",
+          model: "m",
+          apiBase: "https://example.invalid",
+          apiKey: "k",
+          timeoutMs: 40,
+          llmCall: () => new Promise<string>(() => {}),
+        });
+      } catch {
+        timedOut = true;
+      }
+      assert.isTrue(timedOut);
+      assert.isBelow(Date.now() - started, 2000);
+    } finally {
+      globalRef.AbortController = originalCtor;
+    }
+  });
+
+  it("passes an abort signal to the call when AbortController exists", async function () {
+    let receivedSignal: unknown = null;
+    const result = await callLLMWithTimeout({
+      prompt: "x",
+      model: "m",
+      apiBase: "https://example.invalid",
+      apiKey: "k",
+      timeoutMs: 5000,
+      llmCall: async (params: { signal?: AbortSignal }) => {
+        receivedSignal = params.signal;
+        return "ok";
+      },
+    });
+
+    assert.equal(result, "ok");
+    assert.isOk(receivedSignal);
   });
 });

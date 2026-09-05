@@ -2,7 +2,6 @@ import type { ConversationSystem } from "../../../../shared/types";
 import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
 import { sanitizeText } from "../../textUtils";
 
-export const GLOBAL_HISTORY_UNDO_WINDOW_MS = 6_000;
 export const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;
 export const HISTORY_ROW_TITLE_MAX_LENGTH = 42;
 
@@ -35,20 +34,6 @@ export type HistorySwitchTarget =
   | { kind: "paper"; conversationKey: number }
   | { kind: "global"; conversationKey: number }
   | null;
-
-export type PendingHistoryDeletion = {
-  kind: "paper" | "global";
-  conversationID?: string;
-  conversationKey: number;
-  libraryID: number;
-  conversationSystem: ConversationSystem;
-  paperItemID?: number;
-  providerSessionId?: string;
-  title: string;
-  wasActive: boolean;
-  expiresAt: number;
-  timeoutId: number | null;
-};
 
 export type PaperHistoryNavigationDecision =
   | "load-in-place"

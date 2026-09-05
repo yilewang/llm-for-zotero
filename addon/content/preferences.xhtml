@@ -11,6 +11,16 @@
   <linkset>
     <html:link rel="localization" href="__addonRef__-preferences.ftl" />
   </linkset>
+  <html:style>
+    /* The preferences window is a chrome document, whose used user-select value
+    roots at `none` — hints, helper text, and status lines must opt back in so
+    users can copy URLs and error details out of them. Interactive controls opt
+    out again. */ #__addonRef__-prefs { -moz-user-select: text; user-select:
+    text; } #__addonRef__-prefs button, #__addonRef__-prefs select,
+    #__addonRef__-prefs option, #__addonRef__-prefs summary, #__addonRef__-prefs
+    input[type="checkbox"], #__addonRef__-prefs input[type="radio"] {
+    -moz-user-select: none; user-select: none; }
+  </html:style>
   <groupbox>
     <html:div style="display: flex; flex-direction: column; padding: 10px">
       <!-- ═══ Tab bar ═══ -->
@@ -686,7 +696,210 @@
           </html:span>
         </html:div>
 
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
+            for="__addonRef__-agent-library-write-mode"
+            style="
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            Library Write Mode
+          </html:label>
+          <html:select
+            id="__addonRef__-agent-library-write-mode"
+            style="
+              width: 100%;
+              min-width: 0;
+              max-width: 100%;
+              height: 28px;
+              margin: 0;
+              padding: 4px 8px;
+              font-size: 12px;
+              line-height: 18px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 6px;
+              box-sizing: border-box;
+              background: Field;
+              color: FieldText;
+            "
+          >
+            <html:option value="auto">auto</html:option>
+            <html:option value="safe">safe</html:option>
+            <html:option value="yolo">yolo</html:option>
+          </html:select>
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              line-height: 1.45;
+              overflow-wrap: anywhere;
+            "
+          >
+            <html:code>safe</html:code>
+            reviews every library change before it happens, and batch jobs pause
+            on each page.
+            <html:code>yolo</html:code>
+            lets the agent apply changes on its own judgement, including
+            whole-library batch jobs — every run is still recorded and can be
+            reverted from the agent history. This is separate from the Claude
+            Code permission mode, which governs the bridge only.
+          </html:span>
+        </html:div>
+
         <html:div
+          id="__addonRef__-tavily-card"
+          style="
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 6px;
+          "
+        >
+          <html:div
+            style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 8px 12px;
+              background: Field;
+              color: FieldText;
+              border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);
+            "
+          >
+            <html:span style="font-weight: 700; font-size: 13px"
+              >Tavily Web Search</html:span
+            >
+          </html:div>
+          <html:div
+            style="
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+              padding: 14px;
+            "
+          >
+            <html:span
+              style="
+                font-size: 11.5px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Adds current, general web search and focused page reading to the
+              in-plugin Agent. The key stays in your local Zotero preferences.
+            </html:span>
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:label
+                for="__addonRef__-tavily-api-key"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                "
+              >
+                API key
+              </html:label>
+              <html:div
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  min-width: 0;
+                "
+              >
+                <html:input
+                  id="__addonRef__-tavily-api-key"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="tvly-…"
+                  style="
+                    width: 100%;
+                    min-width: 0;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                ></html:input>
+                <html:button
+                  id="__addonRef__-tavily-test"
+                  type="button"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    white-space: nowrap;
+                    flex-shrink: 0;
+                    background: transparent;
+                    color: var(--color-accent, #2563eb);
+                    border: 1px solid var(--color-accent, #2563eb);
+                    border-radius: 5px;
+                    cursor: pointer;
+                  "
+                >
+                  Test connection
+                </html:button>
+              </html:div>
+              <html:a
+                id="__addonRef__-tavily-key-link"
+                href="https://app.tavily.com"
+                style="
+                  width: fit-content;
+                  font-size: 11px;
+                  color: var(--color-accent, #2563eb);
+                  cursor: pointer;
+                "
+              >
+                Get a free API key
+              </html:a>
+              <html:span
+                id="__addonRef__-tavily-status"
+                role="status"
+                aria-live="polite"
+                style="
+                  display: none;
+                  white-space: pre-line;
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  line-height: 1.45;
+                "
+              ></html:span>
+            </html:div>
+            <html:span
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Basic search costs 1 Tavily credit; Advanced costs 2. Basic
+              extraction costs 1 credit per 5 successful pages; Advanced costs 2
+              per 5. Tavily currently offers a free monthly credit allowance.
+            </html:span>
+            <html:span
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Search queries and requested URLs are sent to Tavily and are
+              handled under Tavily's privacy, retention, and search-index
+              policies. When displayed, favicons are loaded from public URLs
+              supplied by Tavily. Do not include credentials or sensitive
+              private text in web queries.
+            </html:span>
+          </html:div>
+        </html:div>
+
+        <html:div
+          id="__addonRef__-codex-app-server-card"
           style="
             border: 1px solid var(--stroke-secondary, #c8c8c8);
             border-radius: 8px;
@@ -993,7 +1206,15 @@
                   </html:button>
                   <html:span
                     id="__addonRef__-codex-app-server-status"
-                    style="font-size: 11.5px; display: none"
+                    style="
+                      font-size: 11.5px;
+                      line-height: 1.45;
+                      white-space: pre-wrap;
+                      overflow-wrap: anywhere;
+                      flex: 1 1 320px;
+                      min-width: 0;
+                      display: none;
+                    "
                   ></html:span>
                 </html:div>
               </html:div>
@@ -1076,7 +1297,15 @@
                   </html:button>
                   <html:span
                     id="__addonRef__-codex-app-server-mcp-status"
-                    style="font-size: 11.5px; display: none"
+                    style="
+                      font-size: 11.5px;
+                      line-height: 1.45;
+                      white-space: normal;
+                      overflow-wrap: anywhere;
+                      flex: 1 1 320px;
+                      min-width: 0;
+                      display: none;
+                    "
                   ></html:span>
                 </html:div>
                 <html:span
@@ -1639,13 +1868,23 @@
                 <html:div
                   style="
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                    grid-template-columns: repeat(
+                      auto-fit,
+                      minmax(min(220px, 100%), 1fr)
+                    );
+                    width: 100%;
+                    min-width: 0;
                     gap: 12px 16px;
                     align-items: start;
                   "
                 >
                   <html:div
-                    style="display: flex; flex-direction: column; gap: 4px"
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      min-width: 0;
+                      gap: 4px;
+                    "
                   >
                     <html:label
                       for="__addonRef__-claude-code-model"
@@ -1658,40 +1897,137 @@
                     >
                       Default Model
                     </html:label>
-                    <html:span
-                      style="
-                        font-size: 11px;
-                        color: var(--fill-secondary, #777);
-                        line-height: 1.45;
-                      "
-                    >
-                      This sets the default capability tier for new Claude
-                      conversations. <html:code>haiku</html:code>,
-                      <html:code>sonnet</html:code>, and
-                      <html:code>opus</html:code> are strength tiers, so the
-                      runtime may map them to different underlying models.
-                    </html:span>
                     <html:select
                       id="__addonRef__-claude-code-model"
+                      aria-describedby="__addonRef__-claude-code-model-help __addonRef__-claude-code-model-status"
+                      aria-busy="true"
                       style="
                         width: 100%;
-                        max-width: none;
+                        min-width: 0;
+                        max-width: 100%;
+                        height: 28px;
+                        margin: 0;
                         padding: 4px 8px;
                         font-size: 12px;
+                        line-height: 18px;
                         border: 1px solid var(--stroke-secondary, #c8c8c8);
                         border-radius: 6px;
+                        box-sizing: border-box;
                         background: Field;
                         color: FieldText;
                       "
                     >
-                      <html:option value="sonnet">sonnet</html:option>
-                      <html:option value="opus">opus</html:option>
-                      <html:option value="haiku">haiku</html:option>
+                      <html:option value="" disabled="disabled"
+                        >Loading models…</html:option
+                      >
+                      <html:option value="customized">Customized</html:option>
                     </html:select>
+                    <html:span
+                      id="__addonRef__-claude-code-model-help"
+                      style="
+                        font-size: 11px;
+                        color: var(--fill-secondary, #777);
+                        line-height: 1.45;
+                        overflow-wrap: anywhere;
+                      "
+                    >
+                      Choose a model reported by Claude Code. Select Customized
+                      to enter an alias, exact model ID, or provider-specific
+                      value.
+                    </html:span>
+                    <html:div
+                      id="__addonRef__-claude-code-custom-model-wrap"
+                      hidden="hidden"
+                      style="
+                        display: flex;
+                        flex-direction: column;
+                        min-width: 0;
+                        gap: 4px;
+                      "
+                    >
+                      <html:label
+                        for="__addonRef__-claude-code-custom-model"
+                        style="
+                          display: block;
+                          font-weight: 600;
+                          font-size: 11px;
+                          color: var(--fill-primary, inherit);
+                        "
+                      >
+                        Customized model
+                      </html:label>
+                      <html:input
+                        id="__addonRef__-claude-code-custom-model"
+                        type="text"
+                        autocomplete="off"
+                        spellcheck="false"
+                        disabled="disabled"
+                        placeholder="Provider/Exact-Model[1m]"
+                        aria-describedby="__addonRef__-claude-code-model-help __addonRef__-claude-code-model-status"
+                        style="
+                          width: 100%;
+                          min-width: 0;
+                          max-width: 100%;
+                          height: 28px;
+                          margin: 0;
+                          padding: 4px 8px;
+                          font-size: 12px;
+                          line-height: 18px;
+                          border: 1px solid var(--stroke-secondary, #c8c8c8);
+                          border-radius: 6px;
+                          box-sizing: border-box;
+                          background: Field;
+                          color: FieldText;
+                        "
+                      />
+                    </html:div>
+                    <html:div
+                      style="
+                        display: flex;
+                        align-items: center;
+                        min-width: 0;
+                        gap: 8px;
+                      "
+                    >
+                      <html:span
+                        id="__addonRef__-claude-code-model-status"
+                        role="status"
+                        aria-live="polite"
+                        style="
+                          flex: 1 1 auto;
+                          min-width: 0;
+                          min-height: 1.3em;
+                          font-size: 11px;
+                          color: var(--fill-secondary, #777);
+                          line-height: 1.3;
+                          overflow-wrap: anywhere;
+                        "
+                      />
+                      <html:button
+                        id="__addonRef__-claude-code-model-refresh"
+                        type="button"
+                        style="
+                          flex: 0 0 auto;
+                          padding: 2px 8px;
+                          font-size: 11px;
+                          border: 1px solid var(--stroke-secondary, #c8c8c8);
+                          border-radius: 5px;
+                          background: Field;
+                          color: FieldText;
+                          cursor: pointer;
+                        "
+                        >Refresh</html:button
+                      >
+                    </html:div>
                   </html:div>
 
                   <html:div
-                    style="display: flex; flex-direction: column; gap: 4px"
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      min-width: 0;
+                      gap: 4px;
+                    "
                   >
                     <html:label
                       for="__addonRef__-agent-permission-mode"
@@ -1704,29 +2040,20 @@
                     >
                       Permission Mode
                     </html:label>
-                    <html:span
-                      style="
-                        font-size: 11px;
-                        color: var(--fill-secondary, #777);
-                        line-height: 1.45;
-                      "
-                    >
-                      <html:code>safe</html:code>
-                      is recommended.
-                      <html:code>yolo</html:code>
-                      affects Claude Code bridge permissions only; Zotero MCP
-                      and tool-specific safety checks may still require
-                      confirmation or block unsafe actions.
-                    </html:span>
                     <html:select
                       id="__addonRef__-agent-permission-mode"
                       style="
                         width: 100%;
-                        max-width: none;
+                        min-width: 0;
+                        max-width: 100%;
+                        height: 28px;
+                        margin: 0;
                         padding: 4px 8px;
                         font-size: 12px;
+                        line-height: 18px;
                         border: 1px solid var(--stroke-secondary, #c8c8c8);
                         border-radius: 6px;
+                        box-sizing: border-box;
                         background: Field;
                         color: FieldText;
                       "
@@ -1734,10 +2061,29 @@
                       <html:option value="safe">safe</html:option>
                       <html:option value="yolo">yolo</html:option>
                     </html:select>
+                    <html:span
+                      style="
+                        font-size: 11px;
+                        color: var(--fill-secondary, #777);
+                        line-height: 1.45;
+                        overflow-wrap: anywhere;
+                      "
+                    >
+                      <html:code>safe</html:code>
+                      is recommended.
+                      <html:code>yolo</html:code>
+                      changes bridge permissions only; Zotero safety checks
+                      still apply.
+                    </html:span>
                   </html:div>
 
                   <html:div
-                    style="display: flex; flex-direction: column; gap: 4px"
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      min-width: 0;
+                      gap: 4px;
+                    "
                   >
                     <html:label
                       for="__addonRef__-claude-code-reasoning"
@@ -1750,24 +2096,20 @@
                     >
                       Default Reasoning
                     </html:label>
-                    <html:span
-                      style="
-                        font-size: 11px;
-                        color: var(--fill-secondary, #777);
-                        line-height: 1.45;
-                      "
-                    >
-                      The reasoning effort Claude uses by default for new runs.
-                    </html:span>
                     <html:select
                       id="__addonRef__-claude-code-reasoning"
                       style="
                         width: 100%;
-                        max-width: none;
+                        min-width: 0;
+                        max-width: 100%;
+                        height: 28px;
+                        margin: 0;
                         padding: 4px 8px;
                         font-size: 12px;
+                        line-height: 18px;
                         border: 1px solid var(--stroke-secondary, #c8c8c8);
                         border-radius: 6px;
+                        box-sizing: border-box;
                         background: Field;
                         color: FieldText;
                       "
@@ -1779,10 +2121,25 @@
                       <html:option value="xhigh">xhigh</html:option>
                       <html:option value="max">max</html:option>
                     </html:select>
+                    <html:span
+                      style="
+                        font-size: 11px;
+                        color: var(--fill-secondary, #777);
+                        line-height: 1.45;
+                        overflow-wrap: anywhere;
+                      "
+                    >
+                      The reasoning effort Claude uses by default for new runs.
+                    </html:span>
                   </html:div>
 
                   <html:div
-                    style="display: flex; flex-direction: column; gap: 6px"
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      min-width: 0;
+                      gap: 6px;
+                    "
                   >
                     <html:label
                       style="
@@ -1813,7 +2170,12 @@
                   </html:div>
 
                   <html:div
-                    style="display: flex; flex-direction: column; gap: 6px"
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      min-width: 0;
+                      gap: 6px;
+                    "
                   >
                     <html:label
                       style="
@@ -1851,7 +2213,7 @@
                         min="30"
                         max="80"
                         step="1"
-                        style="flex: 1 1 auto"
+                        style="flex: 1 1 auto; min-width: 0"
                       />
                       <html:span
                         id="__addonRef__-claude-code-auto-compact-threshold-value"
@@ -3041,6 +3403,7 @@
                     "
                   >
                     <html:span
+                      role="button"
                       data-sort-key="cached"
                       style="
                         width: 8px;
@@ -3051,21 +3414,25 @@
                       >&#x25CF;</html:span
                     >
                     <html:span
+                      role="button"
                       data-sort-key="title"
                       style="flex: 1; min-width: 0; cursor: pointer"
                       >Title</html:span
                     >
                     <html:span
+                      role="button"
                       data-sort-key="firstCreator"
                       style="flex: 0 0 90px; cursor: pointer"
                       >Author</html:span
                     >
                     <html:span
+                      role="button"
                       data-sort-key="year"
                       style="flex: 0 0 34px; text-align: right; cursor: pointer"
                       >Year</html:span
                     >
                     <html:span
+                      role="button"
                       data-sort-key="dateAdded"
                       style="flex: 0 0 64px; text-align: right; cursor: pointer"
                       >Added</html:span

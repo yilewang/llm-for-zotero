@@ -6,10 +6,10 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
 } from "../utils/llmDefaults";
-import { HTML_NS } from "../utils/domHelpers";
+import { HTML_NS, el, iconBtn } from "../utils/domHelpers";
 import { registerAddonDialog } from "../utils/dialogRegistry";
 import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "../utils/normalization";
@@ -20,20 +20,56 @@ import {
   resolveModelInputMode,
 } from "../utils/modelInputMode";
 import {
+  buildProviderCatalogIdentity,
+  createCodexDirectModelRow,
   createEmptyProviderGroup,
   createProviderModelEntry,
+  createWebChatTargetRow,
+  getFirstSelectableModelEntryId,
+  getLastUsedModelEntryId,
   getModelProviderGroups,
-  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
+  setLastUsedModelEntryId,
   type ModelProviderAuthMode,
+  type CodexDirectProviderGroup,
   type ModelProviderGroup,
   type ModelProviderModel,
+  type WebChatProviderGroup,
 } from "../utils/modelProviders";
+import {
+  CUSTOMIZED_MODEL_OPTION_VALUE,
+  buildProviderModelSelectRows,
+  canFetchProviderModels,
+  providerGroupRequiresApiKey,
+  createSelectRebuildGate,
+  resolveModelEntryMode,
+  resolveProviderModelFetchStatus,
+  runAfterSelectChangeDispatch,
+} from "../utils/providerModelPicker";
+import {
+  attachCodexDirectCatalogInteractions,
+  canOfferCodexDirectAuthMode,
+} from "../utils/codexDirectProviderCard";
+import {
+  PROVIDER_MODEL_CONTROL_STYLE,
+  createProviderCardSectionDivider,
+  createProviderModelRowBlueprint,
+  createProviderModelSectionBlueprint,
+} from "../utils/providerCardModelSection";
+import {
+  getModelCapabilities,
+  getModelCatalogStatus,
+  refreshModelCatalog,
+  subscribeModelCapabilities,
+  type ModelProfileOverride,
+} from "../modelCapabilities";
+import { createModelProfileEditor } from "./modelProfileEditor";
 import {
   PROVIDER_PRESETS,
   detectProviderPreset,
   getProviderPreset,
   getProviderPresetProtocolOptions,
+  providerPresetRequiresApiKey,
   type ProviderPresetId,
 } from "../utils/providerPresets";
 import {
@@ -44,9 +80,15 @@ import {
 } from "../utils/providerProtocol";
 import {
   runProviderConnectionTest,
+  runProviderSettingsChecks,
   runCodexAppServerConnectionTest,
 } from "../utils/providerConnectionTest";
 import { normalizeAgentPermissionMode } from "../shared/agentPermissionMode";
+import { normalizeAgentLibraryWriteMode } from "../shared/agentLibraryWriteMode";
+import {
+  getAgentLibraryWriteMode,
+  setAgentLibraryWriteMode,
+} from "../agent/libraryWriteMode";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -56,6 +98,15 @@ import {
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  transitionProviderAuthMode,
+} from "./preferences/providerAuthModeTransition";
+import {
+  createCodexDirectProviderCardController,
+  type CodexDirectProviderCardController,
+} from "./preferences/providerCards/codexDirectProviderCardController";
+import { createProviderCardModeSpec } from "./preferences/providerCards/providerCardFactory";
 import {
   FONT_SCALE_DEFAULT_PERCENT,
   FONT_SCALE_MAX_PERCENT,
@@ -153,6 +204,7 @@ import {
   getClaudePermissionModePref,
   getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
+  getClaudeSettingSourcesByPref,
   isClaudeAutoCompactEnabled,
   isClaudeBlockStreamingEnabled,
   getConversationSystemPref,
@@ -168,6 +220,14 @@ import {
   setClaudeRuntimeModelPref,
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
+import {
+  buildClaudeModelPreferenceOptions,
+  CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY,
+  fetchClaudeModelCatalog,
+  resolveClaudeModelPreferenceSelection,
+  shouldPreserveClaudeCustomModelDraft,
+  type ClaudeModelPreferenceOption,
+} from "../claudeCode/modelCatalog";
 import {
   getCodexAppServerApprovalsReviewerPref,
   getCodexBinaryPathPref,
@@ -194,13 +254,20 @@ import {
 } from "../codexAppServer/modelCatalog";
 import {
   installOrUpdateCodexZoteroMcpConfig,
+  probeCodexZoteroMcpThroughAppServer,
   readCodexNativeMcpSetupStatus,
 } from "../codexAppServer/mcpSetup";
+import {
+  describeCodexZoteroMcpFailure,
+  formatCodexZoteroMcpError,
+} from "../codexAppServer/mcpErrors";
 import {
   getClaudeRuntimeRootDir,
   getClaudeUserHomeDir,
 } from "../claudeCode/projectSkills";
 import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
+import { getTavilyApiKey, setTavilyApiKey } from "../webAccess/prefs";
+import { TavilyClient } from "../webAccess/tavilyClient";
 import {
   getDefaultClaudeManagedInstructionBlock,
   readClaudeProjectManagedInstructionBlock,
@@ -222,11 +289,9 @@ const setPref = (key: PrefKey, value: string) =>
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
 const LEGACY_CODEX_AUTH_HELPER_TEXT =
-  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
+  "Uses credentials from `codex login` to call the Codex backend directly through the llm-for-zotero harness. This convenient legacy mode does not provide App Server sessions, MCP or runtime management, sandbox controls, approvals, or permission settings. Use Codex App Server for the full Codex runtime experience.";
 const CODEX_APP_SERVER_HELPER_TEXT =
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
-const LEGACY_CODEX_API_HELPER_TEXT =
-  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the local codex app-server transport.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
@@ -246,11 +311,8 @@ const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the legacy direct backend transport.";
 const COPILOT_API_HELPER_TEXT =
   "GitHub Copilot uses device-based login. Click Login to authenticate via GitHub.";
-const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
 const MAX_PROVIDER_COUNT = 10;
 const INITIAL_PROVIDER_COUNT = 4;
-const DEFAULT_CODEX_API_BASE =
-  "https://chatgpt.com/backend-api/codex/responses";
 
 type ProviderProfile = {
   label: string;
@@ -372,43 +434,266 @@ function resolveModelSelectedProtocol(
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────
+// `el` and `iconBtn` live in utils/domHelpers so the profile editor and this
+// pane render identical controls from one definition.
 
-function el<K extends keyof HTMLElementTagNameMap>(
-  doc: Document,
-  tag: K,
-  style?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = doc.createElementNS(HTML_NS, tag) as HTMLElementTagNameMap[K];
-  if (style) node.setAttribute("style", style);
-  if (text !== undefined) node.textContent = text;
-  return node;
+// ── Live profile editors ───────────────────────────────────────────
+// Capability data (context window, thinking support) arrives asynchronously
+// from the model catalog, so profile editors repaint when it lands instead of
+// freezing whatever was cached when the pane mounted. One shared subscription
+// serves every editor; disconnected editors are pruned on each notify, and
+// the subscription retires itself when the last one is gone — the pane has no
+// teardown hook, so lifecycle is keyed to the DOM. An editor the user is
+// typing in is skipped: a repaint would eat the in-progress edit.
+
+type LiveProfileEditor = { element: HTMLElement; refresh: () => void };
+const liveProfileEditors: LiveProfileEditor[] = [];
+let unsubscribeCapabilityUpdates: (() => void) | null = null;
+
+function registerLiveProfileEditor(entry: LiveProfileEditor) {
+  liveProfileEditors.push(entry);
+  if (unsubscribeCapabilityUpdates) return;
+  unsubscribeCapabilityUpdates = subscribeModelCapabilities(() => {
+    for (let index = liveProfileEditors.length - 1; index >= 0; index -= 1) {
+      if (!liveProfileEditors[index].element.isConnected) {
+        liveProfileEditors.splice(index, 1);
+      }
+    }
+    if (!liveProfileEditors.length) {
+      unsubscribeCapabilityUpdates?.();
+      unsubscribeCapabilityUpdates = null;
+      return;
+    }
+    for (const editor of liveProfileEditors) {
+      const active = editor.element.ownerDocument?.activeElement;
+      if (active && editor.element.contains(active)) continue;
+      editor.refresh();
+    }
+  });
 }
 
-function iconBtn(
-  doc: Document,
-  label: string,
-  title: string,
-): HTMLButtonElement {
-  const btn = el(
+// ── Provider model select (fetch & choose) ─────────────────────────
+
+/**
+ * Replace a provider-card model input with a native dropdown listing the
+ * provider's live model catalog plus a trailing "Customized…" option.
+ * Choosing "Customized…" reveals the classic text input for manual entry;
+ * choosing a model from the list hides it again. The text input element is
+ * the caller's — its existing listeners keep persisting typed values.
+ *
+ * Returns the row container and the status line to place under the row.
+ */
+function attachProviderModelSelect(args: {
+  doc: Document;
+  input: HTMLInputElement;
+  group: Exclude<ModelProviderGroup, WebChatProviderGroup>;
+  modelEntry: ModelProviderModel;
+  onModelPicked: (modelId: string) => void;
+}): { container: HTMLElement; statusEl: HTMLElement; refresh: () => void } {
+  const { doc, input, group, modelEntry } = args;
+
+  const container = el(
     doc,
-    "button",
-    "padding: 0; width: 22px; height: 22px; border: none; background: transparent;" +
-      " color: var(--fill-secondary, #888); font-size: 16px; font-weight: 500;" +
-      " display: inline-flex; align-items: center; justify-content: center;" +
-      " cursor: pointer; flex-shrink: 0; border-radius: 4px; line-height: 1;",
-    label,
-  ) as HTMLButtonElement;
-  btn.type = "button";
-  btn.title = title;
-  btn.setAttribute("aria-label", title);
-  return btn;
+    "div",
+    "flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;",
+  );
+  const select = el(
+    doc,
+    "select",
+    PROVIDER_MODEL_CONTROL_STYLE,
+  ) as HTMLSelectElement;
+  container.append(select, input);
+
+  const statusEl = el(doc, "span", HELPER_STYLE);
+  statusEl.style.display = "none";
+
+  let userCustomized = false;
+  let loading = false;
+  let fetchToken = 0;
+
+  const readSnapshot = () =>
+    getModelCatalogStatus(buildProviderCatalogIdentity(group));
+
+  const requiresApiKey = providerGroupRequiresApiKey(group);
+
+  const currentStatus = () =>
+    resolveProviderModelFetchStatus({
+      apiKey: group.apiKey,
+      loading,
+      snapshot: readSnapshot(),
+      requiresApiKey,
+    });
+
+  // The manual text input takes over while the catalog is unavailable, while
+  // "Customized…" is explicitly active, and while the input has focus; the
+  // dropdown returns once a catalog exists and the input is idle.
+  const currentMode = () =>
+    resolveModelEntryMode({
+      status: currentStatus(),
+      userCustomized,
+      inputFocused: doc.activeElement === input,
+    });
+
+  const syncModes = () => {
+    const manual = currentMode() === "manual";
+    input.style.display = manual ? "" : "none";
+    select.style.display = manual ? "none" : "";
+  };
+
+  let renderedOptionsSignature = "";
+  const rewriteOptions = () => {
+    const manual = currentMode() === "manual";
+    const rows = buildProviderModelSelectRows({
+      savedModel: modelEntry.model,
+      catalog: readSnapshot()?.models || [],
+      customizedActive: manual,
+    });
+    const desiredValue = manual
+      ? CUSTOMIZED_MODEL_OPTION_VALUE
+      : modelEntry.model.trim();
+    // Skip the DOM rewrite when nothing changed: a TTL-cached refresh resolves
+    // right after mousedown, and replacing options under the just-opened
+    // native popup can flicker or close it.
+    const signature =
+      rows
+        .map((row) => `${row.kind}:${row.kind === "model" ? row.id : ""}`)
+        .join("\n") + `\u0000${desiredValue}`;
+    if (signature === renderedOptionsSignature) return;
+    renderedOptionsSignature = signature;
+    select.textContent = "";
+    for (const row of rows) {
+      const option = el(doc, "option") as HTMLOptionElement;
+      if (row.kind === "placeholder") {
+        option.value = "";
+        option.textContent = t("Select a model…");
+        option.disabled = true;
+      } else if (row.kind === "model") {
+        option.value = row.id;
+        option.textContent = row.id;
+      } else {
+        option.value = CUSTOMIZED_MODEL_OPTION_VALUE;
+        option.textContent = t("Customized…");
+      }
+      select.appendChild(option);
+    }
+    select.value = desiredValue;
+  };
+  // Rewriting the options while the native popup is open crashes Gecko's
+  // popup helper (SelectChild "this.element is null"), so rebuilds triggered
+  // by an async catalog refresh wait until the popup is provably closed.
+  const rebuildGate = createSelectRebuildGate(rewriteOptions);
+  const rebuildOptions = rebuildGate.requestRebuild;
+
+  const updateStatus = () => {
+    const status = currentStatus();
+    if (status.kind === "needs_api_key") {
+      statusEl.textContent = t(
+        "Enter the API key above to fetch this provider's models.",
+      );
+      statusEl.style.color = "var(--fill-secondary, #888)";
+      statusEl.style.display = "block";
+    } else if (status.kind === "loading") {
+      statusEl.textContent = t("Fetching models…");
+      statusEl.style.color = "var(--fill-secondary, #888)";
+      statusEl.style.display = "block";
+    } else {
+      // "manual_entry" is deliberately silent: the row already fell back to
+      // the plain text input, so an error line would only add noise.
+      statusEl.style.display = "none";
+    }
+    syncModes();
+  };
+
+  const refreshCatalog = async () => {
+    if (requiresApiKey && !group.apiKey.trim()) {
+      updateStatus();
+      return;
+    }
+    const token = ++fetchToken;
+    loading = true;
+    updateStatus();
+    try {
+      await refreshModelCatalog(buildProviderCatalogIdentity(group));
+    } finally {
+      if (token === fetchToken) {
+        loading = false;
+        rebuildOptions();
+        updateStatus();
+      }
+    }
+  };
+
+  // The refresh is TTL-cached, so re-checking on every open stays cheap and
+  // picks up an API key the user pasted since the card rendered. Both
+  // handlers run before the popup opens, so the gate can still flush a
+  // pending rebuild into the popup the user is about to see.
+  attachCodexDirectCatalogInteractions({
+    target: select,
+    popupMayOpen: () => rebuildGate.popupMayOpen(),
+    refreshCatalog: () => void refreshCatalog(),
+  });
+  select.addEventListener("blur", () => rebuildGate.popupClosed());
+  const applyModelChoice = (chosenValue: string) => {
+    rebuildGate.popupClosed();
+    if (chosenValue === CUSTOMIZED_MODEL_OPTION_VALUE) {
+      userCustomized = true;
+      input.value = modelEntry.model;
+      syncModes();
+      rebuildOptions();
+      input.focus();
+      return;
+    }
+    userCustomized = false;
+    input.value = chosenValue;
+    args.onModelPicked(chosenValue);
+    syncModes();
+    rebuildOptions();
+  };
+  select.addEventListener("change", () => {
+    // Hiding the select (Customized…) or rewriting its options inside the
+    // change dispatch re-enters Gecko's popup teardown and crashes it
+    // ("this.element is null" in SelectChild.sys.mjs) — same invariant as the
+    // deferred rerender() in the auth-mode/preset selects below.
+    const chosenValue = select.value;
+    runAfterSelectChangeDispatch(() => applyModelChoice(chosenValue));
+  });
+
+  const exitCustomized = () => {
+    userCustomized = false;
+    // With the catalog still unavailable the mode stays manual, so the typed
+    // value keeps its field; otherwise the dropdown returns with it listed.
+    syncModes();
+    rebuildOptions();
+  };
+  input.addEventListener("blur", exitCustomized);
+  input.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Enter") input.blur();
+  });
+
+  syncModes();
+  rebuildOptions();
+  updateStatus();
+  void refreshCatalog();
+
+  return {
+    container,
+    statusEl,
+    refresh: () => void refreshCatalog(),
+  };
 }
 
 // ── Data helpers ───────────────────────────────────────────────────
 
 function cloneGroups(groups: ModelProviderGroup[]): ModelProviderGroup[] {
-  return groups.map((g) => ({ ...g, models: g.models.map((m) => ({ ...m })) }));
+  return groups.map((group) => {
+    if (group.authMode === "codex_auth") {
+      return { ...group, models: group.models.map((model) => ({ ...model })) };
+    }
+    if (group.authMode === "webchat") {
+      return { ...group, models: group.models.map((model) => ({ ...model })) };
+    }
+    return { ...group, models: group.models.map((model) => ({ ...model })) };
+  });
 }
 
 function persistGroups(groups: ModelProviderGroup[]) {
@@ -416,7 +701,10 @@ function persistGroups(groups: ModelProviderGroup[]) {
 }
 
 function ensureModels(
-  group: ModelProviderGroup,
+  group: Exclude<
+    ModelProviderGroup,
+    CodexDirectProviderGroup | WebChatProviderGroup
+  >,
   profile: ProviderProfile,
 ): ModelProviderModel[] {
   if (group.models.length > 0) return group.models.map((m) => ({ ...m }));
@@ -424,6 +712,9 @@ function ensureModels(
 }
 
 function isProviderEmpty(group: ModelProviderGroup): boolean {
+  if (group.authMode === "codex_auth" || group.authMode === "webchat") {
+    return false;
+  }
   return (
     !group.apiBase.trim() &&
     !group.apiKey.trim() &&
@@ -435,108 +726,24 @@ function hasEmptyModel(group: ModelProviderGroup): boolean {
   return group.models.some((m) => !m.model.trim());
 }
 
+function syncProviderAddModelButton(
+  button: HTMLButtonElement,
+  group: ModelProviderGroup,
+): void {
+  const canAdd = !hasEmptyModel(group);
+  button.disabled = !canAdd;
+  button.style.opacity = canAdd ? "1" : "0.35";
+  button.title = canAdd
+    ? t("Add model")
+    : t("Fill in the current model name first");
+}
+
 function normalizeAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "webchat") return "webchat"; // [webchat]
   if (value === "codex_auth") return "codex_auth";
   if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   return "api_key";
-}
-
-type ProcessLike = { env?: Record<string, string | undefined> };
-type PathUtilsLike = {
-  homeDir?: string;
-  join?: (...parts: string[]) => string;
-};
-type ServicesLike = {
-  dirsvc?: {
-    get?: (key: string, iface?: unknown) => { path?: string } | undefined;
-  };
-};
-type OSLike = {
-  Constants?: {
-    Path?: {
-      homeDir?: string;
-    };
-  };
-};
-
-function getProcess(): ProcessLike | undefined {
-  const fromGlobal = (globalThis as { process?: ProcessLike }).process;
-  if (fromGlobal?.env) return fromGlobal;
-  const fromToolkit = ztoolkit.getGlobal("process") as ProcessLike | undefined;
-  return fromToolkit?.env ? fromToolkit : undefined;
-}
-
-function getPathUtils(): PathUtilsLike | undefined {
-  const fromGlobal = (globalThis as { PathUtils?: PathUtilsLike }).PathUtils;
-  if (fromGlobal?.homeDir || fromGlobal?.join) return fromGlobal;
-  return ztoolkit.getGlobal("PathUtils") as PathUtilsLike | undefined;
-}
-
-function getServices(): ServicesLike | undefined {
-  const fromGlobal = (globalThis as { Services?: ServicesLike }).Services;
-  if (fromGlobal?.dirsvc?.get) return fromGlobal;
-  return ztoolkit.getGlobal("Services") as ServicesLike | undefined;
-}
-
-function getOS(): OSLike | undefined {
-  const fromGlobal = (globalThis as { OS?: OSLike }).OS;
-  if (fromGlobal?.Constants?.Path?.homeDir) return fromGlobal;
-  return ztoolkit.getGlobal("OS") as OSLike | undefined;
-}
-
-function getNsIFile(): unknown {
-  const ci = (globalThis as { Ci?: { nsIFile?: unknown } }).Ci;
-  if (ci?.nsIFile) return ci.nsIFile;
-  const components = (
-    globalThis as {
-      Components?: { interfaces?: { nsIFile?: unknown } };
-    }
-  ).Components;
-  return components?.interfaces?.nsIFile;
-}
-
-function resolveCodexAuthPath(): string {
-  const env = getProcess()?.env;
-  const codexHome = env?.CODEX_HOME?.trim();
-  if (codexHome) return joinLocalPath(codexHome, "auth.json");
-  const home =
-    env?.HOME?.trim() ||
-    env?.USERPROFILE?.trim() ||
-    getPathUtils()?.homeDir?.trim() ||
-    getOS()?.Constants?.Path?.homeDir?.trim() ||
-    getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-    (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim();
-  if (!home) throw new Error("Unable to resolve home directory for codex auth");
-  return joinLocalPath(home, ".codex", "auth.json");
-}
-
-async function readCodexAccessToken(): Promise<string> {
-  const authPath = resolveCodexAuthPath();
-  const io = ztoolkit.getGlobal("IOUtils") as
-    | {
-        read?: (
-          path: string,
-        ) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer>;
-      }
-    | undefined;
-  if (!io?.read) {
-    throw new Error("IOUtils is unavailable; cannot read Codex auth file");
-  }
-  const data = await io.read(authPath);
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  const raw = new TextDecoder("utf-8").decode(bytes);
-  const parsed = JSON.parse(raw) as {
-    tokens?: { access_token?: string };
-  };
-  const token = parsed?.tokens?.access_token?.trim() || "";
-  if (!token) {
-    throw new Error(
-      "No access token found in ~/.codex/auth.json. Run `codex login` first.",
-    );
-  }
-  return token;
 }
 
 // ── Style tokens ───────────────────────────────────────────────────
@@ -836,6 +1043,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
+  const tavilyApiKeyInput = doc.querySelector(
+    `#${config.addonRef}-tavily-api-key`,
+  ) as HTMLInputElement | null;
+  const tavilyTestButton = doc.querySelector(
+    `#${config.addonRef}-tavily-test`,
+  ) as HTMLButtonElement | null;
+  const tavilyStatus = doc.querySelector(
+    `#${config.addonRef}-tavily-status`,
+  ) as HTMLSpanElement | null;
+  const tavilyKeyLink = doc.querySelector(
+    `#${config.addonRef}-tavily-key-link`,
+  ) as HTMLAnchorElement | null;
   const codexAppServerEnableSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-enable`,
   ) as HTMLSelectElement | null;
@@ -900,10 +1119,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   // Mutable reference so input listeners inside rerender can update the
   // "Add Provider" button state without triggering a full rerender.
   let syncAddProviderBtn: () => void = () => undefined;
+  let directCardControllers: CodexDirectProviderCardController[] = [];
+  const disposeDirectCardControllers = () => {
+    directCardControllers.forEach((controller) => controller.dispose());
+    directCardControllers = [];
+  };
+  _window.addEventListener("unload", disposeDirectCardControllers, {
+    once: true,
+  });
 
   // ── Render ────────────────────────────────────────────────────────
 
   const rerender = () => {
+    disposeDirectCardControllers();
     modelSections.innerHTML = "";
 
     const wrap = el(
@@ -940,8 +1168,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
     groups.forEach((group, groupIndex) => {
       const profile = getProviderProfile(groupIndex);
-      group.authMode = normalizeAuthMode(group.authMode);
-      group.models = ensureModels(group, profile);
+      const cardMode = createProviderCardModeSpec(group.authMode);
+      if (group.authMode === "codex_auth") {
+        if (!group.models.length) {
+          group.models = [createCodexDirectModelRow()];
+        }
+      } else if (group.authMode === "webchat") {
+        if (!group.models.length) {
+          group.models = [createWebChatTargetRow()];
+        }
+      } else {
+        group.models = ensureModels(group, profile);
+      }
 
       const card = el(doc, "div", CARD_STYLE);
 
@@ -952,6 +1190,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       const removeProvBtn = iconBtn(doc, "×", t("Remove provider"));
       removeProvBtn.addEventListener("click", () => {
+        const removesSelectedModel = group.models.some(
+          (model) => model.id === getLastUsedModelEntryId(),
+        );
+        const nextGroups = groups.filter((_, index) => index !== groupIndex);
+        if (removesSelectedModel) {
+          setLastUsedModelEntryId(getFirstSelectableModelEntryId(nextGroups));
+        }
         groups.splice(groupIndex, 1);
         persistGroups(groups);
         rerender();
@@ -987,7 +1232,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";
-      codexOption.textContent = t("Codex Auth (Legacy)");
+      codexOption.textContent = t("Codex Direct (Legacy)");
       codexOption.selected = group.authMode === "codex_auth";
       const copilotOption = el(doc, "option") as HTMLOptionElement;
       copilotOption.value = "copilot_auth";
@@ -1002,48 +1247,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       if (group.authMode === "codex_app_server") {
         authModeSelect.append(codexAppServerOption);
       }
-      authModeSelect.append(codexOption, copilotOption, webchatOption);
+      if (
+        group.authMode === "codex_auth" ||
+        canOfferCodexDirectAuthMode(groups, group.id)
+      ) {
+        authModeSelect.append(codexOption);
+      }
+      authModeSelect.append(copilotOption, webchatOption);
       authModeSelect.addEventListener("change", () => {
-        const previousAuthMode = group.authMode;
         const nextAuthMode = normalizeAuthMode(authModeSelect.value);
-        group.authMode = nextAuthMode;
-        group.apiBase = migrateApiBaseForAuthModeChange(
-          previousAuthMode,
-          nextAuthMode,
-          group.apiBase,
-        );
-        if (nextAuthMode === "webchat") {
-          group.providerProtocol = "web_sync";
-          // Set default webchat model to chatgpt.com (user can change it)
-          const webchatModelNames: string[] = WEBCHAT_TARGETS.map(
-            (wt) => wt.modelName,
-          );
-          if (
-            !group.models[0]?.model ||
-            !webchatModelNames.includes(group.models[0].model)
-          ) {
-            group.models = [{ ...group.models[0], model: "chatgpt.com" }];
-          }
-        } else if (
-          nextAuthMode === "codex_auth" ||
-          nextAuthMode === "codex_app_server"
-        ) {
-          group.providerProtocol = "codex_responses";
-        } else if (nextAuthMode === "copilot_auth") {
-          group.providerProtocol = "openai_chat_compat";
-        } else if (
-          group.providerProtocol === "codex_responses" ||
-          group.providerProtocol === "web_sync"
-        ) {
-          group.providerProtocol =
-            selectedPreset?.defaultProtocol || "openai_chat_compat";
-        }
-        if (nextAuthMode === "codex_auth" && !group.apiBase.trim()) {
-          group.apiBase = DEFAULT_CODEX_API_BASE;
-        }
-        if (nextAuthMode === "copilot_auth" && !group.apiBase.trim()) {
-          group.apiBase = DEFAULT_COPILOT_API_BASE;
-        }
+        groups[groupIndex] = transitionProviderAuthMode(group, nextAuthMode);
         persistGroups(groups);
         setTimeout(() => rerender(), 0);
       });
@@ -1071,7 +1284,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const selectedPresetId: ProviderPresetId =
         group.authMode === "codex_auth" ||
         group.authMode === "codex_app_server" ||
-        group.authMode === "copilot_auth"
+        group.authMode === "copilot_auth" ||
+        group.authMode === "webchat"
           ? "customized"
           : (group.presetIdOverride ?? detectProviderPreset(group.apiBase));
       const selectedPreset =
@@ -1083,7 +1297,39 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         selectedPresetId === "customized";
+      // Local runtimes serve unauthenticated, so the key field, the connection
+      // test and the model catalog must all work with the key left blank.
+      const presetRequiresApiKey =
+        group.authMode !== "api_key" ||
+        providerPresetRequiresApiKey(selectedPresetId);
       group.providerProtocol = resolveSelectedProtocol(group, selectedPresetId);
+
+      if (group.authMode === "codex_auth") {
+        const controller = createCodexDirectProviderCardController({
+          doc,
+          group,
+          sectionLabelStyle: SECTION_LABEL_STYLE,
+          outlineButtonStyle: OUTLINE_BTN_STYLE,
+          helperStyle: HELPER_STYLE,
+          onGroupChange: (next) => {
+            groups[groupIndex] = next;
+            persistGroups(groups);
+            rerender();
+          },
+          getFetch: () =>
+            ztoolkit.getGlobal("fetch") as typeof fetch | undefined,
+        });
+        directCardControllers.push(controller);
+
+        cardBody.append(
+          authModeWrap,
+          createProviderCardSectionDivider(doc),
+          controller.element,
+        );
+        card.append(cardHeader, cardBody);
+        wrap.appendChild(card);
+        return;
+      }
 
       // ── Provider preset ─────────────────────────────────────────
       const providerPresetWrap = el(
@@ -1091,11 +1337,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "div",
         "display: flex; flex-direction: column;",
       );
-      if (
-        group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
-        group.authMode !== "copilot_auth"
-      ) {
+      if (cardMode.showProviderPreset) {
         const providerPresetLabel = el(
           doc,
           "label",
@@ -1165,19 +1407,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiUrlLabel.setAttribute("for", apiUrlInput.id);
       apiUrlInput.type = "text";
       apiUrlInput.placeholder =
-        group.authMode === "codex_auth"
-          ? DEFAULT_CODEX_API_BASE
-          : group.authMode === "codex_app_server"
-            ? t("Optional absolute path to codex executable")
-            : group.authMode === "copilot_auth"
-              ? DEFAULT_COPILOT_API_BASE
-              : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
-      apiUrlInput.value = group.apiBase;
+        group.authMode === "codex_app_server"
+          ? t("Optional absolute path to codex executable")
+          : group.authMode === "copilot_auth"
+            ? DEFAULT_COPILOT_API_BASE
+            : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
+      apiUrlInput.value = group.apiBase || "";
       apiUrlInput.readOnly =
-        group.authMode !== "codex_auth" &&
         group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
-        !isCustomizedPreset;
+        !isCustomizedPreset &&
+        // Local presets ship a default host and port, but the server may run on
+        // another port or another machine on the LAN, so the URL stays editable.
+        presetRequiresApiKey;
       apiUrlInput.style.opacity = apiUrlInput.readOnly ? "0.85" : "1";
       apiUrlInput.style.cursor = apiUrlInput.readOnly ? "default" : "text";
       apiUrlInput.style.pointerEvents = apiUrlInput.readOnly ? "none" : "auto";
@@ -1185,6 +1427,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         ? t("Switch Provider to Customized to edit this URL manually.")
         : "";
       apiUrlInput.addEventListener("input", () => {
+        if (group.authMode === "webchat") return;
         group.apiBase = apiUrlInput.value;
         persistGroups(groups);
         syncAddProviderBtn();
@@ -1193,13 +1436,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         doc,
         "span",
         HELPER_STYLE,
-        group.authMode === "codex_auth"
-          ? t(LEGACY_CODEX_API_HELPER_TEXT)
-          : group.authMode === "codex_app_server"
-            ? t(getCodexAppServerPathHelperText())
-            : group.authMode === "copilot_auth"
-              ? t(COPILOT_API_HELPER_TEXT)
-              : getPresetSelectHelperText(selectedPresetId),
+        group.authMode === "codex_app_server"
+          ? t(getCodexAppServerPathHelperText())
+          : group.authMode === "copilot_auth"
+            ? t(COPILOT_API_HELPER_TEXT)
+            : getPresetSelectHelperText(selectedPresetId),
       );
       apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
 
@@ -1209,21 +1450,39 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "div",
         "display: flex; flex-direction: column;",
       );
-      const apiKeyLabel = el(doc, "label", LABEL_STYLE, t("API Key"));
+      const apiKeyLabel = el(
+        doc,
+        "label",
+        LABEL_STYLE,
+        presetRequiresApiKey ? t("API Key") : t("API Key (optional)"),
+      );
       const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
       apiKeyInput.id = `${config.addonRef}-api-key-${group.id}`;
       apiKeyLabel.setAttribute("for", apiKeyInput.id);
       apiKeyInput.type = "password";
-      apiKeyInput.placeholder = "sk-…";
-      apiKeyInput.value = group.apiKey;
+      apiKeyInput.placeholder = presetRequiresApiKey
+        ? "sk-…"
+        : t("Leave blank unless your server requires auth");
+      apiKeyInput.value = group.apiKey || "";
+      // Model dropdowns register here so a freshly pasted key refetches their
+      // catalogs without reopening the pane. Debounced to sit out keystrokes.
+      const modelPickerRefreshers: Array<() => void> = [];
+      let modelPickerRefreshTimer: ReturnType<typeof setTimeout> | null = null;
       apiKeyInput.addEventListener("input", () => {
+        if (group.authMode === "webchat") return;
         group.apiKey = apiKeyInput.value;
         persistGroups(groups);
         syncAddProviderBtn();
+        if (modelPickerRefreshTimer !== null)
+          clearTimeout(modelPickerRefreshTimer);
+        modelPickerRefreshTimer = setTimeout(() => {
+          modelPickerRefreshTimer = null;
+          if (!apiKeyInput.value.trim()) return;
+          for (const refresh of modelPickerRefreshers) refresh();
+        }, 800);
       });
       apiKeyWrap.append(apiKeyLabel, apiKeyInput);
       if (
-        group.authMode === "codex_auth" ||
         group.authMode === "codex_app_server" ||
         group.authMode === "copilot_auth"
       ) {
@@ -1497,8 +1756,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               githubToken: group.apiKey,
             });
             if (!models.length) {
-              fetchModelsStatus.textContent = t("No models found");
-              fetchModelsStatus.style.color = "red";
+              fetchModelsStatus.textContent = t(
+                "No models found — type the model name instead.",
+              );
+              fetchModelsStatus.style.color = "var(--fill-secondary, #888)";
               return;
             }
             // Build a map of existing models to preserve user-customized advanced settings
@@ -1515,6 +1776,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   ? {
                       temperature: existing.temperature,
                       maxTokens: existing.maxTokens,
+                      maxTokensExplicit: existing.maxTokensExplicit,
                       inputTokenCap: existing.inputTokenCap,
                       inputMode: existing.inputMode,
                     }
@@ -1529,9 +1791,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             );
             fetchModelsStatus.style.color = "green";
             setTimeout(() => rerender(), 300);
-          } catch (err) {
-            fetchModelsStatus.textContent = `✗ ${(err as Error).message}`;
-            fetchModelsStatus.style.color = "red";
+          } catch (_err) {
+            // Keep fetch failures quiet: manual model entry still works.
+            fetchModelsStatus.textContent = t(
+              "Couldn't fetch models — type the model name instead.",
+            );
+            fetchModelsStatus.style.color = "var(--fill-secondary, #888)";
           } finally {
             fetchModelsBtn.disabled = false;
           }
@@ -1548,23 +1813,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       }
 
       // ── Models list ──────────────────────────────────────────────
-      const modelsWrap = el(
+      const {
+        section: modelsWrap,
+        header: modelsHeaderRow,
+        addButton: addModelBtn,
+      } = createProviderModelSectionBlueprint({
         doc,
-        "div",
-        "display: flex; flex-direction: column; gap: 6px;",
-      );
-
-      const modelsHeaderRow = el(
-        doc,
-        "div",
-        "display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px;",
-      );
-      modelsHeaderRow.appendChild(
-        el(doc, "span", SECTION_LABEL_STYLE, t("Model names")),
-      );
-
-      const addModelBtn = iconBtn(doc, "+", t("Add model"));
-      addModelBtn.style.color = "var(--color-accent, #2563eb)";
+        sectionLabelStyle: SECTION_LABEL_STYLE,
+        title: t("Model names"),
+        addTitle: t("Add model"),
+      });
       if (group.authMode === "webchat") {
         // [webchat] Replace "+" with a "Fetch Models" button that adds all webchat targets
         addModelBtn.style.display = "none";
@@ -1585,7 +1843,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           let added = false;
           for (const target of allTargets) {
             if (!existing.has(target)) {
-              group.models.push(createProviderModelEntry(target));
+              group.models.push(createWebChatTargetRow(target));
               added = true;
             }
           }
@@ -1594,99 +1852,129 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             rerender();
           }
         });
-        modelsHeaderRow.appendChild(fetchModelsBtn);
+        modelsHeaderRow.insertBefore(fetchModelsBtn, addModelBtn);
       }
-      modelsHeaderRow.appendChild(addModelBtn);
-      modelsWrap.appendChild(modelsHeaderRow);
 
-      const syncAddModelBtn = () => {
-        const canAdd = !hasEmptyModel(group);
-        addModelBtn.disabled = !canAdd;
-        addModelBtn.style.opacity = canAdd ? "1" : "0.35";
-        addModelBtn.title = canAdd
-          ? t("Add model")
-          : t("Fill in the current model name first");
-      };
+      const syncAddModelBtn = () =>
+        syncProviderAddModelButton(addModelBtn, group);
       syncAddModelBtn();
 
       addModelBtn.addEventListener("click", () => {
         if (addModelBtn.disabled) return;
+        if (group.authMode === "webchat") return;
         group.models.push(createProviderModelEntry(""));
         persistGroups(groups);
         rerender();
       });
 
       // ── Per-model rows ───────────────────────────────────────────
-      group.models.forEach((modelEntry, modelIndex) => {
-        const rowWrap = el(
-          doc,
-          "div",
-          "display: flex; flex-direction: column; gap: 0;",
-        );
-
-        // Main row: [model input] [Test] [⚙] [×?]
-        const mainRow = el(
-          doc,
-          "div",
-          "display: flex; align-items: center; gap: 5px;",
-        );
-
-        const modelInput = el(
-          doc,
-          "input",
-          "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-            " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-            " box-sizing: border-box; background: Field; color: FieldText;",
-        ) as HTMLInputElement;
-        modelInput.type = "text";
-        if (group.authMode !== "webchat") {
-          modelInput.value = modelEntry.model;
-        }
-        modelInput.placeholder =
-          modelIndex === 0 ? profile.modelPlaceholder : "";
-
-        const testBtn = el(
-          doc,
-          "button",
-          OUTLINE_BTN_STYLE,
-          t("Test"),
-        ) as HTMLButtonElement;
-        testBtn.type = "button";
-
-        const advGearBtn = iconBtn(doc, "⚙", t("Advanced options"));
-
-        // [webchat] Replace text input with a dropdown for webchat model selection
-        if (group.authMode === "webchat") {
-          const validWebchatModels = WEBCHAT_TARGETS.map((wt) => ({
-            value: wt.modelName,
-            label: `${wt.modelName} (${wt.label})`,
-          }));
-          if (!validWebchatModels.some((m) => m.value === modelEntry.model)) {
-            modelEntry.model = "chatgpt.com";
-          }
-          modelInput.style.display = "none";
+      if (group.authMode === "webchat") {
+        group.models.forEach((modelEntry) => {
+          const {
+            row: rowWrap,
+            controls: mainRow,
+            testButton: testBtn,
+            status: statusLine,
+          } = createProviderModelRowBlueprint({
+            doc,
+            outlineButtonStyle: OUTLINE_BTN_STYLE,
+            testLabel: t("Test"),
+          });
           testBtn.style.display = "none";
-          advGearBtn.style.display = "none";
-
+          statusLine.style.display = "none";
           const modelSelect = el(
             doc,
             "select",
-            "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-              " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-              " box-sizing: border-box; background: Field; color: FieldText;",
+            PROVIDER_MODEL_CONTROL_STYLE,
           ) as HTMLSelectElement;
-          for (const opt of validWebchatModels) {
+          for (const target of WEBCHAT_TARGETS) {
             const option = doc.createElement("option");
-            option.value = opt.value;
-            option.textContent = opt.label;
-            if (opt.value === modelEntry.model) option.selected = true;
+            option.value = target.modelName;
+            option.textContent = `${target.modelName} (${target.label})`;
+            option.selected = target.modelName === modelEntry.model;
             modelSelect.appendChild(option);
           }
           modelSelect.addEventListener("change", () => {
             modelEntry.model = modelSelect.value;
             persistGroups(groups);
           });
-          mainRow.append(modelInput, modelSelect);
+          mainRow.append(modelSelect);
+          if (group.models.length > 1) {
+            const removeModelBtn = iconBtn(doc, "×", t("Remove model"));
+            removeModelBtn.addEventListener("click", () => {
+              const wasLastUsed = getLastUsedModelEntryId() === modelEntry.id;
+              group.models = group.models.filter(
+                (entry) => entry.id !== modelEntry.id,
+              );
+              if (!group.models.length) {
+                group.models = [createWebChatTargetRow()];
+              }
+              if (wasLastUsed) {
+                setLastUsedModelEntryId(getFirstSelectableModelEntryId(groups));
+              }
+              persistGroups(groups);
+              rerender();
+            });
+            mainRow.appendChild(removeModelBtn);
+          }
+          modelsWrap.appendChild(rowWrap);
+        });
+        cardBody.append(
+          authModeWrap,
+          createProviderCardSectionDivider(doc),
+          modelsWrap,
+        );
+        card.append(cardHeader, cardBody);
+        wrap.appendChild(card);
+        return;
+      }
+
+      group.models.forEach((modelEntry, modelIndex) => {
+        const {
+          row: rowWrap,
+          controls: mainRow,
+          testButton: testBtn,
+          status: statusLine,
+        } = createProviderModelRowBlueprint({
+          doc,
+          outlineButtonStyle: OUTLINE_BTN_STYLE,
+          testLabel: t("Test"),
+        });
+
+        const modelInput = el(
+          doc,
+          "input",
+          PROVIDER_MODEL_CONTROL_STYLE,
+        ) as HTMLInputElement;
+        modelInput.type = "text";
+        modelInput.value = modelEntry.model;
+        modelInput.placeholder =
+          modelIndex === 0 ? profile.modelPlaceholder : "";
+
+        const advGearBtn = iconBtn(doc, "⚙", t("Advanced options"));
+
+        // Status line owned by the fetch-and-select model dropdown, when used.
+        let pickerStatusEl: HTMLElement | null = null;
+
+        if (canFetchProviderModels(group)) {
+          const picker = attachProviderModelSelect({
+            doc,
+            input: modelInput,
+            group,
+            modelEntry,
+            onModelPicked: (modelId) => {
+              const previousModel = modelEntry.model;
+              modelEntry.model = modelId;
+              onSelectedModelChanged(previousModel);
+              persistGroups(groups);
+              syncAddModelBtn();
+              syncAddProviderBtn();
+              syncAdvAvailability();
+            },
+          });
+          pickerStatusEl = picker.statusEl;
+          modelPickerRefreshers.push(picker.refresh);
+          mainRow.append(picker.container, testBtn, advGearBtn);
         } else {
           mainRow.append(modelInput, testBtn, advGearBtn);
         }
@@ -1694,22 +1982,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (group.models.length > 1) {
           const removeModelBtn = iconBtn(doc, "×", t("Remove model"));
           removeModelBtn.addEventListener("click", () => {
+            const wasLastUsed = getLastUsedModelEntryId() === modelEntry.id;
             group.models = group.models.filter((e) => e.id !== modelEntry.id);
             if (!group.models.length) {
               group.models = [createProviderModelEntry(profile.defaultModel)];
+            }
+            if (wasLastUsed) {
+              setLastUsedModelEntryId(getFirstSelectableModelEntryId(groups));
             }
             persistGroups(groups);
             rerender();
           });
           mainRow.appendChild(removeModelBtn);
         }
-
-        // Status line (hidden until test runs)
-        const statusLine = el(
-          doc,
-          "span",
-          "font-size: 11.5px; display: none; margin-top: 3px; white-space: pre-wrap; word-break: break-all;",
-        );
 
         // ── Advanced section (hidden by default) ──────────────────
         const advRow = el(doc, "div", ADV_ROW_STYLE);
@@ -1840,8 +2125,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (inputModeFieldWrap) advFields.append(inputModeFieldWrap);
         advFields.append(protocolFieldWrap);
         const inputModeHelpText = inputModeFieldWrap
-          ? "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision"
-          : "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)";
+          ? "Temperature: randomness (0–2)  ·  Edited Max tokens and set Input cap override detected/default limits  ·  Input mode: auto/text-only/vision"
+          : "Temperature: randomness (0–2)  ·  Edited Max tokens and set Input cap override detected/default limits";
         advRow.append(
           advFields,
           el(
@@ -1852,12 +2137,80 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ),
         );
 
-        const commitAdvanced = () => {
+        // ── Capability, reasoning and extra-parameter controls ───────────
+        // Part of the same advanced panel rather than a nested disclosure:
+        // one place lists everything customizable for this model, and the
+        // fields above (temperature, max tokens, input cap, input mode) are
+        // not repeated here.
+        const resolveDetectedProfile = () =>
+          getModelCapabilities({
+            model: modelEntry.model,
+            apiBase: group.apiBase,
+            protocol: resolveModelSelectedProtocol(
+              group,
+              selectedPresetId,
+              modelEntry,
+            ),
+            authMode: group.authMode,
+            scope: group.id,
+          });
+
+        const profileEditor = createModelProfileEditor({
+          doc,
+          t,
+          getOverride: () => modelEntry.profileOverride,
+          getDetected: resolveDetectedProfile,
+          getModelName: () => modelEntry.model,
+          onChange: (next: ModelProfileOverride | undefined) => {
+            if (next) {
+              modelEntry.profileOverride = next;
+            } else {
+              delete modelEntry.profileOverride;
+            }
+            persistGroups(groups);
+          },
+          styles: {
+            input: INPUT_STYLE,
+            inputSm: INPUT_SM_STYLE,
+            helper: HELPER_STYLE,
+            sectionLabel: SECTION_LABEL_STYLE,
+            outlineBtn: OUTLINE_BTN_STYLE,
+          },
+        });
+        advRow.append(
+          el(
+            doc,
+            "div",
+            "border-top: 1px solid var(--stroke-secondary, #c8c8c8);" +
+              " margin: 4px 0 2px; opacity: 0.6;",
+          ),
+          profileEditor.element,
+        );
+        // The detected profile arrives asynchronously (catalog fetch), so the
+        // editor repaints when capability data lands rather than seeding once
+        // from whatever was cached at mount time.
+        registerLiveProfileEditor({
+          element: profileEditor.element,
+          refresh: () => profileEditor.refresh(resolveDetectedProfile()),
+        });
+
+        /**
+         * Parameters are tuned for one specific model, so pointing this entry
+         * at a different one must not apply them there — the override carries
+         * the model it was authored for and goes dormant on a mismatch (see
+         * `forModel`), so a rename never destroys it and renaming back
+         * restores it. The repaint swaps the panel to the new model's
+         * detected profile.
+         */
+        function onSelectedModelChanged(previousModel: string) {
+          if (previousModel.trim() === modelEntry.model.trim()) return;
+          profileEditor.refresh(resolveDetectedProfile());
+        }
+
+        const commitAdvanced = (maxTokensEdited = false) => {
           modelEntry.temperature = normalizeTemperature(tempField.input.value);
-          modelEntry.maxTokens = normalizeMaxTokensForModel(
-            maxTokField.input.value,
-            modelEntry.model,
-          );
+          modelEntry.maxTokens = normalizeMaxTokens(maxTokField.input.value);
+          if (maxTokensEdited) modelEntry.maxTokensExplicit = true;
           modelEntry.inputTokenCap = normalizeOptionalInputTokenCap(
             inputCapField.input.value,
           );
@@ -1893,12 +2246,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           }
           persistGroups(groups);
         };
-        for (const f of [tempField, maxTokField, inputCapField]) {
-          f.input.addEventListener("change", commitAdvanced);
-          f.input.addEventListener("blur", commitAdvanced);
+        for (const f of [tempField, inputCapField]) {
+          f.input.addEventListener("change", () => commitAdvanced());
+          f.input.addEventListener("blur", () => commitAdvanced());
         }
-        inputModeSelect?.addEventListener("change", commitAdvanced);
-        protocolFieldSelect.addEventListener("change", commitAdvanced);
+        maxTokField.input.addEventListener("change", () =>
+          commitAdvanced(true),
+        );
+        maxTokField.input.addEventListener("blur", () => commitAdvanced());
+        inputModeSelect?.addEventListener("change", () => commitAdvanced());
+        protocolFieldSelect.addEventListener("change", () => commitAdvanced());
 
         const syncAdvAvailability = () => {
           const hasModel = Boolean(modelEntry.model.trim());
@@ -1921,7 +2278,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         });
 
         modelInput.addEventListener("input", () => {
+          const previousModel = modelEntry.model;
           modelEntry.model = modelInput.value;
+          onSelectedModelChanged(previousModel);
           persistGroups(groups);
           syncAddModelBtn();
           syncAddProviderBtn();
@@ -1939,11 +2298,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             const authMode = normalizeAuthMode(group.authMode);
             const apiBase = (
               group.apiBase.trim() ||
-              (authMode === "codex_auth"
-                ? DEFAULT_CODEX_API_BASE
-                : authMode === "copilot_auth"
-                  ? DEFAULT_COPILOT_API_BASE
-                  : "")
+              (authMode === "copilot_auth" ? DEFAULT_COPILOT_API_BASE : "")
             ).replace(/\/$/, "");
             if (authMode === "codex_app_server") {
               const modelName = (
@@ -1954,21 +2309,23 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               const result = await runCodexAppServerConnectionTest({
                 modelName,
                 codexPath: group.apiBase.trim(),
+                testZoteroMcp: isNativeZoteroMcpToolsEnabled(),
               });
               statusLine.textContent =
-                `${t("✓ Success — model says: ")}"${result.reply}"\n` +
-                `${t("Agent capability: ")}${result.capabilityLabel}`;
+                `${t("Model connection: ")}✓ "${result.reply}"\n` +
+                `${t("Agent capability: ")}${result.capabilityLabel}` +
+                (result.mcpConnected
+                  ? `\n${t("Zotero MCP connection verified through Codex.")}`
+                  : "");
               statusLine.style.color = "green";
               return;
             }
             const apiKey =
-              authMode === "codex_auth"
-                ? await readCodexAccessToken()
-                : authMode === "copilot_auth"
-                  ? await resolveCopilotAccessToken({
-                      githubToken: group.apiKey.trim(),
-                    })
-                  : group.apiKey.trim();
+              authMode === "copilot_auth"
+                ? await resolveCopilotAccessToken({
+                    githubToken: group.apiKey.trim(),
+                  })
+                : group.apiKey.trim();
             const modelName = (
               modelEntry.model ||
               profile.defaultModel ||
@@ -1981,13 +2338,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             );
 
             if (!apiBase) throw new Error(t("API URL is required"));
-            if (!apiKey) {
+            if (!apiKey && presetRequiresApiKey) {
               throw new Error(
-                authMode === "codex_auth"
-                  ? t("codex token missing. Run `codex login` first.")
-                  : authMode === "copilot_auth"
-                    ? t("Copilot token missing. Click Login first.")
-                    : t("API Key is required"),
+                authMode === "copilot_auth"
+                  ? t("Copilot token missing. Click Login first.")
+                  : t("API Key is required"),
               );
             }
 
@@ -2000,12 +2355,57 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               apiKey,
               modelName,
             });
-            statusLine.textContent =
-              `${t("✓ Success — model says: ")}"${result.reply}"\n` +
-              `${t("Agent capability: ")}${result.capabilityLabel}`;
-            statusLine.style.color = "green";
+            // The editor validates nothing about a level's meaning — the
+            // model is the judge — so the test also tries every customized
+            // setting and shows the server's verdict per item.
+            statusLine.textContent = t("Testing custom settings…");
+            statusLine.style.color = "";
+            const settingsChecks = await runProviderSettingsChecks({
+              fetchFn,
+              protocol: providerProtocol,
+              authMode,
+              apiBase,
+              apiKey,
+              modelName,
+              profileOverride: modelEntry.profileOverride,
+            });
+            const settingsLines = settingsChecks.map((check) => {
+              const label =
+                check.kind === "extra"
+                  ? t("extra parameters")
+                  : `${t("level")} ${check.id}`;
+              return check.ok
+                ? `✓ ${label}`
+                : `✗ ${label} — ${check.error || t("rejected")}`;
+            });
+            const settingsFailed = settingsChecks.some((check) => !check.ok);
+            const settingsSuffix = settingsLines.length
+              ? `\n${settingsLines.join("\n")}`
+              : "";
+            if (result.warning) {
+              statusLine.textContent =
+                `${t("⚠ Connected, but no answer — ")}${t(result.warning)}\n` +
+                `${t("Agent capability: ")}${result.capabilityLabel}` +
+                settingsSuffix;
+              statusLine.style.color = "darkorange";
+            } else {
+              statusLine.textContent =
+                `${t("✓ Success — model says: ")}"${result.reply}"\n` +
+                `${t("Agent capability: ")}${result.capabilityLabel}` +
+                settingsSuffix;
+              statusLine.style.color = settingsFailed ? "darkorange" : "green";
+            }
           } catch (error) {
-            statusLine.textContent = `✗ ${(error as Error).message}`;
+            const mcpFailure = describeCodexZoteroMcpFailure(error);
+            const mcpConnectedBeforeModelFailure =
+              (error as { mcpConnected?: unknown })?.mcpConnected === true;
+            statusLine.textContent = mcpConnectedBeforeModelFailure
+              ? `${t("Zotero MCP connection verified through Codex.")}\n${t("Model connection: ")}✗ ${error instanceof Error ? error.message : String(error)}`
+              : group.authMode === "codex_app_server" &&
+                  isNativeZoteroMcpToolsEnabled() &&
+                  mcpFailure
+                ? `${t("Zotero MCP connection: ")}✗ ${formatCodexZoteroMcpError(error, "Codex provider connection test failed")}\n${t("Model connection was not tested.")}`
+                : `✗ ${error instanceof Error ? error.message : String(error)}`;
             statusLine.style.color = "red";
           } finally {
             testBtn.disabled = false;
@@ -2015,19 +2415,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         testBtn.addEventListener("click", () => void runTest());
         testBtn.addEventListener("command", () => void runTest());
 
-        rowWrap.append(mainRow, statusLine, advRow);
+        if (pickerStatusEl) rowWrap.append(pickerStatusEl);
+        rowWrap.append(statusLine, advRow);
         modelsWrap.appendChild(rowWrap);
       });
 
-      const divider = el(
-        doc,
-        "hr",
-        "border: none; border-top: 1px solid var(--stroke-secondary, #c8c8c8); margin: 0;",
-      );
-      if (group.authMode === "webchat") {
-        // [webchat] Minimal layout: only auth mode + model names (webchat target selector)
-        cardBody.append(authModeWrap, divider, modelsWrap);
-      } else if (group.authMode === "copilot_auth") {
+      const divider = createProviderCardSectionDivider(doc);
+      if (group.authMode === "copilot_auth") {
         cardBody.append(
           authModeWrap,
           copilotLoginWrap,
@@ -2037,14 +2431,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         );
       } else if (group.authMode === "codex_app_server") {
         cardBody.append(authModeWrap, apiUrlWrap, divider, modelsWrap);
-      } else if (group.authMode === "codex_auth") {
-        cardBody.append(
-          authModeWrap,
-          apiUrlWrap,
-          apiKeyWrap,
-          divider,
-          modelsWrap,
-        );
       } else {
         cardBody.append(
           authModeWrap,
@@ -2387,6 +2773,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const agentClaudeConfigSourceSelect = doc.querySelector(
     `#${config.addonRef}-agent-claude-config-source`,
   ) as HTMLSelectElement | null;
+  const agentLibraryWriteModeSelect = doc.querySelector(
+    `#${config.addonRef}-agent-library-write-mode`,
+  ) as HTMLSelectElement | null;
   const agentPermissionModeSelect = doc.querySelector(
     `#${config.addonRef}-agent-permission-mode`,
   ) as HTMLSelectElement | null;
@@ -2396,6 +2785,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const claudeCodeModelSelect = doc.querySelector(
     `#${config.addonRef}-claude-code-model`,
   ) as HTMLSelectElement | null;
+  const claudeCodeCustomModelWrap = doc.querySelector(
+    `#${config.addonRef}-claude-code-custom-model-wrap`,
+  ) as HTMLDivElement | null;
+  const claudeCodeCustomModelInput = doc.querySelector(
+    `#${config.addonRef}-claude-code-custom-model`,
+  ) as HTMLInputElement | null;
+  const claudeCodeModelStatus = doc.querySelector(
+    `#${config.addonRef}-claude-code-model-status`,
+  ) as HTMLSpanElement | null;
+  const claudeCodeModelRefreshButton = doc.querySelector(
+    `#${config.addonRef}-claude-code-model-refresh`,
+  ) as HTMLButtonElement | null;
   const claudeCodeReasoningSelect = doc.querySelector(
     `#${config.addonRef}-claude-code-reasoning`,
   ) as HTMLSelectElement | null;
@@ -2449,6 +2850,58 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         enableAgentModeInput.checked,
         true,
       );
+    });
+  }
+
+  if (tavilyApiKeyInput) {
+    tavilyApiKeyInput.value = getTavilyApiKey();
+    const commitTavilyKey = () => {
+      setTavilyApiKey(tavilyApiKeyInput.value);
+      tavilyApiKeyInput.value = getTavilyApiKey();
+      if (tavilyStatus) {
+        tavilyStatus.style.display = "none";
+        tavilyStatus.textContent = "";
+      }
+    };
+    tavilyApiKeyInput.addEventListener("change", commitTavilyKey);
+    tavilyApiKeyInput.addEventListener("blur", commitTavilyKey);
+  }
+
+  if (tavilyKeyLink) {
+    tavilyKeyLink.addEventListener("click", (event) => {
+      event.preventDefault();
+      Zotero.launchURL("https://app.tavily.com");
+    });
+  }
+
+  if (tavilyTestButton && tavilyStatus) {
+    tavilyTestButton.addEventListener("click", () => {
+      void (async () => {
+        const key = tavilyApiKeyInput?.value.trim() || getTavilyApiKey();
+        tavilyStatus.style.display = "inline";
+        if (!key) {
+          tavilyStatus.style.color = "red";
+          tavilyStatus.textContent = t("Enter a Tavily API key first.");
+          return;
+        }
+        setTavilyApiKey(key);
+        if (tavilyApiKeyInput) tavilyApiKeyInput.value = key;
+        tavilyTestButton.disabled = true;
+        tavilyStatus.style.color = "var(--fill-secondary, #888)";
+        tavilyStatus.textContent = t("Testing…");
+        try {
+          const usage = await new TavilyClient(key).getUsage();
+          tavilyStatus.style.color = "green";
+          tavilyStatus.textContent = `${t("Connected")} · ${usage.plan}`;
+        } catch (error) {
+          tavilyStatus.style.color = "red";
+          tavilyStatus.textContent = t(
+            error instanceof Error ? error.message : String(error),
+          );
+        } finally {
+          tavilyTestButton.disabled = false;
+        }
+      })();
     });
   }
 
@@ -2570,13 +3023,23 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             modelName:
               codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
             codexPath: getConfiguredCodexAppServerBinaryPath(),
+            testZoteroMcp: isNativeZoteroMcpToolsEnabled(),
           });
-          codexAppServerStatus.textContent = `${t("✓ Success — model says: ")}"${result.reply}"`;
+          codexAppServerStatus.textContent =
+            `${t("Model connection: ")}✓ "${result.reply}"` +
+            (result.mcpConnected
+              ? `\n${t("Zotero MCP connection verified through Codex.")}`
+              : "");
           codexAppServerStatus.style.color = "green";
         } catch (err) {
-          codexAppServerStatus.textContent = `${t("Test failed: ")}${
-            err instanceof Error ? err.message : String(err)
-          }`;
+          const mcpFailure = describeCodexZoteroMcpFailure(err);
+          const mcpConnectedBeforeModelFailure =
+            (err as { mcpConnected?: unknown })?.mcpConnected === true;
+          codexAppServerStatus.textContent = mcpConnectedBeforeModelFailure
+            ? `${t("Zotero MCP connection verified through Codex.")}\n${t("Model connection: ")}✗ ${err instanceof Error ? err.message : String(err)}`
+            : isNativeZoteroMcpToolsEnabled() && mcpFailure
+              ? `${t("Zotero MCP connection: ")}✗ ${formatCodexZoteroMcpError(err, "Codex connection test failed")}\n${t("Model connection was not tested.")}`
+              : `${t("Test failed: ")}${err instanceof Error ? err.message : String(err)}`;
           codexAppServerStatus.style.color = "red";
         } finally {
           codexAppServerTestBtn.disabled = false;
@@ -2671,14 +3134,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   "%n",
                   String(toolCount),
                 )
-              : t("Zotero MCP config written. Codex is reloading tools."),
+              : t("Zotero MCP connection verified through Codex."),
             "green",
           );
         } catch (error) {
           renderCodexMcpStatus(
-            `${t("Zotero MCP setup failed: ")}${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `${t("Zotero MCP setup failed: ")}${formatCodexZoteroMcpError(error, "Zotero MCP setup failed")}`,
             "red",
           );
         } finally {
@@ -2697,28 +3158,168 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     void readCodexNativeMcpSetupStatus({
       codexPath: getConfiguredCodexAppServerBinaryPath(),
     })
-      .then((status) => {
+      .then(async (status) => {
+        if (status.configured) {
+          await probeCodexZoteroMcpThroughAppServer({
+            codexPath: getConfiguredCodexAppServerBinaryPath(),
+          });
+        }
         renderCodexMcpStatus(
-          status.connected === true
-            ? t("Zotero MCP connected with %n tools.").replace(
-                "%n",
-                String(status.toolNames.length),
-              )
-            : status.configured
-              ? t("Zotero MCP configured. Use setup if tools do not appear.")
-              : t("Zotero MCP tools enabled but not configured yet."),
-          status.connected === true ? "green" : "var(--fill-secondary, #888)",
+          status.configured
+            ? status.toolNames.length > 0
+              ? t("Zotero MCP connected with %n tools.").replace(
+                  "%n",
+                  String(status.toolNames.length),
+                )
+              : t("Zotero MCP connection verified through Codex.")
+            : t("Zotero MCP tools enabled but not configured yet."),
+          status.configured ? "green" : "var(--fill-secondary, #888)",
         );
       })
       .catch((error) => {
         renderCodexMcpStatus(
-          `${t("Could not read Codex MCP status: ")}${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `${t("Could not read Codex MCP status: ")}${formatCodexZoteroMcpError(error, "Could not verify Codex MCP status")}`,
           "red",
         );
       });
   }
+
+  let claudeModelCatalogRequestId = 0;
+  let claudeModelPreferenceOptions: ClaudeModelPreferenceOption[] = [];
+  const renderClaudeModelCatalogStatus = (
+    message: string,
+    color = "var(--fill-secondary, #777)",
+  ) => {
+    if (!claudeCodeModelStatus) return;
+    claudeCodeModelStatus.textContent = message;
+    claudeCodeModelStatus.style.color = color;
+  };
+  const setClaudeCustomModelVisible = (visible: boolean) => {
+    if (claudeCodeCustomModelWrap) {
+      claudeCodeCustomModelWrap.hidden = !visible;
+      claudeCodeCustomModelWrap.style.display = visible ? "flex" : "none";
+    }
+    if (claudeCodeCustomModelInput) {
+      claudeCodeCustomModelInput.disabled = !visible;
+    }
+  };
+  const syncClaudeModelPreferenceUi = (preserveCustomDraft = false) => {
+    if (!claudeCodeModelSelect) return;
+    const customDraft = claudeCodeCustomModelInput?.value ?? "";
+    const selection = resolveClaudeModelPreferenceSelection({
+      options: claudeModelPreferenceOptions,
+      selectedModel: getClaudeRuntimeModelPref(),
+    });
+    claudeCodeModelSelect.replaceChildren();
+    for (const model of claudeModelPreferenceOptions) {
+      const option = doc.createElementNS(
+        HTML_NS,
+        "option",
+      ) as HTMLOptionElement;
+      option.value = model.key;
+      option.textContent = model.label;
+      option.title = model.description;
+      claudeCodeModelSelect.appendChild(option);
+    }
+    const customizedOption = doc.createElementNS(
+      HTML_NS,
+      "option",
+    ) as HTMLOptionElement;
+    customizedOption.value = CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY;
+    customizedOption.textContent = t("Customized");
+    claudeCodeModelSelect.appendChild(customizedOption);
+
+    const customized = preserveCustomDraft || selection.customized;
+    claudeCodeModelSelect.value = customized
+      ? CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY
+      : selection.selectedKey;
+    if (claudeCodeCustomModelInput) {
+      claudeCodeCustomModelInput.value = preserveCustomDraft
+        ? customDraft
+        : selection.customValue;
+    }
+    setClaudeCustomModelVisible(customized);
+    const selectedOption = claudeModelPreferenceOptions.find(
+      (option) => option.key === claudeCodeModelSelect.value,
+    );
+    claudeCodeModelSelect.title =
+      selectedOption?.description || selectedOption?.model || "";
+  };
+  const refreshClaudeModelSuggestions = async (
+    forceRefresh = false,
+    clearExisting = false,
+  ) => {
+    if (!claudeCodeModelSelect) return;
+    const requestId = ++claudeModelCatalogRequestId;
+    const preserveCustomDraft = shouldPreserveClaudeCustomModelDraft({
+      customized:
+        claudeCodeModelSelect.value === CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY,
+      draftValue: claudeCodeCustomModelInput?.value ?? "",
+      selectedModel: getClaudeRuntimeModelPref(),
+      focused: doc.activeElement === claudeCodeCustomModelInput,
+    });
+    if (clearExisting) {
+      claudeModelPreferenceOptions = [];
+    }
+    claudeCodeModelSelect.disabled = true;
+    claudeCodeModelSelect.setAttribute("aria-busy", "true");
+    if (claudeCodeModelRefreshButton) {
+      claudeCodeModelRefreshButton.disabled = true;
+    }
+    renderClaudeModelCatalogStatus(t("Loading available models…"));
+    try {
+      const catalog = await fetchClaudeModelCatalog({
+        bridgeUrl: getClaudeBridgeUrl(),
+        settingSources: getClaudeSettingSourcesByPref(),
+        forceRefresh,
+      });
+      if (requestId !== claudeModelCatalogRequestId) return;
+      if (claudeCodeModelStatus) claudeCodeModelStatus.title = "";
+      claudeModelPreferenceOptions = buildClaudeModelPreferenceOptions(
+        catalog.models,
+      );
+      syncClaudeModelPreferenceUi(preserveCustomDraft);
+      if (!catalog.models.length) {
+        renderClaudeModelCatalogStatus(
+          t(
+            "Claude Code did not return any available models. Use Customized to enter one.",
+          ),
+        );
+      } else if (catalog.legacy) {
+        renderClaudeModelCatalogStatus(
+          t(
+            "Using a legacy adapter model list. Update the adapter for model details.",
+          ),
+        );
+      } else {
+        renderClaudeModelCatalogStatus(
+          t("%n models available.").replace(
+            "%n",
+            String(catalog.models.length),
+          ),
+        );
+      }
+    } catch (error) {
+      if (requestId !== claudeModelCatalogRequestId) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!claudeModelPreferenceOptions.length) {
+        syncClaudeModelPreferenceUi(preserveCustomDraft);
+      }
+      renderClaudeModelCatalogStatus(
+        t("Could not load models. Use Customized to enter one manually."),
+        "var(--fill-secondary, #777)",
+      );
+      if (claudeCodeModelStatus) claudeCodeModelStatus.title = message;
+    } finally {
+      if (requestId === claudeModelCatalogRequestId) {
+        claudeCodeModelSelect.disabled = false;
+        claudeCodeModelSelect.setAttribute("aria-busy", "false");
+        if (claudeCodeModelRefreshButton) {
+          claudeCodeModelRefreshButton.disabled = false;
+        }
+      }
+    }
+  };
 
   if (agentBackendModeSelect) {
     const applyAgentBackendUi = (enabled: boolean) => {
@@ -2739,6 +3340,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       getClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
     const commitBridgeUrl = () => {
       setClaudeBridgeUrl(agentBridgeUrlInput.value);
+      void refreshClaudeModelSuggestions(true, true);
     };
     agentBridgeUrlInput.addEventListener("change", commitBridgeUrl);
     agentBridgeUrlInput.addEventListener("blur", commitBridgeUrl);
@@ -3018,6 +3620,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         true,
       );
       renderClaudeConfigPaths();
+      void refreshClaudeModelSuggestions(true, true);
     });
   }
   renderClaudeConfigPaths();
@@ -3132,6 +3735,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
   }
 
+  if (agentLibraryWriteModeSelect) {
+    agentLibraryWriteModeSelect.value = getAgentLibraryWriteMode();
+    agentLibraryWriteModeSelect.addEventListener("change", () => {
+      setAgentLibraryWriteMode(
+        normalizeAgentLibraryWriteMode(agentLibraryWriteModeSelect.value),
+      );
+    });
+  }
   if (agentPermissionModeSelect) {
     agentPermissionModeSelect.value = getClaudePermissionModePref();
     agentPermissionModeSelect.addEventListener("change", () => {
@@ -3142,9 +3753,65 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   }
 
   if (claudeCodeModelSelect) {
-    claudeCodeModelSelect.value = getClaudeRuntimeModelPref();
     claudeCodeModelSelect.addEventListener("change", () => {
-      setClaudeRuntimeModelPref(claudeCodeModelSelect.value);
+      const selectedKey = claudeCodeModelSelect.value;
+      if (selectedKey === CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY) {
+        setClaudeCustomModelVisible(true);
+        if (
+          claudeCodeCustomModelInput &&
+          !claudeCodeCustomModelInput.value.trim()
+        ) {
+          claudeCodeCustomModelInput.value = getClaudeRuntimeModelPref();
+        }
+        doc.defaultView?.setTimeout(() => {
+          claudeCodeCustomModelInput?.focus();
+          claudeCodeCustomModelInput?.select();
+        }, 0);
+        return;
+      }
+      const selected = claudeModelPreferenceOptions.find(
+        (option) => option.key === selectedKey,
+      );
+      if (!selected) return;
+      setClaudeRuntimeModelPref(selected.model);
+      setClaudeCustomModelVisible(false);
+      claudeCodeModelSelect.title =
+        selected.description || selected.model || "";
+    });
+    void refreshClaudeModelSuggestions(true);
+  }
+
+  if (claudeCodeCustomModelInput) {
+    const commitClaudeCustomModel = () => {
+      const model = claudeCodeCustomModelInput.value.trim();
+      if (!model) {
+        claudeCodeCustomModelInput.value = getClaudeRuntimeModelPref();
+        return;
+      }
+      setClaudeRuntimeModelPref(model);
+      claudeCodeCustomModelInput.value = getClaudeRuntimeModelPref();
+      if (claudeCodeModelSelect) {
+        claudeCodeModelSelect.value = CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY;
+      }
+    };
+    claudeCodeCustomModelInput.addEventListener(
+      "change",
+      commitClaudeCustomModel,
+    );
+    claudeCodeCustomModelInput.addEventListener(
+      "blur",
+      commitClaudeCustomModel,
+    );
+    claudeCodeCustomModelInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      commitClaudeCustomModel();
+    });
+  }
+
+  if (claudeCodeModelRefreshButton) {
+    claudeCodeModelRefreshButton.addEventListener("click", () => {
+      void refreshClaudeModelSuggestions(true);
     });
   }
 
@@ -3358,7 +4025,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const findProviderApiKey = (targetPresetId: string): string => {
       const groups = getModelProviderGroups();
       for (const group of groups) {
-        if (!group.apiKey.trim() || group.authMode !== "api_key") continue;
+        if (group.authMode !== "api_key" || !group.apiKey.trim()) continue;
         if (detectProviderPreset(group.apiBase) === targetPresetId) {
           return group.apiKey;
         }

@@ -12,7 +12,6 @@ import type {
   AgentModelMessage,
   AgentToolCall,
 } from "../types";
-import { MAX_AGENT_TOOL_CALLS_PER_ROUND } from "./limits";
 
 export type ResponsesInputContentPart =
   | { type: "input_text"; text: string }
@@ -371,20 +370,6 @@ function extractOutputText(outputs: unknown): string {
     .join("");
 }
 
-function getFunctionCallOutputId(item: unknown): string | null {
-  if (!item || typeof item !== "object") return null;
-  const row = item as ResponsesOutputItem;
-  const typeValue = typeof row.type === "string" ? row.type.toLowerCase() : "";
-  if (typeValue !== "function_call") return null;
-  if (typeof row.call_id === "string" && row.call_id.trim()) {
-    return row.call_id.trim();
-  }
-  if (typeof row.id === "string" && row.id.trim()) {
-    return row.id.trim();
-  }
-  return null;
-}
-
 function getResponseOutputItemKey(item: unknown): string | null {
   if (!item || typeof item !== "object") return null;
   const row = item as ResponsesOutputItem;
@@ -442,25 +427,6 @@ export function normalizeResponsesStepFromPayload(
     text,
     toolCalls,
     outputItems: outputs,
-  };
-}
-
-export function limitNormalizedResponsesStep(
-  step: NormalizedResponsesStep,
-  maxToolCalls = MAX_AGENT_TOOL_CALLS_PER_ROUND,
-): NormalizedResponsesStep {
-  if (step.toolCalls.length <= maxToolCalls) {
-    return step;
-  }
-  const toolCalls = step.toolCalls.slice(0, maxToolCalls);
-  const keptCallIds = new Set(toolCalls.map((call) => call.id));
-  return {
-    ...step,
-    toolCalls,
-    outputItems: step.outputItems.filter((item) => {
-      const callId = getFunctionCallOutputId(item);
-      return !callId || keptCallIds.has(callId);
-    }),
   };
 }
 

@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import {
   BUILTIN_SKILL_FILES,
-  getMatchedSkillIds,
+  getMatchedSkillIds as getMatchedSkillIdsResolved,
   parseSkill,
   setUserSkills,
 } from "../src/agent/skills";
@@ -10,6 +10,19 @@ import type {
   PaperContextRef,
   TagContextRef,
 } from "../src/shared/types";
+import type { AgentRuntimeRequestInput } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+
+function getMatchedSkillIds(input: AgentRuntimeRequestInput): string[] {
+  return getMatchedSkillIdsResolved(
+    resolvedAgentRequest({
+      conversationKey: 1,
+      mode: "agent",
+      libraryID: 1,
+      ...input,
+    }),
+  );
+}
 
 const paperA: PaperContextRef = {
   itemId: 10,

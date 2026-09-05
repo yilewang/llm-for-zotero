@@ -4,21 +4,33 @@ import {
   type HistoryLifecycleControllerDeps,
 } from "../src/modules/contextPanel/setupHandlers/controllers/historyLifecycleController";
 import { createGlobalPortalItem } from "../src/modules/contextPanel/portalScope";
+import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
 import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
+  setPendingRequestId,
 } from "../src/modules/contextPanel/state";
 import type { Message } from "../src/modules/contextPanel/types";
 import {
   conversationRepository,
   type ConversationCatalogEntry,
 } from "../src/core/conversations/repository";
+import {
+  configurePendingDeletionStoreEnv,
+  pendingDeletionStore,
+  resetPendingDeletionStoreForTests,
+} from "../src/core/conversations/pendingDeletionStore";
+import {
+  configurePendingDeletionSubsystem,
+  resetPendingDeletionSubsystemForTests,
+} from "../src/modules/contextPanel/pendingDeletionWiring";
 import { t } from "../src/utils/i18n";
 
 const LIBRARY_ID = 7;
 const SOURCE_CONVERSATION_KEY = 2_000_000_021;
 const TARGET_CONVERSATION_KEY = 2_000_000_099;
+const PAPER_ITEM_ID = 4_201;
 
 class FakeClassList {
   private readonly tokens = new Set<string>();
@@ -199,8 +211,11 @@ function makeCatalogEntry(params: {
   paperItemID?: number;
   system?: "upstream" | "claude_code" | "codex";
   providerSessionId?: string;
+  instanceID?: string;
+  userTurnCount?: number;
 }): ConversationCatalogEntry {
   return {
+    instanceID: params.instanceID,
     conversationID: `test:${params.conversationKey}`,
     conversationKey: params.conversationKey,
     system: params.system || "upstream",
@@ -210,13 +225,18 @@ function makeCatalogEntry(params: {
     createdAt: 1,
     lastActivityAt: 1,
     title: params.title || "Forked conversation",
-    userTurnCount: 0,
+    userTurnCount: params.userTurnCount ?? 0,
     providerSessionId: params.providerSessionId,
   };
 }
 
 function createControllerHarness(
-  options: { system?: "upstream" | "claude_code" | "codex" } = {},
+  options: {
+    system?: "upstream" | "claude_code" | "codex";
+    item?: Zotero.Item;
+    basePaperItem?: Zotero.Item;
+    mode?: "global" | "paper";
+  } = {},
 ) {
   const doc = new FakeDocument();
   const body = new FakeElement(doc, "div") as unknown as HTMLElement;
@@ -232,11 +252,11 @@ function createControllerHarness(
     "span",
   ) as unknown as HTMLElement;
   const topToast = new FakeElement(doc, "div") as unknown as HTMLElement;
-  let currentItem: Zotero.Item | null = createGlobalPortalItem(
-    LIBRARY_ID,
-    SOURCE_CONVERSATION_KEY,
-  );
+  let currentItem: Zotero.Item | null =
+    options.item || createGlobalPortalItem(LIBRARY_ID, SOURCE_CONVERSATION_KEY);
+  let currentBasePaperItem = options.basePaperItem || null;
   const system = options.system || "upstream";
+  const mode = options.mode || "global";
 
   const deps: HistoryLifecycleControllerDeps = {
     body,
@@ -262,18 +282,20 @@ function createControllerHarness(
     setItem: (item) => {
       currentItem = item;
     },
-    getBasePaperItem: () => null,
-    setBasePaperItem: () => undefined,
+    getBasePaperItem: () => currentBasePaperItem,
+    setBasePaperItem: (item) => {
+      currentBasePaperItem = item;
+    },
     getConversationSystem: () => system,
     isClaudeConversationSystem: () => system === "claude_code",
     isCodexConversationSystem: () => system === "codex",
     isRuntimeConversationSystem: () => system !== "upstream",
     isNoteSession: () => false,
-    isGlobalMode: () => true,
-    isPaperMode: () => false,
+    isGlobalMode: () => mode === "global",
+    isPaperMode: () => mode === "paper",
     isWebChatMode: () => false,
     getCurrentLibraryID: () => LIBRARY_ID,
-    resolveCurrentPaperBaseItem: () => null,
+    resolveCurrentPaperBaseItem: () => currentBasePaperItem,
     getManualPaperContextsForItem: () => [],
     resolveAutoLoadedPaperContext: () => null,
     refreshAutoLoadedPaperContextForCurrentItem: () => undefined,
@@ -345,6 +367,7 @@ describe("historyLifecycleController fork behavior", function () {
   let originalEnsureCatalogEntry: typeof conversationRepository.ensureCatalogEntry;
   let originalForkConversation: typeof conversationRepository.forkConversation;
   let originalGetCatalogEntry: typeof conversationRepository.getCatalogEntry;
+  let originalGetCatalogIdentityWitness: typeof conversationRepository.getCatalogIdentityWitness;
   let originalLoadMessages: typeof conversationRepository.loadMessages;
 
   beforeEach(function () {
@@ -354,6 +377,8 @@ describe("historyLifecycleController fork behavior", function () {
     originalEnsureCatalogEntry = conversationRepository.ensureCatalogEntry;
     originalForkConversation = conversationRepository.forkConversation;
     originalGetCatalogEntry = conversationRepository.getCatalogEntry;
+    originalGetCatalogIdentityWitness =
+      conversationRepository.getCatalogIdentityWitness;
     originalLoadMessages = conversationRepository.loadMessages;
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -373,19 +398,33 @@ describe("historyLifecycleController fork behavior", function () {
     conversationForkLinks.delete(TARGET_CONVERSATION_KEY);
     loadedConversationKeys.delete(SOURCE_CONVERSATION_KEY);
     loadedConversationKeys.delete(TARGET_CONVERSATION_KEY);
+    setPendingRequestId(SOURCE_CONVERSATION_KEY, 0);
+    resetPendingDeletionStoreForTests();
+    configurePendingDeletionStoreEnv({
+      setTimer: () => null,
+      clearTimer: () => {},
+      log: () => {},
+    });
+    resetPendingDeletionSubsystemForTests();
+    configurePendingDeletionSubsystem();
   });
 
   afterEach(function () {
+    resetPendingDeletionStoreForTests();
+    resetPendingDeletionSubsystemForTests();
     conversationRepository.deleteTurnMessages = originalDeleteTurnMessages;
     conversationRepository.ensureCatalogEntry = originalEnsureCatalogEntry;
     conversationRepository.forkConversation = originalForkConversation;
     conversationRepository.getCatalogEntry = originalGetCatalogEntry;
+    conversationRepository.getCatalogIdentityWitness =
+      originalGetCatalogIdentityWitness;
     conversationRepository.loadMessages = originalLoadMessages;
     chatHistory.delete(SOURCE_CONVERSATION_KEY);
     chatHistory.delete(TARGET_CONVERSATION_KEY);
     conversationForkLinks.delete(TARGET_CONVERSATION_KEY);
     loadedConversationKeys.delete(SOURCE_CONVERSATION_KEY);
     loadedConversationKeys.delete(TARGET_CONVERSATION_KEY);
+    setPendingRequestId(SOURCE_CONVERSATION_KEY, 0);
     globalScope.Zotero = originalZotero;
     if (originalZtoolkit) {
       globalScope.ztoolkit = originalZtoolkit;
@@ -501,11 +540,12 @@ describe("historyLifecycleController fork behavior", function () {
       historyUndoText.textContent,
       "\u5df2\u5220\u9664\u4e00\u8f6e\u5bf9\u8bdd",
     );
+    // Hide-don't-splice: the queued turn stays in memory until finalize.
     assert.deepEqual(
       (chatHistory.get(SOURCE_CONVERSATION_KEY) || []).map(
         (message) => message.timestamp,
       ),
-      [100, 200, 500, 600],
+      [100, 200, 300, 400, 500, 600],
     );
 
     await controller.forkConversationFromTurn({
@@ -515,15 +555,22 @@ describe("historyLifecycleController fork behavior", function () {
       assistantTimestamp: 600,
     });
 
+    // Finalizing the overlapped pending turn (fork pre-step) splices it.
+    assert.deepEqual(
+      (chatHistory.get(SOURCE_CONVERSATION_KEY) || []).map(
+        (message) => message.timestamp,
+      ),
+      [100, 200, 500, 600],
+    );
+
     assert.deepEqual(events, ["deleteTurnMessages", "forkConversation"]);
-    assert.deepEqual(deleteCalls, [
-      {
-        system: "upstream",
-        conversationKey: SOURCE_CONVERSATION_KEY,
-        userTimestamp: 300,
-        assistantTimestamp: 400,
-      },
-    ]);
+    assert.lengthOf(deleteCalls, 1);
+    assert.deepInclude(deleteCalls[0], {
+      system: "upstream",
+      conversationKey: SOURCE_CONVERSATION_KEY,
+      userTimestamp: 300,
+      assistantTimestamp: 400,
+    });
     assert.deepEqual(forkCalls, [
       {
         system: "upstream",
@@ -705,6 +752,119 @@ describe("historyLifecycleController fork behavior", function () {
       },
     ]);
     assert.equal(status.textContent, "\u5bf9\u8bdd\u5df2 fork");
+  });
+
+  for (const system of ["upstream", "claude_code", "codex"] as const) {
+    it(`routes the header trash action through durable ${system} conversation deletion`, async function () {
+      const instanceID = `instance-${system}`;
+      conversationRepository.getCatalogEntry = async (params) =>
+        makeCatalogEntry({
+          conversationKey: params.conversationKey,
+          kind: params.kind,
+          libraryID: LIBRARY_ID,
+          system,
+          providerSessionId:
+            system === "upstream" ? undefined : `provider-${system}`,
+          instanceID,
+          userTurnCount: 1,
+        });
+      conversationRepository.getCatalogIdentityWitness = async () => ({
+        instanceID,
+        catalogCreatedAt: 1,
+        conversationID: `test:${SOURCE_CONVERSATION_KEY}`,
+      });
+
+      const { controller, status } = createControllerHarness({ system });
+
+      const queued = await controller.queueCurrentConversationDeletion();
+      const pending = pendingDeletionStore.getLatestPending();
+
+      assert.isTrue(queued);
+      assert.equal(pending?.kind, "conversation");
+      if (pending?.kind !== "conversation") {
+        assert.fail("expected a pending conversation deletion");
+      }
+      assert.equal(pending.system, system);
+      assert.equal(pending.conversationKind, "global");
+      assert.equal(pending.conversationKey, SOURCE_CONVERSATION_KEY);
+      assert.equal(pending.instanceID, instanceID);
+      assert.equal(
+        status.textContent,
+        t("Conversation deleted. Undo available."),
+      );
+    });
+  }
+
+  it("rejects header deletion while its conversation is generating", async function () {
+    let catalogRead = false;
+    conversationRepository.getCatalogEntry = async (params) => {
+      catalogRead = true;
+      return makeCatalogEntry({
+        conversationKey: params.conversationKey,
+        kind: params.kind,
+        libraryID: LIBRARY_ID,
+        userTurnCount: 1,
+      });
+    };
+    setPendingRequestId(SOURCE_CONVERSATION_KEY, 77);
+    const { controller, status } = createControllerHarness();
+
+    const queued = await controller.queueCurrentConversationDeletion();
+
+    assert.isFalse(queued);
+    assert.isFalse(catalogRead, "the guard should reject before DB hydration");
+    assert.equal(status.textContent, t("Cannot delete while generating"));
+    assert.isNull(pendingDeletionStore.getLatestPending());
+  });
+
+  it("routes the Claude Code paper trash action through the same conversation deletion", async function () {
+    const paperItem = {
+      id: PAPER_ITEM_ID,
+      libraryID: LIBRARY_ID,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getField: (field: string) => (field === "title" ? "Test paper" : ""),
+    } as unknown as Zotero.Item;
+    const portalItem = createClaudePaperPortalItem(
+      paperItem,
+      SOURCE_CONVERSATION_KEY,
+    ) as Zotero.Item;
+    const instanceID = "instance-claude-paper";
+    conversationRepository.getCatalogEntry = async (params) =>
+      makeCatalogEntry({
+        conversationKey: params.conversationKey,
+        kind: "paper",
+        libraryID: LIBRARY_ID,
+        paperItemID: PAPER_ITEM_ID,
+        system: "claude_code",
+        providerSessionId: "provider-claude-paper",
+        instanceID,
+        userTurnCount: 1,
+      });
+    conversationRepository.getCatalogIdentityWitness = async () => ({
+      instanceID,
+      catalogCreatedAt: 1,
+      conversationID: `test:${SOURCE_CONVERSATION_KEY}`,
+    });
+
+    const { controller } = createControllerHarness({
+      system: "claude_code",
+      mode: "paper",
+      item: portalItem,
+      basePaperItem: paperItem,
+    });
+
+    assert.isTrue(await controller.queueCurrentConversationDeletion());
+    const pending = pendingDeletionStore.getLatestPending();
+    assert.equal(pending?.kind, "conversation");
+    if (pending?.kind !== "conversation") {
+      assert.fail("expected a pending conversation deletion");
+    }
+    assert.equal(pending.system, "claude_code");
+    assert.equal(pending.conversationKind, "paper");
+    assert.equal(pending.paperItemID, PAPER_ITEM_ID);
+    assert.equal(pending.conversationKey, SOURCE_CONVERSATION_KEY);
   });
 
   it("rejects Claude Code fork attempts before the repository", async function () {

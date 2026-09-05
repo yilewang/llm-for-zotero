@@ -4,6 +4,7 @@ import {
   spliceManagedBlock,
   hashSkillForUpgrade,
   hashBody,
+  getSkillCustomizationNotice,
 } from "../src/agent/skills/managedBlock";
 
 const BEGIN = "<!-- LLM-FOR-ZOTERO:MANAGED-BEGIN -->";
@@ -96,6 +97,32 @@ describe("hashSkillForUpgrade", function () {
     assert.equal(
       hashSkillForUpgrade(a, "fallback-a"),
       hashSkillForUpgrade(a, "fallback-a"),
+    );
+  });
+});
+
+describe("getSkillCustomizationNotice", function () {
+  it("returns the banner when user content follows the managed block", function () {
+    const instruction = `Intro.\n${BEGIN}\nmanaged defaults\n${END}\n\n## Your customizations\n\nFilename pattern: \`{citekey}.md\`\n`;
+    const notice = getSkillCustomizationNotice(instruction);
+    assert.isString(notice);
+    assert.include(notice || "", "USER CUSTOMIZATIONS");
+    assert.include(notice || "", "OVERRIDE");
+  });
+
+  it("returns null when nothing follows the managed block", function () {
+    const instruction = `Intro.\n${BEGIN}\nmanaged defaults\n${END}`;
+    assert.isNull(getSkillCustomizationNotice(instruction));
+  });
+
+  it("returns null when only whitespace follows the managed block", function () {
+    const instruction = `Intro.\n${BEGIN}\nmanaged defaults\n${END}\n\n   \n`;
+    assert.isNull(getSkillCustomizationNotice(instruction));
+  });
+
+  it("returns null when the instruction has no managed markers", function () {
+    assert.isNull(
+      getSkillCustomizationNotice("A fully user-authored skill body."),
     );
   });
 });

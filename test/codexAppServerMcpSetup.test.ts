@@ -6,6 +6,7 @@ import {
   clearCodexZoteroMcpPreflightCache,
   installOrUpdateCodexZoteroMcpConfig,
   preflightCodexZoteroMcpServer,
+  probeCodexZoteroMcpThroughAppServer,
   readCodexNativeMcpSetupStatus,
 } from "../src/codexAppServer/mcpSetup";
 import {
@@ -92,6 +93,10 @@ describe("Codex app-server MCP setup", function () {
         calls.push({ method, params });
         if (method === "config/value/write") return {};
         if (method === "config/mcpServer/reload") return {};
+        if (method === "thread/start") {
+          return { thread: { id: "mcp-probe-thread" } };
+        }
+        if (method === "thread/archive") return {};
         if (method === "config/read") {
           return {
             mcp_servers: {
@@ -156,6 +161,25 @@ describe("Codex app-server MCP setup", function () {
       calls.map((call) => call.method),
       "config/mcpServer/reload",
     );
+    const probeCall = calls.find((call) => call.method === "thread/start");
+    const probeServers = (
+      probeCall?.params as {
+        config?: { mcp_servers?: Record<string, { required?: boolean }> };
+      }
+    ).config?.mcp_servers;
+    assert.lengthOf(Object.keys(probeServers || {}), 1);
+    assert.match(
+      Object.keys(probeServers || {})[0] || "",
+      /^llm_for_zotero_connection_probe_/,
+    );
+    assert.isTrue(Object.values(probeServers || {})[0]?.required);
+    assert.deepInclude(
+      calls.find((call) => call.method === "thread/archive")?.params as Record<
+        string,
+        unknown
+      >,
+      { threadId: "mcp-probe-thread" },
+    );
     assert.equal(status.configured, true);
     assert.equal(status.connected, true);
     assert.deepEqual(status.toolNames, ["library_search"]);
@@ -172,6 +196,10 @@ describe("Codex app-server MCP setup", function () {
           throw new Error("legacy server does not support dotted keyPath");
         }
         if (method === "config/mcpServer/reload") return {};
+        if (method === "thread/start") {
+          return { thread: { id: "mcp-probe-thread-legacy" } };
+        }
+        if (method === "thread/archive") return {};
         if (method === "config/read") {
           return {
             mcp_servers: {
@@ -210,6 +238,86 @@ describe("Codex app-server MCP setup", function () {
       ["keyPath", "keyPath", "keyPath", "key"],
     );
     assert.equal(status.configured, true);
+  });
+
+  it("probes a required profile-scoped MCP server without sending a model turn", async function () {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const proc = {
+      sendRequest: async (method: string, params?: unknown) => {
+        calls.push({ method, params });
+        if (method === "thread/start") {
+          return { thread: { id: "disposable-probe-thread" } };
+        }
+        if (method === "thread/archive") return {};
+        throw new Error(`unexpected method ${method}`);
+      },
+    } as unknown as CodexAppServerProcess;
+
+    await probeCodexZoteroMcpThroughAppServer({ proc });
+
+    assert.deepEqual(
+      calls.map((call) => call.method),
+      ["thread/start", "thread/archive"],
+    );
+    const startParams = calls[0]?.params as {
+      ephemeral?: boolean;
+      config?: { mcp_servers?: Record<string, { required?: boolean }> };
+    };
+    assert.notProperty(startParams, "model");
+    assert.isTrue(startParams.ephemeral);
+    const servers = startParams.config?.mcp_servers || {};
+    const serverName = Object.keys(servers)[0] || "";
+    assert.match(serverName, /^llm_for_zotero_connection_probe_/);
+    assert.isTrue(servers[serverName]?.required);
+    assert.deepEqual(calls[1]?.params, {
+      threadId: "disposable-probe-thread",
+    });
+    assert.notInclude(
+      calls.map((call) => call.method),
+      "turn/start",
+    );
+  });
+
+  it("fails setup when the in-process preflight passes but Codex receives HTTP 502", async function () {
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      ...globalThis.Zotero,
+      Server: { Endpoints: {} },
+    } as unknown as typeof Zotero;
+    const registry = new AgentToolRegistry();
+    registry.register(createReadTool("library_search"));
+    registry.register(createReadTool("library_read"));
+    registry.register(createReadTool("library_retrieve"));
+    registry.register(createReadTool("paper_read"));
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const localStatus = await preflightCodexZoteroMcpServer({
+      required: true,
+    });
+    assert.isTrue(localStatus.connected);
+
+    const proc = {
+      sendRequest: async (method: string) => {
+        if (method === "config/value/write") return {};
+        if (method === "config/mcpServer/reload") return {};
+        if (method === "thread/start") {
+          throw new Error(
+            "MCP server llm_for_zotero_connection_probe failed for http://127.0.0.1:24680/llm-for-zotero/mcp: HTTP 502 Bad Gateway",
+          );
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+    } as unknown as CodexAppServerProcess;
+
+    let thrown: unknown;
+    try {
+      await installOrUpdateCodexZoteroMcpConfig({ proc });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.instanceOf(thrown, Error);
+    assert.include((thrown as Error).message, "HTTP 502");
   });
 
   it("reports setup status without requiring config write", async function () {

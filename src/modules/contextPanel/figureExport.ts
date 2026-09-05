@@ -1,6 +1,10 @@
 import { buildSafeSvgMarkup } from "../../utils/markdown";
 import { escapeNoteHtml } from "./textUtils";
-import { importNoteImageAsset, type NoteImageImporter } from "./noteImages";
+import {
+  importNoteImageAsset,
+  type NoteImageImporter,
+  type NoteImageImportInput,
+} from "./noteImages";
 
 export type SvgRasterizer = (
   doc: Document,
@@ -19,6 +23,7 @@ export type NoteFigureRenderOptions = {
   omitUnconvertedVisualFences?: boolean;
   rasterizeSvgToPngBytes?: SvgRasterizer;
   renderMermaidSvg?: MermaidSvgRenderer;
+  saveOptions?: NoteImageImportInput["saveOptions"];
 };
 
 const FIGURE_EXPORT_MAX_DIMENSION = 4096;
@@ -213,6 +218,16 @@ export function isVisualFigureFenceLanguage(lang: string): boolean {
   return normalized === "svg" || isMermaidFigureFenceLanguage(normalized);
 }
 
+export function containsVisualFigureFences(markdown: string): boolean {
+  if (!markdown) return false;
+  const codeBlockRegex = /```[ \t]*([^\s`]*)[^\n`]*\n?[\s\S]*?```/g;
+  let match: RegExpExecArray | null;
+  while ((match = codeBlockRegex.exec(markdown)) !== null) {
+    if (isVisualFigureFenceLanguage(match[1] || "")) return true;
+  }
+  return false;
+}
+
 async function resolveFigureFenceSvgMarkup(params: {
   lang: string;
   source: string;
@@ -240,6 +255,7 @@ export async function buildSvgFigureHtmlForNote(params: {
   alt: string;
   importer?: NoteImageImporter;
   rasterizeSvgToPngBytes?: SvgRasterizer;
+  saveOptions?: NoteImageImportInput["saveOptions"];
 }): Promise<string> {
   const rasterizeSvgToPngBytes =
     params.rasterizeSvgToPngBytes || defaultRasterizeSvgToPngBytes;
@@ -250,6 +266,7 @@ export async function buildSvgFigureHtmlForNote(params: {
     noteItemId: params.noteItemId,
     bytes,
     mimeType: "image/png",
+    saveOptions: params.saveOptions,
   });
   if (!imported?.key) return "";
   return `<p><img data-attachment-key="${escapeNoteHtml(imported.key)}" alt="${escapeNoteHtml(params.alt)}" /></p>`;
@@ -308,6 +325,7 @@ export async function replaceVisualFigureFencesWithNoteImages(
       alt,
       importer: options.importer,
       rasterizeSvgToPngBytes: options.rasterizeSvgToPngBytes,
+      saveOptions: options.saveOptions,
     });
     result +=
       imageHtml ||

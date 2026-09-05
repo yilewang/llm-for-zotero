@@ -3,6 +3,7 @@ import {
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   buildAssistantDisplayMarkdownForRender,
   buildRenderedMarkdownClipboardPayload,
+  resolveEffectiveRequestConfig,
   resolveRetryModelInputsForTests,
   type EffectiveRequestConfig,
 } from "../src/modules/contextPanel/chat";
@@ -22,6 +23,34 @@ describe("chat retry model inputs", function () {
     category: "pdf",
     storedPath: "/tmp/paper.pdf",
   };
+
+  it("discards API-provider controls before a WebChat request is resolved", function () {
+    const resolved = resolveEffectiveRequestConfig({
+      item: { id: 42 } as Zotero.Item,
+      model: "chat.deepseek.com",
+      apiBase: "https://must-not-be-consumed.example/v1",
+      apiKey: "must-not-be-consumed",
+      authMode: "webchat",
+      providerProtocol: "responses_api",
+      reasoning: { provider: "openai", level: "high" },
+      advanced: {
+        temperature: 1.7,
+        maxTokens: 99_999,
+        maxTokensExplicit: true,
+        inputTokenCap: 123,
+        inputMode: "text_only",
+        profileOverride: { extraBody: { top_k: 10 } },
+      },
+    });
+
+    assert.equal(resolved.model, "chat.deepseek.com");
+    assert.equal(resolved.authMode, "webchat");
+    assert.equal(resolved.providerProtocol, "web_sync");
+    assert.equal(resolved.apiBase, "");
+    assert.equal(resolved.apiKey, "");
+    assert.isUndefined(resolved.reasoning);
+    assert.isUndefined(resolved.advanced);
+  });
 
   it("converts known quote anchors into render occurrence markers for interactive assistant rendering", function () {
     const quoteCitation = buildQuoteCitation({
@@ -59,6 +88,67 @@ describe("chat retry model inputs", function () {
     assert.include(rendered, "]]\n\nSo **one");
     assert.notInclude(rendered, `[[quote:${quoteCitation!.id}]]`);
     assert.notInclude(rendered, "> Quote card boundaries");
+  });
+
+  it("anchors web chips against canonical Markdown instead of a quote-review override", function () {
+    const first = "First web-supported paragraph.";
+    const second = "**Second paragraph.** It must stay separate.";
+    const rendered = buildAssistantDisplayMarkdownForRender(
+      {
+        text: `${first}\n\n${second}`,
+        quoteCitations: [],
+        quoteDisplayOverride: {
+          markdown: `Changed quote-review text.\n${second}`,
+          quoteCitations: [],
+        },
+      },
+      [
+        {
+          offset: first.length,
+          sources: [
+            {
+              sourceId: "web_abc1234",
+              url: "https://example.com/source",
+              hostname: "example.com",
+              organization: "Example",
+              title: "Source",
+            },
+          ],
+        },
+      ],
+    );
+
+    assert.equal(rendered, `${first}LLMWEBSOURCEANCHOR0END\n\n${second}`);
+    assert.notInclude(rendered, "Changed quote-review text");
+  });
+
+  it("keeps web-sourced quotations out of legacy paper quote cards", function () {
+    const text = [
+      "> Quoted text returned by a web page.",
+      ">",
+      "> Example site: Web page title",
+    ].join("\n");
+    const rendered = buildAssistantDisplayMarkdownForRender(
+      { text, quoteCitations: [] },
+      [
+        {
+          offset: text.length,
+          sources: [
+            {
+              sourceId: "web_abc1234",
+              url: "https://example.com/source",
+              hostname: "example.com",
+              organization: "Example",
+              title: "Source",
+            },
+          ],
+        },
+      ],
+    );
+
+    assert.include(rendered, "> Quoted text returned by a web page.");
+    assert.include(rendered, "LLMWEBSOURCEANCHOR0END");
+    assert.notInclude(rendered, "[[quote-occurrence:");
   });
 
   it("isolates preserved quote anchors in nested lists from emphasized continuation text", function () {
@@ -119,6 +209,22 @@ describe("chat retry model inputs", function () {
     assert.notInclude(payload!.plainText, "[[quote:");
     assert.include(payload!.renderedHtml, "<blockquote>");
     assert.notInclude(payload!.renderedHtml, "[[quote:");
+  });
+
+  it("preserves Markdown heading levels in rendered clipboard payloads", function () {
+    const payload = buildRenderedMarkdownClipboardPayload(
+      ["# Paper Title", "## Summary", "### Details"].join("\n\n"),
+    );
+
+    assert.isNotNull(payload);
+    assert.equal(
+      payload!.plainText,
+      "# Paper Title\n\n## Summary\n\n### Details",
+    );
+    assert.equal(
+      payload!.renderedHtml,
+      "<h1>Paper Title</h1><h2>Summary</h2><h3>Details</h3>",
+    );
   });
 
   it("expands legacy markdown-only quote blocks in rendered clipboard payloads", function () {

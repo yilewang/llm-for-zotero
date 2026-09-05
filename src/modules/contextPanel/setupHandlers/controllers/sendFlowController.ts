@@ -11,6 +11,7 @@ import type {
   ChatRuntimeMode,
   CollectionContextRef,
   PaperContextRef,
+  PaperContextSendMode,
   ResolvedSelectedTextAnchor,
   ResolvedContextSource,
   SelectedTextContext,
@@ -66,10 +67,39 @@ type LatestEditablePair = {
   };
 };
 
+export type SendFlowOptions =
+  | {
+      overrideText?: string;
+      preserveInputDraft?: false;
+      restoreQueuedInput?: never;
+    }
+  | {
+      overrideText: string;
+      preserveInputDraft: true;
+      restoreQueuedInput: () => void;
+    };
+
 type SendFlowControllerDeps = {
   body: Element;
   inputBox: HTMLTextAreaElement;
   getItem: () => Zotero.Item | null;
+  beginRequest: (
+    body: Element,
+    item: Zotero.Item,
+    statusText?: string,
+  ) => {
+    conversationKey: number;
+    requestId: number;
+    signal: AbortSignal;
+  } | null;
+  isRequestOwner: (conversationKey: number, requestId: number) => boolean;
+  finishRequest: (
+    body: Element,
+    item: Zotero.Item,
+    conversationKey: number,
+    requestId: number,
+  ) => boolean;
+  queueFollowUpInput: (text: string) => void;
   resolveContextSource: () => Promise<ResolvedContextSource | null>;
   closeSlashMenu: () => void;
   closePaperPicker: () => void;
@@ -145,21 +175,26 @@ type SendFlowControllerDeps = {
   isCodexConversationSystem: () => boolean;
   normalizeConversationTitleSeed: (raw: unknown) => string;
   getConversationKey: (item: Zotero.Item) => number;
+  getConversationWriteGeneration?: (conversationKey: number) => number;
   touchClaudeConversationTitle: (
     conversationKey: number,
     title: string,
+    generation?: number,
   ) => Promise<void>;
   touchCodexConversationTitle: (
     conversationKey: number,
     title: string,
+    generation?: number,
   ) => Promise<void>;
   touchGlobalConversationTitle: (
     conversationKey: number,
     title: string,
+    generation?: number,
   ) => Promise<void>;
   touchPaperConversationTitle: (
     conversationKey: number,
     title: string,
+    generation?: number,
   ) => Promise<void>;
   getSelectedProfile: () => SelectedProfile | null;
   getCurrentModelName: () => string;
@@ -201,9 +236,11 @@ type SendFlowControllerDeps = {
   persistDraftInput: () => void;
   autoLockGlobalChat: () => void;
   autoUnlockGlobalChat: () => void;
+  onSendSettled?: () => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   editStaleStatusText: string;
   onComposerDraftCleared?: () => void;
+  onComposerDraftRestored?: () => void;
   /** Consume forced skill IDs from slash menu selection. Returns the IDs and clears state. */
   consumeForcedSkillIds?: () => string[] | undefined;
   // [webchat]
@@ -215,39 +252,67 @@ type SendFlowControllerDeps = {
     item: Zotero.Item,
     paperContexts?: PaperContextRef[],
   ) => PaperContextRef[];
-  hasUploadedPdfInCurrentWebChatConversation?: () => boolean;
-  getUploadedWebChatPdfSourceKeys?: () => readonly string[];
-  isWebChatPdfUploadStateUnknown?: () => boolean;
-  markWebChatPdfUploadStateUnknown?: () => void;
-  markWebChatPdfUploadedForCurrentConversation?: (
-    paperContexts: readonly PaperContextRef[],
+  resolvePaperContextNextSendMode: (
+    itemId: number,
+    paperContext: PaperContextRef,
+  ) => PaperContextSendMode;
+  setPaperModeOverride: (
+    itemId: number,
+    paperContext: PaperContextRef,
+    mode: PaperContextSendMode,
   ) => void;
   consumeWebChatForceNewChatIntent?: () => boolean;
   markWebChatForceNewChatIntent?: () => void;
 };
 
 export function createSendFlowController(deps: SendFlowControllerDeps): {
-  doSend: (options?: {
-    overrideText?: string;
-    preserveInputDraft?: boolean;
-  }) => Promise<void>;
+  doSend: (options?: SendFlowOptions) => Promise<void>;
 } {
-  const doSend = async (options?: {
-    overrideText?: string;
-    preserveInputDraft?: boolean;
-  }) => {
+  const doSend = async (options?: SendFlowOptions) => {
     const item = deps.getItem();
     if (!item) return;
 
-    deps.closeSlashMenu();
-    deps.closePaperPicker();
-    deps.autoLockGlobalChat();
-
+    const textContextConversationKey = deps.getConversationKey(item);
+    const capturedDraft = deps.inputBox.value;
+    const draftText = capturedDraft.trim();
+    const rawSubmittedText = (options?.overrideText ?? draftText).trim();
+    const request = deps.beginRequest(
+      deps.body,
+      item,
+      "Preparing attached context…",
+    );
+    if (!request) {
+      if (rawSubmittedText) deps.queueFollowUpInput(rawSubmittedText);
+      return;
+    }
+    const requestIsActive = () =>
+      deps.isRequestOwner(request.conversationKey, request.requestId) &&
+      !request.signal.aborted;
+    const shouldClearDraft = !options?.preserveInputDraft;
+    let submittedInputRestored = false;
+    let providerDispatchStarted = false;
+    const restoreSubmittedInput = () => {
+      if (providerDispatchStarted || submittedInputRestored) return;
+      submittedInputRestored = true;
+      if (options?.preserveInputDraft) {
+        options.restoreQueuedInput();
+        return;
+      }
+      deps.inputBox.value = capturedDraft;
+      deps.persistDraftInput();
+      deps.onComposerDraftRestored?.();
+    };
     try {
-      const textContextConversationKey = deps.getConversationKey(item);
-      const draftText = deps.inputBox.value.trim();
+      if (shouldClearDraft) {
+        deps.inputBox.value = "";
+        deps.onComposerDraftCleared?.();
+        deps.persistDraftInput();
+      }
+      deps.closeSlashMenu();
+      deps.closePaperPicker();
+      deps.autoLockGlobalChat();
+
       const earlyProfile = deps.getSelectedProfile();
-      const rawSubmittedText = (options?.overrideText ?? draftText).trim();
       const codexNativeSkillText =
         earlyProfile?.authMode === "codex_app_server"
           ? resolveSkillDirectiveText(rawSubmittedText, getAllSkills())
@@ -266,6 +331,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       );
       const primarySelectedText = selectedTexts[0] || "";
       const contextSource = await deps.resolveContextSource();
+      if (!requestIsActive()) return;
       const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
       const selectedCollectionContexts = deps.getSelectedCollectionContexts(
         item.id,
@@ -297,6 +363,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             paperContexts: allSelectedPaperContexts,
           })
         : [];
+      if (!requestIsActive()) return;
       // Resolve PDFs based on model capability. The visible chip/attachment state
       // stays unchanged; these variables are the provider-specific model inputs.
       const isWebChat = earlyProfile?.authMode === "webchat";
@@ -309,48 +376,24 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             ? pdfModePaperContexts
             : []))
         : [];
-      const activeWebChatPdfSourceKeys = activeWebChatPdfPaperContexts.map(
-        (paperContext) =>
-          `zotero-pdf:${paperContext.itemId}:${paperContext.contextItemId}`,
+      const webChatPdfModeSnapshot = activeWebChatPdfPaperContexts.map(
+        (paperContext) => ({
+          paperContext,
+          mode: deps.resolvePaperContextNextSendMode(item.id, paperContext),
+        }),
       );
-      const uploadedWebChatPdfSourceKeys = isWebChat
-        ? deps.getUploadedWebChatPdfSourceKeys?.() || []
-        : [];
-      const isWebChatPdfUploadStateUnknown = isWebChat
-        ? (deps.isWebChatPdfUploadStateUnknown?.() ?? false)
-        : false;
-      const uploadedWebChatPdfMatches =
-        uploadedWebChatPdfSourceKeys.length ===
-          activeWebChatPdfSourceKeys.length &&
-        uploadedWebChatPdfSourceKeys.every(
-          (sourceKey, index) => sourceKey === activeWebChatPdfSourceKeys[index],
-        );
+      let webChatPdfModeRestored = false;
+      const restoreWebChatPdfModeAfterUnverifiedSend = () => {
+        if (webChatPdfModeRestored || !webChatPdfModeSnapshot.length) return;
+        webChatPdfModeRestored = true;
+        for (const { paperContext, mode } of webChatPdfModeSnapshot) {
+          deps.setPaperModeOverride(item.id, paperContext, mode);
+        }
+        deps.updatePaperPreviewPreservingScroll();
+      };
       if (isWebChat && activeWebChatPdfPaperContexts.length > 1) {
         deps.setStatusMessage?.(
           "Web chat supports one PDF attachment at a time. Keep one PDF active or start separate chats.",
-          "error",
-        );
-        return;
-      }
-      if (
-        isWebChat &&
-        activeWebChatPdfPaperContexts.length > 0 &&
-        isWebChatPdfUploadStateUnknown
-      ) {
-        deps.setStatusMessage?.(
-          "This web chat may already contain a different PDF. Start a new web chat before attaching the selected PDF.",
-          "error",
-        );
-        return;
-      }
-      if (
-        isWebChat &&
-        activeWebChatPdfPaperContexts.length > 0 &&
-        uploadedWebChatPdfSourceKeys.length > 0 &&
-        !uploadedWebChatPdfMatches
-      ) {
-        deps.setStatusMessage?.(
-          "The selected PDF differs from the PDF already attached to this web chat. Start a new web chat before sending.",
           "error",
         );
         return;
@@ -421,6 +464,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         isWebChat,
         useCodexAttachmentPolicy,
       });
+      if (!requestIsActive()) return;
       if (!pdfInputs.ok) return;
       const {
         selectedFiles,
@@ -432,6 +476,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       if (localDocuments.length && deps.isClaudeConversationSystem()) {
         try {
           await deps.preflightLocalPdfCapability?.();
+          if (!requestIsActive()) return;
         } catch (error) {
           deps.setStatusMessage?.(
             error instanceof Error && error.message.trim()
@@ -555,7 +600,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const titleSeed =
         deps.normalizeConversationTitleSeed(rawSubmittedText) ||
         deps.normalizeConversationTitleSeed(resolvedPromptText);
-      if (titleSeed) {
+      // [webchat] Webchat sessions are ephemeral and hidden from history;
+      // stamping their first message onto the local catalog row would leak
+      // webchat content into the normal history list.
+      if (titleSeed && !isWebChat) {
+        const titleGeneration = deps.getConversationWriteGeneration?.(
+          deps.getConversationKey(item),
+        );
         const touchTitle = deps.isClaudeConversationSystem()
           ? deps.touchClaudeConversationTitle
           : deps.isCodexConversationSystem()
@@ -563,11 +614,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             : deps.isGlobalMode()
               ? deps.touchGlobalConversationTitle
               : deps.touchPaperConversationTitle;
-        void touchTitle(deps.getConversationKey(item), titleSeed).catch(
-          (err) => {
-            ztoolkit.log("LLM: Failed to touch conversation title", err);
-          },
-        );
+        void touchTitle(
+          deps.getConversationKey(item),
+          titleSeed,
+          titleGeneration,
+        ).catch((err) => {
+          ztoolkit.log("LLM: Failed to touch conversation title", err);
+        });
       }
 
       const selectedProfile = deps.getSelectedProfile();
@@ -599,6 +652,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const activeEditSession = deps.getActiveEditSession();
       if (activeEditSession) {
         const latest = await deps.getLatestEditablePair();
+        if (!requestIsActive()) return;
         if (!latest) {
           deps.setActiveEditSession(null);
           deps.setStatusMessage?.("No editable latest prompt", "error");
@@ -620,6 +674,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         const editResult = await deps.editLatestUserMessageAndRetry({
           body: deps.body,
           item,
+          requestId: request.requestId,
+          onProviderDispatch: () => {
+            providerDispatchStarted = true;
+          },
           contextSource,
           displayQuestion,
           selectedTextContexts: selectedContexts.length
@@ -663,6 +721,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           advanced: advancedParams,
         });
         if (editResult !== "ok") {
+          restoreSubmittedInput();
           if (editResult === "stale") {
             deps.setActiveEditSession(null);
             deps.setStatusMessage?.(deps.editStaleStatusText, "error");
@@ -673,15 +732,16 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             deps.setStatusMessage?.("No editable latest prompt", "error");
             return;
           }
+          if (editResult === "cancelled") {
+            // The user stopped the retry; the cancel handler already showed
+            // "Cancelled". The saved edit is not a failure.
+            return;
+          }
           deps.setStatusMessage?.("Failed to save edited prompt", "error");
           return;
         }
+        if (!providerDispatchStarted) restoreSubmittedInput();
 
-        if (!options?.preserveInputDraft) {
-          deps.inputBox.value = "";
-          deps.onComposerDraftCleared?.();
-          deps.persistDraftInput();
-        }
         deps.retainPinnedImageState(item.id);
         if (hasPaperComposeState) {
           deps.consumePaperModeState(item.id, {
@@ -705,11 +765,6 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         return;
       }
 
-      if (!options?.preserveInputDraft) {
-        deps.inputBox.value = "";
-        deps.onComposerDraftCleared?.();
-        deps.persistDraftInput();
-      }
       deps.retainPinnedImageState(item.id);
       if (selectedFiles.length) {
         deps.retainPinnedFileState(item.id);
@@ -726,13 +781,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const webchatForceNewChat = isWebChat
         ? (deps.consumeWebChatForceNewChatIntent?.() ?? false)
         : false;
-      const hasUploadedMatchingWebChatPdf =
-        uploadedWebChatPdfSourceKeys.length > 0
-          ? uploadedWebChatPdfMatches
-          : (deps.hasUploadedPdfInCurrentWebChatConversation?.() ?? false);
       const webchatSendPdf = isWebChat
-        ? activeWebChatPdfPaperContexts.length > 0 &&
-          (webchatForceNewChat || !hasUploadedMatchingWebChatPdf)
+        ? activeWebChatPdfPaperContexts.length > 0
         : false;
 
       const consumedForcedSkillIds = deps.consumeForcedSkillIds?.() || [];
@@ -750,6 +800,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           : composedQuestion;
       if (shouldRetainClaudeRuntime) {
         await deps.retainClaudeRuntime?.(deps.body, item);
+        if (!requestIsActive()) return;
       }
       const activeNoteScope = resolveNoteEditingScope(item);
       const activeNoteContext = buildNoteEditingTurnContext({
@@ -760,6 +811,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const sendTask = deps.sendQuestion({
         body: deps.body,
         item,
+        requestId: request.requestId,
+        onProviderDispatch: () => {
+          providerDispatchStarted = true;
+        },
         contextSource,
         question: questionForSend,
         images,
@@ -825,10 +880,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
       try {
         await sendTask;
-      } catch (err) {
-        if (isWebChat && webchatSendPdf) {
-          deps.markWebChatPdfUploadStateUnknown?.();
+        if (!providerDispatchStarted && !requestIsActive()) {
+          restoreSubmittedInput();
         }
+      } catch (err) {
+        if (!providerDispatchStarted) restoreSubmittedInput();
+        restoreWebChatPdfModeAfterUnverifiedSend();
         if (isWebChat && webchatForceNewChat) {
           deps.markWebChatForceNewChatIntent?.();
         }
@@ -841,12 +898,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           deps.retainPaperState(item.id);
           deps.updatePaperPreviewPreservingScroll();
         }
-        if (webchatSendPdf && webchatSendSucceeded) {
-          deps.markWebChatPdfUploadedForCurrentConversation?.(
-            activeWebChatPdfPaperContexts,
-          );
-        } else if (webchatSendPdf) {
-          deps.markWebChatPdfUploadStateUnknown?.();
+        if (!webchatSendSucceeded) {
+          restoreWebChatPdfModeAfterUnverifiedSend();
         }
         if (!webchatSendSucceeded && webchatForceNewChat) {
           deps.markWebChatForceNewChatIntent?.();
@@ -854,7 +907,29 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
       deps.refreshGlobalHistoryHeader();
     } finally {
+      if (request.signal.aborted && !providerDispatchStarted) {
+        restoreSubmittedInput();
+      }
+      const currentConversationKey = deps.getConversationKey(item);
+      let finished = deps.finishRequest(
+        deps.body,
+        item,
+        currentConversationKey,
+        request.requestId,
+      );
+      if (!finished && currentConversationKey !== request.conversationKey) {
+        finished = deps.finishRequest(
+          deps.body,
+          item,
+          request.conversationKey,
+          request.requestId,
+        );
+      }
+      if (finished && !providerDispatchStarted) {
+        restoreSubmittedInput();
+      }
       deps.autoUnlockGlobalChat();
+      deps.onSendSettled?.();
     }
   };
 

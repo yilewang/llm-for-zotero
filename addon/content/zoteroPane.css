@@ -1,6 +1,15 @@
 /* LLM Panel Styles */
 
 .llm-panel {
+  /*
+   * Zotero windows are chrome documents, whose used user-select value roots
+   * at `none` — so every hint, status, and message the plugin renders is
+   * unselectable unless a surface root opts back in. Interactive affordances
+   * (drag handles, resize states, sort headers) keep their own explicit
+   * `user-select: none`.
+   */
+  -moz-user-select: text;
+  user-select: text;
   --llm-font-scale: 1;
   --llm-fs-10: calc(10px * var(--llm-font-scale));
   --llm-fs-11: calc(11px * var(--llm-font-scale));
@@ -872,6 +881,18 @@
   cursor: default;
 }
 
+/* ---- Interrupted reply footer (streamed reply cut off before completion) ---- */
+.llm-message-interrupted-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 0;
+}
+.llm-message-interrupted-note {
+  font-size: var(--llm-fs-10, 10px);
+  color: #d77757;
+}
+
 .llm-subtitle {
   font-size: var(--llm-fs-11);
   color: var(--fill-secondary);
@@ -899,9 +920,18 @@
   background: var(--fill-quinary);
 }
 
+.llm-clear-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 0;
+}
+
 .llm-clear-btn::before {
   content: "";
-  display: none;
+  display: block;
   width: 16px;
   height: 16px;
   background-color: currentColor;
@@ -914,19 +944,6 @@
   -webkit-mask-position: center;
   -webkit-mask-size: contain;
   pointer-events: none;
-}
-
-.llm-clear-btn[data-compact="true"] {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
-  padding: 0;
-  font-size: 0;
-}
-
-.llm-clear-btn[data-compact="true"]::before {
-  display: block;
 }
 
 @container (max-width: 380px) {
@@ -942,17 +959,16 @@
     padding: 0;
   }
 
-  .llm-clear-btn {
-    width: 24px;
-    min-width: 24px;
-    height: 24px;
-    min-height: 24px;
-    padding: 0;
-    font-size: 0;
-  }
-
-  .llm-clear-btn::before {
-    display: block;
+  /*
+   * Tighten the leading gaps when the trailing icons compact, so the space
+   * comes out of the chrome rather than out of the mode chip's label. The chip
+   * is the only element here that scales with --llm-font-scale, and it is
+   * pinned rigid, so every pixel reclaimed from these gaps is headroom the
+   * label can grow into before it reaches the action icons. The icons keep
+   * their own size — only the spacing between them closes up.
+   */
+  .llm-history-bar {
+    gap: 4px;
   }
 }
 
@@ -1063,6 +1079,10 @@
    as the embedded chat panel (whose .llm-panel defines the same vars).
    applyPanelFontScale() sets --llm-font-scale on both .llm-panel and this root. */
 #llmforzotero-standalone-chat-root {
+  /* Chrome documents root user-select at `none`; opt this surface back in so
+     hints, statuses, and messages can be selected and copied. */
+  -moz-user-select: text;
+  user-select: text;
   --llm-font-scale: 1;
   --llm-fs-10: calc(10px * var(--llm-font-scale));
   --llm-fs-11: calc(11px * var(--llm-font-scale));
@@ -1225,7 +1245,7 @@
   -webkit-mask-image: url("icons/action-export.svg");
 }
 
-/* Clear icon — trash */
+/* Delete conversation icon — shared trash asset */
 .llm-standalone-icon-clear::before {
   mask-image: url("icons/action-clear.svg");
   -webkit-mask-image: url("icons/action-clear.svg");
@@ -1432,7 +1452,6 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 10px 6px 3px;
-  user-select: none;
 }
 
 .llm-standalone-search-item {
@@ -2025,7 +2044,6 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 10px 6px 4px;
-  user-select: none;
 }
 
 .llm-standalone-conv-item {
@@ -2216,7 +2234,13 @@
   gap: 12px;
   padding: 0 16px;
   font-size: var(--llm-fs-12);
-  line-height: 20px;
+  /*
+   * The row is sized purely by this line box (no height, no vertical padding),
+   * so a fixed 20px clipped the descenders off the document title as soon as
+   * --llm-font-scale pushed the glyphs past it. Scale the row with the text:
+   * identical 20px at scale 1, taller as the font grows.
+   */
+  line-height: calc(20px * var(--llm-font-scale));
   font-weight: 500;
   color: var(--fill-primary);
   border-bottom: 1px solid var(--stroke-secondary);
@@ -2712,7 +2736,6 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 8px 6px 3px;
-  user-select: none;
   width: 100%;
   box-sizing: border-box;
 }
@@ -3429,7 +3452,6 @@
   gap: 4px;
   max-width: 100%;
   min-width: 0;
-  contain: layout paint style;
 }
 
 .llm-message-wrapper.user {
@@ -3507,7 +3529,6 @@
   font-size: var(--llm-fs-11, 11px);
   font-weight: 600;
   color: var(--color-accent);
-  user-select: none;
 }
 
 .llm-inline-edit-header-cancel {
@@ -4099,7 +4120,10 @@
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow-x: hidden;
+  /* `clip`, not `hidden`: one-axis `hidden` forces computed overflow-y to
+     `auto`, turning every assistant turn into a scroll container that paints
+     a second scrollbar beside .llm-messages during streaming reflow. */
+  overflow-x: clip;
 }
 
 .llm-assistant-generated-images {
@@ -4720,12 +4744,17 @@
 
 .llm-agent-process-chip-icon {
   flex: 0 0 auto;
+  /*
+   * Keep the icon centered in the first scaled 12.5px label line without
+   * centering it against the full height of a wrapped label.
+   */
+  margin-block-start: calc(0.25px * var(--llm-font-scale, 1));
   opacity: 0.92;
 }
 
 .llm-agent-process-chip-icon.llm-context-svg-icon {
-  width: 12px;
-  height: 12px;
+  width: var(--llm-fs-12);
+  height: var(--llm-fs-12);
 }
 
 .llm-agent-process-chip-icon:not(.llm-context-svg-icon) {
@@ -4887,6 +4916,33 @@ label.llm-search-results-item:hover {
   white-space: nowrap;
 }
 
+.llm-at-icon-library,
+.llm-at-icon-web {
+  flex: 0 0 var(--llm-fs-12);
+  width: var(--llm-fs-12);
+  height: var(--llm-fs-12);
+  /* Center the mask in the first 15.4px text line at every font scale. */
+  margin-block-start: calc(1.7px * var(--llm-font-scale, 1));
+  background-color: currentColor;
+  font-size: 0;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+}
+
+.llm-at-icon-library {
+  mask-image: url("icons/action-library.svg");
+  -webkit-mask-image: url("icons/action-library.svg");
+}
+
+.llm-at-icon-web {
+  mask-image: url("icons/action-mode-global.svg");
+  -webkit-mask-image: url("icons/action-mode-global.svg");
+}
+
 .llm-at-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -4933,6 +4989,170 @@ label.llm-search-results-item:hover {
 
 .llm-agent-process-detail-value-url {
   color: var(--color-accent);
+}
+
+.llm-agent-process-details-with-timeline {
+  gap: 5px;
+  padding-left: 0;
+  border-left: 0;
+}
+
+.llm-agent-process-details-with-timeline > .llm-agent-process-detail {
+  padding-left: 8px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 80%, transparent);
+}
+
+.llm-agent-trace-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.llm-agent-trace-timeline::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 11px;
+  bottom: 11px;
+  left: 8px;
+  width: 1px;
+  background: color-mix(
+    in srgb,
+    var(--stroke-primary, var(--fill-tertiary)) 68%,
+    transparent
+  );
+}
+
+.llm-agent-trace-timeline-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 23px;
+  margin: 0;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fill-secondary);
+  font: inherit;
+  text-align: left;
+}
+
+.llm-agent-trace-timeline-row-link {
+  cursor: pointer;
+}
+
+.llm-agent-trace-timeline-row-link:hover,
+.llm-agent-trace-timeline-row-link:focus-visible {
+  background: var(--fill-quinary);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.llm-agent-trace-timeline-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-left: 1px;
+  border-radius: 4px;
+  background: var(--material-sidepane, var(--material-background));
+  color: var(--fill-tertiary);
+}
+
+.llm-agent-trace-timeline-icon::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background-color: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+}
+
+.llm-agent-trace-timeline-icon-brain::before {
+  mask-image: url("icons/action-reasoning-brain.svg");
+  -webkit-mask-image: url("icons/action-reasoning-brain.svg");
+}
+
+.llm-agent-trace-timeline-icon-paper::before {
+  mask-image: url("icons/action-paper.svg");
+  -webkit-mask-image: url("icons/action-paper.svg");
+}
+
+.llm-agent-trace-timeline-icon-website {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -1px;
+  border-radius: 50%;
+  background: var(--material-background);
+}
+
+.llm-agent-trace-timeline-icon-website::before {
+  z-index: 1;
+  inset: 2px;
+  mask-image: url("icons/action-mode-global.svg");
+  -webkit-mask-image: url("icons/action-mode-global.svg");
+}
+
+.llm-agent-trace-timeline-icon-website.llm-agent-trace-timeline-icon-has-favicon::before,
+.llm-web-source-site-icon.llm-web-source-site-icon-has-favicon::before {
+  display: none;
+}
+
+.llm-web-source-favicon {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.llm-agent-trace-timeline-favicon {
+  position: static;
+  z-index: 1;
+  display: block;
+  width: 70%;
+  height: 70%;
+  border-radius: 0;
+  background: transparent;
+  object-fit: contain;
+}
+
+.llm-web-source-favicon {
+  background: var(--material-background);
+}
+
+.llm-agent-trace-timeline-favicon[hidden],
+.llm-web-source-favicon[hidden] {
+  display: none;
+}
+
+.llm-agent-trace-timeline-value {
+  min-width: 0;
+  overflow: hidden;
+  color: currentColor;
+  font-size: var(--llm-fs-10);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .llm-agent-process-detail-value-code,
@@ -6172,6 +6392,16 @@ label.llm-search-results-item:hover {
   margin: 4px 0;
 }
 
+/* Mirror web chat rendering: list markers ("1.", "•") are semibold */
+.llm-rendered-markdown li::marker {
+  font-weight: 600;
+}
+
+/* Task-list checkboxes ("- [x]") pick up the accent color when checked */
+.llm-rendered-markdown input[type="checkbox"] {
+  accent-color: var(--color-accent, #3584e4);
+}
+
 .llm-rendered-markdown code {
   background: rgba(0, 0, 0, 0.1);
   padding: 2px 5px;
@@ -6567,7 +6797,8 @@ label.llm-search-results-item:hover {
   .llm-codeblock-shell[data-word-wrap="true"]
   .llm-codeblock-body
   pre {
-  overflow-x: hidden;
+  /* `clip`, not `hidden` — see .llm-bubble.assistant. */
+  overflow-x: clip;
   white-space: pre-wrap;
 }
 
@@ -7025,6 +7256,16 @@ label.llm-search-results-item:hover {
   -webkit-line-clamp: 2;
 }
 
+.llm-quote-card-preview .math-display-inline,
+.llm-quote-card-preview .katex-display {
+  display: inline;
+  margin: 0;
+}
+
+.llm-quote-card-preview .katex {
+  font-size: 1em;
+}
+
 .llm-quote-card-citation {
   display: flex;
   justify-content: flex-end;
@@ -7218,6 +7459,10 @@ label.llm-search-results-item:hover {
 /* KaTeX specific styling */
 .llm-rendered-markdown .katex {
   font-size: 1.1em;
+}
+
+.llm-rendered-markdown .katex svg {
+  background: transparent;
 }
 
 .llm-rendered-markdown .math-display .katex {
@@ -7907,7 +8152,7 @@ label.llm-search-results-item:hover {
   background: var(--llm-mineru-bg);
 }
 
-/* PDF mode chip styling (amber) — same blueprint as full/mineru, only colors differ. */
+/* PDF mode chip styling (purple) — same blueprint as full/mineru, only colors differ. */
 .llm-paper-context-chip.llm-paper-context-chip-pdf
   .llm-paper-context-chip-header {
   border: 1px solid var(--llm-pdf-border-color);
@@ -7921,6 +8166,22 @@ label.llm-search-results-item:hover {
   .llm-paper-chip-menu-row {
   border-color: var(--llm-pdf-border-color);
   background: var(--llm-pdf-bg);
+}
+
+/* A consumed one-shot WebChat upload stays visibly PDF, but its surface is
+   neutral until the user arms it for another upload. */
+.llm-paper-context-chip.llm-paper-context-chip-pdf.llm-paper-context-chip-webchat-inactive
+  .llm-paper-context-chip-header {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.llm-paper-context-chip.llm-paper-context-chip-pdf.llm-paper-context-chip-webchat-inactive
+  .llm-paper-context-chip-expanded
+  .llm-paper-chip-menu-row {
+  border-color: transparent;
+  background: transparent;
 }
 
 .llm-paper-context-chip.llm-paper-context-chip-html
@@ -8131,7 +8392,8 @@ label.llm-search-results-item:hover {
   padding: 6px;
 }
 
-.llm-paper-picker-item {
+.llm-paper-picker-item,
+.llm-web-source-row {
   all: unset;
   box-sizing: border-box;
   appearance: none;
@@ -8155,7 +8417,8 @@ label.llm-search-results-item:hover {
   scroll-margin-block: 6px;
 }
 
-.llm-paper-picker-item:hover {
+.llm-paper-picker-item:hover,
+.llm-web-source-row:hover {
   background: color-mix(
     in srgb,
     var(--material-background) 84%,
@@ -8177,7 +8440,8 @@ label.llm-search-results-item:hover {
   border-color: var(--color-accent, #3584e4);
 }
 
-.llm-paper-picker-item:focus-visible {
+.llm-paper-picker-item:focus-visible,
+.llm-web-source-row:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: 1px;
 }
@@ -9309,14 +9573,19 @@ label.llm-search-results-item:hover {
   line-height: 1;
 }
 
+.llm-selected-context-expanded,
+.llm-web-source-popover {
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 10px;
+  background: var(--material-background);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
 .llm-selected-context-expanded {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--stroke-secondary);
-  border-radius: 10px;
-  background: var(--material-background);
   position: absolute;
   left: 0;
   right: 0;
@@ -9325,7 +9594,6 @@ label.llm-search-results-item:hover {
   width: auto;
   max-height: min(68vh, 560px);
   overflow: auto;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   opacity: 0;
   visibility: hidden;
   transform: translateY(4px);
@@ -9372,6 +9640,148 @@ label.llm-search-results-item:hover {
 
 .llm-note-context-chip .llm-selected-context-expanded {
   max-height: min(20vh, 140px);
+}
+
+/* Paragraph-level web sources reuse the paper card surface and row primitives. */
+.llm-web-source-indicator {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 4px;
+  vertical-align: -2px;
+}
+
+.llm-web-source-chip {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 999px;
+  background: var(--material-background);
+  color: var(--fill-secondary);
+  cursor: pointer;
+}
+
+.llm-web-source-chip:hover,
+.llm-web-source-chip:focus-visible,
+.llm-web-source-indicator.expanded .llm-web-source-chip {
+  border-color: var(--color-accent, #3584e4);
+  color: var(--color-accent, #3584e4);
+}
+
+.llm-web-source-chip:focus-visible {
+  outline: 1px solid var(--color-accent, #3584e4);
+  outline-offset: 2px;
+}
+
+.llm-web-source-globe {
+  width: 12px;
+  height: 12px;
+  background: currentColor;
+  mask: url("icons/action-mode-global.svg") center / contain no-repeat;
+  -webkit-mask: url("icons/action-mode-global.svg") center / contain no-repeat;
+}
+
+.llm-web-source-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483600;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  box-sizing: border-box;
+  width: 360px;
+  max-height: min(52vh, 320px);
+  padding: 6px;
+  overflow-y: auto;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease,
+    visibility 0.14s ease;
+}
+
+.llm-web-source-popover.llm-web-source-popover-below {
+  transform: translateY(-4px);
+}
+
+.llm-web-source-popover.llm-web-source-popover-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.llm-web-source-row {
+  flex: 0 0 auto;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  white-space: normal;
+}
+
+.llm-web-source-row + .llm-web-source-row::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: 9px;
+  left: 9px;
+  height: 1px;
+  background: var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+  pointer-events: none;
+}
+
+.llm-web-source-site-icon {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 3px;
+  background: var(--material-background);
+  color: var(--fill-tertiary);
+}
+
+.llm-web-source-site-icon::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background: currentColor;
+  mask: url("icons/action-mode-global.svg") center / contain no-repeat;
+  -webkit-mask: url("icons/action-mode-global.svg") center / contain no-repeat;
+}
+
+.llm-web-source-content {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.llm-web-source-organization,
+.llm-web-source-title {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.llm-web-source-organization {
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-11);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.llm-web-source-title {
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-13);
+  line-height: 1.35;
 }
 
 .llm-selected-context-text {
@@ -9766,7 +10176,6 @@ label.llm-search-results-item:hover {
   line-height: 1.2;
   font-weight: 600;
   color: var(--fill-tertiary);
-  user-select: none;
 }
 
 .llm-select-text-btn.llm-action-icon-only::before {
@@ -10339,7 +10748,6 @@ label.llm-search-results-item:hover {
   background: var(--material-background);
   border-bottom: 1px solid var(--stroke-secondary);
   pointer-events: none;
-  user-select: none;
 }
 
 .llm-model-option,

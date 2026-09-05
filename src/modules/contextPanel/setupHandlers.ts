@@ -9,6 +9,7 @@ import type { ConversationSystem } from "../../shared/types";
 import {
   getLastUsedModelEntryId,
   getModelEntryById,
+  getModelProviderGroups,
 } from "../../utils/modelProviders";
 import {
   buildQueuedFollowUpThreadKey,
@@ -16,6 +17,7 @@ import {
   getQueuedFollowUps,
   registerQueuedFollowUpBody,
   removeQueuedFollowUp,
+  restoreQueuedFollowUp,
   scheduleQueuedFollowUpDrainForThread,
   SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY,
   SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY,
@@ -52,7 +54,6 @@ import {
 } from "./quoteValidationActivity";
 import { createContextIcon } from "./contextIcons";
 import {
-  selectedModelCache,
   selectedReasoningCache,
   selectedReasoningProviderCache,
   selectedRuntimeModeCache,
@@ -66,17 +67,17 @@ import {
   selectedOtherRefContextCache,
   selectedCollectionContextCache,
   selectedTagContextCache,
+  initializedConversationComposeContextKeys,
   paperContextModeOverrides,
   selectedPaperPreviewExpandedCache,
   pinnedSelectedTextKeys,
   pinnedImageKeys,
   pinnedFileKeys,
   setCancelledRequestId,
-  setPendingRequestId,
   getPendingRequestId,
   getAbortController,
-  setAbortController,
   isRequestPending,
+  isRequestOwner,
   responseMenuTarget,
   setResponseMenuTarget,
   promptMenuTarget,
@@ -87,18 +88,13 @@ import {
   markWebChatConversationForceNewChat,
   clearWebChatConversationForceNewChat,
   consumeWebChatConversationForceNewChat,
-  hasWebChatPdfUploadedForConversation,
-  getWebChatUploadedPdfSourceKeysForConversation,
-  isWebChatPdfUploadStateUnknownForConversation,
-  markWebChatPdfUploadStateUnknownForConversation,
-  markWebChatPdfUploadedForConversation,
-  resetWebChatPdfUploadedForConversation,
   resetWebChatConversationSessionState,
   currentRequestId,
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
   draftInputCache,
+  webChatDraftInputCache,
   activeContextPanels,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
@@ -112,6 +108,7 @@ import {
   addAutoLockedGlobalConversationKey,
   removeAutoLockedGlobalConversationKey,
   isAutoLockedGlobalConversation,
+  getConversationWriteGeneration,
 } from "./state";
 import {
   sanitizeText,
@@ -140,14 +137,16 @@ import {
   getStringPref,
   getAgentModeEnabled,
   getClaudeCodeModeEnabled,
-  getSelectedModelEntryForItem,
+  getSelectedModelEntry,
   applyPanelFontScale,
   getAdvancedModelParamsForEntry,
-  setSelectedModelEntryForItem,
+  setSelectedModelEntry,
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
+  getLastUsedRuntimeMode,
   setLastUsedReasoningLevel,
   setLastUsedReasoningLevelForProvider,
+  setLastUsedRuntimeMode,
   setLastUsedUpstreamConversationMode,
   setLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
@@ -157,6 +156,12 @@ import {
   setLockedGlobalConversationKey,
   buildPaperStateKey,
 } from "./prefHelpers";
+import { refreshConfiguredProviderModelCatalogs } from "../../utils/modelProviders";
+import {
+  refreshModelCapabilityRegistry,
+  subscribeModelCapabilities,
+} from "../../modelCapabilities";
+import type { ModelProfileOverride } from "../../modelCapabilities";
 import {
   sendQuestion,
   refreshChat,
@@ -170,18 +175,24 @@ import {
   withScrollGuard,
   copyTextToClipboard,
   refreshConversationPanels,
+  beginPanelRequest,
+  finishPanelRequest,
   clearPendingRequestIdAndSync,
   detectReasoningProvider,
   getReasoningOptions,
   getSelectedReasoningForItem,
   retryLatestAssistantResponse,
+  resetSessionTokens,
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
   scheduleConversationQuoteRevalidation,
   type EditLatestTurnMarker,
 } from "./chat";
-import { getWorkflowTestSendInterceptor } from "./workflowTestHooks";
+import {
+  getWorkflowTestSendInterceptor,
+  notifyWorkflowTestSendSettled,
+} from "./workflowTestHooks";
 import {
   getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
@@ -260,18 +271,15 @@ import {
   extractManagedBlobHash,
   isManagedBlobPath,
   removeAttachmentFile,
-  removeConversationAttachmentFiles,
 } from "./attachmentStorage";
-import { clearConversationSummary as clearConversationSummaryFromCache } from "./conversationSummaryCache";
 import { conversationRepository } from "../../core/conversations/repository";
+import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import {
-  clearConversation as clearStoredConversation,
   touchPaperConversationTitle,
   touchGlobalConversationTitle,
 } from "../../utils/chatStore";
 import {
   ATTACHMENT_GC_MIN_AGE_MS,
-  clearOwnerAttachmentRefs,
   collectAndDeleteUnreferencedBlobs,
   replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
@@ -340,7 +348,6 @@ import {
   type RuntimeConversationSystem,
   type RuntimeSystemControls,
 } from "./runtimeSystemControls";
-import { shouldCompactHeaderClearButton } from "./headerClearPresentation";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
 import {
   chooseAutoLoadedContextPanelItem,
@@ -367,10 +374,8 @@ import {
   getModelPdfSupport,
 } from "./setupHandlers/controllers/modelReasoningController";
 import {
-  GLOBAL_HISTORY_UNDO_WINDOW_MS,
   type ConversationHistoryEntry,
   type HistorySwitchTarget,
-  type PendingHistoryDeletion,
   formatGlobalHistoryTimestamp,
   formatHistoryRowDisplayTitle,
   groupHistoryEntriesByDay,
@@ -416,8 +421,10 @@ import {
   isZoteroItemDragEvent,
   parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
-import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
-import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
+import {
+  createSendFlowController,
+  type SendFlowOptions,
+} from "./setupHandlers/controllers/sendFlowController";
 import { cancelVisiblePendingConfirmationCards } from "./setupHandlers/controllers/cancelPendingConfirmationController";
 import { buildInlineEditRetryContextSnapshot } from "./setupHandlers/controllers/inlineEditRetryController";
 import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assistantSelectionPopupController";
@@ -427,7 +434,10 @@ import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/loca
 import { isZoteroPdfAttachmentCandidate } from "./setupHandlers/controllers/pdfAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
 import { createWebChatHistoryController } from "./setupHandlers/controllers/webChatHistoryController";
-import { createHistoryLifecycleController } from "./setupHandlers/controllers/historyLifecycleController";
+import {
+  createHistoryLifecycleController,
+  disposePendingDeletionSubscriptionForBody,
+} from "./setupHandlers/controllers/historyLifecycleController";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
@@ -456,18 +466,20 @@ import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
 import {
   buildClaudeScope,
-  getClaudeRuntimeModelEntries,
-  getSelectedClaudeRuntimeEntry,
+  getClaudeRuntimeModelEntries as getFallbackClaudeRuntimeModelEntries,
   invalidateAllClaudeHotRuntimes,
-  invalidateClaudeConversationSession,
   listClaudeEfforts,
+  listClaudeModels,
   rememberClaudeConversationSelection,
   resolveRememberedClaudeConversationKey,
   refreshClaudeSlashCommands,
   touchClaudeConversation,
 } from "../../claudeCode/runtime";
 import {
+  getClaudeBridgeUrl,
   getClaudeReasoningModePref,
+  getClaudeRuntimeModelPref,
+  getClaudeSettingSourcesCsvByPref,
   getConversationSystemPref,
   getLastUsedClaudeGlobalConversationKey,
   setClaudeCodeModeEnabled,
@@ -479,6 +491,11 @@ import {
   setClaudeRuntimeModelPref,
   setLastUsedClaudeConversationMode,
 } from "../../claudeCode/prefs";
+import {
+  buildClaudeRuntimeModelEntries,
+  type ClaudeModelCatalogEntry,
+  type ClaudeModelCatalogRequestContext,
+} from "../../claudeCode/modelCatalog";
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
@@ -522,24 +539,21 @@ import {
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
 import { isClaudePaperPortalItem } from "../../claudeCode/portal";
-import {
-  clearClaudeConversation,
-  touchClaudeConversationTitle,
-} from "../../claudeCode/store";
+import { touchClaudeConversationTitle } from "../../claudeCode/store";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
 } from "../../claudeCode/portal";
-import {
-  clearCodexConversation,
-  touchCodexConversationTitle,
-} from "../../codexAppServer/store";
+import { touchCodexConversationTitle } from "../../codexAppServer/store";
 import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
 } from "../../codexAppServer/portal";
-import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
-import { validateConversationScope } from "../../shared/conversationRegistry";
+import type { CodexReasoningChoice } from "../../codex/catalogSelection";
+import {
+  createCodexDirectModelReasoningController,
+  type CodexDirectModelReasoningController,
+} from "./setupHandlers/controllers/codexDirectModelReasoningController";
 
 type ActionMenuTrigger = "/" | "$";
 type ActiveActionToken = PaperSearchSlashToken & {
@@ -830,12 +844,6 @@ export function setupHandlers(
   const headerTop = body.querySelector(
     ".llm-header-top",
   ) as HTMLDivElement | null;
-  const headerInfo = headerTop?.querySelector(
-    ".llm-header-info",
-  ) as HTMLDivElement | null;
-  const headerActions = headerTop?.querySelector(
-    ".llm-header-actions",
-  ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
   applyPanelFontScale(panelRoot);
 
@@ -886,11 +894,158 @@ export function setupHandlers(
   syncQueuedFollowUpRegistration();
   const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
   const isCodexModeAvailable = () => isCodexAppServerModeEnabled();
+  let claudeModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
+  let claudeModelCatalogError = "";
+  let claudeModelCatalogModels: ClaudeModelCatalogEntry[] = [];
+  let claudeModelCatalogLegacy = false;
+  let claudeModelCatalogInFlight: Promise<void> | null = null;
+  let claudeModelCatalogInFlightForced = false;
+  let claudeModelCatalogRequestId = 0;
+  let claudeModelCatalogIdentity = "";
+  let claudeModelCatalogLoadedAt = 0;
+  const CLAUDE_MODEL_CATALOG_UI_TTL_MS = 60_000;
   let codexModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
   let codexModelCatalogError = "";
   let codexModelCatalogModels: CodexAppServerModelCatalogEntry[] = [];
   let codexModelCatalogInFlight: Promise<void> | null = null;
   let codexModelCatalogPath = "";
+  const resolveClaudeModelCatalogContext = ():
+    | ClaudeModelCatalogRequestContext
+    | undefined => {
+    if (!item) return undefined;
+    const conversationKey = getConversationKey(item);
+    const kind = resolveDisplayConversationKind(item);
+    const baseItem = resolveConversationBaseItem(item);
+    const libraryID = Number(item.libraryID || baseItem?.libraryID || 0);
+    if (
+      !Number.isFinite(conversationKey) ||
+      conversationKey <= 0 ||
+      !kind ||
+      !Number.isFinite(libraryID) ||
+      libraryID <= 0
+    ) {
+      return undefined;
+    }
+    const scope = buildClaudeScope({
+      libraryID: Math.floor(libraryID),
+      kind,
+      paperItemID:
+        kind === "paper" ? Number(baseItem?.id || 0) || undefined : undefined,
+      paperTitle:
+        kind === "paper"
+          ? String(baseItem?.getField?.("title") || "").trim() || undefined
+          : undefined,
+    });
+    return {
+      conversationKey,
+      scopeType: scope.scopeType,
+      scopeId: scope.scopeId,
+      scopeLabel: scope.scopeLabel,
+    };
+  };
+  const resolveClaudeModelCatalogIdentity = (
+    context = resolveClaudeModelCatalogContext(),
+  ) =>
+    [
+      getClaudeBridgeUrl().trim().replace(/\/+$/, ""),
+      getClaudeSettingSourcesCsvByPref(),
+      context?.conversationKey || "runtime-root",
+      context?.scopeType || "",
+      context?.scopeId || "",
+    ].join("|");
+  const refreshOpenClaudeModelMenu = () => {
+    updateModelButton();
+    if (!modelMenu || !modelBtn || !isFloatingMenuOpen(modelMenu)) return;
+    rebuildModelMenu();
+    if (!modelMenu.childElementCount) {
+      closeModelMenu();
+      return;
+    }
+    positionFloatingMenu(body, modelMenu, modelBtn);
+  };
+  const ensureClaudeModelCatalogLoaded = (force = false): Promise<void> => {
+    if (!isClaudeConversationSystem()) return Promise.resolve();
+    const context = resolveClaudeModelCatalogContext();
+    const identity = resolveClaudeModelCatalogIdentity(context);
+    const identityChanged = identity !== claudeModelCatalogIdentity;
+    if (
+      !force &&
+      !identityChanged &&
+      claudeModelCatalogStatus === "ready" &&
+      Date.now() - claudeModelCatalogLoadedAt < CLAUDE_MODEL_CATALOG_UI_TTL_MS
+    ) {
+      return Promise.resolve();
+    }
+    if (
+      claudeModelCatalogInFlight &&
+      !identityChanged &&
+      (!force || claudeModelCatalogInFlightForced)
+    ) {
+      // Rapid re-opens piggyback on the running FORCED fetch instead of
+      // launching a parallel one; an unforced in-flight load never satisfies
+      // a forced request (its data may come from the bridge cache).
+      return claudeModelCatalogInFlight;
+    }
+    if (identityChanged) {
+      claudeModelCatalogModels = [];
+      claudeModelCatalogLegacy = false;
+      claudeModelCatalogLoadedAt = 0;
+    }
+    claudeModelCatalogStatus = "loading";
+    claudeModelCatalogError = "";
+    claudeModelCatalogIdentity = identity;
+    claudeModelCatalogInFlightForced = force;
+    const requestId = ++claudeModelCatalogRequestId;
+    refreshOpenClaudeModelMenu();
+    claudeModelCatalogInFlight = initAgentSubsystem()
+      .then((coreRuntime) => listClaudeModels(coreRuntime, force, context))
+      .then((catalog) => {
+        if (
+          requestId !== claudeModelCatalogRequestId ||
+          identity !== resolveClaudeModelCatalogIdentity()
+        ) {
+          return;
+        }
+        claudeModelCatalogModels = catalog.models;
+        claudeModelCatalogLegacy = catalog.legacy;
+        claudeModelCatalogStatus = "ready";
+        claudeModelCatalogError = "";
+        claudeModelCatalogLoadedAt = Date.now();
+      })
+      .catch((error: unknown) => {
+        if (
+          requestId !== claudeModelCatalogRequestId ||
+          identity !== resolveClaudeModelCatalogIdentity()
+        ) {
+          return;
+        }
+        claudeModelCatalogStatus = "error";
+        claudeModelCatalogError =
+          error instanceof Error ? error.message : String(error);
+        ztoolkit.log("Claude Code: failed to load model catalog", error);
+      })
+      .finally(() => {
+        if (requestId !== claudeModelCatalogRequestId) return;
+        claudeModelCatalogInFlight = null;
+        claudeModelCatalogInFlightForced = false;
+        refreshOpenClaudeModelMenu();
+      });
+    return claudeModelCatalogInFlight;
+  };
+  const getClaudeRuntimeModelEntries = (): RuntimeModelEntry[] =>
+    buildClaudeRuntimeModelEntries({
+      models: claudeModelCatalogModels,
+      selectedModel: getClaudeRuntimeModelPref(),
+    });
+  const getSelectedClaudeRuntimeEntry = (): RuntimeModelEntry => {
+    const selectedModel = getClaudeRuntimeModelPref();
+    const entries = getClaudeRuntimeModelEntries();
+    return (
+      entries.find((entry) => entry.model === selectedModel) ||
+      entries[0] ||
+      getFallbackClaudeRuntimeModelEntries()[0]!
+    );
+  };
   const resolveCurrentCodexReasoningSelection = () =>
     resolveCodexAppServerReasoningSelection({
       mode: getCodexReasoningModePref(),
@@ -995,6 +1150,7 @@ export function setupHandlers(
       agentModeEnabled: getAgentModeEnabled(),
       displayConversationKind: resolveDisplayConversationKind(item),
       noteKind: noteSession?.noteKind || null,
+      lastUsedRuntimeMode: getLastUsedRuntimeMode(),
     });
   };
   const updateRuntimeModeButton = () => {
@@ -1102,12 +1258,18 @@ export function setupHandlers(
     if (!isClaudeModeAvailable()) return;
     if (claudeWarmupInFlight) return;
     claudeWarmupInFlight = initAgentSubsystem()
-      .then((coreRuntime) =>
-        Promise.allSettled([
+      .then((coreRuntime) => {
+        const context = resolveClaudeModelCatalogContext();
+        return Promise.allSettled([
           refreshClaudeSlashCommands(coreRuntime, false),
-          listClaudeEfforts(coreRuntime, getSelectedClaudeRuntimeEntry().model),
-        ]),
-      )
+          listClaudeEfforts(
+            coreRuntime,
+            getSelectedClaudeRuntimeEntry().model,
+            context,
+          ),
+          listClaudeModels(coreRuntime, false, context),
+        ]);
+      })
       .catch((err: unknown) => {
         ztoolkit.log("LLM: Failed to warm Claude mode caches", err);
       })
@@ -1154,10 +1316,15 @@ export function setupHandlers(
   let createAndSwitchPaperConversation: (
     forceFresh?: boolean,
   ) => Promise<boolean | void> = async () => {};
+  let ensureWebChatSessionPaperConversation: () => Promise<
+    boolean | void
+  > = async () => {};
   let queueTurnDeletion: (target: {
     conversationKey: number;
     userTimestamp: number;
     assistantTimestamp: number;
+    userMessageID?: number;
+    assistantMessageID?: number;
   }) => Promise<void> = async () => {};
   let forkConversationFromTurn: (target: {
     item: Zotero.Item;
@@ -1165,9 +1332,6 @@ export function setupHandlers(
     userTimestamp: number;
     assistantTimestamp: number;
   }) => Promise<void> = async () => {};
-  let clearPendingTurnDeletion: () => unknown = () => null;
-  let hasPendingTurnDeletionForConversation = (_conversationKey: number) =>
-    false;
   let closePaperPicker = () => {};
   let clearForcedSkill = () => {};
   let renderWebChatHistoryMenu: () => Promise<void> = async () => {};
@@ -1548,6 +1712,8 @@ export function setupHandlers(
   // Preferences window (which runs in a separate window context).
   let cleanupPrefObservers: (() => void) | null = null;
   let cleanupMineruPaperSourceObservers: (() => void) | null = null;
+  let cleanupModelCapabilitySubscription: (() => void) | null = null;
+  let codexDirectController: CodexDirectModelReasoningController | null = null;
   {
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
     const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
@@ -1979,38 +2145,6 @@ export function setupHandlers(
     sendBtn,
     cancelBtn,
   });
-  const syncResponsiveHeaderClearButton = () => {
-    if (
-      isStandalonePanel ||
-      !headerTop ||
-      !headerInfo ||
-      !headerActions ||
-      !clearBtn
-    ) {
-      return;
-    }
-    if (panelRoot.dataset.webchatMode === "true") {
-      clearBtn.dataset.compact = "false";
-      return;
-    }
-
-    // Always measure the full label first so widening the sidebar restores it.
-    clearBtn.dataset.compact = "false";
-    const headerRect = headerTop.getBoundingClientRect();
-    const headerInfoRect = headerInfo.getBoundingClientRect();
-    const actionsRect = headerActions.getBoundingClientRect();
-    const leftContentRight =
-      headerInfoRect.left +
-      Math.max(headerInfoRect.width, Number(headerInfo.scrollWidth) || 0);
-    clearBtn.dataset.compact = shouldCompactHeaderClearButton({
-      headerRight: headerRect.right,
-      leftContentRight,
-      actionsLeft: actionsRect.left,
-      actionsRight: actionsRect.right,
-    })
-      ? "true"
-      : "false";
-  };
   let lastUserContextAlignmentPanelWidth = -1;
   const getRoundedPanelWidth = () =>
     Math.ceil(
@@ -2025,7 +2159,6 @@ export function setupHandlers(
         conversationKey,
         () => {
           applyResponsiveActionButtonsLayout();
-          syncResponsiveHeaderClearButton();
           if (
             panelWidth <= 0 ||
             panelWidth !== lastUserContextAlignmentPanelWidth
@@ -2387,10 +2520,13 @@ export function setupHandlers(
   ) => {
     if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
     const normalizedKey = Math.floor(conversationKey);
+    const cache = isWebChatModeActive()
+      ? webChatDraftInputCache
+      : draftInputCache;
     if (value) {
-      draftInputCache.set(normalizedKey, value);
+      cache.set(normalizedKey, value);
     } else {
-      draftInputCache.delete(normalizedKey);
+      cache.delete(normalizedKey);
     }
   };
   const persistDraftInputForCurrentConversation = () => {
@@ -2400,7 +2536,6 @@ export function setupHandlers(
     // Don't persist the edit-mode text as a draft; the real draft was saved in
     // inlineEditSavedDraft when edit mode was entered.
     if (!item || !inputBox || inlineEditTarget) return;
-    if (isWebChatModeActive()) return;
     setDraftInputForConversation(getConversationKey(item), inputBox.value);
   };
   const restoreDraftInputForCurrentConversation = () => {
@@ -2409,16 +2544,15 @@ export function setupHandlers(
     // in inlineEditSavedDraft when edit mode was entered and will be restored by
     // inlineEditCleanup when the edit session ends.
     if (inlineEditTarget) return;
-    if (isWebChatModeActive()) {
-      inputBox.value = "";
-      resizeTextareaToContent(inputBox);
-      return;
-    }
-    inputBox.value = draftInputCache.get(getConversationKey(item)) || "";
+    const cache = isWebChatModeActive()
+      ? webChatDraftInputCache
+      : draftInputCache;
+    inputBox.value = cache.get(getConversationKey(item)) || "";
     resizeTextareaToContent(inputBox);
   };
   const clearDraftInputState = (itemId: number) => {
     draftInputCache.delete(itemId);
+    webChatDraftInputCache.delete(itemId);
   };
   const retainPinnedImageState = (itemId: number) =>
     retainPinnedImageState_(pinnedImageKeys, itemId);
@@ -2463,6 +2597,7 @@ export function setupHandlers(
   const retainPinnedTextState = (itemId: number) =>
     retainPinnedTextState_(pinnedSelectedTextKeys, itemId);
   const clearTransientComposeStateForItem = (itemId: number) => {
+    initializedConversationComposeContextKeys.delete(itemId);
     clearDraftInputState(itemId);
     clearSelectedImageState(itemId);
     clearAllRefContextState(itemId);
@@ -3646,12 +3781,10 @@ export function setupHandlers(
     chip.dataset.fullText = fullText ? "true" : "false";
     chip.classList.toggle("llm-paper-context-chip-full", fullText);
     chip.dataset.contentSource = contentSourceMode;
-    chip.classList.add(
-      getContextSourceModeCssClassName(
-        isWebChatMode() && contentSourceMode === "pdf" && !fullText
-          ? "text"
-          : contentSourceMode,
-      ),
+    chip.classList.add(getContextSourceModeCssClassName(contentSourceMode));
+    chip.classList.toggle(
+      "llm-paper-context-chip-webchat-inactive",
+      isWebChatMode() && contentSourceMode === "pdf" && !fullText,
     );
     chip.classList.add("collapsed");
 
@@ -3975,8 +4108,10 @@ export function setupHandlers(
     if (!hasAnyContext) {
       paperPreview.style.display = "none";
       paperPreviewList.innerHTML = "";
-      clearSelectedPaperState(itemId);
-      clearPaperContentSourceOverrides(itemId);
+      // Rendering an empty preview must not clear item-scoped compose state.
+      // Another mounted panel can share this conversation while resolving a
+      // different local context source; explicit remove/reset actions own the
+      // corresponding state mutation.
       return;
     }
     if (selectedPapers.length) {
@@ -4375,6 +4510,7 @@ export function setupHandlers(
       : 0;
   };
   const syncConversationPanelState = () => {
+    syncQueuedFollowUpRegistration();
     syncRequestUiForCurrentConversation();
     restoreDraftInputForCurrentConversation();
     updatePaperPreview();
@@ -4556,14 +4692,18 @@ export function setupHandlers(
     historyLifecycleController.createAndSwitchGlobalConversation;
   createAndSwitchPaperConversation =
     historyLifecycleController.createAndSwitchPaperConversation;
+  ensureWebChatSessionPaperConversation =
+    historyLifecycleController.ensureWebChatSessionPaperConversation;
   queueTurnDeletion = historyLifecycleController.queueTurnDeletion;
+  if (__env__ !== "production") {
+    (body as HTMLElement & Record<string, unknown>).__llmQueueTurnDeletion =
+      historyLifecycleController.queueTurnDeletion;
+    (body as HTMLElement & Record<string, unknown>).__llmSearchPanelHistory =
+      historyLifecycleController.searchConversationHistoryForWorkflowTest;
+  }
   forkConversationFromTurn =
     historyLifecycleController.forkConversationFromTurn;
-  clearPendingTurnDeletion =
-    historyLifecycleController.clearPendingTurnDeletion;
   resetHistorySearchState = historyLifecycleController.resetHistorySearchState;
-  hasPendingTurnDeletionForConversation =
-    historyLifecycleController.hasPendingTurnDeletionForConversation;
 
   const switchRuntimeSystemFromControl = async (
     clickedSystem: RuntimeConversationSystem,
@@ -4639,7 +4779,7 @@ export function setupHandlers(
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
         : item
-          ? getSelectedModelEntryForItem(item.id)
+          ? getSelectedModelEntry()
           : null;
     const currentModel =
       selectedEntry?.model ||
@@ -4753,41 +4893,120 @@ export function setupHandlers(
     menu.appendChild(action);
   };
 
+  const appendModelCatalogStatus = (params: {
+    menu: HTMLDivElement;
+    status: "idle" | "loading" | "ready" | "error";
+    modelCount: number;
+    loadingMessage: string;
+    errorMessage: string;
+    errorTitle?: string;
+    emptyMessage: string;
+    retryLabel: string;
+    onRetry: (event: Event) => void;
+  }): boolean => {
+    if (params.status === "loading") {
+      appendModelMenuEmptyState(params.menu, params.loadingMessage);
+      return true;
+    }
+    if (params.status === "error") {
+      const message = appendModelMenuEmptyState(
+        params.menu,
+        params.errorMessage,
+      );
+      if (params.errorTitle) message.title = params.errorTitle;
+      appendModelMenuAction(params.menu, params.retryLabel, params.onRetry);
+      return true;
+    }
+    if (params.status === "ready" && params.modelCount === 0) {
+      appendModelMenuEmptyState(params.menu, params.emptyMessage);
+      return true;
+    }
+    return false;
+  };
+
   const appendCodexModelCatalogStatus = (menu: HTMLDivElement) => {
     if (!isCodexConversationSystem()) return;
-    if (codexModelCatalogStatus === "loading") {
-      appendModelMenuEmptyState(menu, t("Loading Codex models…"));
-      return;
-    }
-    if (codexModelCatalogStatus === "error") {
-      const message = appendModelMenuEmptyState(
-        menu,
-        t("Could not load Codex models. Showing current model only."),
-      );
-      if (codexModelCatalogError) message.title = codexModelCatalogError;
-      appendModelMenuAction(menu, t("Retry loading Codex models"), (event) => {
+    appendModelCatalogStatus({
+      menu,
+      status: codexModelCatalogStatus,
+      modelCount: codexModelCatalogModels.length,
+      loadingMessage: t("Loading Codex models…"),
+      errorMessage: t(
+        "Could not load Codex models. Showing current model only.",
+      ),
+      errorTitle: codexModelCatalogError,
+      emptyMessage: t("Codex did not return any available models."),
+      retryLabel: t("Retry loading Codex models"),
+      onRetry: (event) => {
         if (!isPrimaryPointerEvent(event)) return;
         event.preventDefault();
         event.stopPropagation();
         codexModelCatalogStatus = "idle";
         codexModelCatalogError = "";
         void ensureCodexModelCatalogLoaded();
-      });
-      return;
-    }
-    if (
-      codexModelCatalogStatus === "ready" &&
-      !codexModelCatalogModels.length
-    ) {
+      },
+    });
+  };
+
+  const appendClaudeModelCatalogStatus = (menu: HTMLDivElement) => {
+    if (!isClaudeConversationSystem()) return;
+    const statusHandled = appendModelCatalogStatus({
+      menu,
+      status: claudeModelCatalogStatus,
+      modelCount: claudeModelCatalogModels.length,
+      loadingMessage: claudeModelCatalogModels.length
+        ? t("Refreshing Claude models…")
+        : t("Loading Claude models…"),
+      errorMessage: claudeModelCatalogModels.length
+        ? t("Could not refresh Claude models. Showing the last known list.")
+        : t("Could not load Claude models. Showing the current model only."),
+      errorTitle: claudeModelCatalogError,
+      emptyMessage: t("Claude Code did not return any available models."),
+      retryLabel: t("Retry loading Claude models"),
+      onRetry: (event) => {
+        if (!isPrimaryPointerEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void ensureClaudeModelCatalogLoaded(true);
+      },
+    });
+    if (statusHandled) return;
+    if (claudeModelCatalogStatus === "ready" && claudeModelCatalogLegacy) {
       appendModelMenuEmptyState(
         menu,
-        t("Codex did not return any available models."),
+        t(
+          "Using a legacy adapter model list. Update the adapter for model details.",
+        ),
       );
     }
   };
 
+  const getModelOptionTitle = (entry: RuntimeModelEntry): string => {
+    if (!isClaudeConversationSystem()) {
+      return `${entry.providerLabel} · ${entry.model}`;
+    }
+    const catalogModel =
+      claudeModelCatalogModels.find((model) => model.value === entry.model) ||
+      claudeModelCatalogModels.find(
+        (model) => model.resolvedModel === entry.model,
+      );
+    return [
+      `${entry.providerLabel} · ${entry.model}`,
+      catalogModel?.resolvedModel && catalogModel.resolvedModel !== entry.model
+        ? `${t("Resolves to")}: ${catalogModel.resolvedModel}`
+        : "",
+      catalogModel?.description || "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
+    // Refresh cached provider catalogs when the picker is opened.  The current
+    // snapshot renders synchronously; a subsequent open reflects new models.
+    void refreshModelCapabilityRegistry();
+    void refreshConfiguredProviderModelCatalogs();
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
@@ -4796,7 +5015,14 @@ export function setupHandlers(
       t("Select model"),
       "llm-model-menu-hint",
     );
+    appendClaudeModelCatalogStatus(modelMenu);
     appendCodexModelCatalogStatus(modelMenu);
+    codexDirectController?.appendCatalogStatus({
+      menu: modelMenu,
+      renderStatus: appendModelCatalogStatus,
+      appendEmptyState: appendModelMenuEmptyState,
+      isPrimaryPointerEvent,
+    });
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
       return;
@@ -4815,11 +5041,19 @@ export function setupHandlers(
             textContent: isSelected
               ? `\u2713 ${entry.displayModelLabel || "default"}`
               : entry.displayModelLabel || "default",
-            title: `${entry.providerLabel} · ${entry.model}`,
+            title: getModelOptionTitle(entry),
           },
         );
+        if (entry.catalogAvailability === "saved-unavailable") {
+          option.disabled = true;
+          option.classList.add("llm-model-option-disabled");
+          option.title = t(
+            "This saved model is not present in the current Codex Direct catalog.",
+          );
+        }
         const applyModelSelection = (e: Event) => {
           if (!isPrimaryPointerEvent(e)) return;
+          if (entry.catalogAvailability === "saved-unavailable") return;
           e.preventDefault();
           e.stopPropagation();
           if (!item) return;
@@ -4856,9 +5090,30 @@ export function setupHandlers(
             previousNonWebchatModelId = selectedEntryId || null;
           }
 
-          setSelectedModelEntryForItem(item.id, entry.entryId);
+          setSelectedModelEntry(entry.entryId);
           setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+
+          // Keep the relay target synchronized when switching between webchat
+          // providers as well as when entering webchat from a local/API model.
+          // Otherwise the model button can show DeepSeek while the extension
+          // continues sending to the previous ChatGPT tab.
+          if (entry.authMode === "webchat") {
+            try {
+              const { getWebChatTargetByModelName } =
+                require("../../webchat/types") as typeof import("../../webchat/types");
+              const { relaySetActiveTarget } =
+                require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
+              const selectedWebChatTarget = getWebChatTargetByModelName(
+                entry.model || "",
+              );
+              if (selectedWebChatTarget?.id) {
+                relaySetActiveTarget(selectedWebChatTarget.id);
+              }
+            } catch {
+              /* async preload path will retry when entering webchat */
+            }
+          }
 
           // Auto-correct PDF mode for models that don't support native full-PDF
           // input. Downgrade to text/mineru so the user doesn't end up with a
@@ -4869,7 +5124,7 @@ export function setupHandlers(
               entry.providerProtocol,
               entry.authMode,
               entry.apiBase,
-              entry.advanced.inputMode,
+              entry.advanced?.inputMode,
             ),
             isClaudeCode: isClaudeConversationSystem(),
             isCodex: isCodexConversationSystem(),
@@ -4912,22 +5167,12 @@ export function setupHandlers(
               selectedImageCache.delete(item.id);
               updateImagePreviewPreservingScroll();
             }
-            // Set active target BEFORE applyWebChatModeUI so the hook's
-            // renderWebChatSidebar() reads the correct target for filtering.
-            try {
-              const { getWebChatTargetByModelName: getEntryTarget } =
-                require("../../webchat/types") as typeof import("../../webchat/types");
-              const { relaySetActiveTarget: setTarget } =
-                require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
-              const earlyTargetEntry = getEntryTarget(entry.model || "");
-              if (earlyTargetEntry?.id) setTarget(earlyTargetEntry.id);
-            } catch {
-              /* modules not yet loaded — async path below will handle it */
-            }
             // Apply webchat UI immediately so model button is disabled during preload
             applyWebChatModeUI();
             void (async () => {
-              await createAndSwitchPaperConversation();
+              // Anchor on the paper's dedicated webchat session row (hidden
+              // from history, swept at startup) — never a normal draft.
+              await ensureWebChatSessionPaperConversation();
               if (!isWebChatMode()) return;
               resetCurrentWebChatConversation();
               refreshChatPreservingScroll();
@@ -5012,8 +5257,14 @@ export function setupHandlers(
       return;
     }
     for (const group of groupedChoices) {
+      // [webchat] Retries never route through the browser-relay pipeline, so
+      // webchat entries must not be offered as retry targets.
+      const retryEntries = group.entries.filter(
+        (entry) => entry.authMode !== "webchat",
+      );
+      if (!retryEntries.length) continue;
       appendModelProviderSection(retryModelMenu, group.providerLabel);
-      for (const entry of group.entries) {
+      for (const entry of retryEntries) {
         const isSelected = latestAssistantModelEntryId
           ? entry.entryId === latestAssistantModelEntryId
           : latestAssistantModelName
@@ -5031,21 +5282,30 @@ export function setupHandlers(
             textContent: isSelected
               ? `\u2713 ${entry.displayModelLabel || "default"}`
               : entry.displayModelLabel || "default",
-            title: `${entry.providerLabel} · ${entry.model}`,
+            title: getModelOptionTitle(entry),
           },
         );
+        if (entry.catalogAvailability === "saved-unavailable") {
+          option.disabled = true;
+          option.classList.add("llm-model-option-disabled");
+        }
         const runRetry = async (e: Event) => {
           if (!isPrimaryPointerEvent(e)) return;
+          if (entry.catalogAvailability === "saved-unavailable") return;
           e.preventDefault();
           e.stopPropagation();
           if (!item) return;
           closeRetryModelMenu();
-          const retryReasoning = getSelectedReasoningForItem(
-            item.id,
-            entry.model,
-            entry.apiBase,
-            entry.providerProtocol,
-          );
+          const retryReasoning =
+            entry.authMode === "codex_auth"
+              ? codexDirectController?.getRetryReasoning(entry)
+              : getSelectedReasoningForItem(
+                  item.id,
+                  entry.model,
+                  entry.apiBase,
+                  entry.providerProtocol,
+                  entry.advanced?.profileOverride,
+                );
           const retryAdvanced = getAdvancedModelParams(entry.entryId);
           await retryLatestAssistantResponse(
             body,
@@ -5219,13 +5479,41 @@ export function setupHandlers(
             : (selectedMode as ReasoningLevelSelection),
       };
     }
-    const selectedProfile = getSelectedModelEntryForItem(item.id);
-    const provider = detectReasoningProvider(currentModel);
+    const directSelection =
+      codexDirectController?.resolveReasoningSelection() || {
+        mode: "auto",
+        choices: [] as CodexReasoningChoice[],
+      };
+    if (directSelection.choices.length) {
+      const options: ReasoningOption[] = directSelection.choices
+        .filter((choice) => choice.value !== "auto")
+        .map((choice) => ({
+          level: choice.value as LLMReasoningLevel,
+          enabled: true,
+          label: choice.label,
+        }));
+      return {
+        provider: "openai" as const,
+        currentModel,
+        options,
+        enabledLevels: options.map((option) => option.level),
+        selectedLevel:
+          directSelection.mode === "auto"
+            ? "none"
+            : (directSelection.mode as ReasoningLevelSelection),
+      };
+    }
+    const selectedProfile = getSelectedModelEntry();
+    const provider = detectReasoningProvider(
+      currentModel,
+      selectedProfile?.apiBase,
+    );
     const options = getReasoningOptions(
       provider,
       currentModel,
       selectedProfile?.apiBase,
       selectedProfile?.providerProtocol,
+      selectedProfile?.advanced?.profileOverride,
     );
     const enabledLevels = options
       .filter((option) => option.enabled)
@@ -5330,47 +5618,10 @@ export function setupHandlers(
     updatePaperPreviewPreservingScroll();
   };
 
-  const hasUploadedPdfInCurrentWebChatConversation = () =>
-    item
-      ? hasWebChatPdfUploadedForConversation(getConversationKey(item))
-      : false;
-
-  const getUploadedWebChatPdfSourceKeysForCurrentConversation = () =>
-    item
-      ? getWebChatUploadedPdfSourceKeysForConversation(getConversationKey(item))
-      : [];
-
-  const isWebChatPdfUploadStateUnknownForCurrentConversation = () =>
-    item
-      ? isWebChatPdfUploadStateUnknownForConversation(getConversationKey(item))
-      : false;
-
-  const markWebChatPdfUploadedForCurrentConversation = (
-    paperContexts: readonly PaperContextRef[],
-  ) => {
-    if (!item) return;
-    markWebChatPdfUploadedForConversation(
-      getConversationKey(item),
-      paperContexts.map(
-        (paperContext) =>
-          `zotero-pdf:${paperContext.itemId}:${paperContext.contextItemId}`,
-      ),
-    );
-  };
-
-  const resetWebChatPdfUploadedForCurrentConversation = () => {
-    if (!item) return;
-    resetWebChatPdfUploadedForConversation(getConversationKey(item));
-  };
-
-  const markWebChatPdfUploadStateUnknownForCurrentConversation = () => {
-    if (!item) return;
-    markWebChatPdfUploadStateUnknownForConversation(getConversationKey(item));
-  };
-
   const resetCurrentWebChatConversation = () => {
     if (!item) return;
     const key = getConversationKey(item);
+    clearTransientComposeStateForItem(item.id);
     webChatIsolatedConversationKeys.add(key);
     chatHistory.set(key, []);
     loadedConversationKeys.add(key);
@@ -5393,6 +5644,7 @@ export function setupHandlers(
     }
     loadedConversationKeys.add(key);
     if (!hadWebChatSession) {
+      webChatDraftInputCache.delete(key);
       markNextWebChatSendAsNewChat();
       primeFreshWebChatPaperChipState();
       if (inputBox && !inlineEditTarget) {
@@ -5413,7 +5665,6 @@ export function setupHandlers(
   if (hooks) {
     hooks.clearWebChatNewChatIntent = () => {
       clearNextWebChatNewChatIntent();
-      markWebChatPdfUploadStateUnknownForCurrentConversation();
     };
     hooks.getCurrentModelName = () =>
       getSelectedModelInfo().currentModel || null;
@@ -5459,7 +5710,13 @@ export function setupHandlers(
 
       const { provider, currentModel, options, enabledLevels, selectedLevel } =
         getReasoningState();
-      const available = enabledLevels.length > 0;
+      const directSelection =
+        codexDirectController?.resolveReasoningSelection() || {
+          mode: "auto",
+          choices: [] as CodexReasoningChoice[],
+        };
+      const available =
+        directSelection.choices.length > 0 || enabledLevels.length > 0;
       const resolvedReasoningLabel = isClaudeConversationSystem()
         ? (() => {
             return getClaudeReasoningDisplayLabel(
@@ -5475,16 +5732,22 @@ export function setupHandlers(
                 )?.label || "Auto"
               );
             })()
-          : selectedLevel === "none"
-            ? "off"
-            : available
-              ? getReasoningLevelDisplayLabel(
-                  selectedLevel as LLMReasoningLevel,
-                  provider,
-                  currentModel,
-                  options,
-                )
-              : "off";
+          : directSelection.choices.length
+            ? directSelection.choices.find(
+                (choice) =>
+                  choice.value.toLowerCase() ===
+                  directSelection.mode.toLowerCase(),
+              )?.label || "Auto"
+            : selectedLevel === "none"
+              ? "off"
+              : available
+                ? getReasoningLevelDisplayLabel(
+                    selectedLevel as LLMReasoningLevel,
+                    provider,
+                    currentModel,
+                    options,
+                  )
+                : "off";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
       const reasoningLabel = resolvedReasoningLabel;
@@ -5502,6 +5765,44 @@ export function setupHandlers(
       reasoningBtn.dataset.reasoningHint = reasoningHint;
       scheduleResponsiveLayoutSync();
     });
+  };
+
+  const appendReasoningChoiceButtons = (params: {
+    menu: HTMLDivElement;
+    choices: CodexReasoningChoice[];
+    currentValue: string;
+    onSelect: (value: string) => void;
+    disabled?: boolean;
+  }) => {
+    for (const choice of params.choices) {
+      const option = createElement(
+        body.ownerDocument as Document,
+        "button",
+        "llm-response-menu-item llm-reasoning-option",
+        {
+          type: "button",
+          textContent:
+            params.currentValue.toLowerCase() === choice.value.toLowerCase()
+              ? `\u2713 ${choice.label}`
+              : choice.label,
+          title: choice.description || choice.label,
+        },
+      );
+      const applySelection = (event: Event) => {
+        if (!isPrimaryPointerEvent(event) || params.disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        params.onSelect(choice.value);
+      };
+      if (params.disabled) {
+        option.disabled = true;
+        option.classList.add("llm-reasoning-option-disabled");
+      } else {
+        option.addEventListener("pointerdown", applySelection);
+        option.addEventListener("click", applySelection);
+      }
+      params.menu.appendChild(option);
+    }
   };
 
   const rebuildReasoningMenu = () => {
@@ -5604,29 +5905,27 @@ export function setupHandlers(
     if (isCodexConversationSystem()) {
       const codexModes = getCodexReasoningChoices();
       const currentMode = getCodexReasoningModePref();
-      for (const mode of codexModes) {
-        const option = createElement(
-          body.ownerDocument as Document,
-          "button",
-          "llm-response-menu-item llm-reasoning-option",
-          {
-            type: "button",
-            textContent:
-              currentMode === mode.value ? `\u2713 ${mode.label}` : mode.label,
-          },
-        );
-        const applyCodexSelection = (e: Event) => {
-          if (!isPrimaryPointerEvent(e)) return;
-          e.preventDefault();
-          e.stopPropagation();
-          setCodexReasoningModePref(mode.value);
+      appendReasoningChoiceButtons({
+        menu: reasoningMenu,
+        choices: codexModes,
+        currentValue: currentMode,
+        onSelect: (value) => {
+          setCodexReasoningModePref(value);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
-        };
-        option.addEventListener("pointerdown", applyCodexSelection);
-        option.addEventListener("click", applyCodexSelection);
-        reasoningMenu.appendChild(option);
-      }
+        },
+      });
+      return;
+    }
+    if (
+      codexDirectController?.appendReasoningChoices({
+        menu: reasoningMenu,
+        renderChoices: appendReasoningChoiceButtons,
+        closeMenu: () => {
+          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+        },
+      })
+    ) {
       return;
     }
     if (!enabledLevels.length) {
@@ -5755,6 +6054,16 @@ export function setupHandlers(
     }
   };
 
+  cleanupModelCapabilitySubscription = subscribeModelCapabilities(() => {
+    if (setupHandlersCleaned) return;
+    syncModelFromPrefs();
+  });
+  codexDirectController = createCodexDirectModelReasoningController({
+    getSelectedEntry: () => (item ? getSelectedModelEntry() : null),
+    isRuntimeConversationSystem,
+    onStateChange: syncModelFromPrefs,
+  });
+
   (body as any).__llmRefreshContextSourceForCurrentItem = () => {
     withScrollGuard(chatBox, conversationKey, () => {
       refreshAutoLoadedPaperContextForCurrentItem();
@@ -5782,7 +6091,6 @@ export function setupHandlers(
     },
     refreshChatPreservingScroll,
     isWebChatMode,
-    markWebChatPdfUploadStateUnknownForCurrentConversation,
     clearNextWebChatNewChatIntent,
     setSelectedReasoningLevel: (itemId, level) => {
       selectedReasoningCache.set(itemId, level);
@@ -5896,16 +6204,21 @@ export function setupHandlers(
       void warmUpWebChatHistory();
     }
 
-    // Clear button → "Exit" in webchat, restore "Clear" otherwise
+    // The conversation trash action becomes "Exit" only in WebChat.
     if (clearBtn) {
       if (isWebChat) {
         clearBtn.textContent = "Exit";
         (clearBtn as HTMLButtonElement).disabled = false;
         clearBtn.style.opacity = "";
-        clearBtn.title = "Exit webchat and return to previous model";
+        clearBtn.title = t("Exit webchat and return to previous model");
+        clearBtn.setAttribute(
+          "aria-label",
+          t("Exit webchat and return to previous model"),
+        );
       } else {
-        clearBtn.textContent = "Clear";
-        clearBtn.title = "";
+        clearBtn.textContent = "";
+        clearBtn.title = t("Delete conversation");
+        clearBtn.setAttribute("aria-label", t("Delete conversation"));
       }
     }
 
@@ -6056,13 +6369,18 @@ export function setupHandlers(
 
   function getSelectedProfile() {
     if (!item) return null;
-    if (isClaudeConversationSystem()) {
-      return getSelectedClaudeRuntimeEntry();
-    }
-    if (isCodexConversationSystem()) {
-      return getSelectedCodexRuntimeEntry();
-    }
-    return getSelectedModelEntryForItem(item.id);
+    const selected = isClaudeConversationSystem()
+      ? getSelectedClaudeRuntimeEntry()
+      : isCodexConversationSystem()
+        ? getSelectedCodexRuntimeEntry()
+        : getSelectedModelEntry();
+    if (!selected) return null;
+    return {
+      ...selected,
+      profileOverride: selected.advanced?.profileOverride as
+        | ModelProfileOverride
+        | undefined,
+    };
   }
 
   const getAdvancedModelParams = (
@@ -6091,6 +6409,10 @@ export function setupHandlers(
           ? reconcileSelectedCodexReasoningMode()
           : getCodexReasoningModePref();
       return buildCodexAppServerReasoningConfig(mode);
+    }
+    const directEntry = codexDirectController?.getSelectedEntry();
+    if (directEntry) {
+      return codexDirectController?.getSendReasoning();
     }
     const { provider, enabledLevels, selectedLevel } = getReasoningState();
     if (provider === "unsupported" || selectedLevel === "none")
@@ -6212,10 +6534,7 @@ export function setupHandlers(
     if (slashToken) return { ...slashToken, trigger: "/" };
     return null;
   };
-  let doSend: (options?: {
-    overrideText?: string;
-    preserveInputDraft?: boolean;
-  }) => Promise<void> = async () => {};
+  let doSend: (options?: SendFlowOptions) => Promise<void> = async () => {};
 
   const actionCommandController = createActionCommandController({
     body,
@@ -6244,6 +6563,9 @@ export function setupHandlers(
     getEffectivePdfModePaperContexts,
     getEffectiveFullTextPaperContexts,
     getSelectedProfile,
+    // Lets a long batched action publish its abort controller under the
+    // active conversation, so the panel's stop button cancels it.
+    getConversationKey: () => (item ? getConversationKey(item) : null),
     getDoSend: () => doSend,
     closeRetryModelMenu,
     closeModelMenu,
@@ -6280,7 +6602,6 @@ export function setupHandlers(
     getActiveCommandAction,
     consumeForcedSkillIds,
     handleInlineCommand,
-    handleNaturalLanguageActionIntent,
     consumeActiveActionToken,
   } = actionCommandController;
   closeSlashMenu = closeActionSlashMenu;
@@ -6520,6 +6841,10 @@ export function setupHandlers(
     body,
     inputBox,
     getItem: () => item,
+    beginRequest: beginPanelRequest,
+    isRequestOwner,
+    finishRequest: finishPanelRequest,
+    queueFollowUpInput: (text) => queueFollowUpInput(text),
     resolveContextSource: resolveAutoLoadedContextSourceAsync,
     closeSlashMenu,
     closePaperPicker,
@@ -6548,14 +6873,8 @@ export function setupHandlers(
       currentItem: Zotero.Item,
       selectedPaperContexts?: PaperContextRef[],
     ) => getActiveWebChatPdfPaperContexts(currentItem, selectedPaperContexts),
-    hasUploadedPdfInCurrentWebChatConversation,
-    getUploadedWebChatPdfSourceKeys:
-      getUploadedWebChatPdfSourceKeysForCurrentConversation,
-    isWebChatPdfUploadStateUnknown:
-      isWebChatPdfUploadStateUnknownForCurrentConversation,
-    markWebChatPdfUploadStateUnknown:
-      markWebChatPdfUploadStateUnknownForCurrentConversation,
-    markWebChatPdfUploadedForCurrentConversation,
+    resolvePaperContextNextSendMode,
+    setPaperModeOverride,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     resolveLocalPdfResources: localPdfResourceResolver.resolve,
     preflightLocalPdfCapability: async () => {
@@ -6589,6 +6908,7 @@ export function setupHandlers(
     isCodexConversationSystem,
     normalizeConversationTitleSeed,
     getConversationKey,
+    getConversationWriteGeneration,
     touchClaudeConversationTitle,
     touchCodexConversationTitle,
     touchGlobalConversationTitle,
@@ -6655,6 +6975,8 @@ export function setupHandlers(
         syncConversationIdentity();
       }
     },
+    onSendSettled:
+      __env__ === "test" ? notifyWorkflowTestSendSettled : undefined,
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);
@@ -6662,146 +6984,12 @@ export function setupHandlers(
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
     onComposerDraftCleared: resetComposerInputHeight,
+    onComposerDraftRestored: resetComposerInputHeight,
     consumeForcedSkillIds,
   });
   doSend = sendFlowController.doSend;
-  const { clearCurrentConversation } = createClearConversationController({
-    getConversationKey: () => (item ? getConversationKey(item) : null),
-    getCurrentItemID: () =>
-      item && Number.isFinite(item.id) && item.id > 0 ? item.id : null,
-    getPendingRequestId,
-    getAbortController,
-    setCancelledRequestId,
-    setPendingRequestId,
-    setAbortController,
-    clearPendingTurnDeletion: (conversationKey) => {
-      if (hasPendingTurnDeletionForConversation(conversationKey)) {
-        clearPendingTurnDeletion();
-      }
-    },
-    validateConversationScope: async (conversationKey) => {
-      if (!item) return true;
-      const conversationSystem = resolveConversationSystemForItem(item);
-      const storageSystem = resolveConversationStorageSystem({
-        conversationKey,
-        conversationSystem,
-      });
-      const kind = resolveDisplayConversationKind(item);
-      const libraryID = Number(item.libraryID || 0);
-      if (
-        !storageSystem ||
-        !kind ||
-        !Number.isFinite(libraryID) ||
-        libraryID <= 0
-      ) {
-        return true;
-      }
-      if (kind === "global") {
-        return validateConversationScope({
-          conversationKey,
-          system: storageSystem,
-          kind: "global",
-          libraryID: Math.floor(libraryID),
-        });
-      }
-      const baseItem = resolveConversationBaseItem(item);
-      const paperItemID = Number(baseItem?.id || 0);
-      const paperLibraryID = Number(baseItem?.libraryID || libraryID);
-      if (
-        !Number.isFinite(paperItemID) ||
-        paperItemID <= 0 ||
-        !Number.isFinite(paperLibraryID) ||
-        paperLibraryID <= 0
-      ) {
-        return true;
-      }
-      return validateConversationScope({
-        conversationKey,
-        system: storageSystem,
-        kind: "paper",
-        libraryID: Math.floor(paperLibraryID),
-        paperItemID: Math.floor(paperItemID),
-      });
-    },
-    clearTransientComposeStateForItem,
-    resetComposePreviewUI,
-    resetConversationHistory: (conversationKey) => {
-      chatHistory.set(conversationKey, []);
-    },
-    markConversationLoaded: (conversationKey) => {
-      loadedConversationKeys.add(conversationKey);
-    },
-    invalidateConversationSession: async (conversationKey) => {
-      if (!isClaudeConversationSystem() || !item) return;
-      const libraryID = Number(item.libraryID || 0);
-      const currentKind = resolveDisplayConversationKind(item);
-      const baseItem = resolveConversationBaseItem(item);
-      if (!Number.isFinite(libraryID) || libraryID <= 0 || !currentKind) return;
-      const scope = buildClaudeScope({
-        libraryID: Math.floor(libraryID),
-        kind: currentKind,
-        paperItemID:
-          currentKind === "paper"
-            ? Number(baseItem?.id || 0) || undefined
-            : undefined,
-        paperTitle:
-          currentKind === "paper"
-            ? String(baseItem?.getField?.("title") || "").trim() || undefined
-            : undefined,
-      });
-      await invalidateClaudeConversationSession(await initAgentSubsystem(), {
-        conversationKey,
-        scope,
-      });
-      void touchClaudeConversation(conversationKey, {
-        providerSessionId: undefined,
-        scopedConversationKey: undefined,
-        scopeType: undefined,
-        scopeId: undefined,
-        scopeLabel: undefined,
-        cwd: undefined,
-        updatedAt: Date.now(),
-      });
-    },
-    clearStoredConversation: (conversationKey) =>
-      isClaudeConversationSystem()
-        ? clearClaudeConversation(conversationKey)
-        : isCodexConversationSystem()
-          ? clearCodexConversation(conversationKey)
-          : clearStoredConversation(conversationKey),
-    resetConversationTitle: (conversationKey) =>
-      conversationRepository.clearCatalogTitle({
-        system: getConversationSystem(),
-        conversationKey,
-      }),
-    clearOwnerAttachmentRefs,
-    removeConversationAttachmentFiles,
-    refreshChatPreservingScroll,
-    refreshGlobalHistoryHeader: () => {
-      void refreshGlobalHistoryHeader();
-    },
-    scheduleAttachmentGc,
-    clearAgentToolCaches: clearAllAgentToolCaches,
-    clearAgentConversationState,
-    setStatusMessage: status
-      ? (message, level) => {
-          setStatus(status, message, level);
-        }
-      : undefined,
-    logError: (message, err) => {
-      ztoolkit.log(message, err);
-    },
-    // [webchat] Check if the currently selected model uses webchat auth
-    isWebChatActive: () => {
-      const { selectedEntry } = getSelectedModelInfo();
-      return selectedEntry?.authMode === "webchat";
-    },
-    getWebChatHost: () => {
-      const port = Zotero.Prefs.get("httpServer.port") || 23119;
-      return `http://127.0.0.1:${port}/llm-for-zotero/webchat`;
-    },
-    markNextWebChatSendAsNewChat,
-  });
+  // The header trash action uses the same durable, undoable deletion
+  // lifecycle as Delete in conversation history.
   const executeSend = async () => {
     // If the inline edit widget is active, route through editUserTurnAndRetry
     // instead of the normal send flow.
@@ -6809,6 +6997,47 @@ export function setupHandlers(
       const currentItem = item;
       const editTarget = inlineEditTarget;
       const newText = inputBox?.value.trim() ?? "";
+      if (!newText && isRequestPending(getConversationKey(currentItem))) return;
+      const inlineRequest = newText
+        ? beginPanelRequest(body, currentItem, "Preparing edited retry...")
+        : null;
+      if (newText && !inlineRequest) return;
+      let providerDispatchStarted = false;
+      if (inlineRequest) {
+        inputBox.value = "";
+        persistDraftInputForCurrentConversation();
+        resetComposerInputHeight();
+      }
+      const finishInlineRequest = () => {
+        if (!inlineRequest) return;
+        // The conversation key can change mid-flight (editUserTurnAndRetry
+        // transfers the claim after ensureConversationLoaded). Mirror the
+        // send controller's finally: finish under the current key, then fall
+        // back to the key the claim was taken under so it never strands.
+        const currentConversationKey = getConversationKey(currentItem);
+        const finished = finishPanelRequest(
+          body,
+          currentItem,
+          currentConversationKey,
+          inlineRequest.requestId,
+        );
+        if (
+          !finished &&
+          currentConversationKey !== inlineRequest.conversationKey
+        ) {
+          finishPanelRequest(
+            body,
+            currentItem,
+            inlineRequest.conversationKey,
+            inlineRequest.requestId,
+          );
+        }
+        if (!providerDispatchStarted) {
+          inputBox.value = newText;
+          persistDraftInputForCurrentConversation();
+          resetComposerInputHeight();
+        }
+      };
       const textContextKey = getTextContextConversationKey();
       const selectedContexts = textContextKey
         ? getSelectedTextContextEntries(textContextKey)
@@ -6827,7 +7056,12 @@ export function setupHandlers(
         ),
         selectedTagContexts: selectedTagContextCache.get(currentItem.id),
       });
-      const contextSource = await resolveAutoLoadedContextSourceAsync();
+      const contextSource = await resolveAutoLoadedContextSourceAsync().catch(
+        (error) => {
+          finishInlineRequest();
+          throw error;
+        },
+      );
       const allPaperContexts = getManualPaperContextsForItem(
         currentItem.id,
         currentItem.id === item?.id ? resolveAutoLoadedPaperContext() : null,
@@ -6916,8 +7150,14 @@ export function setupHandlers(
           : null,
         currentModelName: activeModelName,
         isWebChat: isWebChatMode(),
+      }).catch((error) => {
+        finishInlineRequest();
+        throw error;
       });
-      if (!pdfInputs.ok) return;
+      if (!pdfInputs.ok) {
+        finishInlineRequest();
+        return;
+      }
       const {
         selectedFiles,
         modelFiles,
@@ -6940,6 +7180,7 @@ export function setupHandlers(
               "error",
             );
           }
+          finishInlineRequest();
           return;
         }
       }
@@ -6964,37 +7205,46 @@ export function setupHandlers(
       setInlineEditTarget(null);
       if (newText) {
         const webchatGreyOut = isWebChatMode();
-        const retrySucceeded = await editUserTurnAndRetry({
-          body,
-          item: currentItem,
-          contextSource,
-          userTimestamp: editTarget.userTimestamp,
-          assistantTimestamp: editTarget.assistantTimestamp,
-          newText,
-          selectedTextContexts: selectedContexts,
-          selectedTexts,
-          selectedTextSources,
-          selectedTextPaperContexts,
-          selectedTextNoteContexts,
-          selectedCollectionContexts,
-          selectedTagContexts,
-          screenshotImages: images,
-          paperContexts: selectedPaperContexts,
-          pdfPaperContexts: pdfModePapers,
-          fullTextPaperContexts,
-          attachments: selectedFiles,
-          modelAttachments: modelFiles,
-          localDocuments,
-          pdfUploadSystemMessages: pdfUploadSystemMessages.length
-            ? pdfUploadSystemMessages
-            : undefined,
-          targetRuntimeMode,
-          model: selectedProfile?.model,
-          apiBase: selectedProfile?.apiBase,
-          apiKey: selectedProfile?.apiKey,
-          reasoning: selectedReasoning,
-          advanced: advancedParams,
-        });
+        let retrySucceeded = false;
+        try {
+          retrySucceeded = await editUserTurnAndRetry({
+            body,
+            item: currentItem,
+            requestId: inlineRequest!.requestId,
+            onProviderDispatch: () => {
+              providerDispatchStarted = true;
+            },
+            contextSource,
+            userTimestamp: editTarget.userTimestamp,
+            assistantTimestamp: editTarget.assistantTimestamp,
+            newText,
+            selectedTextContexts: selectedContexts,
+            selectedTexts,
+            selectedTextSources,
+            selectedTextPaperContexts,
+            selectedTextNoteContexts,
+            selectedCollectionContexts,
+            selectedTagContexts,
+            screenshotImages: images,
+            paperContexts: selectedPaperContexts,
+            pdfPaperContexts: pdfModePapers,
+            fullTextPaperContexts,
+            attachments: selectedFiles,
+            modelAttachments: modelFiles,
+            localDocuments,
+            pdfUploadSystemMessages: pdfUploadSystemMessages.length
+              ? pdfUploadSystemMessages
+              : undefined,
+            targetRuntimeMode,
+            model: selectedProfile?.model,
+            apiBase: selectedProfile?.apiBase,
+            apiKey: selectedProfile?.apiKey,
+            reasoning: selectedReasoning,
+            advanced: advancedParams,
+          });
+        } finally {
+          finishInlineRequest();
+        }
         if (retrySucceeded) {
           consumePaperModeState(currentItem.id, { webchatGreyOut });
           retainPaperState(currentItem.id);
@@ -7031,9 +7281,16 @@ export function setupHandlers(
       void handleInlineCommand(chipAction.name, params);
       return;
     }
-    if (await handleNaturalLanguageActionIntent(inputBox?.value ?? "")) {
-      return;
-    }
+    // The natural-language action interceptor used to run here, matching
+    // phrases like "reorganize all items in my library" and diverting them to
+    // a slash-command action before the agent turn began. That is exactly the
+    // request `library_batch` exists to handle, and the agent can now chain a
+    // batch job with other steps in one turn — which the interceptor could
+    // never do, because it replaced the turn entirely.
+    //
+    // Explicit slash commands and the action picker are untouched: those are
+    // deterministic user gestures, and they remain the surface that reviews
+    // each page before applying it.
     const inlineCommand = parseInlineActionCommand(inputBox?.value ?? "");
     if (inlineCommand) {
       closeSlashMenu();
@@ -7064,12 +7321,19 @@ export function setupHandlers(
     const next = shiftQueuedFollowUp(threadKey);
     renderQueuedFollowUpInputs();
     if (!next) return;
+    let queuedInputRestored = false;
     await doSend({
       overrideText: next.text,
       preserveInputDraft: true,
+      restoreQueuedInput: () => {
+        queuedInputRestored = true;
+        restoreQueuedFollowUp(threadKey, next);
+      },
     });
     persistDraftInputForCurrentConversation();
-    scheduleQueuedFollowUpDrainForThread(getQueuedFollowUpThreadKey());
+    if (!queuedInputRestored) {
+      scheduleQueuedFollowUpDrainForThread(getQueuedFollowUpThreadKey());
+    }
   }
 
   // Send button - use addEventListener
@@ -7087,6 +7351,9 @@ export function setupHandlers(
       const nextMode: ChatRuntimeMode =
         getCurrentRuntimeMode() === "agent" ? "chat" : "agent";
       setCurrentRuntimeMode(nextMode);
+      // Only an explicit toggle updates the sticky default, so implicit
+      // switches (/compact, skill selection) stay scoped to this conversation.
+      setLastUsedRuntimeMode(nextMode);
       if (status) {
         setStatus(
           status,
@@ -7317,6 +7584,14 @@ export function setupHandlers(
     closeHistoryMenu();
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
+    } else if (isClaudeConversationSystem()) {
+      // Force: the catalog cache identity (bridge URL, prefs, profile-dir
+      // hash, scope) cannot see in-place ~/.claude/settings.json profile
+      // changes, so a user-initiated open must revalidate. Non-blocking — the
+      // menu opens on the cached list and live-updates when the fetch lands.
+      void ensureClaudeModelCatalogLoaded(true);
+    } else if (codexDirectController?.hasConfiguredProvider()) {
+      codexDirectController.ensureCatalog();
     }
     updateModelButton();
     flushResponsiveLayoutSyncNow();
@@ -7344,6 +7619,8 @@ export function setupHandlers(
     closeHistoryMenu();
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
+    } else if (codexDirectController?.getSelectedEntry()) {
+      codexDirectController.ensureCatalog();
     }
     updateReasoningButton();
     flushResponsiveLayoutSyncNow();
@@ -7533,8 +7810,17 @@ export function setupHandlers(
       }
     }
     if (cancelConvKey !== null) {
-      setCancelledRequestId(cancelConvKey, getPendingRequestId(cancelConvKey));
+      const pendingRequestId = getPendingRequestId(cancelConvKey);
+      if (pendingRequestId > 0) {
+        setCancelledRequestId(cancelConvKey, pendingRequestId);
+      }
+      // Force-release the claim so Cancel always restores a sendable
+      // conversation, even when the in-flight call ignores the abort signal
+      // and never settles. The cancelled-id fence above keeps the zombie
+      // request from dispatching, and its own finally's id-fenced
+      // finishRequest no-ops once the claim is gone.
       clearPendingRequestIdAndSync(cancelConvKey, body, item);
+      scheduleQueuedFollowUpDrainForThread(getQueuedFollowUpThreadKey());
     }
     if (status) setStatus(status, t("Cancelled"), "ready");
     // Immediately mark the last assistant message as not streaming so any
@@ -7544,7 +7830,7 @@ export function setupHandlers(
       const history = chatHistory.get(key);
       if (history) {
         for (let i = history.length - 1; i >= 0; i--) {
-          if (history[i].role === "assistant") {
+          if (history[i].role === "assistant" && history[i].streaming) {
             history[i].streaming = false;
             if (!history[i].text) history[i].text = "[Cancelled]";
             break;
@@ -7553,14 +7839,6 @@ export function setupHandlers(
       }
     }
     body.querySelectorAll(".llm-typing").forEach((el: Element) => el.remove());
-    // Re-enable UI for the cancelled conversation
-    if (inputBox) inputBox.disabled = false;
-    if (sendBtn) {
-      sendBtn.style.display = "";
-      sendBtn.disabled = false;
-    }
-    if (cancelBtn) cancelBtn.style.display = "none";
-    scheduleQueuedFollowUpDrainForThread(getQueuedFollowUpThreadKey());
     return true;
   };
 
@@ -7581,7 +7859,7 @@ export function setupHandlers(
     e.stopPropagation();
   });
 
-  // Clear button
+  // Delete conversation button
   if (clearBtn) {
     clearBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
@@ -7602,7 +7880,6 @@ export function setupHandlers(
         body.querySelector(".llm-webchat-preload")?.remove();
         stopWebChatConnectionCheck();
         clearNextWebChatNewChatIntent();
-        resetWebChatPdfUploadedForCurrentConversation();
         // Restore previous model, or fall back to first non-webchat model
         const restoreId =
           previousNonWebchatModelId ||
@@ -7610,7 +7887,7 @@ export function setupHandlers(
             ?.entryId ||
           null;
         if (restoreId) {
-          setSelectedModelEntryForItem(item.id, restoreId);
+          setSelectedModelEntry(restoreId);
         }
         previousNonWebchatModelId = null;
         // Refresh UI back to normal mode
@@ -7641,7 +7918,7 @@ export function setupHandlers(
         return;
       }
 
-      void clearCurrentConversation();
+      void historyLifecycleController.queueCurrentConversationDeletion();
     });
   }
 
@@ -7650,10 +7927,18 @@ export function setupHandlers(
   const cleanupSetupHandlers = () => {
     if (setupHandlersCleaned) return;
     setupHandlersCleaned = true;
+    // The connection-check interval and preload token outlive the detached
+    // body otherwise — one leaked 5s timer per abandoned WebChat panel.
+    stopWebChatConnectionCheck();
+    abortWebChatPreload();
     disconnectObserverCleanup?.();
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
     cleanupMineruPaperSourceObservers?.();
+    cleanupModelCapabilitySubscription?.();
+    cleanupModelCapabilitySubscription = null;
+    codexDirectController?.dispose();
+    codexDirectController = null;
     body.removeEventListener(
       QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
       handleQuoteProvenanceRevalidationRequest,
@@ -7672,7 +7957,10 @@ export function setupHandlers(
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
     delete (body as any).__llmScheduleClaudeQueueDrain;
     delete (body as any).__llmScheduleClaudeThreadQueueDrain;
+    delete (body as any).__llmQueueTurnDeletion;
+    delete (body as any).__llmSearchPanelHistory;
     unregisterContextSurfaceActions();
+    disposePendingDeletionSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);
     if (setupHandlersCleanupByBody.get(body) === cleanupSetupHandlers) {
       setupHandlersCleanupByBody.delete(body);

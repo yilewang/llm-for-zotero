@@ -1,5 +1,12 @@
 import type { RuntimeModelEntry } from "../utils/modelProviders";
 import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
+import {
+  buildCodexReasoningChoices,
+  buildCodexRuntimeModelCandidates,
+  formatCodexReasoningLabel,
+  reconcileCodexReasoningChoice,
+  type CodexReasoningChoice,
+} from "../codex/catalogSelection";
 import { CODEX_REASONING_OPTIONS } from "./constants";
 import { listCodexAppServerModels } from "./nativeClient";
 
@@ -21,10 +28,7 @@ export type CodexAppServerModelCatalog = {
   models: CodexAppServerModelCatalogEntry[];
 };
 
-export type CodexAppServerReasoningChoice = {
-  value: string;
-  label: string;
-};
+export type CodexAppServerReasoningChoice = CodexReasoningChoice;
 
 export type ListCodexAppServerModelsParams = {
   codexPath?: string;
@@ -145,13 +149,7 @@ export async function loadCodexAppServerModelCatalog(params: {
 }
 
 export function formatCodexAppServerReasoningLabel(value: string): string {
-  const normalized = value.trim();
-  if (normalized.toLowerCase() === "xhigh") return "XHigh";
-  return normalized
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return formatCodexReasoningLabel(value);
 }
 
 export function getCodexAppServerReasoningChoices(params: {
@@ -165,36 +163,14 @@ export function getCodexAppServerReasoningChoices(params: {
   const efforts = catalogModel
     ? catalogModel.supportedReasoningEfforts
     : CODEX_REASONING_OPTIONS;
-  const choices: CodexAppServerReasoningChoice[] = [
-    { value: "auto", label: "Auto" },
-  ];
-  const seen = new Set<string>(["auto"]);
-
-  for (const effort of efforts) {
-    const value = effort.trim();
-    const key = value.toLowerCase();
-    if (!value || seen.has(key)) continue;
-    seen.add(key);
-    choices.push({
-      value,
-      label: formatCodexAppServerReasoningLabel(value),
-    });
-  }
-
-  return choices;
+  return buildCodexReasoningChoices({ efforts });
 }
 
 export function reconcileCodexAppServerReasoningMode(
   mode: string,
   choices: CodexAppServerReasoningChoice[],
 ): string {
-  const normalized = mode.trim();
-  if (!normalized || normalized.toLowerCase() === "auto") return "auto";
-  return (
-    choices.find(
-      (choice) => choice.value.toLowerCase() === normalized.toLowerCase(),
-    )?.value || "auto"
-  );
+  return reconcileCodexReasoningChoice(mode, choices);
 }
 
 export function resolveCodexAppServerReasoningSelection(params: {
@@ -262,38 +238,14 @@ export function buildCodexRuntimeModelEntries(params: {
   selectedModel: string;
   codexPath?: string;
 }): RuntimeModelEntry[] {
-  const selectedModel = params.selectedModel.trim();
-  const entries: RuntimeModelEntry[] = [];
-  const seenModels = new Set<string>();
-
-  if (selectedModel) {
-    const hasSelectedModel = params.models.some(
-      (model) => model.model.toLowerCase() === selectedModel.toLowerCase(),
-    );
-    if (!hasSelectedModel) {
-      entries.push(
-        createRuntimeModelEntry({
-          model: selectedModel,
-          displayModelLabel: selectedModel,
-          codexPath: params.codexPath,
-        }),
-      );
-      seenModels.add(selectedModel.toLowerCase());
-    }
-  }
-
-  for (const model of params.models) {
-    const key = model.model.toLowerCase();
-    if (seenModels.has(key)) continue;
-    seenModels.add(key);
-    entries.push(
-      createRuntimeModelEntry({
-        model: model.model,
-        displayModelLabel: model.displayName || model.model,
-        codexPath: params.codexPath,
-      }),
-    );
-  }
-
-  return entries;
+  return buildCodexRuntimeModelCandidates({
+    catalogModels: params.models,
+    selectedModel: params.selectedModel,
+  }).map((candidate) =>
+    createRuntimeModelEntry({
+      model: candidate.model,
+      displayModelLabel: candidate.displayName,
+      codexPath: params.codexPath,
+    }),
+  );
 }

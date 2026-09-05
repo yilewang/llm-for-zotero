@@ -15,7 +15,9 @@ export type QueryLibraryEntity =
   | "collections"
   | "notes"
   | "tags"
-  | "libraries";
+  | "libraries"
+  | "itemTypes"
+  | "savedSearches";
 export type QueryLibraryMode = "search" | "list" | "related" | "duplicates";
 export type QueryLibraryInclude =
   | "metadata"
@@ -34,6 +36,13 @@ export type QueryLibraryFilters = {
   yearTo?: number;
   itemType?: string;
   tag?: string;
+  /**
+   * List the trash rather than the library. Zotero excludes trashed items
+   * from every search unless told otherwise, so without this nothing could
+   * enumerate what was in the trash -- which made restoring anything the
+   * user had deleted impossible.
+   */
+  deleted?: boolean;
 };
 
 export type QueryLibraryItemResult = LibraryItemTarget & {
@@ -154,6 +163,68 @@ function applyLimit<T>(items: T[], limit: unknown): T[] {
     : items;
 }
 
+/**
+ * `dateModified` is deliberately absent: neither LibraryPaperTarget nor
+ * LibraryItemTarget carries the field, so sorting by it would read "" for
+ * every row and silently do nothing. Add the field to those targets before
+ * adding the key back.
+ */
+export type LibrarySortKey = "dateAdded" | "title";
+export type LibrarySortOrder = "asc" | "desc";
+
+function readSortValue(entry: unknown, key: LibrarySortKey): string {
+  const record =
+    entry && typeof entry === "object"
+      ? (entry as Record<string, unknown>)
+      : {};
+  const value = record[key];
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * Orders results before the window is taken.
+ *
+ * There was no sort of any kind, and `applyLimit` is a head slice, so "the 50
+ * most recently added papers" was simply not expressible — even though
+ * `dateAdded` has always been on the item targets and `autoTag` sorts by it
+ * internally.
+ */
+export function applySort<T>(items: T[], sort: unknown, order: unknown): T[] {
+  if (sort !== "dateAdded" && sort !== "title") {
+    return items;
+  }
+  const key = sort as LibrarySortKey;
+  // Titles default ascending, dates default descending ("most recent first"
+  // is what someone asking for recent papers means).
+  const descending = key === "title" ? order === "desc" : order !== "asc";
+  return [...items].sort((left, right) => {
+    const a = readSortValue(left, key);
+    const b = readSortValue(right, key);
+    // Empty values sort last in BOTH directions, so undated items never
+    // displace real hits. Reversing a sorted array would have floated them to
+    // the top of a descending list, which is why the direction is applied
+    // inside the comparator rather than afterwards.
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    const compared =
+      key === "title" ? a.localeCompare(b) : a < b ? -1 : a > b ? 1 : 0;
+    return descending ? -compared : compared;
+  });
+}
+
+/**
+ * Takes a window after sorting. Without this every list was a head slice, so
+ * a chain could never walk past the first page of its own results.
+ */
+export function applyOffset<T>(items: T[], offset: unknown): T[] {
+  const normalized =
+    Number.isFinite(offset) && Number(offset) > 0
+      ? Math.floor(Number(offset))
+      : 0;
+  return normalized > 0 ? items.slice(normalized) : items;
+}
+
 export class LibraryQueryService {
   constructor(private readonly zoteroGateway: ZoteroGateway) {}
 
@@ -191,6 +262,9 @@ export class LibraryQueryService {
     libraryID: number;
     filters?: QueryLibraryFilters;
     limit?: number;
+    offset?: number;
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
     include?: QueryLibraryInclude[];
   }): Promise<{
     results: QueryLibraryItemResult[];
@@ -210,6 +284,9 @@ export class LibraryQueryService {
     libraryID: number;
     filters?: QueryLibraryFilters;
     limit?: number;
+    offset?: number;
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
     include?: QueryLibraryInclude[];
   }): Promise<{
     results: QueryLibraryItemResult[];
@@ -272,13 +349,12 @@ export class LibraryQueryService {
       });
     }
     const totalCount = papers.length;
-    const normalizedLimit = Number.isFinite(params.limit)
-      ? Math.max(1, Math.floor(params.limit as number))
-      : undefined;
-    const limitedPapers =
-      normalizedLimit && papers.length > normalizedLimit
-        ? papers.slice(0, normalizedLimit)
-        : papers;
+    // The hasPdf:true short-circuit used to drop sort and offset silently, so
+    // a schema that advertised them lied on this path.
+    const limitedPapers = applyLimit(
+      applyOffset(applySort(papers, params.sort, params.order), params.offset),
+      params.limit,
+    );
     const enriched = limitedPapers.map((paper) =>
       enrichPaperTarget(paper, this.zoteroGateway, params.include),
     );
@@ -289,6 +365,9 @@ export class LibraryQueryService {
     libraryID: number;
     filters?: QueryLibraryFilters;
     limit?: number;
+    offset?: number;
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
     include?: QueryLibraryInclude[];
   }): Promise<{
     results: QueryLibraryItemResult[];
@@ -323,7 +402,11 @@ export class LibraryQueryService {
         });
       }
       const totalCount = items.length;
-      const enriched = applyLimit(items, params.limit).map((item) =>
+      const windowed = applyLimit(
+        applyOffset(applySort(items, params.sort, params.order), params.offset),
+        params.limit,
+      );
+      const enriched = windowed.map((item) =>
         enrichItemTarget(item, this.zoteroGateway, params.include),
       );
       return { results: enriched, totalCount, warnings: [] };
@@ -339,11 +422,15 @@ export class LibraryQueryService {
       yearFrom: filters.yearFrom,
       yearTo: filters.yearTo,
       tag: filters.tag,
+      deleted: filters.deleted,
     };
     const result = await this.zoteroGateway.listItemsByFilters({
       libraryID: params.libraryID,
       filters: agentFilters,
       limit: params.limit,
+      offset: params.offset,
+      sort: params.sort,
+      order: params.order,
     });
     const enriched = result.items.map((item) =>
       enrichItemTarget(item, this.zoteroGateway, params.include),

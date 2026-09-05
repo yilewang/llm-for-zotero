@@ -72,4 +72,15 @@ describe("composer input focus CSS", function () {
       /border-radius:\s*0 0 var\(--llm-inline-edit-border-radius\)\s+var\(--llm-inline-edit-border-radius\);/,
     );
   });
+
+  it("does not paint-contain the message wrapper that hosts inline edit menus", function () {
+    const css = readPanelCss();
+    const messageWrapperRule = extractCssRule(css, ".llm-message-wrapper");
+
+    assert.notMatch(
+      messageWrapperRule,
+      /contain\s*:[^;]*(?:layout|paint)/,
+      "layout/paint containment traps the inline editor's fixed model and reasoning menus",
+    );
+  });
 });

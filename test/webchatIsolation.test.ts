@@ -5,12 +5,7 @@ import { assert } from "chai";
 import {
   clearAllState,
   consumeWebChatConversationForceNewChat,
-  getWebChatUploadedPdfSourceKeysForConversation,
-  hasWebChatPdfUploadedForConversation,
-  isWebChatPdfUploadStateUnknownForConversation,
-  markWebChatPdfUploadStateUnknownForConversation,
   markWebChatConversationForceNewChat,
-  markWebChatPdfUploadedForConversation,
   resetWebChatConversationSessionState,
 } from "../src/modules/contextPanel/state";
 
@@ -196,7 +191,7 @@ describe("webchat isolation", function () {
     );
     const entryBlock = source.slice(entryStart, entryBlockEnd);
     const paperSwitch = entryBlock.indexOf(
-      "await createAndSwitchPaperConversation();",
+      "await ensureWebChatSessionPaperConversation();",
     );
     const webchatReset = entryBlock.indexOf(
       "resetCurrentWebChatConversation();",
@@ -311,6 +306,7 @@ describe("webchat isolation", function () {
     assert.isAbove(resetEnd, resetStart);
     assert.include(resetBlock, "chatHistory.set(key, []);");
     assert.include(resetBlock, "markNextWebChatSendAsNewChat();");
+    assert.include(resetBlock, "clearTransientComposeStateForItem(item.id);");
 
     const controllerSource = readFileSync(
       resolve(
@@ -337,53 +333,40 @@ describe("webchat isolation", function () {
     assert.isAbove(branchEnd, webchatBranch);
     assert.include(newChatBlock, "markNextWebChatSendAsNewChat();");
     assert.include(newChatBlock, "chatHistory.set(key, []);");
+    assert.include(newChatBlock, "clearTransientComposeStateForItem(item.id);");
   });
 
-  it("shares webchat send flags by conversation key", function () {
+  it("shares the fresh-chat send flag by conversation key", function () {
     const conversationKey = 4242;
 
-    markWebChatPdfUploadedForConversation(conversationKey, [
-      "zotero-pdf:10:101",
-    ]);
-    assert.isTrue(hasWebChatPdfUploadedForConversation(conversationKey));
-    assert.deepEqual(
-      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
-      ["zotero-pdf:10:101"],
-    );
-
     markWebChatConversationForceNewChat(conversationKey);
-    assert.isFalse(hasWebChatPdfUploadedForConversation(conversationKey));
     assert.isTrue(consumeWebChatConversationForceNewChat(conversationKey));
     assert.isFalse(consumeWebChatConversationForceNewChat(conversationKey));
 
-    markWebChatPdfUploadedForConversation(conversationKey, [
-      "zotero-pdf:10:102",
-    ]);
+    markWebChatConversationForceNewChat(conversationKey);
     resetWebChatConversationSessionState(conversationKey);
-    assert.isFalse(hasWebChatPdfUploadedForConversation(conversationKey));
-    assert.deepEqual(
-      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
-      [],
-    );
     assert.isFalse(consumeWebChatConversationForceNewChat(conversationKey));
   });
 
-  it("fails closed for restored WebChat sessions until a new chat is requested", function () {
-    const conversationKey = 5252;
+  it("does not block PDF attachment after restoring a WebChat", function () {
+    const sendFlowSource = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController.ts",
+      ),
+      "utf8",
+    );
+    const historySource = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/setupHandlers/controllers/webChatHistoryController.ts",
+      ),
+      "utf8",
+    );
 
-    markWebChatPdfUploadStateUnknownForConversation(conversationKey);
-    assert.isTrue(
-      isWebChatPdfUploadStateUnknownForConversation(conversationKey),
-    );
-    assert.deepEqual(
-      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
-      [],
-    );
-
-    markWebChatConversationForceNewChat(conversationKey);
-    assert.isFalse(
-      isWebChatPdfUploadStateUnknownForConversation(conversationKey),
-    );
+    assert.notInclude(sendFlowSource, "may already contain a different PDF");
+    assert.notInclude(sendFlowSource, "differs from the PDF already attached");
+    assert.notInclude(historySource, "PdfUploadStateUnknown");
   });
 
   it("does not restore normal paper history on webchat panel startup", function () {
@@ -412,5 +395,121 @@ describe("webchat isolation", function () {
       "initializeWebChatConversationForCurrentItem();",
     );
     assert.notInclude(webchatBlock, "switchPaperConversation()");
+  });
+
+  it("preserves an unsent webchat draft during panel state refreshes", function () {
+    const source = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+    const setterStart = source.indexOf("const setDraftInputForConversation =");
+    const persistStart = source.indexOf(
+      "const persistDraftInputForCurrentConversation = () => {",
+      setterStart,
+    );
+    const restoreStart = source.indexOf(
+      "const restoreDraftInputForCurrentConversation = () => {",
+      persistStart,
+    );
+    const clearStart = source.indexOf(
+      "const clearDraftInputState =",
+      restoreStart,
+    );
+    const setterBlock = source.slice(setterStart, persistStart);
+    const persistBlock = source.slice(persistStart, restoreStart);
+    const restoreBlock = source.slice(restoreStart, clearStart);
+    const panelSyncStart = source.indexOf(
+      "const syncConversationPanelState = () => {",
+    );
+    const panelSyncEnd = source.indexOf(
+      "activeContextPanelStateSync.set(body, syncConversationPanelState);",
+      panelSyncStart,
+    );
+    const panelSyncBlock = source.slice(panelSyncStart, panelSyncEnd);
+
+    assert.isAtLeast(setterStart, 0);
+    assert.isAbove(persistStart, setterStart);
+    assert.isAbove(restoreStart, persistStart);
+    assert.isAbove(clearStart, restoreStart);
+    assert.notInclude(
+      persistBlock,
+      "if (isWebChatModeActive()) return;",
+      "typed WebChat drafts must be cached",
+    );
+    assert.include(
+      setterBlock,
+      "webChatDraftInputCache",
+      "WebChat drafts must remain isolated from normal paper-chat drafts",
+    );
+    assert.notInclude(
+      restoreBlock,
+      'inputBox.value = "";',
+      "a background refresh must not erase a WebChat draft",
+    );
+    assert.include(
+      restoreBlock,
+      "webChatDraftInputCache",
+      "panel refreshes must restore the isolated WebChat draft",
+    );
+    assert.include(
+      panelSyncBlock,
+      "restoreDraftInputForCurrentConversation();",
+    );
+  });
+
+  it("keeps webchat models out of the retry pipeline at every gate", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+    const menuStart = setupSource.indexOf("const rebuildRetryModelMenu = ");
+    assert.isAtLeast(menuStart, 0);
+    const menuEnd = setupSource.indexOf(
+      "retryModelMenu.appendChild(option);",
+      menuStart,
+    );
+    const menuBlock = setupSource.slice(menuStart, menuEnd);
+    assert.include(
+      menuBlock,
+      'entry.authMode !== "webchat"',
+      "retry model menu must exclude webchat entries",
+    );
+
+    const chatSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/chat.ts"),
+      "utf8",
+    );
+    const retryStart = chatSource.indexOf(
+      "export async function retryLatestAssistantResponse(",
+    );
+    assert.isAtLeast(retryStart, 0);
+    const retryEnd = chatSource.indexOf(
+      "export async function editUserTurnAndRetry(",
+      retryStart,
+    );
+    const retryBlock = chatSource.slice(retryStart, retryEnd);
+    const resolvedGuard = retryBlock.indexOf(
+      'effectiveRequestConfig.authMode === "webchat" ||',
+    );
+    const guardRestore = retryBlock.indexOf(
+      "restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);",
+      resolvedGuard,
+    );
+    const streamCall = retryBlock.indexOf("callLLMStream");
+    assert.isAtLeast(
+      resolvedGuard,
+      0,
+      "retry must refuse webchat models on the resolved config",
+    );
+    assert.isAbove(
+      guardRestore,
+      resolvedGuard,
+      "the webchat bail-out must restore the reset turn snapshots",
+    );
+    assert.isAbove(
+      streamCall,
+      resolvedGuard,
+      "the webchat gate must run before any model request is dispatched",
+    );
   });
 });

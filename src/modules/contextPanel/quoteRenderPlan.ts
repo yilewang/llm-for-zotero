@@ -72,6 +72,12 @@ export type QuoteRenderPlan = {
 export type BuildQuoteRenderPlanInput = {
   markdown: string;
   quoteCitations?: QuoteCitation[] | undefined | null;
+  /**
+   * Legacy citation-looking Markdown blockquotes are paper-source UI only.
+   * Web-attributed answers disable this inference and keep ordinary quotes as
+   * ordinary blockquotes; explicit structured paper anchors still render.
+   */
+  allowLegacyInference?: boolean;
 };
 
 export function getMessageQuoteDisplay(
@@ -455,7 +461,10 @@ export function buildQuoteRenderPlan(
       continue;
     }
 
-    const tail = splitTrailingCitationLine(quoteLines);
+    const tail =
+      input.allowLegacyInference === false
+        ? null
+        : splitTrailingCitationLine(quoteLines);
     if (tail) {
       const occurrence = createLegacyOccurrence({
         quoteText: tail.quoteText,
@@ -486,7 +495,9 @@ export function buildQuoteRenderPlan(
     let cursor = index;
     while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
     const leading =
-      cursor < lines.length ? parseLeadingCitationLine(lines[cursor]) : null;
+      input.allowLegacyInference !== false && cursor < lines.length
+        ? parseLeadingCitationLine(lines[cursor])
+        : null;
     const quoteText = normalizeMultilineText(quoteLines.join("\n"));
     if (quoteText && leading?.citationLabel) {
       const occurrence = createLegacyOccurrence({

@@ -3,6 +3,8 @@ import {
   RESPONSES_ENDPOINT,
   buildHeaders,
   resolveEndpoint,
+  resolveOllamaNativeApiRoot,
+  resolveOllamaNativeEndpoint,
 } from "./apiHelpers";
 import type { ModelProviderAuthMode } from "./modelProviders";
 import type { ProviderProtocol } from "./providerProtocol";
@@ -62,6 +64,8 @@ function isQwenHost(parsed: ParsedApiBase | null): boolean {
 function rewriteApiBasePath(parsed: ParsedApiBase, pathname: string): string {
   return `${parsed.origin}${pathname}`;
 }
+
+export { resolveOllamaNativeApiRoot, resolveOllamaNativeEndpoint };
 
 export function normalizeOpenAICompatibleBase(apiBase: string): string {
   const cleaned = trimTrailingSlash(apiBase);
@@ -258,6 +262,9 @@ export function resolveProviderTransportEndpoint(params: {
   if (params.protocol === "anthropic_messages") {
     return resolveAnthropicMessagesEndpoint(params.apiBase);
   }
+  if (params.protocol === "ollama_native") {
+    return resolveOllamaNativeEndpoint(params.apiBase);
+  }
   return resolveGeminiNativeEndpoint({
     apiBase: params.apiBase,
     model: params.model || "",
@@ -293,6 +300,16 @@ export function buildProviderTransportHeaders(params: {
       "x-api-key": params.apiKey,
       "anthropic-version": ANTHROPIC_VERSION,
     };
+  }
+  if (params.protocol === "ollama_native") {
+    // Ollama serves unauthenticated; a key is only present when the user has
+    // put it behind a reverse proxy, so send the header only when set.
+    return params.apiKey
+      ? {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`,
+        }
+      : { "Content-Type": "application/json" };
   }
   return {
     "Content-Type": "application/json",

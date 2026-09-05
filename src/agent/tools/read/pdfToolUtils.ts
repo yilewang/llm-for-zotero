@@ -15,6 +15,8 @@ import type {
   AgentToolDefinition,
 } from "../../types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import { getTurnPaperScopeFromRequest } from "../../context/requestTurnPaperScope";
+import { getActiveTurnPaper } from "../../context/turnPaperScope";
 import {
   normalizePositiveInt,
   normalizeToolPaperContext,
@@ -33,6 +35,53 @@ export type PdfTarget = {
   name?: string;
 };
 
+export type PaperTargetSelector = Readonly<
+  Pick<PdfTarget, "paperContext" | "itemId" | "contextItemId">
+>;
+
+export type VisualPaperTargetSelector = Readonly<{
+  paperSelector?: PaperTargetSelector;
+  attachmentId?: string;
+  name?: string;
+}>;
+
+export type ExplicitTargetErrorCode =
+  | "conflicting_target_arguments"
+  | "empty_target_entry"
+  | "unsupported_target_selector"
+  | "selector_not_supported_for_mode"
+  | "unresolvable_target"
+  | "conflicting_paper_identity";
+
+export type ExplicitTargetSyntaxResult =
+  | Readonly<{ kind: "omitted" }>
+  | Readonly<{
+      kind: "paper_selectors";
+      selectors: readonly PaperTargetSelector[];
+    }>
+  | Readonly<{
+      kind: "visual_selector";
+      selector: VisualPaperTargetSelector;
+    }>
+  | Readonly<{
+      kind: "invalid";
+      code: ExplicitTargetErrorCode;
+      message: string;
+    }>;
+
+export class ExplicitPaperTargetError extends Error {
+  constructor(
+    readonly code: Extract<
+      ExplicitTargetErrorCode,
+      "unresolvable_target" | "conflicting_paper_identity"
+    >,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ExplicitPaperTargetError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Target normalization
 // ---------------------------------------------------------------------------
@@ -44,7 +93,7 @@ export function normalizeTarget(value: unknown): PdfTarget | undefined {
   )
     ? normalizeToolPaperContext(value.paperContext) || undefined
     : undefined;
-  return {
+  const target: PdfTarget = {
     paperContext,
     itemId: normalizePositiveInt(value.itemId),
     contextItemId: normalizePositiveInt(value.contextItemId),
@@ -57,6 +106,13 @@ export function normalizeTarget(value: unknown): PdfTarget | undefined {
         ? value.name.trim()
         : undefined,
   };
+  return target.paperContext ||
+    target.itemId ||
+    target.contextItemId ||
+    target.attachmentId ||
+    target.name
+    ? target
+    : undefined;
 }
 
 export function normalizeTargets(
@@ -71,10 +127,183 @@ export function normalizeTargets(
   return targets.length ? targets : undefined;
 }
 
+const PAPER_TARGET_FIELDS = new Set([
+  "paperContext",
+  "itemId",
+  "contextItemId",
+]);
+const VISUAL_TARGET_FIELDS = new Set([
+  ...PAPER_TARGET_FIELDS,
+  "attachmentId",
+  "name",
+]);
+
+function invalidTargetSyntax(
+  code: Exclude<
+    ExplicitTargetErrorCode,
+    "unresolvable_target" | "conflicting_paper_identity"
+  >,
+  message: string,
+): ExplicitTargetSyntaxResult {
+  return { kind: "invalid", code, message };
+}
+
+function hasUnsupportedFields(
+  value: Record<string, unknown>,
+  supported: ReadonlySet<string>,
+): boolean {
+  return Object.keys(value).some((key) => !supported.has(key));
+}
+
+function toPaperTargetSelector(
+  value: Record<string, unknown>,
+): PaperTargetSelector | null {
+  const normalized = normalizeTarget(value);
+  if (
+    !normalized ||
+    (!normalized.paperContext &&
+      !normalized.itemId &&
+      !normalized.contextItemId)
+  ) {
+    return null;
+  }
+  return {
+    paperContext: normalized.paperContext,
+    itemId: normalized.itemId,
+    contextItemId: normalized.contextItemId,
+  };
+}
+
+/**
+ * Normalize model-generated paper_read selector syntax without resolving
+ * Zotero identity. Exactly-empty target objects remain a compatibility alias
+ * for an omitted target, while non-empty malformed selectors fail closed.
+ */
+export function normalizeExplicitTargetSyntax(params: {
+  targetProvided: boolean;
+  target: unknown;
+  targetsProvided: boolean;
+  targets: unknown;
+  mode: "paper" | "visual";
+  maxCount: number;
+}): ExplicitTargetSyntaxResult {
+  if (params.targetProvided && params.targetsProvided) {
+    return invalidTargetSyntax(
+      "conflicting_target_arguments",
+      "Provide either target or targets, not both.",
+    );
+  }
+
+  if (params.targetsProvided) {
+    if (params.mode === "visual") {
+      return invalidTargetSyntax(
+        "selector_not_supported_for_mode",
+        "Visual and capture reads accept one target selector, not targets.",
+      );
+    }
+    if (!Array.isArray(params.targets)) {
+      return invalidTargetSyntax(
+        "unsupported_target_selector",
+        "targets must be an array of paper selectors.",
+      );
+    }
+    if (!params.targets.length) return { kind: "omitted" };
+    const selectors: PaperTargetSelector[] = [];
+    for (const [index, entry] of params.targets.entries()) {
+      if (!validateObject<Record<string, unknown>>(entry)) {
+        return invalidTargetSyntax(
+          "unsupported_target_selector",
+          `targets[${index}] must be an object.`,
+        );
+      }
+      if (!Object.keys(entry).length) {
+        return invalidTargetSyntax(
+          "empty_target_entry",
+          `targets[${index}] must identify a paper.`,
+        );
+      }
+      if (hasUnsupportedFields(entry, PAPER_TARGET_FIELDS)) {
+        return invalidTargetSyntax(
+          "unsupported_target_selector",
+          `targets[${index}] contains an unsupported paper selector.`,
+        );
+      }
+      const selector = toPaperTargetSelector(entry);
+      if (!selector) {
+        return invalidTargetSyntax(
+          "unsupported_target_selector",
+          `targets[${index}] must include paperContext, itemId, or contextItemId.`,
+        );
+      }
+      if (selectors.length < params.maxCount) selectors.push(selector);
+    }
+    return { kind: "paper_selectors", selectors };
+  }
+
+  if (!params.targetProvided) return { kind: "omitted" };
+  if (!validateObject<Record<string, unknown>>(params.target)) {
+    return invalidTargetSyntax(
+      "unsupported_target_selector",
+      "target must be an object.",
+    );
+  }
+  if (!Object.keys(params.target).length) return { kind: "omitted" };
+  if (hasUnsupportedFields(params.target, VISUAL_TARGET_FIELDS)) {
+    return invalidTargetSyntax(
+      "unsupported_target_selector",
+      "target contains an unsupported selector.",
+    );
+  }
+  const normalized = normalizeTarget(params.target);
+  if (!normalized) {
+    return invalidTargetSyntax(
+      "unsupported_target_selector",
+      "target must include a supported paper or visual selector.",
+    );
+  }
+  const hasVisualSelector = Boolean(normalized.attachmentId || normalized.name);
+  if (hasVisualSelector) {
+    if (params.mode !== "visual") {
+      return invalidTargetSyntax(
+        "selector_not_supported_for_mode",
+        "attachmentId and name selectors are supported only for visual or capture reads.",
+      );
+    }
+    const paperSelector = toPaperTargetSelector(params.target) || undefined;
+    return {
+      kind: "visual_selector",
+      selector: {
+        paperSelector,
+        attachmentId: normalized.attachmentId,
+        name: normalized.name,
+      },
+    };
+  }
+  const selector = toPaperTargetSelector(params.target);
+  if (!selector) {
+    return invalidTargetSyntax(
+      "unsupported_target_selector",
+      "target must include paperContext, itemId, or contextItemId.",
+    );
+  }
+  return params.mode === "visual"
+    ? {
+        kind: "visual_selector",
+        selector: { paperSelector: selector },
+      }
+    : { kind: "paper_selectors", selectors: [selector] };
+}
+
 function describeTarget(target: PdfTarget): string {
   const parts = [
-    target.itemId ? `itemId=${target.itemId}` : "",
-    target.contextItemId ? `contextItemId=${target.contextItemId}` : "",
+    target.itemId || target.paperContext?.itemId
+      ? `itemId=${target.itemId || target.paperContext?.itemId}`
+      : "",
+    target.contextItemId || target.paperContext?.contextItemId
+      ? `contextItemId=${
+          target.contextItemId || target.paperContext?.contextItemId
+        }`
+      : "",
   ].filter(Boolean);
   return parts.length ? parts.join(", ") : "missing itemId/contextItemId";
 }
@@ -83,12 +312,41 @@ function resolveTarget(
   target: PdfTarget,
   zoteroGateway: ZoteroGateway,
 ): PaperContextRef | null {
-  if (target.paperContext) return target.paperContext;
-  if (target.itemId || target.contextItemId) {
-    return zoteroGateway.resolvePaperContextTarget({
-      itemId: target.itemId,
-      contextItemId: target.contextItemId,
+  const paperContext = target.paperContext;
+  if (paperContext && target.itemId && target.itemId !== paperContext.itemId) {
+    throw new ExplicitPaperTargetError(
+      "conflicting_paper_identity",
+      "The explicit paper target contains conflicting itemId values.",
+    );
+  }
+  if (
+    paperContext &&
+    target.contextItemId &&
+    target.contextItemId !== paperContext.contextItemId
+  ) {
+    throw new ExplicitPaperTargetError(
+      "conflicting_paper_identity",
+      "The explicit paper target contains conflicting contextItemId values.",
+    );
+  }
+  const itemId = target.itemId || paperContext?.itemId;
+  const contextItemId = target.contextItemId || paperContext?.contextItemId;
+  if (itemId || contextItemId) {
+    const resolved = zoteroGateway.resolvePaperContextTarget({
+      itemId,
+      contextItemId,
     });
+    if (
+      resolved &&
+      ((itemId && resolved.itemId !== itemId) ||
+        (contextItemId && resolved.contextItemId !== contextItemId))
+    ) {
+      throw new ExplicitPaperTargetError(
+        "conflicting_paper_identity",
+        "The explicit paper target resolved to a different Zotero paper.",
+      );
+    }
+    return resolved;
   }
   return null;
 }
@@ -106,9 +364,9 @@ function dedupePaperContextRefs(
     ) {
       continue;
     }
-    const key = `${Math.floor(Number(paperContext.itemId))}:${Math.floor(
-      Number(paperContext.contextItemId),
-    )}`;
+    const key = `${Math.floor(Number(paperContext.libraryID || 0))}:${Math.floor(
+      Number(paperContext.itemId),
+    )}:${Math.floor(Number(paperContext.contextItemId))}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(paperContext);
@@ -119,10 +377,11 @@ function dedupePaperContextRefs(
 export function describeNoDefaultPaperTarget(
   request: AgentRuntimeRequest,
 ): string {
+  const scope = getTurnPaperScopeFromRequest(request);
   if (
     request.conversationKind === "global" ||
-    request.selectedCollectionContexts?.length ||
-    request.selectedTagContexts?.length
+    scope.collections.length ||
+    scope.tags.length
   ) {
     return (
       "No paper target in library chat. Use library_search with the selected " +
@@ -165,9 +424,72 @@ export function resolveDefaultTargets(
     }
     return [paperContext];
   }
-  return dedupePaperContextRefs(
-    zoteroGateway.listPaperContexts(context.request),
-  ).slice(0, maxCount);
+  const scope = getTurnPaperScopeFromRequest(context.request);
+  const activePaper = getActiveTurnPaper(scope);
+  const activeKey = activePaper
+    ? `${activePaper.libraryID}:${activePaper.itemId}:${activePaper.contextItemId}`
+    : "";
+  const addedPapers = scope.papers
+    .filter(
+      (entry) =>
+        `${entry.paper.libraryID}:${entry.paper.itemId}:${entry.paper.contextItemId}` !==
+        activeKey,
+    )
+    .map((entry) => entry.paper);
+  const allPapers = scope.papers.map((entry) => entry.paper);
+  const userText = context.request.userText || "";
+  const paperTargetIntent = context.request.classifiedIntent?.paperTargetIntent;
+  const requestsActivePaper =
+    /\b(?:this|the current|current|active)\s+(?:paper|article|study|document|pdf)\b/i.test(
+      userText,
+    );
+  const requestsAddedPapers =
+    /\b(?:the\s+)?(?:selected|added|attached)\s+(?:papers?|articles?|studies|documents?|pdfs?)\b/i.test(
+      userText,
+    );
+  const requestsAllVisiblePapers =
+    /\b(?:these|both|all(?:\s+of\s+the)?)\s+(?:papers?|articles?|studies|documents?|pdfs?)\b/i.test(
+      userText,
+    );
+  const classifiedTargets =
+    paperTargetIntent === "active"
+      ? activePaper
+        ? [activePaper]
+        : []
+      : paperTargetIntent === "added"
+        ? activePaper
+          ? addedPapers
+          : allPapers
+        : paperTargetIntent === "all_visible"
+          ? allPapers
+          : paperTargetIntent === "unspecified"
+            ? activePaper
+              ? [activePaper]
+              : allPapers
+            : undefined;
+  const legacySummarizeTargets =
+    paperTargetIntent === undefined &&
+    context.request.classifiedIntent?.retrievalIntent === "summarize" &&
+    allPapers.length > 1
+      ? allPapers
+      : undefined;
+  // A failed classifier leaves classifiedIntent absent. In that degraded mode
+  // the English-only phrases above are the compatibility fallback, so requests
+  // expressed differently may require explicit target/targets selectors.
+  const heuristicTargets = requestsActivePaper
+    ? activePaper
+      ? [activePaper]
+      : []
+    : requestsAddedPapers
+      ? addedPapers
+      : requestsAllVisiblePapers
+        ? allPapers
+        : activePaper
+          ? [activePaper]
+          : allPapers;
+  const implicit =
+    classifiedTargets || legacySummarizeTargets || heuristicTargets;
+  return dedupePaperContextRefs(implicit).slice(0, maxCount);
 }
 
 // ---------------------------------------------------------------------------

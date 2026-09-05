@@ -61,30 +61,6 @@ export function stringifyUnknown(value: unknown): string {
   return "";
 }
 
-export function findLastAssistantToolCallIndex(
-  messages: AgentModelMessage[],
-): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (
-      message.role === "assistant" &&
-      Array.isArray(message.tool_calls) &&
-      message.tool_calls.length
-    ) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-export function getToolContinuationMessages(
-  messages: AgentModelMessage[],
-): AgentModelMessage[] {
-  const index = findLastAssistantToolCallIndex(messages);
-  if (index < 0 || index >= messages.length - 1) return [];
-  return messages.slice(index + 1);
-}
-
 export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
   toolMessages: Extract<AgentModelMessage, { role: "tool" }>[];
   followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[];

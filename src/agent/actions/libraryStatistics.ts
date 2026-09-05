@@ -3,6 +3,11 @@ import type {
   ActionExecutionContext,
   ActionResult,
 } from "./types";
+import {
+  libraryIndexService,
+  type LibraryIndexItem,
+  type LibraryIndexSnapshot,
+} from "../../services/libraryIndexService";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,19 +96,6 @@ type LibraryStatisticsOutput = {
 
 function normalizeText(value: unknown): string {
   return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
-
-function getItemTypeName(item: Zotero.Item): string {
-  try {
-    const name = (
-      Zotero as unknown as {
-        ItemTypes?: { getName?: (id: number) => string };
-      }
-    ).ItemTypes?.getName?.(item.itemTypeID);
-    return typeof name === "string" && name.trim() ? name.trim() : "";
-  } catch {
-    return "";
-  }
 }
 
 function increment(map: Map<string, number>, key: string): void {
@@ -304,19 +296,19 @@ export const libraryStatisticsAction: AgentAction<
       total: STEPS,
     });
 
-    let items: Zotero.Item[];
+    let items: LibraryIndexItem[];
+    let snapshot: LibraryIndexSnapshot;
     try {
-      const rawItems: Zotero.Item[] = await Zotero.Items.getAll(
-        ctx.libraryID,
-        false,
-        false,
-        false,
-      );
-      items = rawItems.filter((item) => {
-        if ((item as any).isNote?.()) return !item.parentID;
-        if (item.isAttachment?.()) return false;
-        return item.isRegularItem?.() ?? false;
-      });
+      snapshot = await libraryIndexService.getSnapshot(ctx.libraryID);
+      items = snapshot.topLevelItemOrder
+        .map((itemId) => snapshot.itemById.get(itemId))
+        .filter((item): item is LibraryIndexItem =>
+          Boolean(
+            item &&
+            !item.deleted &&
+            (item.kind === "regular" || item.kind === "standalone-note"),
+          ),
+        );
     } catch (err) {
       return {
         ok: false,
@@ -327,14 +319,9 @@ export const libraryStatisticsAction: AgentAction<
     // Filter by collection if scoped
     if (input.scope === "collection" && input.collectionId) {
       const targetCollectionId = Math.floor(input.collectionId);
-      items = items.filter((item) => {
-        try {
-          const colIds = item.getCollections?.() || [];
-          return colIds.includes(targetCollectionId);
-        } catch {
-          return false;
-        }
-      });
+      items = items.filter((item) =>
+        item.collectionIds.includes(targetCollectionId),
+      );
     }
 
     ctx.onProgress({
@@ -372,53 +359,30 @@ export const libraryStatisticsAction: AgentAction<
 
     for (const item of items) {
       // Standalone notes: count type but skip bibliographic stats
-      if ((item as any).isNote?.()) {
+      if (item.kind === "standalone-note") {
         if (enabled.has("itemTypes")) increment(typeCounts, "note");
         // growth timeline applies to notes too
         if (enabled.has("growthTimeline")) {
-          try {
-            const da = normalizeText(item.getField?.("dateAdded"));
-            const m = da.match(/^(\d{4}-\d{2})/);
-            if (m) increment(monthCounts, m[1]);
-          } catch {
-            /* ignore */
-          }
+          const m = item.dateAdded.match(/^(\d{4}-\d{2})/);
+          if (m) increment(monthCounts, m[1]);
         }
         continue;
       }
 
       // ── Item type ──
       if (enabled.has("itemTypes")) {
-        increment(typeCounts, getItemTypeName(item) || "unknown");
+        increment(typeCounts, item.itemType || "unknown");
       }
 
       // ── Year ──
       if (enabled.has("yearDistribution")) {
-        try {
-          const dateStr = normalizeText(item.getField?.("date"));
-          const yearMatch = dateStr.match(/\b(19|20)\d{2}\b/);
-          if (yearMatch) increment(yearCounts, yearMatch[0]);
-        } catch {
-          /* ignore */
-        }
+        if (item.year) increment(yearCounts, item.year);
       }
 
       // ── Authors ──
       if (enabled.has("topAuthors") || enabled.has("authorshipStats")) {
-        try {
-          const creators: Array<{
-            firstName?: string;
-            lastName?: string;
-            name?: string;
-            creatorType?: string;
-          }> = (item as any).getCreatorsJSON?.() || [];
-          const names: string[] = [];
-          for (const c of creators) {
-            const name = (
-              c.name || [c.firstName, c.lastName].filter(Boolean).join(" ")
-            ).trim();
-            if (name) names.push(name);
-          }
+        {
+          const names = [...item.creators];
           const numAuthors = names.length;
           if (numAuthors > 0) {
             itemsWithAuthors++;
@@ -431,79 +395,53 @@ export const libraryStatisticsAction: AgentAction<
           if (enabled.has("topAuthors")) {
             for (const name of names) increment(authorCounts, name);
           }
-        } catch {
-          /* ignore */
         }
       }
 
       // ── Journal / venue ──
       if (enabled.has("topJournals")) {
-        try {
-          const pubTitle = normalizeText(item.getField?.("publicationTitle"));
-          if (pubTitle) increment(journalCounts, pubTitle);
-        } catch {
-          /* ignore */
+        if (item.publicationTitle) {
+          increment(journalCounts, item.publicationTitle);
         }
       }
 
       // ── Tags ──
       if (enabled.has("tags")) {
-        try {
-          const tags: Array<{ tag: string }> = item.getTags?.() || [];
-          if (tags.length === 0) untaggedCount++;
-          for (const t of tags) {
-            const tagName = normalizeText(t?.tag);
-            if (tagName) {
-              increment(tagCounts, tagName);
-              totalTagAssignments++;
-            }
+        const itemTags = [...item.tags, ...item.automaticTags];
+        if (itemTags.length === 0) untaggedCount++;
+        for (const tagName of itemTags) {
+          if (tagName) {
+            increment(tagCounts, tagName);
+            totalTagAssignments++;
           }
-        } catch {
-          /* ignore */
         }
       }
 
       // ── Collections (for unfiled count and per-collection item counts) ──
       if (enabled.has("collections")) {
-        try {
-          const colIds: number[] = item.getCollections?.() || [];
-          if (colIds.length === 0) unfiledCount++;
-          for (const cid of colIds) {
-            const id = Number(cid);
-            if (Number.isFinite(id) && id > 0) {
-              collectionItemCounts.set(
-                id,
-                (collectionItemCounts.get(id) || 0) + 1,
-              );
-            }
+        if (item.collectionIds.length === 0) unfiledCount++;
+        for (const id of item.collectionIds) {
+          if (Number.isFinite(id) && id > 0) {
+            collectionItemCounts.set(
+              id,
+              (collectionItemCounts.get(id) || 0) + 1,
+            );
           }
-        } catch {
-          /* ignore */
         }
       }
 
       // ── Growth timeline ──
       if (enabled.has("growthTimeline")) {
-        try {
-          const da = normalizeText(item.getField?.("dateAdded"));
-          const m = da.match(/^(\d{4}-\d{2})/);
-          if (m) increment(monthCounts, m[1]);
-        } catch {
-          /* ignore */
-        }
+        const m = item.dateAdded.match(/^(\d{4}-\d{2})/);
+        if (m) increment(monthCounts, m[1]);
       }
 
       // ── Title keywords ──
       if (enabled.has("titleKeywords")) {
-        try {
-          const title = normalizeText(item.getField?.("title"));
-          if (title) {
-            for (const word of tokenizeTitle(title)) {
-              increment(wordCounts, word);
-            }
+        if (item.title) {
+          for (const word of tokenizeTitle(item.title)) {
+            increment(wordCounts, word);
           }
-        } catch {
-          /* ignore */
         }
       }
     }
@@ -569,9 +507,10 @@ export const libraryStatisticsAction: AgentAction<
       const perItemCounts: AnnotatedItem[] = [];
 
       for (const item of items) {
-        if (!item.isRegularItem?.()) continue;
+        if (item.kind !== "regular") continue;
         try {
-          const attachmentIds: number[] = item.getAttachments?.() || [];
+          const attachmentIds =
+            snapshot.childAttachmentIdsByItemId.get(item.itemId) || [];
           let itemAnnotationCount = 0;
 
           for (const attId of attachmentIds) {
@@ -603,9 +542,8 @@ export const libraryStatisticsAction: AgentAction<
             itemsWithAnnotations++;
             totalAnnotations += itemAnnotationCount;
             perItemCounts.push({
-              itemId: item.id,
-              title:
-                normalizeText(item.getField?.("title")) || `Item ${item.id}`,
+              itemId: item.itemId,
+              title: item.title || `Item ${item.itemId}`,
               count: itemAnnotationCount,
             });
           }

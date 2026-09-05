@@ -3,7 +3,10 @@ import type {
   AgentToolDefinition,
   AgentToolInputValidation,
 } from "../../types";
-import { estimateTextTokens } from "../../../utils/modelInputCap";
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+} from "../../../utils/modelInputCap";
 import { getAgentToolResultHandle } from "../../store/toolResultHandles";
 import { fail, ok } from "../shared";
 
@@ -98,9 +101,9 @@ function truncateToTokenBudget(
   if (estimateTextTokens(text) <= maxTokens) {
     return { value };
   }
-  const maxChars = Math.max(256, maxTokens * 4);
+  const excerptBody = sliceTextToTokenBudget(text, Math.max(64, maxTokens));
   return {
-    excerpt: `${text.slice(0, maxChars).trimEnd()}\n\n[Section truncated to fit maxTokens.]`,
+    excerpt: `${excerptBody.trimEnd()}\n\n[Section truncated to fit maxTokens.]`,
     truncated: true,
   };
 }
@@ -272,14 +275,15 @@ export function createToolResultReadTool(): AgentToolDefinition<
     spec: {
       name: "tool_result_read",
       description:
-        "Read a bounded section from a prior Agent tool result that was compacted under context pressure. Use only when a compacted tool message provides a toolResultHandle and omitted rows/snippets are needed for the current answer.",
+        "Read a bounded section from a prior Agent tool result preserved behind a handle. Use when a semantic/context checkpoint provides handle=trh_... or a compacted tool message provides toolResultHandle, and omitted rows or snippets are needed for the current answer.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           handle: {
             type: "string",
-            description: "The toolResultHandle from a compacted tool message.",
+            description:
+              "The trh_... handle from a semantic/context checkpoint or compacted tool message.",
           },
           path: {
             type: "string",

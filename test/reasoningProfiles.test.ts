@@ -6,6 +6,7 @@ import {
   getOpenAIReasoningProfileForModel,
   getReasoningDefaultLevelForModel,
   getRuntimeReasoningOptionsForModel,
+  supportsReasoningForModel,
 } from "../src/utils/reasoningProfiles";
 import { buildReasoningPayload } from "../src/utils/llmClient";
 
@@ -86,6 +87,67 @@ describe("reasoningProfiles", function () {
         gpt53Codex.map((option) => option.level),
         ["low", "medium", "high", "xhigh"],
       );
+    });
+  });
+
+  describe("OpenAI pre-reasoning families", function () {
+    const NON_REASONING_MODELS = [
+      "gpt-4o",
+      "gpt-4o-mini",
+      "gpt-4o-2024-08-06",
+      "gpt-4.1",
+      "gpt-4-turbo",
+      "gpt-4.5-preview",
+      "chatgpt-4o-latest",
+      "gpt-3.5-turbo",
+      "gpt-35-turbo",
+    ];
+
+    it("offers no reasoning levels for the gpt-3 and gpt-4 families", function () {
+      for (const model of NON_REASONING_MODELS) {
+        assert.deepEqual(
+          getRuntimeReasoningOptionsForModel("openai", model),
+          [],
+          `${model} should offer no reasoning levels`,
+        );
+        assert.isFalse(
+          supportsReasoningForModel("openai", model),
+          `${model} should not claim reasoning support`,
+        );
+        assert.isNull(
+          getReasoningDefaultLevelForModel("openai", model),
+          `${model} should have no default reasoning level`,
+        );
+      }
+    });
+
+    it("sends no reasoning payload for gpt-4o even when a level is selected", function () {
+      // A level can still arrive from a cached selection made before the
+      // model was switched. The payload builder must drop it rather than let
+      // the request 400 on an unrecognized `reasoning_effort`.
+      assert.deepEqual(
+        buildReasoningPayload(
+          { provider: "openai", level: "low" },
+          false,
+          "gpt-4o",
+          "https://api.openai.com/v1",
+          "openai_chat_compat",
+        ),
+        { extra: {}, omitTemperature: false },
+      );
+    });
+
+    it("keeps the optimistic level set for an unrecognized OpenAI model", function () {
+      // Guard against anyone narrowing this into a fallback swap: a model
+      // OpenAI has not shipped yet must still get a usable level set without
+      // a code change, which is the whole point of the optimistic fallback.
+      assert.deepEqual(
+        getRuntimeReasoningOptionsForModel("openai", "gpt-6").map(
+          (option) => option.level,
+        ),
+        ["default", "low", "medium", "high"],
+      );
+      assert.isTrue(supportsReasoningForModel("openai", "gpt-6"));
     });
   });
 

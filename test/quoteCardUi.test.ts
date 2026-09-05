@@ -2,11 +2,143 @@ import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendQuoteCardBodyContentForTests } from "../src/modules/contextPanel/assistantCitationLinks";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 function source(path: string): string {
   return readFileSync(resolve(here, "..", path), "utf8");
+}
+
+/**
+ * Minimal DOM stand-in for the quote-card body plumbing. Zotero runs on Gecko
+ * and the suite has no DOM library, so the pieces the renderer actually uses
+ * are modelled here with real DOM semantics: `appendChild` moves a node out of
+ * its previous parent, `textContent` concatenates descendant text, and
+ * `querySelector` matches descendants only. Anything unmodelled throws rather
+ * than quietly answering, so a fake that drifts from Gecko fails loudly.
+ */
+class FakeClassList {
+  private readonly tokens = new Set<string>();
+
+  add(...names: string[]): void {
+    for (const name of names) this.tokens.add(name);
+  }
+
+  remove(...names: string[]): void {
+    for (const name of names) this.tokens.delete(name);
+  }
+
+  contains(name: string): boolean {
+    return this.tokens.has(name);
+  }
+}
+
+class FakeNode {
+  public parentNode: FakeNode | null = null;
+  public readonly childNodes: FakeNode[] = [];
+
+  get firstChild(): FakeNode | null {
+    return this.childNodes[0] || null;
+  }
+
+  get lastChild(): FakeNode | null {
+    return this.childNodes[this.childNodes.length - 1] || null;
+  }
+
+  get firstElementChild(): FakeElement | null {
+    return (
+      this.childNodes.find(
+        (child): child is FakeElement => child instanceof FakeElement,
+      ) || null
+    );
+  }
+
+  get textContent(): string {
+    return this.childNodes.map((child) => child.textContent).join("");
+  }
+
+  appendChild(child: FakeNode): FakeNode {
+    child.parentNode?.removeChild(child);
+    child.parentNode = this;
+    this.childNodes.push(child);
+    return child;
+  }
+
+  removeChild(child: FakeNode): FakeNode {
+    const index = this.childNodes.indexOf(child);
+    if (index < 0) throw new Error("removeChild: node is not a child");
+    this.childNodes.splice(index, 1);
+    child.parentNode = null;
+    return child;
+  }
+
+  /** Supports only the comma-separated tag-name selectors the renderer uses. */
+  querySelector(selector: string): FakeElement | null {
+    const tagNames = selector.split(",").map((part) => part.trim());
+    if (!tagNames.length || tagNames.some((name) => !/^[a-z]+$/.test(name))) {
+      throw new Error(`fake querySelector cannot parse selector: ${selector}`);
+    }
+    for (const child of this.childNodes) {
+      if (
+        child instanceof FakeElement &&
+        tagNames.includes(child.tagName.toLowerCase())
+      ) {
+        return child;
+      }
+      const nested = child.querySelector(selector);
+      if (nested) return nested;
+    }
+    return null;
+  }
+}
+
+class FakeText extends FakeNode {
+  constructor(private readonly data: string) {
+    super();
+  }
+
+  get textContent(): string {
+    return this.data;
+  }
+
+  override appendChild(): FakeNode {
+    throw new Error("text nodes cannot have children");
+  }
+}
+
+class FakeElement extends FakeNode {
+  public readonly classList = new FakeClassList();
+  public readonly tagName: string;
+
+  constructor(tagName: string) {
+    super();
+    this.tagName = tagName.toUpperCase();
+  }
+}
+
+class FakeFragment extends FakeNode {}
+
+function element(tagName: string, ...children: FakeNode[]): FakeElement {
+  const node = new FakeElement(tagName);
+  for (const child of children) node.appendChild(child);
+  return node;
+}
+
+function fragment(...children: FakeNode[]): FakeFragment {
+  const node = new FakeFragment();
+  for (const child of children) node.appendChild(child);
+  return node;
+}
+
+function appendBodyContent(
+  body: FakeElement,
+  quoteContent: FakeNode | null,
+): boolean {
+  return appendQuoteCardBodyContentForTests(
+    body as unknown as HTMLElement,
+    quoteContent as unknown as ParentNode | null,
+  );
 }
 
 describe("quote card UI contract", function () {
@@ -32,17 +164,6 @@ describe("quote card UI contract", function () {
     assert.include(css, "justify-content: flex-end");
     assert.include(css, "background: transparent");
     assert.include(css, "background: var(--llm-quote-card-surface)");
-  });
-
-  it("isolates message layout and paint work while scrolling", function () {
-    const css = source("addon/content/zoteroPane.css");
-    const messageRuleStart = css.indexOf(".llm-message-wrapper {");
-    const messageRuleEnd = css.indexOf("}", messageRuleStart);
-    const messageRule = css.slice(messageRuleStart, messageRuleEnd);
-
-    assert.isAtLeast(messageRuleStart, 0);
-    assert.isAbove(messageRuleEnd, messageRuleStart);
-    assert.include(messageRule, "contain: layout paint style");
   });
 
   it("defines noninteractive amber styling for not-source quote cards", function () {
@@ -159,17 +280,151 @@ describe("quote card UI contract", function () {
     );
   });
 
-  it("renders collapsed quote-card previews as lightweight plain text", function () {
+  it("adopts a prerendered body that carries visible text", function () {
+    const body = element("div");
+    const paragraph = element("p", new FakeText("Attention is all you need."));
+
+    assert.isTrue(appendBodyContent(body, fragment(paragraph)));
+    assert.equal(body.textContent, "Attention is all you need.");
+    assert.isTrue(body.classList.contains("llm-rendered-markdown"));
+    assert.equal(paragraph.childNodes.length, 0);
+  });
+
+  it("rejects a prerendered body whose content sanitized away to nothing", function () {
+    const body = element("div");
+    const quoteContent = fragment(element("p", new FakeText("")));
+
+    assert.isFalse(appendBodyContent(body, quoteContent));
+    assert.equal(body.childNodes.length, 0);
+    assert.isFalse(body.classList.contains("llm-rendered-markdown"));
+  });
+
+  it("rejects a blockquote that rendered to whitespace around an emptied paragraph", function () {
+    // The shape the Markdown renderer actually hands over for the reported
+    // bug: newline text nodes around a paragraph whose only child was swapped
+    // for an empty text node by the sanitizer. Every node here is real, so
+    // node presence alone reports success and the card paints empty.
+    const body = element("div");
+    const quoteContent = fragment(
+      new FakeText("\n"),
+      element("p", new FakeText("")),
+      new FakeText("\n"),
+    );
+
+    assert.isFalse(appendBodyContent(body, quoteContent));
+    assert.equal(body.childNodes.length, 0);
+    assert.equal(quoteContent.childNodes.length, 3);
+  });
+
+  it("adopts a blockquote that rendered to whitespace around real text", function () {
+    const body = element("div");
+    const quoteContent = fragment(
+      new FakeText("\n"),
+      element(
+        "p",
+        new FakeText("Scaling laws hold across orders of magnitude."),
+      ),
+      new FakeText("\n"),
+    );
+
+    assert.isTrue(appendBodyContent(body, quoteContent));
+    assert.equal(
+      body.textContent,
+      "\nScaling laws hold across orders of magnitude.\n",
+    );
+    assert.equal(quoteContent.childNodes.length, 0);
+  });
+
+  it("leaves the prerendered content intact when it rejects it", function () {
+    const emptied = element("p", new FakeText(""));
+    const quoteContent = fragment(emptied);
+
+    assert.isFalse(appendBodyContent(element("div"), quoteContent));
+    assert.equal(quoteContent.childNodes.length, 1);
+    assert.strictEqual(quoteContent.firstChild, emptied);
+    assert.equal(emptied.childNodes.length, 1);
+  });
+
+  it("keeps content that renders visibly without contributing text", function () {
+    // A rule and a task-list checkbox both paint on their own; the sanitizer
+    // only ever lets an <input> through as a checkbox.
+    for (const tagName of ["hr", "input"]) {
+      const body = element("div");
+
+      assert.isTrue(
+        appendBodyContent(body, fragment(element(tagName))),
+        `expected <${tagName}> to count as visible content`,
+      );
+      assert.isTrue(body.classList.contains("llm-rendered-markdown"));
+      assert.equal(body.childNodes.length, 1);
+    }
+  });
+
+  it("does not count a bare line break as visible content", function () {
+    const body = element("div");
+
+    assert.isFalse(appendBodyContent(body, fragment(element("br"))));
+    assert.equal(body.childNodes.length, 0);
+  });
+
+  it("judges the incoming content, not text the body already holds", function () {
+    const body = element("div", new FakeText("Loading…"));
+
+    assert.isFalse(appendBodyContent(body, fragment(element("p"))));
+    assert.equal(body.textContent, "Loading…");
+    assert.equal(body.childNodes.length, 1);
+  });
+
+  it("keeps a markdown class the body already carried", function () {
+    const body = element("div");
+    body.classList.add("llm-rendered-markdown");
+
+    assert.isFalse(appendBodyContent(body, fragment(element("p"))));
+    assert.isTrue(body.classList.contains("llm-rendered-markdown"));
+  });
+
+  it("renders collapsed quote-card previews through the math-only renderer", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const markdownSource = source(
+      "src/modules/contextPanel/renderedMarkdown.ts",
     );
 
     assert.include(renderSource, "buildQuoteCardPreviewText");
     assert.include(
       renderSource,
-      "preview.textContent =\n    buildQuoteCardPreviewText(params.quoteText)",
+      "renderRenderedMathPreviewInto(\n    preview,\n    buildQuoteCardPreviewText(params.quoteText)",
     );
-    assert.notInclude(renderSource, "renderQuoteCardPreviewMarkdown");
+    assert.notInclude(renderSource, "preview.textContent =");
+    assert.include(
+      markdownSource,
+      "export function renderRenderedMathPreviewInto",
+    );
+    const previewRendererStart = markdownSource.indexOf(
+      "export function renderRenderedMathPreviewInto",
+    );
+    const fullRendererStart = markdownSource.indexOf(
+      "export function renderRenderedMarkdownInto",
+      previewRendererStart,
+    );
+    const previewRenderer = markdownSource.slice(
+      previewRendererStart,
+      fullRendererStart,
+    );
+    assert.include(previewRenderer, "setRenderedMarkdownHtml");
+    assert.notInclude(previewRenderer, "attachRenderedCodeBlockControls");
+    assert.notInclude(previewRenderer, "attachRenderedCopyButtons");
+    assert.notInclude(previewRenderer, "renderMermaidBlocks");
+  });
+
+  it("keeps rendered preview math compact inside the two-line clamp", function () {
+    const css = source("addon/content/zoteroPane.css");
+
+    assert.include(css, ".llm-quote-card-preview .math-display-inline");
+    assert.include(css, ".llm-quote-card-preview .katex-display");
+    assert.include(css, "font-size: 1em");
+    assert.include(css, "margin: 0");
   });
 
   it("does not construct a hidden preview for rejected quote cards", function () {
@@ -439,13 +694,18 @@ describe("quote card UI contract", function () {
       "src/modules/contextPanel/agentMode/agentEngine.ts",
     );
 
+    // Send and retry share finalizeAgentTurnOutcome, which awaits quote
+    // finalization for the turn's paired user message before persisting.
     assert.include(
       agentSource,
-      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage,\n      userMessage,\n      runtimeRequest,",
+      "await deps.finalizeAssistantQuoteCitations(\n    assistantMessage,\n    pairedUserMessage,\n    runtimeRequest,",
     );
-    assert.include(
-      agentSource,
-      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage,\n      retryPair.userMessage,\n      runtimeRequest,",
+    assert.include(agentSource, "pairedUserMessage: userMessage,");
+    assert.include(agentSource, "pairedUserMessage: retryPair.userMessage,");
+    // Both turn paths route through the shared finalizer.
+    assert.equal(
+      agentSource.match(/await finalizeAgentTurnOutcome\(\{/g)?.length,
+      2,
     );
   });
 });

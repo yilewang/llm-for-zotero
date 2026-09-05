@@ -7,6 +7,7 @@ import {
   getOrCreateCodexAppServerProcess,
   isCodexAppServerInjectItemsUnsupportedError,
   listNvmCodexCandidates,
+  mergeCodexNoProxyValues,
   resolveCodexAppServerBinaryPath,
   resolveCodexBinary,
   resolveCodexAppServerTurnInputWithFallback,
@@ -161,6 +162,17 @@ function createChunkReader(values: string[]) {
 }
 
 describe("codexAppServerProcess", function () {
+  it("merges inherited no-proxy entries with the required loopback bypass", function () {
+    assert.equal(mergeCodexNoProxyValues(), "localhost,127.0.0.1,::1");
+    assert.equal(
+      mergeCodexNoProxyValues(
+        " corp.internal, LOCALHOST, * ",
+        "legacy.internal,corp.internal,127.0.0.1",
+      ),
+      "corp.internal,LOCALHOST,*,legacy.internal,127.0.0.1,::1",
+    );
+  });
+
   it("extracts thread and turn IDs from both flat and nested response shapes", function () {
     assert.equal(
       extractCodexAppServerThreadId({ id: "thread-flat" }),
@@ -1735,7 +1747,13 @@ describe("codexAppServerProcess", function () {
 
     await withRuntimeStubs(
       {
-        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.exe" },
+        env: {
+          CODEX_PATH: "C:\\Tools\\Codex\\codex.exe",
+          HTTP_PROXY: "http://proxy.example:8080",
+          NO_PROXY: "corp.internal",
+          no_proxy: "legacy.internal",
+        },
+        inheritEnv: false,
         platform: "windows",
         stubProcessLifecycle: true,
         subprocessCall: createSpawnStub(calls),
@@ -1749,6 +1767,16 @@ describe("codexAppServerProcess", function () {
     assert.lengthOf(calls, 1);
     assert.equal(calls[0]?.command, "C:\\Tools\\Codex\\codex.exe");
     assert.deepEqual(calls[0]?.arguments, ["app-server"]);
+    assert.equal(
+      calls[0]?.environment?.NO_PROXY,
+      "corp.internal,legacy.internal,localhost,127.0.0.1,::1",
+    );
+    assert.equal(
+      calls[0]?.environment?.no_proxy,
+      calls[0]?.environment?.NO_PROXY,
+    );
+    assert.notProperty(calls[0]?.environment || {}, "HTTP_PROXY");
+    assert.isTrue(calls[0]?.environmentAppend);
   });
 
   it("uses an explicit codex path before environment or PATH lookup", async function () {
@@ -1791,6 +1819,8 @@ describe("codexAppServerProcess", function () {
 
     await withRuntimeStubs(
       {
+        env: {},
+        inheritEnv: false,
         platform: "windows",
         stubProcessLifecycle: true,
         subprocessCall: createSpawnStub(calls),
@@ -1808,6 +1838,34 @@ describe("codexAppServerProcess", function () {
       "/c",
       "codex app-server",
     ]);
+    assert.equal(calls[0]?.environment?.NO_PROXY, "localhost,127.0.0.1,::1");
+    assert.equal(calls[0]?.environment?.no_proxy, "localhost,127.0.0.1,::1");
+    assert.isTrue(calls[0]?.environmentAppend);
+  });
+
+  it("adds the loopback bypass when launching a Windows cmd shim", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: {},
+        inheritEnv: false,
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "C:\\Tools\\Codex\\codex.cmd",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.match(calls[0]?.command || "", /c:\\windows\\system32\\cmd\.exe/i);
+    assert.equal(calls[0]?.environment?.NO_PROXY, "localhost,127.0.0.1,::1");
+    assert.equal(calls[0]?.environment?.no_proxy, "localhost,127.0.0.1,::1");
+    assert.isTrue(calls[0]?.environmentAppend);
   });
 
   it("bypasses the Windows npm cmd and node shims when the native binary is present", async function () {
@@ -1817,6 +1875,8 @@ describe("codexAppServerProcess", function () {
 
     await withRuntimeStubs(
       {
+        env: {},
+        inheritEnv: false,
         ioExists: async (path) =>
           path === `${nativeRoot}\\codex\\codex.exe` ||
           path === `${nativeRoot}\\path`,
@@ -1837,6 +1897,8 @@ describe("codexAppServerProcess", function () {
     assert.equal(calls[0]?.stderr, "pipe");
     assert.equal(calls[0]?.environment?.CODEX_MANAGED_BY_NPM, "1");
     assert.include(calls[0]?.environment?.PATH || "", `${nativeRoot}\\path`);
+    assert.equal(calls[0]?.environment?.NO_PROXY, "localhost,127.0.0.1,::1");
+    assert.equal(calls[0]?.environment?.no_proxy, "localhost,127.0.0.1,::1");
     assert.isTrue(calls[0]?.environmentAppend);
   });
 
@@ -2174,6 +2236,37 @@ describe("codexAppServerProcess", function () {
     );
   });
 
+  it("merges both no-proxy variants from Zotero Services.env", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.exe" },
+        inheritEnv: false,
+        platform: "windows",
+        servicesEnvGet: (key) => {
+          if (key === "NO_PROXY") return "corp.internal, localhost";
+          if (key === "no_proxy") return "legacy.internal,corp.internal";
+          return undefined;
+        },
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.equal(
+      calls[0]?.environment?.NO_PROXY,
+      "corp.internal,localhost,legacy.internal,127.0.0.1,::1",
+    );
+    assert.equal(
+      calls[0]?.environment?.no_proxy,
+      calls[0]?.environment?.NO_PROXY,
+    );
+  });
+
   it("fails Windows auto-detect without fabricating C:\\Users\\User when home env vars are missing", async function () {
     const checkedPaths: string[] = [];
 
@@ -2242,6 +2335,7 @@ describe("codexAppServerProcess", function () {
           const message =
             error instanceof Error ? error.message : String(error);
           assert.include(message, "codex binary not found");
+          assert.include(message, "Codex CLI Path");
           assert.include(message, "only native Windows Codex is supported");
           assert.include(message, "WSL Codex is not supported");
         }
@@ -2304,12 +2398,80 @@ describe("codexAppServerProcess", function () {
     );
   });
 
+  it("finds codex from the user-scope WinGet Links directory without relying on PATH", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local",
+        },
+        inheritEnv: false,
+        ioExists: async (path) =>
+          path ===
+          "C:\\Users\\alice\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(
+          binary,
+          "C:\\Users\\alice\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe",
+        );
+      },
+    );
+  });
+
+  it("derives the user-scope WinGet Links candidate from USERPROFILE when LOCALAPPDATA is missing", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+        },
+        inheritEnv: false,
+        ioExists: async (path) =>
+          path ===
+          "C:\\Users\\alice\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(
+          binary,
+          "C:\\Users\\alice\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe",
+        );
+      },
+    );
+  });
+
+  it("finds codex from the machine-scope WinGet Links directory without relying on PATH", async function () {
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "" },
+        inheritEnv: false,
+        ioExists: async (path) =>
+          path === "C:\\Program Files\\WinGet\\Links\\codex.exe",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "C:\\Program Files\\WinGet\\Links\\codex.exe");
+      },
+    );
+  });
+
   it("rejects explicit wsl.exe launchers on Windows", async function () {
     await withRuntimeStubs(
       {
         env: {
           CODEX_PATH: "",
         },
+        inheritEnv: false,
         inheritEnv: false,
         platform: "windows",
         subprocessUnavailable: true,
@@ -2444,6 +2606,7 @@ describe("codexAppServerProcess", function () {
           NVM_DIR: "/Users/alice/.nvm",
           CODEX_PATH: "",
         },
+        inheritEnv: false,
         ioExists: async (path) => path === "/opt/homebrew/bin/codex",
         platform: "macos",
         stubProcessLifecycle: true,
@@ -2480,6 +2643,8 @@ describe("codexAppServerProcess", function () {
     assert.deepEqual(calls[1]?.arguments, ["app-server"]);
     assert.equal(calls[1]?.environmentAppend, true);
     assert.include(calls[1]?.environment?.PATH || "", "/opt/homebrew/bin");
+    assert.equal(calls[1]?.environment?.NO_PROXY, "localhost,127.0.0.1,::1");
+    assert.equal(calls[1]?.environment?.no_proxy, "localhost,127.0.0.1,::1");
   });
 
   it("prepends the nvm codex bin directory to PATH when launching on macOS", async function () {

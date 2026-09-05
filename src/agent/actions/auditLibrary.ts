@@ -38,6 +38,8 @@ type AuditLibraryInput = PagedActionInput & {
   userQuery?: string;
   /** If true, saves an audit report note to the library. */
   saveNote?: boolean;
+  /** Internal durable-batch target set. Never accepted from model input. */
+  _batchItemIds?: number[];
 };
 
 export type AuditIssue = {
@@ -127,6 +129,7 @@ export const auditLibraryAction: AgentAction<
     ctx: ActionExecutionContext,
   ): Promise<ActionResult<AuditLibraryOutput>> {
     let options = getPagedActionOptions(input);
+    const initialStartOffset = options.startOffset;
     const windowEndOffset =
       options.limit !== undefined
         ? options.startOffset + options.limit
@@ -155,6 +158,22 @@ export const auditLibraryAction: AgentAction<
         auditableRecords.map((record) => [record.itemId, record] as const),
       );
     };
+    const issueWindowCount = (): number => {
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, issues.length)
+          : issues.length;
+      return Math.max(0, end - Math.min(initialStartOffset, end));
+    };
+    const remainingIssueIds = (nextOffset: number): number[] => {
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, issues.length)
+          : issues.length;
+      return issues
+        .slice(Math.max(initialStartOffset, nextOffset), end)
+        .map((issue) => issue.itemId);
+    };
     try {
       await reloadAuditPages();
     } catch (error) {
@@ -166,6 +185,16 @@ export const auditLibraryAction: AgentAction<
             : "Failed to scan library items",
       };
     }
+
+    await ctx.checkpoint?.({
+      cursor: 0,
+      appliedCount: 0,
+      totalCount: issueWindowCount(),
+      plan: {
+        remainingItemIds: remainingIssueIds(initialStartOffset),
+        pageSize: options.pageSize,
+      },
+    });
 
     ctx.onProgress({
       type: "step_done",
@@ -227,6 +256,17 @@ export const auditLibraryAction: AgentAction<
 
       if (!updateCandidates.length) {
         skipped += page.items.length;
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: metadataFixed,
+          totalCount: issueWindowCount(),
+          plan: {
+            remainingItemIds: remainingIssueIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+          },
+        });
         pageCursor += 1;
         continue;
       }
@@ -319,6 +359,17 @@ export const auditLibraryAction: AgentAction<
           type: "step_done",
           step: `${pageLabel}: Reviewing metadata fixes`,
           summary: `Fixed metadata for ${pageFixed} item${pageFixed === 1 ? "" : "s"}`,
+        });
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: metadataFixed,
+          totalCount: issueWindowCount(),
+          plan: {
+            remainingItemIds: remainingIssueIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+          },
         });
         if (confirmationActionId === "confirm") {
           if (pageCursor >= issuePages.length - 1) {
@@ -433,6 +484,12 @@ async function loadFreshAuditRecords(
   input: AuditLibraryInput,
   ctx: ActionExecutionContext,
 ): Promise<AuditRecord[]> {
+  if (Array.isArray(input._batchItemIds)) {
+    return ctx.zoteroGateway
+      .getBibliographicItemTargetsByItemIds(input._batchItemIds)
+      .filter((target) => !isNonBibliographicTarget(target))
+      .map((target) => auditRecordFromTarget(target, ctx));
+  }
   if (typeof ctx.zoteroGateway.listBibliographicItemTargets === "function") {
     const result =
       input.scope === "collection" &&

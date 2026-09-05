@@ -1,4 +1,4 @@
-import type { AgentToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
   buildPagedReviewActionConfig,
   buildPageSizeSelectField,
@@ -23,6 +23,7 @@ import {
   normalizeMoveAssignmentsFromResolution,
   getMoveAssignmentFieldId,
   executeAndRecordUndo,
+  planLibraryMutations,
 } from "./mutateLibraryShared";
 
 type MoveToCollectionInput = {
@@ -32,13 +33,14 @@ type MoveToCollectionInput = {
 
 export function createMoveToCollectionTool(
   zoteroGateway: ZoteroGateway,
-): AgentToolDefinition<MoveToCollectionInput, unknown> {
+): AgentWriteToolDefinition<MoveToCollectionInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
     spec: {
       name: "move_to_collection",
-      description: "Add or remove Zotero papers from collections (folders).",
+      description:
+        "Add, move, or remove Zotero papers from collections (folders). action:'add' with mode:'move' performs a real move; the default adds, leaving the item in its existing collections as well.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -74,6 +76,18 @@ export function createMoveToCollectionTool(
             description:
               "Collection ID to remove items from (for action 'remove').",
           },
+          mode: {
+            type: "string",
+            enum: ["add", "move"],
+            default: "add",
+            description:
+              "For action 'add'. 'add' files the item and leaves its other collections untouched. 'move' also removes it from 'from', so it ends up filed only where the user asked.",
+          },
+          from: {
+            description:
+              "Required when mode is 'move': the collection ID to take the items out of, or 'all' to replace their collection membership entirely.",
+            anyOf: [{ type: "number" }, { type: "string", enum: ["all"] }],
+          },
           assignments: {
             type: "array",
             items: {
@@ -102,7 +116,12 @@ export function createMoveToCollectionTool(
         onPending: "Waiting for confirmation on collection changes",
         onApproved: "Applying collection changes",
         onDenied: "Collection changes cancelled",
-        onSuccess: "Collection updated",
+        onSuccess: ({ effect }) =>
+          effect === "none"
+            ? "No papers changed"
+            : effect === "partial"
+              ? "Some papers filed"
+              : "Collection updated",
       },
     },
 
@@ -158,6 +177,18 @@ export function createMoveToCollectionTool(
           ? args.targetCollectionName.trim()
           : undefined;
 
+      const mode = args.mode === "move" ? "move" : undefined;
+      const from =
+        args.from === "all"
+          ? ("all" as const)
+          : normalizePositiveInt(args.from) || undefined;
+      if (mode === "move" && from === undefined) {
+        return fail(
+          'mode "move" requires from: pass from:<collectionId> to take the items out of one collection, or from:"all" to replace their collection membership entirely. ' +
+            'Example: { action: "add", mode: "move", from: 12, itemIds: [101], targetCollectionId: 34 }',
+        );
+      }
+
       const operation: MoveToCollectionOperation = {
         id,
         type: "move_to_collection",
@@ -165,6 +196,8 @@ export function createMoveToCollectionTool(
         itemIds: itemIds || undefined,
         targetCollectionId,
         targetCollectionName,
+        mode,
+        from,
       };
       return ok({ action, operation });
     },
@@ -196,12 +229,28 @@ export function createMoveToCollectionTool(
       const op = input.operation as MoveToCollectionOperation;
       const pageMeta = readPagedOperationMeta(op.id);
       const pageLabel = readPagedOperationLabel(op.id);
+      // The card used to be titled "Add to collection" with a "Move" button,
+      // while the code only ever added. Say which one is actually happening.
+      const isMove = op.mode === "move";
+      const sourceLabel =
+        op.from === "all"
+          ? "every collection they are currently in"
+          : (() => {
+              const source =
+                typeof op.from === "number"
+                  ? zoteroGateway.getCollectionSummary(op.from)
+                  : null;
+              return source
+                ? `"${source.path || source.name}"`
+                : `collection ${op.from}`;
+            })();
+      const cardTitle = isMove ? "Move to collection" : "Add to collection";
       const field = buildMoveAssignmentField(op, zoteroGateway, context);
       if (!field) {
         return {
           toolName: "move_to_collection",
           mode: "approval",
-          title: `${pageLabel ? `${pageLabel}: ` : ""}Add to collection`,
+          title: `${pageLabel ? `${pageLabel}: ` : ""}${cardTitle}`,
           description: "No items or collections available for assignment.",
           confirmLabel: "Confirm",
           cancelLabel: pageLabel ? "Stop" : "Cancel",
@@ -214,9 +263,11 @@ export function createMoveToCollectionTool(
       return {
         toolName: "move_to_collection",
         mode: "review",
-        title: `${pageLabel ? `${pageLabel}: ` : ""}Add to collection`,
-        description: "Select the destination collection for each paper.",
-        confirmLabel: "Move",
+        title: `${pageLabel ? `${pageLabel}: ` : ""}${cardTitle}`,
+        description: isMove
+          ? `Select the destination collection for each paper. Each paper will also be removed from ${sourceLabel}.`
+          : "Select the destination collection for each paper. They will stay in any collections they are already in.",
+        confirmLabel: isMove ? "Move" : "Add",
         cancelLabel: pageLabel ? "Stop" : "Cancel",
         fields: [
           field,
@@ -256,6 +307,9 @@ export function createMoveToCollectionTool(
       };
       return ok({ action: input.action, operation: updatedOperation });
     },
+
+    planMutation: (input, context) =>
+      planLibraryMutations(mutationService, [input.operation], context),
 
     execute: async (input, context) => {
       return executeAndRecordUndo(

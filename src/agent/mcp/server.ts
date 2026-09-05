@@ -19,16 +19,33 @@ import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { ZoteroGateway } from "../services/zoteroGateway";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../../shared/conversationWriteFence";
 import type {
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
   AgentToolArtifact,
   AgentToolContext,
   ExhaustiveReadBackend,
   PreparedToolExecution,
   ToolSpec,
 } from "../types";
+import {
+  resolveAgentRuntimeRequest,
+  resolveZoteroTurnMetadataContext,
+} from "../context/resolvedAgentRequest";
+import {
+  getActiveTurnPaper,
+  type TurnPaperRole,
+  type TurnPaperScope,
+  type TurnPaperScopeWarning,
+} from "../context/turnPaperScope";
 import {
   MCP_METHODS,
   RPC_ERRORS,
@@ -70,7 +87,30 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "file_io",
   "zotero_script",
   "undo_last_action",
+  "revert_changes",
+  "annotate_pdf",
 ] as const;
+
+/**
+ * Registered tools deliberately NOT exposed over MCP, and why.
+ *
+ * This list exists so a missing tool reads as a decision rather than drift —
+ * the registry and these curated arrays are maintained by hand and have
+ * silently diverged before.
+ */
+export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
+  // Runs unattended for minutes and reports only at the end. The MCP
+  // transport has no progress channel and no way to drive the per-page
+  // review the in-plugin surface offers, so an external backend would see a
+  // single opaque call that either succeeds or times out. Revisit when the
+  // paged result contract ({done, nextOffset, remaining}) lands.
+  library_batch:
+    "library_batch runs unattended with no progress channel over MCP; use the in-plugin agent or the slash-command surface.",
+  // Deliberately absent and gated on a metadata flag the MCP path never
+  // sets, so advertising it would offer a permanently unavailable tool.
+  tool_result_read:
+    "tool_result_read is gated on an in-plugin metadata flag that the MCP path does not set.",
+};
 const CURATED_READ_TOOL_NAMES = new Set<string>(
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
 );
@@ -127,9 +167,11 @@ const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
   "zotero_script",
 ]);
 
-export type ZoteroMcpActiveScope = {
+type ZoteroMcpScopeMetadata = {
   profileSignature?: string;
   conversationKey?: number;
+  instanceID?: string;
+  conversationGeneration?: number;
   libraryID?: number;
   kind?: "global" | "paper";
   paperItemID?: number;
@@ -149,19 +191,62 @@ export type ZoteroMcpActiveScope = {
     ExhaustiveReadBackend,
     "codex_responses" | "unavailable"
   >;
-  paperContext?: PaperContextRef;
-  selectedPaperContexts?: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts?: PaperContextRef[];
-  pinnedPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
 };
+
+export type ZoteroMcpPaperScopeInput =
+  | {
+      turnPaperScope: TurnPaperScope;
+      turnPaperScopeWarnings?: readonly TurnPaperScopeWarning[];
+      paperContext?: never;
+      selectedPaperContexts?: never;
+      pdfPaperContexts?: never;
+      fullTextPaperContexts?: never;
+      pinnedPaperContexts?: never;
+      selectedCollectionContexts?: never;
+      selectedTagContexts?: never;
+    }
+  | {
+      turnPaperScope?: never;
+      turnPaperScopeWarnings?: never;
+      paperContext?: PaperContextRef;
+      selectedPaperContexts?: PaperContextRef[];
+      pdfPaperContexts?: PaperContextRef[];
+      fullTextPaperContexts?: PaperContextRef[];
+      pinnedPaperContexts?: PaperContextRef[];
+      selectedCollectionContexts?: CollectionContextRef[];
+      selectedTagContexts?: TagContextRef[];
+    };
+
+export type ZoteroMcpActiveScope = ZoteroMcpScopeMetadata &
+  ZoteroMcpPaperScopeInput;
 
 type McpServerDeps = {
   toolRegistry: AgentToolRegistry;
   zoteroGateway: ZoteroGateway;
 };
+
+function getMcpScopePapers(
+  scope: ZoteroMcpActiveScope | null,
+  roles?: readonly TurnPaperRole[],
+): PaperContextRef[] {
+  if (scope?.turnPaperScope) {
+    return scope.turnPaperScope.papers
+      .filter(
+        (entry) => !roles || entry.roles.some((role) => roles.includes(role)),
+      )
+      .map((entry) => entry.paper);
+  }
+  if (!scope) return [];
+  const legacyByRole: Array<[TurnPaperRole, PaperContextRef[] | undefined]> = [
+    ["selected", normalizePaperContexts(scope.selectedPaperContexts)],
+    ["raw_pdf", normalizePaperContexts(scope.pdfPaperContexts)],
+    ["full_text", normalizePaperContexts(scope.fullTextPaperContexts)],
+    ["pinned", normalizePaperContexts(scope.pinnedPaperContexts)],
+  ];
+  return legacyByRole
+    .filter(([role]) => !roles || roles.includes(role))
+    .flatMap(([, papers]) => papers || []);
+}
 
 type EndpointOptions = {
   method: string;
@@ -178,6 +263,10 @@ type McpHttpResponse = {
 const scopedZoteroMcpScopes = new Map<
   string,
   { createdAt: number; expiresAt: number; scope: ZoteroMcpActiveScope }
+>();
+const conversationScopeTokens = new Map<
+  string,
+  { token: string; instanceID?: string }
 >();
 let activeZoteroMcpScope: ZoteroMcpActiveScope | null = null;
 let registeredMcpDeps: McpServerDeps | null = null;
@@ -385,16 +474,19 @@ export function buildZoteroMcpConfigValue(
     scopeToken?: string;
     required?: boolean;
     rawPdfMode?: boolean;
+    enabled?: boolean;
   } = {},
 ): Record<string, unknown> {
   const token = getOrCreateZoteroMcpBearerToken();
   const scopeToken = normalizeText(params.scopeToken, 256);
+  const enabled = params.enabled !== false;
   const enabledToolNames = params.rawPdfMode
     ? getZoteroMcpDirectPdfToolNames()
     : getZoteroMcpAllowedToolNames();
   return {
     url: getZoteroMcpServerUrl(),
-    ...(params.required ? { required: true } : {}),
+    ...(!enabled ? { enabled: false } : {}),
+    ...(enabled && params.required ? { required: true } : {}),
     default_tools_approval_mode: CODEX_MCP_TOOL_APPROVAL_MODE,
     tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
     http_headers: {
@@ -444,10 +536,12 @@ function normalizePaperContext(
   value: PaperContextRef | undefined,
 ): PaperContextRef | undefined {
   if (!value) return undefined;
+  const libraryID = normalizePositiveInt(value.libraryID);
   const itemId = normalizePositiveInt(value.itemId);
   const contextItemId = normalizePositiveInt(value.contextItemId);
   if (!itemId || !contextItemId) return undefined;
   return {
+    ...(libraryID ? { libraryID } : {}),
     itemId,
     contextItemId,
     title: normalizeText(value.title) || `Paper ${itemId}`,
@@ -469,7 +563,7 @@ function normalizePaperContexts(
   for (const value of values) {
     const normalized = normalizePaperContext(value);
     if (!normalized) continue;
-    const key = `${normalized.itemId}:${normalized.contextItemId}`;
+    const key = `${normalized.libraryID || 0}:${normalized.itemId}:${normalized.contextItemId}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(normalized);
@@ -576,17 +670,60 @@ function normalizeReasoningConfig(
 function normalizeActiveScope(
   scope: ZoteroMcpActiveScope,
 ): ZoteroMcpActiveScope {
+  const rawScope = scope as ZoteroMcpActiveScope & Record<string, unknown>;
+  const hasLegacyPaperScope = [
+    "paperContext",
+    "selectedPaperContexts",
+    "pdfPaperContexts",
+    "fullTextPaperContexts",
+    "pinnedPaperContexts",
+    "selectedCollectionContexts",
+    "selectedTagContexts",
+  ].some((field) => rawScope[field] !== undefined);
+  if (scope.turnPaperScope && hasLegacyPaperScope) {
+    throw new Error(
+      "conflicting_paper_scope: send turnPaperScope or legacy paper arrays, not both.",
+    );
+  }
   const paperContext = normalizePaperContext(scope.paperContext);
+  const canonicalActivePaper = scope.turnPaperScope
+    ? getActiveTurnPaper(scope.turnPaperScope)
+    : undefined;
+  const conversationKey = normalizePositiveInt(scope.conversationKey);
   const paperItemID =
-    normalizePositiveInt(scope.paperItemID) || paperContext?.itemId;
+    normalizePositiveInt(scope.paperItemID) ||
+    canonicalActivePaper?.itemId ||
+    paperContext?.itemId;
   const activeContextItemId =
     normalizePositiveInt(scope.activeContextItemId) ||
+    canonicalActivePaper?.contextItemId ||
     paperContext?.contextItemId;
-  return {
+  const metadataLibraryID = normalizePositiveInt(scope.libraryID);
+  const canonicalLibraryID = normalizePositiveInt(
+    scope.turnPaperScope?.libraryID,
+  );
+  if (
+    metadataLibraryID &&
+    canonicalLibraryID &&
+    metadataLibraryID !== canonicalLibraryID
+  ) {
+    throw new Error(
+      "conflicting_paper_scope: turnPaperScope belongs to a different Zotero library.",
+    );
+  }
+  const metadata: ZoteroMcpScopeMetadata = {
     profileSignature: normalizeText(scope.profileSignature, 128),
-    conversationKey: normalizePositiveInt(scope.conversationKey),
-    libraryID: normalizePositiveInt(scope.libraryID),
-    kind: scope.kind === "paper" ? "paper" : "global",
+    conversationKey,
+    instanceID: normalizeText(scope.instanceID, 128),
+    conversationGeneration: conversationKey
+      ? Number.isFinite(scope.conversationGeneration)
+        ? Math.max(0, Math.floor(Number(scope.conversationGeneration)))
+        : getConversationWriteGeneration(conversationKey)
+      : undefined,
+    libraryID: canonicalLibraryID || metadataLibraryID,
+    kind:
+      scope.turnPaperScope?.conversationKind ||
+      (scope.kind === "paper" ? "paper" : "global"),
     paperItemID,
     activeItemId:
       normalizePositiveInt(scope.activeItemId) || paperItemID || undefined,
@@ -605,6 +742,16 @@ function normalizeActiveScope(
       scope.exhaustiveReadBackend === "codex_responses"
         ? "codex_responses"
         : "unavailable",
+  };
+  if (scope.turnPaperScope) {
+    return {
+      ...metadata,
+      turnPaperScope: scope.turnPaperScope,
+      turnPaperScopeWarnings: scope.turnPaperScopeWarnings,
+    };
+  }
+  return {
+    ...metadata,
     paperContext,
     selectedPaperContexts: normalizePaperContexts(scope.selectedPaperContexts),
     pdfPaperContexts: (
@@ -651,6 +798,85 @@ export function registerScopedZoteroMcpScope(
       clearMcpReadDedupeCacheForScopeToken(token);
     },
   };
+}
+
+/**
+ * Returns a scope token that stays stable for one conversation.
+ *
+ * Agent runtimes bind the scope header when they create their conversation and
+ * keep reusing it on resume, so a token that only lives for one turn is already
+ * stale by the next turn. A conversation-stable token lets every turn re-register
+ * its own scope under the same header value.
+ *
+ * Callers pass the identity rather than a pre-joined key so that the turn runner
+ * and the fork path cannot drift on the key format: two spellings of the same
+ * conversation would yield two tokens and bring the stale-header failure back.
+ *
+ * Entries hold only the token. The scope itself is registered per turn in
+ * `scopedZoteroMcpScopes` and released when the turn ends. They are not expired
+ * on a timer: a token whose conversation is still live in the agent runtime must
+ * keep resolving, because the runtime keeps sending the header it captured when
+ * the conversation was created. Endpoint restarts preserve the map; durable
+ * conversation deletion releases its exact entry.
+ */
+export function resolveConversationScopeToken(params: {
+  profileSignature?: string;
+  conversationKey: number;
+  instanceID?: string;
+}): string {
+  const conversationKey = Math.floor(Number(params.conversationKey));
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+    return generateToken();
+  }
+  const instanceID = normalizeText(params.instanceID, 128);
+  const key = `${normalizeText(params.profileSignature, 256) || ""} ${conversationKey}${instanceID ? ` ${instanceID}` : ""}`;
+  const existing = conversationScopeTokens.get(key);
+  if (existing) return existing.token;
+  const token = generateToken();
+  conversationScopeTokens.set(key, {
+    token,
+    ...(instanceID ? { instanceID } : {}),
+  });
+  return token;
+}
+
+/**
+ * Releases the stable token after its conversation has been durably deleted.
+ * This is deliberately identity-specific: another Zotero profile can use the
+ * same numeric conversation key and must keep its own live runtime binding.
+ */
+export function releaseConversationScopeToken(params: {
+  profileSignature?: string;
+  conversationKey: number;
+  instanceID?: string;
+}): void {
+  const conversationKey = Math.floor(Number(params.conversationKey));
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+  const instanceID = normalizeText(params.instanceID, 128);
+  const key = `${normalizeText(params.profileSignature, 256) || ""} ${conversationKey}${instanceID ? ` ${instanceID}` : ""}`;
+  const entry = conversationScopeTokens.get(key);
+  if (!entry) {
+    // Older builds used a key-only token.  Once deletion supplies the old
+    // immutable instance, removing that legacy entry is safe and prevents a
+    // stale provider header from resolving into a later runtime.
+    if (instanceID) {
+      const legacyKey = `${normalizeText(params.profileSignature, 256) || ""} ${conversationKey}`;
+      const legacyEntry = conversationScopeTokens.get(legacyKey);
+      if (legacyEntry) {
+        conversationScopeTokens.delete(legacyKey);
+        scopedZoteroMcpScopes.delete(legacyEntry.token);
+        clearMcpReadDedupeCacheForScopeToken(legacyEntry.token);
+      }
+    }
+    return;
+  }
+  // A deletion carrying an immutable instance identity must never fall back
+  // to the legacy key-only lane: that key may already belong to a newer
+  // conversation. Legacy callers may still release legacy tokens by key.
+  if (instanceID && entry.instanceID !== instanceID) return;
+  conversationScopeTokens.delete(key);
+  scopedZoteroMcpScopes.delete(entry.token);
+  clearMcpReadDedupeCacheForScopeToken(entry.token);
 }
 
 export function setActiveZoteroMcpScope(
@@ -828,7 +1054,7 @@ function shouldBlockRawPdfRetrieval(params: {
   scope: ZoteroMcpActiveScope | null;
 }): boolean {
   if (!RAW_PDF_RETRIEVAL_TOOL_NAMES.has(params.toolName)) return false;
-  const rawPdfs = normalizePaperContexts(params.scope?.pdfPaperContexts) || [];
+  const rawPdfs = getMcpScopePapers(params.scope, ["raw_pdf"]);
   if (!rawPdfs.length) return false;
   const isLibraryAttachmentEnumeration =
     params.toolName === "library_read" &&
@@ -872,11 +1098,15 @@ function shouldBlockRawPdfRetrieval(params: {
     // exact non-PDF paper identity.
     return true;
   }
-  const explicitTextContexts = [
-    ...(normalizePaperContexts(params.scope?.selectedPaperContexts) || []),
-    ...(normalizePaperContexts(params.scope?.fullTextPaperContexts) || []),
-    ...(normalizePaperContexts(params.scope?.pinnedPaperContexts) || []),
-  ].filter((paper) => paper.contentSourceMode !== "pdf");
+  const explicitTextContexts = params.scope?.turnPaperScope
+    ? params.scope.turnPaperScope.papers
+        .filter((entry) => !entry.roles.includes("raw_pdf"))
+        .map((entry) => entry.paper)
+    : getMcpScopePapers(params.scope, [
+        "selected",
+        "full_text",
+        "pinned",
+      ]).filter((paper) => paper.contentSourceMode !== "pdf");
   const explicitTextKeys = new Set(
     explicitTextContexts.map(
       (paper) => `${paper.itemId}:${paper.contextItemId}`,
@@ -1006,7 +1236,7 @@ function getMcpToolAnnotations(
 }
 
 function hasRawPdfScope(scope: ZoteroMcpActiveScope | null): boolean {
-  return Boolean(normalizePaperContexts(scope?.pdfPaperContexts)?.length);
+  return getMcpScopePapers(scope, ["raw_pdf"]).length > 0;
 }
 
 function isMcpToolVisibleInScope(
@@ -1089,7 +1319,7 @@ function decorateMcpToolDescription(
     "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly online search: workflow:'answer' returns scholarly results for source-cited answers, while workflow:'review' opens Zotero import/review-card workflows. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
-      ? "zotero_script runs directly without a review card. Write scripts must call env.snapshot(item) before mutating items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation."
+      ? "Write-mode zotero_script pauses in Zotero and shows the user the script source for approval before it runs. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
       : mutability === "write"
         ? "Write operations pause in Zotero for user review before execution. For Zotero note requests, call note_write instead of returning note-ready text in chat."
         : "";
@@ -1135,6 +1365,12 @@ function resolveScopePaperContext(
   scope: ZoteroMcpActiveScope | null,
 ): PaperContextRef | undefined {
   if (!scope) return undefined;
+  if (scope.turnPaperScope) {
+    return (
+      getActiveTurnPaper(scope.turnPaperScope) ||
+      scope.turnPaperScope.papers[0]?.paper
+    );
+  }
   const paperContext = normalizePaperContext(scope.paperContext);
   if (paperContext) return paperContext;
   const itemId = normalizePositiveInt(scope.paperItemID || scope.activeItemId);
@@ -1195,9 +1431,10 @@ function resolveScopedMcpScope(
   pruneExpiredScopedMcpScopes();
   const entry = scopedZoteroMcpScopes.get(token);
   if (entry) {
-    // A valid token identifies one immutable request scope. The process-wide
-    // active scope may belong to an overlapping turn from the same profile and
-    // must never replace it.
+    // A valid token identifies one conversation, and every turn of that
+    // conversation re-registers its own scope under the token. The process-wide
+    // active scope may belong to an overlapping turn from another conversation
+    // on the same profile and must never replace it.
     return entry.scope;
   }
   throw new Error(
@@ -1278,6 +1515,20 @@ function scopesMatchForConfirmation(
     return false;
   }
   if (
+    handlerScope.instanceID &&
+    requestScope.instanceID &&
+    handlerScope.instanceID !== requestScope.instanceID
+  ) {
+    return false;
+  }
+  if (
+    handlerScope.conversationGeneration !== undefined &&
+    requestScope.conversationGeneration !== undefined &&
+    handlerScope.conversationGeneration !== requestScope.conversationGeneration
+  ) {
+    return false;
+  }
+  if (
     handlerScope.conversationKey &&
     requestScope.conversationKey &&
     handlerScope.conversationKey !== requestScope.conversationKey
@@ -1299,6 +1550,7 @@ function findZoteroMcpConfirmationHandler(
 function createToolContext(
   rawArgs: unknown,
   headers?: Record<string, string>,
+  zoteroGateway?: ZoteroGateway,
 ): AgentToolContext {
   const scopeArgs = extractMcpScopeArgs(rawArgs);
   const scope = resolveScopedMcpScope(headers);
@@ -1339,11 +1591,12 @@ function createToolContext(
   const activeNoteContext = resolveScopeActiveNoteContext(scope);
   const exhaustiveReadBackend =
     scope?.exhaustiveReadBackend === "codex_responses"
-      ? "codex_responses"
-      : "unavailable";
-  const request: AgentRuntimeRequest = {
+      ? ("codex_responses" as const)
+      : ("unavailable" as const);
+  const requestBase = {
     conversationKey: scope?.conversationKey || 0,
-    mode: "agent",
+    conversationGeneration: scope?.conversationGeneration,
+    mode: "agent" as const,
     userText:
       normalizeText(
         normalizeRecord(rawArgs).question || normalizeRecord(rawArgs).text,
@@ -1358,26 +1611,51 @@ function createToolContext(
     apiBase: scope?.codexPath,
     authMode:
       exhaustiveReadBackend === "codex_responses"
-        ? "codex_app_server"
+        ? ("codex_app_server" as const)
         : undefined,
     providerProtocol:
       exhaustiveReadBackend === "codex_responses"
-        ? "codex_responses"
+        ? ("codex_responses" as const)
         : undefined,
     reasoning: scope?.reasoning,
     exhaustiveReadBackend,
-    selectedPaperContexts:
-      selectedPaperContexts ||
-      (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),
-    pdfPaperContexts: pdfPaperContexts.length ? pdfPaperContexts : undefined,
-    fullTextPaperContexts:
-      fullTextPaperContexts ||
-      (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),
-    pinnedPaperContexts,
-    selectedCollectionContexts: scope?.selectedCollectionContexts,
-    selectedTagContexts: scope?.selectedTagContexts,
     activeNoteContext,
   };
+  const request: AgentRuntimeRequest = scope?.turnPaperScope
+    ? {
+        ...requestBase,
+        turnPaperScope: scope.turnPaperScope,
+        zoteroMetadataContext: resolveZoteroTurnMetadataContext(
+          scope.turnPaperScope,
+        ),
+        turnPaperScopeWarnings: scope.turnPaperScopeWarnings,
+      }
+    : resolveAgentRuntimeRequest(
+        {
+          ...requestBase,
+          selectedPaperContexts:
+            selectedPaperContexts ||
+            (!hasExplicitPaperScope && paperContext
+              ? [paperContext]
+              : undefined),
+          pdfPaperContexts: pdfPaperContexts.length
+            ? pdfPaperContexts
+            : undefined,
+          fullTextPaperContexts:
+            fullTextPaperContexts ||
+            (!hasExplicitPaperScope && paperContext
+              ? [paperContext]
+              : undefined),
+          pinnedPaperContexts,
+          selectedCollectionContexts: scope?.selectedCollectionContexts,
+          selectedTagContexts: scope?.selectedTagContexts,
+        } satisfies AgentRuntimeRequestInput,
+        {
+          resolvePaperContext: zoteroGateway
+            ? (selector) => zoteroGateway.resolvePaperContextTarget(selector)
+            : undefined,
+        },
+      );
   return {
     request,
     item,
@@ -1455,6 +1733,7 @@ function extractToolCallErrorText(
 async function requestZoteroMcpConfirmation(params: {
   execution: Extract<PreparedToolExecution, { kind: "confirmation" }>;
   headers?: Record<string, string>;
+  isExecutionAllowed?: () => boolean;
 }): Promise<McpToolCallResult> {
   const scope = resolveScopedMcpScope(params.headers);
   const handler = findZoteroMcpConfirmationHandler(scope);
@@ -1496,9 +1775,29 @@ async function requestZoteroMcpConfirmation(params: {
     approved: resolution.approved,
     actionId: resolution.actionId,
   });
-  const execution = resolution.approved
-    ? await params.execution.execute(resolution.data)
-    : params.execution.deny(resolution.data);
+  let execution: ReturnType<typeof params.execution.deny>;
+  if (!resolution.approved) {
+    execution = params.execution.deny(resolution.data);
+  } else if (params.isExecutionAllowed && !params.isExecutionAllowed()) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ok: false,
+            error:
+              "Conversation lifecycle changed before this tool could execute.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+  } else {
+    // The registry's confirmation executor already performs the final
+    // lifecycle check inside its per-conversation write lock.  Do not wrap
+    // it in a second lock here: that would await itself indefinitely.
+    execution = await params.execution.execute(resolution.data);
+  }
   return formatToolResult(execution);
 }
 
@@ -1560,6 +1859,12 @@ async function handleToolsCall(
   }
 
   const scope = resolveScopedMcpScope(headers);
+  const scopeConversationKey = scope?.conversationKey || 0;
+  const scopeGeneration = scopeConversationKey
+    ? Number.isFinite(scope?.conversationGeneration)
+      ? Number(scope?.conversationGeneration)
+      : getConversationWriteGeneration(scopeConversationKey)
+    : 0;
   const nativeFilesystemViolation = getRawPdfNativeFilesystemViolation({
     toolName: name,
     scope,
@@ -1626,11 +1931,26 @@ async function handleToolsCall(
         name,
         arguments: scopeArgs.toolArgs,
       },
-      createToolContext(rawArgs, headers),
+      createToolContext(rawArgs, headers, deps.zoteroGateway),
       {
         forceConfirmation:
           tool.spec.mutability === "write" &&
           !MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY.has(name),
+        isExecutionAllowed: () => {
+          return (
+            !scopeConversationKey ||
+            (!areConversationWritesFrozen(scopeConversationKey) &&
+              isConversationWriteGenerationCurrent(
+                scopeConversationKey,
+                scopeGeneration,
+              ))
+          );
+        },
+        executeWithLock: (task) => {
+          return scopeConversationKey
+            ? withConversationWriteLock(scopeConversationKey, task)
+            : task();
+        },
       },
     );
 
@@ -1638,6 +1958,16 @@ async function handleToolsCall(
       const result = await requestZoteroMcpConfirmation({
         execution: prepared,
         headers,
+        isExecutionAllowed: () => {
+          return (
+            !scopeConversationKey ||
+            (!areConversationWritesFrozen(scopeConversationKey) &&
+              isConversationWriteGenerationCurrent(
+                scopeConversationKey,
+                scopeGeneration,
+              ))
+          );
+        },
       });
       completeActivity({
         ok: !result.isError,

@@ -1,4 +1,7 @@
 import { assert } from "chai";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   orderQuoteValidationBatchByViewportPriority,
   resolveQuoteValidationIdleTimeouts,
@@ -94,5 +97,41 @@ describe("quote validation scheduling", function () {
         fallbackDelayMs: 0,
       });
     });
+  });
+});
+
+describe("quote source warming bounds", function () {
+  it("stops warming before it can evict its own page-text cache", function () {
+    const chatSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/modules/contextPanel/chat.ts",
+      ),
+      "utf8",
+    );
+    const locatorSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/modules/contextPanel/livePdfSelectionLocator.ts",
+      ),
+      "utf8",
+    );
+    const warmLimit = Number(
+      /const MAX_WARMED_QUOTE_SOURCE_PAPERS = (\d+)/.exec(chatSource)?.[1],
+    );
+    const cacheLimit = Number(
+      /const MAX_PAGE_TEXT_CACHE_ENTRIES = (\d+)/.exec(locatorSource)?.[1],
+    );
+
+    assert.isAbove(warmLimit, 0, "warm limit should be defined");
+    assert.isAbove(cacheLimit, 0, "page-text cache limit should be defined");
+    assert.isAtMost(
+      warmLimit,
+      cacheLimit,
+      "warming more papers than the cache holds would evict pages it just read",
+    );
+    // A library-chat answer can carry many evidence papers; the warm loop must
+    // apply the bound rather than iterating everything it is handed.
+    assert.include(chatSource, "MAX_WARMED_QUOTE_SOURCE_PAPERS,\n  );");
   });
 });

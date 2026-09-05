@@ -9,36 +9,5 @@ on:
       - main
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GitHub_TOKEN }}
-    steps:
-      - name: Setup JS
-        uses: zotero-plugin-dev/workflows/setup-js@main
-      - name: Run Lint
-        run: npm run lint:check
-
-  build:
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GitHub_TOKEN }}
-    steps:
-      - name: Setup JS
-        uses: zotero-plugin-dev/workflows/setup-js@main
-      - name: Run Build
-        run: npm run build
-      - name: Upload build result
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-result
-          path: .scaffold/build
-
-  test:
-    runs-on: ubuntu-latest
-    needs:
-      - build
-    steps:
-      - name: Setup JS
-        uses: zotero-plugin-dev/workflows/setup-js@main
-      - run: npm run test
+  quality:
+    uses: ./.github/workflows/quality.yml

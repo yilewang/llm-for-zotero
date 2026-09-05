@@ -1,4 +1,8 @@
 import type { PaperContextRef, TagContextRef } from "../../shared/types";
+import {
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyRetiredInMemory,
+} from "../../shared/conversationKeyLedger";
 import type { AgentRuntimeRequest } from "../types";
 import type { AgentCacheEvidenceActivity } from "./cacheManagement";
 
@@ -66,6 +70,7 @@ const MAX_RENDERED_COVERAGE_ENTRIES = 10;
 
 const coverageByScope = new Map<string, Map<string, AgentCoverageEntry>>();
 const hydratedScopes = new Set<string>();
+let coverageHydrationEpoch = 0;
 let initPromise: Promise<boolean> | null = null;
 
 function getDb(): ZoteroDb | null {
@@ -112,6 +117,7 @@ async function ensureAgentCoverageStore(): Promise<boolean> {
         `CREATE INDEX IF NOT EXISTS ${COVERAGE_RESOURCE_INDEX}
          ON ${COVERAGE_TABLE} (resource_key, updated_at DESC)`,
       );
+      await installConversationKeyLedgerAgentTriggers();
       return true;
     } catch (error) {
       initPromise = null;
@@ -424,6 +430,7 @@ async function persistCoverageScope(
 
 async function hydrateCoverageScope(scopeKey: string): Promise<void> {
   if (hydratedScopes.has(scopeKey)) return;
+  const hydrationEpoch = coverageHydrationEpoch;
   const dbReady = await ensureAgentCoverageStore();
   const db = getDb();
   if (!dbReady || !db) return;
@@ -436,13 +443,30 @@ async function hydrateCoverageScope(scopeKey: string): Promise<void> {
        LIMIT ?`,
       [scopeKey, MAX_COVERAGE_ENTRIES_PER_SCOPE],
     )) as Array<{ entryJson?: unknown }> | undefined;
+    if (hydrationEpoch !== coverageHydrationEpoch) return;
+    const conversationKey = Number(
+      scopeKey.startsWith("conversation:")
+        ? scopeKey.slice("conversation:".length)
+        : 0,
+    );
+    if (conversationKey && isConversationKeyRetiredInMemory(conversationKey)) {
+      return;
+    }
     const ledger = ledgerForScope(scopeKey);
     for (const row of rows || []) {
       const raw = typeof row.entryJson === "string" ? row.entryJson : "";
       if (!raw) continue;
       try {
         const entry = deserializeCoverageEntry(JSON.parse(raw) as unknown);
-        if (entry) upsertCoverageEntry(ledger, entry);
+        if (
+          entry &&
+          !(
+            entry.originConversationKey &&
+            isConversationKeyRetiredInMemory(entry.originConversationKey)
+          )
+        ) {
+          upsertCoverageEntry(ledger, entry);
+        }
       } catch {
         // Ignore malformed coverage rows; future successful runs refresh them.
       }
@@ -469,23 +493,21 @@ function collectRequestResourceKeys(request: AgentRuntimeRequest): Set<string> {
     add(itemResourceKey(note.parentItemId));
   }
   const paperContexts = [
-    ...(request.selectedTextPaperContexts || []).filter(
-      (entry): entry is PaperContextRef => Boolean(entry),
+    ...request.turnPaperScope.selectedPassagePaperRefs.map(
+      (entry) => entry.paper,
     ),
-    ...(request.selectedPaperContexts || []),
-    ...(request.fullTextPaperContexts || []),
-    ...(request.pinnedPaperContexts || []),
+    ...request.turnPaperScope.papers.map((entry) => entry.paper),
   ];
   for (const paper of paperContexts) {
     add(paperResourceKey(paper));
     add(itemResourceKey(paper.itemId));
     add(attachmentResourceKey(paper.contextItemId));
   }
-  for (const collection of request.selectedCollectionContexts || []) {
+  for (const collection of request.turnPaperScope.collections) {
     add(collectionResourceKey(collection));
     add(libraryResourceKey(collection.libraryID));
   }
-  for (const tag of request.selectedTagContexts || []) {
+  for (const tag of request.turnPaperScope.tags) {
     add(tagResourceKey(tag));
     add(libraryResourceKey(tag.libraryID));
   }
@@ -731,9 +753,7 @@ function buildFileIoCoverageEntries(
   const normalizedPath = filePath.replace(/\\/g, "/");
   const fileName = normalizedPath.split("/").pop() || normalizedPath;
   const matchingPaper = [
-    ...(activity.request.selectedPaperContexts || []),
-    ...(activity.request.fullTextPaperContexts || []),
-    ...(activity.request.pinnedPaperContexts || []),
+    ...activity.request.turnPaperScope.papers.map((entry) => entry.paper),
   ].find((paper) => {
     const cacheDir = normalizeText(paper.mineruCacheDir, 1024).replace(
       /\\/g,
@@ -1141,6 +1161,7 @@ export async function commitAgentCoverageActivities(params: {
 }): Promise<void> {
   const conversationKey = normalizePositiveInt(params.conversationKey);
   if (!conversationKey || !params.activities.length) return;
+  if (isConversationKeyRetiredInMemory(conversationKey)) return;
   const touchedScopes = new Set<string>();
   const conversationScope = conversationScopeKey(conversationKey);
   const conversationLedger = ledgerForScope(conversationScope);
@@ -1171,6 +1192,7 @@ export async function commitAgentCoverageActivities(params: {
 export async function clearPersistedAgentCoverage(
   conversationKeyValue?: number,
 ): Promise<void> {
+  coverageHydrationEpoch += 1;
   if (conversationKeyValue === undefined) {
     coverageByScope.clear();
     hydratedScopes.clear();

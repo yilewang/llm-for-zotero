@@ -79,3 +79,37 @@ describe("libraryChatEvidencePolicy", function () {
     assert.equal(rows[0].sectionLabel, "Methods");
   });
 });
+
+describe("wantedSections (classifier-provided, language-independent)", function () {
+  it("scores a wanted section for a CJK query with no English cues", function () {
+    assert.equal(
+      scoreSectionPreference("这些论文的方法", "Methods", ["methods"]),
+      2,
+    );
+    assert.equal(
+      scoreSectionPreference("这些论文的方法", "Abstract", ["methods"]),
+      0,
+    );
+  });
+
+  it("treats non-empty wantedSections as an explicit section preference", function () {
+    assert.isTrue(
+      queryHasExplicitSectionPreference("这些论文的方法", ["methods"]),
+    );
+    assert.isFalse(queryHasExplicitSectionPreference("这些论文的方法"));
+  });
+
+  it("ranks the wanted section first for a non-English query", function () {
+    const comparator = compareEvidenceCandidatesForQuestion(
+      "这些论文的方法",
+      () => 0,
+      ["methods"],
+    );
+    const sorted = [
+      { sectionLabel: "Abstract", chunkIndex: 0 },
+      { sectionLabel: "Methods", chunkIndex: 5 },
+    ].sort(comparator);
+
+    assert.equal(sorted[0].sectionLabel, "Methods");
+  });
+});

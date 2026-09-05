@@ -1,14 +1,16 @@
 import { assert } from "chai";
 import { createSearchLiteratureOnlineTool } from "../src/agent/tools/read/searchLiteratureOnline";
 import type { AgentToolContext } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 describe("search_literature_online tool", function () {
   const baseContext: AgentToolContext = {
-    request: {
+    request: resolvedAgentRequest({
       conversationKey: 11,
       mode: "agent",
       userText: "Find related papers",
-    },
+      libraryID: 1,
+    }),
     item: null,
     currentAnswerText: "",
     modelName: "gpt-5.4",
@@ -167,7 +169,10 @@ describe("search_literature_online tool", function () {
                 {
                   id: "https://openalex.org/W123",
                   display_name: "Related Paper",
-                  authorships: [{ author: { display_name: "Bob Example" } }],
+                  authorships: [
+                    { author: { display_name: "Bob Example" } },
+                    { author: { display_name: "Riley Example" } },
+                  ],
                   publication_year: 2025,
                   cited_by_count: 4,
                   doi: "https://doi.org/10.1000/related",
@@ -199,6 +204,25 @@ describe("search_literature_online tool", function () {
     assert.lengthOf(results, 1);
     assert.equal(results[0].title, "Related Paper");
     assert.equal(results[0].doi, "10.1000/related");
+    assert.equal(tool.presentation?.traceIcon, "library");
+    assert.isTrue(tool.presentation?.mergeResultIntoCallTrace);
+    assert.deepEqual(
+      tool.presentation?.buildTraceDetails?.({
+        args: validated.value,
+        content: result,
+      }),
+      [
+        { label: "Query", value: "neural networks" },
+        {
+          label: "Paper",
+          value: "Bob Example et al., 2025, Related Paper",
+          timeline: {
+            icon: "paper",
+            href: "https://example.com/paper.pdf",
+          },
+        },
+      ],
+    );
     const reviewAction = await tool.createResultReviewAction?.(
       validated.value,
       {
@@ -281,5 +305,25 @@ describe("search_literature_online tool", function () {
     );
     assert.include(tool.guidance?.instruction || "", "workflow:'answer'");
     assert.include(tool.guidance?.instruction || "", "workflow:'review'");
+    assert.isFalse(
+      tool.guidance?.matches({
+        conversationKey: 12,
+        mode: "agent",
+        userText: "search the web for the latest Zotero release notes",
+      }) || false,
+    );
+    assert.isTrue(
+      tool.guidance?.matches({
+        conversationKey: 13,
+        mode: "agent",
+        userText: "查找论文并核对当前官方文档",
+        classifiedIntent: {
+          retrievalIntent: "none",
+          externalSearchIntent: "both",
+          wantedSections: [],
+          actionIntents: [],
+        },
+      }) || false,
+    );
   });
 });

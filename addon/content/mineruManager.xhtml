@@ -21,6 +21,8 @@
       font-size: 13px;
       color: FieldText;
       background: Field;
+      -moz-user-select: text;
+      user-select: text;
     "
   >
     <!-- Top bar -->
@@ -162,6 +164,7 @@
           "
         >
           <html:span
+            role="button"
             data-sort-key="cached"
             style="
               width: 8px;
@@ -172,21 +175,25 @@
             >&#x25CF;</html:span
           >
           <html:span
+            role="button"
             data-sort-key="title"
             style="flex: 1; min-width: 0; cursor: pointer"
             >Title</html:span
           >
           <html:span
+            role="button"
             data-sort-key="firstCreator"
             style="flex: 0 0 110px; cursor: pointer"
             >Author</html:span
           >
           <html:span
+            role="button"
             data-sort-key="year"
             style="flex: 0 0 40px; text-align: right; cursor: pointer"
             >Year</html:span
           >
           <html:span
+            role="button"
             data-sort-key="dateAdded"
             style="flex: 0 0 72px; text-align: right; cursor: pointer"
             >Added</html:span

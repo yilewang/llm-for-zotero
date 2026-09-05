@@ -4,8 +4,10 @@ import {
   __getDisplayedQuoteAnchorMatchCacheStatsForTest,
   buildQuoteAnchorPromptBlock,
   buildQuoteCitation,
+  buildQuoteSecondaryEvidenceKey,
   buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
+  collectDisplayedQuoteVerificationRequests,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
   finalizeAssistantQuoteCitationsCooperatively,
@@ -78,6 +80,10 @@ describe("quoteCitations", function () {
       quoteTokenSupportCoverage: 1,
       quoteStartTokenSupported: true,
       quoteEndTokenSupported: true,
+      literalSupportedQuoteTokenCount: 1,
+      literalQuoteTokenSupportCoverage: 1,
+      literalQuoteStartTokenSupported: true,
+      literalQuoteEndTokenSupported: true,
       quoteTokenStart: 0,
       quoteTokenEnd: 1,
     });
@@ -2776,6 +2782,226 @@ describe("quoteCitations", function () {
     assert.isEmpty(finalized.quoteCitations);
   });
 
+  it("authenticates a uniquely grounded trailing partial token by trimming it", function () {
+    const source =
+      "We first study drift in linear Hebbian/anti-Hebbian networks, which compress inputs into a lower dimensional principal subspace29. While";
+    const verifiedPrefix =
+      "We first study drift in linear Hebbian/anti-Hebbian networks, which compress inputs into a lower dimensional principal";
+
+    for (const ellipsis of ["...", "…"]) {
+      const quote = `${verifiedPrefix} subs${ellipsis}`;
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}\n\n(Qin et al., 2023)`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: source,
+              sourceLabel: "(Qin et al., 2023)",
+              sourceMatchSource: "pdf-page-text",
+              sourceFingerprint: "pdfworker:qin-page-34",
+              contextItemId: 230,
+              itemId: 61,
+              pageHintIndex: 33,
+              pageHintLabel: "34",
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+      assert.lengthOf(finalized.quoteCitations, 1);
+      const citation = finalized.quoteCitations[0];
+      assert.equal(citation.quoteText, verifiedPrefix);
+      assert.equal(citation.sourceMatchText, verifiedPrefix);
+      assert.equal(citation.displayQuoteText, `${verifiedPrefix}…`);
+      assert.notInclude(citation.quoteText, "subs");
+      assert.equal(citation.contextItemId, 230);
+      assert.equal(citation.itemId, 61);
+      assert.equal(citation.pageHintIndex, 33);
+      assert.equal(citation.pageHintLabel, "34");
+      assert.equal(citation.sourceFingerprint, "pdfworker:qin-page-34");
+    }
+  });
+
+  it("does not authenticate unsupported trailing-fragment shapes", function () {
+    const source =
+      "We first study drift in linear Hebbian networks which compress inputs into a lower dimensional principal subspace.";
+    const prefix =
+      "We first study drift in linear Hebbian networks which compress inputs into a lower dimensional principal";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: source,
+          sourceLabel: "(Qin et al., 2023)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 230,
+          itemId: 61,
+          pageHintIndex: 33,
+        },
+      ],
+    });
+
+    for (const quote of [
+      `${prefix} subs`,
+      `${prefix} su...`,
+      `${prefix} subx...`,
+      `${prefix} subs... followed by invented prose`,
+    ]) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}`,
+        sourceIndex,
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+      assert.isEmpty(finalized.quoteCitations, quote);
+    }
+  });
+
+  it("keeps trailing partial tokens unverified when their source location is ambiguous", function () {
+    const source =
+      "A sufficiently long unique-looking prefix describes the lower dimensional principal subspace.";
+    const quote =
+      "A sufficiently long unique-looking prefix describes the lower dimensional principal subs...";
+    const finalize = (
+      sourceTexts: Parameters<typeof buildQuoteSourceIndex>[0]["sourceTexts"],
+    ) =>
+      finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}`,
+        sourceIndex: buildQuoteSourceIndex({ sourceTexts }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+    const page = (contextItemId: number, pageHintIndex: number) => ({
+      sourceText: source,
+      sourceLabel: `(Paper ${contextItemId}, 2026)`,
+      sourceMatchSource: "pdf-page-text" as const,
+      contextItemId,
+      itemId: contextItemId - 1,
+      pageHintIndex,
+    });
+
+    assert.isEmpty(
+      finalize([{ ...page(230, 33), sourceText: `${source} ${source}` }])
+        .quoteCitations,
+    );
+    assert.isEmpty(finalize([page(230, 33), page(230, 34)]).quoteCitations);
+    assert.isEmpty(finalize([page(230, 33), page(330, 33)]).quoteCitations);
+  });
+
+  it("upgrades strong artifact-aware support with a unique PDF.js certificate", function () {
+    const quote =
+      "The paper defines low dimensional representations of neural activity using definitions of line and ring attractors which are intuitive concepts commonly applied in computational neuroscience models of memory dynamics";
+    const pdfWorkerText =
+      "The paper defines low dimensional representations o f neural activity using definitions o f l ine a nd r ing a ttractors w hich a re i ntuiticveoncepts commonly applied in computational neuroscience models of memory dynamics";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: pdfWorkerText,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfworker:worker-cache",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      secondaryEvidence: [
+        {
+          quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+          contextItemId: 81,
+          status: "matched",
+          certificate: {
+            documentFingerprint: "viewer-document",
+            pageIndex: 2,
+            pageLabel: "3",
+            sourceMatchText: quote,
+            sourceMatchPageOccurrence: 0,
+          },
+        },
+      ],
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(
+      finalized.quoteCitations[0]?.sourceFingerprint,
+      "pdfjs:viewer-document",
+    );
+    assert.equal(finalized.quoteCitations[0]?.sourceMatchText, quote);
+    assert.equal(finalized.quoteCitations[0]?.pageHintIndex, 2);
+  });
+
+  it("rejects a strong Worker partial after complete PDF.js text confirms absence", function () {
+    const source =
+      "The population response remained stable across every repeated recording session despite substantial changes in individual neuronal tuning patterns.";
+    const quote = source.replace("patterns", "preferences");
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      secondaryEvidence: [
+        {
+          quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+          contextItemId: 81,
+          status: "absent",
+          documentFingerprint: "viewer-document",
+        },
+      ],
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("defers when independent PDF.js certificates match more than one paper", function () {
+    const source =
+      "The population response remained stable across every repeated recording session despite substantial changes in individual neuronal tuning patterns.";
+    const quote = source.replace("patterns", "preferences");
+    const quoteKey = buildQuoteSecondaryEvidenceKey(quote);
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [81, 82].map((contextItemId) => ({
+          sourceText: source,
+          sourceLabel: `(Example ${contextItemId} et al., 2026)`,
+          sourceMatchSource: "pdf-page-text",
+          contextItemId,
+          itemId: contextItemId - 1,
+          pageHintIndex: 2,
+        })),
+      }),
+      secondaryEvidence: [81, 82].map((contextItemId) => ({
+        quoteKey,
+        contextItemId,
+        status: "matched" as const,
+        certificate: {
+          documentFingerprint: `viewer-document-${contextItemId}`,
+          pageIndex: 2,
+          sourceMatchText: quote,
+          sourceMatchPageOccurrence: 0,
+        },
+      })),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}`);
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
   it("defers a unique seven-of-eight-token source location", function () {
     const source =
       "We therefore employed intracranial electroencephalography in 28 neurosurgical patients";
@@ -2837,6 +3063,193 @@ describe("quoteCitations", function () {
     assert.equal(finalized.markdown, markdown);
     assert.notInclude(finalized.markdown, "Not a source quote");
     assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("pairs exact MinerU math with a unique literal PDF locator", function () {
+    const quote =
+      "Fisher information provides a lower bound on the variance \\(\\sigma_{\\hat{s}}^2\\) of any estimator.";
+    const mineruSource =
+      "Fisher information provides a lower bound on the variance $\\sigma _ { \\hat { s } } ^ { 2 }$ of any estimator.";
+    const pdfSource =
+      "Fisher information provides a lower bound on the variance s^2 of any estimator.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: mineruSource,
+          sourceLabel: "(Ma & Pouget, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          requiresPageHint: true,
+        },
+        {
+          sourceText: pdfSource,
+          sourceLabel: "(Ma & Pouget, 2009)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          pageHintIndex: 3,
+          pageHintLabel: "752",
+        },
+      ],
+    });
+
+    const requests = collectDisplayedQuoteVerificationRequests({
+      markdown: `> ${quote}`,
+      sourceIndex,
+    });
+    assert.deepEqual(requests, [
+      {
+        quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+        quoteText: quote,
+        contextItemId: 3852,
+        verificationMode: "inline-math-locator",
+      },
+    ]);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex,
+      requireBodyEvidenceQuotes: true,
+      secondaryEvidence: [
+        {
+          quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+          contextItemId: 3852,
+          status: "matched",
+          certificate: {
+            documentFingerprint: "population-codes-pdf",
+            pageIndex: 3,
+            pageLabel: "752",
+            sourceMatchText: pdfSource,
+            sourceMatchKind: "normalized-span",
+            sourceMatchPageOccurrence: 0,
+          },
+        },
+      ],
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    const citation = finalized.quoteCitations[0];
+    assert.equal(citation.quoteText, quote);
+    assert.equal(citation.sourceMatchText, pdfSource);
+    assert.equal(citation.sourceMatchKind, "normalized-span");
+    assert.equal(citation.sourceMatchSource, "pdf-page-text");
+    assert.equal(citation.sourceFingerprint, "pdfjs:population-codes-pdf");
+    assert.equal(citation.pageHintIndex, 3);
+    assert.equal(citation.pageHintLabel, "752");
+  });
+
+  it("does not let a prose-only PDF locator authenticate altered MinerU content", function () {
+    const sourceQuote =
+      "Fisher information provides a lower bound on the variance \\(\\sigma_{\\hat{s}}^2\\) of any estimator.";
+    const mineruSource =
+      "Fisher information provides a lower bound on the variance $\\sigma _ { \\hat { s } } ^ { 2 }$ of any estimator.";
+    const pdfSource =
+      "Fisher information provides a lower bound on the variance s^2 of any estimator.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: mineruSource,
+          sourceLabel: "(Ma & Pouget, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          requiresPageHint: true,
+        },
+        {
+          sourceText: pdfSource,
+          sourceLabel: "(Ma & Pouget, 2009)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          pageHintIndex: 3,
+        },
+      ],
+    });
+
+    for (const quote of [
+      sourceQuote.replace("\\sigma", "\\mu"),
+      sourceQuote.replace("lower", "upper"),
+    ]) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}`,
+        sourceIndex,
+        secondaryEvidence: [
+          {
+            quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+            contextItemId: 3852,
+            status: "matched",
+            certificate: {
+              documentFingerprint: "population-codes-pdf",
+              pageIndex: 3,
+              sourceMatchText: pdfSource,
+              sourceMatchKind: "normalized-span",
+              sourceMatchPageOccurrence: 0,
+            },
+          },
+        ],
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.isEmpty(finalized.quoteCitations, quote);
+      assert.include(finalized.markdown, "Not a source quote", quote);
+    }
+  });
+
+  it("keeps exact MinerU math unresolved without same-attachment PDF corroboration", function () {
+    const quote =
+      "Fisher information provides a lower bound on the variance \\(\\sigma_{\\hat{s}}^2\\) of any estimator.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText:
+            "Fisher information provides a lower bound on the variance $\\sigma _ { \\hat { s } } ^ { 2 }$ of any estimator.",
+          sourceLabel: "(Ma & Pouget, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          requiresPageHint: true,
+        },
+      ],
+    });
+
+    for (const secondaryEvidence of [
+      [
+        {
+          quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+          contextItemId: 9999,
+          status: "matched" as const,
+          certificate: {
+            documentFingerprint: "wrong-attachment",
+            pageIndex: 3,
+            sourceMatchText: quote,
+            sourceMatchKind: "normalized-span" as const,
+            sourceMatchPageOccurrence: 0,
+          },
+        },
+      ],
+      [
+        {
+          quoteKey: buildQuoteSecondaryEvidenceKey(quote),
+          contextItemId: 3852,
+          status: "absent" as const,
+          documentFingerprint: "population-codes-pdf",
+        },
+      ],
+    ]) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}`,
+        sourceIndex,
+        secondaryEvidence,
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.equal(finalized.markdown, `> ${quote}`);
+      assert.isEmpty(finalized.quoteCitations);
+      assert.notInclude(finalized.markdown, "Not a source quote");
+    }
   });
 
   it("defers an ellipsized quote when every displayed segment has unique source support", function () {
@@ -4126,6 +4539,47 @@ describe("quoteCitations", function () {
       rendered,
       "> Unresolved manual quote.\n> Trusted quote text from the paper.",
     );
+  });
+
+  it("finalizes a quote anchor followed by a citation line as one quote", function () {
+    const visibleQuote =
+      "The role of internally-generated network dynamics in rapid temporal sequence coding, updating, and parallel recalling of alternate spatial and mental navigation contexts has remained unclear.";
+    const sourceChunk = `1038/s41467-025-63346-w Generative emergence of non-local representations in the hippocampus Yuchen Zhou 1, Jeremie Sibille1 & George Dragoi 1,2,3 ${visibleQuote}`;
+    const citation = buildQuoteCitation({
+      id: "Q_reopen_separate_citation_line",
+      quoteText: sourceChunk,
+      citationLabel: "(Zhou et al., 2025)",
+      sourceMatchText: sourceChunk,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3823,
+      itemId: 3822,
+    });
+    assert.isDefined(citation);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: [
+        `> “${visibleQuote}”`,
+        `> [[quote:${citation!.id}]]`,
+        "> (Zhou et al., 2025)",
+        "",
+        "### What problem are they addressing?",
+      ].join("\n"),
+      quoteCitations: [citation!],
+      sourceIndex: buildQuoteSourceIndex({
+        quoteCitations: [citation!],
+      }),
+    });
+
+    assert.equal((finalized.markdown.match(/\[\[quote:/g) || []).length, 1);
+    assert.notInclude(finalized.markdown, "> (Zhou et al., 2025)");
+    assert.include(finalized.markdown, "### What problem are they addressing?");
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+    assert.include(rendered, `> “${visibleQuote}”`);
+    assert.notInclude(rendered, sourceChunk);
   });
 
   it("omits unresolved placeholders on external text surfaces", function () {

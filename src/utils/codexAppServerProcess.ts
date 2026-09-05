@@ -35,7 +35,10 @@ const CODEX_ENV_KEYS = [
   "NVM_DIR",
   "PATH",
   "Path",
+  "NO_PROXY",
+  "no_proxy",
 ];
+const CODEX_LOOPBACK_NO_PROXY_ENTRIES = ["localhost", "127.0.0.1", "::1"];
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -200,6 +203,7 @@ export class CodexAppServerProcess {
       args = invocation.args;
       environment = invocation.environment;
     }
+    environment = buildCodexLaunchEnvironment(environment);
     let proc: any;
     try {
       proc = await Subprocess.call({
@@ -1110,6 +1114,9 @@ export function waitForCodexAppServerTurnCompletion(params: {
   } = params;
   const timeoutMs =
     params.timeoutMs ?? DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS;
+  if (signal?.aborted) {
+    return Promise.reject(createAbortError());
+  }
   return new Promise((resolve, reject) => {
     let accumulated = "";
     let settled = false;
@@ -1643,6 +1650,39 @@ function getCodexRuntimeEnv(): Record<string, string | undefined> {
   return env;
 }
 
+export function mergeCodexNoProxyValues(
+  ...values: Array<string | undefined>
+): string {
+  const entries: string[] = [];
+  const seen = new Set<string>();
+  for (const value of [...values, CODEX_LOOPBACK_NO_PROXY_ENTRIES.join(",")]) {
+    for (const rawEntry of String(value || "").split(",")) {
+      const entry = rawEntry.trim();
+      if (!entry) continue;
+      const key = entry.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+  }
+  return entries.join(",");
+}
+
+function buildCodexLaunchEnvironment(
+  invocationEnvironment?: Record<string, string>,
+): Record<string, string> {
+  const runtimeEnv = getCodexRuntimeEnv();
+  const noProxy = mergeCodexNoProxyValues(
+    runtimeEnv.NO_PROXY,
+    runtimeEnv.no_proxy,
+  );
+  return {
+    ...invocationEnvironment,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+  };
+}
+
 function joinRuntimePath(
   separator: "/" | "\\",
   base: string,
@@ -2035,6 +2075,14 @@ function buildWindowsCodexCandidates(
     candidates.push(
       joinRuntimePath("\\", localAppData, "Volta", "bin", "codex.cmd"),
       joinRuntimePath("\\", localAppData, "Volta", "bin", "codex.exe"),
+      joinRuntimePath(
+        "\\",
+        localAppData,
+        "Microsoft",
+        "WinGet",
+        "Links",
+        "codex.exe",
+      ),
     );
   }
   for (const nvmRoot of [nvmSymlink, nvmHome]) {
@@ -2046,6 +2094,7 @@ function buildWindowsCodexCandidates(
     );
   }
   candidates.push("C:\\Program Files\\codex\\codex.exe");
+  candidates.push("C:\\Program Files\\WinGet\\Links\\codex.exe");
   return uniquePaths(candidates);
 }
 
@@ -2119,7 +2168,8 @@ function createCodexBinaryNotFoundError(
       : "";
   return new Error(
     "codex binary not found. Install Codex CLI (https://github.com/openai/codex) and ensure it is on your PATH, " +
-      "or set the CODEX_PATH environment variable to the absolute path of the codex executable." +
+      "set the Codex CLI Path in the plugin's Agent settings to the absolute path of the codex executable, " +
+      "or set the CODEX_PATH environment variable." +
       windowsHint,
   );
 }

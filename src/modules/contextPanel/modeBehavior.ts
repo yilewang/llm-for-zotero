@@ -13,6 +13,8 @@ export type RuntimeModeResolutionInput = {
   agentModeEnabled?: boolean;
   displayConversationKind?: "global" | "paper" | null;
   noteKind?: "standalone" | "item" | string | null;
+  /** Sticky mode from the last explicit toggle; null when never chosen. */
+  lastUsedRuntimeMode?: ChatRuntimeMode | null;
 };
 
 export function isSamePaperContextRef(
@@ -57,5 +59,11 @@ export function resolveRuntimeModeForConversation(
     return "agent";
   }
   if (input.displayConversationKind === "global") return "agent";
+  if (
+    input.lastUsedRuntimeMode === "agent" ||
+    input.lastUsedRuntimeMode === "chat"
+  ) {
+    return input.lastUsedRuntimeMode;
+  }
   return "chat";
 }

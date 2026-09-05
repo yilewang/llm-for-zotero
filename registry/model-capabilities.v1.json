@@ -1,0 +1,477 @@
+{
+  "schemaVersion": 1,
+  "revision": 3,
+  "models": [
+    {
+      "match": {
+        "provider": "kimi",
+        "prefix": "kimi-k2.6"
+      },
+      "limits": {
+        "contextWindowTokens": 262144,
+        "inputTokens": 262144
+      },
+      "reasoning": {
+        "kind": "toggle",
+        "defaultOptionId": "on",
+        "options": [
+          {
+            "id": "off",
+            "label": "Off",
+            "controls": {
+              "body": {
+                "thinking": {
+                  "type": "disabled"
+                }
+              }
+            }
+          },
+          {
+            "id": "on",
+            "label": "On",
+            "controls": {
+              "body": {
+                "thinking": {
+                  "type": "enabled"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "kimi",
+        "prefix": "kimi-k2.7"
+      },
+      "limits": {
+        "contextWindowTokens": 262144,
+        "inputTokens": 262144
+      },
+      "reasoning": {
+        "kind": "fixed",
+        "defaultOptionId": "on",
+        "options": [
+          {
+            "id": "on",
+            "label": "Reasoning",
+            "controls": {
+              "body": {
+                "thinking": {
+                  "type": "enabled"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "kimi",
+        "prefix": "kimi-k3"
+      },
+      "limits": {
+        "contextWindowTokens": 1048576,
+        "inputTokens": 1048576
+      },
+      "reasoning": {
+        "kind": "select",
+        "defaultOptionId": "max",
+        "options": [
+          {
+            "id": "low",
+            "label": "Low",
+            "controls": {
+              "body": {
+                "reasoning_effort": "low"
+              }
+            }
+          },
+          {
+            "id": "high",
+            "label": "High",
+            "controls": {
+              "body": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          {
+            "id": "max",
+            "label": "Max",
+            "controls": {
+              "body": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "kimi",
+        "prefix": "k3"
+      },
+      "limits": {
+        "contextWindowTokens": 262144,
+        "inputTokens": 262144
+      },
+      "reasoning": {
+        "kind": "select",
+        "defaultOptionId": "max",
+        "options": [
+          {
+            "id": "low",
+            "label": "Low",
+            "controls": {
+              "body": {
+                "reasoning_effort": "low"
+              }
+            }
+          },
+          {
+            "id": "high",
+            "label": "High",
+            "controls": {
+              "body": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          {
+            "id": "max",
+            "label": "Max",
+            "controls": {
+              "body": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "kimi",
+        "exact": "k3-256k"
+      },
+      "limits": {
+        "contextWindowTokens": 262144,
+        "inputTokens": 262144
+      },
+      "reasoning": {
+        "kind": "select",
+        "defaultOptionId": "max",
+        "options": [
+          {
+            "id": "low",
+            "label": "Low",
+            "controls": {
+              "body": {
+                "reasoning_effort": "low"
+              }
+            }
+          },
+          {
+            "id": "high",
+            "label": "High",
+            "controls": {
+              "body": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          {
+            "id": "max",
+            "label": "Max",
+            "controls": {
+              "body": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "kimi",
+        "prefix": "kimi-for-coding"
+      },
+      "limits": {
+        "contextWindowTokens": 262144,
+        "inputTokens": 262144
+      },
+      "reasoning": {
+        "kind": "select",
+        "defaultOptionId": "max",
+        "options": [
+          {
+            "id": "low",
+            "label": "Low",
+            "controls": {
+              "body": {
+                "reasoning_effort": "low"
+              }
+            }
+          },
+          {
+            "id": "high",
+            "label": "High",
+            "controls": {
+              "body": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          {
+            "id": "max",
+            "label": "Max",
+            "controls": {
+              "body": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider": "qwen",
+        "prefix": "qwen-long"
+      },
+      "limits": {
+        "contextWindowTokens": 10000000,
+        "inputTokens": 10000000
+      }
+    },
+    {
+      "match": {
+        "provider": "gemini",
+        "prefix": "gemini-2.5"
+      },
+      "limits": {
+        "contextWindowTokens": 1048576,
+        "inputTokens": 1048576
+      }
+    },
+    {
+      "match": {
+        "provider": "openai",
+        "prefix": "gpt-5.4"
+      },
+      "limits": {
+        "contextWindowTokens": 1050000,
+        "inputTokens": 1050000
+      }
+    },
+    {
+      "match": { "prefix": "qwen-turbo" },
+      "limits": { "contextWindowTokens": 1000000, "inputTokens": 1000000 }
+    },
+    {
+      "match": { "prefix": "qwen-max" },
+      "limits": { "contextWindowTokens": 129024, "inputTokens": 129024 }
+    },
+    {
+      "match": { "provider": "qwen", "exact": "qwen3.8-max" },
+      "limits": { "contextWindowTokens": 1000000, "outputTokens": 131072 }
+    },
+    {
+      "match": { "prefix": "gemini-2-5" },
+      "limits": { "contextWindowTokens": 1048576, "inputTokens": 1048576 }
+    },
+    {
+      "match": { "prefix": "gemini-25" },
+      "limits": { "contextWindowTokens": 1048576, "inputTokens": 1048576 }
+    },
+    {
+      "match": { "prefix": "gemini-3" },
+      "limits": { "contextWindowTokens": 1000000, "inputTokens": 1000000 }
+    },
+    {
+      "match": { "prefix": "gemini-1.5" },
+      "limits": { "contextWindowTokens": 1000000, "inputTokens": 1000000 }
+    },
+    {
+      "match": { "prefix": "gemini-1-5" },
+      "limits": { "contextWindowTokens": 1000000, "inputTokens": 1000000 }
+    },
+    {
+      "match": { "prefix": "gemini-15" },
+      "limits": { "contextWindowTokens": 1000000, "inputTokens": 1000000 }
+    },
+    {
+      "match": { "prefix": "gpt-4.1" },
+      "limits": { "contextWindowTokens": 1047576, "inputTokens": 1047576 }
+    },
+    {
+      "match": { "prefix": "gpt-4-1" },
+      "limits": { "contextWindowTokens": 1047576, "inputTokens": 1047576 }
+    },
+    {
+      "match": { "prefix": "gpt-41" },
+      "limits": { "contextWindowTokens": 1047576, "inputTokens": 1047576 }
+    },
+    {
+      "match": { "prefix": "gpt-5" },
+      "limits": { "contextWindowTokens": 400000, "inputTokens": 400000 }
+    },
+    {
+      "match": { "prefix": "o3" },
+      "limits": { "contextWindowTokens": 200000, "inputTokens": 200000 }
+    },
+    {
+      "match": { "prefix": "o1-pro" },
+      "limits": { "contextWindowTokens": 200000, "inputTokens": 200000 }
+    },
+    {
+      "match": { "prefix": "o1" },
+      "limits": { "contextWindowTokens": 200000, "inputTokens": 200000 }
+    },
+    {
+      "match": { "prefix": "gpt-4o" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "claude-opus-4-7" },
+      "limits": {
+        "contextWindowTokens": 200000,
+        "inputTokens": 200000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": { "prefix": "claude-opus-4-6" },
+      "limits": {
+        "contextWindowTokens": 200000,
+        "inputTokens": 200000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": { "prefix": "claude-sonnet-4-6" },
+      "limits": {
+        "contextWindowTokens": 200000,
+        "inputTokens": 200000,
+        "outputTokens": 64000
+      }
+    },
+    {
+      "match": { "prefix": "claude-haiku-4-5" },
+      "limits": {
+        "contextWindowTokens": 200000,
+        "inputTokens": 200000,
+        "outputTokens": 64000
+      }
+    },
+    {
+      "match": { "prefix": "claude" },
+      "limits": { "contextWindowTokens": 200000, "inputTokens": 200000 }
+    },
+    {
+      "match": { "prefix": "grok-4.1-fast" },
+      "limits": { "contextWindowTokens": 2000000, "inputTokens": 2000000 }
+    },
+    {
+      "match": { "prefix": "grok-4-1-fast" },
+      "limits": { "contextWindowTokens": 2000000, "inputTokens": 2000000 }
+    },
+    {
+      "match": { "prefix": "grok-41-fast" },
+      "limits": { "contextWindowTokens": 2000000, "inputTokens": 2000000 }
+    },
+    {
+      "match": { "prefix": "grok-4-fast" },
+      "limits": { "contextWindowTokens": 2000000, "inputTokens": 2000000 }
+    },
+    {
+      "match": { "prefix": "grok-code-fast-1" },
+      "limits": { "contextWindowTokens": 256000, "inputTokens": 256000 }
+    },
+    {
+      "match": { "prefix": "grok-4" },
+      "limits": { "contextWindowTokens": 256000, "inputTokens": 256000 }
+    },
+    {
+      "match": { "prefix": "grok-3" },
+      "limits": { "contextWindowTokens": 131072, "inputTokens": 131072 }
+    },
+    {
+      "match": { "prefix": "command-a" },
+      "limits": { "contextWindowTokens": 256000, "inputTokens": 256000 }
+    },
+    {
+      "match": { "prefix": "command-r+" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "command-r-plus" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "command-r" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "mistral-large-3" },
+      "limits": { "contextWindowTokens": 256000, "inputTokens": 256000 }
+    },
+    {
+      "match": { "prefix": "ministral-3" },
+      "limits": { "contextWindowTokens": 256000, "inputTokens": 256000 }
+    },
+    {
+      "match": { "prefix": "mistral-medium-3" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "mistral-small-3" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "codestral" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    },
+    {
+      "match": { "prefix": "deepseek-v4-flash" },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 384000
+      }
+    },
+    {
+      "match": { "prefix": "deepseek-v4-pro" },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 384000
+      }
+    },
+    {
+      "match": { "prefix": "deepseek-chat" },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 384000
+      }
+    },
+    {
+      "match": { "prefix": "deepseek-reasoner" },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 384000
+      }
+    },
+    {
+      "match": { "prefix": "deepseek" },
+      "limits": { "contextWindowTokens": 128000, "inputTokens": 128000 }
+    }
+  ]
+}

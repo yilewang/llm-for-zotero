@@ -2,9 +2,13 @@ import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
 import { createElement } from "../../../../utils/domHelpers";
-import { callLLM } from "../../../../utils/llmClient";
 import type { ModelProviderAuthMode } from "../../../../utils/modelProviders";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
+import {
+  callUtilityLLM,
+  describeUtilityLLMFailure,
+} from "../../../../utils/utilityLLM";
+import type { ModelProfileOverride } from "../../../../modelCapabilities";
 import { getAgentModeEnabled } from "../../prefHelpers";
 import { formatActionLabel } from "../../actionStatusText";
 import { renderPendingActionCard } from "../../agentTrace/render";
@@ -75,7 +79,14 @@ type ActionProfile = {
   apiKey?: string;
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
+  profileOverride?: ModelProfileOverride;
 };
+/**
+ * Scope inference blocks the slash command the user just typed, and asks for
+ * only ~220 tokens, so it stays on the short end of the utility budgets.
+ */
+const ACTION_SCOPE_TIMEOUT_MS = 10_000;
+
 type ActionMenuTrigger = "/" | "$";
 type ActiveActionToken = {
   query: string;
@@ -127,12 +138,7 @@ type ActionCommandControllerDeps = {
     paperContexts: PaperContextRef[],
   ) => PaperContextRef[];
   getSelectedProfile: () => ActionProfile | null;
-  getDoSend: () =>
-    | ((options?: {
-        overrideText?: string;
-        preserveInputDraft?: boolean;
-      }) => Promise<void>)
-    | null;
+  getDoSend: () => (() => Promise<void>) | null;
   closeRetryModelMenu: () => void;
   closeModelMenu: () => void;
   closeReasoningMenu: () => void;
@@ -168,7 +174,6 @@ export function createActionCommandController(
   getActiveCommandAction: () => { name: string } | null;
   consumeForcedSkillIds: () => string[] | undefined;
   handleInlineCommand: (actionName: string, params: string) => Promise<void>;
-  handleNaturalLanguageActionIntent: (text: string) => Promise<boolean>;
   consumeActiveActionToken: () => boolean;
 } {
   const {
@@ -829,6 +834,42 @@ export function createActionCommandController(
     }
   };
 
+  /**
+   * Narrows a paged action to the user's selected chips.
+   *
+   * Scope used to be resolved by the pre-turn natural-language interceptor,
+   * which also handled explicit slash commands on its way past. Removing that
+   * interceptor took this with it, so "/auto_tag this folder" with the
+   * Dynamical_System chip selected silently fell back to `scope: "all"` and
+   * paged the entire library — with no card mentioning the change.
+   *
+   * Only applied when the command did not name a scope itself: an explicit
+   * `collection <name>` must still win over whatever happens to be selected.
+   */
+  const applySelectedChipScope = (
+    actionName: string,
+    input: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    if (input.scope && input.scope !== "all") return input;
+    // organize_unfiled operates on unfiled items by definition; narrowing it
+    // to a collection is meaningless and the resolver rejects it outright.
+    if (actionName === "organize_unfiled") return input;
+    const requestContext = buildActionRequestContext();
+    const collectionIds = (requestContext.selectedCollectionContexts || [])
+      .map((entry) => Number(entry.collectionId))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (collectionIds.length) {
+      return { ...input, scope: "collection", collectionIds };
+    }
+    const tags = (requestContext.selectedTagContexts || [])
+      .map((entry) => String(entry.name || "").trim())
+      .filter(Boolean);
+    if (tags.length) {
+      return { ...input, scope: "tag", tags };
+    }
+    return input;
+  };
+
   const resolvePagedLibraryActionInput = (
     actionName: string,
     params: string,
@@ -853,7 +894,7 @@ export function createActionCommandController(
         );
         return null;
       }
-      return resolution.input;
+      return applySelectedChipScope(actionName, resolution.input);
     } catch (error) {
       deps.logError(`LLM: failed to resolve /${actionName} input`, error);
       setStatus("Agent system unavailable", "error");
@@ -995,26 +1036,30 @@ export function createActionCommandController(
       tags: params.tagCandidates,
       requestContext: params.requestContext,
     });
-    let raw: string;
-    try {
-      raw = await callLLM({
-        prompt,
-        model: selectedProfile.model,
-        apiBase: selectedProfile.apiBase || "",
-        apiKey: selectedProfile.apiKey,
-        authMode: selectedProfile.authMode,
-        providerProtocol: selectedProfile.providerProtocol,
-        temperature: 0,
-        maxTokens: 220,
-      });
-    } catch (error) {
-      deps.logError("LLM: failed to infer action scope", error);
+    const result = await callUtilityLLM({
+      prompt,
+      model: selectedProfile.model,
+      apiBase: selectedProfile.apiBase || "",
+      apiKey: selectedProfile.apiKey,
+      authMode: selectedProfile.authMode,
+      providerProtocol: selectedProfile.providerProtocol,
+      profileOverride: selectedProfile.profileOverride,
+      temperature: 0,
+      jsonBudget: 220,
+      timeoutMs: ACTION_SCOPE_TIMEOUT_MS,
+    });
+    if (!result.ok) {
+      deps.logError(
+        "LLM: failed to infer action scope",
+        describeUtilityLLMFailure(result),
+      );
       return {
         kind: "error" as const,
         error:
           "Could not infer the collection from this description. Select a folder chip or use collection <name>.",
       };
     }
+    const raw = result.text;
 
     const choice = parseLlmActionScopeChoice(raw);
     if (!choice) {
@@ -1293,8 +1338,10 @@ export function createActionCommandController(
             apiKey: selectedProfile.apiKey,
             authMode: selectedProfile.authMode,
             providerProtocol: selectedProfile.providerProtocol,
+            profileOverride: selectedProfile.profileOverride,
           }
         : undefined,
+      conversationKey: deps.getConversationKey?.() ?? null,
       isPagedLibraryAction: isPagedLibraryActionForMode(
         action.name,
         actionMode,
@@ -1327,69 +1374,6 @@ export function createActionCommandController(
     inputBox.value = "";
     dispatchComposerInput();
     deps.persistDraftInputForCurrentConversation();
-  };
-
-  const handleNaturalLanguageActionIntent = async (
-    text: string,
-  ): Promise<boolean> => {
-    if (deps.isClaudeConversationSystem()) return false;
-    const requestContext = buildActionRequestContext();
-    if (requestContext.mode !== "library") return false;
-    try {
-      await initAgentSubsystem();
-      const actions = getAgentApi()
-        .listActions(requestContext.mode)
-        .map((action) => ({
-          ...action,
-          paperScopeProfile: getAgentApi().getPaperScopedActionProfile(
-            action.name,
-          ),
-        }));
-      const collectionCandidates = getPaperScopedCollectionCandidates();
-      const tagCandidates = await getPaperScopedTagCandidates();
-      const result = resolveNaturalLanguageActionIntent({
-        text,
-        mode: requestContext.mode,
-        actions,
-        requestContext,
-        collectionCandidates,
-        tagCandidates,
-      });
-      const resolvedResult =
-        result.kind === "none"
-          ? await resolveLlmNaturalLanguageActionIntent({
-              text,
-              actions,
-              requestContext,
-              collectionCandidates,
-              tagCandidates,
-            })
-          : result;
-      if (resolvedResult.kind === "none") return false;
-      if (resolvedResult.kind === "error") {
-        setStatus(resolvedResult.error, "error");
-        return true;
-      }
-      const action = actions.find(
-        (candidate) => candidate.name === resolvedResult.actionName,
-      );
-      if (!action) {
-        setStatus(`Unknown action: ${resolvedResult.actionName}`, "error");
-        return true;
-      }
-      closeSlashMenu();
-      clearSubmittedActionDraft();
-      void executeAgentAction(
-        action,
-        resolvedResult.input,
-        resolvedResult.userQuery,
-      );
-      return true;
-    } catch (error) {
-      deps.logError("LLM: failed to resolve natural action intent", error);
-      setStatus("Agent system unavailable", "error");
-      return true;
-    }
   };
 
   const handleSkillSelection = (skill: AgentSkill): void => {
@@ -1632,7 +1616,6 @@ export function createActionCommandController(
       return ids;
     },
     handleInlineCommand,
-    handleNaturalLanguageActionIntent,
     consumeActiveActionToken,
   };
 }

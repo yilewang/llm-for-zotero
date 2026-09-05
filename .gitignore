@@ -11,13 +11,20 @@ tsconfig.tsbuildinfo
 
 # Scaffold
 .env
+.env.*
+!.env.example
 .scaffold
 build
 logs
 tmp/
 
+# Merge and patch leftovers
+*.orig
+*.rej
+
 # Ignore all contents inside a folder
 .claude/
+.codex/
 AGENTS.md
 # Local design notes
 /docs/

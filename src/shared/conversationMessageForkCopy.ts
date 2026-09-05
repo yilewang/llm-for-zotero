@@ -4,6 +4,11 @@ import {
   storedMessageDisplayOrderSql,
   storedMessageRoleOrderSql,
 } from "./conversationMessageSql";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "./conversationWriteFence";
 
 export type ForkConversationMessagesResult = {
   copiedMessageCount: number;
@@ -20,6 +25,14 @@ export type ConversationMessageForkCopyConfig = {
   resolveTargetConversationID: (
     conversationKey: number,
   ) => Promise<string | null>;
+  /** Immutable identity required by the catalog/message trigger when the
+   * migrated schema is active. */
+  resolveTargetInstanceID?: (conversationKey: number) => Promise<string | null>;
+  assertSourceConversationLive?: (params: {
+    conversationKey: number;
+    instanceID?: string;
+    conversationID?: string;
+  }) => Promise<void>;
   refreshCatalogSummary: (conversationKey: number) => Promise<void>;
   refreshSearchIndex: (conversationKey: number) => Promise<void>;
   afterCopy?: (
@@ -53,6 +66,8 @@ export async function copyConversationMessagesThroughAssistantAnchor(
   config: ConversationMessageForkCopyConfig,
   params: {
     sourceConversationKey: number;
+    sourceInstanceID?: string;
+    sourceConversationID?: string;
     targetConversationKey: number;
     throughAssistantTimestamp: number;
     timestampBase?: number;
@@ -75,6 +90,8 @@ export async function copyConversationMessagesThroughAssistantAnchor(
     params.throughAssistantTimestamp,
   );
   if (!throughAssistantTimestamp) return emptyResult;
+  const sourceGeneration = getConversationWriteGeneration(sourceKey);
+  if (areConversationWritesFrozen(sourceKey)) return emptyResult;
 
   const sourceSelector = await config.resolveSourceSelector(sourceKey);
   const anchorRows = (await Zotero.DB.queryAsync(
@@ -113,19 +130,43 @@ export async function copyConversationMessagesThroughAssistantAnchor(
   )) as MessageCopyRow[] | undefined;
   if (!rows?.length) return emptyResult;
 
+  // Clear/deletion preserves the numeric key and ledger witness.  The source
+  // generation is therefore the only boundary that distinguishes this
+  // snapshot from content which was cleared while the SELECT was in flight.
+  if (
+    areConversationWritesFrozen(sourceKey) ||
+    !isConversationWriteGenerationCurrent(sourceKey, sourceGeneration)
+  ) {
+    return emptyResult;
+  }
+
   const targetConversationID =
     await config.resolveTargetConversationID(targetKey);
   if (!targetConversationID) return emptyResult;
+  const targetInstanceID =
+    (await config.resolveTargetInstanceID?.(targetKey)) || "";
   const timestampBase = normalizeTimestamp(params.timestampBase) || Date.now();
   const targetAnchorAssistantTimestamp = timestampBase + rows.length - 1;
   const insertColumns = [
     "conversation_id",
     "conversation_key",
     ...config.copyColumns,
+    ...(targetInstanceID ? ["conversation_instance_id"] : []),
   ];
   const placeholders = insertColumns.map(() => "?").join(", ");
 
   await Zotero.DB.executeTransaction(async () => {
+    if (
+      areConversationWritesFrozen(sourceKey) ||
+      !isConversationWriteGenerationCurrent(sourceKey, sourceGeneration)
+    ) {
+      throw new Error("Fork source conversation changed during copy");
+    }
+    await config.assertSourceConversationLive?.({
+      conversationKey: sourceKey,
+      instanceID: params.sourceInstanceID,
+      conversationID: params.sourceConversationID,
+    });
     for (const [index, row] of rows.entries()) {
       await Zotero.DB.queryAsync(
         `INSERT INTO ${config.tableName}
@@ -137,6 +178,7 @@ export async function copyConversationMessagesThroughAssistantAnchor(
           ...config.copyColumns.map((column) =>
             column === "timestamp" ? timestampBase + index : row[column],
           ),
+          ...(targetInstanceID ? [targetInstanceID] : []),
         ],
       );
     }

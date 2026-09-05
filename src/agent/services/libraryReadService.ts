@@ -2,12 +2,14 @@ import type { PaperContextRef } from "../../shared/types";
 import type { AgentRuntimeRequest } from "../types";
 import type {
   CollectionSummary,
-  EditableArticleMetadataSnapshot,
   LibraryItemTargetAttachment,
   PaperAnnotationRecord,
   PaperNoteRecord,
   ZoteroGateway,
 } from "./zoteroGateway";
+import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
+import { projectLibraryReadMetadata } from "../../services/zoteroMetadata/projections";
+import type { LibraryReadMetadataV1 } from "../../services/zoteroMetadata/types";
 
 export type ReadLibrarySection =
   | "metadata"
@@ -20,11 +22,16 @@ export type ReadLibrarySection =
 export type ReadLibraryResultEntry = {
   itemId: number;
   title: string;
-  metadata?: EditableArticleMetadataSnapshot | null;
+  metadata?: LibraryReadMetadataV1;
   notes?: PaperNoteRecord[];
   annotations?: PaperAnnotationRecord[];
   attachments?: LibraryItemTargetAttachment[];
   collections?: CollectionSummary[];
+};
+
+export type ReadLibraryServiceResult = {
+  results: Record<string, ReadLibraryResultEntry>;
+  warnings: string[];
 };
 
 function uniqueNumbers(values: number[]): number[] {
@@ -36,8 +43,8 @@ function uniqueNumbers(values: number[]): number[] {
 function canUseActiveItemFallback(request: AgentRuntimeRequest): boolean {
   return (
     request.conversationKind !== "global" &&
-    !request.selectedCollectionContexts?.length &&
-    !request.selectedTagContexts?.length
+    !request.turnPaperScope.collections.length &&
+    !request.turnPaperScope.tags.length
   );
 }
 
@@ -48,13 +55,14 @@ export class LibraryReadService {
     request: AgentRuntimeRequest;
     itemIds?: number[];
     paperContexts?: PaperContextRef[];
+    selectorMode?: "explicit" | "ambient";
   }): number[] {
     const explicitItemIds = [
       ...(params.itemIds || []),
       ...(params.paperContexts || []).map((entry) => entry.itemId),
     ];
     const explicit = uniqueNumbers(explicitItemIds);
-    if (explicit.length) return explicit;
+    if (params.selectorMode === "explicit" || explicit.length) return explicit;
     const itemIds = this.zoteroGateway
       .listPaperContexts(params.request)
       .map((entry) => entry.itemId);
@@ -71,7 +79,8 @@ export class LibraryReadService {
     sections: ReadLibrarySection[];
     maxNotes?: number;
     maxAnnotations?: number;
-  }): Promise<Record<string, ReadLibraryResultEntry>> {
+    selectorMode?: "explicit" | "ambient";
+  }): Promise<ReadLibraryServiceResult> {
     const itemIds = this.resolveItemIds(params);
     const targetMap = new Map(
       this.zoteroGateway
@@ -80,9 +89,38 @@ export class LibraryReadService {
     );
     const sectionSet = new Set(params.sections);
     const results: Record<string, ReadLibraryResultEntry> = {};
+    const warnings: string[] = [];
+    const resolver = createZoteroMetadataResolver({
+      getItem: (itemId) => this.zoteroGateway.getItem(itemId),
+    });
+    const addUnsupportedSectionWarnings = (
+      itemId: number,
+      kind: "attachment" | "note",
+      supported: ReadonlySet<ReadLibrarySection>,
+    ) => {
+      for (const section of sectionSet) {
+        if (supported.has(section)) continue;
+        warnings.push(
+          `Section '${section}' does not apply to ${kind} item ${itemId}`,
+        );
+      }
+    };
     for (const itemId of itemIds) {
       const rawItem = this.zoteroGateway.getItem(itemId);
-      if (!rawItem) continue;
+      if (!rawItem) {
+        warnings.push(`Item ${itemId} was not found`);
+        continue;
+      }
+      const metadataResolution = sectionSet.has("metadata")
+        ? resolver.resolveItemMetadata(itemId, {
+            detail: "complete",
+            includeSystemMetadata: true,
+          })
+        : null;
+      const metadata =
+        metadataResolution?.status === "resolved"
+          ? projectLibraryReadMetadata(metadataResolution.value)
+          : undefined;
 
       // Note path — handles both standalone notes and child notes attached to a paper
       if ((rawItem as any).isNote?.()) {
@@ -92,20 +130,65 @@ export class LibraryReadService {
             : null;
         results[String(itemId)] = {
           itemId,
-          title: noteContent?.title || `Note ${itemId}`,
+          title: noteContent?.title || metadata?.title || `Note ${itemId}`,
+          metadata,
           notes: noteContent ? [noteContent] : undefined,
+          // A standalone note can be a collection member, and this branch
+          // never reported that — so filing a note could not be verified.
+          collections: sectionSet.has("collections")
+            ? this.zoteroGateway
+                .getItemCollectionIds(itemId)
+                .map((collectionId) =>
+                  this.zoteroGateway.getCollectionSummary(collectionId),
+                )
+                .filter((entry): entry is CollectionSummary => Boolean(entry))
+            : undefined,
         };
+        addUnsupportedSectionWarnings(
+          itemId,
+          "note",
+          new Set<ReadLibrarySection>([
+            "metadata",
+            "notes",
+            "content",
+            "collections",
+          ]),
+        );
+        continue;
+      }
+
+      if (rawItem.isAttachment?.()) {
+        const collectionIds = this.zoteroGateway.getItemCollectionIds(itemId);
+        results[String(itemId)] = {
+          itemId,
+          title:
+            metadata?.title ||
+            `${rawItem.getDisplayTitle?.() || `Attachment ${itemId}`}`,
+          metadata,
+          collections: sectionSet.has("collections")
+            ? collectionIds
+                .map((collectionId) =>
+                  this.zoteroGateway.getCollectionSummary(collectionId),
+                )
+                .filter((entry): entry is CollectionSummary => Boolean(entry))
+            : undefined,
+        };
+        addUnsupportedSectionWarnings(
+          itemId,
+          "attachment",
+          new Set<ReadLibrarySection>(["metadata", "collections"]),
+        );
         continue;
       }
 
       // Regular item path
       const item = this.zoteroGateway.resolveMetadataItem({ itemId });
       if (!item) continue;
-      const metadata = sectionSet.has("metadata")
-        ? this.zoteroGateway.getEditableArticleMetadata(item)
-        : undefined;
       const target = targetMap.get(itemId);
-      const collectionIds = target?.collectionIds || [];
+      // Read membership from the item itself. The paper-target map is
+      // PDF-gated, so a book or a PDF-less paper reported no collections at
+      // all — the exact items most likely to be filed by hand.
+      const collectionIds = this.zoteroGateway.getItemCollectionIds(itemId);
       results[String(itemId)] = {
         itemId,
         title:
@@ -138,6 +221,6 @@ export class LibraryReadService {
           : undefined,
       };
     }
-    return results;
+    return { results, warnings };
   }
 }

@@ -7,10 +7,24 @@ import {
   findLargestUniqueQuoteTextAnchorMatch,
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
+  splitQuoteAtPairedInlineMath,
   splitQuoteAtEllipsis,
+  summarizeQuoteTextSupport,
 } from "../src/modules/contextPanel/quoteTextSearch";
 
 describe("quoteTextSearch", function () {
+  it("keeps exact repetitive quotes searchable above the fragment state ceiling", function () {
+    const quote = Array.from({ length: 500 }, () => "repeat").join(" ");
+    const match = findLargestUniqueQuoteTextAnchorMatch(
+      [{ id: "repetitive-page", text: quote }],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "repetitive-page");
+    assert.equal(match?.totalOccurrences, 1);
+  });
+
   it("splits quotes at internal ellipsis and keeps meaningful segments", function () {
     const result = splitQuoteAtEllipsis(
       "...Preparatory activity is thought to provide top-down signals that enable rapid processing... The neural basis of this preparatory state involves distributed cortical networks...",
@@ -19,6 +33,38 @@ describe("quoteTextSearch", function () {
     assert.equal(result.length, 2);
     assert.include(result[0], "Preparatory activity");
     assert.include(result[1], "neural basis");
+  });
+
+  it("splits paired inline math at the beginning, middle, and end", function () {
+    assert.deepEqual(
+      splitQuoteAtPairedInlineMath(
+        "\\(x\\) The surrounding prose remains a searchable source locator.",
+      )?.proseSegments,
+      ["", " The surrounding prose remains a searchable source locator."],
+    );
+    assert.deepEqual(
+      splitQuoteAtPairedInlineMath(
+        "The variance \\(\\sigma^2\\) remains a searchable source locator.",
+      )?.proseSegments,
+      ["The variance ", " remains a searchable source locator."],
+    );
+    assert.deepEqual(
+      splitQuoteAtPairedInlineMath(
+        "The surrounding prose remains searchable at $t + 1$",
+      )?.proseSegments,
+      ["The surrounding prose remains searchable at ", ""],
+    );
+  });
+
+  it("refuses malformed and display-math delimiters", function () {
+    for (const quote of [
+      "The result \\(x remains unresolved.",
+      "The result x\\) remains unresolved.",
+      "The result $$x$$ remains display math.",
+      "The result \\[x\\] remains display math.",
+    ]) {
+      assert.isNull(splitQuoteAtPairedInlineMath(quote), quote);
+    }
   });
 
   it("keeps a Unicode-hyphen quote as one complete FindController query", function () {
@@ -384,5 +430,20 @@ describe("quoteTextSearch", function () {
     assert.include(match?.query || "", "痛觉感觉成分加工");
     assert.notInclude(match?.query || "", "另一栏");
     assert.isAtLeast(match?.matchedTokenCount || 0, 12);
+  });
+
+  it("credits recoverable PDF layout fragments after one corrupted token pair", function () {
+    const quote =
+      "The paper defines low dimensional representations of neural activity using definitions of line and ring attractors which are intuitive concepts commonly applied in computational neuroscience models of memory dynamics";
+    const pdfWorkerText =
+      "The paper defines low dimensional representations o f neural activity using definitions o f l ine a nd r ing a ttractors w hich a re i ntuiticveoncepts commonly applied in computational neuroscience models of memory dynamics";
+    const support = summarizeQuoteTextSupport(
+      [{ id: "corrupted-page", text: pdfWorkerText }],
+      quote,
+    );
+
+    assert.equal(support.quoteTokenCount, 29);
+    assert.equal(support.supportedQuoteTokenCount, 27);
+    assert.closeTo(support.coverage, 27 / 29, 0.000001);
   });
 });

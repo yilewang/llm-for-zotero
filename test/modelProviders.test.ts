@@ -2,13 +2,34 @@ import { assert } from "chai";
 import { config } from "../package.json";
 import {
   buildModelProviderGroupsFromLegacySlots,
+  buildProviderCatalogIdentity,
   deriveProviderLabel,
+  getLastUsedModelEntryId,
+  getModelProviderGroups,
   getRuntimeModelEntries,
   migrateApiBaseForAuthModeChange,
+  normalizeModelProviderGroups,
+  refreshConfiguredProviderModelCatalogs,
   setModelProviderGroups,
+  subscribeModelProviderGroups,
   type LegacyModelSlot,
   type ModelProviderGroup,
 } from "../src/utils/modelProviders";
+import {
+  configureModelCapabilityRuntime,
+  getDiscoveredModels,
+  refreshModelCatalog,
+  resetModelCapabilityStateForTests,
+} from "../src/modelCapabilities";
+import {
+  loadCodexDirectCatalog,
+  resetCodexDirectCatalogForTests,
+} from "../src/codexAuth/modelCatalog";
+import { resolveModelInputTokenLimit } from "../src/utils/modelInputCap";
+import {
+  getSelectedModelEntry,
+  setSelectedModelEntry,
+} from "../src/modules/contextPanel/prefHelpers";
 
 let originalZotero: typeof Zotero | undefined;
 
@@ -18,6 +39,7 @@ describe("modelProviders", function () {
   });
 
   beforeEach(function () {
+    resetCodexDirectCatalogForTests();
     const prefStore = new Map<string, unknown>();
     (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
       Prefs: {
@@ -32,6 +54,10 @@ describe("modelProviders", function () {
   after(function () {
     (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
       originalZotero;
+  });
+
+  afterEach(function () {
+    resetCodexDirectCatalogForTests();
   });
 
   it("derives provider labels from known hosts and falls back to hostname", function () {
@@ -165,6 +191,217 @@ describe("modelProviders", function () {
     assert.equal(entries[0].providerLabel, "OpenAI");
     assert.equal(entries[0].authMode, "api_key");
     assert.equal(entries[0].providerProtocol, "responses_api");
+  });
+
+  it("round-trips explicit max-token provenance through provider storage", function () {
+    setModelProviderGroups([
+      {
+        id: "ollama",
+        apiBase: "http://127.0.0.1:11434",
+        apiKey: "",
+        authMode: "api_key",
+        providerProtocol: "ollama_native",
+        models: [
+          {
+            id: "explicit",
+            model: "qwen3:8b",
+            temperature: 0.3,
+            maxTokens: 4096,
+            maxTokensExplicit: true,
+          },
+          {
+            id: "default",
+            model: "gemma3:4b",
+            temperature: 0.3,
+            maxTokens: 4096,
+          },
+          {
+            id: "legacy-custom",
+            model: "future-model",
+            temperature: 0.3,
+            maxTokens: 250000,
+          },
+          {
+            id: "known-high-explicit",
+            model: "claude-haiku-4-5",
+            temperature: 0.3,
+            maxTokens: 200000,
+            maxTokensExplicit: true,
+          },
+        ],
+      },
+    ]);
+
+    const entries = getRuntimeModelEntries();
+
+    assert.isTrue(entries[0].advanced.maxTokensExplicit);
+    assert.isUndefined(entries[1].advanced.maxTokensExplicit);
+    assert.equal(entries[2].advanced.maxTokens, 250000);
+    assert.isTrue(entries[2].advanced.maxTokensExplicit);
+    assert.equal(entries[3].advanced.maxTokens, 200000);
+    assert.isTrue(entries[3].advanced.maxTokensExplicit);
+  });
+
+  it("notifies open consumers after provider settings change", function () {
+    let notifications = 0;
+    const unsubscribe = subscribeModelProviderGroups(() => {
+      notifications += 1;
+    });
+
+    setModelProviderGroups([]);
+    unsubscribe();
+    setModelProviderGroups([]);
+
+    assert.equal(notifications, 1);
+  });
+
+  it("normalizes WebChat as target-only persisted and runtime state", function () {
+    setModelProviderGroups([
+      {
+        id: "webchat-provider",
+        apiBase: "https://ignored.example/v1",
+        apiKey: "ignored-secret",
+        authMode: "webchat",
+        providerProtocol: "responses_api",
+        presetIdOverride: "customized",
+        models: [
+          {
+            id: "web-target",
+            model: "chatgpt.com",
+            temperature: 1.7,
+            maxTokens: 99_999,
+            maxTokensExplicit: true,
+            inputTokenCap: 123,
+            inputMode: "text_only",
+            providerProtocol: "responses_api",
+            profileOverride: { extraBody: { top_k: 10 } },
+          },
+        ],
+      } as unknown as ModelProviderGroup,
+    ]);
+
+    const [group] = getModelProviderGroups();
+    assert.equal(group.authMode, "webchat");
+    if (group.authMode !== "webchat") assert.fail("expected WebChat group");
+    assert.deepEqual(group, {
+      id: "webchat-provider",
+      authMode: "webchat",
+      providerProtocol: "web_sync",
+      models: [{ id: "web-target", model: "chatgpt.com" }],
+    });
+    const [entry] = getRuntimeModelEntries();
+    assert.equal(entry.authMode, "webchat");
+    assert.notProperty(entry, "advanced");
+
+    const stored = JSON.parse(
+      String(
+        globalThis.Zotero.Prefs.get(
+          `${config.prefsPrefix}.modelProviderGroups`,
+          true,
+        ),
+      ),
+    ) as Array<Record<string, unknown>>;
+    assert.deepEqual(stored, [group]);
+  });
+
+  it("migrates legacy WebChat targets and repairs an invalid selection", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+      get: (key: string, global?: boolean) => unknown;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "webchat-provider",
+          apiBase: "https://ignored.example/v1",
+          apiKey: "ignored",
+          authMode: "webchat",
+          providerProtocol: "responses_api",
+          models: [
+            { id: "invalid-row", model: "gpt-5.4", temperature: 1.2 },
+            { id: "chatgpt-row", model: "CHATGPT.COM", maxTokens: 1 },
+            { id: "duplicate-row", model: "chatgpt.com" },
+            { id: "deepseek-row", model: "chat.deepseek.com" },
+          ],
+        },
+      ]),
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.lastUsedModelEntryId`,
+      "invalid-row",
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      6,
+      true,
+    );
+
+    const [group] = getModelProviderGroups();
+    assert.equal(group.authMode, "webchat");
+    if (group.authMode !== "webchat") assert.fail("expected WebChat group");
+    assert.deepEqual(group.models, [
+      { id: "chatgpt-row", model: "chatgpt.com" },
+      { id: "deepseek-row", model: "chat.deepseek.com" },
+    ]);
+    assert.equal(getLastUsedModelEntryId(), "chatgpt-row");
+    const stored = String(
+      prefs.get(`${config.prefsPrefix}.modelProviderGroups`, true),
+    );
+    assert.notInclude(stored, "temperature");
+    assert.notInclude(stored, "maxTokens");
+    assert.notInclude(stored, "api.example");
+    assert.notInclude(stored, "apiBase");
+    assert.notInclude(stored, "apiKey");
+  });
+
+  it("preserves a selected WebChat target row that survives migration", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+      get: (key: string, global?: boolean) => unknown;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "webchat-provider",
+          apiBase: "https://ignored.example/v1",
+          apiKey: "ignored",
+          authMode: "webchat",
+          models: [
+            { id: "chatgpt-row", model: "chatgpt.com" },
+            {
+              id: "deepseek-row",
+              model: "chat.deepseek.com",
+              temperature: 1.4,
+            },
+          ],
+        },
+      ]),
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.lastUsedModelEntryId`,
+      "deepseek-row",
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      6,
+      true,
+    );
+
+    const [group] = getModelProviderGroups();
+    assert.equal(getLastUsedModelEntryId(), "deepseek-row");
+    assert.equal(group.models[1]?.id, "deepseek-row");
+    const stored = String(
+      prefs.get(`${config.prefsPrefix}.modelProviderGroups`, true),
+    );
+    assert.notInclude(stored, "temperature");
+    assert.notInclude(stored, "apiBase");
+    assert.notInclude(stored, "apiKey");
   });
 
   it("infers Anthropic protocol for customized providers with default chat protocol", function () {
@@ -535,8 +772,324 @@ describe("modelProviders", function () {
     assert.lengthOf(entries, 1);
     assert.equal(entries[0].authMode, "codex_auth");
     assert.equal(entries[0].providerProtocol, "codex_responses");
-    assert.equal(entries[0].providerLabel, "OpenAI (codex auth, legacy)");
-    assert.equal(entries[0].displayModelLabel, "codex/gpt-5.4");
+    assert.equal(entries[0].providerLabel, "Codex Direct (Legacy)");
+    assert.equal(entries[0].displayModelLabel, "gpt-5.4");
+    assert.equal(
+      entries[0].apiBase,
+      "https://chatgpt.com/backend-api/codex/responses",
+    );
+    assert.equal(entries[0].catalogAvailability, "unverified");
+  });
+
+  it("collapses legacy Direct groups into one row-backed singleton", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "provider-codex-migration",
+          apiBase: "https://custom.example/codex",
+          apiKey: "dormant",
+          authMode: "codex_auth",
+          providerProtocol: "gemini_native",
+          models: [
+            { id: "m1", model: "first-model", temperature: 0.3, maxTokens: 1 },
+            {
+              id: "m2",
+              model: "selected-model",
+              temperature: 1.2,
+              maxTokens: 2,
+            },
+          ],
+        },
+        {
+          id: "provider-codex-duplicate",
+          apiBase: "https://ignored.example/codex",
+          apiKey: "also-dormant",
+          authMode: "codex_auth",
+          providerProtocol: "openai_chat_compat",
+          codexDirectModel: "third-model",
+          models: [
+            { id: "m3", model: "FIRST-MODEL", inputTokenCap: 123 },
+            { id: "m4", model: "third-model", temperature: 1.7 },
+          ],
+        },
+      ]),
+      true,
+    );
+    prefs.set(`${config.prefsPrefix}.lastUsedModelEntryId`, "m2", true);
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      4,
+      true,
+    );
+
+    const groups = getModelProviderGroups();
+    assert.lengthOf(groups, 1);
+    const group = groups[0];
+    assert.equal(group.authMode, "codex_auth");
+    if (group.authMode !== "codex_auth") assert.fail("expected Direct group");
+    assert.notProperty(group, "selectedModel");
+    assert.equal(
+      group.apiBase,
+      "https://chatgpt.com/backend-api/codex/responses",
+    );
+    assert.equal(group.apiKey, "");
+    assert.equal(group.providerProtocol, "codex_responses");
+    assert.deepEqual(
+      group.models.map((row) => row.model),
+      ["first-model", "selected-model", "third-model"],
+    );
+    assert.notProperty(group.models[1], "temperature");
+    assert.equal(
+      globalThis.Zotero.Prefs.get(
+        `${config.prefsPrefix}.lastUsedModelEntryId`,
+        true,
+      ),
+      "m2",
+    );
+    const stored = JSON.parse(
+      String(
+        globalThis.Zotero.Prefs.get(
+          `${config.prefsPrefix}.modelProviderGroups`,
+          true,
+        ),
+      ),
+    ) as Array<Record<string, unknown>>;
+    assert.notProperty(stored[0], "selectedModel");
+    assert.notProperty(stored[0], "codexDirectModel");
+  });
+
+  it("normalizes an empty Direct card to exactly one model row", function () {
+    const groups = normalizeModelProviderGroups([
+      {
+        id: "provider-direct",
+        authMode: "codex_auth",
+        models: [],
+      },
+    ]);
+    assert.lengthOf(groups, 1);
+    const group = groups[0];
+    assert.equal(group.authMode, "codex_auth");
+    if (group.authMode !== "codex_auth") assert.fail("expected Direct group");
+    assert.lengthOf(group.models, 1);
+    assert.equal(group.models[0].model, "");
+  });
+
+  it("retains a legacy Direct selection as a row but drops the field", function () {
+    const groups = normalizeModelProviderGroups([
+      {
+        id: "first-direct",
+        authMode: "codex_auth",
+        models: [{ id: "first-row", model: "first-model" }],
+      },
+      {
+        id: "second-direct",
+        authMode: "codex_auth",
+        selectedModel: "saved-selection",
+        models: [{ id: "saved-row", model: "saved-selection" }],
+      },
+    ]);
+    assert.lengthOf(groups, 1);
+    const group = groups[0];
+    assert.equal(group.authMode, "codex_auth");
+    if (group.authMode !== "codex_auth") assert.fail("expected Direct group");
+    assert.notProperty(group, "selectedModel");
+    assert.deepEqual(
+      group.models.map((row) => row.model),
+      ["first-model", "saved-selection"],
+    );
+  });
+
+  it("migrates a legacy Direct model string to its stable row ID", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+      get: (key: string, global?: boolean) => unknown;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "direct",
+          authMode: "codex_auth",
+          selectedModel: "saved-selection",
+          models: [{ id: "saved-row", model: "saved-selection" }],
+        },
+      ]),
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      5,
+      true,
+    );
+
+    getModelProviderGroups();
+
+    assert.equal(getLastUsedModelEntryId(), "saved-row");
+    const stored = JSON.parse(
+      String(prefs.get(`${config.prefsPrefix}.modelProviderGroups`, true)),
+    ) as Array<Record<string, unknown>>;
+    assert.notProperty(stored[0], "selectedModel");
+  });
+
+  it("does not replace a valid non-Direct selection during Direct migration", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "standard",
+          authMode: "api_key",
+          apiBase: "https://api.openai.com/v1",
+          models: [{ id: "standard-row", model: "gpt-standard" }],
+        },
+        {
+          id: "direct",
+          authMode: "codex_auth",
+          selectedModel: "saved-selection",
+          models: [{ id: "saved-row", model: "saved-selection" }],
+        },
+      ]),
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.lastUsedModelEntryId`,
+      "standard-row",
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      5,
+      true,
+    );
+
+    getModelProviderGroups();
+
+    assert.equal(getLastUsedModelEntryId(), "standard-row");
+  });
+
+  it("exposes only configured Direct rows and publishes live context limits", async function () {
+    setModelProviderGroups([
+      {
+        id: "provider-direct",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        authMode: "codex_auth",
+        providerProtocol: "codex_responses",
+        models: [
+          { id: "saved-row", model: "saved-missing" },
+          { id: "catalog-row", model: "catalog-first" },
+        ],
+      },
+    ]);
+    const fallbackLimit = resolveModelInputTokenLimit(
+      "catalog-first",
+      undefined,
+      {
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        protocol: "codex_responses",
+        authMode: "codex_auth",
+      },
+    );
+    assert.equal(fallbackLimit.limitTokens, 256000);
+    assert.equal(fallbackLimit.source, "default");
+    await loadCodexDirectCatalog({
+      authPath: "/test/codex/auth.json",
+      readText: async () =>
+        JSON.stringify({
+          tokens: { access_token: "test", refresh_token: "refresh" },
+        }),
+      fetchFn: (async () =>
+        new Response(
+          JSON.stringify({
+            models: [
+              {
+                slug: "catalog-first",
+                display_name: "Catalog First",
+                visibility: "list",
+                priority: 10,
+                context_window: 128000,
+                supported_reasoning_levels: [],
+              },
+              {
+                slug: "catalog-second",
+                display_name: "Catalog Second",
+                visibility: "list",
+                priority: 5,
+                supported_reasoning_levels: [],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch,
+    });
+
+    const entries = getRuntimeModelEntries();
+    assert.deepEqual(
+      entries.map((entry) => entry.model),
+      ["saved-missing", "catalog-first"],
+    );
+    assert.equal(entries[0].catalogAvailability, "saved-unavailable");
+    assert.equal(entries[1].catalogAvailability, "available");
+    assert.equal(entries[1].providerLabel, "Codex Direct (Legacy)");
+    assert.equal(entries[1].advanced.temperature, 0.3);
+    assert.equal(entries[1].advanced.maxTokens, 4096);
+    assert.isUndefined(entries[1].advanced.inputTokenCap);
+    assert.notInclude(
+      entries.map((entry) => entry.model),
+      "catalog-second",
+    );
+    assert.equal(
+      resolveModelInputTokenLimit("catalog-first", undefined, {
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        protocol: "codex_responses",
+        authMode: "codex_auth",
+      }).limitTokens,
+      128000,
+    );
+  });
+
+  it("changes Direct selection through one stable ID without provider notifications", function () {
+    setModelProviderGroups([
+      {
+        id: "provider-direct",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        authMode: "codex_auth",
+        providerProtocol: "codex_responses",
+        models: [
+          { id: "first-row", model: "first-model" },
+          { id: "second-row", model: "second-model" },
+        ],
+      },
+    ]);
+    const storedBefore = globalThis.Zotero.Prefs.get(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      true,
+    );
+    let providerNotifications = 0;
+    const unsubscribe = subscribeModelProviderGroups(() => {
+      providerNotifications += 1;
+    });
+
+    setSelectedModelEntry("second-row");
+
+    assert.equal(getLastUsedModelEntryId(), "second-row");
+    assert.equal(getSelectedModelEntry()?.entryId, "second-row");
+    assert.equal(providerNotifications, 0);
+    assert.equal(
+      globalThis.Zotero.Prefs.get(
+        `${config.prefsPrefix}.modelProviderGroups`,
+        true,
+      ),
+      storedBefore,
+    );
+    unsubscribe();
   });
 
   it("keeps codex app server entries labeled separately", function () {
@@ -660,14 +1213,14 @@ describe("modelProviders", function () {
       );
     });
 
-    it("clears local paths when leaving codex_app_server for a URL-based mode", function () {
+    it("uses the fixed endpoint when leaving codex_app_server for Codex Direct", function () {
       assert.equal(
         migrateApiBaseForAuthModeChange(
           "codex_app_server",
           "codex_auth",
           "C:\\nvm4w\\nodejs\\codex.cmd",
         ),
-        "",
+        "https://chatgpt.com/backend-api/codex/responses",
       );
       assert.equal(
         migrateApiBaseForAuthModeChange(
@@ -690,7 +1243,7 @@ describe("modelProviders", function () {
       );
     });
 
-    it("leaves apiBase alone for non-app-server transitions", function () {
+    it("uses the fixed endpoint when entering Codex Direct", function () {
       assert.equal(
         migrateApiBaseForAuthModeChange(
           "api_key",
@@ -701,7 +1254,136 @@ describe("modelProviders", function () {
       );
       assert.equal(
         migrateApiBaseForAuthModeChange("api_key", "codex_auth", ""),
-        "",
+        "https://chatgpt.com/backend-api/codex/responses",
+      );
+    });
+  });
+
+  describe("discovered provider catalogs", function () {
+    afterEach(function () {
+      resetModelCapabilityStateForTests();
+    });
+
+    function makeGeminiGroup(): ModelProviderGroup {
+      return {
+        id: "provider-gemini-test",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "test-key",
+        authMode: "api_key",
+        providerProtocol: "gemini_native",
+        models: [
+          {
+            id: "model-entry-1",
+            model: "gemini-2.5-pro",
+            temperature: 0.7,
+            maxTokens: 4096,
+          },
+        ],
+      };
+    }
+
+    it("keeps the action-panel runtime list to user-configured models even when a catalog is loaded", async function () {
+      const group = makeGeminiGroup();
+      setModelProviderGroups([group]);
+      configureModelCapabilityRuntime({
+        environment: "test",
+        fetch: (async () => ({
+          ok: true,
+          json: async () => ({
+            models: [
+              {
+                name: "models/gemini-2.5-pro",
+                inputTokenLimit: 1_048_576,
+                outputTokenLimit: 65_536,
+              },
+              { name: "models/gemini-2.5-flash-preview-tts" },
+              { name: "models/gemma-4-26b-a4b-it" },
+              { name: "models/embedding-001" },
+            ],
+          }),
+        })) as unknown as typeof fetch,
+      });
+
+      const identity = buildProviderCatalogIdentity(group);
+      const catalog = await refreshModelCatalog(identity);
+      assert.lengthOf(catalog, 4, "the catalog itself keeps every model");
+      assert.lengthOf(getDiscoveredModels(identity), 4);
+
+      const entries = getRuntimeModelEntries();
+      assert.deepEqual(
+        entries.map((entry) => entry.model),
+        ["gemini-2.5-pro"],
+        "only models pinned in preferences may appear in the runtime list",
+      );
+    });
+
+    it("builds the same catalog identity for preset groups that the runtime send path uses", function () {
+      const group = makeGeminiGroup();
+      const identity = buildProviderCatalogIdentity(group);
+      assert.equal(identity.provider, "gemini");
+      assert.equal(identity.model, "");
+      assert.equal(identity.apiBase, group.apiBase);
+      assert.equal(identity.protocol, "gemini_native");
+      assert.equal(identity.authMode, "api_key");
+      assert.equal(identity.apiKey, "test-key");
+      assert.equal(identity.scope, group.id);
+    });
+
+    it("marks customized groups with an undefined provider in the catalog identity", function () {
+      const group: ModelProviderGroup = {
+        id: "provider-custom-test",
+        apiBase: "https://my-llm.example.com/v1",
+        apiKey: "k",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+        models: [],
+      };
+      const identity = buildProviderCatalogIdentity(group);
+      assert.isUndefined(identity.provider);
+      assert.equal(identity.scope, group.id);
+    });
+
+    it("never runs the generic catalog fetch for copilot, codex, or webchat groups", async function () {
+      let fetchCalls = 0;
+      configureModelCapabilityRuntime({
+        environment: "test",
+        fetch: (async () => {
+          fetchCalls += 1;
+          return { ok: true, json: async () => ({ data: [] }) };
+        }) as unknown as typeof fetch,
+      });
+      const excluded: ModelProviderGroup[] = [
+        {
+          id: "provider-copilot",
+          apiBase: "https://api.githubcopilot.com",
+          apiKey: "gho_github-oauth-token",
+          authMode: "copilot_auth",
+          providerProtocol: "openai_chat_compat",
+          models: [],
+        },
+        {
+          id: "provider-codex",
+          apiBase: "https://chatgpt.com/backend-api/codex/responses",
+          apiKey: "",
+          authMode: "codex_auth",
+          providerProtocol: "codex_responses",
+          models: [],
+        },
+        {
+          id: "provider-webchat",
+          apiBase: "",
+          apiKey: "",
+          authMode: "webchat",
+          providerProtocol: "web_sync",
+          models: [],
+        },
+      ];
+      setModelProviderGroups(excluded);
+      await refreshConfiguredProviderModelCatalogs();
+      assert.equal(
+        fetchCalls,
+        0,
+        "copilot needs a token exchange (a raw GitHub token would 401) and codex/webchat have no catalog",
       );
     });
   });

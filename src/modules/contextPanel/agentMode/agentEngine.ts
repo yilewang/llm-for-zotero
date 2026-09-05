@@ -11,7 +11,8 @@ import type {
   AgentEvent,
   AgentPendingAction,
   AgentRunEventRecord,
-  AgentRuntimeRequest,
+  AgentRuntimeOutcome,
+  AgentRuntimeRequestInput as AgentRuntimeRequest,
 } from "../../../agent/types";
 import { consumePendingRetentionEvents } from "../../../claudeCode/runtimeRetention";
 import {
@@ -23,6 +24,12 @@ import {
   resolveDisplayConversationKind,
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
+import { filterMessagesInPendingTurns } from "../turnMessageUtils";
+import { resolveStreamInterruptionOutcome } from "../streamInterruption";
+import {
+  restoreRetryUserSnapshot,
+  takeRetryUserSnapshot,
+} from "../retryUserSnapshot";
 import { renderPendingActionCard } from "../agentTrace/render";
 import {
   createBlockStreamCoalescer,
@@ -181,6 +188,563 @@ function appendPendingFinalText(
   message.text = message.pendingFinalText || message.text;
 }
 
+/**
+ * The stored-row patch for a turn's user message. Shared by the onStart and
+ * tool_result persistence in both the send and retry paths, which previously
+ * hand-copied these fields four times.
+ */
+function buildStoredUserMessagePatch(
+  message: Message,
+): Parameters<AgentEngineDeps["updateStoredLatestUserMessage"]>[1] {
+  return {
+    text: message.text,
+    timestamp: message.timestamp,
+    runMode: "agent",
+    agentRunId: message.agentRunId,
+    selectedText: message.selectedText,
+    selectedTextContexts: message.selectedTextContexts,
+    selectedTexts: message.selectedTexts,
+    selectedTextSources: message.selectedTextSources,
+    selectedTextPaperContexts: message.selectedTextPaperContexts,
+    selectedTextNoteContexts: message.selectedTextNoteContexts,
+    screenshotImages: message.screenshotImages,
+    paperContexts: message.paperContexts,
+    pdfPaperContexts: message.pdfPaperContexts,
+    fullTextPaperContexts: message.fullTextPaperContexts,
+    citationPaperContexts: message.citationPaperContexts,
+    selectedCollectionContexts: message.selectedCollectionContexts,
+    selectedTagContexts: message.selectedTagContexts,
+    attachments: message.attachments,
+    modelAttachments: message.modelAttachments,
+    modelName: message.modelName,
+    modelEntryId: message.modelEntryId,
+    modelProviderLabel: message.modelProviderLabel,
+  };
+}
+
+type AgentTurnEventContext = {
+  deps: AgentEngineDeps;
+  body: Element;
+  ui: PanelRequestUIShape;
+  conversationKey: number;
+  runtimeRequest: AgentRuntimeRequest;
+  assistantMessage: Message;
+  pairedUserMessage: Message;
+  /** The in-memory history array compact markers are spliced into. */
+  history: Message[];
+  /** /compact turns skip user-message persistence; retries never compact. */
+  isCompactCommand: boolean;
+  /**
+   * How a context_compacted event treats the streaming assistant bubble:
+   * send replaces it (clears text/trace, and drops it from history on manual
+   * compacts); retry keeps it untouched.
+   */
+  compactStyle: "replace-assistant" | "keep-assistant";
+  onContextCompacted?: () => void;
+  messageDeltaCoalescer: { pushText: (text: string) => void };
+  flushMessageDeltas: (reason: BlockStreamFlushReason) => void;
+  queueRefresh: () => void;
+  refreshChatSafely: () => void;
+  setStatusSafely: (text: string, kind: StatusKind) => void;
+  pushTraceEvent: (runId: string, event: AgentEvent) => void;
+  scheduleQueueDrain: () => void;
+  uiRelease: { releaseReady: () => void };
+};
+
+/**
+ * The per-event consumer for an agent runtime turn. Send and retry previously
+ * carried two hand-synchronized ~300-line copies of this switch; they differ
+ * only in which user message is paired with the turn, which history array
+ * receives compact markers, and how compaction treats the assistant bubble.
+ */
+function createAgentTurnEventHandler(
+  ctx: AgentTurnEventContext,
+): (event: AgentEvent) => Promise<void> {
+  const {
+    deps,
+    body,
+    ui,
+    conversationKey,
+    runtimeRequest,
+    assistantMessage,
+    pairedUserMessage,
+    history,
+    isCompactCommand,
+    compactStyle,
+    onContextCompacted,
+    messageDeltaCoalescer,
+    flushMessageDeltas,
+    queueRefresh,
+    refreshChatSafely,
+    setStatusSafely,
+    pushTraceEvent,
+    scheduleQueueDrain,
+    uiRelease,
+  } = ctx;
+  return async (event: AgentEvent): Promise<void> => {
+    if (assistantMessage.agentRunId) {
+      pushTraceEvent(assistantMessage.agentRunId, event);
+    }
+    if (event.type !== "message_delta") {
+      flushMessageDeltas(event.type === "final" ? "final" : "event");
+    }
+    switch (event.type) {
+      case "provider_event":
+        applyResolvedClaudeEffortDisplay(body, event);
+        break;
+      case "usage": {
+        const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
+        recordContextCacheTelemetry(
+          runtimeRequest.contextCache,
+          normalizeAgentUsageForCacheTelemetry(usageEvent),
+        );
+        if (ui.tokenUsageEl) {
+          const previous = deps.getContextUsageSnapshot?.(conversationKey);
+          const usageRecord = usageEvent as unknown as Record<string, unknown>;
+          const hasContextPayload = "contextTokens" in usageRecord;
+          if (hasContextPayload) {
+            const nextTokens = Math.max(
+              0,
+              Number(usageRecord.contextTokens) || 0,
+            );
+            const rawContextWindow = usageRecord.contextWindow;
+            const nextWindow =
+              typeof rawContextWindow === "number" &&
+              Number.isFinite(rawContextWindow)
+                ? rawContextWindow
+                : previous?.contextWindow;
+            const effectiveTokens =
+              nextTokens > 0
+                ? nextTokens
+                : usageRecord.contextWindowIsAuthoritative === true
+                  ? (previous?.contextTokens ?? 0)
+                  : 0;
+            deps.setContextUsageSnapshot?.(conversationKey, {
+              contextTokens: effectiveTokens,
+              contextWindow: nextWindow,
+              contextWindowIsAuthoritative:
+                usageRecord.contextWindowIsAuthoritative === true,
+              cacheReadTokens:
+                typeof usageRecord.cacheReadTokens === "number"
+                  ? usageRecord.cacheReadTokens
+                  : undefined,
+              cacheWriteTokens:
+                typeof usageRecord.cacheWriteTokens === "number"
+                  ? usageRecord.cacheWriteTokens
+                  : undefined,
+              cacheMissTokens:
+                typeof usageRecord.cacheMissTokens === "number"
+                  ? usageRecord.cacheMissTokens
+                  : undefined,
+              cacheHitRatio:
+                typeof usageRecord.cacheHitRatio === "number"
+                  ? usageRecord.cacheHitRatio
+                  : undefined,
+              cacheProvider:
+                typeof usageRecord.cacheProvider === "string"
+                  ? usageRecord.cacheProvider
+                  : undefined,
+              estimated: usageRecord.contextWindowIsAuthoritative !== true,
+              source:
+                usageRecord.contextWindowIsAuthoritative === true
+                  ? "provider"
+                  : "estimated",
+            });
+            deps.setTokenUsage(
+              ui.tokenUsageEl,
+              effectiveTokens,
+              nextWindow,
+              body.querySelector(
+                "#llm-claude-context-gauge",
+              ) as HTMLElement | null,
+              {
+                estimated: usageRecord.contextWindowIsAuthoritative !== true,
+                cacheReadTokens:
+                  typeof usageRecord.cacheReadTokens === "number"
+                    ? usageRecord.cacheReadTokens
+                    : undefined,
+                cacheWriteTokens:
+                  typeof usageRecord.cacheWriteTokens === "number"
+                    ? usageRecord.cacheWriteTokens
+                    : undefined,
+                cacheMissTokens:
+                  typeof usageRecord.cacheMissTokens === "number"
+                    ? usageRecord.cacheMissTokens
+                    : undefined,
+                cacheHitRatio:
+                  typeof usageRecord.cacheHitRatio === "number"
+                    ? usageRecord.cacheHitRatio
+                    : undefined,
+                cacheProvider:
+                  typeof usageRecord.cacheProvider === "string"
+                    ? usageRecord.cacheProvider
+                    : undefined,
+              },
+            );
+          } else if (
+            typeof usageRecord.totalTokens === "number" &&
+            usageRecord.totalTokens > 0
+          ) {
+            deps.accumulateSessionTokens(
+              conversationKey,
+              usageRecord.totalTokens,
+            );
+          }
+        }
+        break;
+      }
+      case "tool_result": {
+        if (!event.ok) break;
+        mergeAgentToolResultQuoteCitations(assistantMessage, event);
+        const toolPaperContexts = deps.normalizePaperContexts([
+          ...extractPaperContextCandidatesFromToolContent(event.content),
+          ...extractPaperContextCandidatesFromToolContent(event.artifacts),
+        ]);
+        if (!toolPaperContexts.length) break;
+        const before = pairedUserMessage.citationPaperContexts?.length || 0;
+        pairedUserMessage.citationPaperContexts = mergeCitationPaperContexts(
+          pairedUserMessage.citationPaperContexts,
+          toolPaperContexts,
+        ).slice(0, MAX_AGENT_EVIDENCE_PAPER_CONTEXTS);
+        if ((pairedUserMessage.citationPaperContexts?.length || 0) === before)
+          break;
+        if (!isCompactCommand) {
+          await deps.updateStoredLatestUserMessage(
+            conversationKey,
+            buildStoredUserMessagePatch(pairedUserMessage),
+          );
+        }
+        break;
+      }
+      case "status": {
+        const isCompactingStatus = /compacting context/i.test(event.text);
+        if (
+          !isCompactingStatus &&
+          !assistantMessage.agentRunId &&
+          assistantMessage.pendingAgentTraceEvents
+        ) {
+          assistantMessage.pendingAgentTraceEvents.push({
+            runId: "pending",
+            seq: assistantMessage.pendingAgentTraceEvents.length + 1,
+            eventType: event.type,
+            payload: event,
+            createdAt: Date.now(),
+          });
+        }
+        setStatusSafely(event.text, "sending");
+        if (isCompactingStatus) {
+          assistantMessage.pendingAgentTraceEvents = undefined;
+          queueRefresh();
+        }
+        break;
+      }
+      case "reasoning": {
+        if (event.summary) {
+          assistantMessage.reasoningSummary = deps.appendReasoningPart(
+            assistantMessage.reasoningSummary,
+            event.summary,
+          );
+        }
+        if (event.details) {
+          assistantMessage.reasoningDetails = deps.appendReasoningPart(
+            assistantMessage.reasoningDetails,
+            event.details,
+          );
+        }
+        queueRefresh();
+        return;
+      }
+      case "fallback":
+        if (assistantMessage.text === "Compacting context…") {
+          assistantMessage.text = "";
+        }
+        setStatusSafely(event.reason, "sending");
+        break;
+      case "confirmation_required":
+        showInlineConfirmationCard(body, ui, event.requestId, event.action);
+        queueRefresh();
+        body.ownerDocument?.defaultView?.setTimeout(() => {
+          showInlineConfirmationCard(body, ui, event.requestId, event.action);
+        }, 90);
+        setStatusSafely("Approval required", "sending");
+        return;
+      case "confirmation_resolved":
+        closeInlineConfirmationCard(body, ui, event.requestId);
+        queueRefresh();
+        setStatusSafely(
+          event.approved ? "Approval sent" : "Action denied",
+          "sending",
+        );
+        return;
+      case "message_delta": {
+        messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
+        return;
+      }
+      case "message_rollback":
+        if (typeof event.length === "number" && event.length > 0) {
+          assistantMessage.pendingFinalText = (
+            assistantMessage.pendingFinalText || ""
+          ).slice(
+            0,
+            Math.max(
+              0,
+              (assistantMessage.pendingFinalText || "").length - event.length,
+            ),
+          );
+          if (shouldSyncVisibleRollbackText(assistantMessage)) {
+            assistantMessage.text = assistantMessage.pendingFinalText || "";
+            queueRefresh();
+          }
+        }
+        return;
+      case "context_compacted": {
+        onContextCompacted?.();
+        const compactMarker: Message = {
+          role: "assistant",
+          text: event.automatic
+            ? "Context compacted automatically"
+            : "Conversation compacted",
+          timestamp: Date.now(),
+          runMode: "agent",
+          compactMarker: true,
+          modelName: assistantMessage.modelName,
+          modelEntryId: assistantMessage.modelEntryId,
+          modelProviderLabel: assistantMessage.modelProviderLabel,
+        };
+        const insertIndex = Math.max(0, history.indexOf(assistantMessage));
+        history.splice(insertIndex, 0, compactMarker);
+        if (compactStyle === "replace-assistant" && !event.automatic) {
+          const assistantIndex = history.indexOf(assistantMessage);
+          if (assistantIndex >= 0) history.splice(assistantIndex, 1);
+        }
+        await deps.persistConversationMessage(conversationKey, {
+          role: "assistant",
+          text: compactMarker.text,
+          timestamp: compactMarker.timestamp,
+          runMode: "agent",
+          modelName: compactMarker.modelName,
+          modelEntryId: compactMarker.modelEntryId,
+          modelProviderLabel: compactMarker.modelProviderLabel,
+          compactMarker: true,
+        });
+        if (compactStyle === "replace-assistant") {
+          assistantMessage.text = "";
+          assistantMessage.pendingAgentTraceEvents = undefined;
+        }
+        refreshChatSafely();
+        scheduleQueueDrain();
+        await deps.waitForUiStep();
+        return;
+      }
+      case "final":
+        assistantMessage.text =
+          deps.sanitizeText(event.text) ||
+          assistantMessage.pendingFinalText ||
+          assistantMessage.text;
+        assistantMessage.pendingFinalText = undefined;
+        assistantMessage.waitingAnimationStartedAt = undefined;
+        assistantMessage.streaming = false;
+        uiRelease.releaseReady();
+        break;
+      default:
+        break;
+    }
+    refreshChatSafely();
+    await deps.waitForUiStep();
+  };
+}
+
+/**
+ * Post-runTurn success finalization, shared by send and retry: cancellation
+ * re-check, final text resolution, quote-citation finalization, persistence,
+ * and the Claude session capture.
+ */
+async function finalizeAgentTurnOutcome(ctx: {
+  deps: AgentEngineDeps;
+  item: Zotero.Item;
+  conversationKey: number;
+  thisRequestId: number;
+  outcome: AgentRuntimeOutcome;
+  assistantMessage: Message;
+  pairedUserMessage: Message;
+  runtimeRequest: AgentRuntimeRequest;
+  refreshChatSafely: () => void;
+  setStatusSafely: (text: string, kind: StatusKind) => void;
+  markCancelled: () => Promise<void>;
+  persistAssistantOnce: () => Promise<void>;
+  uiRelease: { isReleased: () => boolean };
+  /** Send skips the assistant persist when a /compact turn already handled it. */
+  skipAssistantPersist: boolean;
+}): Promise<void> {
+  const {
+    deps,
+    item,
+    conversationKey,
+    thisRequestId,
+    outcome,
+    assistantMessage,
+    pairedUserMessage,
+    runtimeRequest,
+    refreshChatSafely,
+    setStatusSafely,
+    markCancelled,
+    persistAssistantOnce,
+    uiRelease,
+    skipAssistantPersist,
+  } = ctx;
+  if (
+    !uiRelease.isReleased() &&
+    (deps.cancelledRequestId(conversationKey) >= thisRequestId ||
+      Boolean(deps.currentAbortController(conversationKey)?.signal.aborted))
+  ) {
+    await markCancelled();
+    return;
+  }
+
+  assistantMessage.agentRunId = outcome.runId;
+  assistantMessage.runMode = "agent";
+  const finalOutcomeText =
+    outcome.kind === "completed"
+      ? outcome.text
+      : assistantMessage.pendingFinalText || assistantMessage.text;
+  assistantMessage.text =
+    deps.sanitizeText(finalOutcomeText) ||
+    assistantMessage.pendingFinalText ||
+    assistantMessage.text ||
+    "No response.";
+  await deps.finalizeAssistantQuoteCitations(
+    assistantMessage,
+    pairedUserMessage,
+    runtimeRequest,
+  );
+  assistantMessage.pendingFinalText = undefined;
+  assistantMessage.waitingAnimationStartedAt = undefined;
+  assistantMessage.streaming = false;
+  refreshChatSafely();
+  if (!skipAssistantPersist) {
+    await persistAssistantOnce();
+  }
+  if (deps.getConversationSystem?.() === "claude_code") {
+    const conversationKind = resolveDisplayConversationKind(item);
+    const baseItem = resolveConversationBaseItem(item);
+    await captureClaudeSessionInfo(
+      conversationKey,
+      buildClaudeScope({
+        libraryID: Number(item.libraryID || baseItem?.libraryID || 0),
+        kind: conversationKind === "global" ? "global" : "paper",
+        paperItemID:
+          conversationKind === "paper"
+            ? Number(baseItem?.id || 0) || undefined
+            : undefined,
+        paperTitle:
+          conversationKind === "paper"
+            ? String(baseItem?.getField?.("title") || "").trim() || undefined
+            : undefined,
+      }),
+      runtimeRequest.conversationGeneration,
+    ).catch(() => null);
+  }
+  if (!uiRelease.isReleased()) {
+    setStatusSafely("Ready", "ready");
+  }
+}
+
+/**
+ * Shared failure path for an agent turn: keep whatever streamed (marking the
+ * reply interrupted) or fall back to the bare error text, then persist and
+ * surface the error in the status row.
+ */
+async function handleAgentTurnFailure(ctx: {
+  err: unknown;
+  deps: AgentEngineDeps;
+  conversationKey: number;
+  thisRequestId: number;
+  assistantMessage: Message;
+  messageDeltaCoalescer: {
+    flushNow: (reason: BlockStreamFlushReason) => void;
+    cancel: () => void;
+  };
+  refreshChatSafely: () => void;
+  setStatusSafely: (text: string, kind: StatusKind) => void;
+  markCancelled: () => Promise<void>;
+  persistAssistantOnce: () => Promise<void>;
+  uiRelease: { isReleased: () => boolean };
+  /**
+   * Retry passes this to restore the pre-retry assistant message when the
+   * failed attempt streamed nothing — a preserved interrupted partial (or the
+   * previous answer) must not be overwritten by bare error text.
+   */
+  restorePreviousAssistant?: () => void;
+  /**
+   * Retry also passes this: rolls the paired user row (model identity,
+   * rebuilt contexts, run linkage) back to its pre-retry state and rewrites
+   * the stored row that onStart already stamped with the failed retry's
+   * metadata. Runs only alongside restorePreviousAssistant, so the stored
+   * turn stays a consistent pair.
+   */
+  restorePairedUser?: () => Promise<void>;
+}): Promise<void> {
+  const {
+    err,
+    deps,
+    conversationKey,
+    thisRequestId,
+    assistantMessage,
+    messageDeltaCoalescer,
+    refreshChatSafely,
+    setStatusSafely,
+    markCancelled,
+    persistAssistantOnce,
+    uiRelease,
+    restorePreviousAssistant,
+    restorePairedUser,
+  } = ctx;
+  if (uiRelease.isReleased()) {
+    return;
+  }
+  const isCancelled =
+    deps.cancelledRequestId(conversationKey) >= thisRequestId ||
+    Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
+    (err as { name?: string }).name === "AbortError";
+  if (isCancelled) {
+    await markCancelled();
+    return;
+  }
+  const errMsg = (err as Error).message || "Error";
+  const userFacingError =
+    errMsg.includes("[ede_diagnostic]") &&
+    errMsg.includes("last_content_type=none")
+      ? "The model returned an empty reply. Please retry."
+      : errMsg;
+  // Preserve whatever streamed before the failure instead of discarding it.
+  // Flush the unflushed tail into pendingFinalText and read THAT — unlike the
+  // coalescer's grow-only buffer, pendingFinalText respects message_rollback,
+  // so text the model retracted between tool rounds is not resurrected.
+  messageDeltaCoalescer.flushNow("cancel");
+  const partialText = assistantMessage.pendingFinalText || "";
+  messageDeltaCoalescer.cancel();
+  const outcome = resolveStreamInterruptionOutcome({
+    partialText,
+    errorMessage: userFacingError,
+  });
+  if (!outcome.interrupted && restorePreviousAssistant) {
+    restorePreviousAssistant();
+    await restorePairedUser?.();
+    refreshChatSafely();
+    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+    return;
+  }
+  assistantMessage.text = outcome.text;
+  assistantMessage.interrupted = outcome.interrupted;
+  // Clear the per-turn accumulator so a later retry cannot concatenate
+  // this turn's partial onto its own deltas.
+  assistantMessage.pendingFinalText = undefined;
+  assistantMessage.streaming = false;
+  refreshChatSafely();
+  await persistAssistantOnce();
+  setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+}
+
 export function mergeAgentToolResultQuoteCitations(
   message: { quoteCitations?: QuoteCitation[] },
   event: Pick<Extract<AgentEvent, { type: "tool_result" }>, "ok"> & {
@@ -217,6 +781,7 @@ type StatusKind = "ready" | "sending" | "error" | "warning";
 
 type PanelUpdateHelpers = {
   refreshChatSafely: () => void;
+  refreshAssistantMessageSafely: (message: Message) => void;
   setStatusSafely: (text: string, kind: StatusKind) => void;
 };
 
@@ -309,12 +874,34 @@ function closeInlineConfirmationCard(
   syncInlineActionCardState(body, ui);
 }
 
+/**
+ * Provenance for one answer, bounded to roughly the number of evidence
+ * snippets a single retrieval returns.  This is a guard against a runaway
+ * agent run, not a relevance filter: the cost of consuming these papers is
+ * bounded where it is actually paid — background quote-source warming caps
+ * how many PDFs it reads, and a quote click caps how many it verifies.
+ */
+const MAX_AGENT_EVIDENCE_PAPER_CONTEXTS = 80;
+
+/**
+ * Recover the papers a tool actually grounded its answer in.
+ *
+ * Every tool nests this evidence differently — `library_retrieve` only exposes
+ * an attachment id on its `snippets`, `paper_read` on its `results` — so this
+ * walks the whole result rather than a list of key names that silently goes
+ * stale whenever a tool gains a new result shape.  A record counts as a paper
+ * only when it can name both the item and the attachment to open, which is
+ * specific enough that unrelated payload objects do not qualify.
+ */
 function extractPaperContextCandidatesFromToolContent(
   content: unknown,
 ): unknown[] {
   const out: unknown[] = [];
+  const seen = new WeakSet<object>();
   const visit = (value: unknown, depth: number) => {
     if (depth > 8 || !value || typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
     if (Array.isArray(value)) {
       for (const entry of value) visit(entry, depth + 1);
       return;
@@ -327,16 +914,16 @@ function extractPaperContextCandidatesFromToolContent(
     ) {
       out.push(record);
     }
-    if (record.paperContext) {
-      visit(record.paperContext, depth + 1);
-    }
-    for (const key of ["results", "papers", "items", "artifacts"]) {
-      if (record[key]) visit(record[key], depth + 1);
+    for (const nested of Object.values(record)) {
+      visit(nested, depth + 1);
     }
   };
   visit(content, 0);
   return out;
 }
+
+export const extractPaperContextCandidatesFromToolContentForTests =
+  extractPaperContextCandidatesFromToolContent;
 
 type EffectiveRequestConfigShape = {
   model: string;
@@ -354,6 +941,7 @@ type EffectiveRequestConfigShape = {
     | "openai_chat_compat"
     | "anthropic_messages"
     | "gemini_native"
+    | "ollama_native"
     | "web_sync";
   modelEntryId?: string;
   modelProviderLabel?: string;
@@ -363,7 +951,9 @@ type EffectiveRequestConfigShape = {
 
 type BuildAgentRuntimeRequestParamsShape = {
   conversationKey: number;
+  conversationGeneration?: number;
   item: Zotero.Item;
+  activePaperContext?: PaperContextRef;
   userText: string;
   selectedTextContexts?: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
@@ -407,6 +997,8 @@ type ReconstructedRetryPayload = {
 // ---------------------------------------------------------------------------
 
 export type AgentEngineDeps = {
+  /** Captured before the turn starts; Clear bumps this generation. */
+  conversationGeneration?: number;
   // Chat history (mutable Map reference; push() on the retrieved array mutates state)
   chatHistory: Map<number, Message[]>;
 
@@ -416,14 +1008,20 @@ export type AgentEngineDeps = {
   // Request lifecycle (per-conversation)
   cancelledRequestId: (conversationKey: number) => number;
   currentAbortController: (conversationKey: number) => AbortController | null;
-  setCurrentAbortController: (
-    conversationKey: number,
-    ctrl: AbortController | null,
-  ) => void;
-  getAbortControllerCtor: () => new () => AbortController;
+  getAbortControllerCtor: () => (new () => AbortController) | undefined;
   nextRequestId: () => number;
-  setPendingRequestId: (conversationKey: number, id: number) => void;
-
+  tryBeginRequest: (
+    conversationKey: number,
+    requestId: number,
+    abortController: AbortController | null,
+  ) => boolean;
+  isRequestOwner: (conversationKey: number, requestId: number) => boolean;
+  finishRequest: (conversationKey: number, requestId: number) => boolean;
+  transferRequest: (
+    fromConversationKey: number,
+    toConversationKey: number,
+    requestId: number,
+  ) => boolean;
   // UI helpers
   getPanelRequestUI: (body: Element) => PanelRequestUIShape;
   setRequestUIBusy: (
@@ -525,6 +1123,7 @@ export type AgentEngineDeps = {
       | "openai_chat_compat"
       | "anthropic_messages"
       | "gemini_native"
+      | "ollama_native"
       | "web_sync";
     modelEntryId?: string;
     modelProviderLabel?: string;
@@ -557,6 +1156,7 @@ export type AgentEngineDeps = {
   ) => {
     paperContexts: PaperContextRef[];
     fullTextPaperContexts: PaperContextRef[];
+    activePaperContext?: PaperContextRef;
   };
   findLatestRetryPair: (history: Message[]) => LatestRetryPairShape | null;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
@@ -608,10 +1208,7 @@ type RequestUiReleaseController = {
 };
 
 function createRequestUiReleaseController(params: {
-  deps: Pick<
-    AgentEngineDeps,
-    "restoreRequestUIIdle" | "setCurrentAbortController" | "setPendingRequestId"
-  >;
+  deps: Pick<AgentEngineDeps, "finishRequest" | "restoreRequestUIIdle">;
   body: Element;
   conversationKey: number;
   requestId: number;
@@ -622,13 +1219,14 @@ function createRequestUiReleaseController(params: {
   const releaseReady = () => {
     if (released) return;
     released = true;
-    params.deps.setPendingRequestId(params.conversationKey, 0);
+    if (!params.deps.finishRequest(params.conversationKey, params.requestId)) {
+      return;
+    }
     params.deps.restoreRequestUIIdle(
       params.body,
       params.conversationKey,
       params.requestId,
     );
-    params.deps.setCurrentAbortController(params.conversationKey, null);
     params.setStatusSafely("Ready", "ready");
     params.scheduleQueueDrain();
   };
@@ -661,6 +1259,8 @@ export async function sendAgentTurn(
   opts: {
     body: Element;
     item: Zotero.Item;
+    requestId?: number;
+    onProviderDispatch?: () => void;
     contextSource?: ResolvedContextSource | null;
     question: string;
     images?: string[];
@@ -679,6 +1279,7 @@ export async function sendAgentTurn(
       | "openai_chat_compat"
       | "anthropic_messages"
       | "gemini_native"
+      | "ollama_native"
       | "web_sync";
     modelEntryId?: string;
     modelProviderLabel?: string;
@@ -737,9 +1338,23 @@ export async function sendAgentTurn(
   } = opts;
   const conversationKey = deps.getConversationKey(item);
   const ui = deps.getPanelRequestUI(body);
-  const thisRequestId = deps.nextRequestId();
-  deps.setPendingRequestId(conversationKey, thisRequestId);
+  const thisRequestId = opts.requestId ?? deps.nextRequestId();
+  if (opts.requestId !== undefined) {
+    if (!deps.isRequestOwner(conversationKey, thisRequestId)) return;
+  } else {
+    const AbortControllerCtor = deps.getAbortControllerCtor();
+    if (
+      !deps.tryBeginRequest(
+        conversationKey,
+        thisRequestId,
+        AbortControllerCtor ? new AbortControllerCtor() : null,
+      )
+    ) {
+      return;
+    }
+  }
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent...");
+  if (ui.inputBox) ui.inputBox.disabled = true;
 
   const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
     selectedTextContexts,
@@ -895,19 +1510,20 @@ export async function sendAgentTurn(
       effectiveRequestConfig.modelProviderLabel === "Codex"
         ? buildPendingAgentTraceEvents(body)
         : undefined,
-    reasoningOpen: false,
+    reasoningOpen: deps.isReasoningExpandedByDefault(),
     quoteCitations: selectedTextQuoteCitationsForMessage.length
       ? selectedTextQuoteCitationsForMessage
       : undefined,
   };
   historyForRun.push(assistantMessage);
-  const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
+  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
+    deps.createPanelUpdateHelpers(body, item, conversationKey, ui);
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const queueRefresh = deps.createQueuedRefresh(() =>
+    refreshAssistantMessageSafely(assistantMessage),
   );
-  const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
   const messageDeltaCoalescer = createBlockStreamCoalescer({
     onBlock: (block) => {
       appendPendingFinalText(assistantMessage, block, deps.sanitizeText);
@@ -939,12 +1555,13 @@ export async function sendAgentTurn(
 
   await deps.ensureConversationLoaded(item);
   const history = deps.chatHistory.get(conversationKey) || [];
-  const llmHistory = deps.buildLLMHistoryMessages(history.slice(0, -2));
+  // A turn queued for deletion is hidden from the user; a failed finalize
+  // must not leak it into the prompt (see filterMessagesInPendingTurns).
+  const llmHistory = deps.buildLLMHistoryMessages(
+    filterMessagesInPendingTurns(conversationKey, history.slice(0, -2)),
+  );
   const normalizedPaperContexts = deps.normalizePaperContexts([
     ...(paperContexts || []),
-    ...selectedTextPaperContextsForMessage.filter(
-      (paper): paper is PaperContextRef => Boolean(paper),
-    ),
   ]);
   const normalizedFullTextPaperContexts = deps.normalizePaperContexts(
     fullTextPaperContexts,
@@ -952,6 +1569,7 @@ export async function sendAgentTurn(
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
+    activePaperContext,
   } = deps.includeAutoLoadedPaperContext(
     item,
     normalizedPaperContexts,
@@ -959,7 +1577,8 @@ export async function sendAgentTurn(
     pdfPaperContextsForMessage.length
       ? new Set(
           pdfPaperContextsForMessage.map(
-            (paper) => `${paper.itemId}:${paper.contextItemId}`,
+            (paper) =>
+              `${Math.floor(Number(paper.libraryID || item.libraryID))}:${paper.itemId}:${paper.contextItemId}`,
           ),
         )
       : undefined,
@@ -1004,7 +1623,9 @@ export async function sendAgentTurn(
   }
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
+    conversationGeneration: deps.conversationGeneration,
     item,
+    activePaperContext,
     userText: question,
     selectedTextContexts: selectedTextContextsForMessage,
     resolvedSelectedTextAnchors,
@@ -1028,6 +1649,8 @@ export async function sendAgentTurn(
   const agentRuntime = deps.getAgentRuntime();
   const capabilities = agentRuntime.getCapabilities(runtimeRequest);
   if (!capabilities.toolCalls) {
+    if (ui.inputBox) ui.inputBox.disabled = false;
+    opts.onProviderDispatch?.();
     const fallback = await agentRuntime.runTurn({
       request: runtimeRequest,
     });
@@ -1036,6 +1659,8 @@ export async function sendAgentTurn(
       await deps.sendChatFallback({
         body,
         item,
+        requestId: thisRequestId,
+        onProviderDispatch: opts.onProviderDispatch,
         question,
         images,
         model,
@@ -1086,6 +1711,7 @@ export async function sendAgentTurn(
       modelName: assistantMessage.modelName,
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
+      interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
       quoteCitations: assistantMessage.quoteCitations,
@@ -1100,12 +1726,6 @@ export async function sendAgentTurn(
   };
 
   try {
-    const AbortControllerCtor = deps.getAbortControllerCtor();
-    deps.setCurrentAbortController(
-      conversationKey,
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
-
     const pushTraceEvent = (runId: string, event: AgentEvent) => {
       const list = deps.agentRunTraceCache.get(runId) || [];
       list.push({
@@ -1119,6 +1739,8 @@ export async function sendAgentTurn(
     };
     let compactEventHandled = false;
 
+    if (ui.inputBox) ui.inputBox.disabled = false;
+    opts.onProviderDispatch?.();
     const outcome = await agentRuntime.runTurn({
       request: runtimeRequest,
       signal: deps.currentAbortController(conversationKey)?.signal,
@@ -1128,422 +1750,73 @@ export async function sendAgentTurn(
         deps.agentRunTraceCache.set(runId, []);
         refreshChatSafely();
         if (!isCompactCommand) {
-          await deps.updateStoredLatestUserMessage(conversationKey, {
-            text: userMessage.text,
-            timestamp: userMessage.timestamp,
-            runMode: "agent",
-            agentRunId: runId,
-            selectedText: userMessage.selectedText,
-            selectedTextContexts: userMessage.selectedTextContexts,
-            selectedTexts: userMessage.selectedTexts,
-            selectedTextSources: userMessage.selectedTextSources,
-            selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
-            selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
-            screenshotImages: userMessage.screenshotImages,
-            paperContexts: userMessage.paperContexts,
-            pdfPaperContexts: userMessage.pdfPaperContexts,
-            fullTextPaperContexts: userMessage.fullTextPaperContexts,
-            citationPaperContexts: userMessage.citationPaperContexts,
-            selectedCollectionContexts: userMessage.selectedCollectionContexts,
-            selectedTagContexts: userMessage.selectedTagContexts,
-            attachments: userMessage.attachments,
-            modelAttachments: userMessage.modelAttachments,
-            modelName: userMessage.modelName,
-            modelEntryId: userMessage.modelEntryId,
-            modelProviderLabel: userMessage.modelProviderLabel,
-          });
+          await deps.updateStoredLatestUserMessage(
+            conversationKey,
+            buildStoredUserMessagePatch(userMessage),
+          );
         }
       },
-      onEvent: async (event) => {
-        if (assistantMessage.agentRunId) {
-          pushTraceEvent(assistantMessage.agentRunId, event);
-        }
-        if (event.type !== "message_delta") {
-          flushMessageDeltas(event.type === "final" ? "final" : "event");
-        }
-        switch (event.type) {
-          case "provider_event":
-            applyResolvedClaudeEffortDisplay(body, event);
-            break;
-          case "usage": {
-            const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
-            recordContextCacheTelemetry(
-              runtimeRequest.contextCache,
-              normalizeAgentUsageForCacheTelemetry(usageEvent),
-            );
-            if (ui.tokenUsageEl) {
-              const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageRecord = usageEvent as unknown as Record<
-                string,
-                unknown
-              >;
-              const hasContextPayload = "contextTokens" in usageRecord;
-              if (hasContextPayload) {
-                const nextTokens = Math.max(
-                  0,
-                  Number(usageRecord.contextTokens) || 0,
-                );
-                const rawContextWindow = usageRecord.contextWindow;
-                const nextWindow =
-                  typeof rawContextWindow === "number" &&
-                  Number.isFinite(rawContextWindow)
-                    ? rawContextWindow
-                    : previous?.contextWindow;
-                const effectiveTokens =
-                  nextTokens > 0
-                    ? nextTokens
-                    : usageRecord.contextWindowIsAuthoritative === true
-                      ? (previous?.contextTokens ?? 0)
-                      : 0;
-                deps.setContextUsageSnapshot?.(conversationKey, {
-                  contextTokens: effectiveTokens,
-                  contextWindow: nextWindow,
-                  contextWindowIsAuthoritative:
-                    usageRecord.contextWindowIsAuthoritative === true,
-                  cacheReadTokens:
-                    typeof usageRecord.cacheReadTokens === "number"
-                      ? usageRecord.cacheReadTokens
-                      : undefined,
-                  cacheWriteTokens:
-                    typeof usageRecord.cacheWriteTokens === "number"
-                      ? usageRecord.cacheWriteTokens
-                      : undefined,
-                  cacheMissTokens:
-                    typeof usageRecord.cacheMissTokens === "number"
-                      ? usageRecord.cacheMissTokens
-                      : undefined,
-                  cacheHitRatio:
-                    typeof usageRecord.cacheHitRatio === "number"
-                      ? usageRecord.cacheHitRatio
-                      : undefined,
-                  cacheProvider:
-                    typeof usageRecord.cacheProvider === "string"
-                      ? usageRecord.cacheProvider
-                      : undefined,
-                  estimated: usageRecord.contextWindowIsAuthoritative !== true,
-                  source:
-                    usageRecord.contextWindowIsAuthoritative === true
-                      ? "provider"
-                      : "estimated",
-                });
-                deps.setTokenUsage(
-                  ui.tokenUsageEl,
-                  effectiveTokens,
-                  nextWindow,
-                  body.querySelector(
-                    "#llm-claude-context-gauge",
-                  ) as HTMLElement | null,
-                  {
-                    estimated:
-                      usageRecord.contextWindowIsAuthoritative !== true,
-                    cacheReadTokens:
-                      typeof usageRecord.cacheReadTokens === "number"
-                        ? usageRecord.cacheReadTokens
-                        : undefined,
-                    cacheWriteTokens:
-                      typeof usageRecord.cacheWriteTokens === "number"
-                        ? usageRecord.cacheWriteTokens
-                        : undefined,
-                    cacheMissTokens:
-                      typeof usageRecord.cacheMissTokens === "number"
-                        ? usageRecord.cacheMissTokens
-                        : undefined,
-                    cacheHitRatio:
-                      typeof usageRecord.cacheHitRatio === "number"
-                        ? usageRecord.cacheHitRatio
-                        : undefined,
-                    cacheProvider:
-                      typeof usageRecord.cacheProvider === "string"
-                        ? usageRecord.cacheProvider
-                        : undefined,
-                  },
-                );
-              } else if (
-                typeof usageRecord.totalTokens === "number" &&
-                usageRecord.totalTokens > 0
-              ) {
-                deps.accumulateSessionTokens(
-                  conversationKey,
-                  usageRecord.totalTokens,
-                );
-              }
-            }
-            break;
-          }
-          case "tool_result": {
-            if (!event.ok) break;
-            mergeAgentToolResultQuoteCitations(assistantMessage, event);
-            const toolPaperContexts = deps.normalizePaperContexts([
-              ...extractPaperContextCandidatesFromToolContent(event.content),
-              ...extractPaperContextCandidatesFromToolContent(event.artifacts),
-            ]);
-            if (!toolPaperContexts.length) break;
-            const before = userMessage.citationPaperContexts?.length || 0;
-            userMessage.citationPaperContexts = mergeCitationPaperContexts(
-              userMessage.citationPaperContexts,
-              toolPaperContexts,
-            );
-            if ((userMessage.citationPaperContexts?.length || 0) === before)
-              break;
-            if (!isCompactCommand) {
-              await deps.updateStoredLatestUserMessage(conversationKey, {
-                text: userMessage.text,
-                timestamp: userMessage.timestamp,
-                runMode: "agent",
-                agentRunId: userMessage.agentRunId,
-                selectedText: userMessage.selectedText,
-                selectedTextContexts: userMessage.selectedTextContexts,
-                selectedTexts: userMessage.selectedTexts,
-                selectedTextSources: userMessage.selectedTextSources,
-                selectedTextPaperContexts:
-                  userMessage.selectedTextPaperContexts,
-                selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
-                paperContexts: userMessage.paperContexts,
-                pdfPaperContexts: userMessage.pdfPaperContexts,
-                fullTextPaperContexts: userMessage.fullTextPaperContexts,
-                citationPaperContexts: userMessage.citationPaperContexts,
-                selectedCollectionContexts:
-                  userMessage.selectedCollectionContexts,
-                selectedTagContexts: userMessage.selectedTagContexts,
-                screenshotImages: userMessage.screenshotImages,
-                attachments: userMessage.attachments,
-                modelAttachments: userMessage.modelAttachments,
-                modelName: userMessage.modelName,
-                modelEntryId: userMessage.modelEntryId,
-                modelProviderLabel: userMessage.modelProviderLabel,
-              });
-            }
-            break;
-          }
-          case "status": {
-            const isCompactingStatus = /compacting context/i.test(event.text);
-            if (
-              !isCompactingStatus &&
-              !assistantMessage.agentRunId &&
-              assistantMessage.pendingAgentTraceEvents
-            ) {
-              assistantMessage.pendingAgentTraceEvents.push({
-                runId: "pending",
-                seq: assistantMessage.pendingAgentTraceEvents.length + 1,
-                eventType: event.type,
-                payload: event,
-                createdAt: Date.now(),
-              });
-            }
-            setStatusSafely(event.text, "sending");
-            if (isCompactingStatus) {
-              assistantMessage.pendingAgentTraceEvents = undefined;
-              queueRefresh();
-            }
-            break;
-          }
-          case "reasoning": {
-            if (event.summary) {
-              assistantMessage.reasoningSummary = deps.appendReasoningPart(
-                assistantMessage.reasoningSummary,
-                event.summary,
-              );
-            }
-            if (event.details) {
-              assistantMessage.reasoningDetails = deps.appendReasoningPart(
-                assistantMessage.reasoningDetails,
-                event.details,
-              );
-            }
-            queueRefresh();
-            return;
-          }
-          case "fallback":
-            if (assistantMessage.text === "Compacting context…") {
-              assistantMessage.text = "";
-            }
-            setStatusSafely(event.reason, "sending");
-            break;
-          case "confirmation_required":
-            showInlineConfirmationCard(body, ui, event.requestId, event.action);
-            queueRefresh();
-            body.ownerDocument?.defaultView?.setTimeout(() => {
-              showInlineConfirmationCard(
-                body,
-                ui,
-                event.requestId,
-                event.action,
-              );
-            }, 90);
-            setStatusSafely("Approval required", "sending");
-            return;
-          case "confirmation_resolved":
-            closeInlineConfirmationCard(body, ui, event.requestId);
-            queueRefresh();
-            setStatusSafely(
-              event.approved ? "Approval sent" : "Action denied",
-              "sending",
-            );
-            return;
-          case "message_delta": {
-            messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
-            return;
-          }
-          case "message_rollback":
-            if (typeof event.length === "number" && event.length > 0) {
-              assistantMessage.pendingFinalText = (
-                assistantMessage.pendingFinalText || ""
-              ).slice(
-                0,
-                Math.max(
-                  0,
-                  (assistantMessage.pendingFinalText || "").length -
-                    event.length,
-                ),
-              );
-              if (shouldSyncVisibleRollbackText(assistantMessage)) {
-                assistantMessage.text = assistantMessage.pendingFinalText || "";
-                queueRefresh();
-              }
-            }
-            return;
-          case "context_compacted": {
-            compactEventHandled = true;
-            const compactMarker: Message = {
-              role: "assistant",
-              text: event.automatic
-                ? "Context compacted automatically"
-                : "Conversation compacted",
-              timestamp: Date.now(),
-              runMode: "agent",
-              compactMarker: true,
-              modelName: assistantMessage.modelName,
-              modelEntryId: assistantMessage.modelEntryId,
-              modelProviderLabel: assistantMessage.modelProviderLabel,
-            };
-            const insertIndex = Math.max(
-              0,
-              historyForRun.indexOf(assistantMessage),
-            );
-            historyForRun.splice(insertIndex, 0, compactMarker);
-            if (!event.automatic) {
-              const assistantIndex = historyForRun.indexOf(assistantMessage);
-              if (assistantIndex >= 0) historyForRun.splice(assistantIndex, 1);
-            }
-            await deps.persistConversationMessage(conversationKey, {
-              role: "assistant",
-              text: compactMarker.text,
-              timestamp: compactMarker.timestamp,
-              runMode: "agent",
-              modelName: compactMarker.modelName,
-              modelEntryId: compactMarker.modelEntryId,
-              modelProviderLabel: compactMarker.modelProviderLabel,
-              compactMarker: true,
-            });
-            assistantMessage.text = "";
-            assistantMessage.pendingAgentTraceEvents = undefined;
-            refreshChatSafely();
-            scheduleQueueDrain?.();
-            await deps.waitForUiStep();
-            return;
-          }
-          case "final":
-            assistantMessage.text =
-              deps.sanitizeText(event.text) ||
-              assistantMessage.pendingFinalText ||
-              assistantMessage.text;
-            assistantMessage.pendingFinalText = undefined;
-            assistantMessage.waitingAnimationStartedAt = undefined;
-            assistantMessage.streaming = false;
-            uiRelease.releaseReady();
-            break;
-          default:
-            break;
-        }
-        refreshChatSafely();
-        await deps.waitForUiStep();
-      },
+      onEvent: createAgentTurnEventHandler({
+        deps,
+        body,
+        ui,
+        conversationKey,
+        runtimeRequest,
+        assistantMessage,
+        pairedUserMessage: userMessage,
+        history: historyForRun,
+        isCompactCommand,
+        compactStyle: "replace-assistant",
+        onContextCompacted: () => {
+          compactEventHandled = true;
+        },
+        messageDeltaCoalescer,
+        flushMessageDeltas,
+        queueRefresh,
+        refreshChatSafely,
+        setStatusSafely,
+        pushTraceEvent,
+        scheduleQueueDrain,
+        uiRelease,
+      }),
     });
 
-    if (
-      !uiRelease.isReleased() &&
-      (deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-        Boolean(deps.currentAbortController(conversationKey)?.signal.aborted))
-    ) {
-      await markCancelled();
-      return;
-    }
-
-    assistantMessage.agentRunId = outcome.runId;
-    assistantMessage.runMode = "agent";
-    const finalOutcomeText =
-      outcome.kind === "completed"
-        ? outcome.text
-        : assistantMessage.pendingFinalText || assistantMessage.text;
-    assistantMessage.text =
-      deps.sanitizeText(finalOutcomeText) ||
-      assistantMessage.pendingFinalText ||
-      assistantMessage.text ||
-      "No response.";
-    await deps.finalizeAssistantQuoteCitations(
+    await finalizeAgentTurnOutcome({
+      deps,
+      item,
+      conversationKey,
+      thisRequestId,
+      outcome,
       assistantMessage,
-      userMessage,
+      pairedUserMessage: userMessage,
       runtimeRequest,
-    );
-    assistantMessage.pendingFinalText = undefined;
-    assistantMessage.waitingAnimationStartedAt = undefined;
-    assistantMessage.streaming = false;
-    refreshChatSafely();
-    if (!(isCompactCommand && compactEventHandled)) {
-      await persistAssistantOnce();
-    }
-    if (deps.getConversationSystem?.() === "claude_code") {
-      const conversationKind = resolveDisplayConversationKind(item);
-      const baseItem = resolveConversationBaseItem(item);
-      await captureClaudeSessionInfo(
-        conversationKey,
-        buildClaudeScope({
-          libraryID: Number(item.libraryID || baseItem?.libraryID || 0),
-          kind: conversationKind === "global" ? "global" : "paper",
-          paperItemID:
-            conversationKind === "paper"
-              ? Number(baseItem?.id || 0) || undefined
-              : undefined,
-          paperTitle:
-            conversationKind === "paper"
-              ? String(baseItem?.getField?.("title") || "").trim() || undefined
-              : undefined,
-        }),
-      ).catch(() => null);
-    }
-    if (!uiRelease.isReleased()) {
-      setStatusSafely("Ready", "ready");
-    }
+      refreshChatSafely,
+      setStatusSafely,
+      markCancelled,
+      persistAssistantOnce,
+      uiRelease,
+      skipAssistantPersist: isCompactCommand && compactEventHandled,
+    });
   } catch (err) {
-    if (uiRelease.isReleased()) {
-      return;
-    }
-    const isCancelled =
-      deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
-      (err as { name?: string }).name === "AbortError";
-    if (isCancelled) {
-      await markCancelled();
-      return;
-    }
-    messageDeltaCoalescer.cancel();
-    const errMsg = (err as Error).message || "Error";
-    const userFacingError =
-      errMsg.includes("[ede_diagnostic]") &&
-      errMsg.includes("last_content_type=none")
-        ? "The model returned an empty reply. Please retry."
-        : errMsg;
-    assistantMessage.text = `Error: ${userFacingError}`;
-    assistantMessage.streaming = false;
-    refreshChatSafely();
-    await persistAssistantOnce();
-    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+    await handleAgentTurnFailure({
+      err,
+      deps,
+      conversationKey,
+      thisRequestId,
+      assistantMessage,
+      messageDeltaCoalescer,
+      refreshChatSafely,
+      setStatusSafely,
+      markCancelled,
+      persistAssistantOnce,
+      uiRelease,
+    });
   } finally {
     if (!uiRelease.isReleased()) {
-      deps.setPendingRequestId(conversationKey, 0);
-      deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
-      deps.setCurrentAbortController(conversationKey, null);
-      scheduleQueueDrain();
+      if (deps.finishRequest(conversationKey, thisRequestId)) {
+        deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+        scheduleQueueDrain();
+      }
     }
   }
 }
@@ -1571,6 +1844,7 @@ export async function retryAgentTurn(
     | "openai_chat_compat"
     | "anthropic_messages"
     | "gemini_native"
+    | "ollama_native"
     | "web_sync"
     | undefined,
   modelEntryId: string | undefined,
@@ -1579,17 +1853,86 @@ export async function retryAgentTurn(
   advanced: AdvancedModelParams | undefined,
   modelAttachmentsOverride: ChatAttachment[] | undefined,
   deps: AgentEngineDeps,
+  requestId?: number,
+  onProviderDispatch?: () => void,
+  activePaperContextOverride?: PaperContextRef,
 ): Promise<void> {
   const ui = deps.getPanelRequestUI(body);
-  await deps.ensureConversationLoaded(item);
+  const initialConversationKey = deps.getConversationKey(item);
+  const thisRequestId = requestId ?? deps.nextRequestId();
+  if (requestId !== undefined) {
+    if (!deps.isRequestOwner(initialConversationKey, thisRequestId)) return;
+  } else {
+    const AbortControllerCtor = deps.getAbortControllerCtor();
+    if (
+      !deps.tryBeginRequest(
+        initialConversationKey,
+        thisRequestId,
+        AbortControllerCtor ? new AbortControllerCtor() : null,
+      )
+    ) {
+      return;
+    }
+  }
+  deps.setRequestUIBusy(
+    body,
+    ui,
+    initialConversationKey,
+    "Preparing agent retry...",
+  );
+  if (ui.inputBox) ui.inputBox.disabled = true;
+  try {
+    await deps.ensureConversationLoaded(item);
+  } catch (error) {
+    if (deps.finishRequest(initialConversationKey, thisRequestId)) {
+      deps.restoreRequestUIIdle(body, initialConversationKey, thisRequestId);
+    }
+    throw error;
+  }
   const conversationKey = deps.getConversationKey(item);
-  const history = deps.chatHistory.get(conversationKey) || [];
+  if (
+    conversationKey !== initialConversationKey &&
+    !deps.transferRequest(
+      initialConversationKey,
+      conversationKey,
+      thisRequestId,
+    )
+  ) {
+    if (deps.finishRequest(initialConversationKey, thisRequestId)) {
+      deps.restoreRequestUIIdle(body, initialConversationKey, thisRequestId);
+    }
+    return;
+  }
+  const requestIsActive = () =>
+    deps.isRequestOwner(conversationKey, thisRequestId) &&
+    !deps.currentAbortController(conversationKey)?.signal.aborted &&
+    deps.cancelledRequestId(conversationKey) < thisRequestId;
+  const releaseRequest = () => {
+    if (!deps.finishRequest(conversationKey, thisRequestId)) return false;
+    deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+    deps.scheduleQueuedInputDrain(body, {
+      conversationSystem: deps.getConversationSystem(),
+      conversationKey,
+    });
+    return true;
+  };
+  if (!requestIsActive()) {
+    releaseRequest();
+    return;
+  }
+  // Select the retry target and slice the prompt from the user-visible view;
+  // turns queued for deletion must stay invisible even if finalize failed.
+  const history = filterMessagesInPendingTurns(
+    conversationKey,
+    deps.chatHistory.get(conversationKey) || [],
+  );
   const retryPair = deps.findLatestRetryPair(history);
   if (!retryPair) {
     if (ui.status) {
       // Best-effort status update without full createPanelUpdateHelpers
       ui.status.textContent = "No retryable response found";
     }
+    releaseRequest();
     return;
   }
   const reconstructedRetryPayload = deps.reconstructRetryPayload(
@@ -1619,10 +1962,18 @@ export async function retryAgentTurn(
     if (usesLocalPdfTransport && pdfPaperContexts.length) {
       retryLocalDocuments =
         await deps.resolveLocalPdfResources(pdfPaperContexts);
+      if (!requestIsActive()) {
+        releaseRequest();
+        return;
+      }
       if (retryLocalDocuments.length !== pdfPaperContexts.length) {
         throw new Error("Could not resolve every selected raw PDF.");
       }
       await deps.preflightLocalPdfCapability();
+      if (!requestIsActive()) {
+        releaseRequest();
+        return;
+      }
     }
   } catch (error) {
     if (ui.status) {
@@ -1631,20 +1982,56 @@ export async function retryAgentTurn(
           ? error.message
           : "Could not resolve the selected raw PDF.";
     }
+    releaseRequest();
     return;
   }
 
-  const thisRequestId = deps.nextRequestId();
-  deps.setPendingRequestId(conversationKey, thisRequestId);
-  deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent retry...");
-
   const assistantMessage = retryPair.assistantMessage;
+
+  // Snapshot the fields the reset below overwrites, so a failed retry that
+  // streamed nothing can restore the previous answer (or a preserved
+  // interrupted partial) instead of losing it to bare error text.
+  const assistantSnapshot = {
+    text: assistantMessage.text,
+    agentRunId: assistantMessage.agentRunId,
+    runMode: assistantMessage.runMode,
+    streaming: assistantMessage.streaming,
+    interrupted: assistantMessage.interrupted,
+    pendingFinalText: assistantMessage.pendingFinalText,
+    modelName: assistantMessage.modelName,
+    modelEntryId: assistantMessage.modelEntryId,
+    modelProviderLabel: assistantMessage.modelProviderLabel,
+    waitingAnimationStartedAt: assistantMessage.waitingAnimationStartedAt,
+    reasoningSummary: assistantMessage.reasoningSummary,
+    reasoningDetails: assistantMessage.reasoningDetails,
+    reasoningOpen: assistantMessage.reasoningOpen,
+    pendingAgentTraceEvents: assistantMessage.pendingAgentTraceEvents,
+  };
+  const restorePreviousAssistant = () => {
+    Object.assign(assistantMessage, assistantSnapshot);
+    assistantMessage.streaming = false;
+  };
+  // The retry rewrites (and, at onStart, persists) the paired user row's
+  // model identity, contexts and run linkage before any output exists. A
+  // failed retry that restores the previous answer must roll the user row
+  // back with it, or the stored turn pairs the old answer with the failed
+  // retry's metadata after a reload.
+  const userSnapshot = takeRetryUserSnapshot(retryPair.userMessage);
+  const restorePairedUser = async () => {
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    await deps.updateStoredLatestUserMessage(
+      conversationKey,
+      buildStoredUserMessagePatch(retryPair.userMessage),
+    );
+  };
 
   // Clear the previous agent run so the trace and text reset immediately.
   assistantMessage.text = "";
   assistantMessage.agentRunId = undefined;
   assistantMessage.runMode = "agent";
   assistantMessage.streaming = true;
+  assistantMessage.interrupted = undefined;
+  assistantMessage.pendingFinalText = undefined;
   assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
   assistantMessage.modelProviderLabel =
@@ -1663,13 +2050,14 @@ export async function retryAgentTurn(
       ? buildPendingAgentTraceEvents(body)
       : undefined;
 
-  const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
+  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
+    deps.createPanelUpdateHelpers(body, item, conversationKey, ui);
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const queueRefresh = deps.createQueuedRefresh(() =>
+    refreshAssistantMessageSafely(assistantMessage),
   );
-  const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
   const messageDeltaCoalescer = createBlockStreamCoalescer({
     onBlock: (block) => {
       appendPendingFinalText(assistantMessage, block, deps.sanitizeText);
@@ -1698,12 +2086,26 @@ export async function retryAgentTurn(
   const {
     question,
     screenshotImages,
-    paperContexts,
     pdfPaperContexts,
-    fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
   } = reconstructedRetryPayload;
+  let { paperContexts, fullTextPaperContexts } = reconstructedRetryPayload;
+  const retryPaperContext = deps.includeAutoLoadedPaperContext(
+    item,
+    paperContexts,
+    fullTextPaperContexts,
+    pdfPaperContexts.length
+      ? new Set(
+          pdfPaperContexts.map(
+            (paper) =>
+              `${Math.floor(Number(paper.libraryID || item.libraryID))}:${paper.itemId}:${paper.contextItemId}`,
+          ),
+        )
+      : undefined,
+  );
+  paperContexts = retryPaperContext.paperContexts;
+  fullTextPaperContexts = retryPaperContext.fullTextPaperContexts;
   retryPair.userMessage.paperContexts = paperContexts.length
     ? paperContexts
     : undefined;
@@ -1714,9 +2116,14 @@ export async function retryAgentTurn(
     ? fullTextPaperContexts
     : undefined;
   if (!question.trim()) {
+    // The assistant bubble was already reset for streaming and the user
+    // contexts rewritten — put the turn back or it stays stuck as an empty
+    // streaming message that blocks every later retry/edit.
+    restorePreviousAssistant();
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
     setStatusSafely("Nothing to retry for latest turn", "error");
-    deps.setPendingRequestId(conversationKey, 0);
-    deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+    releaseRequest();
     return;
   }
 
@@ -1751,6 +2158,13 @@ export async function retryAgentTurn(
       ),
     ]),
   });
+  if (!requestIsActive()) {
+    restorePreviousAssistant();
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
+    releaseRequest();
+    return;
+  }
   assistantMessage.quoteCitations = buildSelectedTextQuoteCitations(
     selectedTextsRaw,
     selectedTextSourcesRaw,
@@ -1779,7 +2193,10 @@ export async function retryAgentTurn(
 
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
+    conversationGeneration: deps.conversationGeneration,
     item,
+    activePaperContext:
+      activePaperContextOverride ?? retryPaperContext.activePaperContext,
     userText: question,
     selectedTextContexts: selectedTextContextsRaw,
     resolvedSelectedTextAnchors,
@@ -1799,6 +2216,13 @@ export async function retryAgentTurn(
     effectiveRequestConfig,
     history: historyForLLM,
   });
+  if (!requestIsActive()) {
+    restorePreviousAssistant();
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
+    releaseRequest();
+    return;
+  }
 
   let assistantPersisted = false;
   const persistAssistantOnce = async () => {
@@ -1817,6 +2241,7 @@ export async function retryAgentTurn(
       modelName: assistantMessage.modelName,
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
+      interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
       quoteCitations: assistantMessage.quoteCitations,
@@ -1832,12 +2257,6 @@ export async function retryAgentTurn(
 
   const agentRuntime = deps.getAgentRuntime();
   try {
-    const AbortControllerCtor = deps.getAbortControllerCtor();
-    deps.setCurrentAbortController(
-      conversationKey,
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
-
     const pushTraceEvent = (runId: string, event: AgentEvent) => {
       const list = deps.agentRunTraceCache.get(runId) || [];
       list.push({
@@ -1850,6 +2269,8 @@ export async function retryAgentTurn(
       deps.agentRunTraceCache.set(runId, list);
     };
 
+    if (ui.inputBox) ui.inputBox.disabled = false;
+    onProviderDispatch?.();
     const outcome = await agentRuntime.runTurn({
       request: runtimeRequest,
       signal: deps.currentAbortController(conversationKey)?.signal,
@@ -1858,418 +2279,71 @@ export async function retryAgentTurn(
         retryPair.userMessage.agentRunId = runId;
         deps.agentRunTraceCache.set(runId, []);
         refreshChatSafely();
-        await deps.updateStoredLatestUserMessage(conversationKey, {
-          text: retryPair.userMessage.text,
-          timestamp: retryPair.userMessage.timestamp,
-          runMode: "agent",
-          agentRunId: runId,
-          selectedText: retryPair.userMessage.selectedText,
-          selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-          selectedTexts: retryPair.userMessage.selectedTexts,
-          selectedTextSources: retryPair.userMessage.selectedTextSources,
-          selectedTextPaperContexts:
-            retryPair.userMessage.selectedTextPaperContexts,
-          selectedTextNoteContexts:
-            retryPair.userMessage.selectedTextNoteContexts,
-          screenshotImages: retryPair.userMessage.screenshotImages,
-          paperContexts: retryPair.userMessage.paperContexts,
-          pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-          fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
-          citationPaperContexts: retryPair.userMessage.citationPaperContexts,
-          selectedCollectionContexts:
-            retryPair.userMessage.selectedCollectionContexts,
-          selectedTagContexts: retryPair.userMessage.selectedTagContexts,
-          attachments: retryPair.userMessage.attachments,
-          modelAttachments: retryPair.userMessage.modelAttachments,
-          modelName: retryPair.userMessage.modelName,
-          modelEntryId: retryPair.userMessage.modelEntryId,
-          modelProviderLabel: retryPair.userMessage.modelProviderLabel,
-        });
+        await deps.updateStoredLatestUserMessage(
+          conversationKey,
+          buildStoredUserMessagePatch(retryPair.userMessage),
+        );
       },
-      onEvent: async (event) => {
-        if (assistantMessage.agentRunId) {
-          pushTraceEvent(assistantMessage.agentRunId, event);
-        }
-        if (event.type !== "message_delta") {
-          flushMessageDeltas(event.type === "final" ? "final" : "event");
-        }
-        switch (event.type) {
-          case "provider_event":
-            applyResolvedClaudeEffortDisplay(body, event);
-            break;
-          case "usage": {
-            const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
-            recordContextCacheTelemetry(
-              runtimeRequest.contextCache,
-              normalizeAgentUsageForCacheTelemetry(usageEvent),
-            );
-            if (ui.tokenUsageEl) {
-              const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageRecord = usageEvent as unknown as Record<
-                string,
-                unknown
-              >;
-              const hasContextPayload = "contextTokens" in usageRecord;
-              if (hasContextPayload) {
-                const nextTokens = Math.max(
-                  0,
-                  Number(usageRecord.contextTokens) || 0,
-                );
-                const rawContextWindow = usageRecord.contextWindow;
-                const nextWindow =
-                  typeof rawContextWindow === "number" &&
-                  Number.isFinite(rawContextWindow)
-                    ? rawContextWindow
-                    : previous?.contextWindow;
-                const effectiveTokens =
-                  nextTokens > 0
-                    ? nextTokens
-                    : usageRecord.contextWindowIsAuthoritative === true
-                      ? (previous?.contextTokens ?? 0)
-                      : 0;
-                deps.setContextUsageSnapshot?.(conversationKey, {
-                  contextTokens: effectiveTokens,
-                  contextWindow: nextWindow,
-                  contextWindowIsAuthoritative:
-                    usageRecord.contextWindowIsAuthoritative === true,
-                  cacheReadTokens:
-                    typeof usageRecord.cacheReadTokens === "number"
-                      ? usageRecord.cacheReadTokens
-                      : undefined,
-                  cacheWriteTokens:
-                    typeof usageRecord.cacheWriteTokens === "number"
-                      ? usageRecord.cacheWriteTokens
-                      : undefined,
-                  cacheMissTokens:
-                    typeof usageRecord.cacheMissTokens === "number"
-                      ? usageRecord.cacheMissTokens
-                      : undefined,
-                  cacheHitRatio:
-                    typeof usageRecord.cacheHitRatio === "number"
-                      ? usageRecord.cacheHitRatio
-                      : undefined,
-                  cacheProvider:
-                    typeof usageRecord.cacheProvider === "string"
-                      ? usageRecord.cacheProvider
-                      : undefined,
-                  estimated: usageRecord.contextWindowIsAuthoritative !== true,
-                  source:
-                    usageRecord.contextWindowIsAuthoritative === true
-                      ? "provider"
-                      : "estimated",
-                });
-                deps.setTokenUsage(
-                  ui.tokenUsageEl,
-                  effectiveTokens,
-                  nextWindow,
-                  body.querySelector(
-                    "#llm-claude-context-gauge",
-                  ) as HTMLElement | null,
-                  {
-                    estimated:
-                      usageRecord.contextWindowIsAuthoritative !== true,
-                    cacheReadTokens:
-                      typeof usageRecord.cacheReadTokens === "number"
-                        ? usageRecord.cacheReadTokens
-                        : undefined,
-                    cacheWriteTokens:
-                      typeof usageRecord.cacheWriteTokens === "number"
-                        ? usageRecord.cacheWriteTokens
-                        : undefined,
-                    cacheMissTokens:
-                      typeof usageRecord.cacheMissTokens === "number"
-                        ? usageRecord.cacheMissTokens
-                        : undefined,
-                    cacheHitRatio:
-                      typeof usageRecord.cacheHitRatio === "number"
-                        ? usageRecord.cacheHitRatio
-                        : undefined,
-                    cacheProvider:
-                      typeof usageRecord.cacheProvider === "string"
-                        ? usageRecord.cacheProvider
-                        : undefined,
-                  },
-                );
-              } else if (
-                typeof usageRecord.totalTokens === "number" &&
-                usageRecord.totalTokens > 0
-              ) {
-                deps.accumulateSessionTokens(
-                  conversationKey,
-                  usageRecord.totalTokens,
-                );
-              }
-            }
-            break;
-          }
-          case "tool_result": {
-            if (!event.ok) break;
-            mergeAgentToolResultQuoteCitations(assistantMessage, event);
-            const toolPaperContexts = deps.normalizePaperContexts([
-              ...extractPaperContextCandidatesFromToolContent(event.content),
-              ...extractPaperContextCandidatesFromToolContent(event.artifacts),
-            ]);
-            if (!toolPaperContexts.length) break;
-            const before =
-              retryPair.userMessage.citationPaperContexts?.length || 0;
-            retryPair.userMessage.citationPaperContexts =
-              mergeCitationPaperContexts(
-                retryPair.userMessage.citationPaperContexts,
-                toolPaperContexts,
-              );
-            if (
-              (retryPair.userMessage.citationPaperContexts?.length || 0) ===
-              before
-            )
-              break;
-            await deps.updateStoredLatestUserMessage(conversationKey, {
-              text: retryPair.userMessage.text,
-              timestamp: retryPair.userMessage.timestamp,
-              runMode: "agent",
-              agentRunId: retryPair.userMessage.agentRunId,
-              selectedText: retryPair.userMessage.selectedText,
-              selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-              selectedTexts: retryPair.userMessage.selectedTexts,
-              selectedTextSources: retryPair.userMessage.selectedTextSources,
-              selectedTextPaperContexts:
-                retryPair.userMessage.selectedTextPaperContexts,
-              selectedTextNoteContexts:
-                retryPair.userMessage.selectedTextNoteContexts,
-              paperContexts: retryPair.userMessage.paperContexts,
-              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-              fullTextPaperContexts:
-                retryPair.userMessage.fullTextPaperContexts,
-              citationPaperContexts:
-                retryPair.userMessage.citationPaperContexts,
-              selectedCollectionContexts:
-                retryPair.userMessage.selectedCollectionContexts,
-              selectedTagContexts: retryPair.userMessage.selectedTagContexts,
-              screenshotImages: retryPair.userMessage.screenshotImages,
-              attachments: retryPair.userMessage.attachments,
-              modelAttachments: retryPair.userMessage.modelAttachments,
-              modelName: retryPair.userMessage.modelName,
-              modelEntryId: retryPair.userMessage.modelEntryId,
-              modelProviderLabel: retryPair.userMessage.modelProviderLabel,
-            });
-            break;
-          }
-          case "status": {
-            const isCompactingStatus = /compacting context/i.test(event.text);
-            if (
-              !isCompactingStatus &&
-              !assistantMessage.agentRunId &&
-              assistantMessage.pendingAgentTraceEvents
-            ) {
-              assistantMessage.pendingAgentTraceEvents.push({
-                runId: "pending",
-                seq: assistantMessage.pendingAgentTraceEvents.length + 1,
-                eventType: event.type,
-                payload: event,
-                createdAt: Date.now(),
-              });
-            }
-            setStatusSafely(event.text, "sending");
-            if (isCompactingStatus) {
-              assistantMessage.pendingAgentTraceEvents = undefined;
-              queueRefresh();
-            }
-            break;
-          }
-          case "reasoning": {
-            if (event.summary) {
-              assistantMessage.reasoningSummary = deps.appendReasoningPart(
-                assistantMessage.reasoningSummary,
-                event.summary,
-              );
-            }
-            if (event.details) {
-              assistantMessage.reasoningDetails = deps.appendReasoningPart(
-                assistantMessage.reasoningDetails,
-                event.details,
-              );
-            }
-            queueRefresh();
-            return;
-          }
-          case "fallback":
-            if (assistantMessage.text === "Compacting context…") {
-              assistantMessage.text = "";
-            }
-            setStatusSafely(event.reason, "sending");
-            break;
-          case "confirmation_required":
-            showInlineConfirmationCard(body, ui, event.requestId, event.action);
-            queueRefresh();
-            body.ownerDocument?.defaultView?.setTimeout(() => {
-              showInlineConfirmationCard(
-                body,
-                ui,
-                event.requestId,
-                event.action,
-              );
-            }, 90);
-            setStatusSafely("Approval required", "sending");
-            return;
-          case "confirmation_resolved":
-            closeInlineConfirmationCard(body, ui, event.requestId);
-            queueRefresh();
-            setStatusSafely(
-              event.approved ? "Approval sent" : "Action denied",
-              "sending",
-            );
-            return;
-          case "message_delta": {
-            messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
-            return;
-          }
-          case "message_rollback":
-            if (typeof event.length === "number" && event.length > 0) {
-              assistantMessage.pendingFinalText = (
-                assistantMessage.pendingFinalText || ""
-              ).slice(
-                0,
-                Math.max(
-                  0,
-                  (assistantMessage.pendingFinalText || "").length -
-                    event.length,
-                ),
-              );
-              if (shouldSyncVisibleRollbackText(assistantMessage)) {
-                assistantMessage.text = assistantMessage.pendingFinalText || "";
-                queueRefresh();
-              }
-            }
-            return;
-          case "context_compacted": {
-            const compactMarker: Message = {
-              role: "assistant",
-              text: event.automatic
-                ? "Context compacted automatically"
-                : "Conversation compacted",
-              timestamp: Date.now(),
-              runMode: "agent",
-              compactMarker: true,
-              modelName: assistantMessage.modelName,
-              modelEntryId: assistantMessage.modelEntryId,
-              modelProviderLabel: assistantMessage.modelProviderLabel,
-            };
-            const insertIndex = Math.max(0, history.indexOf(assistantMessage));
-            history.splice(insertIndex, 0, compactMarker);
-            await deps.persistConversationMessage(conversationKey, {
-              role: "assistant",
-              text: compactMarker.text,
-              timestamp: compactMarker.timestamp,
-              runMode: "agent",
-              modelName: compactMarker.modelName,
-              modelEntryId: compactMarker.modelEntryId,
-              modelProviderLabel: compactMarker.modelProviderLabel,
-              compactMarker: true,
-            });
-            refreshChatSafely();
-            scheduleQueueDrain?.();
-            await deps.waitForUiStep();
-            return;
-          }
-          case "final":
-            assistantMessage.text =
-              deps.sanitizeText(event.text) ||
-              assistantMessage.pendingFinalText ||
-              assistantMessage.text;
-            assistantMessage.pendingFinalText = undefined;
-            assistantMessage.waitingAnimationStartedAt = undefined;
-            assistantMessage.streaming = false;
-            uiRelease.releaseReady();
-            break;
-          default:
-            break;
-        }
-        refreshChatSafely();
-        await deps.waitForUiStep();
-      },
+      onEvent: createAgentTurnEventHandler({
+        deps,
+        body,
+        ui,
+        conversationKey,
+        runtimeRequest,
+        assistantMessage,
+        pairedUserMessage: retryPair.userMessage,
+        history,
+        isCompactCommand: false,
+        compactStyle: "keep-assistant",
+        messageDeltaCoalescer,
+        flushMessageDeltas,
+        queueRefresh,
+        refreshChatSafely,
+        setStatusSafely,
+        pushTraceEvent,
+        scheduleQueueDrain,
+        uiRelease,
+      }),
     });
 
-    if (
-      !uiRelease.isReleased() &&
-      (deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-        Boolean(deps.currentAbortController(conversationKey)?.signal.aborted))
-    ) {
-      await markCancelled();
-      return;
-    }
-
-    assistantMessage.agentRunId = outcome.runId;
-    assistantMessage.runMode = "agent";
-    const finalOutcomeText =
-      outcome.kind === "completed"
-        ? outcome.text
-        : assistantMessage.pendingFinalText || assistantMessage.text;
-    assistantMessage.text =
-      deps.sanitizeText(finalOutcomeText) ||
-      assistantMessage.pendingFinalText ||
-      assistantMessage.text ||
-      "No response.";
-    await deps.finalizeAssistantQuoteCitations(
+    await finalizeAgentTurnOutcome({
+      deps,
+      item,
+      conversationKey,
+      thisRequestId,
+      outcome,
       assistantMessage,
-      retryPair.userMessage,
+      pairedUserMessage: retryPair.userMessage,
       runtimeRequest,
-    );
-    assistantMessage.pendingFinalText = undefined;
-    assistantMessage.waitingAnimationStartedAt = undefined;
-    assistantMessage.streaming = false;
-    refreshChatSafely();
-    await persistAssistantOnce();
-    if (deps.getConversationSystem?.() === "claude_code") {
-      const conversationKind = resolveDisplayConversationKind(item);
-      const baseItem = resolveConversationBaseItem(item);
-      await captureClaudeSessionInfo(
-        conversationKey,
-        buildClaudeScope({
-          libraryID: Number(item.libraryID || baseItem?.libraryID || 0),
-          kind: conversationKind === "global" ? "global" : "paper",
-          paperItemID:
-            conversationKind === "paper"
-              ? Number(baseItem?.id || 0) || undefined
-              : undefined,
-          paperTitle:
-            conversationKind === "paper"
-              ? String(baseItem?.getField?.("title") || "").trim() || undefined
-              : undefined,
-        }),
-      ).catch(() => null);
-    }
-    if (!uiRelease.isReleased()) {
-      setStatusSafely("Ready", "ready");
-    }
+      refreshChatSafely,
+      setStatusSafely,
+      markCancelled,
+      persistAssistantOnce,
+      uiRelease,
+      skipAssistantPersist: false,
+    });
   } catch (err) {
-    if (uiRelease.isReleased()) {
-      return;
-    }
-    const isCancelled =
-      deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
-      (err as { name?: string }).name === "AbortError";
-    if (isCancelled) {
-      await markCancelled();
-      return;
-    }
-    messageDeltaCoalescer.cancel();
-    const errMsg = (err as Error).message || "Error";
-    const userFacingError =
-      errMsg.includes("[ede_diagnostic]") &&
-      errMsg.includes("last_content_type=none")
-        ? "The model returned an empty reply. Please retry."
-        : errMsg;
-    assistantMessage.text = `Error: ${userFacingError}`;
-    assistantMessage.streaming = false;
-    refreshChatSafely();
-    await persistAssistantOnce();
-    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+    await handleAgentTurnFailure({
+      err,
+      deps,
+      conversationKey,
+      thisRequestId,
+      assistantMessage,
+      messageDeltaCoalescer,
+      refreshChatSafely,
+      setStatusSafely,
+      markCancelled,
+      persistAssistantOnce,
+      uiRelease,
+      restorePreviousAssistant,
+      restorePairedUser,
+    });
   } finally {
     if (!uiRelease.isReleased()) {
-      deps.setPendingRequestId(conversationKey, 0);
-      deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
-      deps.setCurrentAbortController(conversationKey, null);
-      scheduleQueueDrain();
+      if (deps.finishRequest(conversationKey, thisRequestId)) {
+        deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+        scheduleQueueDrain();
+      }
     }
   }
 }

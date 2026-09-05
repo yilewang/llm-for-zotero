@@ -1,10 +1,12 @@
-import type { AgentPendingAction, AgentConfirmationResolution } from "../types";
+import type {
+  AgentConfirmationResolution,
+  AgentJournalActionScope,
+  AgentPendingAction,
+  AgentActionContract,
+  AgentActionProgressLedger,
+} from "../types";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { ZoteroGateway } from "../services/zoteroGateway";
-import type { LibraryQueryService } from "../services/libraryQueryService";
-import type { LibraryReadService } from "../services/libraryReadService";
-import type { LibraryMutationService } from "../services/libraryMutationService";
-import type { LiteratureSearchService } from "../services/literatureSearchService";
 import type { ModelProviderAuthMode } from "../../utils/modelProviders";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import type {
@@ -13,6 +15,8 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import type { PaperScopedActionProfile } from "./paperScopeTypes";
+import type { ModelProfileOverride } from "../../modelCapabilities";
+import type { UtilityLLMParams } from "../../utils/utilityLLM";
 
 /**
  * LLM credentials that an action can use to call the model directly
@@ -25,6 +29,9 @@ export type ActionLLMConfig = {
   apiKey?: string;
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
+  profileOverride?: ModelProfileOverride;
+  /** Test seam: replaces the actual model call. */
+  llmCall?: UtilityLLMParams["llmCall"];
 };
 
 /**
@@ -52,11 +59,14 @@ export type ActionProgressEvent =
     }
   | { type: "status"; message: string };
 
-export type ActionServices = {
-  queryService: LibraryQueryService;
-  readService: LibraryReadService;
-  mutationService: LibraryMutationService;
-  literatureSearchService: LiteratureSearchService;
+export type ActionCheckpoint = {
+  /** Absolute next item offset, not a page/event count. */
+  cursor: number;
+  /** Number of library objects actually changed so far. */
+  appliedCount: number;
+  totalCount?: number;
+  /** Stable action decisions needed to resume with the same behavior. */
+  plan?: Record<string, unknown>;
 };
 
 export type ActionRequestContext = {
@@ -66,17 +76,39 @@ export type ActionRequestContext = {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  actionContract?: AgentActionContract;
+  actionProgress?: AgentActionProgressLedger;
 };
 
 export type ActionExecutionContext = {
   /** The tool registry — used by ActionExecutor to call tools deterministically. */
   registry: AgentToolRegistry;
+  /**
+   * The conversation these changes belong to.
+   *
+   * `buildToolContext` used to hard-code `0` here, so every tool an action
+   * invoked wrote its undo entry and its journal row under conversation 0 —
+   * a key nothing ever queries. A batch job's changes were therefore
+   * unrecoverable by both `undo_last_action` and `revert_changes`, while the
+   * confirmation card promised the run "can be reverted".
+   */
+  conversationKey?: number;
+  /**
+   * Groups this run's journal entries so they can be reverted as a unit.
+   * Defaults to the conversation when absent.
+   */
+  runId?: string;
+  /** Durable action shared by every nested write in a composite invocation. */
+  journalActionScope?: AgentJournalActionScope;
+  /** User-visible tool identity retained across internal action/tool bridges. */
+  journalToolName?: string;
   zoteroGateway: ZoteroGateway;
-  services: ActionServices;
   /** The Zotero library ID to operate on. */
   libraryID: number;
   confirmationMode: ActionConfirmationMode;
   onProgress: (event: ActionProgressEvent) => void;
+  /** Awaited after a page has fully landed, before the next page starts. */
+  checkpoint?: (checkpoint: ActionCheckpoint) => Promise<void>;
   /**
    * Request confirmation from the user.  Called by ActionExecutor when a tool
    * requires HITL and confirmationMode is `"native_ui"` or `"mcp_response"`.
@@ -95,6 +127,11 @@ export type ActionExecutionContext = {
   llm?: ActionLLMConfig;
   /** Optional chat-context refs forwarded from the compose UI. */
   requestContext?: ActionRequestContext;
+  /**
+   * Cancels the run. Batched actions call the model once per batch and those
+   * batches are sequential, so without this a long queue is unstoppable.
+   */
+  signal?: AbortSignal;
 };
 
 export type ActionResult<TOutput = unknown> =

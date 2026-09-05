@@ -5,7 +5,7 @@
  */
 
 import { config } from "../../package.json";
-import { DEFAULT_SYSTEM_PROMPT } from "./llmDefaults";
+import { DEFAULT_MAX_TOKENS, DEFAULT_SYSTEM_PROMPT } from "./llmDefaults";
 import {
   getAnthropicReasoningProfileForModel,
   getDeepseekReasoningProfileForModel,
@@ -17,6 +17,7 @@ import {
   getReasoningDefaultLevelForModel,
   getRuntimeReasoningOptionsForModel,
   supportsReasoningForModel,
+  withGeminiThoughtSummaries,
 } from "./reasoningProfiles";
 import type {
   ReasoningProvider,
@@ -57,11 +58,13 @@ import {
   resolveEndpoint,
   usesMaxCompletionTokens,
 } from "./apiHelpers";
-import { getLocalParentPath, joinLocalPath, pathToFileUrl } from "./localPath";
+import { pathToFileUrl } from "./localPath";
+import { fingerprintSecret } from "./secretFingerprint";
 import {
+  normalizeMaxTokens,
   normalizeTemperature,
   normalizeMaxTokensForModel,
-  normalizeInputTokenCap,
+  resolveGeminiTemperature,
 } from "./normalization";
 import {
   getDefaultModelEntry,
@@ -83,6 +86,7 @@ import {
   buildProviderTransportHeaders,
   resolveAnthropicMessagesEndpoint,
   resolveGeminiNativeEndpoint,
+  resolveOllamaNativeEndpoint,
   resolveProviderTransportEndpoint,
 } from "./providerTransport";
 import { parseDataUrl } from "../shared/dataUrl";
@@ -91,7 +95,7 @@ import { buildMultipartRequest } from "./multipart";
 import {
   applyModelInputTokenCap,
   estimateConversationTokens,
-  getModelInputTokenLimit,
+  resolveModelInputTokenLimit,
   type InputCapResult,
 } from "./modelInputCap";
 import { resolveProviderCapabilities } from "../providers";
@@ -100,6 +104,25 @@ import {
   type ContextCachePlan,
 } from "../contextCache/manager";
 import type { ModelInputMode } from "../shared/types";
+import {
+  compileReasoningControls,
+  ensureModelCapabilities,
+  getModelCapabilities,
+  isRecord,
+  isReservedRequestKey,
+  profileOverrideAppliesTo,
+  type ModelProfileOverride,
+} from "../modelCapabilities";
+import {
+  CODEX_DIRECT_RESPONSES_URL,
+  buildCodexAuthHeaders,
+  refreshCodexAuthSession,
+  resolveCodexAuthSession,
+} from "../codexAuth/auth";
+import {
+  assertCodexDirectModelAvailable,
+  sanitizeCodexDirectReasoningConfig,
+} from "../codexAuth/modelCatalog";
 
 // =============================================================================
 // Types
@@ -135,6 +158,8 @@ export type ChatParams = {
   temperature?: number;
   /** Optional custom token budget for completion/output */
   maxTokens?: number;
+  /** Whether maxTokens was deliberately set rather than inherited as a default. */
+  maxTokensExplicit?: boolean;
   /** Optional override for input token cap. */
   inputTokenCap?: number;
   /** Optional per-model input capability override. Missing means auto. */
@@ -147,6 +172,12 @@ export type ChatParams = {
   providerProtocol?: ProviderProtocol;
   /** Provider-side prompt/context cache plan resolved by the context planner. */
   contextCache?: ContextCachePlan;
+  /**
+   * User-authored capability overrides for the selected model. Threaded through
+   * so capability resolution, token clamping and the request body all see the
+   * same picture the preferences pane showed.
+   */
+  profileOverride?: ModelProfileOverride;
 };
 
 export type ContextBudgetPlan = {
@@ -209,10 +240,7 @@ type NativePdfPart = {
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
-export const DEFAULT_CODEX_API_BASE =
-  "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token";
-const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+export const DEFAULT_CODEX_API_BASE = CODEX_DIRECT_RESPONSES_URL;
 
 const COPILOT_GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98";
 const COPILOT_DEVICE_CODE_URL = "https://github.com/login/device/code";
@@ -247,13 +275,15 @@ function getApiConfig(overrides?: {
     getPref("apiBase") ||
     "";
   const resolvedApiBase =
-    overrides?.apiBase ||
-    prefApiBase ||
-    (authMode === "codex_auth" || authMode === "codex_app_server"
+    authMode === "codex_auth"
       ? DEFAULT_CODEX_API_BASE
-      : authMode === "copilot_auth"
-        ? DEFAULT_COPILOT_API_BASE
-        : "");
+      : overrides?.apiBase ||
+        prefApiBase ||
+        (authMode === "codex_app_server"
+          ? DEFAULT_CODEX_API_BASE
+          : authMode === "copilot_auth"
+            ? DEFAULT_COPILOT_API_BASE
+            : "");
   const apiBase = resolvedApiBase.trim().replace(/\/$/, "");
   const apiKey = (
     overrides?.apiKey ||
@@ -272,6 +302,7 @@ function getApiConfig(overrides?: {
   const embeddingModel = getPref("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
   const customSystemPrompt = getPref("systemPrompt") || "";
   const providerProtocol: ProviderProtocol = (() => {
+    if (authMode === "codex_auth") return "codex_responses";
     if (overrides?.providerProtocol) return overrides.providerProtocol;
     // Only inherit the configured group protocol when we are actually using that
     // group's base URL. If the caller supplied their own apiBase override, derive
@@ -316,14 +347,7 @@ function normalizeEmbeddingApiBase(apiBase: string): string {
   return apiBase.trim().replace(/\/+$/, "");
 }
 
-function fingerprintEmbeddingSecret(secret: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < secret.length; i += 1) {
-    hash ^= secret.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-}
+const fingerprintEmbeddingSecret = fingerprintSecret;
 
 function resolveSeparateEmbeddingApiKey(embeddingProvider: string): string {
   const explicitKey = (getPref("embeddingApiKey") || "").toString().trim();
@@ -331,7 +355,7 @@ function resolveSeparateEmbeddingApiKey(embeddingProvider: string): string {
 
   const groups = getModelProviderGroups();
   for (const group of groups) {
-    if (!group.apiKey.trim() || group.authMode !== "api_key") continue;
+    if (group.authMode !== "api_key" || !group.apiKey.trim()) continue;
     if (detectProviderPreset(group.apiBase) === embeddingProvider) {
       return group.apiKey.trim();
     }
@@ -418,35 +442,6 @@ type ZoteroFileLike = {
 };
 
 const uploadedResponseFileIdCache = new Map<string, string>();
-type ProcessLike = { env?: Record<string, string | undefined> };
-type PathUtilsLike = {
-  homeDir?: string;
-  join?: (...parts: string[]) => string;
-  parent?: (path: string) => string;
-};
-type ServicesLike = {
-  dirsvc?: {
-    get?: (key: string, iface?: unknown) => { path?: string } | undefined;
-  };
-};
-type OSLike = {
-  Constants?: {
-    Path?: {
-      homeDir?: string;
-    };
-  };
-};
-
-type CodexTokenData = {
-  access_token?: string;
-  refresh_token?: string;
-};
-
-type CodexAuthJson = {
-  tokens?: CodexTokenData;
-  last_refresh?: string;
-  OPENAI_API_KEY?: string;
-};
 
 function getIOUtils(): IOUtilsLike | undefined {
   const fromGlobal = (globalThis as unknown as { IOUtils?: IOUtilsLike })
@@ -464,44 +459,6 @@ function getOSFile(): OSFileLike | undefined {
     | undefined;
   const fromToolkit = toolkitOS?.File;
   return fromToolkit?.read ? fromToolkit : undefined;
-}
-
-function getPathUtils(): PathUtilsLike | undefined {
-  const fromGlobal = (globalThis as { PathUtils?: PathUtilsLike }).PathUtils;
-  if (fromGlobal?.join || fromGlobal?.homeDir || fromGlobal?.parent) {
-    return fromGlobal;
-  }
-  return ztoolkit.getGlobal("PathUtils") as PathUtilsLike | undefined;
-}
-
-function getServices(): ServicesLike | undefined {
-  const fromGlobal = (globalThis as { Services?: ServicesLike }).Services;
-  if (fromGlobal?.dirsvc?.get) return fromGlobal;
-  return ztoolkit.getGlobal("Services") as ServicesLike | undefined;
-}
-
-function getOS(): OSLike | undefined {
-  const fromGlobal = (globalThis as { OS?: OSLike }).OS;
-  if (fromGlobal?.Constants?.Path?.homeDir) return fromGlobal;
-  return ztoolkit.getGlobal("OS") as OSLike | undefined;
-}
-
-function getNsIFile(): unknown {
-  const ci = (globalThis as { Ci?: { nsIFile?: unknown } }).Ci;
-  if (ci?.nsIFile) return ci.nsIFile;
-  const components = (
-    globalThis as {
-      Components?: { interfaces?: { nsIFile?: unknown } };
-    }
-  ).Components;
-  return components?.interfaces?.nsIFile;
-}
-
-function getProcess(): ProcessLike | undefined {
-  const fromGlobal = (globalThis as { process?: ProcessLike }).process;
-  if (fromGlobal?.env) return fromGlobal;
-  const fromToolkit = ztoolkit.getGlobal("process") as ProcessLike | undefined;
-  return fromToolkit?.env ? fromToolkit : undefined;
 }
 
 function getZoteroFile(): ZoteroFileLike | undefined {
@@ -539,205 +496,6 @@ function coerceToBytes(data: unknown): Uint8Array | null {
     return binaryStringToBytes(data);
   }
   return null;
-}
-
-function resolveHomeDir(): string {
-  const env = getProcess()?.env;
-  const envHome = env?.HOME || env?.USERPROFILE;
-  if (typeof envHome === "string" && envHome.trim()) {
-    return envHome.trim();
-  }
-  const fromPathUtils = getPathUtils()?.homeDir;
-  if (typeof fromPathUtils === "string" && fromPathUtils.trim()) {
-    return fromPathUtils.trim();
-  }
-  const osHome = getOS()?.Constants?.Path?.homeDir;
-  if (typeof osHome === "string" && osHome.trim()) {
-    return osHome.trim();
-  }
-  const servicesHome = getServices()
-    ?.dirsvc?.get?.("Home", getNsIFile())
-    ?.path?.trim();
-  if (typeof servicesHome === "string" && servicesHome) {
-    return servicesHome;
-  }
-  const profileDir = (Zotero as unknown as { Profile?: { dir?: string } })
-    .Profile?.dir;
-  if (typeof profileDir === "string" && profileDir.trim()) {
-    return profileDir.trim();
-  }
-  throw new Error("Unable to resolve HOME directory for Codex auth");
-}
-
-function resolveCodexAuthPath(): string {
-  const env = getProcess()?.env;
-  const codexHome = env?.CODEX_HOME?.trim();
-  if (codexHome) return joinLocalPath(codexHome, "auth.json");
-  return joinLocalPath(resolveHomeDir(), ".codex", "auth.json");
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch (_err) {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch (_err) {
-      return false;
-    }
-  }
-  return false;
-}
-
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory API available to persist Codex auth");
-}
-
-async function readUtf8File(path: string): Promise<string> {
-  const bytes = await readLocalFileBytes(path);
-  const decoder = new TextDecoder("utf-8");
-  return decoder.decode(bytes);
-}
-
-async function writeUtf8File(path: string, content: string): Promise<void> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(content);
-  await ensureDir(getLocalParentPath(path));
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, data);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, data);
-    return;
-  }
-  throw new Error("No file write API available to persist Codex auth");
-}
-
-async function loadCodexAuthJson(
-  authPath: string,
-): Promise<CodexAuthJson | null> {
-  if (!(await pathExists(authPath))) return null;
-  try {
-    const raw = await readUtf8File(authPath);
-    if (!raw.trim()) return null;
-    const parsed = JSON.parse(raw) as CodexAuthJson;
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch (_err) {
-    return null;
-  }
-}
-
-function extractCodexAccessToken(auth: CodexAuthJson | null): string {
-  const token = auth?.tokens?.access_token;
-  return typeof token === "string" ? token.trim() : "";
-}
-
-function extractCodexRefreshToken(auth: CodexAuthJson | null): string {
-  const token = auth?.tokens?.refresh_token;
-  return typeof token === "string" ? token.trim() : "";
-}
-
-async function refreshCodexAccessToken(params: {
-  authPath: string;
-  refreshToken: string;
-  signal?: AbortSignal;
-}): Promise<string> {
-  const response = await getFetch()(CODEX_REFRESH_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      client_id: CODEX_CLIENT_ID,
-      grant_type: "refresh_token",
-      refresh_token: params.refreshToken,
-    }),
-    signal: params.signal,
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Codex token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-    );
-  }
-  const payload = (await response.json()) as {
-    access_token?: unknown;
-    refresh_token?: unknown;
-  };
-  const nextAccess =
-    typeof payload.access_token === "string" ? payload.access_token.trim() : "";
-  if (!nextAccess) {
-    throw new Error("Codex token refresh returned empty access token");
-  }
-
-  const current = (await loadCodexAuthJson(params.authPath)) || {};
-  const tokens: CodexTokenData = {
-    ...(current.tokens || {}),
-    access_token: nextAccess,
-    refresh_token:
-      typeof payload.refresh_token === "string" && payload.refresh_token.trim()
-        ? payload.refresh_token.trim()
-        : params.refreshToken,
-  };
-  const nextAuth: CodexAuthJson = {
-    ...current,
-    tokens,
-    last_refresh: new Date().toISOString(),
-  };
-  await writeUtf8File(
-    params.authPath,
-    `${JSON.stringify(nextAuth, null, 2)}\n`,
-  );
-  return nextAccess;
-}
-
-async function resolveCodexAccessToken(params?: {
-  signal?: AbortSignal;
-}): Promise<{ token: string; refreshToken: string; authPath: string }> {
-  const authPath = resolveCodexAuthPath();
-  const auth = await loadCodexAuthJson(authPath);
-  const accessToken = extractCodexAccessToken(auth);
-  const refreshToken = extractCodexRefreshToken(auth);
-  if (accessToken) {
-    return { token: accessToken, refreshToken, authPath };
-  }
-  if (refreshToken) {
-    const refreshed = await refreshCodexAccessToken({
-      authPath,
-      refreshToken,
-      signal: params?.signal,
-    });
-    return { token: refreshed, refreshToken, authPath };
-  }
-  throw new Error(
-    "codex auth token not found. Please run `codex login` and ensure ~/.codex/auth.json is available.",
-  );
 }
 
 // =============================================================================
@@ -1411,6 +1169,13 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
     rawMessages,
     model,
     params.inputTokenCap,
+    {
+      provider: detectProviderPreset(apiBase).toString(),
+      apiBase,
+      protocol: providerProtocol,
+      authMode,
+      profileOverride: params.profileOverride,
+    },
   );
   return {
     apiBase,
@@ -1423,6 +1188,34 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
     providerProtocol,
     contextCache: params.contextCache,
   };
+}
+
+export async function preflightRequestModelCapabilities(
+  params: ChatParams,
+): Promise<void> {
+  try {
+    const resolved = getApiConfig({
+      apiBase: params.apiBase,
+      apiKey: params.apiKey,
+      authMode: params.authMode,
+      model: params.model,
+      providerProtocol: params.providerProtocol,
+    });
+    await ensureModelCapabilities(
+      {
+        provider: detectProviderPreset(resolved.apiBase).toString(),
+        model: resolved.model,
+        apiBase: resolved.apiBase,
+        protocol: resolved.providerProtocol,
+        authMode: resolved.authMode,
+        apiKey: resolved.apiKey,
+      },
+      { timeoutMs: 5_000 },
+    );
+  } catch {
+    // Capability discovery is best effort. The request must retain its
+    // bundled/legacy fallback when a provider catalog is unavailable.
+  }
 }
 
 function getReasoningReserveTokens(reasoning?: ReasoningConfig): number {
@@ -1439,6 +1232,8 @@ function getReasoningReserveTokens(reasoning?: ReasoningConfig): number {
     case "high":
       return 4_096;
     case "xhigh":
+    case "ultra":
+    case "max":
       return 8_192;
     default:
       return 256;
@@ -1453,21 +1248,41 @@ export function estimateAvailableContextBudget(params: {
   model: string;
   reasoning?: ReasoningConfig;
   maxTokens?: number;
+  maxTokensExplicit?: boolean;
   inputTokenCap?: number;
   systemPrompt?: string;
+  apiBase?: string;
+  providerProtocol?: ProviderProtocol;
+  authMode?: ModelProviderAuthMode;
+  profileOverride?: ModelProfileOverride;
 }): ContextBudgetPlan {
   const normalizedModel =
     (params.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-  const modelLimitTokens = getModelInputTokenLimit(normalizedModel);
-  const limitTokens = normalizeInputTokenCap(
-    params.inputTokenCap,
-    modelLimitTokens,
-  );
-  const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
-  const outputReserveTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
+  const resolvedInputLimit = resolveModelInputTokenLimit(
     normalizedModel,
+    params.inputTokenCap,
+    {
+      provider: params.apiBase
+        ? detectProviderPreset(params.apiBase).toString()
+        : undefined,
+      apiBase: params.apiBase,
+      protocol: params.providerProtocol,
+      authMode: params.authMode,
+      profileOverride: params.profileOverride,
+    },
   );
+  const limitTokens = resolvedInputLimit.limitTokens;
+  const modelLimitTokens = limitTokens;
+  const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
+  const outputReserveTokens = normalizeMaxTokensForRequest({
+    value: params.maxTokens,
+    maxTokensExplicit: params.maxTokensExplicit,
+    model: normalizedModel,
+    apiBase: params.apiBase,
+    protocol: params.providerProtocol,
+    authMode: params.authMode,
+    profileOverride: params.profileOverride,
+  });
   const reasoningReserveTokens = getReasoningReserveTokens(params.reasoning);
 
   const baseMessages = buildMessages(
@@ -1543,6 +1358,14 @@ function normalizeStreamText(value: unknown): string {
 type ThoughtTagState = {
   inThought: boolean;
   buffer: string;
+  /** Which tag opened the current block, so only its match can close it. */
+  openTagName?: string;
+  /**
+   * Whether any non-whitespace answer text has streamed yet. Once it has, a
+   * reasoning tag can no longer be a chat-template leak, so it is left in the
+   * answer as the ordinary text it is.
+   */
+  sawAnswerText: boolean;
 };
 
 function getPartialTagTailLength(text: string, tag: string): number {
@@ -1557,12 +1380,74 @@ function getPartialTagTailLength(text: string, tag: string): number {
   return 0;
 }
 
+/**
+ * Reasoning tags that arrive inline in the content stream instead of in a
+ * dedicated field. Every one of them is *leakage*, not a contract this plugin
+ * asked the model for: llama.cpp and vLLM without a reasoning parser pass the
+ * chat template's raw output straight through, and `<thought>` reaches us the
+ * same way from a Codex-side prompt we do not own.
+ *
+ * That distinction is why `thoughtBlockCanOpen` below exists. Nothing tells a
+ * leaked `<think>` apart from a model *writing about* `<think>` except where it
+ * sits: a template always emits its reasoning block first, so a leak opens the
+ * assistant message, while an answer that mentions the tag has already started
+ * talking. Without that rule, "how do I stop my model emitting <think> blocks?"
+ * loses its own answer into the Thinking panel.
+ */
+const THOUGHT_TAG_NAMES = ["thought", "think", "reasoning"] as const;
+
+type ThoughtTagMatch = { index: number; length: number; name: string };
+
+/**
+ * Whether a reasoning block may still open. False once the model has streamed
+ * any non-whitespace answer text — the leading newlines a chat template emits
+ * around its block (`<think>\n…\n</think>\n\n`) are part of the leak, so
+ * whitespace alone must not close the window.
+ */
+function thoughtBlockCanOpen(state: ThoughtTagState): boolean {
+  return !state.sawAnswerText;
+}
+
+/** Earliest opening tag at or after `from`, across every recognized name. */
+function findEarliestTag(
+  haystackLower: string,
+  from: number,
+  build: (name: string) => string,
+): ThoughtTagMatch | null {
+  let best: ThoughtTagMatch | null = null;
+  for (const name of THOUGHT_TAG_NAMES) {
+    const tag = build(name);
+    const index = haystackLower.indexOf(tag, from);
+    if (index === -1) continue;
+    if (!best || index < best.index) {
+      best = { index, length: tag.length, name };
+    }
+  }
+  return best;
+}
+
+/**
+ * Longest partial tag suffix across every recognized name, so a tag split
+ * across two stream chunks is held back rather than emitted as text.
+ */
+function longestPartialTagTail(
+  segment: string,
+  build: (name: string) => string,
+): number {
+  let longest = 0;
+  for (const name of THOUGHT_TAG_NAMES) {
+    const tail = getPartialTagTailLength(segment, build(name));
+    if (tail > longest) longest = tail;
+  }
+  return longest;
+}
+
 function splitThoughtTaggedText(
   chunk: string,
   state: ThoughtTagState,
 ): { answer: string; thought: string } {
-  const OPEN_TAG = "<thought>";
-  const CLOSE_TAG = "</thought>";
+  const openTag = (name: string) => `<${name}>`;
+  const closeTag = (name: string) => `</${name}>`;
   const input = `${state.buffer}${chunk}`;
   state.buffer = "";
   if (!input) return { answer: "", thought: "" };
@@ -1574,34 +1459,70 @@ function splitThoughtTaggedText(
 
   while (cursor < input.length) {
     if (state.inThought) {
-      const closeIdx = inputLower.indexOf(CLOSE_TAG, cursor);
+      // Only the tag that opened the block can close it, so a stray
+      // `</think>` inside a `<thought>` block does not end it early.
+      const closeName = state.openTagName || THOUGHT_TAG_NAMES[0];
+      const close = closeTag(closeName);
+      const closeIdx = inputLower.indexOf(close, cursor);
       if (closeIdx === -1) {
         const segment = input.slice(cursor);
-        const tailLen = getPartialTagTailLength(segment, CLOSE_TAG);
+        const tailLen = getPartialTagTailLength(segment, close);
         thought += segment.slice(0, segment.length - tailLen);
         state.buffer = segment.slice(segment.length - tailLen);
         break;
       }
       thought += input.slice(cursor, closeIdx);
-      cursor = closeIdx + CLOSE_TAG.length;
+      cursor = closeIdx + close.length;
       state.inThought = false;
+      state.openTagName = undefined;
       continue;
     }
 
-    const openIdx = inputLower.indexOf(OPEN_TAG, cursor);
-    if (openIdx === -1) {
+    const open = thoughtBlockCanOpen(state)
+      ? findEarliestTag(inputLower, cursor, openTag)
+      : null;
+    // Answer text ahead of the tag means the model is writing about it, not
+    // leaking it, so the tag and everything after stay in the answer.
+    const opensTheMessage = open
+      ? !input.slice(cursor, open.index).trim()
+      : false;
+    if (!open || !opensTheMessage) {
       const segment = input.slice(cursor);
-      const tailLen = getPartialTagTailLength(segment, OPEN_TAG);
-      answer += segment.slice(0, segment.length - tailLen);
+      // Only hold back a partial tag while one could still open; afterwards a
+      // trailing `<thi` is ordinary text and must not be swallowed.
+      const tailLen = thoughtBlockCanOpen(state)
+        ? longestPartialTagTail(segment, openTag)
+        : 0;
+      const emitted = segment.slice(0, segment.length - tailLen);
+      answer += emitted;
+      if (emitted.trim()) state.sawAnswerText = true;
       state.buffer = segment.slice(segment.length - tailLen);
       break;
     }
-    answer += input.slice(cursor, openIdx);
-    cursor = openIdx + OPEN_TAG.length;
+    answer += input.slice(cursor, open.index);
+    cursor = open.index + open.length;
     state.inThought = true;
+    state.openTagName = open.name;
   }
 
   return { answer, thought };
+}
+
+/**
+ * Flush whatever is left in the tag buffer when the stream ends.
+ *
+ * Only a partial tag suffix can be held back — text inside an open reasoning
+ * block is emitted as it arrives so the Thinking panel stays live. That means
+ * an unterminated block cannot be reclassified as the answer after the fact
+ * without showing the same text twice, so it is deliberately left as reasoning.
+ */
+function resolveUnterminatedThought(state: ThoughtTagState): {
+  asAnswer: boolean;
+  text: string;
+} {
+  const text = state.buffer;
+  if (!text) return { asAnswer: false, text: "" };
+  return { asAnswer: !state.inThought, text };
 }
 
 function buildTokenParam(model: string, maxTokens: number) {
@@ -1612,6 +1533,28 @@ function buildTokenParam(model: string, maxTokens: number) {
 
 function buildResponsesTokenParam(maxTokens: number) {
   return { max_output_tokens: maxTokens };
+}
+
+export function normalizeMaxTokensForRequest(params: {
+  value?: number;
+  maxTokensExplicit?: boolean;
+  model: string;
+  apiBase?: string;
+  protocol?: ProviderProtocol;
+  authMode?: ModelProviderAuthMode;
+  profileOverride?: ModelProfileOverride;
+}): number {
+  if (params.maxTokensExplicit) return normalizeMaxTokens(params.value);
+  const normalized = normalizeMaxTokensForModel(params.value, params.model, {
+    provider: params.apiBase
+      ? detectProviderPreset(params.apiBase).toString()
+      : undefined,
+    apiBase: params.apiBase,
+    protocol: params.protocol,
+    authMode: params.authMode,
+    profileOverride: params.profileOverride,
+  });
+  return normalized;
 }
 
 const OPENAI_EFFORT_ORDER: OpenAIReasoningEffort[] = [
@@ -1775,6 +1718,16 @@ function resolveAnthropicThinkingMode(params: {
   return null;
 }
 
+/** A local validation failure for a main request's selected reasoning mode. */
+export class ReasoningBudgetError extends Error {
+  readonly code = "reasoning_budget_too_small" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ReasoningBudgetError";
+  }
+}
+
 function resolveAnthropicManualBudget(params: {
   level: ReasoningLevel;
   profile: AnthropicReasoningProfile;
@@ -1794,7 +1747,7 @@ function resolveAnthropicManualBudget(params: {
   const maxBudgetTokens = maxTokens - reservedAnswerTokens;
   if (maxBudgetTokens < 1024) {
     const label = (params.modelName || "the selected Anthropic model").trim();
-    throw new Error(
+    throw new ReasoningBudgetError(
       `${label} extended thinking requires max_tokens of at least 2048 so budget_tokens can be less than max_tokens while leaving room for the answer. Increase max tokens or turn thinking off.`,
     );
   }
@@ -2009,13 +1962,85 @@ export type AnthropicReasoningModeOverride = Exclude<
 export type ReasoningPayloadOptions = {
   maxTokens?: number;
   anthropicModeOverride?: AnthropicReasoningModeOverride;
+  /** User-authored capability overrides, including extra body parameters. */
+  profileOverride?: ModelProfileOverride;
 };
 
 export type ReasoningSelection = ReasoningConfig & {
   anthropicModeOverride?: AnthropicReasoningModeOverride;
 };
 
+/**
+ * Reasoning controls plus any user-authored extra request parameters.
+ *
+ * `extraBody` is not reasoning-specific, but this function's result is already
+ * spread into every payload builder, so it is the one hook that reaches all
+ * protocols. Reasoning controls are layered on top: the reasoning selector is
+ * a live per-message control, and static configuration must not silently
+ * override what the user just picked.
+ */
 export function buildReasoningPayload(
+  reasoning: ReasoningConfig | undefined,
+  useResponses: boolean,
+  modelName?: string,
+  apiBase?: string,
+  providerProtocol?: ProviderProtocol,
+  options?: ReasoningPayloadOptions,
+): { extra: Record<string, unknown>; omitTemperature: boolean } {
+  const base = buildReasoningControlPayload(
+    reasoning,
+    useResponses,
+    modelName,
+    apiBase,
+    providerProtocol,
+    options,
+  );
+  const extraBody = resolveUserExtraBody(options?.profileOverride, modelName);
+  if (!extraBody) return base;
+  return {
+    extra: { ...extraBody, ...base.extra },
+    omitTemperature: base.omitTemperature,
+  };
+}
+
+/**
+ * The extra request parameters an override contributes to a request — after
+ * the reserved-key strip, and only when the override was authored for the
+ * model being called (a dormant override from a renamed entry contributes
+ * nothing; see `forModel`).
+ */
+export function resolveUserExtraBody(
+  profileOverride: ModelProfileOverride | undefined,
+  modelName: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!profileOverrideAppliesTo(profileOverride, modelName || "")) {
+    return undefined;
+  }
+  return stripReservedRequestKeys(profileOverride?.extraBody);
+}
+
+/**
+ * Last line of defence against a user parameter occupying an envelope key.
+ *
+ * The editor rejects these at input time with a visible message, so reaching
+ * here means a hand-edited or imported config. Silent by design: every payload
+ * builder spreads the reasoning extras into the body, most of them after the
+ * envelope, so an unfiltered `messages` or `tools` key would replace the
+ * conversation or drop every tool definition.
+ */
+export function stripReservedRequestKeys(
+  extraBody: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!extraBody) return undefined;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extraBody)) {
+    if (isReservedRequestKey(key)) continue;
+    kept[key] = value;
+  }
+  return Object.keys(kept).length ? kept : undefined;
+}
+
+function buildReasoningControlPayload(
   reasoning: ReasoningConfig | undefined,
   useResponses: boolean,
   modelName?: string,
@@ -2026,7 +2051,31 @@ export function buildReasoningPayload(
   if (!reasoning) {
     return emptyReasoningPayload();
   }
-  if (!supportsReasoningForModel(reasoning.provider, modelName)) {
+  const exactEffort = reasoning.effort?.trim();
+  if (
+    exactEffort &&
+    (reasoning.provider === "openai" || reasoning.provider === "grok")
+  ) {
+    return {
+      extra: useResponses
+        ? { reasoning: { effort: exactEffort, summary: "detailed" } }
+        : { reasoning_effort: exactEffort },
+      omitTemperature: reasoning.provider === "openai",
+    };
+  }
+  const capabilities = getModelCapabilities({
+    provider: reasoning.provider,
+    model: modelName || "",
+    apiBase,
+    protocol: providerProtocol,
+    profileOverride: options?.profileOverride,
+  });
+  const declarativeControls = compileReasoningControls(capabilities, reasoning);
+  if (declarativeControls) return declarativeControls;
+  if (
+    capabilities.reasoning.kind === "none" &&
+    !supportsReasoningForModel(reasoning.provider, modelName)
+  ) {
     return emptyReasoningPayload();
   }
 
@@ -2075,6 +2124,7 @@ export function buildReasoningPayload(
         typeof resolvedOption.value === "number" ? resolvedOption.value : 8192;
     } else {
       thinkingConfig.thinking_level =
+        resolvedOption.value === "minimal" ||
         resolvedOption.value === "low" ||
         resolvedOption.value === "medium" ||
         resolvedOption.value === "high"
@@ -2228,6 +2278,7 @@ function buildAnthropicMessagesPayload(params: {
   anthropicModeOverride?: AnthropicReasoningModeOverride;
   pdfParts?: NativePdfPart[];
   contextCache?: ContextCachePlan;
+  profileOverride?: ModelProfileOverride;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2307,6 +2358,7 @@ function buildAnthropicMessagesPayload(params: {
     {
       maxTokens: params.effectiveMaxTokens,
       anthropicModeOverride: params.anthropicModeOverride,
+      profileOverride: params.profileOverride,
     },
   );
   Object.assign(payload, reasoningPayload.extra);
@@ -2430,10 +2482,15 @@ async function parseAnthropicStreamResponse(
 }
 
 function buildGeminiNativePayload(params: {
+  model: string;
+  apiBase?: string;
   messages: ChatMessage[];
   effectiveMaxTokens: number;
-  effectiveTemperature: number;
+  /** Omitted from the payload when undefined (Gemini 3 server default). */
+  temperature: number | undefined;
+  reasoning?: ReasoningConfig;
   pdfParts?: Array<{ base64: string }>;
+  profileOverride?: ModelProfileOverride;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2483,13 +2540,80 @@ function buildGeminiNativePayload(params: {
       }
     }
   }
+  // User extra parameters ride along here the same as on every other
+  // protocol; a user generationConfig is merged under the envelope so the
+  // dedicated temperature/max-token fields keep the last word on a collision.
+  const extraBody = resolveUserExtraBody(params.profileOverride, params.model);
+  const { generationConfig: extraGenerationConfig, ...extraTop } = (extraBody ||
+    {}) as { generationConfig?: unknown } & Record<string, unknown>;
   const payload: Record<string, unknown> = {
+    ...extraTop,
     contents,
     generationConfig: {
+      ...(isRecord(extraGenerationConfig) ? extraGenerationConfig : {}),
       maxOutputTokens: params.effectiveMaxTokens,
-      temperature: params.effectiveTemperature,
+      ...(params.temperature !== undefined
+        ? { temperature: params.temperature }
+        : {}),
     },
   };
+  if (params.reasoning?.provider === "gemini") {
+    const declarative = compileReasoningControls(
+      getModelCapabilities({
+        provider: "gemini",
+        model: params.model,
+        apiBase: params.apiBase,
+        protocol: "gemini_native",
+        profileOverride: params.profileOverride,
+      }),
+      params.reasoning,
+    );
+    const generationConfig = payload.generationConfig as Record<
+      string,
+      unknown
+    >;
+    const declaredGenerationConfig =
+      declarative?.extra.generationConfig ||
+      declarative?.extra.generation_config;
+    if (
+      declaredGenerationConfig &&
+      typeof declaredGenerationConfig === "object" &&
+      !Array.isArray(declaredGenerationConfig)
+    ) {
+      Object.assign(generationConfig, declaredGenerationConfig);
+    }
+    const declarativeConfig =
+      declarative?.extra.thinkingConfig ||
+      declarative?.extra.thinking_config ||
+      generationConfig.thinkingConfig;
+    if (isRecord(declarativeConfig)) {
+      generationConfig.thinkingConfig =
+        withGeminiThoughtSummaries(declarativeConfig);
+    } else {
+      const profile = getGeminiReasoningProfile(params.model);
+      const value =
+        profile.levelToValue[params.reasoning.level] ??
+        profile.levelToValue[profile.defaultLevel] ??
+        profile.defaultValue;
+      (payload.generationConfig as Record<string, unknown>).thinkingConfig =
+        profile.param === "thinking_budget"
+          ? {
+              includeThoughts: true,
+              thinkingBudget: typeof value === "number" ? value : 8192,
+            }
+          : {
+              includeThoughts: true,
+              thinkingLevel:
+                value === "minimal" ||
+                value === "low" ||
+                value === "medium" ||
+                value === "high"
+                  ? value
+                  : "medium",
+            };
+    }
+    if (declarative?.omitTemperature) delete generationConfig.temperature;
+  }
   if (systemParts.length > 0) {
     payload.systemInstruction = { parts: systemParts };
   }
@@ -2517,13 +2641,23 @@ function assertCodexAppServerUsesNativeRuntime(
   if (authMode !== "codex_app_server") return;
   throw new Error(
     "Codex App Server is only supported through the native Codex conversation system. " +
-      "Use Codex Auth (Legacy) for the direct backend transport.",
+      "Use Codex Direct (Legacy) for the direct backend transport.",
   );
+}
+
+/**
+ * Gemini marks thought-summary parts with `thought: true` when
+ * `includeThoughts` is requested.  A `thoughtSignature` alone does NOT make a
+ * part a thought: Gemini 3 attaches signatures to regular answer parts too.
+ */
+function isGeminiThoughtSummaryPart(part: { thought?: unknown }): boolean {
+  return part.thought === true;
 }
 
 async function parseGeminiNativeStreamResponse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: string) => void,
+  onReasoning?: (event: ReasoningEvent) => void,
   onUsage?: (usage: UsageStats) => void,
 ): Promise<string> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
@@ -2548,7 +2682,9 @@ async function parseGeminiNativeStreamResponse(
         try {
           const parsed = JSON.parse(data) as {
             candidates?: Array<{
-              content?: { parts?: Array<{ text?: string }> };
+              content?: {
+                parts?: Array<{ text?: string; thought?: unknown }>;
+              };
             }>;
             usageMetadata?: {
               promptTokenCount?: number;
@@ -2557,10 +2693,18 @@ async function parseGeminiNativeStreamResponse(
               cachedContentTokenCount?: number;
             };
           };
-          const text =
-            parsed.candidates?.[0]?.content?.parts
-              ?.map((p) => p.text || "")
-              .join("") || "";
+          const parts = parsed.candidates?.[0]?.content?.parts || [];
+          const thoughtText = parts
+            .filter((p) => isGeminiThoughtSummaryPart(p))
+            .map((p) => p.text || "")
+            .join("");
+          if (thoughtText && onReasoning) {
+            onReasoning({ details: thoughtText });
+          }
+          const text = parts
+            .filter((p) => !isGeminiThoughtSummaryPart(p))
+            .map((p) => p.text || "")
+            .join("");
           if (text) {
             fullText += text;
             onDelta(text);
@@ -2593,6 +2737,231 @@ async function parseGeminiNativeStreamResponse(
   return fullText;
 }
 
+// ── Ollama native (/api/chat) ────────────────────────────────────────────────
+
+/**
+ * Ollama's chat message shape. Unlike OpenAI, images are not content parts:
+ * they ride alongside the text as an array of bare base64 strings.
+ */
+type OllamaChatMessage = {
+  role: string;
+  content: string;
+  images?: string[];
+};
+
+function toOllamaChatMessages(messages: ChatMessage[]): OllamaChatMessage[] {
+  return messages.map((message) => {
+    if (typeof message.content === "string") {
+      return { role: message.role, content: message.content };
+    }
+    const textParts: string[] = [];
+    const images: string[] = [];
+    for (const part of message.content) {
+      if (part.type === "text") {
+        textParts.push(part.text);
+        continue;
+      }
+      // Ollama wants raw base64 with no data: prefix; a plain URL cannot be
+      // forwarded, so drop it rather than sending something unfetchable.
+      const parsed = parseDataUrl(part.image_url?.url || "");
+      if (parsed?.data) images.push(parsed.data);
+    }
+    return {
+      role: message.role,
+      content: textParts.join("\n"),
+      ...(images.length ? { images } : {}),
+    };
+  });
+}
+
+/**
+ * The one Ollama `/api/chat` envelope builder, shared by chat mode and the
+ * agent adapter so the merge subtleties below exist in exactly one place.
+ */
+export function buildOllamaChatPayload(params: {
+  model: string;
+  /** Pre-converted messages (agent adapter) or ChatMessages (chat mode). */
+  messages: ChatMessage[] | Array<Record<string, unknown>>;
+  messagesAreConverted?: boolean;
+  stream: boolean;
+  temperature?: number;
+  /**
+   * Output cap. Ollama's own default is unlimited (-1); a thinking model that
+   * inherits the plugin's 4096 default can spend the whole budget reasoning and
+   * return empty content, so callers pass -1 unless the user set a value.
+   */
+  numPredict?: number;
+  /** Runtime context window, so what we claim and what Ollama allocates agree. */
+  numCtx?: number;
+  /** Tool definitions (agent mode). User extra params never occupy this key. */
+  tools?: unknown[];
+  reasoningExtra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  if (params.temperature !== undefined)
+    options.temperature = params.temperature;
+  if (params.numPredict !== undefined) options.num_predict = params.numPredict;
+  if (params.numCtx !== undefined) options.num_ctx = params.numCtx;
+  const { options: extraOptions, ...extraTop } = (params.reasoningExtra ||
+    {}) as { options?: unknown } & Record<string, unknown>;
+  // `options` is merged rather than spread over: a user parameter such as
+  // `options.repeat_penalty` would otherwise replace the whole object and
+  // silently drop num_ctx, reinstating the context truncation this protocol
+  // exists to avoid. User keys win within the merge; the envelope does not.
+  const mergedOptions = isRecord(extraOptions)
+    ? { ...options, ...extraOptions }
+    : options;
+  return {
+    model: params.model,
+    messages: params.messagesAreConverted
+      ? params.messages
+      : toOllamaChatMessages(params.messages as ChatMessage[]),
+    stream: params.stream,
+    ...(params.tools?.length ? { tools: params.tools } : {}),
+    ...(Object.keys(mergedOptions).length ? { options: mergedOptions } : {}),
+    ...extraTop,
+  };
+}
+
+/**
+ * Ollama's own `num_predict` default is -1 (unlimited). The plugin's 4096
+ * default is a hazard here: a thinking model can spend the entire budget
+ * reasoning and return empty content. Treat the untouched plugin default as
+ * "unset" and let the server decide; any other value is the user's explicit
+ * choice and is honoured.
+ */
+export function resolveOllamaNumPredict(
+  effectiveMaxTokens: number,
+  maxTokensExplicit = false,
+): number {
+  return !maxTokensExplicit && effectiveMaxTokens === DEFAULT_MAX_TOKENS
+    ? -1
+    : effectiveMaxTokens;
+}
+
+/**
+ * Ollama's runtime context window defaults well below a model's trained
+ * maximum, so a prompt sized against the trained figure is silently truncated.
+ * Allocating exactly the cap the plugin trimmed to keeps the claim and the
+ * allocation in agreement.
+ */
+export function resolveOllamaNumCtx(
+  protocol: ProviderProtocol,
+  limitTokens: number,
+): number | undefined {
+  if (protocol !== "ollama_native") return undefined;
+  return Number.isSafeInteger(limitTokens) && limitTokens > 0
+    ? limitTokens
+    : undefined;
+}
+
+type OllamaChatChunk = {
+  message?: {
+    content?: unknown;
+    thinking?: unknown;
+    tool_calls?: Array<{
+      function?: { name?: string; arguments?: unknown };
+    }>;
+  };
+  done?: boolean;
+  done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+  error?: string;
+};
+
+/** A tool call as Ollama frames it; the agent layer assigns ids itself. */
+export type OllamaRawToolCall = { name: string; arguments: unknown };
+
+/**
+ * Parse Ollama's `/api/chat` stream — the one NDJSON parser for both chat
+ * mode and the agent adapter, so a wire quirk is fixed in exactly one place.
+ *
+ * The framing is NDJSON — one complete JSON object per line, with no `data:`
+ * prefix — so `parseStreamResponse` cannot be reused: it skips every line that
+ * does not start with `data:` and would silently return "".
+ *
+ * `message.thinking` and `message.content` arrive as separate fields, which is
+ * the whole reason this protocol exists (see #363): over Ollama's
+ * OpenAI-compatible endpoint some models put the entire answer in the reasoning
+ * field and leave content empty.
+ *
+ * Ollama emits each tool call complete in a single chunk, so `onToolCall`
+ * fires once per call with no per-index accumulation.
+ */
+export async function parseOllamaChatStream(
+  body: ReadableStream<Uint8Array>,
+  onDelta: (delta: string) => void | Promise<void>,
+  onReasoning?: (event: ReasoningEvent) => void | Promise<void>,
+  onUsage?: (usage: UsageStats) => void | Promise<void>,
+  onToolCall?: (call: OllamaRawToolCall) => void,
+): Promise<string> {
+  const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let fullText = "";
+
+  const handleLine = async (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let parsed: OllamaChatChunk;
+    try {
+      parsed = JSON.parse(trimmed) as OllamaChatChunk;
+    } catch (err) {
+      ztoolkit.log("Ollama stream parse error:", err);
+      return;
+    }
+    if (parsed.error) {
+      throw new Error(`Ollama error: ${parsed.error}`);
+    }
+    const thinking = normalizeStreamText(parsed.message?.thinking ?? "");
+    if (thinking && onReasoning) await onReasoning({ details: thinking });
+    const content = normalizeStreamText(parsed.message?.content ?? "");
+    if (content) {
+      fullText += content;
+      await onDelta(content);
+    }
+    if (onToolCall && Array.isArray(parsed.message?.tool_calls)) {
+      for (const call of parsed.message.tool_calls) {
+        const name = call?.function?.name?.trim();
+        if (!name) continue;
+        onToolCall({ name, arguments: call.function?.arguments });
+      }
+    }
+    if (parsed.done && onUsage) {
+      const promptTokens = parsed.prompt_eval_count ?? 0;
+      const completionTokens = parsed.eval_count ?? 0;
+      const totalTokens = promptTokens + completionTokens;
+      if (totalTokens > 0) {
+        await onUsage({
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          contextTokens: promptTokens,
+          contextWindowIsAuthoritative: promptTokens > 0,
+        });
+      }
+    }
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) await handleLine(line);
+    }
+    // Flush a trailing object that arrived without a closing newline.
+    if (buffer.trim()) await handleLine(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+
+  return fullText;
+}
+
 function createChatPayloadBuilder(params: {
   model: string;
   messages: ChatMessage[];
@@ -2605,6 +2974,7 @@ function createChatPayloadBuilder(params: {
   effectiveMaxTokens: number;
   stream: boolean;
   contextCache?: ContextCachePlan;
+  profileOverride?: ModelProfileOverride;
 }) {
   const {
     model,
@@ -2630,17 +3000,10 @@ function createChatPayloadBuilder(params: {
       ? messages
       : mergeSystemMessagesForChatPayload(messages);
     if (useResponses && isCodexAuth && responsesInput) {
-      const codexReasoningEffort =
-        reasoningOverride &&
-        (reasoningOverride.provider === "openai" ||
-          reasoningOverride.provider === "grok")
-          ? resolveOpenAIReasoningEffort(
-              reasoningOverride.provider,
-              reasoningOverride.level,
-              model,
-              apiBase,
-            )
-          : null;
+      const codexReasoningEffort = sanitizeCodexDirectReasoningConfig(
+        model,
+        reasoningOverride,
+      )?.effort;
       const codexInstructionsParts = [
         responsesInput.instructions || "You are a helpful assistant.",
         codexReasoningEffort
@@ -2668,7 +3031,10 @@ function createChatPayloadBuilder(params: {
       model,
       apiBase,
       providerProtocol,
-      { maxTokens: effectiveMaxTokens },
+      {
+        maxTokens: effectiveMaxTokens,
+        profileOverride: params.profileOverride,
+      },
     );
     const temperatureParam = reasoningPayload.omitTemperature
       ? {}
@@ -2797,6 +3163,7 @@ export type RequestAuthState = {
   codex?: {
     authPath: string;
     refreshToken: string;
+    accountId?: string;
   };
   copilot?: {
     githubToken: string;
@@ -2806,9 +3173,16 @@ export type RequestAuthState = {
 function buildAuthHeaders(
   token: string,
   mode?: ModelProviderAuthMode,
+  accountId?: string,
 ): Record<string, string> {
   if (mode === "copilot_auth") {
     return buildCopilotHeaders(token);
+  }
+  if (mode === "codex_auth") {
+    return buildCodexAuthHeaders(
+      { token, accountId },
+      { "Content-Type": "application/json" },
+    );
   }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -2824,26 +3198,26 @@ async function refreshCodexAuthState(
   signal?: AbortSignal,
 ): Promise<RequestAuthState> {
   if (state.mode !== "codex_auth") return state;
-  const authPath = state.codex?.authPath || resolveCodexAuthPath();
-  const refreshToken =
-    state.codex?.refreshToken ||
-    extractCodexRefreshToken(await loadCodexAuthJson(authPath));
-  if (!refreshToken) {
-    throw new Error(
-      "codex auth refresh token missing. Please run `codex login` to restore ~/.codex/auth.json.",
-    );
-  }
-  const token = await refreshCodexAccessToken({
-    authPath,
-    refreshToken,
+  const session =
+    state.codex?.authPath && state.codex.refreshToken
+      ? {
+          token: state.token,
+          authPath: state.codex.authPath,
+          refreshToken: state.codex.refreshToken,
+          accountId: state.codex.accountId,
+        }
+      : await resolveCodexAuthSession({ signal, fetchFn: getFetch() });
+  const refreshed = await refreshCodexAuthSession(session, {
     signal,
+    fetchFn: getFetch(),
   });
   return {
     mode: "codex_auth",
-    token,
+    token: refreshed.token,
     codex: {
-      authPath,
-      refreshToken,
+      authPath: refreshed.authPath,
+      refreshToken: refreshed.refreshToken,
+      ...(refreshed.accountId ? { accountId: refreshed.accountId } : {}),
     },
   };
 }
@@ -2882,7 +3256,9 @@ async function postWithTemperatureFallback(params: {
   const send = (bodyPayload: Record<string, unknown>, auth: RequestAuthState) =>
     getFetch()(params.url, {
       method: "POST",
-      headers: params.headers ?? buildAuthHeaders(auth.token, auth.mode),
+      headers:
+        params.headers ??
+        buildAuthHeaders(auth.token, auth.mode, auth.codex?.accountId),
       body: JSON.stringify(bodyPayload),
       signal: params.signal,
     });
@@ -2946,7 +3322,7 @@ async function postWithTemperatureFallback(params: {
   );
 }
 
-function parseStatusFromErrorMessage(message: string): number | null {
+export function parseStatusFromErrorMessage(message: string): number | null {
   const match = message.trim().match(/^(\d{3})\b/);
   if (!match) return null;
   const value = Number.parseInt(match[1], 10);
@@ -2965,7 +3341,10 @@ function isReasoningErrorMessage(errorMessage: string): boolean {
     text.includes("chat_template_kwargs") ||
     text.includes("thinking_level") ||
     text.includes("thinking_budget") ||
-    text.includes("budget_tokens")
+    text.includes("budget_tokens") ||
+    // Ollama rejects an unsupported think level, e.g. a string level sent to a
+    // model that only accepts a boolean.
+    text.includes("think")
   );
 }
 
@@ -2995,6 +3374,7 @@ function getReasoningSelectionKey(
   return [
     reasoningSelection.provider,
     reasoningSelection.level,
+    reasoningSelection.effort || "",
     reasoningSelection.anthropicModeOverride || "",
   ].join(":");
 }
@@ -3111,8 +3491,9 @@ export async function resolveRequestAuthState(params: {
   signal?: AbortSignal;
 }): Promise<RequestAuthState> {
   if (params.authMode === "codex_auth") {
-    const resolved = await resolveCodexAccessToken({
+    const resolved = await resolveCodexAuthSession({
       signal: params.signal,
+      fetchFn: getFetch(),
     });
     return {
       mode: "codex_auth",
@@ -3120,6 +3501,7 @@ export async function resolveRequestAuthState(params: {
       codex: {
         authPath: resolved.authPath,
         refreshToken: resolved.refreshToken,
+        ...(resolved.accountId ? { accountId: resolved.accountId } : {}),
       },
     };
   }
@@ -3145,17 +3527,19 @@ export async function resolveRequestAuthState(params: {
 // =============================================================================
 
 /**
- * Handles anthropic_messages and gemini_native protocols for both streaming and
- * non-streaming calls. Passing onDelta enables streaming.
+ * Handles anthropic_messages, gemini_native and ollama_native protocols for
+ * both streaming and non-streaming calls. Passing onDelta enables streaming.
  */
 async function callNativeProtocol(params: {
-  protocol: "anthropic_messages" | "gemini_native";
+  protocol: "anthropic_messages" | "gemini_native" | "ollama_native";
   apiBase: string;
   apiKey: string;
   model: string;
   messages: ChatMessage[];
   effectiveMaxTokens: number;
-  effectiveTemperature: number;
+  maxTokensExplicit?: boolean;
+  /** Raw request temperature; protocol-specific defaults are applied here. */
+  rawTemperature?: number | string;
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onReasoning?: (event: ReasoningEvent) => void;
@@ -3163,6 +3547,9 @@ async function callNativeProtocol(params: {
   attachments?: ChatFileAttachment[];
   reasoning?: ReasoningConfig;
   contextCache?: ContextCachePlan;
+  /** ollama_native only: runtime context window to allocate. */
+  numCtx?: number;
+  profileOverride?: ModelProfileOverride;
 }): Promise<string> {
   const {
     protocol,
@@ -3171,7 +3558,7 @@ async function callNativeProtocol(params: {
     model,
     messages,
     effectiveMaxTokens,
-    effectiveTemperature,
+    rawTemperature,
     signal,
     onDelta,
     onReasoning,
@@ -3181,7 +3568,9 @@ async function callNativeProtocol(params: {
   const url =
     protocol === "anthropic_messages"
       ? resolveAnthropicMessagesEndpoint(apiBase)
-      : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
+      : protocol === "ollama_native"
+        ? resolveOllamaNativeEndpoint(apiBase)
+        : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
   const headers = buildProviderTransportHeaders({ protocol, apiKey });
   const pdfParts: Array<{ base64: string }> = [];
   if (
@@ -3205,25 +3594,50 @@ async function callNativeProtocol(params: {
     }
   }
   const buildBody = (reasoningOverride: ReasoningSelection | undefined) =>
-    protocol === "anthropic_messages"
-      ? buildAnthropicMessagesPayload({
+    protocol === "ollama_native"
+      ? buildOllamaChatPayload({
           model,
           messages,
-          effectiveMaxTokens,
-          effectiveTemperature,
           stream: isStreaming,
-          reasoning: reasoningOverride,
-          apiBase,
-          anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
-          pdfParts: pdfParts.length ? pdfParts : undefined,
-          contextCache: params.contextCache,
+          temperature: normalizeTemperature(rawTemperature),
+          numPredict: resolveOllamaNumPredict(
+            effectiveMaxTokens,
+            params.maxTokensExplicit,
+          ),
+          numCtx: params.numCtx,
+          reasoningExtra: buildReasoningPayload(
+            reasoningOverride,
+            false,
+            model,
+            apiBase,
+            "ollama_native",
+            { profileOverride: params.profileOverride },
+          ).extra,
         })
-      : buildGeminiNativePayload({
-          messages,
-          effectiveMaxTokens,
-          effectiveTemperature,
-          pdfParts: pdfParts.length ? pdfParts : undefined,
-        });
+      : protocol === "anthropic_messages"
+        ? buildAnthropicMessagesPayload({
+            model,
+            messages,
+            effectiveMaxTokens,
+            effectiveTemperature: normalizeTemperature(rawTemperature),
+            stream: isStreaming,
+            reasoning: reasoningOverride,
+            apiBase,
+            anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
+            pdfParts: pdfParts.length ? pdfParts : undefined,
+            contextCache: params.contextCache,
+            profileOverride: params.profileOverride,
+          })
+        : buildGeminiNativePayload({
+            model,
+            apiBase,
+            messages,
+            effectiveMaxTokens,
+            temperature: resolveGeminiTemperature(model, rawTemperature),
+            reasoning: reasoningOverride,
+            pdfParts: pdfParts.length ? pdfParts : undefined,
+            profileOverride: params.profileOverride,
+          });
   const res = await postWithReasoningFallback({
     url,
     auth: { mode: "api_key", token: apiKey },
@@ -3244,7 +3658,23 @@ async function callNativeProtocol(params: {
     if (!res.body) return callNativeProtocol({ ...params, onDelta: undefined });
     return protocol === "anthropic_messages"
       ? parseAnthropicStreamResponse(res.body, onDelta!, onReasoning, onUsage)
-      : parseGeminiNativeStreamResponse(res.body, onDelta!, onUsage);
+      : protocol === "ollama_native"
+        ? parseOllamaChatStream(res.body, onDelta!, onReasoning, onUsage)
+        : parseGeminiNativeStreamResponse(
+            res.body,
+            onDelta!,
+            onReasoning,
+            onUsage,
+          );
+  }
+  if (protocol === "ollama_native") {
+    const data = (await res.json()) as OllamaChatChunk;
+    const thinking = normalizeStreamText(data?.message?.thinking ?? "");
+    if (thinking && onReasoning) onReasoning({ details: thinking });
+    // Deliberately no fallback to `thinking` when content is empty: if the
+    // server put the answer in the reasoning field that is the server's bug,
+    // and silently promoting it would hide a misconfiguration (see #363).
+    return normalizeStreamText(data?.message?.content ?? "");
   }
   if (protocol === "anthropic_messages") {
     const data = (await res.json()) as {
@@ -3256,11 +3686,15 @@ async function callNativeProtocol(params: {
     );
   }
   const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string; thought?: unknown }> };
+    }>;
   };
   return (
-    data.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") ??
-    JSON.stringify(data)
+    data.candidates?.[0]?.content?.parts
+      ?.filter((p) => !isGeminiThoughtSummaryPart(p))
+      .map((p) => p.text || "")
+      .join("") ?? JSON.stringify(data)
   );
 }
 
@@ -3268,6 +3702,7 @@ async function callNativeProtocol(params: {
  * Call LLM API (non-streaming)
  */
 export async function callLLM(params: ChatParams): Promise<string> {
+  await preflightRequestModelCapabilities(params);
   const prepared = prepareChatRequest(params);
   const {
     apiBase,
@@ -3278,9 +3713,13 @@ export async function callLLM(params: ChatParams): Promise<string> {
     inputCap,
     providerProtocol,
   } = prepared;
+  if (authMode === "codex_auth") {
+    assertCodexDirectModelAvailable(model);
+  }
   if (
     providerProtocol === "anthropic_messages" ||
-    providerProtocol === "gemini_native"
+    providerProtocol === "gemini_native" ||
+    providerProtocol === "ollama_native"
   ) {
     return callNativeProtocol({
       protocol: providerProtocol,
@@ -3288,12 +3727,23 @@ export async function callLLM(params: ChatParams): Promise<string> {
       apiKey,
       model,
       messages,
-      effectiveMaxTokens: normalizeMaxTokensForModel(params.maxTokens, model),
-      effectiveTemperature: normalizeTemperature(params.temperature),
+      effectiveMaxTokens: normalizeMaxTokensForRequest({
+        value: params.maxTokens,
+        maxTokensExplicit: params.maxTokensExplicit,
+        model,
+        apiBase,
+        protocol: providerProtocol,
+        authMode,
+        profileOverride: params.profileOverride,
+      }),
+      maxTokensExplicit: params.maxTokensExplicit === true,
+      rawTemperature: params.temperature,
       signal: params.signal,
       attachments: params.attachments,
       reasoning: params.reasoning,
       contextCache: params.contextCache,
+      numCtx: resolveOllamaNumCtx(providerProtocol, inputCap.limitTokens),
+      profileOverride: params.profileOverride,
     });
   }
   assertCodexAppServerUsesNativeRuntime(authMode);
@@ -3340,10 +3790,15 @@ export async function callLLM(params: ChatParams): Promise<string> {
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
+  const effectiveMaxTokens = normalizeMaxTokensForRequest({
+    value: params.maxTokens,
+    maxTokensExplicit: params.maxTokensExplicit,
     model,
-  );
+    apiBase,
+    protocol: providerProtocol,
+    authMode,
+    profileOverride: params.profileOverride,
+  });
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3369,6 +3824,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
     effectiveMaxTokens,
     stream: false,
     contextCache: params.contextCache,
+    profileOverride: params.profileOverride,
   });
   const res = await postWithReasoningFallback({
     url,
@@ -3403,6 +3859,7 @@ export async function callLLMStream(
   onReasoning?: (event: ReasoningEvent) => void,
   onUsage?: (usage: UsageStats) => void,
 ): Promise<string> {
+  await preflightRequestModelCapabilities(params);
   const prepared = prepareChatRequest(params);
   const {
     apiBase,
@@ -3413,9 +3870,13 @@ export async function callLLMStream(
     inputCap,
     providerProtocol,
   } = prepared;
+  if (authMode === "codex_auth") {
+    assertCodexDirectModelAvailable(model);
+  }
   if (
     providerProtocol === "anthropic_messages" ||
-    providerProtocol === "gemini_native"
+    providerProtocol === "gemini_native" ||
+    providerProtocol === "ollama_native"
   ) {
     return callNativeProtocol({
       protocol: providerProtocol,
@@ -3423,8 +3884,17 @@ export async function callLLMStream(
       apiKey,
       model,
       messages,
-      effectiveMaxTokens: normalizeMaxTokensForModel(params.maxTokens, model),
-      effectiveTemperature: normalizeTemperature(params.temperature),
+      effectiveMaxTokens: normalizeMaxTokensForRequest({
+        value: params.maxTokens,
+        maxTokensExplicit: params.maxTokensExplicit,
+        model,
+        apiBase,
+        protocol: providerProtocol,
+        authMode,
+        profileOverride: params.profileOverride,
+      }),
+      maxTokensExplicit: params.maxTokensExplicit === true,
+      rawTemperature: params.temperature,
       signal: params.signal,
       onDelta,
       onReasoning,
@@ -3432,6 +3902,8 @@ export async function callLLMStream(
       attachments: params.attachments,
       reasoning: params.reasoning,
       contextCache: params.contextCache,
+      numCtx: resolveOllamaNumCtx(providerProtocol, inputCap.limitTokens),
+      profileOverride: params.profileOverride,
     });
   }
   assertCodexAppServerUsesNativeRuntime(authMode);
@@ -3475,10 +3947,15 @@ export async function callLLMStream(
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
+  const effectiveMaxTokens = normalizeMaxTokensForRequest({
+    value: params.maxTokens,
+    maxTokensExplicit: params.maxTokensExplicit,
     model,
-  );
+    apiBase,
+    protocol: providerProtocol,
+    authMode,
+    profileOverride: params.profileOverride,
+  });
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3504,11 +3981,12 @@ export async function callLLMStream(
     effectiveMaxTokens,
     stream: true,
     contextCache: params.contextCache,
+    profileOverride: params.profileOverride,
   });
   const res = await postWithReasoningFallback({
     url,
     auth,
-    headers: requestHeaders,
+    ...(authMode === "codex_auth" ? {} : { headers: requestHeaders }),
     modelName: model,
     initialReasoning: params.reasoning,
     buildPayload,
@@ -3645,7 +4123,11 @@ export async function parseStreamResponse(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
-  const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
+  const thoughtState: ThoughtTagState = {
+    inThought: false,
+    buffer: "",
+    sawAnswerText: false,
+  };
 
   try {
     while (true) {
@@ -3731,12 +4213,13 @@ export async function parseStreamResponse(
       }
     }
   } finally {
-    if (thoughtState.buffer) {
-      if (thoughtState.inThought && onReasoning) {
-        onReasoning({ details: thoughtState.buffer });
-      } else {
-        fullText += thoughtState.buffer;
-        onDelta(thoughtState.buffer);
+    const tail = resolveUnterminatedThought(thoughtState);
+    if (tail.text) {
+      if (tail.asAnswer) {
+        fullText += tail.text;
+        onDelta(tail.text);
+      } else if (onReasoning) {
+        onReasoning({ details: tail.text });
       }
     }
     reader.releaseLock();
@@ -3755,7 +4238,11 @@ async function parseResponsesStream(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
-  const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
+  const thoughtState: ThoughtTagState = {
+    inThought: false,
+    buffer: "",
+    sawAnswerText: false,
+  };
   let sawAnswerDelta = false;
   let sawAnswerFinal = false;
   let sawSummaryDelta = false;
@@ -4211,12 +4698,13 @@ async function parseResponsesStream(
       }
     }
   } finally {
-    if (thoughtState.buffer) {
-      if (thoughtState.inThought && onReasoning) {
-        onReasoning({ details: thoughtState.buffer });
-      } else {
-        fullText += thoughtState.buffer;
-        onDelta(thoughtState.buffer);
+    const tail = resolveUnterminatedThought(thoughtState);
+    if (tail.text) {
+      if (tail.asAnswer) {
+        fullText += tail.text;
+        onDelta(tail.text);
+      } else if (onReasoning) {
+        onReasoning({ details: tail.text });
       }
     }
     reader.releaseLock();

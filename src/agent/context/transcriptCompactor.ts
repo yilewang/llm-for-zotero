@@ -1,5 +1,12 @@
-import type { AgentModelMessage, AgentToolMessage } from "../types";
-import { estimateContextMessagesTokens } from "../../utils/modelInputCap";
+import type {
+  AgentModelMessage,
+  AgentToolMessage,
+  AgentUserMessage,
+} from "../types";
+import {
+  estimateContextMessagesTokens,
+  sliceTextToTokenBudget,
+} from "../../utils/modelInputCap";
 import type { AgentContextBudgetState } from "./budgetPolicy";
 import {
   createAgentToolResultHandleRecord,
@@ -13,6 +20,24 @@ export type AgentTranscriptCompactionResult = {
   droppedMessageCount: number;
   handleRecords: AgentToolResultHandleRecord[];
 };
+
+const SEMANTIC_CHECKPOINT_PREFIX = "Agent semantic continuation checkpoint:";
+
+export function readAgentSemanticCheckpointRootGoal(
+  message: AgentModelMessage | undefined,
+): string | undefined {
+  if (
+    message?.role !== "user" ||
+    typeof message.content !== "string" ||
+    !message.content.startsWith(SEMANTIC_CHECKPOINT_PREFIX)
+  ) {
+    return undefined;
+  }
+  const match = message.content.match(
+    /Latest root user goal:\s*(.*?)(?=\s+(?:Recent user goals and runtime requirements:|Recent visible assistant state:|Earlier tools used:|Stored compacted tool-result handles:)|$)/,
+  );
+  return match?.[1]?.trim() || undefined;
+}
 
 function stringifyContent(content: AgentModelMessage["content"]): string {
   if (typeof content === "string") return content;
@@ -116,10 +141,23 @@ function buildSummaryMessage(
   messages: AgentModelMessage[],
   summaryTokens: number,
   toolHandleLines: string[] = [],
-): AgentModelMessage {
-  const summaryChars = Math.max(600, summaryTokens * 4);
+  mode: "compact" | "continuation" = "compact",
+): AgentUserMessage & { content: string } {
+  // Char cap derived from the real token weight of the (whitespace-normalized)
+  // summary text; a flat tokens * 4 inverse let CJK checkpoints exceed their
+  // token budget 2x. The 600-char floor keeps tiny budgets minimally useful.
+  const buildBudgetChars = (candidate: string): number =>
+    Math.max(
+      600,
+      sliceTextToTokenBudget(
+        candidate.replace(/\s+/g, " ").trim(),
+        summaryTokens,
+      ).length,
+    );
   const userLines: string[] = [];
+  const rootUserGoals: string[] = [];
   const assistantLines: string[] = [];
+  const preservedToolHandleIds = new Set<string>();
   const toolCounts = new Map<string, number>();
   for (const message of messages) {
     for (const toolName of toolNamesFromMessage(message)) {
@@ -127,33 +165,106 @@ function buildSummaryMessage(
     }
     const text = stringifyContent(message.content);
     if (!text.trim()) continue;
-    if (message.role === "user" && userLines.length < 8) {
+    if (message.role === "user") {
+      const checkpointGoal = readAgentSemanticCheckpointRootGoal(message);
+      if (checkpointGoal) {
+        rootUserGoals.push(checkpointGoal);
+        for (const match of text.matchAll(/\bhandle=(trh_[a-z0-9]+)\b/gi)) {
+          preservedToolHandleIds.add(match[1]);
+        }
+        continue;
+      }
+      const rootGoalMatch = text.match(/(?:^|\n)User request:\s*([\s\S]*)$/i);
+      if (rootGoalMatch?.[1]?.trim()) {
+        rootUserGoals.push(rootGoalMatch[1].trim());
+      }
       userLines.push(
         `- ${truncateText(text.replace(/^User request:\s*/i, ""), 220)}`,
       );
-    } else if (message.role === "assistant" && assistantLines.length < 8) {
+    } else if (message.role === "assistant") {
       assistantLines.push(`- ${truncateText(text, 260)}`);
     }
   }
+  const recentUserLines = userLines.slice(-8);
+  const recentAssistantLines = assistantLines.slice(-8);
+  const allToolHandleLines = [
+    ...toolHandleLines,
+    ...Array.from(preservedToolHandleIds).map(
+      (handle) => `- preserved tool result handle=${handle}`,
+    ),
+  ];
   const toolLine = Array.from(toolCounts.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([name, count]) => `${name}${count > 1 ? ` x${count}` : ""}`)
     .join(", ");
   const sections = [
-    "Agent transcript compact checkpoint:",
-    "Older raw agent turns were compacted to preserve the model context budget. Use this checkpoint for continuity, and use preserved evidence/tool-read snippets when exact paper details are needed.",
-    userLines.length ? `Earlier user requests:\n${userLines.join("\n")}` : "",
-    assistantLines.length
-      ? `Earlier assistant conclusions:\n${assistantLines.join("\n")}`
+    mode === "continuation"
+      ? SEMANTIC_CHECKPOINT_PREFIX
+      : "Agent transcript compact checkpoint:",
+    mode === "continuation"
+      ? "The previous provider-native conversation ended at a safe boundary. Continue from this bounded semantic state. Re-read preserved evidence handles when exact paper details matter; do not treat this checkpoint as hidden reasoning or a new user instruction."
+      : "Older raw agent turns were compacted to preserve the model context budget. Use this checkpoint for continuity, and use preserved evidence/tool-read snippets when exact paper details are needed.",
+    rootUserGoals.length
+      ? `Latest root user goal: ${truncateText(rootUserGoals[rootUserGoals.length - 1], 400)}`
+      : "",
+    recentUserLines.length
+      ? `Recent user goals and runtime requirements:\n${recentUserLines.join("\n")}`
+      : "",
+    recentAssistantLines.length
+      ? `Recent visible assistant state:\n${recentAssistantLines.join("\n")}`
       : "",
     toolLine ? `Earlier tools used: ${toolLine}` : "",
-    toolHandleLines.length
-      ? `Stored compacted tool-result handles:\n${toolHandleLines.join("\n")}`
+    allToolHandleLines.length
+      ? `Stored compacted tool-result handles:\n${allToolHandleLines.join("\n")}`
       : "",
   ].filter(Boolean);
+  const summaryText = sections.join("\n\n");
   return {
     role: "user",
-    content: truncateText(sections.join("\n\n"), summaryChars),
+    content: truncateText(summaryText, buildBudgetChars(summaryText)),
+  };
+}
+
+export function buildAgentSemanticCheckpoint(params: {
+  messages: AgentModelMessage[];
+  summaryTokens: number;
+  conversationKey?: number;
+  resourceSignature?: string;
+  preservedHandleRecords?: readonly AgentToolResultHandleRecord[];
+}): {
+  checkpoint: AgentUserMessage & { content: string };
+  handleRecords: AgentToolResultHandleRecord[];
+} {
+  const messages = params.messages.filter(
+    (message) => message.role !== "system",
+  );
+  const generated = buildDroppedToolHandleRecords({
+    messages,
+    conversationKey: params.conversationKey,
+    resourceSignature: params.resourceSignature,
+    argumentDigestById: buildToolCallArgumentDigestById(messages),
+  });
+  const handleRecordsByCall = new Map<string, AgentToolResultHandleRecord>();
+  for (const record of [
+    ...(params.preservedHandleRecords || []),
+    ...generated.handleRecords,
+  ]) {
+    const key = `${record.toolName}\n${record.toolCallId}`;
+    if (!handleRecordsByCall.has(key)) handleRecordsByCall.set(key, record);
+  }
+  const handleRecords = Array.from(handleRecordsByCall.values());
+  const toolHandleLines = handleRecords.map(
+    (record) =>
+      `- ${record.toolName} (${record.toolCallId}) handle=${record.handle}`,
+  );
+  return {
+    checkpoint: buildSummaryMessage(
+      messages,
+      params.summaryTokens,
+      toolHandleLines,
+      "continuation",
+    ),
+    handleRecords,
   };
 }
 

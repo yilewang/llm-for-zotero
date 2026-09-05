@@ -14,6 +14,19 @@ import {
 const MINUTE_MS = 60 * 1000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const LONG_PDF_FILE_NAME =
+  "Incorporating DeepLabv3 and object-based image analysis for semantic segmentation of very high resolution remote sensing images-dual.pdf";
+const LONG_PDF_PATH = `/tmp/${LONG_PDF_FILE_NAME}`;
+const LONG_COMMON_PREFIX = "shared-prefix-".repeat(8);
+const LONG_PDF_PATH_A = `/tmp/${LONG_COMMON_PREFIX}first.pdf`;
+const LONG_PDF_PATH_B = `/tmp/${LONG_COMMON_PREFIX}second.pdf`;
+const LONG_UNICODE_PDF_PATH = `/tmp/${"论文😀".repeat(40)}.pdf`;
+const EXACT_LIMIT_PDF_FILE_NAME = `${"a".repeat(76)}.pdf`;
+const EXACT_LIMIT_PDF_PATH = `/tmp/${EXACT_LIMIT_PDF_FILE_NAME}`;
+const WINDOWS_LEGACY_MAX_PATH_CHARS = 260;
+const MINERU_WINDOWS_OUTPUT_ROOT =
+  "C:\\Users\\researcher\\Documents\\local-ai-services\\mineru-runtime\\outputs";
+const MINERU_TASK_ID = "19e9a6ce-d8ac-48c9-8a4f-8b9e24997d49";
 
 function bytes(value: string): Uint8Array {
   return encoder.encode(value);
@@ -78,6 +91,43 @@ async function readMultipartTextField(
   if (valueStart < 0) return "";
   const valueEnd = text.indexOf("\r\n", valueStart + 4);
   return text.slice(valueStart + 4, valueEnd < 0 ? undefined : valueEnd);
+}
+
+async function readMultipartFileName(
+  body: BodyInit | null | undefined,
+  name: string,
+): Promise<string> {
+  if (!body) return "";
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    const value = body.get(name) as { name?: unknown } | null;
+    return typeof value?.name === "string" ? value.name : "";
+  }
+  const text =
+    typeof body === "string"
+      ? body
+      : body instanceof ArrayBuffer
+        ? decoder.decode(new Uint8Array(body))
+        : ArrayBuffer.isView(body)
+          ? decoder.decode(
+              new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
+            )
+          : await new Response(body).text();
+  const nameMarker = `name="${name}"`;
+  const fieldIndex = text.indexOf(nameMarker);
+  if (fieldIndex < 0) return "";
+  const headerEnd = text.indexOf("\r\n\r\n", fieldIndex);
+  if (headerEnd < 0) return "";
+  const header = text.slice(fieldIndex, headerEnd);
+  return /filename="([^"]*)"/.exec(header)?.[1] || "";
+}
+
+function buildMineruWindowsOutputPath(
+  outputRoot: string,
+  taskId: string,
+  uploadFileName: string,
+): string {
+  const stem = uploadFileName.replace(/\.pdf$/i, "");
+  return `${outputRoot}\\${taskId}\\${stem}\\ocr\\${stem}.md`;
 }
 
 describe("mineruClient", function () {
@@ -248,6 +298,11 @@ describe("mineruClient", function () {
       setupLocalMineruClientTest({
         "/tmp/paper.pdf": "%PDF-1.7",
         "/tmp/paper-2.pdf": "%PDF-1.7",
+        [LONG_PDF_PATH]: "%PDF-1.7",
+        [LONG_PDF_PATH_A]: "%PDF-1.7",
+        [LONG_PDF_PATH_B]: "%PDF-1.7",
+        [LONG_UNICODE_PDF_PATH]: "%PDF-1.7",
+        [EXACT_LIMIT_PDF_PATH]: "%PDF-1.7",
       });
     });
 
@@ -362,6 +417,213 @@ describe("mineruClient", function () {
         await readMultipartTextField(submittedBody, "parse_method"),
         "ocr",
       );
+    });
+
+    it("uses a hash-only multipart filename for a short ASCII name", async function () {
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed short filename"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      const result = await parsePdfWithMineruLocal(
+        "/tmp/paper.pdf",
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      assert.equal(result?.mdContent, "# Parsed short filename");
+      const fileName = await readMultipartFileName(submittedBody, "files");
+      assert.equal(encoder.encode(fileName).byteLength, 16);
+      assert.match(fileName, /^[a-f0-9]{12}\.pdf$/);
+      assert.notEqual(fileName, "paper.pdf");
+    });
+
+    it("hashes a filename at the previous byte limit", async function () {
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed boundary filename"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      await parsePdfWithMineruLocal(
+        EXACT_LIMIT_PDF_PATH,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const fileName = await readMultipartFileName(submittedBody, "files");
+      assert.equal(encoder.encode(fileName).byteLength, 16);
+      assert.match(fileName, /^[a-f0-9]{12}\.pdf$/);
+      assert.notEqual(fileName, EXACT_LIMIT_PDF_FILE_NAME);
+    });
+
+    it("shortens long multipart filenames deterministically", async function () {
+      const submittedBodies: Array<BodyInit | null | undefined> = [];
+      globalThis.fetch = (async (_url, init) => {
+        submittedBodies.push(init?.body);
+        return new Response(createMineruZip("# Parsed long filename"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      await parsePdfWithMineruLocal(
+        LONG_PDF_PATH,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+      await parsePdfWithMineruLocal(
+        LONG_PDF_PATH,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const firstName = await readMultipartFileName(
+        submittedBodies[0],
+        "files",
+      );
+      const secondName = await readMultipartFileName(
+        submittedBodies[1],
+        "files",
+      );
+      assert.equal(firstName, secondName);
+      assert.equal(encoder.encode(firstName).byteLength, 16);
+      assert.match(firstName, /^[a-f0-9]{12}\.pdf$/);
+      assert.notEqual(firstName, LONG_PDF_FILE_NAME);
+    });
+
+    it("hashes the unsafe boundary before building MinerU output paths", async function () {
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed nested output path"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      await parsePdfWithMineruLocal(
+        EXACT_LIMIT_PDF_PATH,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const unsafeBoundaryPath = buildMineruWindowsOutputPath(
+        MINERU_WINDOWS_OUTPUT_ROOT,
+        MINERU_TASK_ID,
+        EXACT_LIMIT_PDF_FILE_NAME,
+      );
+      const submittedName = await readMultipartFileName(submittedBody, "files");
+      const fixedPath = buildMineruWindowsOutputPath(
+        MINERU_WINDOWS_OUTPUT_ROOT,
+        MINERU_TASK_ID,
+        submittedName,
+      );
+
+      assert.isAtLeast(
+        unsafeBoundaryPath.length,
+        WINDOWS_LEGACY_MAX_PATH_CHARS,
+      );
+      assert.match(submittedName, /^[a-f0-9]{12}\.pdf$/);
+      assert.notEqual(submittedName, EXACT_LIMIT_PDF_FILE_NAME);
+      assert.isBelow(fixedPath.length, WINDOWS_LEGACY_MAX_PATH_CHARS);
+    });
+
+    it("keeps distinct hashes for long names with a shared prefix", async function () {
+      const submittedBodies: Array<BodyInit | null | undefined> = [];
+      globalThis.fetch = (async (_url, init) => {
+        submittedBodies.push(init?.body);
+        return new Response(createMineruZip("# Parsed shared prefix"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      await parsePdfWithMineruLocal(
+        LONG_PDF_PATH_A,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+      await parsePdfWithMineruLocal(
+        LONG_PDF_PATH_B,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const firstName = await readMultipartFileName(
+        submittedBodies[0],
+        "files",
+      );
+      const secondName = await readMultipartFileName(
+        submittedBodies[1],
+        "files",
+      );
+      assert.notEqual(firstName, secondName);
+      assert.match(firstName, /^[a-f0-9]{12}\.pdf$/);
+      assert.match(secondName, /^[a-f0-9]{12}\.pdf$/);
+    });
+
+    it("uses a hash-only multipart filename for long Unicode names", async function () {
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed Unicode filename"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      await parsePdfWithMineruLocal(
+        LONG_UNICODE_PDF_PATH,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const fileName = await readMultipartFileName(submittedBody, "files");
+      assert.equal(encoder.encode(fileName).byteLength, 16);
+      assert.match(fileName, /^[a-f0-9]{12}\.pdf$/);
+    });
+
+    it("reports an unavailable SHA-256 implementation for long names", async function () {
+      const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "crypto",
+      );
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: undefined,
+      });
+      let fetchCalled = false;
+      const progress: string[] = [];
+      globalThis.fetch = (async () => {
+        fetchCalled = true;
+        return new Response(createMineruZip("# Unexpected parse"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      try {
+        const result = await parsePdfWithMineruLocal(
+          LONG_PDF_PATH,
+          "http://127.0.0.1:58659",
+          "pipeline",
+          (stage) => progress.push(stage),
+        );
+
+        assert.isNull(result);
+        assert.isFalse(fetchCalled);
+        assert.include(
+          progress[progress.length - 1],
+          "SHA-256 is unavailable for MinerU filename normalization",
+        );
+      } finally {
+        if (originalCryptoDescriptor) {
+          Object.defineProperty(globalThis, "crypto", originalCryptoDescriptor);
+        } else {
+          delete (globalThis as { crypto?: Crypto }).crypto;
+        }
+      }
     });
 
     it("serializes concurrent local file_parse submissions in this process", async function () {

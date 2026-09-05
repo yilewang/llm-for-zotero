@@ -7,6 +7,7 @@ import {
   resolveSkillRequestContext,
   type SkillRoutingRequest,
 } from "./contextEligibility";
+import { inferExplicitNoteIntent, WRITE_NOTE_SKILL_ID } from "./noteIntent";
 import { matchesSkill, type AgentSkill } from "./skillLoader";
 
 const SIMPLE_PAPER_QA_SKILL_ID = "simple-paper-qa";
@@ -259,8 +260,8 @@ function hasPaperTarget(request: SkillRoutingRequest): boolean {
 
 function hasLibraryScopeTarget(request: SkillRoutingRequest): boolean {
   return Boolean(
-    request.selectedCollectionContexts?.length ||
-    request.selectedTagContexts?.length ||
+    request.turnPaperScope.collections.length ||
+    request.turnPaperScope.tags.length ||
     LIBRARY_SCOPE_TARGET_PATTERN.test(request.userText || ""),
   );
 }
@@ -277,8 +278,17 @@ function computeContextForcedSkillIds(
       ? new RegExp(`\\b${escaped}\\b`, "i")
       : new RegExp(escaped, "i");
     if (pattern.test(request.userText)) {
-      forced.add("write-note");
+      forced.add(WRITE_NOTE_SKILL_ID);
     }
+  }
+  // Deterministic multilingual note-intent force: note-taking requests must
+  // activate write-note (where user customizations live) in every language,
+  // even when the LLM intent classifier errors or misses. Only the strong
+  // text-only signal forces here — this path also runs on turns where the
+  // classifier said "no skill", so inferNoteIntent's weak open-note branches
+  // (a bare "add"/"update" with a note open) would over-trigger.
+  if (inferExplicitNoteIntent(request.userText)) {
+    forced.add(WRITE_NOTE_SKILL_ID);
   }
   if (
     SIMPLE_PAPER_QA_INTENT_PATTERN.test(request.userText || "") &&
@@ -288,9 +298,10 @@ function computeContextForcedSkillIds(
     forced.add(SIMPLE_PAPER_QA_SKILL_ID);
   }
   if (
-    (request.selectedCollectionContexts?.length ||
-      request.selectedTagContexts?.length) &&
-    COLLECTION_ANALYSIS_INTENT_PATTERN.test(request.userText || "")
+    (request.turnPaperScope.collections.length ||
+      request.turnPaperScope.tags.length) &&
+    (COLLECTION_ANALYSIS_INTENT_PATTERN.test(request.userText || "") ||
+      request.classifiedIntent?.retrievalIntent === "summarize")
   ) {
     forced.add(LIBRARY_ANALYSIS_SKILL_ID);
   }

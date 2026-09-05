@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import { BUILTIN_SKILL_FILES } from "../src/agent/skills";
 import { patchSkillFrontmatter } from "../src/agent/skills/frontmatterPatcher";
-import { hashSkillForUpgrade } from "../src/agent/skills/managedBlock";
+import {
+  hashSkillForUpgrade,
+  spliceManagedBlock,
+} from "../src/agent/skills/managedBlock";
 import { parseSkill } from "../src/agent/skills/skillLoader";
 import {
   getCanonicalSkillFilePath,
@@ -333,5 +336,50 @@ describe("user skill bootstrap upgrades", function () {
     assert.include(canonicalCompare, "Use my customized comparison workflow.");
     assert.include(canonicalCompare, "contexts: paper-set,library-corpus");
     assert.include(canonicalCompare, "name: compare-papers");
+  });
+
+  it("refreshes the write-note managed block while preserving appended customizations", async function () {
+    const baseDir = "/tmp/llm-for-zotero-bootstrap-write-note-test";
+    installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
+    const shipped = BUILTIN_SKILL_FILES["write-note.md"];
+    // Simulate a user on an older shipped managed block who appended a
+    // customization section after MANAGED-END (the supported flow).
+    const oldManagedOnDisk = spliceManagedBlock(
+      shipped,
+      "\nOLD MANAGED CONTENT — previous shipped version.\n",
+    );
+    assert.isString(oldManagedOnDisk);
+    const customization =
+      "\n\n## Your customizations\n\nPath pattern: `{papertitle}/{papertitle}.md`\n";
+    const onDisk = (oldManagedOnDisk as string) + customization;
+    const onDiskSkill = parseSkill(onDisk);
+    const writeNotePath = getCanonicalSkillFilePath("write-note");
+    const files: Record<string, string> = {
+      [writeNotePath]: onDisk,
+    };
+    const prefs = new Map<string, string>([
+      [
+        BODY_HASH_PREF_KEY,
+        JSON.stringify({
+          "write-note.md": hashSkillForUpgrade(onDisk, onDiskSkill.instruction),
+        }),
+      ],
+    ]);
+
+    installMockSkillEnvironment(baseDir, files, prefs);
+
+    await initUserSkills();
+
+    const canonicalWriteNote = files[writeNotePath];
+    assert.notInclude(canonicalWriteNote, "OLD MANAGED CONTENT");
+    assert.include(canonicalWriteNote, "USER CUSTOMIZATIONS COME FIRST.");
+    assert.include(canonicalWriteNote, "## Your customizations");
+    assert.include(
+      canonicalWriteNote,
+      "Path pattern: `{papertitle}/{papertitle}.md`",
+    );
+    // Tracks the shipped write-note version; bumped to 9 when the skill's
+    // "folder means filesystem" guidance was corrected for issue #374.
+    assert.equal(parseSkill(canonicalWriteNote).version, 9);
   });
 });

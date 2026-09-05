@@ -21,6 +21,11 @@ describe("workflowTestHooks", function () {
       combinedContext: "Reading receipt:\n- Planned papers: 2",
       strategy: "general-retrieval",
       systemMessages: ["Reading receipt:\n- Planned papers: 2"],
+      inputCap: {
+        limitTokens: 1_000_000,
+        limitSource: "advanced",
+        estimatedAfterTokens: 12_000,
+      },
       inputCapEffects: {
         documentContextTrimmed: false,
         documentContextDropped: false,

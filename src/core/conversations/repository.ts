@@ -1,3 +1,4 @@
+import { pendingDeletionStore } from "./pendingDeletionStore";
 import {
   createClaudeGlobalConversation,
   createClaudePaperConversation,
@@ -40,7 +41,9 @@ import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getRegisteredConversationScope,
+  getCatalogInstanceIDForScope,
   repairRegisteredConversationScope,
+  syncCatalogInstanceID,
 } from "../../shared/conversationRegistry";
 import type {
   ClaudeConversationSummary,
@@ -76,15 +79,31 @@ import {
   type StoredChatMessage,
 } from "../../utils/chatStore";
 import { codexAppServerForkService } from "../../codexAppServer/forkService";
+import { getCodexProfileSignature } from "../../codexAppServer/constants";
+import { getConversationKeyLedgerEntry } from "../../shared/conversationKeyLedger";
+import { releaseConversationScopeToken } from "../../agent/mcp/server";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../../shared/conversationWriteFence";
 import {
   deleteConversationForkLink,
   recordConversationForkLink,
   type ConversationForkLink,
 } from "../../shared/conversationForkLinks";
+import {
+  enqueueConversationCleanupJobInTransaction,
+  initConversationCleanupJobs,
+  type ConversationCleanupProviderScope,
+} from "./conversationCleanupJobs";
 
 export type ConversationCatalogKind = "global" | "paper";
 
 export type ConversationCatalogEntry = {
+  /** Cryptographically random immutable identity for this catalog instance. */
+  instanceID?: string;
   conversationID: string;
   conversationKey: number;
   system: ConversationSystem;
@@ -104,6 +123,27 @@ export type ConversationCatalogEntry = {
   cwd?: string;
   model?: string;
   effort?: string;
+  /** Ephemeral webchat session row: hidden from history, swept at startup. */
+  webchatSession?: boolean;
+};
+
+export type ConversationCatalogIdentityWitness = {
+  instanceID: string;
+  catalogCreatedAt: number;
+  conversationID: string;
+};
+
+/** Immutable, scope-bound identity used by destructive conversation flows. */
+export type ConversationInstanceRef = {
+  instanceId: string;
+  conversationID: string;
+  conversationKey: number;
+  catalogCreatedAt: number;
+  system: ConversationSystem;
+  kind: ConversationCatalogKind;
+  profileSignature: string;
+  libraryID: number;
+  paperItemID?: number;
 };
 
 export type ConversationCatalogScope = {
@@ -119,9 +159,31 @@ type ConversationCatalogListParams = ConversationCatalogScope & {
 };
 
 type ConversationCatalogMutationTarget = {
+  instanceID?: string;
+  conversationID?: string;
   system: ConversationSystem;
   conversationKey: number;
   kind?: ConversationCatalogKind;
+  providerSessionId?: string | null;
+  libraryID?: number;
+  paperItemID?: number;
+  providerScope?: ConversationCleanupProviderScope;
+  /**
+   * Provider sessions captured by pending turn intents that are being folded
+   * into this whole-conversation deletion.  They are inserted into the
+   * cleanup queue in the same transaction as the local delete, so purging the
+   * turn intents can never discard the last exact provider witness.
+   */
+  additionalProviderCleanup?: Array<{
+    operation: "codex_archive" | "claude_invalidate";
+    system: "codex" | "claude_code";
+    providerSessionId: string;
+    providerScope?: ConversationCleanupProviderScope;
+  }>;
+  onBeforeCommit?: () => Promise<void>;
+  expectedGeneration?: number;
+  /** DML is already enclosed by the caller's owning transaction. */
+  inTransaction?: boolean;
 };
 
 type ConversationMessageTarget = {
@@ -132,6 +194,11 @@ type ConversationMessageTarget = {
 type DeleteTurnMessagesParams = ConversationMessageTarget & {
   userTimestamp: number;
   assistantTimestamp: number;
+  /** Immutable row IDs captured when the turn was selected. */
+  userMessageID?: number;
+  assistantMessageID?: number;
+  /** Runs inside the provider's message-delete transaction before commit. */
+  onBeforeCommit?: () => Promise<void>;
 };
 
 type EnsureCatalogEntryParams = ConversationCatalogScope & {
@@ -139,7 +206,20 @@ type EnsureCatalogEntryParams = ConversationCatalogScope & {
   title?: string;
 };
 
-type CreateCatalogEntryParams = ConversationCatalogScope;
+type CreateCatalogEntryParams = ConversationCatalogScope & {
+  /**
+   * Upstream only: create the row as an ephemeral webchat session. Flagged
+   * rows are hidden from catalog listings and swept at startup unless a
+   * persisted message adopts them into a normal conversation.
+   */
+  webchatSession?: boolean;
+  /**
+   * Provisioning-only witness for preserving an existing canonical default
+   * key on its first issuance. Ordinary creation must leave this unset so
+   * the permanent allocator issues a fresh key.
+   */
+  preferredConversationKey?: number;
+};
 
 type ForkConversationParams = ConversationCatalogScope & {
   sourceConversationKey: number;
@@ -182,6 +262,17 @@ function normalizeUserTurnCount(value: unknown): number {
   return Math.floor(parsed);
 }
 
+async function hydrateCatalogEntryInstanceID(
+  entry: ConversationCatalogEntry | null,
+): Promise<ConversationCatalogEntry | null> {
+  if (!entry || entry.instanceID) return entry;
+  const ledger = await getConversationKeyLedgerEntry(entry.conversationKey);
+  if (ledger?.instanceID) return { ...entry, instanceID: ledger.instanceID };
+  const scope = await getRegisteredConversationScope(entry.conversationKey);
+  if (scope?.instanceID) return { ...entry, instanceID: scope.instanceID };
+  return entry;
+}
+
 function isUpstreamGlobalConversationKey(conversationKey: number): boolean {
   return isConversationKeyForKind("upstream", "global", conversationKey);
 }
@@ -216,6 +307,7 @@ function fromUpstreamGlobalSummary(
     lastActivityAt,
     title: normalizeTitle(summary.title),
     userTurnCount: normalizeUserTurnCount(summary.userTurnCount),
+    ...(summary.webchatSession === true ? { webchatSession: true } : {}),
   };
 }
 
@@ -251,6 +343,7 @@ function fromUpstreamPaperSummary(
     lastActivityAt,
     title: normalizeTitle(summary.title),
     userTurnCount: normalizeUserTurnCount(summary.userTurnCount),
+    ...(summary.webchatSession === true ? { webchatSession: true } : {}),
   };
 }
 
@@ -265,6 +358,7 @@ function fromClaudeSummary(
   if (!conversationKey || !libraryID || !createdAt) return null;
   if (summary.kind === "paper" && !paperItemID) return null;
   return {
+    instanceID: summary.instanceID,
     conversationID: summary.conversationID,
     conversationKey,
     system: "claude_code",
@@ -297,6 +391,7 @@ function fromCodexSummary(
   if (!conversationKey || !libraryID || !createdAt) return null;
   if (summary.kind === "paper" && !paperItemID) return null;
   return {
+    instanceID: summary.instanceID,
     conversationID: summary.conversationID,
     conversationKey,
     system: "codex",
@@ -400,6 +495,30 @@ function catalogEntryMatchesScope(
   return true;
 }
 
+async function attachCatalogInstanceIdentity(
+  entry: ConversationCatalogEntry | null,
+): Promise<ConversationCatalogEntry | null> {
+  if (!entry) return null;
+  try {
+    const registered = await getRegisteredConversationScope(
+      entry.conversationKey,
+    );
+    if (
+      registered?.valid &&
+      registered.instanceID &&
+      registered.system === entry.system &&
+      registered.kind === entry.kind &&
+      registered.libraryID === entry.libraryID &&
+      (registered.paperItemID || null) === (entry.paperItemID || null)
+    ) {
+      return { ...entry, instanceID: registered.instanceID };
+    }
+  } catch {
+    // Identity enrichment is best-effort for non-destructive catalog reads.
+  }
+  return entry;
+}
+
 async function touchRuntimeEmptyCatalogActivity(
   entry: ConversationCatalogEntry,
   timestamp: number,
@@ -454,32 +573,96 @@ export const conversationRepository = {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return null;
     if (target.system === "claude_code") {
-      return fromClaudeSummary(
-        await getClaudeConversationSummary(conversationKey),
+      return attachCatalogInstanceIdentity(
+        fromClaudeSummary(await getClaudeConversationSummary(conversationKey)),
       );
     }
     if (target.system === "codex") {
-      return fromCodexSummary(
-        await getCodexConversationSummary(conversationKey),
+      return attachCatalogInstanceIdentity(
+        fromCodexSummary(await getCodexConversationSummary(conversationKey)),
       );
     }
     if (
       target.kind === "global" ||
       isUpstreamGlobalConversationKey(conversationKey)
     ) {
-      return fromUpstreamGlobalSummary(
-        await getGlobalConversation(conversationKey),
+      return attachCatalogInstanceIdentity(
+        fromUpstreamGlobalSummary(await getGlobalConversation(conversationKey)),
       );
     }
     if (
       target.kind === "paper" ||
       isUpstreamPaperConversationKey(conversationKey)
     ) {
-      return fromUpstreamPaperSummary(
-        await getPaperConversation(conversationKey),
+      return attachCatalogInstanceIdentity(
+        fromUpstreamPaperSummary(await getPaperConversation(conversationKey)),
       );
     }
     return null;
+  },
+
+  // The permanent key ledger and immutable instance ID identify the row. The
+  // catalog-created timestamp remains a migration witness for legacy pending
+  // intents. Returns null when no witness can be read — callers must treat that
+  // as "unverifiable", never as "proceed".
+  async getCatalogIdentityWitness(
+    target: ConversationCatalogMutationTarget,
+  ): Promise<ConversationCatalogIdentityWitness | null> {
+    try {
+      const entry = await conversationRepository.getCatalogEntry(target);
+      if (!entry) return null;
+      const catalogCreatedAt = normalizeTimestamp(entry.createdAt);
+      if (!catalogCreatedAt) return null;
+      const registered = await getRegisteredConversationScope(
+        entry.conversationKey,
+      );
+      if (
+        !registered ||
+        !registered.valid ||
+        registered.system !== entry.system ||
+        registered.kind !== entry.kind ||
+        registered.libraryID !== entry.libraryID ||
+        (registered.paperItemID || null) !== (entry.paperItemID || null) ||
+        !registered.instanceID
+      ) {
+        return null;
+      }
+      let catalogInstanceID = await getCatalogInstanceIDForScope({
+        conversationKey: entry.conversationKey,
+        system: entry.system,
+        kind: entry.kind,
+      });
+      if (!catalogInstanceID) {
+        // Legacy rows may have the new column but no value yet.  The registry
+        // witness is already scope-validated, so backfill this one row before
+        // allowing a destructive intent to be persisted.  If the write cannot
+        // be observed, fail closed and quarantine rather than falling back to
+        // the numeric key or deterministic conversation ID.
+        await syncCatalogInstanceID({
+          instanceID: registered.instanceID,
+          conversationKey: entry.conversationKey,
+          system: entry.system,
+          kind: entry.kind,
+        });
+        catalogInstanceID = await getCatalogInstanceIDForScope({
+          conversationKey: entry.conversationKey,
+          system: entry.system,
+          kind: entry.kind,
+        });
+      }
+      if (catalogInstanceID !== registered.instanceID) return null;
+      return {
+        instanceID: registered.instanceID,
+        catalogCreatedAt,
+        conversationID:
+          typeof entry.conversationID === "string"
+            ? entry.conversationID.trim()
+            : "",
+      };
+    } catch {
+      // A witness that cannot be read is not a witness.
+      return null;
+    }
   },
 
   async loadMessages(
@@ -507,6 +690,9 @@ export const conversationRepository = {
         conversationKey,
         userTimestamp,
         assistantTimestamp,
+        target.userMessageID,
+        target.assistantMessageID,
+        target.onBeforeCommit,
       );
       return;
     }
@@ -515,6 +701,9 @@ export const conversationRepository = {
         conversationKey,
         userTimestamp,
         assistantTimestamp,
+        target.userMessageID,
+        target.assistantMessageID,
+        target.onBeforeCommit,
       );
       return;
     }
@@ -522,6 +711,9 @@ export const conversationRepository = {
       conversationKey,
       userTimestamp,
       assistantTimestamp,
+      target.userMessageID,
+      target.assistantMessageID,
+      target.onBeforeCommit,
     );
   },
 
@@ -542,16 +734,10 @@ export const conversationRepository = {
           await repairRuntimeRegistryFromSummary("claude_code", existing);
           return entry;
         }
-        await upsertClaudeConversationSummary({
-          conversationKey,
-          libraryID,
-          kind: params.kind,
-          paperItemID,
-          title: params.title || "",
-        });
-        return fromClaudeSummary(
-          await getClaudeConversationSummary(conversationKey),
-        );
+        // An explicit key is a lookup witness, never an instruction to create
+        // a row. Recreating a missing key here would allow a stale history
+        // read to resurrect a retired conversation.
+        return null;
       }
       return fromClaudeSummary(
         params.kind === "paper"
@@ -569,16 +755,9 @@ export const conversationRepository = {
           await repairRuntimeRegistryFromSummary("codex", existing);
           return entry;
         }
-        await upsertCodexConversationSummary({
-          conversationKey,
-          libraryID,
-          kind: params.kind,
-          paperItemID,
-          title: params.title || "",
-        });
-        return fromCodexSummary(
-          await getCodexConversationSummary(conversationKey),
-        );
+        // An explicit key is a lookup witness, never an instruction to create
+        // a row. New conversations must go through createCatalogEntry().
+        return null;
       }
       return fromCodexSummary(
         params.kind === "paper"
@@ -604,7 +783,7 @@ export const conversationRepository = {
     }
     if (!paperItemID) return null;
     const entry = fromUpstreamPaperSummary(
-      conversationKey && conversationKey !== paperItemID
+      conversationKey
         ? await getPaperConversation(conversationKey)
         : await ensurePaperV1Conversation(libraryID, paperItemID),
     );
@@ -619,30 +798,54 @@ export const conversationRepository = {
     const paperItemID = normalizePositiveInt(params.paperItemID);
     if (!libraryID) return null;
     if (params.system === "claude_code") {
-      return fromClaudeSummary(
-        params.kind === "paper"
-          ? await createClaudePaperConversation(libraryID, paperItemID)
-          : await createClaudeGlobalConversation(libraryID),
+      return hydrateCatalogEntryInstanceID(
+        fromClaudeSummary(
+          params.kind === "paper"
+            ? await createClaudePaperConversation(libraryID, paperItemID, {
+                conversationKey: params.preferredConversationKey,
+              })
+            : await createClaudeGlobalConversation(libraryID, {
+                conversationKey: params.preferredConversationKey,
+              }),
+        ),
       );
     }
     if (params.system === "codex") {
-      return fromCodexSummary(
-        params.kind === "paper"
-          ? await createCodexPaperConversation(libraryID, paperItemID)
-          : await createCodexGlobalConversation(libraryID),
+      return hydrateCatalogEntryInstanceID(
+        fromCodexSummary(
+          params.kind === "paper"
+            ? await createCodexPaperConversation(libraryID, paperItemID, {
+                conversationKey: params.preferredConversationKey,
+              })
+            : await createCodexGlobalConversation(libraryID, {
+                conversationKey: params.preferredConversationKey,
+              }),
+        ),
       );
     }
     if (params.kind === "paper") {
-      return fromUpstreamPaperSummary(
-        paperItemID
-          ? await createPaperConversation(libraryID, paperItemID)
-          : null,
+      return hydrateCatalogEntryInstanceID(
+        fromUpstreamPaperSummary(
+          paperItemID
+            ? await createPaperConversation(libraryID, paperItemID, {
+                webchatSession: params.webchatSession === true,
+                conversationKey: params.preferredConversationKey,
+              })
+            : null,
+        ),
       );
     }
-    const conversationKey = await createGlobalConversation(libraryID);
-    return conversationKey
-      ? fromUpstreamGlobalSummary(await getGlobalConversation(conversationKey))
-      : null;
+    const conversationKey = await createGlobalConversation(libraryID, {
+      webchatSession: params.webchatSession === true,
+      conversationKey: params.preferredConversationKey,
+    });
+    return hydrateCatalogEntryInstanceID(
+      conversationKey
+        ? fromUpstreamGlobalSummary(
+            await getGlobalConversation(conversationKey),
+          )
+        : null,
+    );
   },
 
   async forkConversation(
@@ -665,150 +868,191 @@ export const conversationRepository = {
     }
     if (params.kind === "paper" && !paperItemID) return null;
 
-    const sourceEntry = await conversationRepository.getCatalogEntry({
-      system: params.system,
-      kind: params.kind,
-      conversationKey: sourceConversationKey,
-    });
-    if (!catalogEntryMatchesScope(sourceEntry, params)) return null;
-    const sourceProviderSessionId =
-      normalizeTitle(sourceEntry.providerSessionId) || "";
-
-    let forkedCodexThreadId: string | null = null;
-    if (params.system === "codex") {
-      const latestCodexForkableAssistantTimestamp =
-        await getLatestCodexForkableAssistantTimestamp(sourceConversationKey);
-      if (latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp) {
-        return null;
-      }
-      if (sourceProviderSessionId) {
-        forkedCodexThreadId = await codexAppServerForkService.forkThread({
-          threadId: sourceProviderSessionId,
-        });
-        if (!forkedCodexThreadId) return null;
-      }
-    }
-
-    const entry = await conversationRepository.createCatalogEntry({
-      system: params.system,
-      kind: params.kind,
-      libraryID,
-      paperItemID,
-    });
-    if (!entry) {
-      if (forkedCodexThreadId) {
-        await codexAppServerForkService
-          .archiveThread({ threadId: forkedCodexThreadId })
-          .catch(() => {});
-      }
-      return null;
-    }
-    if (entry && params.system === "codex" && forkedCodexThreadId) {
-      const persistedProviderSession = await upsertCodexConversationSummary({
-        conversationKey: entry.conversationKey,
-        libraryID,
-        kind: entry.kind,
-        paperItemID: entry.paperItemID,
-        createdAt: entry.createdAt,
-        updatedAt: Date.now(),
-        title: entry.title,
-        providerSessionId: forkedCodexThreadId,
+    // Forking reads a source snapshot and then performs several asynchronous
+    // target/provider writes.  Serialize the whole lifecycle with Clear and
+    // other conversation-owned writes; generation checks inside the copy
+    // helper remain a defense-in-depth barrier for callers that bypass this
+    // repository method.
+    return withConversationWriteLock(sourceConversationKey, async () => {
+      const sourceEntry = await conversationRepository.getCatalogEntry({
+        system: params.system,
+        kind: params.kind,
+        conversationKey: sourceConversationKey,
       });
-      if (!persistedProviderSession) {
+      if (!catalogEntryMatchesScope(sourceEntry, params)) return null;
+      const sourceProviderSessionId =
+        normalizeTitle(sourceEntry.providerSessionId) || "";
+
+      if (params.system === "codex") {
+        const latestCodexForkableAssistantTimestamp =
+          await getLatestCodexForkableAssistantTimestamp(sourceConversationKey);
+        if (
+          latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp
+        ) {
+          return null;
+        }
+      }
+
+      const entry = await conversationRepository.createCatalogEntry({
+        system: params.system,
+        kind: params.kind,
+        libraryID,
+        paperItemID,
+      });
+      if (!entry) return null;
+
+      // The catalog entry is created first so the fork can be told which
+      // conversation it belongs to. Codex binds the Zotero scope header when it
+      // creates the target conversation, and resume never rebinds it, so a fork
+      // that inherits the source header would stay bound to the source scope.
+      let forkedCodexThreadId: string | null = null;
+      if (params.system === "codex" && sourceProviderSessionId) {
+        const discardForkEntry = async () => {
+          await conversationRepository
+            .deleteCatalogEntry({
+              system: "codex",
+              kind: entry.kind,
+              conversationKey: entry.conversationKey,
+              instanceID: entry.instanceID,
+              conversationID: entry.conversationID,
+            })
+            .catch(() => {});
+        };
+        try {
+          forkedCodexThreadId = await codexAppServerForkService.forkThread({
+            threadId: sourceProviderSessionId,
+            targetConversationKey: entry.conversationKey,
+            targetInstanceID: entry.instanceID,
+          });
+        } catch (err) {
+          await discardForkEntry();
+          throw err;
+        }
+        if (!forkedCodexThreadId) {
+          await discardForkEntry();
+          return null;
+        }
+      }
+      if (params.system === "codex" && forkedCodexThreadId) {
+        const persistedProviderSession = await upsertCodexConversationSummary({
+          conversationKey: entry.conversationKey,
+          libraryID,
+          kind: entry.kind,
+          paperItemID: entry.paperItemID,
+          createdAt: entry.createdAt,
+          updatedAt: Date.now(),
+          title: entry.title,
+          providerSessionId: forkedCodexThreadId,
+          instanceID: entry.instanceID,
+        });
+        if (!persistedProviderSession) {
+          await conversationRepository.deleteCatalogEntry({
+            system: "codex",
+            kind: entry.kind,
+            conversationKey: entry.conversationKey,
+            instanceID: entry.instanceID,
+            conversationID: entry.conversationID,
+            providerSessionId: forkedCodexThreadId,
+          });
+          await codexAppServerForkService
+            .archiveThread({ threadId: forkedCodexThreadId })
+            .catch(() => {});
+          return null;
+        }
+      }
+
+      const cleanupForkEntry = async () => {
         await conversationRepository.deleteCatalogEntry({
-          system: "codex",
+          system: params.system,
           kind: entry.kind,
           conversationKey: entry.conversationKey,
+          instanceID: entry.instanceID,
+          conversationID: entry.conversationID,
+          providerSessionId: forkedCodexThreadId || undefined,
         });
-        await codexAppServerForkService
-          .archiveThread({ threadId: forkedCodexThreadId })
-          .catch(() => {});
+        if (params.system === "codex" && forkedCodexThreadId) {
+          await codexAppServerForkService
+            .archiveThread({ threadId: forkedCodexThreadId })
+            .catch(() => {});
+        }
+      };
+      let copiedMessageCount = 0;
+      let targetAnchorAssistantTimestamp = 0;
+      try {
+        const copyResult =
+          params.system === "codex"
+            ? await forkCodexConversationMessages({
+                sourceConversationKey,
+                sourceInstanceID: sourceEntry.instanceID,
+                sourceConversationID: sourceEntry.conversationID,
+                targetConversationKey: entry.conversationKey,
+                throughAssistantTimestamp,
+                timestampBase: Date.now(),
+              })
+            : await forkUpstreamConversationMessages({
+                sourceConversationKey,
+                sourceInstanceID: sourceEntry.instanceID,
+                sourceConversationID: sourceEntry.conversationID,
+                targetConversationKey: entry.conversationKey,
+                throughAssistantTimestamp,
+                timestampBase: Date.now(),
+              });
+        copiedMessageCount = copyResult.copiedMessageCount;
+        targetAnchorAssistantTimestamp =
+          copyResult.targetAnchorAssistantTimestamp;
+      } catch (err) {
+        await cleanupForkEntry();
+        throw err;
+      }
+      if (copiedMessageCount <= 0 || targetAnchorAssistantTimestamp <= 0) {
+        await cleanupForkEntry();
         return null;
       }
-    }
 
-    const cleanupForkEntry = async () => {
-      await conversationRepository.deleteCatalogEntry({
+      const titleSeed =
+        normalizeTitle(params.title) ||
+        normalizeTitle(sourceEntry?.title) ||
+        "Forked chat";
+      await conversationRepository.setCatalogTitle({
+        system: params.system,
+        kind: entry.kind,
+        conversationKey: entry.conversationKey,
+        title: `Fork: ${titleSeed}`,
+      });
+
+      const refreshed = await conversationRepository.getCatalogEntry({
         system: params.system,
         kind: entry.kind,
         conversationKey: entry.conversationKey,
       });
-      if (params.system === "codex" && forkedCodexThreadId) {
-        await codexAppServerForkService
-          .archiveThread({ threadId: forkedCodexThreadId })
-          .catch(() => {});
-      }
-    };
-    let copiedMessageCount = 0;
-    let targetAnchorAssistantTimestamp = 0;
-    try {
-      const copyResult =
-        params.system === "codex"
-          ? await forkCodexConversationMessages({
-              sourceConversationKey,
-              targetConversationKey: entry.conversationKey,
-              throughAssistantTimestamp,
-              timestampBase: Date.now(),
-            })
-          : await forkUpstreamConversationMessages({
-              sourceConversationKey,
-              targetConversationKey: entry.conversationKey,
-              throughAssistantTimestamp,
-              timestampBase: Date.now(),
-            });
-      copiedMessageCount = copyResult.copiedMessageCount;
-      targetAnchorAssistantTimestamp =
-        copyResult.targetAnchorAssistantTimestamp;
-    } catch (err) {
-      await cleanupForkEntry();
-      throw err;
-    }
-    if (copiedMessageCount <= 0 || targetAnchorAssistantTimestamp <= 0) {
-      await cleanupForkEntry();
-      return null;
-    }
-
-    const titleSeed =
-      normalizeTitle(params.title) ||
-      normalizeTitle(sourceEntry?.title) ||
-      "Forked chat";
-    await conversationRepository.setCatalogTitle({
-      system: params.system,
-      kind: entry.kind,
-      conversationKey: entry.conversationKey,
-      title: `Fork: ${titleSeed}`,
+      const resultEntry = refreshed || entry;
+      const forkLink = await recordConversationForkLink({
+        targetConversationKey: resultEntry.conversationKey,
+        targetInstanceID: resultEntry.instanceID,
+        targetConversationID: resultEntry.conversationID,
+        targetSystem: params.system,
+        targetKind: resultEntry.kind,
+        sourceConversationKey,
+        sourceInstanceID: sourceEntry.instanceID,
+        sourceConversationID: sourceEntry.conversationID,
+        sourceSystem: params.system,
+        sourceKind: sourceEntry.kind,
+        sourceLibraryID: sourceEntry.libraryID,
+        sourcePaperItemID: sourceEntry.paperItemID,
+        sourceAssistantTimestamp: throughAssistantTimestamp,
+        targetAnchorAssistantTimestamp,
+        createdAt: Date.now(),
+      }).catch(async (err) => {
+        await cleanupForkEntry();
+        throw err;
+      });
+      return {
+        entry: resultEntry,
+        copiedMessageCount,
+        targetAnchorAssistantTimestamp,
+        forkLink,
+      };
     });
-
-    const refreshed = await conversationRepository.getCatalogEntry({
-      system: params.system,
-      kind: entry.kind,
-      conversationKey: entry.conversationKey,
-    });
-    const resultEntry = refreshed || entry;
-    const forkLink = await recordConversationForkLink({
-      targetConversationKey: resultEntry.conversationKey,
-      targetConversationID: resultEntry.conversationID,
-      targetSystem: params.system,
-      targetKind: resultEntry.kind,
-      sourceConversationKey,
-      sourceConversationID: sourceEntry.conversationID,
-      sourceSystem: params.system,
-      sourceKind: sourceEntry.kind,
-      sourceLibraryID: sourceEntry.libraryID,
-      sourcePaperItemID: sourceEntry.paperItemID,
-      sourceAssistantTimestamp: throughAssistantTimestamp,
-      targetAnchorAssistantTimestamp,
-      createdAt: Date.now(),
-    }).catch(async (err) => {
-      await cleanupForkEntry();
-      throw err;
-    });
-    return {
-      entry: resultEntry,
-      copiedMessageCount,
-      targetAnchorAssistantTimestamp,
-      forkLink,
-    };
   },
 
   async listCatalogEntries(
@@ -908,22 +1152,34 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
-    if (target.system === "claude_code") {
-      await setClaudeConversationTitle(conversationKey, target.title);
-      return;
-    }
-    if (target.system === "codex") {
-      await setCodexConversationTitle(conversationKey, target.title);
-      return;
-    }
-    if (
-      target.kind === "paper" ||
-      isUpstreamPaperConversationKey(conversationKey)
-    ) {
-      await setPaperConversationTitle(conversationKey, target.title);
-      return;
-    }
-    await setGlobalConversationTitle(conversationKey, target.title);
+    await withConversationWriteLock(conversationKey, async () => {
+      if (areConversationWritesFrozen(conversationKey)) return;
+      if (
+        target.expectedGeneration !== undefined &&
+        !isConversationWriteGenerationCurrent(
+          conversationKey,
+          target.expectedGeneration,
+        )
+      ) {
+        return;
+      }
+      if (target.system === "claude_code") {
+        await setClaudeConversationTitle(conversationKey, target.title);
+        return;
+      }
+      if (target.system === "codex") {
+        await setCodexConversationTitle(conversationKey, target.title);
+        return;
+      }
+      if (
+        target.kind === "paper" ||
+        isUpstreamPaperConversationKey(conversationKey)
+      ) {
+        await setPaperConversationTitle(conversationKey, target.title);
+        return;
+      }
+      await setGlobalConversationTitle(conversationKey, target.title);
+    });
   },
 
   async clearCatalogTitle(
@@ -932,14 +1188,26 @@ export const conversationRepository = {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
     if (target.system === "claude_code") {
-      await setClaudeConversationTitle(conversationKey, "");
+      await setClaudeConversationTitle(conversationKey, "", {
+        instanceID: target.instanceID,
+        conversationID: target.conversationID,
+        inTransaction: target.inTransaction,
+      });
       return;
     }
     if (target.system === "codex") {
-      await setCodexConversationTitle(conversationKey, "");
+      await setCodexConversationTitle(conversationKey, "", {
+        instanceID: target.instanceID,
+        conversationID: target.conversationID,
+        inTransaction: target.inTransaction,
+      });
       return;
     }
-    await clearConversationTitle(conversationKey);
+    await clearConversationTitle(conversationKey, {
+      instanceID: target.instanceID,
+      conversationID: target.conversationID,
+      inTransaction: target.inTransaction,
+    });
   },
 
   async touchCatalogTitle(
@@ -976,20 +1244,68 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
+    const expectedGeneration =
+      target.expectedGeneration ??
+      getConversationWriteGeneration(conversationKey);
+    // The upstream variants of this touch rewrite created_at, which is the
+    // immutable identity witness a queued deletion is verified against. Moving
+    // it would make the finalizer classify the user's own deletion as "stale"
+    // and silently abandon it, so a conversation awaiting deletion is never
+    // touched. (Nothing should be adopting such a conversation anyway — see
+    // resolveFreshConversationDraft — this is the backstop.)
+    if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+      return;
+    }
     const timestamp = normalizeTimestamp(target.timestamp, Date.now());
     if (target.system === "claude_code" || target.system === "codex") {
       const entry = await conversationRepository.getCatalogEntry(target);
-      if (entry) await touchRuntimeEmptyCatalogActivity(entry, timestamp);
+      if (!entry) return;
+      await withConversationWriteLock(conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          return;
+        }
+        const current = await conversationRepository.getCatalogEntry(target);
+        if (!current || current.instanceID !== entry.instanceID) return;
+        await touchRuntimeEmptyCatalogActivity(current, timestamp);
+      });
       return;
     }
     if (
       target.kind === "paper" ||
       isUpstreamPaperConversationKey(conversationKey)
     ) {
-      await touchEmptyPaperConversation(conversationKey, timestamp);
+      await withConversationWriteLock(conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          return;
+        }
+        await touchEmptyPaperConversation(conversationKey, timestamp);
+      });
       return;
     }
-    await touchEmptyGlobalConversation(conversationKey, timestamp);
+    await withConversationWriteLock(conversationKey, async () => {
+      if (
+        areConversationWritesFrozen(conversationKey) ||
+        !isConversationWriteGenerationCurrent(
+          conversationKey,
+          expectedGeneration,
+        )
+      ) {
+        return;
+      }
+      await touchEmptyGlobalConversation(conversationKey, timestamp);
+    });
   },
 
   async deleteCatalogEntry(
@@ -997,6 +1313,17 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
+    // Once the permanent ledger is active, even internal rollback paths must
+    // use the same identity-bound local deletion primitive as user deletion.
+    // The legacy direct helpers remain only for pre-migration test/upgrade
+    // databases that have no ledger witness yet.
+    if (target.instanceID) {
+      await conversationRepository.deleteLocalConversationRows({
+        ...target,
+        conversationKey,
+      });
+      return;
+    }
     const cleanupForkLink = async () => {
       await deleteConversationForkLink(conversationKey).catch(() => {});
     };
@@ -1007,6 +1334,11 @@ export const conversationRepository = {
     }
     if (target.system === "codex") {
       await deleteCodexConversation(conversationKey);
+      releaseConversationScopeToken({
+        profileSignature: getCodexProfileSignature(),
+        conversationKey,
+        instanceID: target.instanceID,
+      });
       await cleanupForkLink();
       return;
     }
@@ -1027,15 +1359,105 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
+    const providerSessionId = String(target.providerSessionId || "").trim();
+    const hasClaudeScopeWitness =
+      target.system === "claude_code" &&
+      Boolean(target.providerScope?.scopeType && target.providerScope.scopeId);
+    const cleanupParams =
+      (providerSessionId || hasClaudeScopeWitness) &&
+      (target.system === "codex" || target.system === "claude_code")
+        ? [
+            {
+              operation:
+                target.system === "codex"
+                  ? ("codex_archive" as const)
+                  : ("claude_invalidate" as const),
+              system: target.system,
+              conversationKey,
+              instanceID: target.instanceID,
+              conversationKind: target.kind,
+              libraryID: target.libraryID,
+              paperItemID: target.paperItemID,
+              providerScope: target.providerScope,
+              providerSessionId,
+            },
+          ]
+        : [];
+    for (const cleanup of target.additionalProviderCleanup || []) {
+      const allowEmptyClaudeWitness =
+        cleanup.system === "claude_code" &&
+        Boolean(
+          cleanup.providerScope?.scopeType &&
+          cleanup.providerScope.scopeId &&
+          target.instanceID,
+        );
+      if (!cleanup.providerSessionId.trim() && !allowEmptyClaudeWitness)
+        continue;
+      if (
+        cleanupParams.some(
+          (existing) =>
+            existing.operation === cleanup.operation &&
+            existing.system === cleanup.system &&
+            existing.providerSessionId === cleanup.providerSessionId,
+        )
+      ) {
+        continue;
+      }
+      cleanupParams.push({
+        operation: cleanup.operation,
+        system: cleanup.system,
+        conversationKey,
+        instanceID: target.instanceID,
+        conversationKind: target.kind,
+        libraryID: target.libraryID,
+        paperItemID: target.paperItemID,
+        providerScope: cleanup.providerScope,
+        providerSessionId: cleanup.providerSessionId.trim(),
+      });
+    }
+    if (cleanupParams.length) await initConversationCleanupJobs();
+    const onCommit = cleanupParams.length
+      ? async () => {
+          for (const cleanup of cleanupParams) {
+            const job =
+              await enqueueConversationCleanupJobInTransaction(cleanup);
+            if (!job) {
+              throw new Error(
+                "Provider cleanup job could not be persisted with local deletion",
+              );
+            }
+          }
+        }
+      : undefined;
     if (target.system === "claude_code") {
-      await deleteClaudeConversationLocalRows(conversationKey);
+      await deleteClaudeConversationLocalRows(conversationKey, {
+        instanceID: target.instanceID,
+        conversationID: target.conversationID,
+        onBeforeCommit: target.onBeforeCommit,
+        onCommit,
+      });
       return;
     }
     if (target.system === "codex") {
-      await deleteCodexConversationLocalRows(conversationKey);
+      await deleteCodexConversationLocalRows(conversationKey, {
+        instanceID: target.instanceID,
+        conversationID: target.conversationID,
+        onBeforeCommit: target.onBeforeCommit,
+        onCommit,
+      });
+      releaseConversationScopeToken({
+        profileSignature: getCodexProfileSignature(),
+        conversationKey,
+        instanceID: target.instanceID,
+      });
       return;
     }
-    await deleteUpstreamConversationLocalRows(conversationKey, target.kind);
+    await deleteUpstreamConversationLocalRows(conversationKey, target.kind, {
+      instanceID: target.instanceID,
+      conversationID: target.conversationID,
+      onBeforeCommit: target.onBeforeCommit,
+      onCommit,
+    });
   },
 
   async preflightDeleteLocalConversationRows(

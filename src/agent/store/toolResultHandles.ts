@@ -1,3 +1,13 @@
+import {
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyRetiredInMemory,
+} from "../../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "../../shared/conversationWriteFence";
+
 export type AgentToolResultHandleRecord = {
   handle: string;
   conversationKey: number;
@@ -148,6 +158,7 @@ async function ensureAgentToolResultHandleStore(): Promise<boolean> {
         `CREATE INDEX IF NOT EXISTS ${TOOL_RESULT_HANDLE_INDEX}
          ON ${TOOL_RESULT_HANDLE_TABLE} (conversation_key, created_at DESC)`,
       );
+      await installConversationKeyLedgerAgentTriggers();
       return true;
     } catch (error) {
       logHandleStoreError(
@@ -202,6 +213,7 @@ export async function hydrateAgentToolResultHandles(
 ): Promise<void> {
   const conversationKey = normalizePositiveInt(conversationKeyValue);
   if (!conversationKey || hydratedConversations.has(conversationKey)) return;
+  const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const dbReady = await ensureAgentToolResultHandleStore();
   const db = getDb();
   if (!dbReady || !db) {
@@ -222,6 +234,13 @@ export async function hydrateAgentToolResultHandles(
        WHERE conversation_key = ?`,
       [conversationKey],
     )) as unknown[] | undefined;
+    if (
+      isConversationKeyRetiredInMemory(conversationKey) ||
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      return;
+    }
     for (const row of rows || []) {
       const record = normalizeRecord(row);
       if (!record) continue;
@@ -244,6 +263,7 @@ export async function upsertAgentToolResultHandles(
     .filter((record): record is AgentToolResultHandleRecord => Boolean(record));
   if (!normalized.length) return;
   for (const record of normalized) {
+    if (isConversationKeyRetiredInMemory(record.conversationKey)) continue;
     handleStore.set(storeKey(record.conversationKey, record.handle), record);
   }
   const dbReady = await ensureAgentToolResultHandleStore();
@@ -251,6 +271,7 @@ export async function upsertAgentToolResultHandles(
   if (!dbReady || !db) return;
   try {
     for (const record of normalized) {
+      if (isConversationKeyRetiredInMemory(record.conversationKey)) continue;
       await db.queryAsync(
         `INSERT OR REPLACE INTO ${TOOL_RESULT_HANDLE_TABLE}
           (conversation_key, handle, tool_name, tool_call_id, input_digest, resource_signature, content_json, created_at)
@@ -268,6 +289,14 @@ export async function upsertAgentToolResultHandles(
       );
     }
   } catch (error) {
+    for (const record of normalized) {
+      if (isConversationKeyRetiredInMemory(record.conversationKey)) {
+        const prefix = `${record.conversationKey}:`;
+        for (const key of Array.from(handleStore.keys())) {
+          if (key.startsWith(prefix)) handleStore.delete(key);
+        }
+      }
+    }
     logHandleStoreError(
       "LLM Agent: Failed to persist tool-result handles",
       error,

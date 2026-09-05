@@ -24,6 +24,11 @@ pref("enableClaudeCodeMode", false);
 pref("agentBackendBridgeUrl", "http://127.0.0.1:19787");
 pref("agentClaudeConfigSource", "default");
 pref("agentPermissionMode", "safe");
+// How much the in-plugin agent may change the library unattended. Separate
+// from agentPermissionMode, whose help text promises it governs the Claude
+// Code bridge only -- see src/shared/agentLibraryWriteMode.ts.
+pref("agentLibraryWriteMode", "auto");
+pref("tavilyApiKey", "");
 pref("conversationSystem", "upstream");
 pref("enableCodexAppServerMode", false);
 pref("codexAppServerModel", "gpt-5.4");

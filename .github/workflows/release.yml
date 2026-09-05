@@ -9,6 +9,9 @@ permissions:
   contents: write
 
 jobs:
+  # No test gate here on purpose. Tests run on every push to main via ci.yml,
+  # which is where a red suite should be noticed and fixed. Publishing must not
+  # be blocked by them -- a flaky test is not a reason a release cannot ship.
   release:
     runs-on: ubuntu-latest
 
@@ -21,7 +24,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       - name: Install deps

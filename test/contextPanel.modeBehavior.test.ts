@@ -158,4 +158,93 @@ describe("contextPanel mode behavior", function () {
       "chat",
     );
   });
+
+  it("falls back to the sticky last used mode for paper conversations", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: "agent",
+      }),
+      "agent",
+    );
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: "chat",
+      }),
+      "chat",
+    );
+  });
+
+  it("keeps chat for paper conversations when no sticky mode was ever chosen", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: null,
+      }),
+      "chat",
+    );
+  });
+
+  it("lets the per-conversation choice win over the sticky mode", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: "chat",
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: "agent",
+      }),
+      "chat",
+    );
+  });
+
+  it("keeps notes and global conversations on agent even when the sticky mode is chat", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: true,
+        displayConversationKind: "global",
+        lastUsedRuntimeMode: "chat",
+      }),
+      "agent",
+    );
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        noteKind: "standalone",
+        lastUsedRuntimeMode: "chat",
+      }),
+      "agent",
+    );
+  });
+
+  it("never resurrects agent mode from the sticky mode while the feature is off", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        agentModeEnabled: false,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: "agent",
+      }),
+      "chat",
+    );
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: null,
+        isWebChat: true,
+        agentModeEnabled: true,
+        displayConversationKind: "paper",
+        lastUsedRuntimeMode: "agent",
+      }),
+      "chat",
+    );
+  });
 });

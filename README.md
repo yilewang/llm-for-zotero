@@ -43,6 +43,7 @@ Documentation:
 - [File-Based Notes](#file-based-notes)
 - [Agent Mode](#agent-mode-beta)
 - [Skills](#skills)
+- [General Web Search](#general-web-search)
 - [WebChat Setup](#webchat-setup-chatgpt-web-sync)
 - [Codex Setup](#codex-setup-chatgpt-plus-subscribers)
 - [Claude Code Setup](#claude-code-setup-experimental)
@@ -51,7 +52,6 @@ Documentation:
 - [Roadmap](#roadmap)
 - [FAQ](#faq)
 - [Contributing](#contributing)
-- [Star History](#star-history)
 
 ## At a Glance
 
@@ -63,6 +63,7 @@ Documentation:
   Markdown folders such as Obsidian and Logseq.
 - Enable Agent Mode for library-wide read, search, tagging, metadata, import,
   note-editing, and organization workflows.
+- Search the current public web and read relevant pages with Tavily, with source links attached to the answer.
 - Use your preferred backend: API keys, local models, ChatGPT WebChat, Codex App
   Server, or Claude Code.
 
@@ -79,6 +80,7 @@ Documentation:
   support native Zotero API operations.
 - **Skills** let you customize how Agent Mode handles research workflows. The
   plugin ships with 8 built-in skills and a portal for creating your own.
+- **General Web Search** lets the in-plugin Agent search the current public web with Tavily, read relevant pages, and attach source links to its answers.
 - **Standalone Window Mode** opens the assistant in a dedicated window with
   paper chat, library chat, and conversation history.
 - **File-Based Notes** save Markdown notes to local folders, including Obsidian,
@@ -272,6 +274,7 @@ again when the needed source or coverage layer is missing.
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Library and PDF reading  | Search items and collections, read metadata, read papers, search paper passages, render PDF pages, inspect attachments                            |
 | Scholarly discovery      | Search CrossRef and Semantic Scholar for metadata, recommendations, references, and citations                                                     |
+| General web research     | Search the current public web with Tavily, read relevant pages, and show source links with the answer                                             |
 | Library writes           | Apply tags, update metadata, move items, manage collections, manage attachments, merge duplicates, trash items, import identifiers or local files |
 | Notes                    | Edit the active Zotero note or create a new note in plain text, Markdown, or HTML                                                                 |
 | Filesystem and scripting | Read/write allowed local files, run analysis commands, or execute Zotero JavaScript with write confirmations                                      |
@@ -344,6 +347,30 @@ as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
 </details>
 
+## General Web Search
+
+Agent Mode can search the current public web with [Tavily](https://www.tavily.com/) and read the most relevant returned pages when search-result snippets are not enough.
+Use it for current facts, official documentation, news, finance, product information, and other general-web evidence.
+Scholarly discovery remains separate: the agent uses CrossRef and Semantic Scholar for research literature, and it can combine both kinds of search when a question needs academic and general-web sources.
+
+To enable general web search:
+
+1. Get a Tavily API key from [app.tavily.com](https://app.tavily.com/).
+2. Open `Preferences` -> `llm-for-zotero` -> **Agent**.
+3. In **Tavily Web Search**, paste the API key and click **Test connection**.
+4. Enable Agent Mode and ask it to search or verify something online.
+
+There is no separate enable switch.
+The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when a Tavily key is configured.
+They are not added to WebChat, Codex App Server, or Claude Code conversations, which use their own runtimes and tool sets.
+
+The agent chooses basic or advanced search and page-reading depth from the request, or follows an explicit request such as _"use advanced web search."_
+It can narrow searches by topic, date, or domain, and answers include clickable source indicators for the pages actually used.
+
+Basic search costs 1 Tavily credit and advanced search costs 2.
+Page extraction also consumes Tavily credits, and Tavily currently offers a free monthly allowance.
+The API key stays in local Zotero preferences, but search queries and requested URLs are sent to Tavily, so do not include credentials or sensitive private text in web queries.
+
 ## Codex Setup (ChatGPT Plus Subscribers)
 
 If you have a ChatGPT Plus subscription, you can use Codex models in the plugin
@@ -368,9 +395,8 @@ planned for future deprecation after app-server validation.
    npm install -g @openai/codex
    ```
 
-   On macOS, you can also use `brew install --cask codex`. On Windows, install
-   Codex from PowerShell or Command Prompt rather than WSL, so Zotero MCP can
-   use the Windows-local loopback connection.
+   On macOS, you can also use `brew install --cask codex`.
+   On Windows, you can also use `winget install OpenAI.Codex`; install Codex from PowerShell or Command Prompt rather than WSL, so Zotero MCP can use the Windows-local loopback connection.
 
 2. Log in:
 
@@ -530,10 +556,10 @@ Each Claude conversation also gets its own local `.claude` folder under the
 runtime `scopes/` tree, so per-conversation overrides do not leak into other
 chats.
 
-The Zotero UI exposes `opus`, `sonnet`, and `haiku` as capability tiers. If you
-route Claude Code through a compatible provider layer or proxy, configure that
-in Claude Code itself; Zotero only selects the tier and forwards the request to
-the bridge.
+The Zotero UI loads the model catalog advertised by the configured Claude Code bridge and preserves each model value exactly, including aliases, explicit model IDs, context-window variants, custom provider values, and future model families.
+The chat model picker identifies the active conversation so discovery uses the same scoped `.claude/settings.local.json` stack as the turn.
+The model preference remains editable when discovery is unavailable.
+Claude Code is responsible for resolving or rejecting the selected value and for applying provider or proxy configuration.
 
 </details>
 
@@ -673,6 +699,15 @@ Setup:
    **Auth Mode** -> `WebChat`.
 5. ⚠️: Keep a ChatGPT tab open in your browser. A green dot in Zotero means the extension and ChatGPT tab are connected. Make sure the tab and Zotero stay in the same monitor. No minimization or backgrounding, or the connection may drop.
 
+For release validation, keep Chrome signed in with the development extension loaded and run:
+
+```bash
+npm run test:webchat:live
+```
+
+This opt-in gate creates a real Zotero PDF fixture and clicks the real Zotero composer send control.
+It verifies one exact PDF upload and answer, toggles the visible PDF chip both ways, then verifies one prompt-only turn with zero submitted PDFs through the relay and Chrome extension.
+
 ## Privacy and Data Flow
 
 Data flow depends on the backend you choose. Local models and local MinerU can
@@ -688,6 +723,7 @@ and cloud MinerU involve their respective services or companion runtimes.
   configure.
 - In WebChat mode, requests are relayed through the browser extension to
   `chatgpt.com` or `chat.deepseek.com`.
+- When Tavily Web Search is configured, web queries and requested public URLs are sent to Tavily; the API key remains in local Zotero preferences.
 - In cloud MinerU mode, newly added PDFs are sent to MinerU for parsing when
   parsing is enabled.
 - In local MinerU mode, newly added PDFs are sent to the local or remote
@@ -727,6 +763,7 @@ and cloud MinerU involve their respective services or companion runtimes.
 | Use ChatGPT in the browser                                  | [WebChat](#webchat-setup-chatgpt-web-sync) with the Sync for Zotero extension | No                              |
 | Use Codex models with ChatGPT Plus                          | [Codex App Server](#codex-setup-chatgpt-plus-subscribers)                     | No separate API key             |
 | Use Claude Code inside Zotero                               | [Claude Code bridge](#claude-code-setup-experimental)                         | Claude Code auth                |
+| Search and read the current public web                      | [General Web Search](#general-web-search) with Tavily                          | Tavily API key                  |
 | Improve PDF extraction for tables, equations, and figures   | [MinerU PDF parsing](#mineru-pdf-parsing)                                     | Personal MinerU key recommended |
 
 > **Q: Is it free to use?**
@@ -758,6 +795,19 @@ improvements, and pull requests are all useful. Please
 [open an issue](https://github.com/yilewang/llm-for-zotero/issues) or submit a
 PR.
 
-## Star History
+### Model capability registry
 
-[![Star History Chart](https://api.star-history.com/image?repos=yilewang/llm-for-zotero&type=date&legend=top-left)](https://www.star-history.com/?repos=yilewang%2Fllm-for-zotero&type=date&legend=top-left)
+Model context limits and provider-defined reasoning options are maintained in
+[`registry/model-capabilities.v1.json`](./registry/model-capabilities.v1.json).
+
+The plugin refreshes this schema-validated registry and each configured
+provider's model catalog in the background, and performs a bounded first-use
+refresh when needed.
+
+Adding a model to the registry does not require a plugin release; increment the
+registry revision, run `npm run validate:model-registry`, and publish the JSON
+change.
+
+When a provider does not expose reasoning controls or context metadata through
+its model catalog, the registry remains the authoritative provider-maintained
+fallback.

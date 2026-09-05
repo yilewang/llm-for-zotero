@@ -2,7 +2,12 @@
  * Shared helpers used by the focused facade tools for building
  * confirmation cards, normalizing inputs, and executing operations.
  */
-import type { AgentPendingField, AgentToolContext } from "../../types";
+import type {
+  AgentMutationPlan,
+  AgentPendingField,
+  AgentToolContext,
+  AgentWriteToolOutput,
+} from "../../types";
 import type {
   ApplyTagsOperation,
   MoveToCollectionOperation,
@@ -10,6 +15,7 @@ import type {
   LibraryMutationOperation,
   LibraryMutationService,
 } from "../../services/libraryMutationService";
+import { executeLibraryMutationAction } from "../../services/mutationCoordinator";
 import type {
   EditableArticleCreator,
   EditableArticleMetadataField,
@@ -19,7 +25,6 @@ import type {
   ZoteroGateway,
 } from "../../services/zoteroGateway";
 import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../../services/zoteroGateway";
-import { pushUndoEntry } from "../../store/undoStore";
 import {
   normalizePositiveInt,
   normalizeStringArray,
@@ -106,6 +111,59 @@ export function normalizeTagAssignmentsFromResolution(
     .filter((entry): entry is { itemId: number; tags: string[] } =>
       Boolean(entry),
     );
+}
+
+/**
+ * Reads a checklist field's answer off a confirmation resolution.
+ *
+ * The renderer's checklist accessor returns the *checked* row ids as strings
+ * (`agentTrace/render.ts` `getSelectedIds`), so the three states a caller must
+ * tell apart are:
+ *   - `undefined` — no resolution at all (the `auto_approve` / non-HITL path).
+ *     The caller keeps its original operation.
+ *   - `[]` — the user was asked and unchecked everything. This is a decision,
+ *     not an absence, and destructive callers must surface it as an error
+ *     rather than proceeding with the full list.
+ *   - a non-empty array — the rows to act on.
+ *
+ * Row ids are whatever the field author put in `items[].id`: numeric item ids
+ * (trash, merge), array indices including `"0"` (import identifiers), or file
+ * paths (import local files). This returns them verbatim; use
+ * `normalizeChecklistItemIdsFromResolution` when the ids are Zotero item ids.
+ */
+export function normalizeChecklistSelectionFromResolution(
+  resolutionData: unknown,
+  fieldId: string,
+): string[] | undefined {
+  if (!validateObject<Record<string, unknown>>(resolutionData)) {
+    return undefined;
+  }
+  const raw = resolutionData[fieldId];
+  if (raw === undefined || raw === null || !Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw
+    .map((entry) => (typeof entry === "string" ? entry : String(entry ?? "")))
+    .filter((entry) => entry.length > 0);
+}
+
+/**
+ * `normalizeChecklistSelectionFromResolution` for checklists whose row ids are
+ * Zotero item ids. Ids that are not positive integers are dropped, so a
+ * malformed payload narrows the operation rather than widening it.
+ */
+export function normalizeChecklistItemIdsFromResolution(
+  resolutionData: unknown,
+  fieldId: string,
+): number[] | undefined {
+  const selected = normalizeChecklistSelectionFromResolution(
+    resolutionData,
+    fieldId,
+  );
+  if (selected === undefined) return undefined;
+  return selected
+    .map((entry) => normalizePositiveInt(entry))
+    .filter((id): id is number => Boolean(id));
 }
 
 // ── Move assignment helpers ─────────────────────────────────────────────────
@@ -515,17 +573,21 @@ export async function executeAndRecordUndo(
   operation: LibraryMutationOperation,
   context: AgentToolContext,
   facadeToolName: string,
-): Promise<{ result: unknown }> {
-  const executed = await mutationService.executeOperation(operation, context);
-  if (executed.undo) {
-    pushUndoEntry(context.request.conversationKey, {
-      id: `undo-${facadeToolName}-${Date.now()}`,
-      toolName: facadeToolName,
-      description: executed.undo.description,
-      revert: executed.undo.revert,
-    });
-  }
-  return { result: executed.result };
+): Promise<AgentWriteToolOutput<{ actionId?: string; result: unknown }>> {
+  const coordinated = await executeLibraryMutationAction({
+    service: mutationService,
+    operations: [operation],
+    context,
+    facadeToolName,
+  });
+  return {
+    content: {
+      actionId: coordinated.actionId,
+      result: coordinated.results[0],
+    },
+    effect: coordinated.effect,
+    actionEvidence: coordinated.actionEvidence,
+  };
 }
 
 /**
@@ -538,34 +600,58 @@ export async function executeAndRecordUndoBatch(
   operations: LibraryMutationOperation[],
   context: AgentToolContext,
   facadeToolName: string,
-): Promise<{ appliedCount: number; results: unknown[] }> {
-  const results: unknown[] = [];
-  const undoEntries: Array<{
-    description: string;
-    revert: () => Promise<void>;
-  }> = [];
+): Promise<
+  AgentWriteToolOutput<{
+    actionId?: string;
+    appliedCount: number;
+    results: unknown[];
+  }>
+> {
+  const coordinated = await executeLibraryMutationAction({
+    service: mutationService,
+    operations,
+    context,
+    facadeToolName,
+  });
+  return {
+    content: {
+      actionId: coordinated.actionId,
+      appliedCount: coordinated.affectedCount,
+      results: coordinated.results,
+    },
+    effect: coordinated.effect,
+    actionEvidence: coordinated.actionEvidence,
+  };
+}
+
+/** Build the confirmation decision from the same concrete operations that
+ * will later be persisted and executed by MutationCoordinator. */
+export async function planLibraryMutations(
+  mutationService: LibraryMutationService,
+  operations: LibraryMutationOperation[],
+  context: AgentToolContext,
+): Promise<AgentMutationPlan> {
+  if (!operations.length) {
+    return { effect: "none", reversibility: "full" };
+  }
+  const plans = [];
   for (const operation of operations) {
-    const executed = await mutationService.executeOperation(operation, context);
-    results.push(executed.result);
-    if (executed.undo) {
-      undoEntries.push(executed.undo);
-    }
+    plans.push(await mutationService.planOperation(operation, context));
   }
-  if (undoEntries.length) {
-    pushUndoEntry(context.request.conversationKey, {
-      id: `undo-${facadeToolName}-batch-${Date.now()}`,
-      toolName: facadeToolName,
-      description: `Undo ${undoEntries.length} ${facadeToolName} change${
-        undoEntries.length === 1 ? "" : "s"
-      }`,
-      revert: async () => {
-        for (const undo of [...undoEntries].reverse()) {
-          await undo.revert();
-        }
-      },
-    });
-  }
-  return { appliedCount: results.length, results };
+  const reversibility = plans.every((plan) => plan.reversibility === "full")
+    ? "full"
+    : plans.every((plan) => plan.reversibility === "none")
+      ? "none"
+      : "partial";
+  return {
+    effect: "write",
+    reversibility,
+    reason:
+      plans
+        .map((plan) => plan.reason)
+        .filter((reason): reason is string => Boolean(reason))
+        .join(" ") || undefined,
+  };
 }
 
 // ── Metadata & Creator normalization ─────────────────────────────────────────
@@ -639,6 +725,15 @@ export function normalizeCreatorsList(
  * the "creators"/"authors" alias, and string/number/boolean field coercion.
  * Skips un-normalizable fields instead of aborting the entire patch.
  */
+/**
+ * Keys in a patch that are not metadata fields.
+ *
+ * `creators`/`authors` are handled separately below, and `fields` is the
+ * wrapper this function flattens. Everything else is left for the gateway to
+ * validate against the item's own type.
+ */
+const STRUCTURAL_PATCH_KEYS = new Set(["creators", "authors", "fields"]);
+
 export function normalizeMetadataPatch(
   value: unknown,
 ): EditableArticleMetadataPatch | null {
@@ -651,9 +746,13 @@ export function normalizeMetadataPatch(
       }
     : value;
   const metadata: EditableArticleMetadataPatch = {};
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(normalizedValue, fieldName))
-      continue;
+  // This loop -- not the gateway -- was the real allowlist: it filtered the
+  // patch down to 18 names before the gateway ever saw it, so widening the
+  // gateway alone changed nothing. Any string-valued key is now carried
+  // through, and whether it is a real field for *this item's type* is decided
+  // by the gateway, which is the only layer that knows the item.
+  for (const fieldName of Object.keys(normalizedValue)) {
+    if (STRUCTURAL_PATCH_KEYS.has(fieldName)) continue;
     const normalized = normalizeStringValue(normalizedValue[fieldName]);
     if (normalized === null) continue;
     metadata[fieldName as EditableArticleMetadataField] = normalized;

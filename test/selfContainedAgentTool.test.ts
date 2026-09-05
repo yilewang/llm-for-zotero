@@ -8,6 +8,7 @@ import type {
   AgentModelStep,
   AgentRuntimeRequest,
 } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import type {
   AgentModelAdapter,
   AgentStepParams,
@@ -157,14 +158,15 @@ class InspectingAdapter implements AgentModelAdapter {
 }
 
 describe("self-contained agent tool", function () {
-  const request: AgentRuntimeRequest = {
+  const request: AgentRuntimeRequest = resolvedAgentRequest({
     conversationKey: 1,
     mode: "agent",
     userText: "Run the self-contained demo tool",
+    libraryID: 1,
     model: "gpt-4o-mini",
     apiBase: "https://api.openai.com/v1/chat/completions",
     apiKey: "test",
-  };
+  });
 
   it("adds tool-local guidance into the shared initial messages", async function () {
     const tool = createSelfContainedTestTool();

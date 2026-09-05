@@ -1066,6 +1066,11 @@ describe("misrouted Codex conversation repair", function () {
           query.sql.includes("INSERT INTO llm_for_zotero_codex_messages"),
         ),
       );
+      const messageTransfer = queries.find((query) =>
+        query.sql.includes("INSERT INTO llm_for_zotero_codex_messages"),
+      );
+      assert.include(messageTransfer?.sql || "", "collection_contexts_json");
+      assert.include(messageTransfer?.sql || "", "tag_contexts_json");
       assert.isTrue(
         queries.some((query) =>
           query.sql.includes("DELETE FROM llm_for_zotero_claude_conversations"),
@@ -1161,6 +1166,16 @@ describe("chat history startup schema compatibility", function () {
           "CREATE INDEX IF NOT EXISTS llm_for_zotero_claude_conversations_kind_idx",
         ),
       );
+      const collectionContextColumnIndex = queries.findIndex(
+        (query) =>
+          query.sql.includes("ALTER TABLE llm_for_zotero_claude_messages") &&
+          query.sql.includes("ADD COLUMN collection_contexts_json TEXT"),
+      );
+      const tagContextColumnIndex = queries.findIndex(
+        (query) =>
+          query.sql.includes("ALTER TABLE llm_for_zotero_claude_messages") &&
+          query.sql.includes("ADD COLUMN tag_contexts_json TEXT"),
+      );
 
       assert.isAtLeast(createdAtColumnIndex, 0);
       assert.isAtLeast(updatedAtColumnIndex, 0);
@@ -1169,6 +1184,8 @@ describe("chat history startup schema compatibility", function () {
       assert.isBelow(createdAtColumnIndex, activityIndexIndex);
       assert.isBelow(updatedAtColumnIndex, activityIndexIndex);
       assert.isBelow(timestampBackfillIndex, activityIndexIndex);
+      assert.isAtLeast(collectionContextColumnIndex, 0);
+      assert.isAtLeast(tagContextColumnIndex, 0);
     } finally {
       restore();
     }
@@ -1208,6 +1225,16 @@ describe("chat history startup schema compatibility", function () {
           "CREATE INDEX IF NOT EXISTS llm_for_zotero_codex_conversations_kind_idx",
         ),
       );
+      const collectionContextColumnIndex = queries.findIndex(
+        (query) =>
+          query.sql.includes("ALTER TABLE llm_for_zotero_codex_messages") &&
+          query.sql.includes("ADD COLUMN collection_contexts_json TEXT"),
+      );
+      const tagContextColumnIndex = queries.findIndex(
+        (query) =>
+          query.sql.includes("ALTER TABLE llm_for_zotero_codex_messages") &&
+          query.sql.includes("ADD COLUMN tag_contexts_json TEXT"),
+      );
 
       assert.isAtLeast(createdAtColumnIndex, 0);
       assert.isAtLeast(updatedAtColumnIndex, 0);
@@ -1216,6 +1243,8 @@ describe("chat history startup schema compatibility", function () {
       assert.isBelow(createdAtColumnIndex, activityIndexIndex);
       assert.isBelow(updatedAtColumnIndex, activityIndexIndex);
       assert.isBelow(timestampBackfillIndex, activityIndexIndex);
+      assert.isAtLeast(collectionContextColumnIndex, 0);
+      assert.isAtLeast(tagContextColumnIndex, 0);
     } finally {
       restore();
     }

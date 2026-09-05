@@ -74,6 +74,7 @@ import {
 import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver";
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 import { renderSelectedTextPageFallbackContext } from "./selectedTextAnchorFormatting";
+import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -233,8 +234,13 @@ function buildPaperRefFromContextItem(
 
 function buildMetadataOnlyFallback(papers: PaperContextRef[]): string {
   if (!papers.length) return "";
+  const metadataResolver = createZoteroMetadataResolver();
   const blocks = papers.map((paper, index) => {
-    return `Paper ${index + 1}\n${buildFullPaperContext(paper, undefined)}`;
+    return `Paper ${index + 1}\n${buildFullPaperContext(
+      paper,
+      undefined,
+      metadataResolver,
+    )}`;
   });
   return `Paper Context Metadata:\n\n${blocks.join("\n\n---\n\n")}`;
 }
@@ -957,8 +963,13 @@ export function assembleFullMultiPaperContext(params: {
   estimatedTokens: number;
 } {
   const blocks: string[] = [];
+  const metadataResolver = createZoteroMetadataResolver();
   for (const [index, paper] of params.papers.entries()) {
-    const block = buildFullPaperContext(paper.paperContext, paper.pdfContext);
+    const block = buildFullPaperContext(
+      paper.paperContext,
+      paper.pdfContext,
+      metadataResolver,
+    );
     if (!block.trim()) continue;
     blocks.push(`Paper ${index + 1}\n${block.trim()}`);
   }
@@ -996,6 +1007,7 @@ function assembleBestEffortFullMultiPaperContext(params: {
 } {
   const blocks: string[] = [];
   const includedPaperKeys = new Set<string>();
+  const metadataResolver = createZoteroMetadataResolver();
   const budget = Math.max(0, Math.floor(params.contextBudgetTokens));
   if (!params.papers.length || budget <= 0) {
     return {
@@ -1010,7 +1022,11 @@ function assembleBestEffortFullMultiPaperContext(params: {
     const fullBlock = formatFullPaperBlock({
       paper,
       index,
-      text: buildFullPaperContext(paper.paperContext, paper.pdfContext),
+      text: buildFullPaperContext(
+        paper.paperContext,
+        paper.pdfContext,
+        metadataResolver,
+      ),
     });
     const fullCombined = buildFullPaperContextWrapper([...blocks, fullBlock]);
     const fullCombinedTokens = estimateTextTokens(fullCombined);
@@ -1042,7 +1058,7 @@ function assembleBestEffortFullMultiPaperContext(params: {
     const truncated = buildTruncatedFullPaperContext(
       paper.paperContext,
       paper.pdfContext,
-      { maxTokens: remainingForPaper },
+      { maxTokens: remainingForPaper, metadataResolver },
     );
     const truncatedBlock = formatFullPaperBlock({
       paper,
@@ -1634,8 +1650,19 @@ export async function resolveMultiContextPlan(params: {
     image: params.image,
     reasoning: params.reasoning,
     maxTokens: params.advanced?.maxTokens,
+    maxTokensExplicit: params.advanced?.maxTokensExplicit,
     inputTokenCap: params.advanced?.inputTokenCap,
     systemPrompt: params.systemPrompt,
+    apiBase: params.apiBase,
+    providerProtocol: params.providerProtocol,
+    authMode: params.authMode as
+      | "api_key"
+      | "codex_auth"
+      | "codex_app_server"
+      | "copilot_auth"
+      | "webchat"
+      | undefined,
+    profileOverride: params.advanced?.profileOverride,
   });
   const pageFallbackContext = renderSelectedTextPageFallbackContext({
     anchors: params.resolvedSelectedTextAnchors || [],
@@ -1673,7 +1700,7 @@ export async function resolveMultiContextPlan(params: {
       apiKey: params.apiKey,
       authMode: params.authMode as ChatParams["authMode"],
       providerProtocol: params.providerProtocol,
-      reasoning: params.reasoning,
+      profileOverride: params.advanced?.profileOverride,
       signal: params.signal,
       sourceSamples: papers
         .map((paper) =>
@@ -1956,6 +1983,7 @@ export async function resolveMultiContextPlan(params: {
               authMode: params.authMode as ChatParams["authMode"],
               providerProtocol: params.providerProtocol,
               reasoning: params.reasoning,
+              profileOverride: params.advanced?.profileOverride,
             }
           : undefined,
       signal: params.signal,

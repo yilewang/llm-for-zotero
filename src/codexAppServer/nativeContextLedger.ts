@@ -1,5 +1,9 @@
 import type { PaperContextRef } from "../shared/types";
 import type { ZoteroMcpToolActivityEvent } from "../agent/mcp/server";
+import {
+  areConversationWritesFrozen,
+  isConversationWriteGenerationCurrent,
+} from "../shared/conversationWriteFence";
 
 const MAX_LEDGER_ENTRIES = 12;
 const MAX_RENDERED_LEDGER_ENTRIES = 8;
@@ -14,6 +18,8 @@ const READ_TOOL_NAMES = new Set([
 type NativeContextLedgerScope = {
   profileSignature?: string;
   conversationKey: number;
+  instanceID?: string;
+  conversationGeneration?: number;
   kind: "global" | "paper";
   libraryID?: number;
   paperItemID?: number;
@@ -65,11 +71,13 @@ function normalizeRecord(value: unknown): Record<string, unknown> {
 function ledgerKey(params: {
   profileSignature?: string;
   conversationKey: number;
+  instanceID?: string;
   threadId: string;
 }): string {
   return [
     normalizeText(params.profileSignature, 128) || "default-profile",
     normalizePositiveInt(params.conversationKey) || 0,
+    normalizeText(params.instanceID, 128),
     normalizeText(params.threadId, 256),
   ].join(":");
 }
@@ -326,6 +334,28 @@ export function clearCodexNativeReadLedger(): void {
   readLedger.clear();
 }
 
+export function clearCodexNativeReadLedgerForConversation(params: {
+  conversationKey: number;
+  instanceID?: string;
+  profileSignature?: string;
+}): void {
+  const conversationKey = normalizePositiveInt(params.conversationKey);
+  if (!conversationKey) return;
+  const profile = normalizeText(params.profileSignature, 128);
+  const instanceID = normalizeText(params.instanceID, 128);
+  for (const key of readLedger.keys()) {
+    const parts = key.split(":");
+    const sameConversation =
+      parts[1] === String(conversationKey) &&
+      (!profile || parts[0] === profile);
+    const sameInstance =
+      !instanceID || parts[2] === instanceID || parts[2] === "";
+    if (sameConversation && sameInstance) {
+      readLedger.delete(key);
+    }
+  }
+}
+
 export function recordCodexNativeReadActivity(params: {
   threadId: string;
   scope: NativeContextLedgerScope;
@@ -336,6 +366,16 @@ export function recordCodexNativeReadActivity(params: {
   if (!threadId) return;
   const conversationKey = normalizePositiveInt(params.scope.conversationKey);
   if (!conversationKey) return;
+  if (
+    areConversationWritesFrozen(conversationKey) ||
+    (Number.isFinite(params.scope.conversationGeneration) &&
+      !isConversationWriteGenerationCurrent(
+        conversationKey,
+        Number(params.scope.conversationGeneration),
+      ))
+  ) {
+    return;
+  }
   const entries = buildToolEntries({
     event: params.event,
     scope: params.scope,
@@ -344,6 +384,7 @@ export function recordCodexNativeReadActivity(params: {
   const key = ledgerKey({
     profileSignature: params.scope.profileSignature,
     conversationKey,
+    instanceID: params.scope.instanceID,
     threadId,
   });
   let ledger = readLedger.get(key);
@@ -373,6 +414,7 @@ function formatLedgerLine(entry: NativeReadLedgerEntry): string {
 export function buildCodexNativePriorReadContextBlock(params: {
   profileSignature?: string;
   conversationKey: number;
+  instanceID?: string;
   threadId?: string;
 }): string {
   const threadId = normalizeText(params.threadId, 256);
@@ -380,6 +422,7 @@ export function buildCodexNativePriorReadContextBlock(params: {
   const key = ledgerKey({
     profileSignature: params.profileSignature,
     conversationKey: params.conversationKey,
+    instanceID: params.instanceID,
     threadId,
   });
   const ledger = readLedger.get(key);

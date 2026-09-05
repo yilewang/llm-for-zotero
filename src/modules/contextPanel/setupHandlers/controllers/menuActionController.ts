@@ -41,6 +41,8 @@ export type ResponseMenuTarget = {
 
 type ResponseActionKind = "copy" | "note" | "fork" | "delete";
 
+const inFlightResponseNoteSaves = new Map<string, Promise<void>>();
+
 type ResponseTurnReference = {
   conversationKey: number;
   userTimestamp: number;
@@ -95,6 +97,8 @@ type MenuActionControllerDeps = {
     conversationKey: number;
     userTimestamp: number;
     assistantTimestamp: number;
+    userMessageID?: number;
+    assistantMessageID?: number;
   }) => Promise<void>;
   forkConversationFromTurn: (target: {
     item: Zotero.Item;
@@ -261,7 +265,27 @@ function findRenderedMermaidSvgForSource(
   return null;
 }
 
-async function saveResponseTargetAsNote(
+function buildResponseNoteSaveKey(
+  target: NonNullable<ResponseMenuTarget>,
+): string {
+  const itemId = Number(target.item?.id || 0);
+  const conversationKey = parsePositiveFiniteNumber(target.conversationKey);
+  const assistantTimestamp = parsePositiveFiniteNumber(
+    target.assistantTimestamp,
+  );
+  if (conversationKey && assistantTimestamp) {
+    return `${itemId}:${conversationKey}:${assistantTimestamp}`;
+  }
+  return [
+    itemId,
+    target.modelName,
+    target.queryText?.slice(0, 80) || "",
+    target.contentText.slice(0, 160),
+    target.contentText.length,
+  ].join(":");
+}
+
+async function saveResponseTargetAsNoteOnce(
   deps: MenuActionControllerDeps,
   target: ResponseMenuTarget,
   setStatusMessage: (
@@ -299,7 +323,7 @@ async function saveResponseTargetAsNote(
         Number.isFinite(targetItem.libraryID) && targetItem.libraryID > 0
           ? Math.floor(targetItem.libraryID)
           : deps.getCurrentLibraryID();
-      await createAssistantResponseNote({
+      const result = await createAssistantResponseNote({
         destination: { kind: "standalone", libraryID },
         contentText,
         queryText,
@@ -309,10 +333,17 @@ async function saveResponseTargetAsNote(
         generatedImages,
         figureRender,
       });
-      setStatusMessage(t("Created a new note"), "ready");
+      setStatusMessage(
+        t(
+          result.warnings?.length
+            ? "Created a new note with warnings"
+            : "Created a new note",
+        ),
+        result.warnings?.length ? "warning" : "ready",
+      );
       return;
     }
-    await createAssistantResponseNote({
+    const result = await createAssistantResponseNote({
       destination: { kind: "item", item: targetItem },
       contentText,
       queryText,
@@ -322,10 +353,46 @@ async function saveResponseTargetAsNote(
       generatedImages,
       figureRender,
     });
-    setStatusMessage(t("Created a new note"), "ready");
+    setStatusMessage(
+      t(
+        result.warnings?.length
+          ? "Created a new note with warnings"
+          : "Created a new note",
+      ),
+      result.warnings?.length ? "warning" : "ready",
+    );
   } catch (err) {
     deps.logError("Create note failed:", err);
     setStatusMessage(t("Failed to create note"), "error");
+  }
+}
+
+async function saveResponseTargetAsNote(
+  deps: MenuActionControllerDeps,
+  target: ResponseMenuTarget,
+  setStatusMessage: (
+    message: string,
+    level: "ready" | "warning" | "error",
+  ) => void,
+): Promise<void> {
+  if (!target) {
+    await saveResponseTargetAsNoteOnce(deps, target, setStatusMessage);
+    return;
+  }
+  const key = buildResponseNoteSaveKey(target);
+  const existing = inFlightResponseNoteSaves.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+  const pending = saveResponseTargetAsNoteOnce(deps, target, setStatusMessage);
+  inFlightResponseNoteSaves.set(key, pending);
+  try {
+    await pending;
+  } finally {
+    if (inFlightResponseNoteSaves.get(key) === pending) {
+      inFlightResponseNoteSaves.delete(key);
+    }
   }
 }
 
@@ -356,7 +423,13 @@ async function queueResponseTurnDeletion(
     setStatusMessage(t("Cannot delete while generating"), "ready");
     return;
   }
-  await deps.queueTurnDeletion(normalized);
+  await deps.queueTurnDeletion({
+    ...normalized,
+    ...(pair.userMessage.id ? { userMessageID: pair.userMessage.id } : {}),
+    ...(pair.assistantMessage.id
+      ? { assistantMessageID: pair.assistantMessage.id }
+      : {}),
+  });
 }
 
 function normalizeTurnTarget(
@@ -489,10 +562,24 @@ export function attachMenuActionController(
         setStatusMessage(t("No deletable turn found"), "error");
         return;
       }
+      const promptPair = findResponseTurnPair(
+        deps.getHistory(Math.floor(target.conversationKey)),
+        {
+          conversationKey: Math.floor(target.conversationKey),
+          userTimestamp: Math.floor(target.userTimestamp),
+          assistantTimestamp: Math.floor(target.assistantTimestamp),
+        },
+      );
       await deps.queueTurnDeletion({
         conversationKey: Math.floor(target.conversationKey),
         userTimestamp: Math.floor(target.userTimestamp),
         assistantTimestamp: Math.floor(target.assistantTimestamp),
+        ...(promptPair?.userMessage.id
+          ? { userMessageID: promptPair.userMessage.id }
+          : {}),
+        ...(promptPair?.assistantMessage.id
+          ? { assistantMessageID: promptPair.assistantMessage.id }
+          : {}),
       });
     });
     deps.promptMenuForkBtn?.addEventListener("click", async (e: Event) => {
@@ -556,16 +643,25 @@ export function attachMenuActionController(
           setStatusMessage(t("No chat history detected."), "ready");
           return;
         }
-        if (deps.isGlobalMode()) {
-          await createStandaloneNoteFromChatHistory(currentLibraryID, history, {
-            figureRender: buildNoteFigureRenderOptions(deps),
-          });
-        } else {
-          await createNoteFromChatHistory(currentItem, history, {
-            figureRender: buildNoteFigureRenderOptions(deps),
-          });
-        }
-        setStatusMessage(t("Saved chat history to new note"), "ready");
+        const result = deps.isGlobalMode()
+          ? await createStandaloneNoteFromChatHistory(
+              currentLibraryID,
+              history,
+              {
+                figureRender: buildNoteFigureRenderOptions(deps),
+              },
+            )
+          : await createNoteFromChatHistory(currentItem, history, {
+              figureRender: buildNoteFigureRenderOptions(deps),
+            });
+        setStatusMessage(
+          t(
+            result.warnings?.length
+              ? "Saved chat history to new note with warnings"
+              : "Saved chat history to new note",
+          ),
+          result.warnings?.length ? "warning" : "ready",
+        );
       } catch (err) {
         deps.logError("Save chat history note failed:", err);
         setStatusMessage(t("Failed to save chat history"), "error");

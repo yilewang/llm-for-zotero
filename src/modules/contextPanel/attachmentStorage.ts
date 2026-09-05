@@ -5,6 +5,11 @@ import {
   joinLocalPath,
   toFileUrl,
 } from "../../utils/localPath";
+import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  withConversationWriteLock,
+} from "../../shared/conversationWriteFence";
 
 export const ATTACHMENT_BLOBS_TABLE = "llm_for_zotero_attachment_blobs";
 
@@ -464,13 +469,27 @@ export async function persistConversationAttachmentFile(
   fileName: string,
   bytes: Uint8Array,
 ): Promise<string> {
-  const dirPath = getConversationDir(conversationKey);
-  await ensureDir(dirPath);
-  // Conversation uploads use stable path by filename so re-uploading the same
-  // file name in the same chat overwrites instead of creating duplicates.
-  const targetPath = getConversationAttachmentPath(conversationKey, fileName);
-  await writeBytes(targetPath, bytes);
-  return targetPath;
+  return withConversationWriteLock(conversationKey, async () => {
+    if (
+      isConversationKeyRetiredInMemory(conversationKey) ||
+      areConversationWritesFrozen(conversationKey)
+    ) {
+      throw new Error("Conversation key is permanently retired");
+    }
+    const dirPath = getConversationDir(conversationKey);
+    await ensureDir(dirPath);
+    // Conversation uploads use stable path by filename so re-uploading the same
+    // file name in the same chat overwrites instead of creating duplicates.
+    const targetPath = getConversationAttachmentPath(conversationKey, fileName);
+    if (
+      isConversationKeyRetiredInMemory(conversationKey) ||
+      areConversationWritesFrozen(conversationKey)
+    ) {
+      throw new Error("Conversation key is permanently retired");
+    }
+    await writeBytes(targetPath, bytes);
+    return targetPath;
+  });
 }
 
 export async function copyAttachmentFileToNoteDir(
@@ -485,11 +504,110 @@ export async function copyAttachmentFileToNoteDir(
   return targetPath;
 }
 
-export async function removeConversationAttachmentFiles(
+async function removeConversationAttachmentFilesUnlocked(
   conversationKey: number,
+  expectedInstanceID?: string,
 ): Promise<void> {
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+  const instanceID = String(expectedInstanceID || "").trim();
+  // Conversation upload directories historically used the recyclable numeric
+  // key.  Never remove one by key alone: a newer instance may already own the
+  // same directory after a restart or an explicit key reuse.
+  if (!instanceID) return;
+  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
+    .Zotero?.DB;
+  if (typeof db?.queryAsync !== "function") return;
+  const catalogTables = [
+    {
+      name: "llm_for_zotero_conversation_registry",
+      instanceColumn: "instance_id",
+      keyColumn: "legacy_conversation_key",
+    },
+    {
+      name: "llm_for_zotero_global_conversations",
+      instanceColumn: "conversation_instance_id",
+      keyColumn: "conversation_key",
+    },
+    {
+      name: "llm_for_zotero_paper_conversations",
+      instanceColumn: "conversation_instance_id",
+      keyColumn: "conversation_key",
+    },
+    {
+      name: "llm_for_zotero_claude_conversations",
+      instanceColumn: "conversation_instance_id",
+      keyColumn: "conversation_key",
+    },
+    {
+      name: "llm_for_zotero_codex_conversations",
+      instanceColumn: "conversation_instance_id",
+      keyColumn: "conversation_key",
+    },
+  ];
+  let sawCurrentInstance = false;
+  let sawCatalogRow = false;
+  for (const table of catalogTables) {
+    let rows: Array<{ instanceID?: unknown }> | undefined;
+    try {
+      rows = (await (
+        db.queryAsync as (sql: string, params?: unknown[]) => Promise<unknown>
+      )(
+        `SELECT ${table.instanceColumn} AS instanceID
+         FROM ${table.name}
+         WHERE ${table.keyColumn} = ?
+         LIMIT 1`,
+        [Math.floor(conversationKey)],
+      )) as Array<{ instanceID?: unknown }> | undefined;
+    } catch (error) {
+      if (/no such table|no table/i.test(String(error))) continue;
+      throw error;
+    }
+    if (rows?.length) sawCatalogRow = true;
+    const currentInstanceID = String(rows?.[0]?.instanceID || "").trim();
+    if (!currentInstanceID) {
+      // A live row without an identity witness is not safe to classify as the
+      // deleted instance.  Preserve its numeric-key directory.
+      if (rows?.length) return;
+      continue;
+    }
+    if (currentInstanceID !== instanceID) {
+      // A different instance owns this recyclable key.  Preserve its files.
+      return;
+    }
+    sawCurrentInstance = true;
+  }
+  // If a catalog row exists but the registry/catalog query could not expose
+  // its identity, fail closed rather than deleting a potentially newer file
+  // set.  A completely absent row is the normal post-delete case.
+  if (!sawCurrentInstance) {
+    if (sawCatalogRow) return;
+    const tombstoneRows = (await (
+      db.queryAsync as (sql: string, params?: unknown[]) => Promise<unknown>
+    )(
+      `SELECT 1 AS present
+       FROM llm_for_zotero_conversation_deletion_tombstones
+       WHERE conversation_key = ?
+       LIMIT 1`,
+      [Math.floor(conversationKey)],
+    ).catch((error: unknown) => {
+      if (/no such table|no table/i.test(String(error))) return [];
+      throw error;
+    })) as Array<{ present?: unknown }> | undefined;
+    if (!tombstoneRows?.length) return;
+  }
   await removePath(getConversationDir(Math.floor(conversationKey)), true);
+}
+
+export async function removeConversationAttachmentFiles(
+  conversationKey: number,
+  expectedInstanceID?: string,
+): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    removeConversationAttachmentFilesUnlocked(
+      conversationKey,
+      expectedInstanceID,
+    ),
+  );
 }
 
 export async function removeAttachmentFile(path: string): Promise<void> {

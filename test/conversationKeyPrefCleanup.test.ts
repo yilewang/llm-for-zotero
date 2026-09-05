@@ -104,10 +104,12 @@ describe("conversation key preference cleanup", function () {
     });
     assert.deepEqual(readMap(prefStore, "codexAppServerPaperConversationMap"), {
       valid: CODEX_PAPER_CONVERSATION_KEY_BASE + 1,
+      claude: CLAUDE_PAPER_CONVERSATION_KEY_BASE + 1,
     });
     assert.deepEqual(readMap(prefStore, "lastUsedPaperConversationMap"), {
       legacy: 42,
       extra: UPSTREAM_PAPER_CONVERSATION_KEY_BASE + 1,
+      runtime: CODEX_PAPER_CONVERSATION_KEY_BASE + 1,
     });
     assert.deepEqual(readMap(prefStore, "lastUsedGlobalConversationMap"), {
       valid: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE + 1,

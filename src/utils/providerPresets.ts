@@ -12,7 +12,9 @@ export type SupportedProviderPresetId =
   | "kimi"
   | "mimo"
   | "atlascloud"
-  | "copilot";
+  | "copilot"
+  | "ollama"
+  | "local_openai";
 
 export type ProviderPresetId = SupportedProviderPresetId | "customized";
 
@@ -30,6 +32,13 @@ export type ProviderPreset = {
   supportsEmbeddings?: boolean;
   /** Default embedding model name for providers that support embeddings. */
   defaultEmbeddingModel?: string;
+  /**
+   * Whether an API key is mandatory. Absent means required. Local runtimes
+   * (Ollama, LM Studio, llama.cpp, vLLM) serve unauthenticated by default, so
+   * the key field, the connection test and the model catalog must all work
+   * with it left blank.
+   */
+  requiresApiKey?: boolean;
 };
 
 const GENERAL_API_KEY_PROTOCOL_OPTIONS: ProviderProtocol[] = [
@@ -46,6 +55,7 @@ const CUSTOMIZED_API_KEY_PROTOCOL_OPTIONS: ProviderProtocol[] = [
 type ParsedApiBase = {
   hostname: string;
   pathname: string;
+  port: string;
 };
 
 function normalizeApiBase(apiBase: string): string {
@@ -60,10 +70,68 @@ function parseApiBase(apiBase: string): ParsedApiBase | null {
     return {
       hostname: parsed.hostname.trim().toLowerCase(),
       pathname: parsed.pathname.replace(/\/+$/, "") || "/",
+      port: parsed.port,
     };
   } catch (_err) {
     return null;
   }
+}
+
+/** Private IPv4 ranges (RFC1918) plus link-local, for LAN-hosted runtimes. */
+function isPrivateIPv4(hostname: string): boolean {
+  const octets = hostname.split(".");
+  if (octets.length !== 4) return false;
+  const parts = octets.map((part) => Number(part));
+  if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  // 169.254.0.0/16 link-local, e.g. a directly attached inference box.
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+function isLocalHostname(hostname: string): boolean {
+  if (!hostname) return false;
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    hostname === "host.docker.internal"
+  ) {
+    return true;
+  }
+  // 127.0.0.0/8 loopback and *.localhost both resolve to the local machine.
+  if (hostname.startsWith("127.")) return isPrivateOrLoopbackIPv4(hostname);
+  if (hostname.endsWith(".localhost")) return true;
+  // mDNS names published by a machine on the same LAN.
+  if (hostname.endsWith(".local")) return true;
+  return isPrivateIPv4(hostname);
+}
+
+function isPrivateOrLoopbackIPv4(hostname: string): boolean {
+  const octets = hostname.split(".");
+  if (octets.length !== 4) return false;
+  return octets.every((part) => {
+    const value = Number(part);
+    return Number.isInteger(value) && value >= 0 && value <= 255;
+  });
+}
+
+/**
+ * True when an API base points at a model server on this machine or the local
+ * network. Used to decide that an API key is optional and that requests may go
+ * over plain HTTP — never to override which provider family a model belongs
+ * to, since `deepseek-r1:8b` served by Ollama is still DeepSeek's weights.
+ */
+export function isLocalModelApiBase(apiBase: string): boolean {
+  const parsed = parseApiBase(apiBase);
+  return parsed ? isLocalHostname(parsed.hostname) : false;
 }
 
 function matchesPaths(pathname: string, paths: string[]): boolean {
@@ -94,6 +162,10 @@ const OPENAI_PATHS = [
 
 const GEMINI_PATHS = [
   "/",
+  "/v1",
+  "/v1/models",
+  "/v1alpha",
+  "/v1alpha/models",
   "/v1beta",
   "/v1beta/models",
   "/v1beta/openai",
@@ -138,10 +210,37 @@ const QWEN_PATHS = [
   "/api/v2/apps/protocols/compatible-mode/v1",
   "/api/v2/apps/protocols/compatible-mode/v1/responses",
 ];
-const KIMI_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const KIMI_PATHS = [
+  "/",
+  "/v1",
+  "/v1/chat/completions",
+  // Kimi-for-Coding subscription endpoint (api.kimi.com).
+  "/coding",
+  "/coding/v1",
+  "/coding/v1/chat/completions",
+];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const ATLASCLOUD_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
+
+const OLLAMA_DEFAULT_PORT = "11434";
+
+/**
+ * Ollama is claimed when the base is local and either sits on its default port
+ * or already names an /api path. Anything else local falls through to the
+ * generic OpenAI-compatible preset below, so LM Studio (1234), llama.cpp (8080)
+ * and vLLM (8000) are not mislabelled.
+ */
+function matchesOllamaBase(apiBase: string): boolean {
+  const parsed = parseApiBase(apiBase);
+  if (!parsed || !isLocalHostname(parsed.hostname)) return false;
+  if (parsed.port === OLLAMA_DEFAULT_PORT) return true;
+  return parsed.pathname === "/api" || parsed.pathname.startsWith("/api/");
+}
+
+function matchesLocalOpenAIBase(apiBase: string): boolean {
+  return isLocalModelApiBase(apiBase);
+}
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -254,9 +353,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultProtocol: "openai_chat_compat",
     supportedProtocols: ["openai_chat_compat"],
     helperText:
-      "Preset uses Moonshot's international API. Use api.moonshot.cn for China.",
+      "Moonshot platform keys use api.moonshot.ai (api.moonshot.cn for China). " +
+      "Kimi coding-plan keys only work with https://api.kimi.com/coding/v1.",
     matches: makeHostAndPathMatcher(
-      ["api.moonshot.cn", "api.moonshot.ai"],
+      ["api.moonshot.cn", "api.moonshot.ai", "api.kimi.com"],
       KIMI_PATHS,
     ),
     supportsEmbeddings: false,
@@ -293,7 +393,44 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     matches: makeHostAndPathMatcher(["api.githubcopilot.com"], COPILOT_PATHS),
     supportsEmbeddings: false,
   },
+  // Local runtimes go last: their matchers accept broad local hosts, so a
+  // hosted preset must get the chance to claim the base first. Within the pair,
+  // ollama must precede local_openai — detectProviderPreset returns the first
+  // match and local_openai accepts every local host.
+  {
+    id: "ollama",
+    label: "Ollama (local)",
+    defaultApiBase: "http://localhost:11434",
+    defaultProtocol: "ollama_native",
+    supportedProtocols: ["ollama_native", "openai_chat_compat"],
+    helperText:
+      "Preset uses Ollama's native /api/chat endpoint, which separates thinking " +
+      "from the answer and honours the think parameter. No API key required.",
+    matches: matchesOllamaBase,
+    supportsEmbeddings: true,
+    defaultEmbeddingModel: "nomic-embed-text",
+    requiresApiKey: false,
+  },
+  {
+    id: "local_openai",
+    label: "Local (OpenAI-compatible)",
+    defaultApiBase: "http://localhost:1234/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat", "responses_api"],
+    helperText:
+      "For LM Studio, llama.cpp, vLLM, Jan and other local OpenAI-compatible " +
+      "servers. No API key required.",
+    matches: matchesLocalOpenAIBase,
+    supportsEmbeddings: true,
+    requiresApiKey: false,
+  },
 ];
+
+/** True when the preset serves unauthenticated, so a blank API key is valid. */
+export function providerPresetRequiresApiKey(id: ProviderPresetId): boolean {
+  if (id === "customized") return true;
+  return getProviderPreset(id).requiresApiKey !== false;
+}
 
 export function getProviderPreset(
   id: SupportedProviderPresetId,
@@ -318,6 +455,12 @@ export function getProviderPresetProtocolOptions(
     return [...CUSTOMIZED_API_KEY_PROTOCOL_OPTIONS];
   }
   const preset = getProviderPreset(id);
+  // Local runtimes speak exactly what they declare. Appending the general
+  // hosted options would offer anthropic_messages against an Ollama or
+  // llama.cpp server, which never serves it.
+  if (preset.requiresApiKey === false) {
+    return dedupeProtocols([...preset.supportedProtocols]);
+  }
   return dedupeProtocols([
     ...preset.supportedProtocols,
     ...GENERAL_API_KEY_PROTOCOL_OPTIONS,

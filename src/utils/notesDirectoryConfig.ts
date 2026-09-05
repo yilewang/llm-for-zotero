@@ -22,9 +22,14 @@ export type NotesDirectoryConfig = {
   nickname: string;
 };
 
-export type NotesDirectoryWritePolicy = NotesDirectoryConfig & {
-  enforceDefaultTarget: boolean;
-};
+/**
+ * Path information attached to note-writing requests. This is purely
+ * informational: it never overrides the path the agent chooses. Its only
+ * enforcement consumer is run_command's channel rule, which redirects
+ * Markdown note writes to file_io (same paths, same content — just the
+ * tool that carries undo and overwrite confirmation).
+ */
+export type NotesDirectoryWritePolicy = NotesDirectoryConfig;
 
 function getPrefs(): ZoteroPrefsLike | null {
   return (
@@ -115,7 +120,7 @@ export function buildNotesDirectoryConfigSection(): string {
     `- Default folder: ${notesConfig.defaultFolder}`,
     `- Default target path: ${notesConfig.defaultTargetPath}`,
     `- Default note file template: ${joinLocalPath(notesConfig.defaultTargetPath, "<filename>.md")}`,
-    `- Rule: when the user does not explicitly specify another folder, write file-based notes directly under Default target path. Do not append Default folder to Default target path again.`,
+    `- Rule: Default target path is the default destination, not a constraint. When neither the user's message nor their skill customizations direct otherwise, write file-based notes directly under it (do not append Default folder to Default target path again). When the user's message or skill customizations specify another folder, layout, or path pattern, follow that instead — subdirectories are created automatically.`,
     `- Attachments folder: ${notesConfig.attachmentsFolder} (relative to notes directory root)`,
   );
   if (notesConfig.attachmentsPath) {
@@ -147,59 +152,6 @@ export function isLocalPathInsideOrEqual(
   );
 }
 
-export function getLocalPathBasename(path: string): string {
-  return (
-    path
-      .split(/[\\/]+/)
-      .filter(Boolean)
-      .pop() || ""
-  );
-}
-
-function userTextSpecifiesCustomNoteFolder(
-  userText: string | undefined,
-  config: NotesDirectoryConfig,
-): boolean {
-  const text = (userText || "").trim();
-  if (!text) return false;
-  const defaultFolder = config.defaultFolder.trim();
-  const nickname = config.nickname.trim();
-  const pathLikeMatch = text.match(
-    /\b(?:to|into|in|under|inside|as)\s+["'`]?((?:~\/|\/|[A-Za-z]:[\\/]|[\w .-]+[\\/])[^"'`,.;\n]+)/i,
-  );
-  if (pathLikeMatch?.[1]?.trim()) return true;
-  const customFolderPattern =
-    /\b(?:folder|directory|subfolder)\s+["'`]?([^"'`,.;\n]+)/i;
-  const folderMatch = text.match(customFolderPattern);
-  if (!folderMatch?.[1]) return false;
-  const requested = folderMatch[1].trim().replace(/[\\/]+$/g, "");
-  if (!requested) return false;
-  const requestedLower = requested.toLowerCase();
-  if (defaultFolder && requestedLower === defaultFolder.toLowerCase()) {
-    return false;
-  }
-  if (nickname && requestedLower === nickname.toLowerCase()) {
-    return false;
-  }
-  return true;
-}
-
-export function buildNotesDirectoryWritePolicy(
-  params: {
-    userText?: string;
-  } = {},
-): NotesDirectoryWritePolicy | null {
-  const config = getNotesDirectoryConfig();
-  if (!config) return null;
-  return {
-    ...config,
-    enforceDefaultTarget: !userTextSpecifiesCustomNoteFolder(
-      params.userText,
-      config,
-    ),
-  };
-}
-
 function readStringField(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   return typeof value === "string" ? value.trim() : "";
@@ -220,6 +172,5 @@ export function parseNotesDirectoryWritePolicy(
     attachmentsFolder: readStringField(record, "attachmentsFolder"),
     attachmentsPath: readStringField(record, "attachmentsPath"),
     nickname: readStringField(record, "nickname"),
-    enforceDefaultTarget: record.enforceDefaultTarget !== false,
   };
 }

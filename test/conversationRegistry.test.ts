@@ -6,6 +6,9 @@ import {
   inferSinglePaperItemIdFromContextRows,
   registerConversationScope,
   validateConversationScope,
+  getRegisteredConversationScope,
+  initConversationRegistryStore,
+  resetConversationRegistryStoreInitForTests,
 } from "../src/shared/conversationRegistry";
 import { repairRecoverableMessageConversationIDs } from "../src/shared/conversationMessageIdentityRepair";
 
@@ -17,6 +20,71 @@ describe("conversation registry", function () {
 
   afterEach(function () {
     globalScope.Zotero = originalZotero;
+    resetConversationRegistryStoreInitForTests();
+  });
+
+  // getRegisteredConversationScope awaits schema preparation on every lookup,
+  // from ~30 call sites including message append and history rendering. When
+  // that work was unmemoized each lookup paid a PRAGMA, a backfill scan, and
+  // -- because the legacy-key index was dropped and recreated unconditionally
+  // -- a full index rebuild over the registry table.
+  it("prepares the registry schema once per database handle", async function () {
+    resetConversationRegistryStoreInitForTests();
+    const statements: string[] = [];
+    globalScope.Zotero = {
+      Profile: { dir: "/tmp/llm-for-zotero-registry-init-test" },
+      DB: {
+        queryAsync: async (sql: string) => {
+          statements.push(sql);
+          return [];
+        },
+      },
+    };
+
+    await initConversationRegistryStore();
+    const afterFirst = statements.length;
+    assert.isAbove(afterFirst, 0, "first call must prepare the schema");
+
+    for (let i = 0; i < 5; i += 1) {
+      await getRegisteredConversationScope(1234);
+    }
+
+    const schemaWork = statements
+      .slice(afterFirst)
+      .filter((sql) =>
+        /CREATE INDEX|DROP INDEX|CREATE TABLE|PRAGMA|ALTER TABLE/i.test(sql),
+      );
+    assert.deepEqual(
+      schemaWork,
+      [],
+      "repeat lookups must not redo schema or index work",
+    );
+  });
+
+  it("re-prepares the schema when the database handle changes", async function () {
+    resetConversationRegistryStoreInitForTests();
+    const makeDb = (sink: string[]) => ({
+      Profile: { dir: "/tmp/llm-for-zotero-registry-init-test" },
+      DB: {
+        queryAsync: async (sql: string) => {
+          sink.push(sql);
+          return [];
+        },
+      },
+    });
+    const first: string[] = [];
+    globalScope.Zotero = makeDb(first);
+    await initConversationRegistryStore();
+    assert.isAbove(first.length, 0);
+
+    const second: string[] = [];
+    globalScope.Zotero = makeDb(second);
+    await initConversationRegistryStore();
+    assert.isAbove(
+      second.length,
+      0,
+      "a new handle (test fixture, profile switch) must re-initialize",
+    );
   });
 
   it("rejects scope and profile mismatches for a registered key", async function () {

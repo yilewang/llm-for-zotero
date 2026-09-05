@@ -1,4 +1,3 @@
-import { DEFAULT_SYSTEM_PROMPT } from "../utils/llmDefaults";
 import {
   ensureClaudeProjectSkillStructure,
   getClaudeProjectInstructionFile,
@@ -21,6 +20,15 @@ type IOUtilsLike = {
 
 const MANAGED_BEGIN_MARKER = "<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-BEGIN -->";
 const MANAGED_END_MARKER = "<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-END -->";
+const CLAUDE_MANAGED_CONTRACT_VERSION = 2;
+const CLAUDE_MANAGED_VERSION_MARKER = `<!-- LLM-FOR-ZOTERO:CLAUDE-CONTRACT-VERSION:${CLAUDE_MANAGED_CONTRACT_VERSION} -->`;
+const CLAUDE_MANAGED_FINGERPRINT_PREFIX =
+  "<!-- LLM-FOR-ZOTERO:CLAUDE-STOCK-FINGERPRINT:";
+// Behavior-section fingerprints for the two unmodified v1 stock templates.
+const KNOWN_STOCK_BEHAVIOR_FINGERPRINTS = new Set([
+  "fnv1a32-15002f10",
+  "fnv1a32-bcaf2d1b",
+]);
 
 function getIOUtils(): IOUtilsLike | undefined {
   return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
@@ -60,58 +68,70 @@ function getConfigModelInstructionLines(): string[] {
   ];
 }
 
-function getLegacyBootstrapInstructionTemplate(): string {
-  return [
-    "# Claude Code in Zotero",
-    "",
-    "This Claude runtime is embedded inside Zotero and is specialized for reading, comparing, and editing around academic papers.",
-    "",
-    "## Shared Zotero behavior",
-    DEFAULT_SYSTEM_PROMPT,
-    "",
-    "## Config model",
-    "- Project config is shared by all Claude runtimes within the current Zotero profile.",
-    "- Different Zotero profiles use different Claude runtime roots and different local conversation folders.",
-    "- Local config is scoped to the current conversation runtime folder.",
-    "- Put shared Zotero skills in `.claude/skills/` or `.claude/commands/` under the runtime root.",
-  ].join("\n");
-}
-
 export function getDefaultClaudeManagedInstructionBlock(): string {
-  return [
+  const fingerprintless = [
     "# Claude Code in Zotero",
+    CLAUDE_MANAGED_VERSION_MARKER,
     "",
-    "This Claude runtime is embedded inside Zotero and is specialized for reading, comparing, and editing around academic papers.",
-    "",
-    "## Shared Zotero behavior",
-    DEFAULT_SYSTEM_PROMPT,
-    "",
-    "## Claude runtime paper guidance",
-    "- Treat the user's Zotero library as the primary source of truth for library, collection, note, and paper questions. Do not default to describing the local runtime folder, plugin workspace, or project files unless the user is clearly asking about code or the runtime itself.",
-    "- Assume Claude can answer from the whole Zotero library, not only the currently open paper. For library-wide requests, reason across library metadata, collections, notes, selected papers, pinned papers, and conversation-visible retrieval results before defaulting to generic workspace exploration.",
-    "- When available, treat Zotero SQL-backed library metadata, MinerU parsed-text caches, and semantic embedding caches or retrieval indexes as valid evidence sources for whole-library questions.",
-    "- For broad library questions, first reason about the active Zotero scope: current paper, selected papers, pinned papers, current library, notes, local caches, and any available retrieval indexes. Prefer answering from those sources before falling back to generic workspace exploration.",
-    "- If the user's request is ambiguous between their Zotero library and the local project/runtime, prefer the Zotero interpretation unless surrounding evidence clearly points to code, files, or development work.",
-    "- For summary-like requests such as summarize, key points, main idea, takeaway, overview, or authors, prefer concise synthesis grounded in the source instead of exact blockquotes.",
-    "- Do not hunt for page numbers or exact quotations unless the user explicitly asks for evidence, quotes, exact wording, page references, or passage location.",
-    "- If a paper is marked for full-text reading on this turn, treat it as a high-priority reading target before answering.",
-    "- Treat selected papers as available turn context, and treat pinned papers as persistent background context.",
-    "- For bounded selected or pinned multi-paper synthesis, comparison, commonality, and theme questions, treat the selected papers as the requested evidence pool and prefer body-evidence coverage before answering.",
-    "- For broad questions about one paper, prefer one useful read then answer.",
-    "- For specific questions about methods, results, metrics, datasets, or exact claims, keep retrieval targeted and minimal.",
-    "- For large or unbounded multi-paper work, stage breadth first and report the coverage frontier instead of pretending every paper was deeply read.",
-    "- For figures and tables, prefer localized section reads over scanning the whole paper.",
-    "- For library or collection analysis, prefer one local aggregation pass over enumerating large result sets in chat.",
-    "- Default to the shortest path that can produce a correct answer.",
+    "This managed block contains stable profile configuration only.",
+    "Live Zotero behavior, citation rules, tool routing, selected resources, and model limitations are supplied by the bridge on each turn.",
     "",
     ...getConfigModelInstructionLines(),
   ].join("\n");
+  const lines = fingerprintless.split("\n");
+  lines.splice(
+    2,
+    0,
+    `${CLAUDE_MANAGED_FINGERPRINT_PREFIX}${fingerprintText(fingerprintless)} -->`,
+  );
+  return lines.join("\n");
 }
 
 function normalizeManagedInstructionBlockContent(content: string): string {
   return String(content || "")
     .replace(/\r\n?/g, "\n")
     .trim();
+}
+
+function fingerprintText(content: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function behaviorSectionForFingerprint(content: string): string {
+  const normalized = normalizeManagedInstructionBlockContent(content);
+  const configIndex = normalized.indexOf("\n## Config model");
+  return (
+    configIndex >= 0 ? normalized.slice(0, configIndex) : normalized
+  ).trim();
+}
+
+function hasValidStockFingerprint(content: string): boolean {
+  const normalized = normalizeManagedInstructionBlockContent(content);
+  const fingerprintPattern = new RegExp(
+    `^${CLAUDE_MANAGED_FINGERPRINT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\s>]+) -->$`,
+    "m",
+  );
+  const match = normalized.match(fingerprintPattern);
+  if (!match) return false;
+  const fingerprintless = normalized
+    .replace(`${match[0]}\n`, "")
+    .replace(`\n${match[0]}`, "")
+    .trim();
+  return fingerprintText(fingerprintless) === match[1];
+}
+
+function isKnownStockInstructionBlock(content: string): boolean {
+  const normalized = normalizeManagedInstructionBlockContent(content);
+  const managed = extractManagedInstructionBlock(normalized) || normalized;
+  if (hasValidStockFingerprint(managed)) return true;
+  return KNOWN_STOCK_BEHAVIOR_FINGERPRINTS.has(
+    fingerprintText(behaviorSectionForFingerprint(managed)),
+  );
 }
 
 function getManagedInstructionBlockFromSettings(): string {
@@ -131,6 +151,9 @@ function getBootstrapInstructionTemplate(
 function upgradeManagedInstructionBlock(content: string): string {
   const normalized = normalizeManagedInstructionBlockContent(content);
   if (!normalized) return getDefaultClaudeManagedInstructionBlock();
+  if (isKnownStockInstructionBlock(normalized)) {
+    return getDefaultClaudeManagedInstructionBlock();
+  }
   if (normalized.includes("Shared Zotero profile runtime root:")) {
     return normalized;
   }
@@ -144,6 +167,12 @@ function upgradeManagedInstructionBlock(content: string): string {
     return replacement;
   }
   return `${normalized}\n\n${replacement}`;
+}
+
+export function upgradeManagedInstructionBlockForTests(
+  content: string,
+): string {
+  return upgradeManagedInstructionBlock(content);
 }
 
 async function writeIfMissing(path: string, content: string): Promise<void> {
@@ -225,7 +254,7 @@ export async function readClaudeProjectManagedInstructionBlock(): Promise<
   if (!raw) return null;
   const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
   const current = new TextDecoder("utf-8").decode(bytes);
-  if (current.trim() === getLegacyBootstrapInstructionTemplate().trim()) {
+  if (isKnownStockInstructionBlock(current)) {
     return getDefaultClaudeManagedInstructionBlock();
   }
   return extractManagedInstructionBlock(current);
@@ -253,10 +282,9 @@ export async function updateClaudeProjectManagedInstructionBlock(
   const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
   const current = new TextDecoder("utf-8").decode(bytes);
   const currentTrimmed = current.trim();
-  const next =
-    currentTrimmed === getLegacyBootstrapInstructionTemplate().trim()
-      ? getBootstrapInstructionTemplate(managedBlock)
-      : spliceManagedInstructionBlock(current, managedBlock);
+  const next = isKnownStockInstructionBlock(currentTrimmed)
+    ? getBootstrapInstructionTemplate(managedBlock)
+    : spliceManagedInstructionBlock(current, managedBlock);
   if (next === current) return;
   await io.write(path, new TextEncoder().encode(next));
 }

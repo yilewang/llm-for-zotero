@@ -17,15 +17,16 @@ import { resolveRequestContentInputs } from "./messageBuilder";
 import {
   buildResponsesContinuationInput,
   buildResponsesInitialInput,
-  limitNormalizedResponsesStep,
   type ResponsesPayload,
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
+import { buildResponsesFunctionTools } from "./shared";
+import { CODEX_DIRECT_RESPONSES_URL } from "../../codexAuth/auth";
 import {
-  buildResponsesFunctionTools,
-  getToolContinuationMessages,
-} from "./shared";
+  assertCodexDirectModelAvailable,
+  sanitizeCodexDirectReasoningConfig,
+} from "../../codexAuth/modelCatalog";
 
 function isCodexAuthRequest(request: AgentRuntimeRequest): boolean {
   return (
@@ -37,7 +38,6 @@ function isCodexAuthRequest(request: AgentRuntimeRequest): boolean {
 }
 
 export {
-  limitNormalizedResponsesStep,
   normalizeResponsesStepFromPayload as normalizeStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
@@ -84,7 +84,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
       "You are the agent runtime inside a Zotero plugin.";
     const followupInput = this.conversationItems
       ? await buildResponsesContinuationInput(
-          getToolContinuationMessages(params.messages),
+          params.continuationMessages || [],
           {
             resolveFilePart: async (part) => [
               {
@@ -99,22 +99,42 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
     const inputItems = this.conversationItems
       ? [...this.conversationItems, ...followupInput]
       : initialInput.input;
-    const url = resolveProviderTransportEndpoint({
-      protocol: "codex_responses",
-      apiBase: request.apiBase || "",
-    });
+    const isCodexDirect = request.authMode === "codex_auth";
+    if (isCodexDirect) {
+      assertCodexDirectModelAvailable(request.model || "");
+    }
+    const url = isCodexDirect
+      ? CODEX_DIRECT_RESPONSES_URL
+      : resolveProviderTransportEndpoint({
+          protocol: "codex_responses",
+          apiBase: request.apiBase || "",
+        });
+    const initialReasoning = isCodexDirect
+      ? sanitizeCodexDirectReasoningConfig(
+          request.model || "",
+          request.reasoning,
+        )
+      : request.reasoning;
     const response = await postWithReasoningFallback({
       url,
       auth,
       modelName: request.model,
-      initialReasoning: request.reasoning,
+      initialReasoning,
       buildPayload: (reasoningOverride) => {
         const reasoningPayload = buildReasoningPayload(
-          reasoningOverride,
+          isCodexDirect
+            ? sanitizeCodexDirectReasoningConfig(
+                request.model || "",
+                reasoningOverride,
+              )
+            : reasoningOverride,
           true,
           request.model,
           request.apiBase,
           "codex_responses",
+          isCodexDirect
+            ? undefined
+            : { profileOverride: request.advanced?.profileOverride },
         );
         return {
           model: request.model,
@@ -127,7 +147,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           store: false,
           stream: true,
           ...reasoningPayload.extra,
-          ...(reasoningPayload.omitTemperature
+          ...(isCodexDirect || reasoningPayload.omitTemperature
             ? {}
             : {
                 temperature: normalizeTemperature(
@@ -138,18 +158,16 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
       },
       signal: params.signal,
     });
-    const normalized = limitNormalizedResponsesStep(
-      response.body
-        ? await parseResponsesStepStream(
-            response.body,
-            params.onTextDelta,
-            params.onReasoning,
-            params.onUsage,
-          )
-        : normalizeResponsesStepFromPayload(
-            (await response.json()) as ResponsesPayload,
-          ),
-    );
+    const normalized = response.body
+      ? await parseResponsesStepStream(
+          response.body,
+          params.onTextDelta,
+          params.onReasoning,
+          params.onUsage,
+        )
+      : normalizeResponsesStepFromPayload(
+          (await response.json()) as ResponsesPayload,
+        );
 
     this.conversationItems = [...inputItems, ...normalized.outputItems];
 

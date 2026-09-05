@@ -88,6 +88,31 @@ describe("providerProtocol", function () {
     }
   });
 
+  it("infers Gemini Native for Gemini hosts unless the OpenAI compat path is chosen", function () {
+    for (const apiBase of [
+      "https://generativelanguage.googleapis.com",
+      "https://generativelanguage.googleapis.com/v1beta",
+      "https://generativelanguage.googleapis.com/v1",
+      "https://generativelanguage.googleapis.com/v1alpha",
+    ]) {
+      assert.equal(
+        normalizeProviderProtocolForAuthMode({
+          authMode: "api_key",
+          apiBase,
+        }),
+        "gemini_native",
+        apiBase,
+      );
+    }
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
+      }),
+      "openai_chat_compat",
+    );
+  });
+
   it("keeps explicit protocol overrides over URL inference", function () {
     assert.equal(
       normalizeProviderProtocolForAuthMode({

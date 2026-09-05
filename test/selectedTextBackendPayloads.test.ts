@@ -11,6 +11,7 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
 } from "../src/shared/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 const selectedTextContext: SelectedTextContext = {
   text: "A highlighted claim on a late PDF page.",
@@ -87,16 +88,17 @@ describe("highlight-aware backend payloads", function () {
   });
 
   it("includes the locator and bounded context in plugin Agent messages", async function () {
-    const request: AgentRuntimeRequest = {
+    const request: AgentRuntimeRequest = resolvedAgentRequest({
       conversationKey: 30301,
       mode: "agent",
       userText: "Explain the claim.",
+      libraryID: 1,
       selectedTextContexts: [selectedTextContext],
       resolvedSelectedTextAnchors: [resolvedAnchor],
       selectedTexts: [selectedTextContext.text],
       selectedTextSources: ["pdf"],
       selectedTextPaperContexts: [selectedTextContext.paperContext],
-    };
+    });
     const messages = await buildAgentInitialMessages(request, [], []);
     const userMessage = [...messages]
       .reverse()
@@ -114,6 +116,7 @@ describe("highlight-aware backend payloads", function () {
       conversationKey: 30302,
       mode: "agent",
       userText: "Explain the claim.",
+      libraryID: 1,
       selectedTextContexts: [selectedTextContext],
       resolvedSelectedTextAnchors: [resolvedAnchor],
       selectedTexts: [selectedTextContext.text],

@@ -1,7 +1,7 @@
 ---
 id: evidence-based-qa
 description: Locate specific passages in selected papers or collections that support a given claim, returning quoted evidence with page and section citations. Not for general questions — use simple-paper-qa for those.
-version: 4
+version: 5
 contexts: single-paper,paper-set,library-corpus
 activation: auto
 match: /\b(what method|what approach|what technique|what model|how did they|how does it|what results?|what data|what dataset|what experiment|what metric|what performance|what accuracy|what baseline)\b/i
@@ -48,35 +48,8 @@ For a single-paper turn, call `paper_read({ mode:'targeted', query:'<the specifi
 Do NOT make additional retrieval calls just to decorate the answer.
 If bounded multi-paper coverage is still insufficient, make the specific follow-up read needed for the missing paper/dimension, or say what is missing rather than pretending.
 
-Use citations and short quotes to make important paper-specific claims checkable, not to decorate every paragraph.
-Use retrieved paper text as evidence for reasoning, not as material to rewrite.
-For paper-specific questions with exact passages available, state the answer in your own words, quote or anchor 1-3 high-signal snippets only when they support a key claim, then explain what each snippet establishes and how it answers the user's question.
-After a direct quote, do not merely paraphrase it; explain the inference, implication, limitation, or contrast it supports.
-A useful quote should do real work: define a term, show a method, report a result, state a limitation, capture the authors' interpretation, or resolve an ambiguity.
-Cite concrete claims about methods, datasets, results, definitions, equations, limitations, and the authors' own interpretations.
-Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
-For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
-`>` Markdown blockquotes are reserved only for direct original source text.
-Verified quote anchors are available only for direct source quotes; use the exact anchor token only when exact wording is useful.
-For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
-Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
-Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
-Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
-Never use quotes as decoration or as a substitute for reasoning.
-Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
-
-If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those
-anchor tokens for direct quotes instead of copying the quote/sourceLabel manually.
-Direct quote text must be copied verbatim in the original source language;
-never translate quote text to match the user's language.
-Put any translation outside the blockquote as explanation.
-If no quote anchor is provided for a direct quote, put the provided
-`sourceLabel` on the next non-empty line after the blockquote, before any
-commentary.
-Copy the Source label string exactly.
-Do not invent author/year/page/section labels.
-Do not write `[[source=...]]`, `section=...`, or `chunk=...`
-metadata in the final answer.
+Apply the system citation contract to paper-specific claims and direct quotations.
+Use only high-signal passages that establish the requested method, result, dataset, or claim, and explain what each passage shows.
 
 ### Budget
 

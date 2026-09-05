@@ -1,4 +1,4 @@
-import type { AgentToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition } from "../../types";
 import { fail, ok, validateObject } from "../shared";
 import { classifyRequest } from "../../model/requestClassifier";
 
@@ -7,7 +7,7 @@ type SelfContainedTestToolInput = {
   target?: string;
 };
 
-export function createSelfContainedTestTool(): AgentToolDefinition<
+export function createSelfContainedTestTool(): AgentWriteToolDefinition<
   SelfContainedTestToolInput,
   unknown
 > {
@@ -66,6 +66,9 @@ export function createSelfContainedTestTool(): AgentToolDefinition<
         target,
       });
     },
+    // This development-only tool exercises the confirmation UI but does not
+    // mutate Zotero or the filesystem.
+    planMutation: () => ({ effect: "none", reversibility: "full" }),
     createPendingAction: (input) => ({
       toolName: "self_contained_test_tool",
       title: "Review self-contained demo",
@@ -203,9 +206,12 @@ export function createSelfContainedTestTool(): AgentToolDefinition<
       });
     },
     execute: async (input) => ({
-      status: "ok",
-      saved: input.content,
-      target: input.target || "primary",
+      content: {
+        status: "ok",
+        saved: input.content,
+        target: input.target || "primary",
+      },
+      effect: "none",
     }),
     buildFollowupMessage: async (result) => ({
       role: "user",

@@ -16,6 +16,7 @@ import { OpenAIResponsesAgentAdapter } from "./openaiResponses";
 import { OpenAIChatCompatAgentAdapter } from "./openaiCompatible";
 import { AnthropicMessagesAgentAdapter } from "./anthropicMessages";
 import { GeminiNativeAgentAdapter } from "./geminiNative";
+import { OllamaNativeAgentAdapter } from "./ollamaNative";
 
 class CodexAppServerNativeOnlyAgentAdapter implements AgentModelAdapter {
   getCapabilities(_request: AgentRuntimeRequest): AgentModelCapabilities {
@@ -66,6 +67,9 @@ export function createAgentModelAdapter(
     // Gemini's OpenAI-compatible chat endpoint drops thought signatures on
     // returned tool calls, which breaks multi-step agent continuation.
     return new GeminiNativeAgentAdapter();
+  }
+  if (protocol === "ollama_native") {
+    return new OllamaNativeAgentAdapter();
   }
   if (protocol === "codex_responses") {
     return new CodexResponsesAgentAdapter();

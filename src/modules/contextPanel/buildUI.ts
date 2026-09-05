@@ -83,7 +83,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     hostBody.style.minWidth = "0";
     hostBody.style.width = "100%";
     hostBody.style.maxWidth = "100%";
-    hostBody.style.overflowX = "hidden";
+    // `clip`, not `hidden`: one-axis `hidden` forces computed overflow-y to
+    // `auto`, making the host a scroll container that can paint a second
+    // scrollbar beside the .llm-messages one.
+    hostBody.style.overflowX = "clip";
     hostBody.style.boxSizing = "border-box";
   }
 
@@ -258,11 +261,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const clearBtn = createElement(doc, "button", "llm-btn-icon llm-clear-btn", {
     id: "llm-clear",
     type: "button",
-    textContent: t("Clear"),
-    title: t("Clear"),
+    title: t("Delete conversation"),
   });
-  clearBtn.dataset.compact = "true";
-  clearBtn.setAttribute("aria-label", t("Clear"));
+  clearBtn.setAttribute("aria-label", t("Delete conversation"));
   headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);

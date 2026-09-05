@@ -4,7 +4,10 @@ import { clearCitationPageCache } from "./citationNavigationCache";
 import {
   findLargestUniqueQuoteTextAnchorMatch,
   normalizeLocatorText,
+  splitQuoteAtPairedInlineMath,
+  splitQuoteAtEllipsisInOrder,
   stripBoundaryEllipsis,
+  summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
 } from "./quoteTextSearch";
 import {
@@ -55,11 +58,37 @@ export type LivePdfSelectionLocateResult = {
   sourceMatchText?: string;
   sourceMatchKind?: QuoteTextSearchQueryKind;
   sourceMatchPageOccurrence?: number;
+  /** Coverage of the single matched span. */
   sourceMatchQuoteTokenCoverage?: number;
+  /**
+   * Coverage of the whole quote across every run this document accounts for,
+   * pooled over its pages.  A stitched quote scores low on the span figure
+   * above and high here; this is the one to judge "is this the paper?" by.
+   */
+  sourceMatchQuoteTokenSupportCoverage?: number;
+  /** Absolute count behind the coverage above. */
+  sourceMatchSupportedQuoteTokenCount?: number;
+  /** Longest single contiguous run this document shares with the quote. */
+  sourceMatchLongestRunTokenCount?: number;
   excerpt?: string;
   reason?: string;
   debugSummary?: string[];
 };
+
+export type LivePdfQuoteCertificate = {
+  contextItemId: number;
+  documentFingerprint: string;
+  pageIndex: number;
+  pageLabel?: string;
+  sourceMatchText: string;
+  sourceMatchKind: "exact" | "normalized-span";
+  sourceMatchPageOccurrence: number;
+};
+
+export type LivePdfQuoteVerification =
+  | { status: "matched"; certificate: LivePdfQuoteCertificate }
+  | { status: "absent"; documentFingerprint: string }
+  | { status: "defer"; reason: string };
 
 export type ExactQuoteJumpQueryAttempt = {
   query: string;
@@ -590,10 +619,109 @@ type IndexedLivePdfPageText = {
   textIndex: QuoteTextIndex;
 };
 
+type EllipsisSegmentLocation = {
+  pageIndex: number;
+  pageIndexes: number[];
+  sourceMatchText: string;
+  occurrenceIndex: number;
+};
+
+/** Drop the quotation marks a displayed quote is wrapped in. */
+function stripOuterQuoteMarks(value: string): string {
+  const text = (value || "").trim();
+  const paired =
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("\u201c") && text.endsWith("\u201d"));
+  return paired ? text.slice(1, -1).trim() : text;
+}
+
+/**
+ * A displayed quote often ends with a full stop the source sentence does not
+ * have, and the span matcher fails closed on a terminal sentence boundary.
+ * Retrying without it recovers the ordinary case without loosening matching.
+ */
+function segmentMatchVariants(segment: string): string[] {
+  const trimmed = segment.trim();
+  const withoutTerminal = trimmed.replace(/[.,;:!?]+$/u, "").trim();
+  return withoutTerminal && withoutTerminal !== trimmed
+    ? [trimmed, withoutTerminal]
+    : [trimmed];
+}
+
+/**
+ * Locate a quote that declares its own pieces with an ellipsis.
+ *
+ * Each piece must appear exactly once in the document and the pieces must
+ * appear in the order the quote gives them, compared by position within the
+ * page as well as across pages — same-page stitching is the common case, so an
+ * order rule that only compared page numbers would be vacuous exactly when it
+ * matters.  Together those make a coincidental assembly out of unrelated parts
+ * of a paper unlikely.
+ *
+ * Being an assembly is not by itself proof that this is the right paper: the
+ * caller still measures how much of the quote the document accounts for.  The
+ * reader lands on the first piece, since that is where the quote starts.
+ */
+function locateEllipsisSegmentsInIndexedPageTexts(
+  indexedPages: IndexedLivePdfPageText[],
+  quoteText: string,
+): EllipsisSegmentLocation | null {
+  const segments = splitQuoteAtEllipsisInOrder(stripOuterQuoteMarks(quoteText));
+  if (segments.length < 2) return null;
+
+  const located: Array<{
+    pageIndex: number;
+    sourceStart: number;
+    text: string;
+    occurrenceIndex: number;
+  }> = [];
+  for (const segment of segments) {
+    const hits = segmentMatchVariants(segment)
+      .map((variant) =>
+        indexedPages.flatMap((entry) =>
+          findQuoteSourceSpansAllowingLayoutArtifacts(
+            entry.textIndex,
+            variant,
+          ).map((span) => ({
+            pageIndex: entry.page.pageIndex,
+            sourceStart: span.sourceStart,
+            text: span.text.trim(),
+            occurrenceIndex: span.occurrenceIndex,
+          })),
+        ),
+      )
+      .find((found) => found.length > 0);
+    // Ambiguous or missing pieces make the assembly unverifiable, so the
+    // caller falls through to the weaker single-run rescue rather than guess.
+    if (!hits || hits.length !== 1) return null;
+    located.push(hits[0]);
+  }
+
+  for (let index = 1; index < located.length; index += 1) {
+    const previous = located[index - 1];
+    const current = located[index];
+    if (current.pageIndex < previous.pageIndex) return null;
+    if (
+      current.pageIndex === previous.pageIndex &&
+      current.sourceStart < previous.sourceStart
+    ) {
+      return null;
+    }
+  }
+  const first = located[0];
+  return {
+    pageIndex: first.pageIndex,
+    pageIndexes: located.map((entry) => entry.pageIndex),
+    sourceMatchText: first.text,
+    occurrenceIndex: first.occurrenceIndex,
+  };
+}
+
 function locateQuoteInIndexedPageTexts(
   indexedPages: IndexedLivePdfPageText[],
   quoteText: string,
   expectedPageIndex?: number | null,
+  options?: { exactOnly?: boolean },
 ): LivePdfSelectionLocateResult {
   const pages = indexedPages.map((entry) => entry.page);
   const cleanQuote = sanitizeText(quoteText || "").trim();
@@ -637,6 +765,72 @@ function locateQuoteInIndexedPageTexts(
         text: page.text,
       };
     });
+    // Pooled over every page, so a quote stitched across a page break is
+    // summarised for the document rather than for whichever page won.
+    const documentSupport = summarizeQuoteTextSupport(
+      searchEntries,
+      cleanQuote,
+      {
+        minQueryLength: 24,
+        rejectWeakQueries: true,
+      },
+    );
+    if (options?.exactOnly) {
+      return {
+        status: "not-found",
+        confidence: "none",
+        selectionText: cleanQuote,
+        normalizedSelection,
+        queryLabel: "Quote",
+        expectedPageIndex: expectedPageIndex ?? null,
+        computedPageIndex: null,
+        matchedPageIndexes: [],
+        totalMatches: 0,
+        pagesScanned: pages.length,
+        sourceMatchQuoteTokenSupportCoverage: documentSupport.coverage,
+        sourceMatchSupportedQuoteTokenCount:
+          documentSupport.supportedQuoteTokenCount,
+        sourceMatchLongestRunTokenCount: documentSupport.longestRunTokenCount,
+        reason: "The complete quote was not found in the live PDF text.",
+      };
+    }
+    // A quote written with an ellipsis declares its own pieces.  Locate them
+    // individually before falling back to "largest single run", which cannot
+    // resolve a quote whose longest piece happens to repeat in the document.
+    const segmentLocation = locateEllipsisSegmentsInIndexedPageTexts(
+      indexedPages,
+      cleanQuote,
+    );
+    if (segmentLocation) {
+      return {
+        status: "resolved",
+        confidence: "high",
+        selectionText: cleanQuote,
+        normalizedSelection,
+        queryLabel: "Quote",
+        expectedPageIndex: expectedPageIndex ?? null,
+        computedPageIndex: segmentLocation.pageIndex,
+        matchedPageIndexes: segmentLocation.pageIndexes,
+        totalMatches: segmentLocation.pageIndexes.length,
+        pagesScanned: pages.length,
+        sourceMatchText: segmentLocation.sourceMatchText,
+        sourceMatchKind: "ellipsis-segment",
+        sourceMatchPageOccurrence: segmentLocation.occurrenceIndex,
+        // Measured on the same filtered basis as every other branch.  Assuming
+        // completeness here would hand the caller's guard a number it never
+        // computed, which is the whole failure this rewrite exists to remove.
+        sourceMatchQuoteTokenCoverage: documentSupport.longestRunCoverage,
+        sourceMatchQuoteTokenSupportCoverage: documentSupport.coverage,
+        sourceMatchSupportedQuoteTokenCount:
+          documentSupport.supportedQuoteTokenCount,
+        sourceMatchLongestRunTokenCount: documentSupport.longestRunTokenCount,
+        reason:
+          "Every piece of the ellipsized quote matched exactly once, in order, in the live PDF text.",
+        debugSummary: [
+          `Matched ${segmentLocation.pageIndexes.length} quote segments across pages ${segmentLocation.pageIndexes.join(", ")}.`,
+        ],
+      };
+    }
     const sourceMatch = findLargestUniqueQuoteTextAnchorMatch(
       searchEntries,
       cleanQuote,
@@ -648,6 +842,8 @@ function locateQuoteInIndexedPageTexts(
     const matchedPage = sourceMatch
       ? pageByEntryId.get(sourceMatch.entryId)
       : undefined;
+    // Pooled over every page, so a quote stitched across a page break is
+    // summarised for the document rather than for whichever page won.
     if (sourceMatch && matchedPage) {
       return {
         status: "resolved",
@@ -662,12 +858,19 @@ function locateQuoteInIndexedPageTexts(
         pagesScanned: pages.length,
         sourceMatchText: sourceMatch.query,
         sourceMatchKind: sourceMatch.matchKind,
+        // The rescue only accepts a span that occurs once in the document, so
+        // its position on its own page is necessarily the first.
         sourceMatchPageOccurrence: 0,
         sourceMatchQuoteTokenCoverage: sourceMatch.quoteTokenCoverage,
+        sourceMatchQuoteTokenSupportCoverage: documentSupport.coverage,
+        sourceMatchSupportedQuoteTokenCount:
+          documentSupport.supportedQuoteTokenCount,
+        sourceMatchLongestRunTokenCount: documentSupport.longestRunTokenCount,
         reason:
           "The complete quote did not align, but its largest strong contiguous source span matched exactly once in the live PDF text.",
         debugSummary: [
           `Largest unique source span matched ${sourceMatch.matchedTokenCount}/${sourceMatch.quoteTokenCount} quote tokens.`,
+          `Document accounts for ${documentSupport.supportedQuoteTokenCount}/${documentSupport.quoteTokenCount} quote tokens.`,
         ],
       };
     }
@@ -682,6 +885,10 @@ function locateQuoteInIndexedPageTexts(
       matchedPageIndexes,
       totalMatches,
       pagesScanned: pages.length,
+      sourceMatchQuoteTokenSupportCoverage: documentSupport.coverage,
+      sourceMatchSupportedQuoteTokenCount:
+        documentSupport.supportedQuoteTokenCount,
+      sourceMatchLongestRunTokenCount: documentSupport.longestRunTokenCount,
       reason: "The complete quote was not found in the live PDF text.",
     };
   }
@@ -1167,6 +1374,7 @@ const FIND_CONTROLLER_ACTIVE_POLL_MS = 100;
 const FIND_CONTROLLER_ACCEPTED_POLL_MS = 500;
 const MAX_PAGE_TEXT_CACHE_ESTIMATED_BYTES = 32 * 1024 * 1024;
 const MAX_HIDDEN_QUOTE_LOCATION_CACHE_ENTRIES = 1000;
+const MAX_LIVE_PDF_QUOTE_VERIFICATION_CACHE_ENTRIES = 1000;
 const MAX_COOPERATIVE_PAGE_TEXT_CHARS = 50_000;
 
 type CachedPageTextRecord = {
@@ -1193,6 +1401,51 @@ const hiddenQuoteLocationCache = new Map<
   string,
   HiddenQuoteLocationCacheRecord
 >();
+const livePdfQuoteVerificationCache = new Map<
+  string,
+  Extract<LivePdfQuoteVerification, { status: "matched" | "absent" }>
+>();
+
+function cacheLivePdfQuoteVerification(
+  key: string,
+  value: Extract<LivePdfQuoteVerification, { status: "matched" | "absent" }>,
+): void {
+  livePdfQuoteVerificationCache.delete(key);
+  livePdfQuoteVerificationCache.set(key, value);
+  while (
+    livePdfQuoteVerificationCache.size >
+    MAX_LIVE_PDF_QUOTE_VERIFICATION_CACHE_ENTRIES
+  ) {
+    const oldestKey = livePdfQuoteVerificationCache.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    livePdfQuoteVerificationCache.delete(oldestKey);
+  }
+}
+const MAX_LIVE_PDF_VERIFICATION_EXTRACTION_CACHE_ENTRIES = 3;
+type LivePdfVerificationExtraction = {
+  pages: LivePdfPageText[];
+  indexes: QuoteTextIndex[];
+};
+const livePdfVerificationExtractionCache = new Map<
+  string,
+  LivePdfVerificationExtraction
+>();
+
+function cacheLivePdfVerificationExtraction(
+  key: string,
+  value: LivePdfVerificationExtraction,
+): void {
+  livePdfVerificationExtractionCache.delete(key);
+  livePdfVerificationExtractionCache.set(key, value);
+  while (
+    livePdfVerificationExtractionCache.size >
+    MAX_LIVE_PDF_VERIFICATION_EXTRACTION_CACHE_ENTRIES
+  ) {
+    const oldestKey = livePdfVerificationExtractionCache.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    livePdfVerificationExtractionCache.delete(oldestKey);
+  }
+}
 const hiddenQuoteLocationTasks = new Map<
   string,
   Promise<HiddenQuoteLocationCacheEntry | null>
@@ -1653,6 +1906,7 @@ function locateQuoteInCachedPageTexts(
   cached: CachedPageTextIndex,
   quoteText: string,
   expectedPageIndex?: number | null,
+  options?: { exactOnly?: boolean },
 ): LivePdfSelectionLocateResult {
   const cachedIndexByPage = new Map(
     cached.normalised.map((entry) => [entry.pageIndex, entry.textIndex]),
@@ -1668,6 +1922,7 @@ function locateQuoteInCachedPageTexts(
     })),
     quoteText,
     expectedPageIndex,
+    options,
   );
 }
 
@@ -1773,6 +2028,11 @@ async function extractPageTextsFromPdfWorker(
  */
 async function extractPageTextsFromViewer(
   reader: any,
+  options?: {
+    pageNative?: boolean;
+    yieldToMain?: () => Promise<void>;
+    shouldContinue?: () => boolean;
+  },
 ): Promise<ExtractedPageTextIndexSource | null> {
   try {
     const app = getPdfViewerApplication(reader);
@@ -1809,6 +2069,8 @@ async function extractPageTextsFromViewer(
     );
     const pages: LivePdfPageText[] = [];
     for (let i = 1; i <= numPages; i++) {
+      if (options?.shouldContinue?.() === false) return null;
+      if (options?.yieldToMain) await options.yieldToMain();
       try {
         const page = resolveGeckoMethodOwner(
           await pdfDoc.getPage(i),
@@ -1822,7 +2084,21 @@ async function extractPageTextsFromViewer(
           );
           continue;
         }
-        const textContent = unwrapGeckoJsObject(await page.getTextContent());
+        let rawTextContent: any;
+        if (options?.pageNative) {
+          try {
+            rawTextContent = await page.getTextContent({
+              disableNormalization: true,
+            });
+          } catch {
+            // Some Gecko cross-realm proxies reject an options object even
+            // though the same method succeeds without one.
+            rawTextContent = await page.getTextContent();
+          }
+        } else {
+          rawTextContent = await page.getTextContent();
+        }
+        const textContent = unwrapGeckoJsObject(rawTextContent);
         const rawItems = textContent?.items;
         const itemCount = Number(rawItems?.length || 0);
         const items: any[] = [];
@@ -1831,18 +2107,24 @@ async function extractPageTextsFromViewer(
             items.push(unwrapGeckoJsObject(rawItems[itemIndex]));
           }
         }
-        const text = items
-          .map((item: any) => item.str ?? "")
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
+        const text = options?.pageNative
+          ? buildPageNativeFindControllerPageText(items)
+          : items
+              .map((item: any) => item.str ?? "")
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .trim();
         if (text) {
           let pageLabel = `${i}`;
           const labels = app?.pdfViewer?.pageLabels;
           if (Array.isArray(labels) && labels[i - 1]) {
             pageLabel = String(labels[i - 1]);
           }
-          pages.push({ pageIndex: i - 1, pageLabel, text: sanitizeText(text) });
+          pages.push({
+            pageIndex: i - 1,
+            pageLabel,
+            text: options?.pageNative ? text : sanitizeText(text),
+          });
         }
       } catch (e) {
         ztoolkit.log(
@@ -1865,6 +2147,310 @@ async function extractPageTextsFromViewer(
     ztoolkit.log("LLM quote-locator: viewer API strategy failed:", e);
     return null;
   }
+}
+
+type InlineMathPdfLocatorResult =
+  | {
+      status: "matched";
+      page: LivePdfPageText;
+      sourceMatchText: string;
+      sourceMatchPageOccurrence: number;
+    }
+  | { status: "ambiguous" }
+  | { status: "not-found" };
+
+function resolveInlineMathQuoteInCompletePdfPages(
+  pages: LivePdfPageText[],
+  indexes: QuoteTextIndex[],
+  quoteText: string,
+): InlineMathPdfLocatorResult {
+  const split = splitQuoteAtPairedInlineMath(quoteText);
+  if (!split) return { status: "not-found" };
+
+  const proseSegments = split.proseSegments
+    .map((segment) => segment.trim())
+    .filter((segment) => buildQuoteTextIndex(segment).tokens.length > 0);
+  const hasSubstantiveSegment = proseSegments.some((segment) => {
+    const segmentIndex = buildQuoteTextIndex(segment);
+    return (
+      segmentIndex.tokens.length >= 4 &&
+      normalizeLocatorText(segment).length >= 24
+    );
+  });
+  if (!proseSegments.length || !hasSubstantiveSegment) {
+    return { status: "not-found" };
+  }
+
+  type QuoteSpan = ReturnType<
+    typeof findQuoteSourceSpansAllowingLayoutArtifacts
+  >[number];
+  type Candidate = {
+    pageOrdinal: number;
+    sourceStart: number;
+    sourceEnd: number;
+    sourceMatchText: string;
+  };
+  const candidates = new Map<string, Candidate>();
+
+  for (let pageOrdinal = 0; pageOrdinal < pages.length; pageOrdinal += 1) {
+    const spansBySegment = proseSegments.map((segment) =>
+      findQuoteSourceSpansAllowingLayoutArtifacts(
+        indexes[pageOrdinal],
+        segment,
+      ),
+    );
+    if (spansBySegment.some((spans) => !spans.length)) continue;
+
+    let sequences: QuoteSpan[][] = [[]];
+    for (const spans of spansBySegment) {
+      const nextSequences: QuoteSpan[][] = [];
+      for (const sequence of sequences) {
+        const previous = sequence[sequence.length - 1];
+        for (const span of spans) {
+          if (previous && span.sourceStart < previous.sourceEnd) continue;
+          nextSequences.push([...sequence, span]);
+          if (nextSequences.length > 256) {
+            return { status: "ambiguous" };
+          }
+        }
+      }
+      sequences = nextSequences;
+      if (!sequences.length) break;
+    }
+
+    for (const sequence of sequences) {
+      const first = sequence[0];
+      const last = sequence[sequence.length - 1];
+      if (!first || !last || last.sourceEnd <= first.sourceStart) continue;
+      const sourceMatchText = normalizePageNativeFindControllerLiteral(
+        pages[pageOrdinal].text.slice(first.sourceStart, last.sourceEnd),
+        quoteText,
+      ).trim();
+      if (!sourceMatchText) continue;
+      const key = `${pageOrdinal}\u241f${first.sourceStart}\u241f${last.sourceEnd}`;
+      candidates.set(key, {
+        pageOrdinal,
+        sourceStart: first.sourceStart,
+        sourceEnd: last.sourceEnd,
+        sourceMatchText,
+      });
+    }
+  }
+
+  if (!candidates.size) return { status: "not-found" };
+  if (candidates.size !== 1) return { status: "ambiguous" };
+
+  const candidate = Array.from(candidates.values())[0];
+  const literalLocations = pages.flatMap((page, pageOrdinal) =>
+    findQuoteSourceSpansAllowingLayoutArtifacts(
+      indexes[pageOrdinal],
+      candidate.sourceMatchText,
+    ).map((span) => ({ page, pageOrdinal, span })),
+  );
+  if (literalLocations.length !== 1) {
+    return literalLocations.length
+      ? { status: "ambiguous" }
+      : { status: "not-found" };
+  }
+  const literalLocation = literalLocations[0];
+  if (literalLocation.pageOrdinal !== candidate.pageOrdinal) {
+    return { status: "ambiguous" };
+  }
+  return {
+    status: "matched",
+    page: literalLocation.page,
+    sourceMatchText: candidate.sourceMatchText,
+    sourceMatchPageOccurrence: literalLocation.span.occurrenceIndex,
+  };
+}
+
+/**
+ * Verify a quote only against the loaded PDF.js document. The default path is
+ * deliberately stricter than navigation: partial anchors are never accepted,
+ * and a negative or unique verdict requires searchable text for every page.
+ * The opt-in inline-math mode supplies only a locator for wording that an
+ * independent context-text source has already verified in full.
+ */
+export async function verifyCompleteQuoteInLivePdfJs(
+  reader: any,
+  contextItemId: number,
+  quoteText: string,
+  options?: {
+    yieldToMain?: () => Promise<void>;
+    shouldContinue?: () => boolean;
+    allowInlineMathLocator?: boolean;
+  },
+): Promise<LivePdfQuoteVerification> {
+  const itemId = Math.floor(Number(contextItemId));
+  const readerItemId = Math.floor(
+    Number(reader?._item?.id || reader?.itemID || 0),
+  );
+  if (!itemId || readerItemId !== itemId) {
+    return {
+      status: "defer",
+      reason: "The active PDF reader does not contain this attachment.",
+    };
+  }
+  const cleanQuote = stripBoundaryEllipsis(
+    sanitizeText(quoteText || "").trim(),
+  );
+  if (!cleanQuote) {
+    return { status: "defer", reason: "No quote text was provided." };
+  }
+  const app = getPdfViewerApplication(reader);
+  const documentFingerprint = getPdfDocumentFingerprint(app);
+  if (!app?.pdfDocument || !documentFingerprint) {
+    return {
+      status: "defer",
+      reason: "The loaded PDF.js document is not ready for verification.",
+    };
+  }
+  const verificationCacheKey = `${itemId}\u241f${documentFingerprint}\u241f${
+    options?.allowInlineMathLocator ? "inline-math-locator" : "complete"
+  }\u241f${hashFindControllerQuery(normalizeLocatorText(cleanQuote))}`;
+  const cachedVerification =
+    livePdfQuoteVerificationCache.get(verificationCacheKey);
+  if (cachedVerification) {
+    cacheLivePdfQuoteVerification(verificationCacheKey, cachedVerification);
+    return cachedVerification;
+  }
+  const extractionCacheKey = `${itemId}␟${documentFingerprint}`;
+  let extraction = livePdfVerificationExtractionCache.get(extractionCacheKey);
+  if (!extraction) {
+    const extracted = await extractPageTextsFromViewer(reader, {
+      pageNative: true,
+      yieldToMain: options?.yieldToMain,
+      shouldContinue: options?.shouldContinue,
+    });
+    const pageCount = Math.floor(Number(extracted?.pageCount || 0));
+    const indexes = (extracted?.pages ?? []).map((page) =>
+      buildQuoteTextIndex(page.text),
+    );
+    if (
+      !extracted?.pages.length ||
+      !pageCount ||
+      extracted.pages.length !== pageCount ||
+      indexes.some((index) => !index.tokens.length)
+    ) {
+      return {
+        status: "defer",
+        reason:
+          "PDF.js could not provide complete searchable text for every page.",
+      };
+    }
+    extraction = { pages: extracted.pages, indexes };
+    cacheLivePdfVerificationExtraction(extractionCacheKey, extraction);
+  }
+  const { pages, indexes } = extraction;
+
+  const locations = pages.flatMap((page, pageOrdinal) =>
+    findQuoteSourceSpansAllowingLayoutArtifacts(
+      indexes[pageOrdinal],
+      cleanQuote,
+    ).map((span) => ({ page, span })),
+  );
+  if (!locations.length) {
+    if (options?.allowInlineMathLocator) {
+      const inlineMathLocation = resolveInlineMathQuoteInCompletePdfPages(
+        pages,
+        indexes,
+        cleanQuote,
+      );
+      if (inlineMathLocation.status === "ambiguous") {
+        return {
+          status: "defer",
+          reason:
+            "The non-math prose around the verified inline math does not identify one PDF location.",
+        };
+      }
+      if (inlineMathLocation.status === "matched") {
+        const matched: Extract<
+          LivePdfQuoteVerification,
+          { status: "matched" }
+        > = {
+          status: "matched",
+          certificate: {
+            contextItemId: itemId,
+            documentFingerprint,
+            pageIndex: inlineMathLocation.page.pageIndex,
+            pageLabel: inlineMathLocation.page.pageLabel,
+            sourceMatchText: inlineMathLocation.sourceMatchText,
+            sourceMatchKind: "normalized-span",
+            sourceMatchPageOccurrence:
+              inlineMathLocation.sourceMatchPageOccurrence,
+          },
+        };
+        cacheLivePdfQuoteVerification(verificationCacheKey, matched);
+        return matched;
+      }
+    }
+    // A genuine quote that straddles a page break matches no single page.
+    // Probe the text around each boundary before condemning the quote; a
+    // boundary match cannot form a per-page navigation certificate, so it
+    // defers instead of matching.
+    const boundaryWindow = cleanQuote.length + 400;
+    for (let i = 0; i + 1 < pages.length; i += 1) {
+      if (options?.shouldContinue && !options.shouldContinue()) {
+        return {
+          status: "defer",
+          reason: "Verification was interrupted before completing.",
+        };
+      }
+      const joined = buildQuoteTextIndex(
+        `${pages[i].text.slice(-boundaryWindow)}\n${pages[i + 1].text.slice(
+          0,
+          boundaryWindow,
+        )}`,
+      );
+      if (
+        findQuoteSourceSpansAllowingLayoutArtifacts(joined, cleanQuote).length
+      ) {
+        return {
+          status: "defer",
+          reason:
+            "The quote spans a page boundary, which per-page verification cannot certify.",
+        };
+      }
+      if (options?.yieldToMain) await options.yieldToMain();
+    }
+    const absent: Extract<LivePdfQuoteVerification, { status: "absent" }> = {
+      status: "absent",
+      documentFingerprint,
+    };
+    cacheLivePdfQuoteVerification(verificationCacheKey, absent);
+    return absent;
+  }
+  if (locations.length !== 1) {
+    return {
+      status: "defer",
+      reason: "The complete quote occurs more than once in the loaded PDF.",
+    };
+  }
+  const location = locations[0];
+  const sourceMatchText = normalizePageNativeFindControllerLiteral(
+    location.span.text,
+    cleanQuote,
+  ).trim();
+  if (!sourceMatchText) {
+    return {
+      status: "defer",
+      reason: "The verified PDF.js span could not form a native search query.",
+    };
+  }
+  const matched: Extract<LivePdfQuoteVerification, { status: "matched" }> = {
+    status: "matched",
+    certificate: {
+      contextItemId: itemId,
+      documentFingerprint,
+      pageIndex: location.page.pageIndex,
+      pageLabel: location.page.pageLabel,
+      sourceMatchText,
+      sourceMatchKind: "exact",
+      sourceMatchPageOccurrence: location.span.occurrenceIndex,
+    },
+  };
+  cacheLivePdfQuoteVerification(verificationCacheKey, matched);
+  return matched;
 }
 
 async function refreshPageTextCacheFromLiveViewer(
@@ -2173,6 +2759,8 @@ export function clearPageTextCache(): void {
   pageTextCachePromisesByKey.clear();
   hiddenQuoteLocationCache.clear();
   hiddenQuoteLocationTasks.clear();
+  livePdfQuoteVerificationCache.clear();
+  livePdfVerificationExtractionCache.clear();
   clearCitationPageCache();
   anonymousReaderKeys = new WeakMap<object, string>();
   anonymousReaderKeySequence = 0;
@@ -3567,7 +4155,7 @@ export async function locateCurrentSelectionInLivePdfReader(
 export async function locateQuoteInLivePdfReader(
   reader: any,
   quoteText: string,
-  _options?: { skipFindController?: boolean; exactOnly?: boolean },
+  options?: { skipFindController?: boolean; exactOnly?: boolean },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),
@@ -3613,9 +4201,11 @@ export async function locateQuoteInLivePdfReader(
       cached,
       cleanQuote,
       expectedPageIndex,
+      { exactOnly: options?.exactOnly },
     );
     if (
       cachedResult.status === "resolved" &&
+      cachedResult.sourceMatchKind === "exact" &&
       canUseCachedPageTextAsNegativeEvidence(cached)
     ) {
       return cachedResult;
@@ -3633,6 +4223,7 @@ export async function locateQuoteInLivePdfReader(
         liveViewerCache,
         cleanQuote,
         expectedPageIndex,
+        { exactOnly: options?.exactOnly },
       );
     }
     if (cachedResult.status === "resolved") return cachedResult;
@@ -3682,6 +4273,7 @@ async function runPageNativeFindControllerJump(
     requireUniqueMatch?: boolean;
     highlightCoverage?: number;
     allowDerivedPartialAfterSearchFailure?: boolean;
+    verifiedFullSpan?: boolean;
   },
 ): Promise<ExactQuoteJumpResult> {
   const startedAt = Date.now();
@@ -3811,11 +4403,13 @@ async function runPageNativeFindControllerJump(
   );
   const partialSourceMatch = completeQuery
     ? null
-    : resolveLargestUniquePageNativeSourceMatch(
-        pageText,
-        quoteText,
-        options?.normalizationHintText,
-      );
+    : options?.verifiedFullSpan
+      ? null
+      : resolveLargestUniquePageNativeSourceMatch(
+          pageText,
+          quoteText,
+          options?.normalizationHintText,
+        );
   const resolvedQuery = completeQuery || partialSourceMatch;
   const usedPartialSourceMatch = Boolean(partialSourceMatch);
   if (!resolvedQuery) {
@@ -3866,6 +4460,7 @@ async function runPageNativeFindControllerJump(
       if (
         !completeQuery ||
         usedPartialSourceMatch ||
+        options?.verifiedFullSpan ||
         options?.allowDerivedPartialAfterSearchFailure === false ||
         Date.now() >= hardDeadlineAt ||
         options?.isAttemptCurrent?.() === false
@@ -4088,6 +4683,7 @@ export async function scrollToExactQuoteInReader(
     sourceFingerprint?: string;
     sourceMatchPageOccurrence?: number;
     fallbackQuoteTexts?: string[];
+    verifiedFullSpan?: boolean;
   },
 ): Promise<ExactQuoteJumpResult> {
   const navigationStartedAt = Date.now();

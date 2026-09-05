@@ -3,7 +3,10 @@ import {
   applyModelInputTokenCap,
   estimateContextMessagesTokens,
   estimateConversationTokens,
+  estimateTextTokens,
   getModelInputTokenLimit,
+  resolveModelInputTokenLimit,
+  sliceTextToTokenBudget,
   resolveContextWindowTokens,
   type InputCapMessage,
 } from "../src/utils/modelInputCap";
@@ -29,7 +32,8 @@ describe("modelInputCap", function () {
       assert.equal(getModelInputTokenLimit("gemini-2.5-pro"), 1048576);
       assert.equal(getModelInputTokenLimit("gemini-3-pro"), 1000000);
       assert.equal(getModelInputTokenLimit("qwen-long-latest"), 10000000);
-      assert.equal(getModelInputTokenLimit("unknown-custom-model"), 128000);
+      assert.equal(getModelInputTokenLimit("qwen3.8-max"), 1000000);
+      assert.equal(getModelInputTokenLimit("unknown-custom-model"), 256000);
     });
   });
 
@@ -84,6 +88,27 @@ describe("modelInputCap", function () {
     it("resolves the active context window from model and override", function () {
       assert.equal(resolveContextWindowTokens("gpt-5.4"), 1050000);
       assert.equal(resolveContextWindowTokens("gpt-5.4", 64000), 64000);
+      assert.equal(resolveContextWindowTokens("gpt-4o", 1_000_000), 1_000_000);
+      assert.equal(
+        resolveContextWindowTokens("future-model-2030", 1_000_000),
+        1_000_000,
+      );
+      assert.deepInclude(
+        resolveModelInputTokenLimit("future-model-2030", 1_000_000),
+        { limitTokens: 1_000_000, source: "advanced" },
+      );
+    });
+
+    it("uses a matching profile override when the dedicated cap is blank", function () {
+      assert.deepInclude(
+        resolveModelInputTokenLimit("claude-haiku-4-5", undefined, {
+          profileOverride: {
+            forModel: "claude-haiku-4-5",
+            limits: { contextWindowTokens: 750_000 },
+          },
+        }),
+        { limitTokens: 750_000, source: "user" },
+      );
     });
   });
 
@@ -182,5 +207,50 @@ describe("modelInputCap", function () {
       assert.isFalse(result.capped);
       assert.equal(result.estimatedAfterTokens, result.estimatedBeforeTokens);
     });
+  });
+});
+
+describe("estimateTextTokens per-script estimation", function () {
+  it("keeps the ASCII estimate at length/4", function () {
+    assert.equal(estimateTextTokens("a".repeat(40)), 10);
+  });
+
+  it("counts CJK characters at two chars per token", function () {
+    assert.equal(estimateTextTokens("神".repeat(8)), 4);
+  });
+
+  it("counts kana and hangul as CJK-like", function () {
+    assert.equal(estimateTextTokens("ありがとう"), 3);
+    assert.equal(estimateTextTokens("안녕하세요"), 3);
+  });
+
+  it("sums mixed scripts per bucket", function () {
+    assert.equal(estimateTextTokens("abcd神经"), 2);
+  });
+
+  it("returns zero for an empty string", function () {
+    assert.equal(estimateTextTokens(""), 0);
+  });
+});
+
+describe("sliceTextToTokenBudget", function () {
+  it("slices ASCII at four chars per token", function () {
+    assert.equal(sliceTextToTokenBudget("a".repeat(40), 5), "a".repeat(20));
+  });
+
+  it("slices CJK at two chars per token", function () {
+    assert.equal(sliceTextToTokenBudget("神".repeat(8), 2), "神神神神");
+  });
+
+  it("keeps the estimate of the slice within the budget for mixed text", function () {
+    const text = `${"a".repeat(100)}${"神".repeat(100)}`;
+    const sliced = sliceTextToTokenBudget(text, 30);
+
+    assert.isAtMost(estimateTextTokens(sliced), 30);
+    assert.isBelow(sliced.length, text.length);
+  });
+
+  it("returns the whole text when it fits", function () {
+    assert.equal(sliceTextToTokenBudget("short", 100), "short");
   });
 });

@@ -287,6 +287,48 @@ describe("quoteRenderPlan", function () {
     assert.include(plan.displayMarkdown, "Afterward.");
   });
 
+  it("binds structured anchors when the citation label follows on its own blockquote line", function () {
+    const visibleQuote =
+      "The role of internally-generated network dynamics in rapid temporal sequence coding, updating, and parallel recalling of alternate spatial and mental navigation contexts has remained unclear.";
+    const citation = buildQuoteCitation({
+      id: "Q_separate_citation_line",
+      quoteText: `1038/s41467-025-63346-w Generative emergence of non-local representations in the hippocampus Yuchen Zhou 1, Jeremie Sibille1 & George Dragoi 1,2,3 ${visibleQuote}`,
+      citationLabel: "(Zhou et al., 2025)",
+      sourceMatchText: `1038/s41467-025-63346-w Generative emergence of non-local representations in the hippocampus Yuchen Zhou 1, Jeremie Sibille1 & George Dragoi 1,2,3 ${visibleQuote}`,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3823,
+      itemId: 3822,
+    });
+    assert.isDefined(citation);
+
+    const markdown = [
+      `> “${visibleQuote}”`,
+      `> [[quote:${citation!.id}]]`,
+      "> (Zhou et al., 2025)",
+      "",
+      "### What problem are they addressing?",
+    ].join("\n");
+    const plan = buildQuoteRenderPlan({
+      markdown,
+      quoteCitations: [citation!],
+    });
+
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].trust, "trusted-anchor");
+    assert.equal(plan.occurrences[0].displayText, `“${visibleQuote}”`);
+    assert.equal(
+      plan.occurrences[0].quoteCitation?.displayQuoteText,
+      `“${visibleQuote}”`,
+    );
+    assert.notInclude(plan.displayMarkdown, "(Zhou et al., 2025)");
+    assert.notInclude(plan.displayMarkdown, `[[quote:${citation!.id}]]`);
+    assert.include(
+      plan.displayMarkdown,
+      "### What problem are they addressing?",
+    );
+  });
+
   it("does not create legacy quote occurrences from fenced blockquote examples", function () {
     const markdown = [
       "```mermaid",

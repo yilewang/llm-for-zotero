@@ -44,6 +44,7 @@ import {
   paperContentSourceOverrides,
   paperContextModeOverrides,
   selectedTagContextCache,
+  initializedConversationComposeContextKeys,
 } from "./state";
 import type {
   CollectionContextRef,
@@ -148,6 +149,7 @@ export function upsertPaperContext(
     },
   ];
   selectedPaperContextCache.set(item.id, nextPapers);
+  initializedConversationComposeContextKeys.add(item.id);
   setPaperModeOverride(item.id, nextPapers[nextPapers.length - 1], "full-next");
   selectedPaperPreviewExpandedCache.set(item.id, false);
   deps.updatePaperPreviewPreservingScroll();
@@ -319,6 +321,7 @@ export function clearUserAddedContextForItem(params: {
   if (!itemId) return unchanged();
   const textContextKey = normalizePositiveItemId(params.textContextKey);
   const hadContext = hasUserAddedContextForItem({ itemId, textContextKey });
+  initializedConversationComposeContextKeys.add(itemId);
 
   const removedPapers = selectedPaperContextCache.get(itemId) || [];
   selectedPaperContextCache.delete(itemId);
@@ -442,6 +445,7 @@ export function removeReferenceAttachmentContext(params: {
       }
       selectedPaperPreviewExpandedCache.set(item.id, false);
       deps.updatePaperPreviewPreservingScroll();
+      initializedConversationComposeContextKeys.add(item.id);
       removed = true;
     }
   } else if (kind === "note") {
@@ -508,6 +512,7 @@ export function removeReferenceGroupContexts(params: {
       clearPaperOverridesForItem(item.id, paper);
     }
     selectedPaperPreviewExpandedCache.set(item.id, false);
+    initializedConversationComposeContextKeys.add(item.id);
     removed = true;
   }
 
@@ -559,10 +564,12 @@ export function toggleCollectionContext(params: {
     const next = existing.filter((_, index) => index !== existingIndex);
     if (next.length) selectedCollectionContextCache.set(item.id, next);
     else selectedCollectionContextCache.delete(item.id);
+    initializedConversationComposeContextKeys.add(item.id);
     deps.updatePaperPreviewPreservingScroll();
     return changed(t("Collection context removed."), "ready");
   }
   selectedCollectionContextCache.set(item.id, [...existing, ref]);
+  initializedConversationComposeContextKeys.add(item.id);
   deps.updatePaperPreviewPreservingScroll();
   return changed(t("Collection context added."), "ready");
 }
@@ -620,10 +627,12 @@ export function toggleTagContext(params: {
     const next = existing.filter((_, index) => index !== existingIndex);
     if (next.length) selectedTagContextCache.set(item.id, next);
     else selectedTagContextCache.delete(item.id);
+    initializedConversationComposeContextKeys.add(item.id);
     deps.updatePaperPreviewPreservingScroll();
     return changed(t("Tag context removed."), "ready");
   }
   selectedTagContextCache.set(item.id, [...existing, normalizedRef]);
+  initializedConversationComposeContextKeys.add(item.id);
   deps.updatePaperPreviewPreservingScroll();
   return changed(t("Tag context added."), "ready");
 }

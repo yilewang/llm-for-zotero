@@ -2,7 +2,7 @@
  * Focused facade tool for importing papers into Zotero by DOI, ISBN, arXiv ID, or URL.
  * Provides a self-describing schema for importing papers by identifier.
  */
-import type { AgentToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type ImportIdentifiersOperation,
@@ -15,7 +15,13 @@ import {
   normalizePositiveInt,
   normalizeStringArray,
 } from "../shared";
-import { executeAndRecordUndo } from "./mutateLibraryShared";
+import {
+  executeAndRecordUndo,
+  normalizeChecklistSelectionFromResolution,
+  planLibraryMutations,
+} from "./mutateLibraryShared";
+
+const IDENTIFIERS_CHECKLIST_FIELD_ID = "identifiersChecklist";
 
 type ImportIdentifiersInput = {
   operation: ImportIdentifiersOperation;
@@ -23,7 +29,7 @@ type ImportIdentifiersInput = {
 
 export function createImportIdentifiersTool(
   zoteroGateway: ZoteroGateway,
-): AgentToolDefinition<ImportIdentifiersInput, unknown> {
+): AgentWriteToolDefinition<ImportIdentifiersInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
@@ -98,7 +104,7 @@ export function createImportIdentifiersTool(
       if (!identifiers?.length) {
         return fail(
           "identifiers must be a non-empty array of strings. " +
-            'Example: { identifiers: ["10.1234/example", "arXiv:2301.00001"] }',
+            'Example: { identifiers: ["10.1234/example", "arxiv:2301.00001"] }',
         );
       }
 
@@ -135,7 +141,7 @@ export function createImportIdentifiersTool(
         fields: [
           {
             type: "checklist" as const,
-            id: "identifiersChecklist",
+            id: IDENTIFIERS_CHECKLIST_FIELD_ID,
             label: "Identifiers to import",
             items: operation.identifiers.map((identifier, index) => ({
               id: `${index}`,
@@ -147,10 +153,38 @@ export function createImportIdentifiersTool(
       };
     },
 
-    applyConfirmation(input, _resolutionData) {
-      // Checklist is informational; pass through unchanged
-      return ok(input);
+    applyConfirmation(input, resolutionData) {
+      const selected = normalizeChecklistSelectionFromResolution(
+        resolutionData,
+        IDENTIFIERS_CHECKLIST_FIELD_ID,
+      );
+      // No resolution — auto_approve / non-HITL path.
+      if (selected === undefined) {
+        return ok(input);
+      }
+      if (!selected.length) {
+        return fail(
+          "No identifiers were left checked, so nothing was imported. Check the identifiers you want to import, or cancel the operation.",
+        );
+      }
+      // Row ids are indices into operation.identifiers, so "0" is a valid id.
+      const chosen = new Set(selected);
+      const identifiers = input.operation.identifiers.filter((_, index) =>
+        chosen.has(String(index)),
+      );
+      if (!identifiers.length) {
+        return fail(
+          "The confirmed selection did not match any of the identifiers in this request. Nothing was imported.",
+        );
+      }
+      return ok({
+        ...input,
+        operation: { ...input.operation, identifiers },
+      });
     },
+
+    planMutation: (input, context) =>
+      planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {
       return executeAndRecordUndo(

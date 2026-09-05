@@ -1,6 +1,9 @@
 import type { PaperContextRef } from "./types";
 import type { PdfContext } from "../modules/contextPanel/types";
-import { estimateTextTokens } from "../utils/modelInputCap";
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+} from "../utils/modelInputCap";
 import { callLLM, type ChatParams } from "../utils/llmClient";
 
 export type ExhaustiveReadStatus = "complete" | "partial" | "unreadable";
@@ -92,7 +95,13 @@ type PaperInput = {
 
 type LlmBatchConfig = Pick<
   ChatParams,
-  "model" | "apiBase" | "apiKey" | "authMode" | "providerProtocol" | "reasoning"
+  | "model"
+  | "apiBase"
+  | "apiKey"
+  | "authMode"
+  | "providerProtocol"
+  | "reasoning"
+  | "profileOverride"
 >;
 
 export type ExhaustiveDocumentReaderParams = {
@@ -466,7 +475,7 @@ function compactContextText(
     evidenceContentLength - evidenceBudget,
   );
 
-  return render(
+  const rendered = render(
     allocateFairCharacterBudgets(
       digestParts,
       digestBudget,
@@ -474,6 +483,11 @@ function compactContextText(
     ),
     allocateFairCharacterBudgets(evidenceParts, evidenceBudget),
   );
+  // The char allocations above assume ~4 chars/token; CJK content weighs
+  // double, so clamp the final digest to the real token budget.
+  return estimateTextTokens(rendered) <= tokenBudget
+    ? rendered
+    : sliceTextToTokenBudget(rendered, tokenBudget);
 }
 
 async function analyzeWithRetries(params: {

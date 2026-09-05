@@ -22,8 +22,8 @@ export const CLAUDE_PROFILE_SLOT_MOD = RUNTIME_PROFILE_SLOT_MOD;
 export const CLAUDE_HISTORY_LIMIT = 200;
 export const CLAUDE_RUNTIME_RELEASE_GRACE_MS = 30_000;
 
-export const CLAUDE_MODEL_OPTIONS = ["sonnet", "opus", "haiku"] as const;
-export type ClaudeRuntimeModel = (typeof CLAUDE_MODEL_OPTIONS)[number];
+export const DEFAULT_CLAUDE_RUNTIME_MODEL = "sonnet";
+export type ClaudeRuntimeModel = string;
 
 export const CLAUDE_REASONING_OPTIONS = [
   "auto",

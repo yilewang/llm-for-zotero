@@ -116,6 +116,7 @@ const zhCN: Record<string, string> = {
   "No assistant text selected": "没有选中助手文本",
   "Copied response": "已复制回复",
   "Created a new note": "已创建新笔记",
+  "Created a new note with warnings": "已创建新笔记，但有警告",
   "Failed to create note": "创建笔记失败",
   "No deletable turn found": "没有可删除的对话轮次",
   "No forkable turn found": "没有可分叉的对话轮次",
@@ -137,6 +138,8 @@ const zhCN: Record<string, string> = {
   "No chat history detected.": "未检测到对话历史。",
   "Copied chat as md": "已复制对话为 Markdown",
   "Saved chat history to new note": "已将对话历史保存为新笔记",
+  "Saved chat history to new note with warnings":
+    "已将对话历史保存为新笔记，但有警告",
   "Failed to save chat history": "保存对话历史失败",
   "Could not open plugin settings": "无法打开插件设置",
   "Could not find this paper": "无法找到此论文",
@@ -146,6 +149,9 @@ const zhCN: Record<string, string> = {
   "This chat's source item was deleted": "此对话的来源条目已被删除",
   "Failed to fully delete turn. Check logs.":
     "未能完全删除对话轮次，请查看日志。",
+  "Failed to queue deletion. Check logs.": "无法排入删除队列，请查看日志。",
+  "Chat storage is unavailable; check the log": "聊天存储不可用，请查看日志。",
+  "Failed to restore. Check logs.": "恢复失败，请查看日志。",
   "Turn deleted": "已删除对话轮次",
   "Turn restored": "已恢复对话轮次",
   "Cannot delete while generating": "生成中无法删除",
@@ -344,6 +350,39 @@ const zhCN: Record<string, string> = {
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent (beta)" toggle in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent（测试版）"切换按钮，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',
+  "Library Write Mode": "文献库写入模式",
+  safe: "安全",
+  yolo: "全自动",
+  "reviews every library change before it happens, and batch jobs pause on each page.":
+    "会在每次更改文献库之前进行审核，批处理任务会在每一页暂停。",
+  "lets the agent apply changes on its own judgement, including whole-library batch jobs — every run is still recorded and can be reverted from the agent history. This is separate from the Claude Code permission mode, which governs the bridge only.":
+    "允许 Agent 自主判断并应用更改，包括整个文献库的批处理任务——每次运行仍会被记录，并可从 Agent 历史记录中撤销。此模式与 Claude Code 权限模式相互独立；后者仅控制桥接服务。",
+  "Tavily Web Search": "Tavily 网页搜索",
+  "Adds current, general web search and focused page reading to the in-plugin Agent. The key stays in your local Zotero preferences.":
+    "为插件内的 Agent 提供最新的通用网页搜索和针对性网页读取功能。API 密钥仅保存在本机的 Zotero 偏好设置中。",
+  "API key": "API 密钥",
+  "Get a free API key": "获取免费 API 密钥",
+  "Basic search costs 1 Tavily credit; Advanced costs 2. Basic extraction costs 1 credit per 5 successful pages; Advanced costs 2 per 5. Tavily currently offers a free monthly credit allowance.":
+    "基础搜索消耗 1 个 Tavily 积分；高级搜索消耗 2 个。每成功提取 5 个网页，基础提取消耗 1 个积分；高级提取消耗 2 个。Tavily 目前每月提供免费积分额度。",
+  "Search queries and requested URLs are sent to Tavily and are handled under Tavily's privacy, retention, and search-index policies. When displayed, favicons are loaded from public URLs supplied by Tavily. Do not include credentials or sensitive private text in web queries.":
+    "搜索查询和所请求的 URL 会发送至 Tavily，并按照 Tavily 的隐私、数据保留和搜索索引政策进行处理。显示网站图标时，图标会从 Tavily 提供的公开 URL 加载。请勿在网页查询中包含登录凭据或敏感的私密文本。",
+  "Enter a Tavily API key first.": "请先输入 Tavily API 密钥。",
+  Connected: "已连接",
+  "Could not reach Tavily. Check the network connection.":
+    "无法连接 Tavily。请检查网络连接。",
+  "Tavily rejected the API key. Check it in Preferences → Agent.":
+    "Tavily 拒绝了该 API 密钥。请在偏好设置 → Agent 中检查。",
+  "Tavily rate-limited the request. Try again later.":
+    "Tavily 已对该请求限流。请稍后重试。",
+  "The Tavily plan credit limit has been reached.":
+    "已达到 Tavily 套餐的积分上限。",
+  "The Tavily pay-as-you-go limit has been reached.":
+    "已达到 Tavily 按量付费上限。",
+  "Tavily is temporarily unavailable. Try again later.":
+    "Tavily 暂时不可用。请稍后重试。",
+  "View web sources": "查看网页来源",
+  "Web sources": "网页来源",
+  "Open web source": "打开网页来源",
   "MinerU PDF Parsing": "MinerU PDF 解析",
   "Extract high-quality structured text from PDFs with preserved math formulas, tables, and figures. MinerU dramatically improves how the AI understands your papers.":
     "从 PDF 中提取高质量结构化文本，保留数学公式、表格和图片。MinerU 显著提升 AI 对论文的理解能力。",
@@ -502,7 +541,36 @@ const zhCN: Record<string, string> = {
   "API Key": "API 密钥",
   "codex auth": "codex 认证",
   "Codex Auth": "Codex 认证",
-  "Codex Auth (Legacy)": "Codex 认证（旧版）",
+  "Codex Direct (Legacy)": "Codex 直连（旧版）",
+  "Uses credentials from `codex login` to call the Codex backend directly through the llm-for-zotero harness. This convenient legacy mode does not provide App Server sessions, MCP or runtime management, sandbox controls, approvals, or permission settings. Use Codex App Server for the full Codex runtime experience.":
+    "使用 `codex login` 的凭据，通过 llm-for-zotero 直接调用 Codex 后端。此便捷的旧版模式不提供 App Server 会话、MCP、运行时管理、沙箱控制、审批或权限设置。若需完整的 Codex 运行时体验，请使用 Codex App Server。",
+  "Select a Codex Direct model…": "选择一个 Codex 直连模型…",
+  Unavailable: "不可用",
+  "Fetching Codex Direct models…": "正在获取 Codex 直连模型…",
+  "Couldn't fetch Codex Direct models:": "无法获取 Codex 直连模型：",
+  "Fetching Codex model catalog…": "正在获取 Codex 模型目录…",
+  "Catalog:": "模型目录：",
+  "models; test model:": "个模型；测试模型：",
+  "Inference:": "推理：",
+  "Inference was not run.": "未运行推理测试。",
+  "The server returned no model output.": "服务器未返回任何模型输出。",
+  "The selected Codex Direct model is not available in the current catalog.":
+    "所选的 Codex 直连模型不在当前模型目录中。",
+  "Loading Codex Direct models. Current model is unverified.":
+    "正在加载 Codex 直连模型。当前模型尚未验证。",
+  "Loading Codex Direct models…": "正在加载 Codex 直连模型…",
+  "Could not load Codex Direct models. Current model is unverified.":
+    "无法加载 Codex 直连模型。当前模型尚未验证。",
+  "Could not load Codex Direct models.": "无法加载 Codex 直连模型。",
+  "Codex Direct did not return any available models.":
+    "Codex 直连未返回任何可用模型。",
+  "Retry loading Codex Direct models": "重新加载 Codex 直连模型",
+  "The saved Codex Direct model is no longer available. Select another model before sending.":
+    "已保存的 Codex 直连模型已不可用。请在发送前选择其他模型。",
+  "This saved model is not present in the current Codex Direct catalog.":
+    "当前 Codex 直连模型目录中不存在此已保存模型。",
+  "The saved Codex Direct model is unavailable. Select a model from the current catalog before sending.":
+    "已保存的 Codex 直连模型不可用。请在发送前从当前模型目录中选择一个模型。",
   "Codex App Server": "Codex App Server",
   "Transport is handled by the codex subprocess; no API URL is needed.":
     "传输由 codex 子进程处理，不需要 API URL。",
@@ -520,10 +588,10 @@ const zhCN: Record<string, string> = {
   "Input mode": "输入模式",
   "Text only": "仅文本",
   "Vision allowed": "允许视觉",
-  "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)":
-    "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制（可选）",
-  "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision":
-    "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制  ·  输入模式：自动/仅文本/视觉",
+  "Temperature: randomness (0–2)  ·  Edited Max tokens and set Input cap override detected/default limits":
+    "温度：随机性 (0–2)  ·  编辑后的最大 Token 数和已设置的输入上限会覆盖检测值/默认值",
+  "Temperature: randomness (0–2)  ·  Edited Max tokens and set Input cap override detected/default limits  ·  Input mode: auto/text-only/vision":
+    "温度：随机性 (0–2)  ·  编辑后的最大 Token 数和已设置的输入上限会覆盖检测值/默认值  ·  输入模式：自动/仅文本/视觉",
   "Complete the empty provider first": "请先完善空白的服务商",
   "Add provider": "添加服务商",
   "+ Add Provider": "+ 添加服务商",
@@ -533,6 +601,41 @@ const zhCN: Record<string, string> = {
     "codex 令牌缺失。请先运行 `codex login`。",
   "Agent capability: ": "Agent 能力: ",
   "✓ Success — model says: ": "✓ 成功 — 模型回复: ",
+  "⚠ Connected, but no answer — ": "⚠ 已连接，但没有回答 — ",
+  "The model returned reasoning but no answer. Turn thinking off for this model, or pick a different one — some models only produce an answer with thinking disabled.":
+    "模型只返回了思考内容，没有回答。请关闭该模型的思考功能，或换一个模型——部分模型只有在关闭思考时才会给出回答。",
+  // ── Local providers ────────────────────────────────────────────────
+  "Ollama (local)": "Ollama（本地）",
+  "Local (OpenAI-compatible)": "本地（OpenAI 兼容）",
+  "API Key (optional)": "API 密钥（可选）",
+  "Leave blank unless your server requires auth":
+    "除非服务器需要认证，否则留空",
+  "Preset uses Ollama's native /api/chat endpoint, which separates thinking from the answer and honours the think parameter. No API key required.":
+    "预设使用 Ollama 原生 /api/chat 接口，可将思考与回答分开，并支持 think 参数。无需 API 密钥。",
+  "For LM Studio, llama.cpp, vLLM, Jan and other local OpenAI-compatible servers. No API key required.":
+    "适用于 LM Studio、llama.cpp、vLLM、Jan 等本地 OpenAI 兼容服务。无需 API 密钥。",
+  // ── Model parameter editor ─────────────────────────────────────────
+  "Reasoning levels": "思考级别",
+  "Future-proofing: when a provider ships a new reasoning level, add it here yourself — no plugin update needed. Type only the level name — ultra, off, anything — and the plugin sends it in the provider's own parameter, shown next to the level. The model decides what is valid: use Test to try every custom level. Deleting every level hides the reasoning menu.":
+    "面向未来的设计：当服务商推出新的思考级别时，你可以自行在此添加，无需等待插件更新。只需输入级别名称——ultra、off 或任何名称——插件会以该服务商自己的参数发送（显示在级别旁边）。级别是否有效由模型决定：点击 Test 可逐一验证自定义级别。删除所有级别会完全隐藏思考菜单。",
+  "Discard changes and return to the detected profile":
+    "放弃更改并恢复为检测到的配置",
+  "+ Add level": "+ 添加级别",
+  "Delete level": "删除级别",
+  level: "级别",
+  "Duplicate level — ignored": "级别重复 — 已忽略",
+  "Use letters, digits, - or _ so the level is remembered":
+    "请使用字母、数字、- 或 _，否则该级别不会被记住",
+  "Testing custom settings…": "正在测试自定义设置…",
+  "extra parameters": "额外参数",
+  rejected: "被拒绝",
+  "Extra request parameters": "额外请求参数",
+  'A JSON object merged into every request to this model, for example {"top_k": 40, "options": {"repeat_penalty": 1.1}}.':
+    '一个 JSON 对象，会合并进发往该模型的每次请求，例如 {"top_k": 40, "options": {"repeat_penalty": 1.1}}。',
+  "Invalid JSON: ": "JSON 无效：",
+  "Reset to detected": "恢复为检测值",
+  "customized for this model": "已为该模型自定义",
+  // Label / Auto / Yes / No are already defined above.
   "codex auth reuses local `codex login` credentials from ~/.codex/auth.json":
     "codex 认证复用本地 `codex login` 凭据（~/.codex/auth.json）",
   "GitHub Copilot": "GitHub Copilot",
@@ -551,6 +654,13 @@ const zhCN: Record<string, string> = {
   "Fetching models…": "正在获取模型…",
   "No models found": "未找到模型",
   "Synced %n models": "已同步 %n 个模型",
+  "Enter the API key above to fetch this provider's models.":
+    "请先在上方填写 API Key，以获取该服务商的模型列表。",
+  "Couldn't fetch models:": "无法获取模型列表：",
+  "Couldn't fetch the model list.": "无法获取模型列表。",
+  "The provider returned no models.": "该服务商未返回任何模型。",
+  "Select a model…": "请选择模型…",
+  "Customized…": "自定义…",
   "Loading Codex models…": "正在加载 Codex 模型…",
   "Could not load Codex models. Showing current model only.":
     "无法加载 Codex 模型。仅显示当前模型。",
@@ -655,6 +765,11 @@ const zhCN: Record<string, string> = {
     "已禁用原生 Codex 和 Claude Code 回合中的 Zotero MCP 工具。",
   "Configuring Zotero MCP tools…": "正在配置 Zotero MCP 工具…",
   "Zotero MCP connected with %n tools.": "Zotero MCP 已连接 %n 个工具。",
+  "Zotero MCP connection verified through Codex.":
+    "已通过 Codex 验证 Zotero MCP 连接。",
+  "Zotero MCP connection: ": "Zotero MCP 连接：",
+  "Model connection: ": "模型连接：",
+  "Model connection was not tested.": "未测试模型连接。",
   "Zotero MCP config written. Codex is reloading tools.":
     "Zotero MCP 配置已写入。Codex 正在重新加载工具。",
   "Zotero MCP setup failed: ": "Zotero MCP 设置失败：",
@@ -664,6 +779,13 @@ const zhCN: Record<string, string> = {
   "Zotero MCP tools enabled but not configured yet.":
     "Zotero MCP 工具已启用，但尚未配置。",
   "Could not read Codex MCP status: ": "无法读取 Codex MCP 状态：",
+  "Codex could not reach Zotero's local MCP server because a proxy or VPN likely intercepted the loopback request (HTTP 502). LLM for Zotero already requested a direct localhost connection. In your proxy app, route localhost, 127.0.0.1, and ::1 directly, fully restart Zotero, and retry. External OpenAI traffic can remain proxied.":
+    "Codex 无法连接 Zotero 的本地 MCP 服务器，因为代理或 VPN 可能拦截了回环请求（HTTP 502）。LLM for Zotero 已要求 localhost 直连。如果问题仍然存在，请在代理应用中将 localhost、127.0.0.1 和 ::1 设为直连，完全重启 Zotero 后重试。外部 OpenAI 流量仍可继续使用代理。",
+  "Codex could not reach Zotero's local MCP server. Keep Zotero open, make sure its local HTTP server is available, and retry.":
+    "Codex 无法连接 Zotero 的本地 MCP 服务器。请保持 Zotero 运行，确认其本地 HTTP 服务器可用，然后重试。",
+  "Codex reached Zotero's local MCP server, but authorization failed. Click Install/update Zotero MCP config, then retry.":
+    "Codex 已连接 Zotero 的本地 MCP 服务器，但授权失败。请点击“安装/更新 Zotero MCP 配置”，然后重试。",
+  "Zotero MCP connection failed: ": "Zotero MCP 连接失败：",
   "Native Codex approvals": "原生 Codex 授权",
   "Lets Zotero surface native Codex command, file-change, and permission approval requests as per-request review cards. This does not grant shell or filesystem access by default.":
     "允许 Zotero 将原生 Codex 的命令、文件变更和权限请求显示为逐次审核卡片。默认不会授予 shell 或文件系统访问权限。",
@@ -872,7 +994,7 @@ export function getWebChatWelcomeHtml(
           <div class="llm-start-page-rec-title llm-webchat-rec-title-spaced">怎么提问</div>
           <ol class="llm-start-page-rec-list">
             <li>在这里输入问题并点击 <strong>Send</strong>。</li>
-            <li>论文对话中，论文标签高亮表示会附加当前 PDF；右键论文标签可切换发送 PDF 或跳过 PDF。每个 WebChat 会话通常只上传一次 PDF。</li>
+            <li>论文对话中，论文标签高亮表示下一轮会附加当前 PDF；未高亮时只发送提问。发送成功后，标签会自动切换为仅发送提问；之后随时可以右键论文标签重新附加当前 PDF。</li>
             <li>如果没有反应，请刷新 <strong>${domain}</strong> 标签页，确认扩展已启用，并让 Zotero 和浏览器保持在同一个显示器。</li>
           </ol>
         </div>
@@ -897,7 +1019,7 @@ export function getWebChatWelcomeHtml(
         <div class="llm-start-page-rec-title llm-webchat-rec-title-spaced">Ask from Zotero</div>
         <ol class="llm-start-page-rec-list">
           <li>Type your question here and press <strong>Send</strong>.</li>
-          <li>For paper chat, a highlighted paper chip means the current PDF will be attached; right-click the chip to switch between send PDF and skip PDF. A PDF is uploaded only once per webchat session.</li>
+          <li>For paper chat, a highlighted paper chip means the current PDF will be attached on the next turn; an unhighlighted chip sends only the prompt. After a successful send, the chip switches to prompt-only mode, and you can right-click it at any time to attach the current PDF again.</li>
           <li>If nothing happens, reload the <strong>${domain}</strong> tab, confirm the extension is enabled, and keep Zotero and the browser on the same monitor.</li>
         </ol>
       </div>

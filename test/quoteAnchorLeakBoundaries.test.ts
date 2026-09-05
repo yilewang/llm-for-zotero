@@ -15,7 +15,7 @@ describe("quote anchor leak boundaries", function () {
 
     assert.include(
       chatSource,
-      "const safeText = buildAssistantDisplayMarkdownForRender(msg);",
+      "const safeText = buildAssistantDisplayMarkdownForRender(\n          msg,\n          webSourceAnchors,\n        );",
     );
     assert.notInclude(chatSource, "const safeText = sanitizeText(msg.text);");
     assert.notInclude(

@@ -20,6 +20,8 @@ export type AgentAdapterToolCallResult = {
 export type AgentStepParams = {
   request: AgentRuntimeRequest;
   messages: AgentModelMessage[];
+  /** Messages appended after the preceding model response. */
+  continuationMessages?: AgentModelMessage[];
   tools: ToolSpec[];
   signal?: AbortSignal;
   onTextDelta?: (delta: string) => void | Promise<void>;

@@ -74,7 +74,7 @@ describe("historyNavigationModeSync", function () {
       originalZotero;
   });
 
-  it("primes paper mode and records the searched paper conversation", function () {
+  it("primes active paper mode before the restore service initializes", function () {
     const snapshot = primeHistoryNavigationMode({
       system: "upstream",
       libraryID: 7,
@@ -89,7 +89,7 @@ describe("historyNavigationModeSync", function () {
       2201,
     );
     assert.equal(getLastUsedUpstreamConversationMode(7), "paper");
-    assert.equal(getLastUsedPaperConversationKey(7, 42), 2201);
+    assert.isNull(getLastUsedPaperConversationKey(7, 42));
 
     snapshot.restore();
     assert.isFalse(activeConversationModeByLibrary.has(7));
@@ -145,7 +145,7 @@ describe("historyNavigationModeSync", function () {
       activePaperConversationByPaper.get(buildPaperStateKey(7, 42)),
       2201,
     );
-    assert.equal(getLastUsedPaperConversationKey(7, 42), 2201);
+    assert.isNull(getLastUsedPaperConversationKey(7, 42));
 
     snapshot.restore();
 
@@ -159,7 +159,7 @@ describe("historyNavigationModeSync", function () {
       activePaperConversationByPaper.get(buildPaperStateKey(7, 42)),
       1101,
     );
-    assert.equal(getLastUsedPaperConversationKey(7, 42), 1101);
+    assert.isNull(getLastUsedPaperConversationKey(7, 42));
   });
 
   it("updates Claude and Codex runtime-specific mode state", function () {
@@ -183,7 +183,7 @@ describe("historyNavigationModeSync", function () {
       activeClaudePaperConversationByPaper.get(claudePaperStateKey),
       claudePaperKey,
     );
-    assert.equal(getLastUsedClaudePaperConversationKey(7, 42), claudePaperKey);
+    assert.isNull(getLastUsedClaudePaperConversationKey(7, 42));
 
     claudeSnapshot.restore();
     assert.isFalse(activeClaudeConversationModeByLibrary.has(claudeLibraryKey));

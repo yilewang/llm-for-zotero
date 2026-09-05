@@ -17,26 +17,42 @@ import {
   StoredChatMessage,
 } from "../../utils/chatStore";
 import { conversationRepository } from "../../core/conversations/repository";
+import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
+import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
+import { filterMessagesInPendingTurns } from "./turnMessageUtils";
+import {
+  clearAgentConversationState,
+  clearPersistedAgentConversationRowsInTransaction,
+} from "./agentConversationCleanup";
 import {
   appendCodexMessage,
+  clearCodexConversationSessionMetadata,
   pruneCodexConversation,
   updateLatestCodexAssistantMessage,
   updateLatestCodexUserMessage,
 } from "../../codexAppServer/store";
+import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
+import {
+  completeConversationCleanupJob,
+  enqueueConversationCleanupJob,
+  failConversationCleanupJob,
+} from "../../core/conversations/conversationCleanupJobs";
 import {
   getClaudeAutoCompactThresholdPercent,
   isClaudeAutoCompactEnabled,
 } from "../../claudeCode/prefs";
 import {
-  appendClaudeConversationMessage,
+  appendClaudeConversationMessageWithinWriteLock,
   buildClaudeScope,
   captureClaudeSessionInfo,
   getClaudeBridgeRuntime,
+  invalidateClaudeConversationSessionWithinWriteLock,
   isClaudeConversationSystemActive,
-  updateLatestClaudeConversationAssistantMessage,
-  updateLatestClaudeConversationUserMessage,
+  updateLatestClaudeConversationAssistantMessageWithinWriteLock,
+  updateLatestClaudeConversationUserMessageWithinWriteLock,
 } from "../../claudeCode/runtime";
 import { getCodexProfileSignature } from "../../codexAppServer/constants";
+import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
@@ -61,6 +77,7 @@ import {
   type CodexNativeDiagnostics,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
+import { formatCodexZoteroMcpError } from "../../codexAppServer/mcpErrors";
 import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
@@ -68,8 +85,8 @@ import {
   type ChatParams,
   ChatFileAttachment,
   ChatMessage,
-  getRuntimeReasoningOptions,
   prepareChatRequest,
+  preflightRequestModelCapabilities,
   type PreparedChatRequest,
   ReasoningConfig as LLMReasoningConfig,
   ReasoningEvent,
@@ -77,10 +94,21 @@ import {
   UsageStats,
   checkEmbeddingAvailability,
 } from "../../utils/llmClient";
-import { applyModelInputTokenCap } from "../../utils/modelInputCap";
+import {
+  getModelCapabilities,
+  type ModelProfileOverride,
+  getRuntimeReasoningOptions as getCatalogReasoningOptions,
+  inferProviderFromModelName,
+} from "../../modelCapabilities";
+import {
+  applyModelInputTokenCap,
+  type ModelInputTokenLimitSource,
+} from "../../utils/modelInputCap";
+import { subscribeModelProviderGroups } from "../../utils/modelProviders";
 import { formatDisplayModelName } from "../../utils/modelDisplayLabel";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import { inferLegacyProviderProtocol } from "../../utils/providerProtocol";
+import { isLocalModelApiBase } from "../../utils/providerPresets";
 import {
   PERSISTED_HISTORY_LIMIT,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -102,7 +130,10 @@ import {
   withScrollGuard,
 } from "./chatScrollSnapshots";
 import { resizeTextareaToContent } from "./textareaSizing";
-import { getActiveReaderForSelectedTab } from "./contextResolution";
+import {
+  getActiveReaderForSelectedTab,
+  getAllOpenReaders,
+} from "./contextResolution";
 export {
   isScrollUpdateSuspended,
   withScrollGuard,
@@ -112,6 +143,14 @@ import {
   type BlockStreamCoalescer,
   type BlockStreamFlushReason,
 } from "./blockStreamCoalescer";
+import {
+  getStreamInterruptionLabel,
+  resolveStreamInterruptionOutcome,
+} from "./streamInterruption";
+import {
+  restoreRetryUserSnapshot,
+  takeRetryUserSnapshot,
+} from "./retryUserSnapshot";
 import type {
   ConversationSystem,
   GeneratedChatImage,
@@ -158,13 +197,14 @@ import type {
   ContextAssemblyStrategy,
   ResolvedContextSource,
 } from "./types";
+import { resolveTargetedAssistantRerenders } from "./targetedRerender";
+import { withConversationWriteLock } from "../../shared/conversationWriteFence";
 import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
   loadingConversationTasks,
   webChatIsolatedConversationKeys,
-  selectedModelCache,
   selectedReasoningCache,
   selectedReasoningProviderCache,
   selectedImageCache,
@@ -172,15 +212,24 @@ import {
   selectedPaperContextCache,
   selectedCollectionContextCache,
   selectedTagContextCache,
+  initializedConversationComposeContextKeys,
   paperContextModeOverrides,
+  paperContentSourceOverrides,
   activeContextPanels,
   activeContextPanelStateSync,
   getCancelledRequestId,
+  getPendingRequestId,
   getAbortController,
-  setAbortController,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  areConversationWritesFrozen,
+  finishRequest,
+  isRequestOwner,
   nextRequestId,
   isRequestPending,
   setPendingRequestId,
+  transferRequest,
+  tryBeginRequest,
   setResponseMenuTarget,
   getResponseActionRunner,
   getForkSourceNavigationRunner,
@@ -238,7 +287,7 @@ import {
   getLastReasoningExpanded,
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
-  getSelectedModelEntryForItem,
+  getSelectedModelEntry,
   getBoolPref,
   getStringPref,
   setLastReasoningExpanded,
@@ -286,6 +335,15 @@ import {
   mergeToolActivityPayload,
 } from "./agentTrace/toolActivityDedupe";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
+import {
+  getWebSourceAnchorsFromTrace,
+  stripWebSourceMarkersForDisplay,
+} from "../../webAccess/attribution";
+import type { WebSourceAnchor } from "../../webAccess/types";
+import {
+  decorateWebSourceIndicators,
+  injectWebSourceAnchorTokens,
+} from "./webSourceIndicators";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
@@ -297,6 +355,7 @@ import {
 import {
   getCachedPageTextForAttachment,
   hasCompleteSearchablePageTextForAttachment,
+  verifyCompleteQuoteInLivePdfJs,
   warmPageTextCacheForAttachment,
 } from "./livePdfSelectionLocator";
 import {
@@ -306,10 +365,12 @@ import {
 import {
   buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
+  collectDisplayedQuoteVerificationRequests,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
   finalizeAssistantQuoteCitationsCooperatively,
   mergeQuoteCitations,
+  type QuoteSecondaryEvidence,
   type QuoteSourceText,
 } from "./quoteCitations";
 import {
@@ -329,7 +390,6 @@ import { getAgentRunTrace } from "../../agent/store/traceStore";
 import {
   applyHistoryCompression,
   scheduleLLMSummary,
-  clearConversationSummary,
 } from "./conversationSummaryCache";
 import type {
   AgentAttachmentResource,
@@ -338,7 +398,7 @@ import type {
   AgentEvent,
   AgentPendingAction,
   AgentRunEventRecord,
-  AgentRuntimeRequest,
+  AgentRuntimeRequestInput as AgentRuntimeRequest,
   AgentToolArtifact,
 } from "../../agent/types";
 import {
@@ -351,6 +411,7 @@ import {
   scheduleQueuedFollowUpDrainForThread,
   SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY,
   SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY,
+  transferQueuedFollowUpThreadState,
 } from "./queuedFollowUps";
 import { getConversationKey } from "./conversationIdentity";
 import { recordContextCacheTelemetry } from "../../contextCache/manager";
@@ -362,8 +423,10 @@ import {
 } from "./contexts/paperContextState";
 import {
   getConversationScopeValidationDetails,
+  getRegisteredConversationScope,
   type ConversationRegistryScope,
 } from "../../shared/conversationRegistry";
+import { isConversationInstanceRecentlyDeleted } from "../../core/conversations/recentlyDeletedConversations";
 import {
   provisionConversationScopeForItem,
   resolveConversationStorageSystemForItem,
@@ -373,18 +436,70 @@ export { getConversationKey } from "./conversationIdentity";
 export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
 
 /** Get AbortController constructor from global scope */
-function getAbortControllerCtor(): new () => AbortController {
+function getAbortControllerCtor(): (new () => AbortController) | undefined {
   return (
     (ztoolkit.getGlobal("AbortController") as new () => AbortController) ||
     (
       globalThis as typeof globalThis & {
-        AbortController: new () => AbortController;
+        AbortController?: new () => AbortController;
       }
     ).AbortController
   );
 }
 
+// AbortController is not guaranteed in Zotero's Gecko chrome context. When it
+// is absent, requests run without cancellation support instead of failing at
+// admission; this inert signal keeps beginPanelRequest's return shape.
+const INERT_ABORT_SIGNAL = { aborted: false } as AbortSignal;
+
+// Committing hidden turns is best effort: prompt, retry-target, render and
+// history-search correctness all come from filterMessagesInPendingTurns, which
+// reads the store's in-memory entries synchronously and does not depend on the
+// finalize completing. The store serializes every op on one chain, so a slow
+// finalize belonging to an UNRELATED conversation would otherwise hold this
+// user action for as long as its provider call takes (a codex thread archive
+// can run to its 60s request timeout). Bound the wait and move on; the entry
+// stays queued and hidden, and its own retry timer finalizes it.
+// AbortController is not reliably available under Gecko, so this uses the
+// repo's Promise.race + setTimeout/clearTimeout idiom.
+const PENDING_TURN_FINALIZE_WAIT_MS = 3_000;
+
+async function awaitPendingTurnFinalize(
+  finalize: Promise<boolean>,
+): Promise<void> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      finalize.then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise<void>((resolve) => {
+        timeoutId = setTimeout(resolve, PENDING_TURN_FINALIZE_WAIT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 const blockedConversationLoadKeys = new Set<number>();
+type AgentRunTraceLoader = typeof getAgentRunTrace;
+let agentRunTraceLoader: AgentRunTraceLoader = getAgentRunTrace;
+
+export function setAgentRunTraceLoaderForTests(
+  loader?: AgentRunTraceLoader,
+): void {
+  agentRunTraceLoader = loader || getAgentRunTrace;
+  if (!loader) {
+    agentRunTraceCache.clear();
+    agentRunTraceLoadingTasks.clear();
+  }
+}
+
+export function hasAgentRunTraceForTests(runId: string): boolean {
+  return agentRunTraceCache.has((runId || "").trim());
+}
 
 function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
   try {
@@ -692,6 +807,13 @@ function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(paperContexts, { sanitizeText });
 }
 
+function completePaperContextKey(
+  paperContext: PaperContextRef,
+  fallbackLibraryID = 0,
+): string {
+  return `${Math.floor(Number(paperContext.libraryID || fallbackLibraryID))}:${Math.floor(Number(paperContext.itemId))}:${Math.floor(Number(paperContext.contextItemId))}`;
+}
+
 function normalizeCollectionContexts(
   collectionContexts: unknown,
 ): CollectionContextRef[] {
@@ -812,7 +934,7 @@ function collectRecentPaperContexts(history: Message[]): PaperContextRef[] {
     if (!message || message.role !== "user") continue;
     const contexts = getMessageCitationPaperContexts(message);
     for (const context of contexts) {
-      const key = `${context.itemId}:${context.contextItemId}`;
+      const key = completePaperContextKey(context);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(context);
@@ -1012,9 +1134,16 @@ function decorateCompletedAssistantCitationLinks(params: {
   bubble: HTMLDivElement;
   assistantMessage: Message;
   pairedUserMessage: Message | null;
+  webSourceAnchors?: readonly WebSourceAnchor[];
 }): void {
-  const { body, panelItem, bubble, assistantMessage, pairedUserMessage } =
-    params;
+  const {
+    body,
+    panelItem,
+    bubble,
+    assistantMessage,
+    pairedUserMessage,
+    webSourceAnchors = [],
+  } = params;
   if (assistantMessage.streaming || assistantMessage.compactMarker) return;
   if (!sanitizeText(bubble.textContent || assistantMessage.text || "").trim()) {
     return;
@@ -1038,6 +1167,7 @@ function decorateCompletedAssistantCitationLinks(params: {
       assistantMessage,
       pairedUserMessage,
     });
+    if (webSourceAnchors.length) return;
     decorateAssistantCitationLinks({
       body,
       panelItem,
@@ -1313,9 +1443,10 @@ const followBottomStabilizers = new Map<
 
 /** Legacy cumulative API token usage per conversation key for this UI session. */
 const sessionTokenTotals = new Map<number, number>();
-type ContextUsageSnapshot = {
+export type ContextUsageSnapshot = {
   contextTokens: number;
   contextWindow?: number;
+  inputLimitSource?: ModelInputTokenLimitSource;
   contextWindowIsAuthoritative?: boolean;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
@@ -1337,6 +1468,7 @@ function setContextUsageSnapshot(
       Number(snapshot.contextWindow) > 0
         ? Math.floor(Number(snapshot.contextWindow))
         : undefined,
+    inputLimitSource: snapshot.inputLimitSource,
     contextWindowIsAuthoritative:
       snapshot.contextWindowIsAuthoritative === true,
     cacheReadTokens:
@@ -1404,15 +1536,36 @@ function estimateHistoryContextUsageSnapshot(
     messages,
     effectiveRequestConfig.model || "",
     effectiveRequestConfig.advanced?.inputTokenCap,
+    {
+      apiBase: effectiveRequestConfig.apiBase,
+      protocol: effectiveRequestConfig.providerProtocol,
+      authMode: effectiveRequestConfig.authMode,
+      profileOverride: effectiveRequestConfig.advanced?.profileOverride,
+    },
   );
   if (inputCap.estimatedAfterTokens <= 0) return undefined;
   return {
     contextTokens: inputCap.estimatedAfterTokens,
     contextWindow: inputCap.limitTokens,
+    inputLimitSource: inputCap.limitSource,
     estimated: true,
     source: "estimated",
   };
 }
+
+export function refreshAllActiveConversationPanels(): void {
+  for (const [body, getItem] of activeContextPanels) {
+    if (!(body as Element).isConnected) {
+      activeContextPanels.delete(body);
+      activeContextPanelStateSync.delete(body);
+      continue;
+    }
+    const item = getItem();
+    if (item) refreshChat(body, item);
+  }
+}
+
+subscribeModelProviderGroups(refreshAllActiveConversationPanels);
 
 function accumulateSessionTokens(
   conversationKey: number,
@@ -1555,9 +1708,19 @@ async function loadStoredConversationByKey(
 
 async function loadConversationForkLinkCache(
   conversationKey: number,
+  expectedGeneration = getConversationWriteGeneration(conversationKey),
 ): Promise<void> {
   try {
     const link = await getConversationForkLink(conversationKey);
+    if (
+      pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
+      isConversationKeyRetiredInMemory(conversationKey) ||
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      conversationForkLinks.delete(conversationKey);
+      return;
+    }
     if (link) {
       conversationForkLinks.set(conversationKey, link);
     } else {
@@ -1569,18 +1732,33 @@ async function loadConversationForkLinkCache(
   }
 }
 
-async function updateStoredLatestUserMessageByConversation(
+async function updateStoredLatestUserMessageByConversationUnlocked(
   conversationKey: number,
-  message: Parameters<typeof updateStoredLatestUserMessage>[1],
+  message: Parameters<typeof updateStoredLatestUserMessage>[1] & {
+    conversationGeneration?: number;
+  },
   conversationSystem?: ConversationSystem | null,
 ): Promise<void> {
+  const expectedGeneration = Number(
+    (message as StoredChatMessage).conversationGeneration,
+  );
+  if (
+    Number.isFinite(expectedGeneration) &&
+    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+  ) {
+    return;
+  }
+  if (areConversationWritesFrozen(conversationKey)) return;
   const storageSystem = resolveConversationStorageSystem({
     conversationKey,
     conversationSystem,
   });
   if (!storageSystem) return;
   if (storageSystem === "claude_code") {
-    await updateLatestClaudeConversationUserMessage(conversationKey, message);
+    await updateLatestClaudeConversationUserMessageWithinWriteLock(
+      conversationKey,
+      message,
+    );
     return;
   }
   if (storageSystem === "codex") {
@@ -1590,11 +1768,23 @@ async function updateStoredLatestUserMessageByConversation(
   await updateStoredLatestUserMessage(conversationKey, message);
 }
 
-async function updateStoredLatestAssistantMessageByConversation(
+async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationKey: number,
-  message: Parameters<typeof updateStoredLatestAssistantMessage>[1],
+  message: Parameters<typeof updateStoredLatestAssistantMessage>[1] & {
+    conversationGeneration?: number;
+  },
   conversationSystem?: ConversationSystem | null,
 ): Promise<void> {
+  const expectedGeneration = Number(
+    (message as StoredChatMessage).conversationGeneration,
+  );
+  if (
+    Number.isFinite(expectedGeneration) &&
+    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+  ) {
+    return;
+  }
+  if (areConversationWritesFrozen(conversationKey)) return;
   const storageSystem = resolveConversationStorageSystem({
     conversationKey,
     conversationSystem,
@@ -1602,19 +1792,22 @@ async function updateStoredLatestAssistantMessageByConversation(
   if (!storageSystem) return;
   if (storageSystem === "claude_code") {
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateLatestClaudeConversationAssistantMessage(conversationKey, {
-      ...message,
-      contextTokens:
-        Number.isFinite(Number(message.contextTokens)) &&
-        Number(message.contextTokens) > 0
-          ? Math.floor(Number(message.contextTokens))
-          : latestContextSnapshot?.contextTokens,
-      contextWindow:
-        Number.isFinite(Number(message.contextWindow)) &&
-        Number(message.contextWindow) > 0
-          ? Math.floor(Number(message.contextWindow))
-          : latestContextSnapshot?.contextWindow,
-    });
+    await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+      conversationKey,
+      {
+        ...message,
+        contextTokens:
+          Number.isFinite(Number(message.contextTokens)) &&
+          Number(message.contextTokens) > 0
+            ? Math.floor(Number(message.contextTokens))
+            : latestContextSnapshot?.contextTokens,
+        contextWindow:
+          Number.isFinite(Number(message.contextWindow)) &&
+          Number(message.contextWindow) > 0
+            ? Math.floor(Number(message.contextWindow))
+            : latestContextSnapshot?.contextWindow,
+      },
+    );
     return;
   }
   if (storageSystem === "codex") {
@@ -1637,38 +1830,95 @@ async function updateStoredLatestAssistantMessageByConversation(
   await updateStoredLatestAssistantMessage(conversationKey, message);
 }
 
+async function updateStoredLatestUserMessageByConversation(
+  conversationKey: number,
+  message: Parameters<typeof updateStoredLatestUserMessage>[1] & {
+    conversationGeneration?: number;
+  },
+  conversationSystem?: ConversationSystem | null,
+): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    updateStoredLatestUserMessageByConversationUnlocked(
+      conversationKey,
+      message,
+      conversationSystem,
+    ),
+  );
+}
+
+async function updateStoredLatestAssistantMessageByConversation(
+  conversationKey: number,
+  message: Parameters<typeof updateStoredLatestAssistantMessage>[1] & {
+    conversationGeneration?: number;
+  },
+  conversationSystem?: ConversationSystem | null,
+): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    updateStoredLatestAssistantMessageByConversationUnlocked(
+      conversationKey,
+      message,
+      conversationSystem,
+    ),
+  );
+}
+
 async function persistConversationMessage(
   conversationKey: number,
   message: StoredChatMessage,
   conversationSystem?: ConversationSystem | null,
 ): Promise<void> {
   try {
-    const storageSystem = resolveConversationStorageSystem({
-      conversationKey,
-      conversationSystem,
-    });
-    if (!storageSystem) return;
-    if (storageSystem === "claude_code") {
-      await appendClaudeConversationMessage(conversationKey, message);
-    } else if (storageSystem === "codex") {
-      await appendCodexMessage(conversationKey, message);
-      await pruneCodexConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
-    } else {
-      await appendStoredMessage(conversationKey, message);
-      await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+    const expectedGeneration = Number(message.conversationGeneration);
+    if (
+      Number.isFinite(expectedGeneration) &&
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      return;
     }
-    const storedMessages = await loadStoredConversationByKey(
-      conversationKey,
-      PERSISTED_HISTORY_LIMIT,
-      storageSystem,
-    );
-    const attachmentHashes =
-      collectAttachmentHashesFromStoredMessages(storedMessages);
-    await replaceOwnerAttachmentRefs(
-      "conversation",
-      conversationKey,
-      attachmentHashes,
-    );
+    if (areConversationWritesFrozen(conversationKey)) return;
+    await withConversationWriteLock(conversationKey, async () => {
+      if (
+        (Number.isFinite(expectedGeneration) &&
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            expectedGeneration,
+          )) ||
+        areConversationWritesFrozen(conversationKey)
+      ) {
+        return;
+      }
+      const storageSystem = resolveConversationStorageSystem({
+        conversationKey,
+        conversationSystem,
+      });
+      if (!storageSystem) return;
+      if (storageSystem === "claude_code") {
+        await appendClaudeConversationMessageWithinWriteLock(
+          conversationKey,
+          message,
+          undefined,
+        );
+      } else if (storageSystem === "codex") {
+        await appendCodexMessage(conversationKey, message, undefined);
+        await pruneCodexConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+      } else {
+        await appendStoredMessage(conversationKey, message, undefined);
+        await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+      }
+      const storedMessages = await loadStoredConversationByKey(
+        conversationKey,
+        PERSISTED_HISTORY_LIMIT,
+        storageSystem,
+      );
+      const attachmentHashes =
+        collectAttachmentHashesFromStoredMessages(storedMessages);
+      await replaceOwnerAttachmentRefs(
+        "conversation",
+        conversationKey,
+        attachmentHashes,
+        expectedGeneration,
+      );
+    });
   } catch (err) {
     ztoolkit.log("LLM: Failed to persist chat message", err);
   }
@@ -1695,19 +1945,17 @@ function normalizeStoredPaperContextRoutes(params: {
     ),
   ]).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const pdfKeys = new Set(
-    pdfPaperContexts.map((paper) => `${paper.itemId}:${paper.contextItemId}`),
+    pdfPaperContexts.map((paper) => completePaperContextKey(paper)),
   );
   const fullTextPaperContexts = allFullTextPaperContexts.filter(
-    (paper) => !pdfKeys.has(`${paper.itemId}:${paper.contextItemId}`),
+    (paper) => !pdfKeys.has(completePaperContextKey(paper)),
   );
   const fullTextKeys = new Set(
-    fullTextPaperContexts.map(
-      (paper) => `${paper.itemId}:${paper.contextItemId}`,
-    ),
+    fullTextPaperContexts.map((paper) => completePaperContextKey(paper)),
   );
   return {
     paperContexts: allPaperContexts.filter((paper) => {
-      const key = `${paper.itemId}:${paper.contextItemId}`;
+      const key = completePaperContextKey(paper);
       return !pdfKeys.has(key) && !fullTextKeys.has(key);
     }),
     pdfPaperContexts,
@@ -1717,6 +1965,131 @@ function normalizeStoredPaperContextRoutes(params: {
 
 export const normalizeStoredPaperContextRoutesForTests =
   normalizeStoredPaperContextRoutes;
+
+function getMessageDisplayPaperContexts(
+  message: Pick<
+    Message,
+    "paperContexts" | "pdfPaperContexts" | "fullTextPaperContexts"
+  >,
+): PaperContextRef[] {
+  return normalizePaperContexts([
+    ...(message.paperContexts || []),
+    ...(message.fullTextPaperContexts || []),
+    ...(message.pdfPaperContexts || []),
+  ]);
+}
+
+export const getMessageDisplayPaperContextsForTests =
+  getMessageDisplayPaperContexts;
+
+type ConversationComposeContextSnapshot = {
+  paperContexts: PaperContextRef[];
+  collectionContexts: CollectionContextRef[];
+  tagContexts: TagContextRef[];
+};
+
+function toContinuationPaperContext(
+  paperContext: PaperContextRef,
+): PaperContextRef {
+  const { contentSourceMode: _consumedSourceMode, ...identity } = paperContext;
+  return identity;
+}
+
+function deriveConversationComposeContextSnapshot(
+  conversationKey: number,
+  messages: Message[],
+  autoLoadedPaperContext?: PaperContextRef | null,
+): ConversationComposeContextSnapshot {
+  const latestUserMessage = [
+    ...filterMessagesInPendingTurns(conversationKey, messages),
+  ]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!latestUserMessage) {
+    return { paperContexts: [], collectionContexts: [], tagContexts: [] };
+  }
+  const autoPaperKey = autoLoadedPaperContext
+    ? completePaperContextKey(autoLoadedPaperContext)
+    : "";
+  const paperContexts = getMessageDisplayPaperContexts(latestUserMessage)
+    .filter(
+      (paperContext) => completePaperContextKey(paperContext) !== autoPaperKey,
+    )
+    .map(toContinuationPaperContext);
+  return {
+    paperContexts,
+    collectionContexts: normalizeCollectionContexts(
+      latestUserMessage.selectedCollectionContexts,
+    ),
+    tagContexts: normalizeTagContexts(latestUserMessage.selectedTagContexts),
+  };
+}
+
+export const deriveConversationComposeContextSnapshotForTests =
+  deriveConversationComposeContextSnapshot;
+
+function clearPaperContinuationOverrides(itemId: number): void {
+  const prefix = `${itemId}:`;
+  for (const key of Array.from(paperContextModeOverrides.keys())) {
+    if (key.startsWith(prefix)) paperContextModeOverrides.delete(key);
+  }
+  for (const key of Array.from(paperContentSourceOverrides.keys())) {
+    if (key.startsWith(prefix)) paperContentSourceOverrides.delete(key);
+  }
+}
+
+export function restoreConversationComposeContext(item: Zotero.Item): boolean {
+  const conversationKey = getConversationKey(item);
+  const itemId = Math.floor(Number(item.id || 0));
+  if (
+    conversationKey <= 0 ||
+    itemId <= 0 ||
+    !loadedConversationKeys.has(conversationKey) ||
+    initializedConversationComposeContextKeys.has(conversationKey)
+  ) {
+    return false;
+  }
+  if (
+    selectedPaperContextCache.has(itemId) ||
+    selectedCollectionContextCache.has(itemId) ||
+    selectedTagContextCache.has(itemId)
+  ) {
+    initializedConversationComposeContextKeys.add(conversationKey);
+    return false;
+  }
+
+  const snapshot = deriveConversationComposeContextSnapshot(
+    conversationKey,
+    chatHistory.get(conversationKey) || [],
+    resolveAutoLoadedPaperContextForItem(item),
+  );
+  if (snapshot.paperContexts.length) {
+    selectedPaperContextCache.set(itemId, snapshot.paperContexts);
+  } else {
+    selectedPaperContextCache.delete(itemId);
+  }
+  if (snapshot.collectionContexts.length) {
+    selectedCollectionContextCache.set(itemId, snapshot.collectionContexts);
+  } else {
+    selectedCollectionContextCache.delete(itemId);
+  }
+  if (snapshot.tagContexts.length) {
+    selectedTagContextCache.set(itemId, snapshot.tagContexts);
+  } else {
+    selectedTagContextCache.delete(itemId);
+  }
+  clearPaperContinuationOverrides(itemId);
+  initializedConversationComposeContextKeys.add(conversationKey);
+
+  for (const [body, getItem] of activeContextPanels) {
+    const activeItem = getItem();
+    if (!activeItem || getConversationKey(activeItem) !== conversationKey) {
+      continue;
+    }
+    activeContextPanelStateSync.get(body)?.();
+  }
+  return true;
+}
 
 function toPanelMessage(message: StoredChatMessage): Message {
   const screenshotImages = Array.isArray(message.screenshotImages)
@@ -1772,6 +2145,10 @@ function toPanelMessage(message: StoredChatMessage): Message {
   );
   const selectedTagContexts = normalizeTagContexts(message.selectedTagContexts);
   return {
+    // Preserve the immutable database row identity through the runtime
+    // history model. Turn-deletion intents use this ID as the primary fence;
+    // dropping it here forces every consumer back onto recyclable timestamps.
+    id: message.id,
     role: message.role,
     text: message.text,
     timestamp: message.timestamp,
@@ -1824,6 +2201,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: isReasoningExpandedByDefault(),
     compactMarker: Boolean((message as StoredChatMessage).compactMarker),
+    interrupted: message.interrupted || undefined,
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
     quoteCitations: message.quoteCitations,
@@ -1833,8 +2211,29 @@ function toPanelMessage(message: StoredChatMessage): Message {
 export async function ensureConversationLoaded(
   item: Zotero.Item,
 ): Promise<void> {
+  // Provision first.  A paper's historical default key may have been
+  // permanently retired; provisioning then allocates a fresh key and updates
+  // the active scope before this function captures the key used by all load,
+  // append, and identity-fence checks below.
+  await provisionConversationScopeForItem({ item }).catch(() => false);
   const conversationKey = getConversationKey(item);
+  // Provisioning can replace a retired default with a fresh key after the DOM
+  // was initially built. Keep every mounted surface's identity dataset in
+  // lock-step with the item object so reader actions (including Add Text) do
+  // not target the retired key captured during the first render.
+  for (const [body, getItem] of activeContextPanels) {
+    if (getItem() !== item) continue;
+    const root = body.querySelector("#llm-main") as HTMLElement | null;
+    if (root) root.dataset.itemId = String(conversationKey);
+  }
   const conversationSystem = resolveConversationSystemForItem(item);
+  const loadGeneration = getConversationWriteGeneration(conversationKey);
+  if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+    chatHistory.delete(conversationKey);
+    loadedConversationKeys.delete(conversationKey);
+    conversationForkLinks.delete(conversationKey);
+    return;
+  }
   if (isEffectiveWebChatRequest(item)) {
     isolateWebChatConversationKey(
       conversationKey,
@@ -1851,14 +2250,16 @@ export async function ensureConversationLoaded(
 
   if (loadedConversationKeys.has(conversationKey)) {
     await loadConversationForkLinkCache(conversationKey);
+    restoreConversationComposeContext(item);
     return;
   }
   if (
     chatHistory.has(conversationKey) &&
     !blockedConversationLoadKeys.has(conversationKey)
   ) {
-    await loadConversationForkLinkCache(conversationKey);
+    await loadConversationForkLinkCache(conversationKey, loadGeneration);
     loadedConversationKeys.add(conversationKey);
+    restoreConversationComposeContext(item);
     return;
   }
   if (blockedConversationLoadKeys.has(conversationKey)) {
@@ -1870,12 +2271,35 @@ export async function ensureConversationLoaded(
   const existingTask = loadingConversationTasks.get(conversationKey);
   if (existingTask) {
     await existingTask;
+    restoreConversationComposeContext(item);
     return;
   }
 
   const task = (async () => {
     let shouldMarkLoaded = false;
+    let instanceID = "";
     try {
+      try {
+        instanceID =
+          (await getRegisteredConversationScope(conversationKey))?.instanceID ||
+          "";
+      } catch {
+        instanceID = "";
+      }
+      const isFrozen = () =>
+        pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
+        areConversationWritesFrozen(conversationKey) ||
+        !isConversationWriteGenerationCurrent(
+          conversationKey,
+          loadGeneration,
+        ) ||
+        (Boolean(instanceID) &&
+          isConversationInstanceRecentlyDeleted(conversationKey, instanceID));
+      if (isFrozen()) {
+        chatHistory.delete(conversationKey);
+        conversationForkLinks.delete(conversationKey);
+        return;
+      }
       const validScope = await validateConversationScopeForItem({
         item,
         conversationKey,
@@ -1892,6 +2316,11 @@ export async function ensureConversationLoaded(
         PERSISTED_HISTORY_LIMIT,
         conversationSystem,
       );
+      if (isFrozen()) {
+        chatHistory.delete(conversationKey);
+        conversationForkLinks.delete(conversationKey);
+        return;
+      }
       if (
         webChatIsolatedConversationKeys.has(conversationKey) ||
         isEffectiveWebChatRequest(item)
@@ -1930,10 +2359,25 @@ export async function ensureConversationLoaded(
       blockedConversationLoadKeys.delete(conversationKey);
       chatHistory.set(conversationKey, panelMessages);
       validateLoadedConversationQuoteMessages(panelMessages, conversationKey);
-      await loadConversationForkLinkCache(conversationKey);
+      await loadConversationForkLinkCache(conversationKey, loadGeneration);
+      if (isFrozen()) {
+        chatHistory.delete(conversationKey);
+        conversationForkLinks.delete(conversationKey);
+        return;
+      }
       shouldMarkLoaded = true;
     } catch (err) {
       ztoolkit.log("LLM: Failed to load chat history", err);
+      if (
+        pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
+        (instanceID &&
+          isConversationInstanceRecentlyDeleted(conversationKey, instanceID))
+      ) {
+        chatHistory.delete(conversationKey);
+        conversationForkLinks.delete(conversationKey);
+        shouldMarkLoaded = false;
+        return;
+      }
       if (!chatHistory.has(conversationKey)) {
         chatHistory.set(conversationKey, []);
       }
@@ -1951,6 +2395,7 @@ export async function ensureConversationLoaded(
 
   loadingConversationTasks.set(conversationKey, task);
   await task;
+  restoreConversationComposeContext(item);
 }
 
 async function ensureAgentRunTraceLoaded(
@@ -1960,6 +2405,29 @@ async function ensureAgentRunTraceLoaded(
 ): Promise<void> {
   const normalizedRunId = (runId || "").trim();
   if (!normalizedRunId || agentRunTraceCache.has(normalizedRunId)) return;
+  const conversationKey = item ? getConversationKey(item) : 0;
+  const expectedGeneration =
+    conversationKey > 0 ? getConversationWriteGeneration(conversationKey) : 0;
+  let instanceID = "";
+  if (conversationKey > 0) {
+    try {
+      instanceID =
+        (await getRegisteredConversationScope(conversationKey))?.instanceID ||
+        "";
+    } catch {
+      instanceID = "";
+    }
+  }
+  const isFrozen = () =>
+    conversationKey > 0 &&
+    (pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(
+        conversationKey,
+        expectedGeneration,
+      ) ||
+      (Boolean(instanceID) &&
+        isConversationInstanceRecentlyDeleted(conversationKey, instanceID)));
   const existing = agentRunTraceLoadingTasks.get(normalizedRunId);
   if (existing) {
     await existing;
@@ -1967,19 +2435,29 @@ async function ensureAgentRunTraceLoaded(
   }
   const task = (async () => {
     try {
-      const trace = await getAgentRunTrace(normalizedRunId);
-      agentRunTraceCache.set(normalizedRunId, trace.events);
+      const trace = await agentRunTraceLoader(normalizedRunId);
+      if (!isFrozen()) {
+        agentRunTraceCache.set(normalizedRunId, trace.events);
+      }
     } catch (err) {
       ztoolkit.log("LLM: Failed to load agent run trace", err);
     } finally {
       agentRunTraceLoadingTasks.delete(normalizedRunId);
-      if (body && item) {
-        refreshChat(body, item);
+      if (body && item && !isFrozen()) {
+        refreshConversationPanels(body, item);
       }
     }
   })();
   agentRunTraceLoadingTasks.set(normalizedRunId, task);
   await task;
+}
+
+export function ensureAgentRunTraceLoadedForTests(
+  runId: string,
+  body: Element,
+  item: Zotero.Item,
+): Promise<void> {
+  return ensureAgentRunTraceLoaded(runId, body, item);
 }
 
 function getCachedAgentRunEvents(
@@ -1990,31 +2468,34 @@ function getCachedAgentRunEvents(
   return agentRunTraceCache.get(normalizedRunId) || [];
 }
 
+const REASONING_PROVIDER_KINDS = new Set<ReasoningProviderKind>([
+  "openai",
+  "gemini",
+  "deepseek",
+  "kimi",
+  "mimo",
+  "qwen",
+  "grok",
+  "anthropic",
+  "local",
+]);
+
 export function detectReasoningProvider(
   modelName: string,
+  apiBase?: string,
 ): ReasoningProviderKind {
-  const name = modelName.trim().toLowerCase();
-  if (!name) return "unsupported";
-  if (name.startsWith("deepseek")) {
-    return "deepseek";
+  const inferred = inferProviderFromModelName(modelName);
+  if (
+    inferred &&
+    REASONING_PROVIDER_KINDS.has(inferred as ReasoningProviderKind)
+  ) {
+    return inferred as ReasoningProviderKind;
   }
-  if (name.startsWith("kimi")) {
-    return "kimi";
-  }
-  if (/(^|[/:])mimo-v2(?:\.5)?(?:-(?:pro|omni|flash))?(?:\b|[.-])/.test(name)) {
-    return "mimo";
-  }
-  if (/(^|[/:])(?:qwen(?:\d+)?|qwq|qvq)(?:\b|[.-])/.test(name)) {
-    return "qwen";
-  }
-  if (/(^|[/:])grok(?:\b|[.-])/.test(name)) {
-    return "grok";
-  }
-  if (/(^|[/:.])claude(?:\b|[.-])/.test(name)) {
-    return "anthropic";
-  }
-  if (name.includes("gemini")) return "gemini";
-  if (/^(gpt-5|o\d)(\b|[.-])/.test(name)) return "openai";
+  // Only as a last resort: a recognized family keeps its own profile even when
+  // served locally, because the level set belongs to the weights. This covers
+  // the models whose names match nothing — gemma, llama, mistral, or a custom
+  // Modelfile name — whose reasoning support the server reports directly.
+  if (apiBase && isLocalModelApiBase(apiBase)) return "local";
   return "unsupported";
 }
 
@@ -2023,8 +2504,8 @@ export function getReasoningOptions(
   modelName: string,
   apiBase?: string,
   providerProtocol?: ProviderProtocol,
+  profileOverride?: ModelProfileOverride,
 ): ReasoningOption[] {
-  if (provider === "unsupported") return [];
   if (provider === "anthropic") {
     const resolvedProtocol =
       providerProtocol ||
@@ -2034,7 +2515,15 @@ export function getReasoningOptions(
       });
     if (resolvedProtocol !== "anthropic_messages") return [];
   }
-  return getRuntimeReasoningOptions(provider, modelName).map((option) => ({
+  // The user's override is part of the identity: the menu must offer exactly
+  // the levels the request builder will encode, custom ones included.
+  return getCatalogReasoningOptions({
+    provider: provider === "unsupported" ? undefined : provider,
+    model: modelName,
+    apiBase,
+    protocol: providerProtocol,
+    profileOverride,
+  }).map((option) => ({
     level: option.level as LLMReasoningLevel,
     enabled: option.enabled,
     label: option.label,
@@ -2043,11 +2532,22 @@ export function getReasoningOptions(
 
 export function buildAssistantDisplayMarkdownForRender(
   message: Pick<Message, "text" | "quoteCitations" | "quoteDisplayOverride">,
+  webSourceAnchors: readonly WebSourceAnchor[] = [],
 ): string {
-  const display = getMessageQuoteDisplay(message);
+  const hasWebSources = webSourceAnchors.length > 0;
+  const display = hasWebSources
+    ? {
+        markdown: message.text || "",
+        quoteCitations: message.quoteCitations,
+      }
+    : getMessageQuoteDisplay(message);
   return buildQuoteDisplayMarkdown({
-    markdown: sanitizeText(display.markdown),
+    markdown: injectWebSourceAnchorTokens(
+      stripWebSourceMarkersForDisplay(sanitizeText(display.markdown)),
+      webSourceAnchors,
+    ),
     quoteCitations: display.quoteCitations,
+    allowLegacyInference: !hasWebSources,
   });
 }
 
@@ -2138,14 +2638,35 @@ export function getSelectedReasoningForItem(
   modelName: string,
   apiBase?: string,
   providerProtocol?: ProviderProtocol,
+  profileOverride?: ModelProfileOverride,
 ): LLMReasoningConfig | undefined {
-  const provider = detectReasoningProvider(modelName);
-  if (provider === "unsupported") return undefined;
+  const detectedProvider = detectReasoningProvider(modelName, apiBase);
+  const resolvedCapabilityProvider = getModelCapabilities({
+    provider: detectedProvider === "unsupported" ? undefined : detectedProvider,
+    model: modelName,
+    apiBase,
+    protocol: providerProtocol,
+    profileOverride,
+  }).provider;
+  const provider: ReasoningProviderKind = [
+    "openai",
+    "gemini",
+    "deepseek",
+    "kimi",
+    "mimo",
+    "qwen",
+    "grok",
+    "anthropic",
+    "local",
+  ].includes(resolvedCapabilityProvider as ReasoningProviderKind)
+    ? (resolvedCapabilityProvider as ReasoningProviderKind)
+    : detectedProvider;
   const enabledLevels = getReasoningOptions(
     provider,
     modelName,
     apiBase,
     providerProtocol,
+    profileOverride,
   )
     .filter((option) => option.enabled)
     .map((option) => option.level);
@@ -2173,6 +2694,7 @@ export function getSelectedReasoningForItem(
   setLastUsedReasoningLevelForProvider(provider, selectedLevel);
   if (selectedLevel === "none") return undefined;
 
+  if (provider === "unsupported") return undefined;
   return { provider, level: selectedLevel as LLMReasoningLevel };
 }
 
@@ -2443,6 +2965,29 @@ function normalizeQueuedInputConversationSystem(
   return value === "claude_code" || value === "codex" ? value : "upstream";
 }
 
+function transferPanelRequest(
+  conversationSystem: ConversationSystem | string | null | undefined,
+  fromConversationKey: number,
+  toConversationKey: number,
+  requestId: number,
+): boolean {
+  if (!transferRequest(fromConversationKey, toConversationKey, requestId)) {
+    return false;
+  }
+  const system = normalizeQueuedInputConversationSystem(conversationSystem);
+  transferQueuedFollowUpThreadState(
+    buildQueuedFollowUpThreadKey({
+      conversationSystem: system,
+      conversationKey: fromConversationKey,
+    }),
+    buildQueuedFollowUpThreadKey({
+      conversationSystem: system,
+      conversationKey: toConversationKey,
+    }),
+  );
+  return true;
+}
+
 function scheduleQueuedInputDrain(
   body: Element,
   scope?: QueuedInputDrainScope,
@@ -2488,13 +3033,20 @@ function setRequestUIBusy(
       ui.sendBtn.disabled = false;
     }
     if (ui.cancelBtn) ui.cancelBtn.style.display = "";
-    if (ui.inputBox) {
-      ui.inputBox.disabled = isPanelWebChatMode(body);
-    }
+    if (ui.inputBox && isPanelWebChatMode(body)) ui.inputBox.disabled = true;
     if (ui.status) setStatus(ui.status, statusText, "sending");
   });
   // History controls are intentionally left enabled so the user can
   // switch conversations or create new ones while a request is in flight.
+}
+
+function notifyProviderDispatch(
+  body: Element,
+  ui: PanelRequestUI,
+  callback?: () => void,
+): void {
+  if (ui.inputBox) ui.inputBox.disabled = isPanelWebChatMode(body);
+  callback?.();
 }
 
 function getPanelBodyConversationKey(
@@ -2515,6 +3067,24 @@ function getPanelBodyConversationKey(
     return getConversationKey(item);
   }
   return null;
+}
+
+export function isPanelConversationCurrent(
+  body: Element,
+  item: Zotero.Item,
+): boolean {
+  const conversationKey = getConversationKey(item);
+  const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+  const displayedKey = Number(panelRoot?.dataset.itemId || 0);
+  if (
+    Number.isFinite(displayedKey) &&
+    displayedKey > 0 &&
+    displayedKey !== conversationKey
+  ) {
+    return false;
+  }
+  const activeItem = activeContextPanels.get(body)?.() || null;
+  return !activeItem || getConversationKey(activeItem) === conversationKey;
 }
 
 function cleanupDisconnectedPanelBody(body: Element): void {
@@ -2574,17 +3144,66 @@ function setPendingRequestIdAndSync(
   requestId: number,
   primaryBody?: Element | null,
   primaryItem?: Zotero.Item | null,
+  expectedCurrentId?: number,
 ): void {
-  setPendingRequestId(conversationKey, requestId);
+  setPendingRequestId(conversationKey, requestId, expectedCurrentId);
   syncRequestUIForConversation(conversationKey, primaryBody, primaryItem);
+}
+
+export function beginPanelRequest(
+  body: Element,
+  item: Zotero.Item,
+  statusText = "Preparing attached context…",
+): {
+  conversationKey: number;
+  requestId: number;
+  signal: AbortSignal;
+} | null {
+  const conversationKey = getConversationKey(item);
+  const requestId = nextRequestId();
+  const AbortControllerCtor = getAbortControllerCtor();
+  const abortController = AbortControllerCtor
+    ? new AbortControllerCtor()
+    : null;
+  if (!tryBeginRequest(conversationKey, requestId, abortController)) {
+    return null;
+  }
+  syncRequestUIForConversation(conversationKey, body, item);
+  const ui = getPanelRequestUI(body);
+  setRequestUIBusy(body, ui, conversationKey, statusText);
+  if (ui.inputBox) ui.inputBox.disabled = true;
+  return {
+    conversationKey,
+    requestId,
+    signal: abortController ? abortController.signal : INERT_ABORT_SIGNAL,
+  };
+}
+
+export function finishPanelRequest(
+  body: Element,
+  item: Zotero.Item,
+  conversationKey: number,
+  requestId: number,
+): boolean {
+  if (!finishRequest(conversationKey, requestId)) return false;
+  syncRequestUIForConversation(conversationKey, body, item);
+  restoreRequestUIIdle(body, conversationKey, requestId);
+  return true;
 }
 
 export function clearPendingRequestIdAndSync(
   conversationKey: number,
   primaryBody?: Element | null,
   primaryItem?: Zotero.Item | null,
-): void {
+  expectedCurrentId?: number,
+): boolean {
+  if (expectedCurrentId !== undefined) {
+    if (!finishRequest(conversationKey, expectedCurrentId)) return false;
+    syncRequestUIForConversation(conversationKey, primaryBody, primaryItem);
+    return true;
+  }
   setPendingRequestIdAndSync(conversationKey, 0, primaryBody, primaryItem);
+  return true;
 }
 
 function setStatusForConversationPanels(
@@ -2629,7 +3248,8 @@ function restoreRequestUIIdle(
   conversationKey: number,
   requestId: number,
 ): void {
-  if (getCancelledRequestId(conversationKey) >= requestId) return;
+  const currentRequestId = getPendingRequestId(conversationKey);
+  if (currentRequestId > 0 && currentRequestId !== requestId) return;
   // Guard: only restore UI if the panel is still showing this conversation.
   // If the user switched away, the panel rebuild (onAsyncRender) will handle
   // the correct idle/busy state for the new conversation.
@@ -2656,6 +3276,299 @@ function restoreRequestUIIdle(
   });
 }
 
+/**
+ * Shared per-turn stream handlers. The send and retry pipelines previously
+ * carried hand-synchronized copies of these; they differ only in the small
+ * hooks threaded through the params.
+ */
+function createStreamReasoningHandler(params: {
+  assistantMessage: Message;
+  flushResponseStream: (reason: BlockStreamFlushReason) => void;
+  queueRefresh: () => void;
+  /** Retry captures the streamed reasoning for its interruption fallback. */
+  onReasoningCaptured?: () => void;
+}): (reasoning: ReasoningEvent) => void {
+  return (reasoning) => {
+    params.flushResponseStream("event");
+    if (reasoning.summary) {
+      params.assistantMessage.reasoningSummary = appendReasoningPart(
+        params.assistantMessage.reasoningSummary,
+        reasoning.summary,
+      );
+    }
+    if (reasoning.details) {
+      params.assistantMessage.reasoningDetails = appendReasoningPart(
+        params.assistantMessage.reasoningDetails,
+        reasoning.details,
+      );
+    }
+    params.onReasoningCaptured?.();
+    params.queueRefresh();
+  };
+}
+
+export function resolveUsageContextWindow(params: {
+  providerContextWindow?: number;
+  providerContextWindowIsAuthoritative?: boolean;
+  fallbackContextWindow: number;
+  fallbackInputLimitSource: ModelInputTokenLimitSource;
+}): {
+  contextWindow: number;
+  inputLimitSource: ModelInputTokenLimitSource;
+  contextWindowIsAuthoritative: boolean;
+} {
+  const fallbackIsUserAuthoritative =
+    params.fallbackInputLimitSource === "advanced" ||
+    params.fallbackInputLimitSource === "user";
+  if (fallbackIsUserAuthoritative || !params.providerContextWindow) {
+    return {
+      contextWindow: params.fallbackContextWindow,
+      inputLimitSource: params.fallbackInputLimitSource,
+      contextWindowIsAuthoritative: false,
+    };
+  }
+  return {
+    contextWindow: params.providerContextWindow,
+    inputLimitSource: "live",
+    contextWindowIsAuthoritative:
+      params.providerContextWindowIsAuthoritative === true,
+  };
+}
+
+export function updateContextUsageSnapshotFromProvider(params: {
+  conversationKey: number;
+  usage: UsageStats;
+  fallbackContextWindow: number;
+  fallbackInputLimitSource: ModelInputTokenLimitSource;
+}): ContextUsageSnapshot | undefined {
+  const contextTokens =
+    typeof params.usage.contextTokens === "number" &&
+    params.usage.contextTokens > 0
+      ? params.usage.contextTokens
+      : 0;
+  if (contextTokens <= 0) return undefined;
+  const resolvedWindow = resolveUsageContextWindow({
+    providerContextWindow: params.usage.contextWindow,
+    providerContextWindowIsAuthoritative:
+      params.usage.contextWindowIsAuthoritative,
+    fallbackContextWindow: params.fallbackContextWindow,
+    fallbackInputLimitSource: params.fallbackInputLimitSource,
+  });
+  return setContextUsageSnapshot(params.conversationKey, {
+    contextTokens,
+    contextWindow: resolvedWindow.contextWindow,
+    inputLimitSource: resolvedWindow.inputLimitSource,
+    estimated: !resolvedWindow.contextWindowIsAuthoritative,
+    source: resolvedWindow.contextWindowIsAuthoritative
+      ? "provider"
+      : "estimated",
+    contextWindowIsAuthoritative: resolvedWindow.contextWindowIsAuthoritative,
+    cacheReadTokens: params.usage.cacheReadTokens,
+    cacheWriteTokens: params.usage.cacheWriteTokens,
+    cacheMissTokens: params.usage.cacheMissTokens,
+    cacheHitRatio: params.usage.cacheHitRatio,
+    cacheProvider: params.usage.cacheProvider,
+  });
+}
+
+function createStreamUsageHandler(params: {
+  body: Element;
+  tokenUsageEl: HTMLElement | null;
+  conversationKey: number;
+  conversationGeneration?: number;
+  contextCache: Parameters<typeof recordContextCacheTelemetry>[0];
+  fallbackContextWindow: number;
+  fallbackInputLimitSource: ModelInputTokenLimitSource;
+}): (usage: UsageStats) => void {
+  return (usage) => {
+    if (
+      areConversationWritesFrozen(params.conversationKey) ||
+      (params.conversationGeneration !== undefined &&
+        !isConversationWriteGenerationCurrent(
+          params.conversationKey,
+          params.conversationGeneration,
+        ))
+    ) {
+      return;
+    }
+    recordContextCacheTelemetry(params.contextCache, usage);
+    const snapshot = updateContextUsageSnapshotFromProvider({
+      conversationKey: params.conversationKey,
+      usage,
+      fallbackContextWindow: params.fallbackContextWindow,
+      fallbackInputLimitSource: params.fallbackInputLimitSource,
+    });
+    if (!snapshot) return;
+    renderContextUsageSnapshot(params.body, params.tokenUsageEl, snapshot);
+  };
+}
+
+type CodexNativeTurnCallbacks = Pick<
+  Parameters<typeof runCodexAppServerNativeTurn>[0],
+  | "onSkillActivated"
+  | "onDelta"
+  | "onAgentMessageDelta"
+  | "onReasoning"
+  | "onUsage"
+  | "onItemStarted"
+  | "onItemCompleted"
+  | "onMcpToolActivity"
+  | "onMcpConfirmationRequest"
+  | "onMcpSetupWarning"
+  | "onDiagnostics"
+  | "onApprovalRequest"
+>;
+
+/**
+ * The Codex app-server native-turn callback set, previously duplicated
+ * verbatim between the send and retry pipelines.
+ */
+function buildCodexNativeTurnCallbacks(ctx: {
+  body: Element;
+  assistantMessage: Message;
+  codexActivityTrace: ReturnType<
+    typeof createCodexNativeActivityTraceController
+  > | null;
+  flushResponseStream: (reason: BlockStreamFlushReason) => void;
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+  handleDelta: (delta: string) => void;
+  handleReasoning: (reasoning: ReasoningEvent) => void;
+  handleUsage: (usage: UsageStats) => void;
+  conversationKey: number;
+  conversationGeneration: number;
+}): CodexNativeTurnCallbacks {
+  const {
+    body,
+    assistantMessage,
+    codexActivityTrace,
+    flushResponseStream,
+    setStatusSafely,
+    handleDelta,
+    handleReasoning,
+    handleUsage,
+  } = ctx;
+  const isLive = () =>
+    !areConversationWritesFrozen(ctx.conversationKey) &&
+    isConversationWriteGenerationCurrent(
+      ctx.conversationKey,
+      ctx.conversationGeneration,
+    );
+  return {
+    onSkillActivated: (skillId) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.noteSkillActivated(skillId);
+      setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
+    },
+    onDelta: (delta) => {
+      if (isLive()) handleDelta(delta);
+    },
+    onAgentMessageDelta: (event) => {
+      if (!isLive()) return;
+      if (!codexActivityTrace?.appendAgentMessageDelta(event)) {
+        handleDelta(event.delta);
+      }
+    },
+    onReasoning: (reasoning) => {
+      if (isLive()) handleReasoning(reasoning);
+    },
+    onUsage: (usage) => {
+      if (isLive()) handleUsage(usage);
+    },
+    onItemStarted: (event) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.appendItemStatus(event, "started");
+      const itemType = sanitizeText(event.type || "");
+      if (itemType && !isCodexNativeAgentMessageItem(event)) {
+        setStatusSafely(`Codex: ${itemType} started`, "sending");
+      }
+    },
+    onItemCompleted: (event) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.noteAgentMessageCompleted(event);
+      codexActivityTrace?.appendItemStatus(event, "completed");
+      const itemType = sanitizeText(event.type || "");
+      if (itemType && !isCodexNativeAgentMessageItem(event)) {
+        setStatusSafely(`Codex: ${itemType} completed`, "sending");
+      }
+    },
+    onMcpToolActivity: (event) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.noteMcpToolActivity(event);
+      assistantMessage.quoteCitations = mergeQuoteCitations(
+        assistantMessage.quoteCitations,
+        event.quoteCitations,
+      );
+      const label =
+        sanitizeText(event.toolLabel || "").trim() ||
+        sanitizeText(event.toolName || "")
+          .replace(/_/g, " ")
+          .trim();
+      if (label) {
+        setStatusSafely(
+          event.phase === "completed"
+            ? `Codex: used ${label}`
+            : `Codex: using ${label}`,
+          "sending",
+        );
+      }
+    },
+    onMcpConfirmationRequest: async ({ requestId, action }) => {
+      if (!isLive())
+        return { approved: false, reason: "conversation_not_live" };
+      flushResponseStream("event");
+      setStatusSafely(
+        action.mode === "review"
+          ? "Codex is waiting for your Zotero review"
+          : "Codex is waiting for your Zotero approval",
+        "sending",
+      );
+      codexActivityTrace?.noteMcpConfirmationRequired(requestId, action);
+      const resolution = await showNativeMcpActionCard(body, requestId, action);
+      if (!isLive())
+        return { approved: false, reason: "conversation_not_live" };
+      codexActivityTrace?.noteMcpConfirmationResolved(requestId, resolution);
+      return resolution;
+    },
+    onMcpSetupWarning: (message) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      setStatusSafely(
+        formatCodexZoteroMcpError(
+          message,
+          "Native conversation MCP setup warning",
+        ),
+        "error",
+      );
+    },
+    onDiagnostics: (diagnostics) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      setStatusSafely(
+        formatCodexNativeDiagnosticsStatus(diagnostics),
+        "sending",
+      );
+    },
+    onApprovalRequest: async (request) => {
+      if (!isLive())
+        return { approved: false, reason: "conversation_not_live" };
+      flushResponseStream("event");
+      return resolveCodexNativeApprovalWithOptionalReviewCard({
+        body,
+        request,
+        trace: codexActivityTrace,
+        setStatusSafely,
+      });
+    },
+  };
+}
+
 function createPanelUpdateHelpers(
   body: Element,
   item: Zotero.Item,
@@ -2663,6 +3576,7 @@ function createPanelUpdateHelpers(
   ui: PanelRequestUI,
 ): {
   refreshChatSafely: () => void;
+  refreshAssistantMessageSafely: (message: Message) => void;
   setStatusSafely: (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -2670,6 +3584,11 @@ function createPanelUpdateHelpers(
 } {
   const refreshChatSafely = () => {
     refreshConversationPanels(body, item);
+  };
+  const refreshAssistantMessageSafely = (message: Message) => {
+    refreshConversationPanels(body, item, {
+      chatOptions: { rerenderAssistantMessages: new Set([message]) },
+    });
   };
   const setStatusSafely = (
     text: string,
@@ -2679,6 +3598,7 @@ function createPanelUpdateHelpers(
   };
   return {
     refreshChatSafely,
+    refreshAssistantMessageSafely,
     setStatusSafely,
   };
 }
@@ -2754,7 +3674,7 @@ function resolveEffectiveConversationSystem(params: {
   return "upstream";
 }
 
-function resolveEffectiveRequestConfig(params: {
+export function resolveEffectiveRequestConfig(params: {
   item: Zotero.Item;
   model?: string;
   apiBase?: string;
@@ -2771,6 +3691,20 @@ function resolveEffectiveRequestConfig(params: {
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
 }): EffectiveRequestConfig {
+  if (params.authMode === "webchat" || params.providerProtocol === "web_sync") {
+    return {
+      model: (params.model || "chatgpt.com").trim() || "chatgpt.com",
+      apiBase: "",
+      apiKey: "",
+      authMode: "webchat",
+      providerProtocol: "web_sync",
+      modelEntryId: params.modelEntryId,
+      modelProviderLabel: params.modelProviderLabel,
+      reasoning: undefined,
+      advanced: undefined,
+    };
+  }
+
   if (isCodexAppServerConversationRequest(params)) {
     const model =
       (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
@@ -2798,7 +3732,7 @@ function resolveEffectiveRequestConfig(params: {
   );
   const fallbackEntry = hasExplicitProviderMetadata
     ? null
-    : getSelectedModelEntryForItem(params.item.id);
+    : getSelectedModelEntry();
   const explicitEntry =
     hasExplicitProviderMetadata && params.modelProviderLabel === "Claude Code"
       ? {
@@ -2855,22 +3789,27 @@ function resolveEffectiveRequestConfig(params: {
     params.providerProtocol ||
     explicitEntry?.providerProtocol ||
     fallbackEntry?.providerProtocol;
-  const reasoning =
-    params.reasoning ||
-    getSelectedReasoningForItem(
-      params.item.id,
-      model,
-      apiBase,
-      providerProtocol,
-    );
-  const advanced =
-    params.advanced || explicitEntry?.advanced || fallbackEntry?.advanced;
+  const webChatRequest =
+    authMode === "webchat" || providerProtocol === "web_sync";
+  const advanced = webChatRequest
+    ? undefined
+    : params.advanced || explicitEntry?.advanced || fallbackEntry?.advanced;
+  const reasoning = webChatRequest
+    ? undefined
+    : params.reasoning ||
+      getSelectedReasoningForItem(
+        params.item.id,
+        model,
+        apiBase,
+        providerProtocol,
+        advanced?.profileOverride,
+      );
   return {
     model,
-    apiBase,
-    apiKey,
-    authMode,
-    providerProtocol,
+    apiBase: webChatRequest ? "" : apiBase,
+    apiKey: webChatRequest ? "" : apiKey,
+    authMode: webChatRequest ? "webchat" : authMode,
+    providerProtocol: webChatRequest ? "web_sync" : providerProtocol,
     modelEntryId:
       params.modelEntryId || explicitEntry?.entryId || fallbackEntry?.entryId,
     modelProviderLabel:
@@ -3089,9 +4028,19 @@ async function prepareFinalContextPlanChatRequest(params: {
     workflowTestIntercepted =
       (await workflowTestFinalRequestInterceptor({
         prompt: params.requestParams.prompt,
+        historyTexts: (params.requestParams.history || []).map((message) =>
+          typeof message.content === "string"
+            ? message.content
+            : JSON.stringify(message.content ?? ""),
+        ),
         combinedContext: params.combinedContext,
         strategy: params.contextPlan.strategy,
         systemMessages,
+        inputCap: {
+          limitTokens: finalPrepared.inputCap.limitTokens,
+          limitSource: finalPrepared.inputCap.limitSource,
+          estimatedAfterTokens: finalPrepared.inputCap.estimatedAfterTokens,
+        },
         inputCapEffects: preview.inputCap.effects,
         readStrategy: params.contextPlan.readStrategy,
         coverageReceipt: params.contextPlan.coverageReceipt,
@@ -3162,8 +4111,8 @@ async function buildContextPlanForRequest(params: {
   ) => void;
 }): Promise<ContextPlanForRequest> {
   const pdfModePaperKeys = new Set(
-    (params.pdfPaperContexts || []).map(
-      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    (params.pdfPaperContexts || []).map((paper) =>
+      completePaperContextKey(paper, params.item.libraryID),
     ),
   );
   const explicitPaperContext = normalizePaperContexts(
@@ -3199,7 +4148,7 @@ async function buildContextPlanForRequest(params: {
     );
     if (!autoLoaded) return false;
     return pdfModePaperKeys.has(
-      `${autoLoaded.itemId}:${autoLoaded.contextItemId}`,
+      completePaperContextKey(autoLoaded, params.item.libraryID),
     );
   })();
   const activeContextItem = activeContextItemInPdfMode
@@ -3217,7 +4166,10 @@ async function buildContextPlanForRequest(params: {
     // Exclude PDF-mode papers from the text retrieval pipeline
     paperContexts: pdfModePaperKeys.size
       ? params.paperContexts.filter(
-          (p) => !pdfModePaperKeys.has(`${p.itemId}:${p.contextItemId}`),
+          (p) =>
+            !pdfModePaperKeys.has(
+              completePaperContextKey(p, params.item.libraryID),
+            ),
         )
       : params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
@@ -3467,6 +4419,12 @@ type QuoteSourceEvidence = {
   complete: boolean;
 };
 
+/**
+ * Kept under the page-text cache's own entry limit so background warming
+ * cannot evict the pages it just read.
+ */
+const MAX_WARMED_QUOTE_SOURCE_PAPERS = 40;
+
 function hasUnresolvedQuoteSourceScope(
   ...groups: Array<PaperContextRef[] | undefined | null>
 ): boolean {
@@ -3537,7 +4495,14 @@ async function warmQuoteSourceCachesForPaperContexts(
     shouldContinue?: () => boolean;
   },
 ): Promise<void> {
-  const uniquePapers = collectQuoteSourcePapers(...groups);
+  // A library-chat answer can cite dozens of papers. Reading more of them than
+  // the page-text cache can hold would evict the earlier ones before they are
+  // used, so warming stops short of thrashing its own cache; quotes in the
+  // remainder simply stay deferred and resolve when clicked.
+  const uniquePapers = collectQuoteSourcePapers(...groups).slice(
+    0,
+    MAX_WARMED_QUOTE_SOURCE_PAPERS,
+  );
   for (const paper of uniquePapers) {
     if (options?.shouldContinue?.() === false) return;
     if (options?.yieldToMain) await options.yieldToMain();
@@ -3565,7 +4530,9 @@ async function warmQuoteSourceCachesForPaperContexts(
           error,
         });
       }
-    } else {
+      if (options?.shouldContinue?.() === false) return;
+    }
+    if (!usesPdfPageText || paper.contentSourceMode === "mineru") {
       await ensureQuoteSourceTextCachedForPaper(paper);
     }
   }
@@ -3714,7 +4681,7 @@ const MAX_QUOTE_VALIDATION_DECISION_ENTRIES = 1000;
 const MAX_QUOTE_VALIDATION_DECISION_BYTES = 4 * 1024 * 1024;
 const MAX_QUOTE_SOURCE_INDEX_ENTRIES = 64;
 const MAX_QUOTE_SOURCE_INDEX_BYTES = 2 * 1024 * 1024;
-const QUOTE_VALIDATION_POLICY_VERSION = 5;
+const QUOTE_VALIDATION_POLICY_VERSION = 8;
 type QuoteValidationDecision = ReturnType<
   typeof finalizeAssistantQuoteCitations
 >;
@@ -3982,6 +4949,7 @@ async function applyAssistantMessageQuoteGate(
   evidence: QuoteSourceEvidence,
   options: AssistantQuoteFinalizationOptions,
   preparedSourceIndex?: ReturnType<typeof buildQuoteSourceIndex>,
+  secondaryEvidence: readonly QuoteSecondaryEvidence[] = [],
   cooperativeOptions?: {
     yieldToMain: () => Promise<void>;
     shouldContinue?: () => boolean;
@@ -4012,6 +4980,26 @@ async function applyAssistantMessageQuoteGate(
             citation.contextItemId || "",
             citation.sourceFingerprint || "",
             citation.quoteText,
+          ].join("\u241f"),
+        ),
+        ...secondaryEvidence.map((entry) =>
+          [
+            "secondary",
+            entry.quoteKey,
+            entry.contextItemId,
+            entry.status,
+            entry.status === "matched"
+              ? entry.certificate.documentFingerprint
+              : entry.status === "absent"
+                ? entry.documentFingerprint
+                : entry.reason,
+            entry.status === "matched" ? entry.certificate.pageIndex : "",
+            entry.status === "matched"
+              ? entry.certificate.sourceMatchPageOccurrence
+              : "",
+            entry.status === "matched"
+              ? entry.certificate.sourceMatchKind || "exact"
+              : "",
           ].join("\u241f"),
         ),
       ].join("\u241e")
@@ -4047,6 +5035,7 @@ async function applyAssistantMessageQuoteGate(
             quoteSourceReview: {
               sourceEvidenceComplete,
             },
+            secondaryEvidence,
           },
           cooperativeOptions,
         )
@@ -4058,6 +5047,7 @@ async function applyAssistantMessageQuoteGate(
           quoteSourceReview: {
             sourceEvidenceComplete,
           },
+          secondaryEvidence,
         });
     if (!finalized) return false;
     if (cacheKey && validationSignature) {
@@ -4080,6 +5070,68 @@ async function applyAssistantMessageQuoteGate(
   );
   assistantMessage.quoteDisplayOverride = nextOverride;
   return changed;
+}
+
+async function collectLivePdfQuoteSecondaryEvidence(params: {
+  markdown: string;
+  sourceIndex: ReturnType<typeof buildQuoteSourceIndex>;
+  yieldToMain: () => Promise<void>;
+  shouldContinue: () => boolean;
+}): Promise<QuoteSecondaryEvidence[]> {
+  // Route each request to whichever open reader holds its attachment, so the
+  // verdict does not depend on which tab happens to be focused.
+  const readersByItemId = new Map<number, any>();
+  for (const reader of getAllOpenReaders()) {
+    const readerItemId = Math.floor(
+      Number(reader?._item?.id || reader?.itemID || 0),
+    );
+    if (readerItemId && !readersByItemId.has(readerItemId)) {
+      readersByItemId.set(readerItemId, reader);
+    }
+  }
+  if (!readersByItemId.size) return [];
+  const requests = collectDisplayedQuoteVerificationRequests({
+    markdown: params.markdown,
+    sourceIndex: params.sourceIndex,
+  }).filter((request) => readersByItemId.has(request.contextItemId));
+  const out: QuoteSecondaryEvidence[] = [];
+  for (const request of requests) {
+    if (!params.shouldContinue()) break;
+    const verification = await verifyCompleteQuoteInLivePdfJs(
+      readersByItemId.get(request.contextItemId),
+      request.contextItemId,
+      request.quoteText,
+      {
+        yieldToMain: params.yieldToMain,
+        shouldContinue: params.shouldContinue,
+        allowInlineMathLocator:
+          request.verificationMode === "inline-math-locator",
+      },
+    );
+    if (verification.status === "matched") {
+      out.push({
+        quoteKey: request.quoteKey,
+        contextItemId: request.contextItemId,
+        status: "matched",
+        certificate: verification.certificate,
+      });
+    } else if (verification.status === "absent") {
+      out.push({
+        quoteKey: request.quoteKey,
+        contextItemId: request.contextItemId,
+        status: "absent",
+        documentFingerprint: verification.documentFingerprint,
+      });
+    } else {
+      out.push({
+        quoteKey: request.quoteKey,
+        contextItemId: request.contextItemId,
+        status: "defer",
+        reason: verification.reason,
+      });
+    }
+  }
+  return out;
 }
 
 const quoteValidationSignatures = new WeakMap<Message, string>();
@@ -4307,6 +5359,21 @@ function startConversationQuoteValidation(conversationKey: number): void {
                 evidence.sourceTexts,
               )
             : undefined;
+          const yieldQuoteValidation = async () => {
+            await waitForQuoteValidationIdle(conversationKey, () =>
+              isPendingQuoteValidationCurrent(conversationKey, request),
+            );
+          };
+          const shouldContinueQuoteValidation = () =>
+            isPendingQuoteValidationCurrent(conversationKey, request);
+          const secondaryEvidence = sourceIndex
+            ? await collectLivePdfQuoteSecondaryEvidence({
+                markdown: rawMarkdown,
+                sourceIndex,
+                yieldToMain: yieldQuoteValidation,
+                shouldContinue: shouldContinueQuoteValidation,
+              })
+            : [];
           const changed = await applyAssistantMessageQuoteGate(
             assistantMessage,
             rawMarkdown,
@@ -4314,14 +5381,10 @@ function startConversationQuoteValidation(conversationKey: number): void {
             evidence,
             options,
             sourceIndex,
+            secondaryEvidence,
             {
-              yieldToMain: async () => {
-                await waitForQuoteValidationIdle(conversationKey, () =>
-                  isPendingQuoteValidationCurrent(conversationKey, request),
-                );
-              },
-              shouldContinue: () =>
-                isPendingQuoteValidationCurrent(conversationKey, request),
+              yieldToMain: yieldQuoteValidation,
+              shouldContinue: shouldContinueQuoteValidation,
             },
           );
           if (changed) {
@@ -4648,6 +5711,7 @@ type AssistantMessageSnapshot = Pick<
   | "reasoningSummary"
   | "reasoningDetails"
   | "reasoningOpen"
+  | "interrupted"
   | "webchatRunState"
   | "webchatCompletionReason"
   | "quoteCitations"
@@ -4688,6 +5752,7 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     reasoningSummary: message.reasoningSummary,
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: message.reasoningOpen,
+    interrupted: message.interrupted,
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
     quoteCitations: message.quoteCitations
@@ -4725,6 +5790,7 @@ function restoreAssistantSnapshot(
   message.reasoningSummary = snapshot.reasoningSummary;
   message.reasoningDetails = snapshot.reasoningDetails;
   message.reasoningOpen = snapshot.reasoningOpen;
+  message.interrupted = snapshot.interrupted;
   message.webchatRunState = snapshot.webchatRunState;
   message.webchatCompletionReason = snapshot.webchatCompletionReason;
   message.quoteCitations = snapshot.quoteCitations
@@ -4759,6 +5825,7 @@ function finalizeCancelledAssistantMessage(
     : false;
   message.pendingAgentTraceEvents = undefined;
   message.streaming = false;
+  message.interrupted = undefined;
   message.webchatRunState = undefined;
   message.webchatCompletionReason = null;
 }
@@ -5894,6 +6961,7 @@ export type EditLatestTurnResult =
   | "missing"
   | "stale"
   | "persist-failed"
+  | "cancelled"
   | "retry-failed";
 
 function normalizeEditableAttachments(
@@ -6227,11 +7295,18 @@ function includeAutoLoadedPaperContext(
 ): {
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  activePaperContext?: PaperContextRef;
 } {
-  const normalizedPaperContexts = normalizePaperContexts(paperContexts);
+  const itemLibraryID = Math.floor(Number(item.libraryID)) || 0;
+  const withRequestLibrary = (paper: PaperContextRef): PaperContextRef =>
+    paper.libraryID || !itemLibraryID
+      ? paper
+      : { ...paper, libraryID: itemLibraryID };
+  const normalizedPaperContexts =
+    normalizePaperContexts(paperContexts).map(withRequestLibrary);
   const normalizedFullTextPaperContexts = normalizePaperContexts(
     fullTextPaperContexts,
-  );
+  ).map(withRequestLibrary);
   if (resolveDisplayConversationKind(item) === "global") {
     return {
       paperContexts: normalizedPaperContexts,
@@ -6253,15 +7328,21 @@ function includeAutoLoadedPaperContext(
       ),
     };
   }
+  const activePaperContext: PaperContextRef = {
+    ...autoLoadedPaperContext,
+    libraryID:
+      Math.floor(Number(autoLoadedPaperContext.libraryID || item.libraryID)) ||
+      undefined,
+  };
   // Always include auto-loaded paper in paperContexts (for display in chat history).
   // Only add to fullTextPaperContexts if NOT in PDF mode.
-  const autoKey = `${autoLoadedPaperContext.itemId}:${autoLoadedPaperContext.contextItemId}`;
+  const autoKey = completePaperContextKey(activePaperContext, itemLibraryID);
   const isExcludedFromTextPipeline = excludePaperKeys?.has(autoKey) === true;
   return {
     paperContexts: isExcludedFromTextPipeline
       ? normalizedPaperContexts
       : normalizePaperContexts([
-          autoLoadedPaperContext,
+          activePaperContext,
           ...normalizedPaperContexts,
         ]),
     fullTextPaperContexts: isExcludedFromTextPipeline
@@ -6269,11 +7350,12 @@ function includeAutoLoadedPaperContext(
       : fullTextPaperContexts === undefined
         ? limitFullTextPaperContexts(
             normalizePaperContexts([
-              autoLoadedPaperContext,
+              activePaperContext,
               ...normalizedFullTextPaperContexts,
             ]),
           )
         : limitFullTextPaperContexts(normalizedFullTextPaperContexts),
+    activePaperContext,
   };
 }
 
@@ -6380,6 +7462,7 @@ function syncComposeContextForInlineEdit(
     );
   }
 
+  initializedConversationComposeContextKeys.add(conversationKey);
   activeContextPanelStateSync.get(body)?.();
 }
 
@@ -6389,6 +7472,8 @@ export async function editLatestUserMessageAndRetry(
   const {
     body,
     item,
+    requestId,
+    onProviderDispatch,
     contextSource,
     displayQuestion,
     selectedTextContexts,
@@ -6418,9 +7503,52 @@ export async function editLatestUserMessageAndRetry(
     reasoning,
     advanced,
   } = opts;
+  const initialConversationKey = getConversationKey(item);
+  if (requestId !== undefined) {
+    if (!isRequestOwner(initialConversationKey, requestId)) return "stale";
+  }
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
-  const history = chatHistory.get(conversationKey) || [];
+  if (requestId !== undefined) {
+    if (
+      conversationKey !== initialConversationKey &&
+      !transferPanelRequest(
+        resolveConversationSystemForItem(item),
+        initialConversationKey,
+        conversationKey,
+        requestId,
+      )
+    ) {
+      return "stale";
+    }
+  }
+  const requestIsActive = () =>
+    requestId === undefined ||
+    (isRequestOwner(conversationKey, requestId) &&
+      getCancelledRequestId(conversationKey) < requestId &&
+      !getAbortController(conversationKey)?.signal.aborted);
+  if (!requestIsActive()) return "stale";
+  // Retry must act on the state the user SEES: complete any pending turn
+  // deletion first so the hidden turn cannot be the retry target. finalize is
+  // best-effort and time-boxed — on failure or timeout the turn stays queued,
+  // so select the target from the filtered (user-visible) view.
+  if (!(await pendingDeletionStore.ensurePersistedFenceLoaded()))
+    return "stale";
+  if (!requestIsActive()) return "stale";
+  await awaitPendingTurnFinalize(
+    pendingDeletionStore.finalizeTurnsForConversation(conversationKey, "retry"),
+  );
+  if (!requestIsActive()) return "stale";
+  // A whole-conversation deletion is an identity fence. Editing/retrying may
+  // not turn user activity into an implicit Undo; only the explicit Undo
+  // action can withdraw the six-second intent.
+  if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+    return "stale";
+  }
+  const history = filterMessagesInPendingTurns(
+    conversationKey,
+    chatHistory.get(conversationKey) || [],
+  );
   const retryPair = findLatestRetryPair(history);
   if (!retryPair) return "missing";
   if (retryPair.assistantMessage.streaming) return "stale";
@@ -6516,20 +7644,21 @@ export async function editLatestUserMessageAndRetry(
   const selectedTagContextsForMessage =
     normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeys = new Set(
-    normalizedPdfPaperContexts.map(
-      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    normalizedPdfPaperContexts.map((paper) =>
+      completePaperContextKey(paper, item.libraryID),
     ),
   );
-  let {
-    paperContexts: paperContextsForMessage,
-    fullTextPaperContexts: fullTextPaperContextsForMessage,
-  } = includeAutoLoadedPaperContext(
+  const autoLoadedPaperContext = includeAutoLoadedPaperContext(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
     pdfExcludeKeys.size > 0 ? pdfExcludeKeys : undefined,
     contextSource,
   );
+  let paperContextsForMessage = autoLoadedPaperContext.paperContexts;
+  let fullTextPaperContextsForMessage =
+    autoLoadedPaperContext.fullTextPaperContexts;
+  const activePaperContext = autoLoadedPaperContext.activePaperContext;
   const editRetryCodexNativeMcpLightContext = shouldUseCodexNativeLightContext({
     isCodexNativeTurn:
       retryConversationSystem === "codex" &&
@@ -6541,6 +7670,7 @@ export async function editLatestUserMessageAndRetry(
         enrichPaperContextsWithMineruCache(paperContextsForMessage),
         enrichPaperContextsWithMineruCache(fullTextPaperContextsForMessage),
       ]);
+    if (!requestIsActive()) return "stale";
     paperContextsForMessage = enrichedPaperContexts || paperContextsForMessage;
     fullTextPaperContextsForMessage =
       enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
@@ -6621,10 +7751,13 @@ export async function editLatestUserMessageAndRetry(
   retryPair.userMessage.attachmentsExpanded = false;
   retryPair.userMessage.attachmentActiveIndex = undefined;
 
+  const conversationGeneration =
+    getConversationWriteGeneration(conversationKey);
   try {
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
       {
+        conversationGeneration,
         text: retryPair.userMessage.text,
         timestamp: retryPair.userMessage.timestamp,
         runMode: retryPair.userMessage.runMode,
@@ -6666,6 +7799,7 @@ export async function editLatestUserMessageAndRetry(
       "conversation",
       conversationKey,
       attachmentHashes,
+      conversationGeneration,
     );
   } catch (err) {
     ztoolkit.log("LLM: Failed to persist edited latest user message", err);
@@ -6687,6 +7821,9 @@ export async function editLatestUserMessageAndRetry(
           reasoning,
           advanced,
           modelAttachments,
+          requestId,
+          onProviderDispatch,
+          activePaperContext,
         )
       : await retryLatestAssistantResponse(
           body,
@@ -6702,8 +7839,17 @@ export async function editLatestUserMessageAndRetry(
           advanced,
           pdfUploadSystemMessages,
           modelAttachments,
+          requestId,
+          onProviderDispatch,
         );
-  if (!retrySucceeded) return "retry-failed";
+  if (!retrySucceeded) {
+    // A deliberate Stop during retry preparation bails with a falsy result;
+    // report it as a cancel, not a failure — the prompt edit itself was saved.
+    return requestId !== undefined &&
+      getCancelledRequestId(conversationKey) >= requestId
+      ? "cancelled"
+      : "retry-failed";
+  }
   return "ok";
 }
 
@@ -6726,24 +7872,110 @@ export async function retryLatestAssistantResponse(
   advanced?: AdvancedModelParams,
   pdfUploadSystemMessages?: string[],
   modelAttachmentsOverride?: ChatAttachment[],
+  requestId?: number,
+  onProviderDispatch?: () => void,
 ) {
   const ui = getPanelRequestUI(body);
+  const initialConversationKey = getConversationKey(item);
+  let thisRequestId: number;
+  if (requestId !== undefined) {
+    thisRequestId = requestId;
+    if (!isRequestOwner(initialConversationKey, thisRequestId)) return;
+    setRequestUIBusy(body, ui, initialConversationKey, "Preparing retry...");
+  } else {
+    const claimed = beginPanelRequest(body, item, "Preparing retry...");
+    if (!claimed) return;
+    thisRequestId = claimed.requestId;
+  }
 
-  await ensureConversationLoaded(item);
+  try {
+    await ensureConversationLoaded(item);
+  } catch (error) {
+    finishPanelRequest(body, item, initialConversationKey, thisRequestId);
+    throw error;
+  }
   const conversationKey = getConversationKey(item);
-  const history = chatHistory.get(conversationKey) || [];
+  if (
+    conversationKey !== initialConversationKey &&
+    !transferPanelRequest(
+      resolveConversationSystemForItem(item),
+      initialConversationKey,
+      conversationKey,
+      thisRequestId,
+    )
+  ) {
+    finishPanelRequest(body, item, initialConversationKey, thisRequestId);
+    return;
+  }
+  const requestIsActive = () =>
+    isRequestOwner(conversationKey, thisRequestId) &&
+    getCancelledRequestId(conversationKey) < thisRequestId &&
+    !getAbortController(conversationKey)?.signal.aborted;
+  const releaseRequest = () => {
+    if (!finishPanelRequest(body, item, conversationKey, thisRequestId)) {
+      return false;
+    }
+    scheduleQueuedInputDrain(body, {
+      conversationSystem: resolveConversationSystemForItem(item) || "upstream",
+      conversationKey,
+    });
+    return true;
+  };
+  if (!requestIsActive()) {
+    releaseRequest();
+    return;
+  }
+  // Retry must act on the state the user SEES: complete any pending turn
+  // deletion first so the hidden turn cannot be the retry target. finalize is
+  // best-effort and time-boxed — on failure or timeout the turn stays queued,
+  // so select the target and build the prompt from the filtered
+  // (user-visible) view.
+  if (!(await pendingDeletionStore.ensurePersistedFenceLoaded())) {
+    releaseRequest();
+    return "stale";
+  }
+  if (!requestIsActive()) {
+    releaseRequest();
+    return;
+  }
+  await awaitPendingTurnFinalize(
+    pendingDeletionStore.finalizeTurnsForConversation(conversationKey, "retry"),
+  );
+  if (!requestIsActive()) {
+    releaseRequest();
+    return;
+  }
+  // Retry cannot cancel a whole-conversation deletion. Only explicit Undo can
+  // withdraw that intent while its own window is still open.
+  if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+    if (ui.status) {
+      setStatus(ui.status, t("Deletion pending; retrying safely"), "warning");
+    }
+    releaseRequest();
+    return;
+  }
+  const history = filterMessagesInPendingTurns(
+    conversationKey,
+    chatHistory.get(conversationKey) || [],
+  );
   const retryPair = findLatestRetryPair(history);
   if (!retryPair) {
     if (ui.status) setStatus(ui.status, "No retryable response found", "error");
+    releaseRequest();
     return;
   }
-
-  const thisRequestId = nextRequestId();
-  setPendingRequestIdAndSync(conversationKey, thisRequestId, body, item);
-  setRequestUIBusy(body, ui, conversationKey, "Preparing retry...");
+  const conversationGeneration = getConversationWriteGeneration(
+    getConversationKey(item),
+  );
   const assistantMessage = retryPair.assistantMessage;
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
+  // The retry rewrites (and later persists) the paired user row's model
+  // identity and rebuilt contexts before any output exists. A failed retry
+  // that restores the previous answer must roll the user row back with it,
+  // or the stored turn pairs the old answer with the failed retry's metadata.
+  const userSnapshot = takeRetryUserSnapshot(retryPair.userMessage);
   assistantMessage.text = "";
+  assistantMessage.interrupted = undefined;
   assistantMessage.reasoningSummary = undefined;
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
@@ -6793,12 +8025,26 @@ export async function retryLatestAssistantResponse(
     assistantMessage.modelProviderLabel === "Codex"
       ? Date.now()
       : undefined;
-  const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
-  );
+  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
+    createPanelUpdateHelpers(body, item, conversationKey, ui);
+  // [webchat] Retries never route through the browser-relay pipeline, so a
+  // webchat model here — passed explicitly by the retry-model menu or picked
+  // up from the selected profile when params were empty — would fire a
+  // generic HTTP request with the rebuilt conversation and persist
+  // webchat-attributed rows into a real, visible conversation. Gate on the
+  // RESOLVED config so both routes are refused; the turn was already reset
+  // for streaming above, so restore both snapshots before bailing.
+  if (
+    effectiveRequestConfig.authMode === "webchat" ||
+    effectiveRequestConfig.providerProtocol === "web_sync"
+  ) {
+    restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
+    setStatusSafely(t("WebChat models can't retry local turns"), "error");
+    releaseRequest();
+    return;
+  }
 
   const historyForLLM = history.slice(0, retryPair.userIndex);
   const retrySelectedTextContexts = synthesizeSelectedTextContexts({
@@ -6820,6 +8066,13 @@ export async function retryLatestAssistantResponse(
         .filter((paper): paper is PaperContextRef => Boolean(paper)),
     ]),
   });
+  if (!requestIsActive()) {
+    restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
+    releaseRequest();
+    return;
+  }
   const {
     question,
     screenshotImages,
@@ -6831,9 +8084,9 @@ export async function retryLatestAssistantResponse(
     selectedTagContexts,
   } = reconstructRetryPayload(retryPair.userMessage, {
     resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-    includeAnchorContext:
-      effectiveRequestConfig.authMode === "webchat" ||
-      effectiveRequestConfig.providerProtocol === "web_sync",
+    // Webchat retries are refused by the gate above, and no other provider
+    // wants inline anchor context in the rebuilt payload.
+    includeAnchorContext: false,
   });
   retryPair.userMessage.paperContexts = paperContexts.length
     ? paperContexts
@@ -6852,14 +8105,26 @@ export async function retryLatestAssistantResponse(
         enrichPaperContextsWithMineruCache(retryPaperContexts),
         enrichPaperContextsWithMineruCache(retryFullTextPaperContexts),
       ]);
+    if (!requestIsActive()) {
+      restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+      restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+      refreshChatSafely();
+      releaseRequest();
+      return;
+    }
     retryPaperContexts = enrichedPaperContexts || retryPaperContexts;
     retryFullTextPaperContexts =
       enrichedFullTextPaperContexts || retryFullTextPaperContexts;
   }
   if (!question.trim()) {
+    // The assistant bubble was already reset for streaming and the user
+    // contexts rewritten — put the turn back or it stays stuck as an empty
+    // streaming message that blocks every later retry/edit.
+    restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    refreshChatSafely();
     setStatusSafely("Nothing to retry for latest turn", "error");
-    restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    clearPendingRequestIdAndSync(conversationKey, body, item);
+    releaseRequest();
     return;
   }
 
@@ -6871,10 +8136,51 @@ export async function retryLatestAssistantResponse(
   let streamedReasoningSummary: string | undefined;
   let streamedReasoningDetails: string | undefined;
 
-  const restoreOriginalAssistant = () => {
+  const restoreOriginalTurn = () => {
     responseStreamCoalescer?.cancel();
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+    restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
     refreshChatSafely();
+  };
+  const stopRetryPreparation = () => {
+    if (requestIsActive()) return false;
+    restoreOriginalTurn();
+    releaseRequest();
+    return true;
+  };
+  // Writes the user row as it currently stands in memory. Called once before
+  // the request goes out, and again after restoreOriginalTurn on a
+  // zero-output failure so the stored row rolls back with the answer.
+  const persistRetryUserRow = async () => {
+    await updateStoredLatestUserMessageByConversation(
+      conversationKey,
+      {
+        conversationGeneration,
+        text: retryPair.userMessage.text,
+        timestamp: retryPair.userMessage.timestamp,
+        runMode: retryPair.userMessage.runMode,
+        agentRunId: retryPair.userMessage.agentRunId,
+        selectedText: retryPair.userMessage.selectedText,
+        selectedTextContexts: retryPair.userMessage.selectedTextContexts,
+        selectedTexts: retryPair.userMessage.selectedTexts,
+        selectedTextSources: retryPair.userMessage.selectedTextSources,
+        selectedTextPaperContexts:
+          retryPair.userMessage.selectedTextPaperContexts,
+        screenshotImages: retryPair.userMessage.screenshotImages,
+        paperContexts: retryPair.userMessage.paperContexts,
+        pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+        fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+        citationPaperContexts: retryPair.userMessage.citationPaperContexts,
+        selectedCollectionContexts:
+          retryPair.userMessage.selectedCollectionContexts,
+        attachments: retryPair.userMessage.attachments,
+        modelAttachments: retryPair.userMessage.modelAttachments,
+        modelName: retryPair.userMessage.modelName,
+        modelEntryId: retryPair.userMessage.modelEntryId,
+        modelProviderLabel: retryPair.userMessage.modelProviderLabel,
+      },
+      effectiveStorageSystem,
+    );
   };
   const finalizeCancelledAssistant = async () => {
     flushResponseStream("cancel");
@@ -6884,10 +8190,12 @@ export async function retryLatestAssistantResponse(
     await updateStoredLatestAssistantMessageByConversation(
       conversationKey,
       {
+        conversationGeneration,
         text: assistantMessage.text,
         timestamp: assistantMessage.timestamp,
         runMode: assistantMessage.runMode,
         agentRunId: assistantMessage.agentRunId,
+        interrupted: assistantMessage.interrupted,
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
         modelProviderLabel: assistantMessage.modelProviderLabel,
@@ -6911,9 +8219,8 @@ export async function retryLatestAssistantResponse(
     const blockedAttachments =
       getBlockedCodexAppServerNativeAttachments(attachments);
     if (blockedAttachments.length) {
-      restoreOriginalAssistant();
-      restoreRequestUIIdle(body, conversationKey, thisRequestId);
-      clearPendingRequestIdAndSync(conversationKey, body, item);
+      restoreOriginalTurn();
+      releaseRequest();
       setStatusSafely(
         buildCodexAppServerNativeAttachmentBlockMessage(blockedAttachments),
         "error",
@@ -6933,6 +8240,7 @@ export async function retryLatestAssistantResponse(
       modelAttachmentsOverride,
       effectiveRequestConfig,
     });
+    if (stopRetryPreparation()) return;
     retryScreenshotImages = retryModelInputs.screenshotImages;
     retryPair.userMessage.screenshotImages = retryScreenshotImages.length
       ? retryScreenshotImages
@@ -6957,9 +8265,8 @@ export async function retryLatestAssistantResponse(
       ...(retryModelInputs.pdfUploadSystemMessages || []),
     ];
   } catch (err) {
-    restoreOriginalAssistant();
-    restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    clearPendingRequestIdAndSync(conversationKey, body, item);
+    restoreOriginalTurn();
+    releaseRequest();
     const message =
       err instanceof Error && err.message.trim()
         ? err.message
@@ -6975,21 +8282,28 @@ export async function retryLatestAssistantResponse(
       usesLocalPdfTransport && pdfPaperContexts.length
         ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
         : undefined;
+    if (stopRetryPreparation()) return;
     if (
       retryLocalDocuments?.length &&
       effectiveConversationSystem === "claude_code"
     ) {
       await preflightClaudeBridgeLocalPdfCapability();
+      if (stopRetryPreparation()) return;
     }
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
-    // Create AbortController early so the signal is available during context
-    // planning.
-    const AbortControllerCtor = getAbortControllerCtor();
-    setAbortController(
-      conversationKey,
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
+    if (effectiveConversationSystem === "upstream") {
+      await preflightRequestModelCapabilities({
+        prompt: question,
+        model: effectiveRequestConfig.model,
+        apiBase: effectiveRequestConfig.apiBase,
+        apiKey: effectiveRequestConfig.apiKey,
+        authMode: effectiveRequestConfig.authMode,
+        providerProtocol: effectiveRequestConfig.providerProtocol,
+        profileOverride: effectiveRequestConfig.advanced?.profileOverride,
+      });
+      if (stopRetryPreparation()) return;
+    }
 
     const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
       ? buildLightCodexNativeMcpContextPlan({
@@ -7019,6 +8333,7 @@ export async function retryLatestAssistantResponse(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
+    if (stopRetryPreparation()) return;
     const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
@@ -7039,41 +8354,19 @@ export async function retryLatestAssistantResponse(
       selectedCollectionContexts.length
         ? selectedCollectionContexts
         : undefined;
-    await updateStoredLatestUserMessageByConversation(
-      conversationKey,
-      {
-        text: retryPair.userMessage.text,
-        timestamp: retryPair.userMessage.timestamp,
-        runMode: retryPair.userMessage.runMode,
-        agentRunId: retryPair.userMessage.agentRunId,
-        selectedText: retryPair.userMessage.selectedText,
-        selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-        selectedTexts: retryPair.userMessage.selectedTexts,
-        selectedTextSources: retryPair.userMessage.selectedTextSources,
-        selectedTextPaperContexts:
-          retryPair.userMessage.selectedTextPaperContexts,
-        screenshotImages: retryPair.userMessage.screenshotImages,
-        paperContexts: retryPair.userMessage.paperContexts,
-        pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-        fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
-        citationPaperContexts: retryPair.userMessage.citationPaperContexts,
-        selectedCollectionContexts:
-          retryPair.userMessage.selectedCollectionContexts,
-        attachments: retryPair.userMessage.attachments,
-        modelAttachments: retryPair.userMessage.modelAttachments,
-        modelName: retryPair.userMessage.modelName,
-        modelEntryId: retryPair.userMessage.modelEntryId,
-        modelProviderLabel: retryPair.userMessage.modelProviderLabel,
-      },
-      effectiveStorageSystem,
-    );
+    await persistRetryUserRow();
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
       getAbortController(conversationKey)?.abort();
       await finalizeCancelledAssistant();
       return;
     }
 
-    const queueRefresh = createQueuedRefresh(refreshChatSafely);
+    // Streaming flushes only mutate this assistant message, so re-render just
+    // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+    // not in the DOM yet.
+    const queueRefresh = createQueuedRefresh(() =>
+      refreshAssistantMessageSafely(assistantMessage),
+    );
     const codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
@@ -7106,7 +8399,10 @@ export async function retryLatestAssistantResponse(
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
+      maxTokensExplicit:
+        effectiveRequestConfig.advanced?.maxTokensExplicit === true,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
@@ -7116,6 +8412,7 @@ export async function retryLatestAssistantResponse(
         contextPlan,
         combinedContext,
       });
+    if (stopRetryPreparation()) return;
     if (workflowTestIntercepted) {
       assistantMessage.text = "Workflow request intercepted before dispatch.";
       assistantMessage.streaming = false;
@@ -7126,6 +8423,7 @@ export async function retryLatestAssistantResponse(
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
+      inputLimitSource: finalPrepared.inputCap.limitSource,
       estimated: true,
       source: "estimated",
     });
@@ -7142,59 +8440,40 @@ export async function retryLatestAssistantResponse(
       if (!chunk) return;
       responseStreamCoalescer?.pushText(chunk);
     };
-    const handleReasoning = (reasoningEvent: ReasoningEvent) => {
-      flushResponseStream("event");
-      if (reasoningEvent.summary) {
-        assistantMessage.reasoningSummary = appendReasoningPart(
-          assistantMessage.reasoningSummary,
-          reasoningEvent.summary,
-        );
+    const handleReasoning = createStreamReasoningHandler({
+      assistantMessage,
+      flushResponseStream,
+      queueRefresh,
+      onReasoningCaptured: () => {
         streamedReasoningSummary = assistantMessage.reasoningSummary;
-      }
-      if (reasoningEvent.details) {
-        assistantMessage.reasoningDetails = appendReasoningPart(
-          assistantMessage.reasoningDetails,
-          reasoningEvent.details,
-        );
         streamedReasoningDetails = assistantMessage.reasoningDetails;
-      }
-      queueRefresh();
-    };
-    const handleUsage = (usage: UsageStats) => {
-      recordContextCacheTelemetry(contextPlan.contextCache, usage);
-      const contextTokens =
-        typeof usage.contextTokens === "number" && usage.contextTokens > 0
-          ? usage.contextTokens
-          : 0;
-      if (contextTokens <= 0) return;
-      const snapshot = setContextUsageSnapshot(conversationKey, {
-        contextTokens,
-        contextWindow:
-          usage.contextWindow || finalPrepared.inputCap.limitTokens,
-        estimated: usage.contextWindowIsAuthoritative !== true,
-        source:
-          usage.contextWindowIsAuthoritative === true
-            ? "provider"
-            : "estimated",
-        contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
-        cacheReadTokens: usage.cacheReadTokens,
-        cacheWriteTokens: usage.cacheWriteTokens,
-        cacheMissTokens: usage.cacheMissTokens,
-        cacheHitRatio: usage.cacheHitRatio,
-        cacheProvider: usage.cacheProvider,
-      });
-      renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
-    };
+      },
+    });
+    const handleUsage = createStreamUsageHandler({
+      body,
+      tokenUsageEl: ui.tokenUsageEl,
+      conversationKey,
+      conversationGeneration,
+      contextCache: contextPlan.contextCache,
+      fallbackContextWindow: finalPrepared.inputCap.limitTokens,
+      fallbackInputLimitSource: finalPrepared.inputCap.limitSource,
+    });
+    const codexScope = isCodexNativeTurn
+      ? await enrichCodexNativeConversationScopeWithMineruCache(
+          resolveCodexNativeConversationScope({
+            item,
+            conversationKey,
+            title: question,
+          }),
+        )
+      : null;
+    if (stopRetryPreparation()) return;
+    notifyProviderDispatch(body, ui, onProviderDispatch);
     const answer = isCodexNativeTurn
       ? (
           await runCodexAppServerNativeTurn({
-            scope: await enrichCodexNativeConversationScopeWithMineruCache(
-              resolveCodexNativeConversationScope({
-                item,
-                conversationKey,
-                title: question,
-              }),
-            ),
+            scope: codexScope!,
+            conversationGeneration,
             model: effectiveRequestConfig.model,
             messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
@@ -7222,100 +8501,18 @@ export async function retryLatestAssistantResponse(
               screenshots: allImages,
               attachments,
             }),
-            onSkillActivated: (skillId) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteSkillActivated(skillId);
-              setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
-            },
-            onDelta: handleDelta,
-            onAgentMessageDelta: (event) => {
-              if (!codexActivityTrace?.appendAgentMessageDelta(event)) {
-                handleDelta(event.delta);
-              }
-            },
-            onReasoning: handleReasoning,
-            onUsage: handleUsage,
-            onItemStarted: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.appendItemStatus(event, "started");
-              const itemType = sanitizeText(event.type || "");
-              if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} started`, "sending");
-              }
-            },
-            onItemCompleted: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteAgentMessageCompleted(event);
-              codexActivityTrace?.appendItemStatus(event, "completed");
-              const itemType = sanitizeText(event.type || "");
-              if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} completed`, "sending");
-              }
-            },
-            onMcpToolActivity: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteMcpToolActivity(event);
-              assistantMessage.quoteCitations = mergeQuoteCitations(
-                assistantMessage.quoteCitations,
-                event.quoteCitations,
-              );
-              const label =
-                sanitizeText(event.toolLabel || "").trim() ||
-                sanitizeText(event.toolName || "")
-                  .replace(/_/g, " ")
-                  .trim();
-              if (label) {
-                setStatusSafely(
-                  event.phase === "completed"
-                    ? `Codex: used ${label}`
-                    : `Codex: using ${label}`,
-                  "sending",
-                );
-              }
-            },
-            onMcpConfirmationRequest: async ({ requestId, action }) => {
-              flushResponseStream("event");
-              setStatusSafely(
-                action.mode === "review"
-                  ? "Codex is waiting for your Zotero review"
-                  : "Codex is waiting for your Zotero approval",
-                "sending",
-              );
-              codexActivityTrace?.noteMcpConfirmationRequired(
-                requestId,
-                action,
-              );
-              const resolution = await showNativeMcpActionCard(
-                body,
-                requestId,
-                action,
-              );
-              codexActivityTrace?.noteMcpConfirmationResolved(
-                requestId,
-                resolution,
-              );
-              return resolution;
-            },
-            onMcpSetupWarning: (message) => {
-              flushResponseStream("event");
-              setStatusSafely(message, "error");
-            },
-            onDiagnostics: (diagnostics) => {
-              flushResponseStream("event");
-              setStatusSafely(
-                formatCodexNativeDiagnosticsStatus(diagnostics),
-                "sending",
-              );
-            },
-            onApprovalRequest: async (request) => {
-              flushResponseStream("event");
-              return resolveCodexNativeApprovalWithOptionalReviewCard({
-                body,
-                request,
-                trace: codexActivityTrace,
-                setStatusSafely,
-              });
-            },
+            ...buildCodexNativeTurnCallbacks({
+              body,
+              assistantMessage,
+              codexActivityTrace,
+              flushResponseStream,
+              setStatusSafely,
+              handleDelta,
+              handleReasoning,
+              handleUsage,
+              conversationKey,
+              conversationGeneration,
+            }),
           })
         ).text
       : await callLLMStream(
@@ -7364,6 +8561,7 @@ export async function retryLatestAssistantResponse(
     if (assistantMessage.compactMarker && !assistantMessage.text.trim()) {
       assistantMessage.text = "Conversation compacted";
     }
+    assistantMessage.interrupted = undefined;
     assistantMessage.streaming = false;
     refreshChatSafely();
 
@@ -7371,10 +8569,12 @@ export async function retryLatestAssistantResponse(
     await updateStoredLatestAssistantMessageByConversation(
       conversationKey,
       {
+        conversationGeneration,
         text: assistantMessage.text,
         timestamp: assistantMessage.timestamp,
         runMode: assistantMessage.runMode,
         agentRunId: assistantMessage.agentRunId,
+        interrupted: assistantMessage.interrupted,
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
         modelProviderLabel: assistantMessage.modelProviderLabel,
@@ -7401,28 +8601,162 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    restoreOriginalAssistant();
-    const errMsg = (err as Error).message || "Error";
+    const technicalErrMsg = (err as Error).message || "Error";
+    const errMsg = isCodexNativeTurn
+      ? formatCodexZoteroMcpError(err, "Native conversation retry failed")
+      : technicalErrMsg;
     const retryHint = resolveMultimodalRetryHint(
       errMsg,
       screenshotImages.length,
     );
+    // Preserve whatever streamed during the retry before the drop. Only fall
+    // back to restoring the previous answer when nothing new streamed. The
+    // message-text fallback covers content that was flushed out of a
+    // coalescer torn down before the throw (same chain as the send path).
+    const partialText = sanitizeText(
+      responseStreamCoalescer?.getFullText() || assistantMessage.text || "",
+    );
+    responseStreamCoalescer?.cancel();
+    const outcome = resolveStreamInterruptionOutcome({
+      partialText,
+      errorMessage: errMsg,
+      retryHint,
+    });
+    if (outcome.interrupted) {
+      assistantMessage.text = outcome.text;
+      assistantMessage.interrupted = true;
+      assistantMessage.timestamp = Date.now();
+      assistantMessage.modelName = effectiveRequestConfig.model;
+      assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
+      assistantMessage.modelProviderLabel =
+        effectiveRequestConfig.modelProviderLabel;
+      assistantMessage.reasoningSummary = streamedReasoningSummary;
+      assistantMessage.reasoningDetails = streamedReasoningDetails;
+      assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
+      assistantMessage.streaming = false;
+      refreshChatSafely();
+      const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
+      await updateStoredLatestAssistantMessageByConversation(
+        conversationKey,
+        {
+          conversationGeneration,
+          text: assistantMessage.text,
+          timestamp: assistantMessage.timestamp,
+          runMode: assistantMessage.runMode,
+          agentRunId: assistantMessage.agentRunId,
+          interrupted: assistantMessage.interrupted,
+          modelName: assistantMessage.modelName,
+          modelEntryId: assistantMessage.modelEntryId,
+          modelProviderLabel: assistantMessage.modelProviderLabel,
+          reasoningSummary: assistantMessage.reasoningSummary,
+          reasoningDetails: assistantMessage.reasoningDetails,
+          compactMarker: assistantMessage.compactMarker,
+          contextTokens: latestContextSnapshot?.contextTokens,
+          contextWindow: latestContextSnapshot?.contextWindow,
+          quoteCitations: assistantMessage.quoteCitations,
+          generatedImages: assistantMessage.generatedImages,
+        },
+        effectiveStorageSystem,
+      );
+    } else {
+      restoreOriginalTurn();
+      // The user row was already persisted with the failed retry's model and
+      // contexts before the request went out — write the restored values back
+      // so the stored turn stays a consistent pair.
+      await persistRetryUserRow();
+    }
     setStatusSafely(
       `Retry failed: ${`${errMsg}${retryHint}`.slice(0, 48)}`,
       "error",
     );
   } finally {
-    restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    setAbortController(conversationKey, null);
-    clearPendingRequestIdAndSync(conversationKey, body, item);
-    if (effectiveRequestConfig.providerProtocol !== "web_sync") {
-      scheduleQueuedInputDrain(body, {
-        conversationSystem:
-          resolveConversationSystemForItem(item) || "upstream",
-        conversationKey,
-      });
+    releaseRequest();
+  }
+}
+
+/**
+ * Detach provider history before an edit truncates local turns. Provider
+ * threads/sessions contain the deleted trailing turns even after their local
+ * rows are gone; retrying on the old session would silently reintroduce that
+ * context. The cleanup obligation is persisted before the provider call so an
+ * outage cannot turn the edit into an untracked provider leak.
+ */
+async function detachProviderForEdit(
+  conversationKey: number,
+  catalog: Awaited<ReturnType<typeof conversationRepository.getCatalogEntry>>,
+): Promise<boolean> {
+  if (!catalog) return false;
+  const providerSessionId = String(catalog.providerSessionId || "").trim();
+  if (catalog.system === "codex") {
+    if (!providerSessionId) return true;
+    const job = await enqueueConversationCleanupJob({
+      operation: "codex_archive",
+      system: "codex",
+      conversationKey,
+      instanceID: catalog.instanceID,
+      conversationKind: catalog.kind,
+      libraryID: catalog.libraryID,
+      paperItemID: catalog.paperItemID,
+      providerSessionId,
+    });
+    if (!job) return false;
+    try {
+      await archiveCodexAppServerThread({ threadId: providerSessionId });
+      await completeConversationCleanupJob(job.id);
+    } catch (error) {
+      if (!/not found|unknown thread|does not exist/i.test(String(error))) {
+        await failConversationCleanupJob(job, error);
+        return false;
+      }
+      await completeConversationCleanupJob(job.id);
+    }
+    await clearCodexConversationSessionMetadata(
+      conversationKey,
+      providerSessionId,
+      catalog.instanceID,
+    );
+    return true;
+  }
+  if (catalog.system === "claude_code") {
+    const scope = buildClaudeScope({
+      libraryID: catalog.libraryID,
+      kind: catalog.kind,
+      paperItemID: catalog.paperItemID,
+    });
+    if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
+      return !providerSessionId;
+    }
+    const job = await enqueueConversationCleanupJob({
+      operation: "claude_invalidate",
+      system: "claude_code",
+      conversationKey,
+      instanceID: catalog.instanceID,
+      conversationKind: catalog.kind,
+      libraryID: catalog.libraryID,
+      paperItemID: catalog.paperItemID,
+      providerScope: scope,
+      providerSessionId,
+    });
+    if (!job) return false;
+    try {
+      await invalidateClaudeConversationSessionWithinWriteLock(
+        await initAgentSubsystem(),
+        {
+          conversationKey,
+          scope,
+          metadata: {
+            ...(providerSessionId ? { providerSessionId } : {}),
+            instanceID: catalog.instanceID,
+          },
+        },
+      );
+      await completeConversationCleanupJob(job.id);
+    } catch (error) {
+      await failConversationCleanupJob(job, error);
+      return false;
     }
   }
+  return true;
 }
 
 /**
@@ -7433,6 +8767,8 @@ export async function retryLatestAssistantResponse(
 export async function editUserTurnAndRetry(opts: {
   body: Element;
   item: Zotero.Item;
+  requestId?: number;
+  onProviderDispatch?: () => void;
   contextSource?: ResolvedContextSource | null;
   userTimestamp: number;
   assistantTimestamp: number;
@@ -7471,6 +8807,8 @@ export async function editUserTurnAndRetry(opts: {
   const {
     body,
     item,
+    requestId,
+    onProviderDispatch,
     contextSource,
     userTimestamp,
     assistantTimestamp,
@@ -7501,9 +8839,52 @@ export async function editUserTurnAndRetry(opts: {
     reasoning,
     advanced,
   } = opts;
+  const initialConversationKey = getConversationKey(item);
+  if (requestId !== undefined) {
+    if (!isRequestOwner(initialConversationKey, requestId)) return false;
+  }
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
+  if (requestId !== undefined) {
+    if (
+      conversationKey !== initialConversationKey &&
+      !transferPanelRequest(
+        resolveConversationSystemForItem(item),
+        initialConversationKey,
+        conversationKey,
+        requestId,
+      )
+    ) {
+      return false;
+    }
+  }
+  const requestIsActive = () =>
+    requestId === undefined ||
+    (isRequestOwner(conversationKey, requestId) &&
+      getCancelledRequestId(conversationKey) < requestId &&
+      !getAbortController(conversationKey)?.signal.aborted);
+  if (!requestIsActive()) return false;
+  // Edit acts on the state the user SEES: complete any pending turn deletion
+  // first. history stays RAW below on purpose — truncation after the edited
+  // pair must also purge hidden trailing pairs and their rows; a preceding
+  // hidden pair is excluded from the prompt by the delegated retry path.
+  if (!(await pendingDeletionStore.ensurePersistedFenceLoaded())) return false;
+  if (!requestIsActive()) return false;
+  await awaitPendingTurnFinalize(
+    pendingDeletionStore.finalizeTurnsForConversation(conversationKey, "edit"),
+  );
+  if (!requestIsActive()) return false;
+  // An edit cannot cancel a whole-conversation deletion. Only explicit Undo
+  // can withdraw that intent during its own window.
+  if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+    ztoolkit.log(
+      "LLM: editUserTurnAndRetry — conversation is frozen by pending deletion",
+    );
+    return false;
+  }
   const history = chatHistory.get(conversationKey) || [];
+  const conversationGeneration =
+    getConversationWriteGeneration(conversationKey);
 
   const userIndex = history.findIndex(
     (m) => m.role === "user" && m.timestamp === userTimestamp,
@@ -7566,27 +8947,132 @@ export async function editUserTurnAndRetry(opts: {
     }
   }
 
+  if (
+    !isConversationWriteGenerationCurrent(
+      conversationKey,
+      conversationGeneration,
+    ) ||
+    areConversationWritesFrozen(conversationKey)
+  ) {
+    return false;
+  }
+
+  if (subsequentPairs.length) {
+    const providerReset = await withConversationWriteLock(
+      conversationKey,
+      async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            conversationGeneration,
+          )
+        ) {
+          return false;
+        }
+        const catalog = await conversationRepository.getCatalogEntry({
+          system: retryStorageSystem,
+          kind:
+            resolveDisplayConversationKind(item) === "paper"
+              ? "paper"
+              : "global",
+          conversationKey,
+        });
+        const detached = await detachProviderForEdit(conversationKey, catalog);
+        if (!detached) return false;
+        if (retryStorageSystem === "codex") {
+          clearCodexNativeReadLedgerForConversation({
+            conversationKey,
+            instanceID: catalog?.instanceID,
+          });
+        }
+        return isConversationWriteGenerationCurrent(
+          conversationKey,
+          conversationGeneration,
+        );
+      },
+    );
+    if (!providerReset) {
+      ztoolkit.log(
+        "LLM: editUserTurnAndRetry — provider history could not be detached",
+      );
+      return false;
+    }
+  }
+
   // Truncate in-memory history to this pair
   history.splice(assistantIndex + 1);
 
   // Delete persisted subsequent turns
+  let trailingDeleteFailed = false;
   for (const p of subsequentPairs) {
     try {
-      const storageSystem = resolveConversationStorageSystem({
+      const deleted = await withConversationWriteLock(
         conversationKey,
-        conversationSystem: retryStorageSystem,
-      });
-      if (!storageSystem) {
-        continue;
+        async () => {
+          if (
+            !isConversationWriteGenerationCurrent(
+              conversationKey,
+              conversationGeneration,
+            ) ||
+            areConversationWritesFrozen(conversationKey)
+          ) {
+            return false;
+          }
+          const storageSystem = resolveConversationStorageSystem({
+            conversationKey,
+            conversationSystem: retryStorageSystem,
+          });
+          if (!storageSystem) return false;
+          await conversationRepository.deleteTurnMessages({
+            system: storageSystem,
+            conversationKey,
+            userTimestamp: p.userTs,
+            assistantTimestamp: p.assistantTs,
+            onBeforeCommit: () =>
+              clearPersistedAgentConversationRowsInTransaction(conversationKey),
+          });
+          return true;
+        },
+      );
+      if (!deleted) {
+        trailingDeleteFailed = true;
+        break;
       }
-      await conversationRepository.deleteTurnMessages({
-        system: storageSystem,
-        conversationKey,
-        userTimestamp: p.userTs,
-        assistantTimestamp: p.assistantTs,
-      });
     } catch (err) {
       ztoolkit.log("LLM: Failed to delete subsequent stored turn", err);
+      trailingDeleteFailed = true;
+      break;
+    }
+  }
+  if (trailingDeleteFailed) {
+    try {
+      const restored = await loadStoredConversationByKey(
+        conversationKey,
+        PERSISTED_HISTORY_LIMIT,
+        retryStorageSystem,
+      );
+      chatHistory.set(
+        conversationKey,
+        restored.map((message) => toPanelMessage(message)),
+      );
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to restore history after edit truncation", err);
+    }
+    return false;
+  }
+  // The edit path deletes trailing message rows directly rather than through
+  // the queued-turn coordinator.  Persistent agent state is conversation-key
+  // scoped, so clear its in-memory/trace participants after the atomic row
+  // purge before the edited retry can build a prompt.
+  if (subsequentPairs.length) {
+    try {
+      await clearAgentConversationState(conversationKey);
+    } catch (err) {
+      ztoolkit.log(
+        "LLM: Failed to clear agent state after edit truncation",
+        err,
+      );
     }
   }
 
@@ -7640,13 +9126,14 @@ export async function editUserTurnAndRetry(opts: {
   const selectedTagContextsForMessage =
     normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeysEdit = new Set(
-    normalizedPdfPaperContexts.map(
-      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    normalizedPdfPaperContexts.map((paper) =>
+      completePaperContextKey(paper, item.libraryID),
     ),
   );
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
+    activePaperContext,
   } = includeAutoLoadedPaperContext(
     item,
     normalizedPaperContexts,
@@ -7720,6 +9207,7 @@ export async function editUserTurnAndRetry(opts: {
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
       {
+        conversationGeneration,
         text: userMsg.text,
         timestamp: userMsg.timestamp,
         runMode: userMsg.runMode,
@@ -7748,6 +9236,40 @@ export async function editUserTurnAndRetry(opts: {
     );
   } catch (err) {
     ztoolkit.log("LLM: Failed to persist edited user message", err);
+    try {
+      const restored = await loadStoredConversationByKey(
+        conversationKey,
+        PERSISTED_HISTORY_LIMIT,
+        retryStorageSystem,
+      );
+      chatHistory.set(
+        conversationKey,
+        restored.map((message) => toPanelMessage(message)),
+      );
+    } catch (restoreError) {
+      ztoolkit.log(
+        "LLM: Failed to restore history after edit persistence failure",
+        restoreError,
+      );
+    }
+    return false;
+  }
+
+  try {
+    const storedAfterEdit = await loadStoredConversationByKey(
+      conversationKey,
+      PERSISTED_HISTORY_LIMIT,
+      retryStorageSystem,
+    );
+    await replaceOwnerAttachmentRefs(
+      "conversation",
+      conversationKey,
+      collectAttachmentHashesFromStoredMessages(storedAfterEdit),
+      conversationGeneration,
+    );
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to reconcile edit attachment refs", err);
+    return false;
   }
 
   // Route agent-mode retries through the agent runtime so tools are available
@@ -7767,6 +9289,9 @@ export async function editUserTurnAndRetry(opts: {
         retryRequestConfig.reasoning,
         retryRequestConfig.advanced,
         modelAttachments,
+        requestId,
+        onProviderDispatch,
+        activePaperContext,
       )
     : await retryLatestAssistantResponse(
         body,
@@ -7782,13 +9307,17 @@ export async function editUserTurnAndRetry(opts: {
         retryRequestConfig.advanced,
         pdfUploadSystemMessages,
         modelAttachments,
+        requestId,
+        onProviderDispatch,
       );
   return retrySucceeded === true;
 }
 
 export type BuildAgentRuntimeRequestParams = {
   conversationKey: number;
+  conversationGeneration?: number;
   item: Zotero.Item;
+  activePaperContext?: PaperContextRef;
   userText: string;
   selectedTextContexts?: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
@@ -8119,6 +9648,22 @@ async function buildAgentRuntimeRequest(
     enrichPaperContextsWithMineruCache(params.paperContexts),
     enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
   ]);
+  const requestLibraryID = Math.floor(Number(params.item.libraryID)) || 0;
+  const completePaperKey = (paper: PaperContextRef) =>
+    `${Math.floor(Number(paper.libraryID || requestLibraryID))}:${Math.floor(
+      Number(paper.itemId),
+    )}:${Math.floor(Number(paper.contextItemId))}`;
+  const activePaperContext = params.activePaperContext
+    ? [
+        ...(enrichedPaperContexts || []),
+        ...(enrichedFullTextPapers || []),
+        ...rawPdfPaperContexts,
+      ].find(
+        (paper) =>
+          completePaperKey(paper) ===
+          completePaperKey(params.activePaperContext!),
+      ) || params.activePaperContext
+    : undefined;
   const attachmentResourcePool = buildAgentAttachmentResourcePool({
     paperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
@@ -8129,12 +9674,35 @@ async function buildAgentRuntimeRequest(
     activeNoteSession?.conversationKind ||
     resolveDisplayConversationKind(params.item) ||
     undefined;
+  let registeredConversation: Awaited<
+    ReturnType<typeof getRegisteredConversationScope>
+  > = null;
+  try {
+    registeredConversation = await getRegisteredConversationScope(
+      params.conversationKey,
+    );
+  } catch {
+    // The instance witness is an adapter-safety hint; a provider turn can
+    // still proceed through the existing request identity when the registry
+    // is temporarily unavailable.
+  }
+  const conversationInstanceID = registeredConversation?.instanceID;
   return {
     conversationKey: params.conversationKey,
+    conversationGeneration: params.conversationGeneration,
     mode: "agent",
     userText: params.userText,
     conversationKind,
     activeItemId: activeNoteSession?.noteId || params.item.id,
+    activePaperContext: activePaperContext
+      ? {
+          ...activePaperContext,
+          libraryID:
+            Math.floor(
+              Number(activePaperContext.libraryID || requestLibraryID),
+            ) || undefined,
+        }
+      : undefined,
     selectedTextContexts: params.selectedTextContexts,
     resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors,
     selectedTexts: params.selectedTexts,
@@ -8197,6 +9765,7 @@ async function buildAgentRuntimeRequest(
           : undefined,
       claudeHistoryLength: params.history.length,
       notesDirectoryConfig: getNotesDirectoryConfig() || undefined,
+      conversationInstanceID,
     },
   };
 }
@@ -8206,6 +9775,7 @@ export const buildAgentRuntimeRequestForTests = buildAgentRuntimeRequest;
 function buildAgentEngineDeps(
   currentItem?: Zotero.Item,
   conversationSystem?: ConversationSystem,
+  conversationGeneration?: number,
 ): AgentEngineDeps {
   const getEffectiveConversationSystem = (): ConversationSystem =>
     conversationSystem ||
@@ -8213,16 +9783,31 @@ function buildAgentEngineDeps(
       ? resolveEffectiveConversationSystem({ item: currentItem })
       : "upstream");
   return {
+    conversationGeneration,
     chatHistory,
     agentRunTraceCache,
     cancelledRequestId: (ck: number) => getCancelledRequestId(ck),
     currentAbortController: (ck: number) => getAbortController(ck),
-    setCurrentAbortController: (ck: number, ctrl: AbortController | null) =>
-      setAbortController(ck, ctrl),
     getAbortControllerCtor,
     nextRequestId,
-    setPendingRequestId: (ck: number, id: number) =>
-      setPendingRequestIdAndSync(ck, id),
+    tryBeginRequest,
+    isRequestOwner,
+    finishRequest,
+    transferRequest: (fromConversationKey, toConversationKey, requestId) => {
+      if (
+        !transferPanelRequest(
+          getEffectiveConversationSystem(),
+          fromConversationKey,
+          toConversationKey,
+          requestId,
+        )
+      ) {
+        return false;
+      }
+      syncRequestUIForConversation(fromConversationKey, null, null);
+      syncRequestUIForConversation(toConversationKey, null, null);
+      return true;
+    },
     getPanelRequestUI,
     setRequestUIBusy,
     restoreRequestUIIdle,
@@ -8283,6 +9868,11 @@ function buildAgentEngineDeps(
     },
     appendReasoningPart,
     persistConversationMessage: async (conversationKey, message) => {
+      const guardedMessage = {
+        ...message,
+        conversationGeneration:
+          message.conversationGeneration ?? conversationGeneration,
+      };
       const system = getEffectiveConversationSystem();
       const storageSystem = currentItem
         ? resolveConversationStorageSystemForItem({
@@ -8300,9 +9890,18 @@ function buildAgentEngineDeps(
       ) {
         return;
       }
-      await persistConversationMessage(conversationKey, message, storageSystem);
+      await persistConversationMessage(
+        conversationKey,
+        guardedMessage,
+        storageSystem,
+      );
     },
     updateStoredLatestUserMessage: async (conversationKey, data) => {
+      const guardedData = {
+        ...data,
+        conversationGeneration:
+          data.conversationGeneration ?? conversationGeneration,
+      };
       const system = getEffectiveConversationSystem();
       const storageSystem = currentItem
         ? resolveConversationStorageSystemForItem({
@@ -8322,13 +9921,18 @@ function buildAgentEngineDeps(
       }
       await updateStoredLatestUserMessageByConversation(
         conversationKey,
-        data as Parameters<
+        guardedData as Parameters<
           typeof updateStoredLatestUserMessageByConversation
         >[1],
         storageSystem,
       );
     },
     updateStoredLatestAssistantMessage: async (conversationKey, data) => {
+      const guardedData = {
+        ...data,
+        conversationGeneration:
+          data.conversationGeneration ?? conversationGeneration,
+      };
       const system = getEffectiveConversationSystem();
       const storageSystem = currentItem
         ? resolveConversationStorageSystemForItem({
@@ -8348,7 +9952,7 @@ function buildAgentEngineDeps(
       }
       await updateStoredLatestAssistantMessageByConversation(
         conversationKey,
-        data as Parameters<
+        guardedData as Parameters<
           typeof updateStoredLatestAssistantMessageByConversation
         >[1],
         storageSystem,
@@ -8390,6 +9994,9 @@ async function retryLatestAgentResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
   modelAttachmentsOverride?: ChatAttachment[],
+  requestId?: number,
+  onProviderDispatch?: () => void,
+  activePaperContextOverride?: PaperContextRef,
 ): Promise<true> {
   const conversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -8397,6 +10004,18 @@ async function retryLatestAgentResponse(
     providerProtocol,
     modelProviderLabel,
   });
+  // Retry must act on the state the user SEES (see retryLatestAssistantResponse);
+  // callers that already finalized and restored make this a cheap no-op. Turn
+  // entries only — a pending conversation deletion is the callers' concern.
+  const agentRetryConversationKey = getConversationKey(item);
+  if (agentRetryConversationKey) {
+    await awaitPendingTurnFinalize(
+      pendingDeletionStore.finalizeTurnsForConversation(
+        agentRetryConversationKey,
+        "retry",
+      ),
+    );
+  }
   await initAgentSubsystem();
   await retryAgentTurn(
     body,
@@ -8411,7 +10030,14 @@ async function retryLatestAgentResponse(
     reasoning,
     advanced,
     modelAttachmentsOverride,
-    buildAgentEngineDeps(item, conversationSystem),
+    buildAgentEngineDeps(
+      item,
+      conversationSystem,
+      getConversationWriteGeneration(getConversationKey(item)),
+    ),
+    requestId,
+    onProviderDispatch,
+    activePaperContextOverride,
   );
   return true;
 }
@@ -8419,6 +10045,8 @@ async function retryLatestAgentResponse(
 async function sendAgentQuestion(opts: {
   body: Element;
   item: Zotero.Item;
+  requestId?: number;
+  onProviderDispatch?: () => void;
   contextSource?: ResolvedContextSource | null;
   question: string;
   images?: string[];
@@ -8456,6 +10084,14 @@ async function sendAgentQuestion(opts: {
   conversationSystem?: ConversationSystem;
 }): Promise<void> {
   const conversationKey = getConversationKey(opts.item);
+  if (
+    opts.requestId !== undefined &&
+    (!isRequestOwner(conversationKey, opts.requestId) ||
+      getCancelledRequestId(conversationKey) >= opts.requestId ||
+      Boolean(getAbortController(conversationKey)?.signal.aborted))
+  ) {
+    return;
+  }
   const safeConversationScope = await validateConversationScopeForItem({
     item: opts.item,
     conversationKey,
@@ -8476,9 +10112,21 @@ async function sendAgentQuestion(opts: {
     return;
   }
   await initAgentSubsystem();
+  if (
+    opts.requestId !== undefined &&
+    (!isRequestOwner(conversationKey, opts.requestId) ||
+      getCancelledRequestId(conversationKey) >= opts.requestId ||
+      Boolean(getAbortController(conversationKey)?.signal.aborted))
+  ) {
+    return;
+  }
   await sendAgentTurn(
     opts,
-    buildAgentEngineDeps(opts.item, opts.conversationSystem),
+    buildAgentEngineDeps(
+      opts.item,
+      opts.conversationSystem,
+      getConversationWriteGeneration(getConversationKey(opts.item)),
+    ),
   );
 }
 
@@ -8515,6 +10163,83 @@ export async function sendQuestion(
     agentRunId,
     skipAgentDispatch = false,
   } = opts;
+  const initialConversationKey = getConversationKey(item);
+  const claimedHere = opts.requestId === undefined;
+  let thisRequestId: number;
+  if (opts.requestId !== undefined) {
+    thisRequestId = opts.requestId;
+    if (!isRequestOwner(initialConversationKey, thisRequestId)) return;
+  } else {
+    const claimed = beginPanelRequest(body, item, "Preparing request...");
+    if (!claimed) return;
+    thisRequestId = claimed.requestId;
+  }
+  const requestIsActive = (conversationKey: number) =>
+    isRequestOwner(conversationKey, thisRequestId) &&
+    getCancelledRequestId(conversationKey) < thisRequestId &&
+    !getAbortController(conversationKey)?.signal.aborted;
+  const finishBeforeDispatch = () => {
+    if (!claimedHere) return false;
+    const currentConversationKey = getConversationKey(item);
+    if (finishPanelRequest(body, item, currentConversationKey, thisRequestId)) {
+      return true;
+    }
+    if (currentConversationKey === initialConversationKey) return false;
+    return finishPanelRequest(
+      body,
+      item,
+      initialConversationKey,
+      thisRequestId,
+    );
+  };
+  {
+    // The durable deletion intents must be loaded before any write. If startup
+    // could not read them, retry now: a transient database error at launch
+    // then self-heals instead of silently dropping the fence and writing into
+    // a conversation the user already deleted in an earlier session.
+    if (!(await pendingDeletionStore.ensurePersistedFenceLoaded())) {
+      const ui = getPanelRequestUI(body);
+      if (ui.status) {
+        setStatus(
+          ui.status,
+          t("Chat storage is unavailable; check the log"),
+          "error",
+        );
+      }
+      finishBeforeDispatch();
+      return;
+    }
+    if (!requestIsActive(initialConversationKey)) {
+      finishBeforeDispatch();
+      return;
+    }
+    // A new send is the user moving on: complete any pending turn deletion so
+    // the hidden turn is neither included in the prompt nor resurrected later.
+    const pendingKey = getConversationKey(item);
+    if (pendingKey) {
+      await awaitPendingTurnFinalize(
+        pendingDeletionStore.finalizeTurnsForConversation(pendingKey, "send"),
+      );
+      // A send cannot become an implicit Undo. Freeze the exact instance until
+      // the user explicitly withdraws the intent from the Undo control.
+      if (pendingDeletionStore.isConversationPendingDeletion(pendingKey)) {
+        const ui = getPanelRequestUI(body);
+        if (ui.status) {
+          setStatus(
+            ui.status,
+            t("Deletion pending; retrying safely"),
+            "warning",
+          );
+        }
+        finishBeforeDispatch();
+        return;
+      }
+    }
+    if (!requestIsActive(initialConversationKey)) {
+      finishBeforeDispatch();
+      return;
+    }
+  }
   const effectiveConversationSystem = resolveEffectiveConversationSystem({
     item,
     authMode: opts.authMode,
@@ -8533,40 +10258,48 @@ export async function sendQuestion(
         ? "chat"
         : runtimeMode;
   if (effectiveRuntimeMode === "agent" && !skipAgentDispatch) {
-    await sendAgentQuestion({
-      body,
-      item,
-      contextSource: opts.contextSource,
-      question,
-      images,
-      model,
-      apiBase,
-      apiKey,
-      authMode: opts.authMode,
-      providerProtocol: opts.providerProtocol,
-      modelEntryId: opts.modelEntryId,
-      modelProviderLabel: opts.modelProviderLabel,
-      reasoning,
-      advanced,
-      displayQuestion,
-      selectedTextContexts,
-      resolvedSelectedTextAnchors,
-      selectedTexts,
-      selectedTextSources,
-      selectedTextPaperContexts,
-      selectedTextNoteContexts,
-      paperContexts,
-      pdfPaperContexts,
-      fullTextPaperContexts,
-      selectedCollectionContexts,
-      selectedTagContexts,
-      attachments,
-      modelAttachments,
-      localDocuments,
-      forcedSkillIds: opts.forcedSkillIds,
-      pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
-      conversationSystem: effectiveConversationSystem,
-    });
+    try {
+      await sendAgentQuestion({
+        body,
+        item,
+        contextSource: opts.contextSource,
+        question,
+        images,
+        model,
+        apiBase,
+        apiKey,
+        authMode: opts.authMode,
+        providerProtocol: opts.providerProtocol,
+        modelEntryId: opts.modelEntryId,
+        modelProviderLabel: opts.modelProviderLabel,
+        reasoning,
+        advanced,
+        displayQuestion,
+        selectedTextContexts,
+        resolvedSelectedTextAnchors,
+        selectedTexts,
+        selectedTextSources,
+        selectedTextPaperContexts,
+        selectedTextNoteContexts,
+        paperContexts,
+        pdfPaperContexts,
+        fullTextPaperContexts,
+        selectedCollectionContexts,
+        selectedTagContexts,
+        attachments,
+        modelAttachments,
+        localDocuments,
+        forcedSkillIds: opts.forcedSkillIds,
+        pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
+        conversationSystem: effectiveConversationSystem,
+        requestId: thisRequestId,
+        onProviderDispatch: opts.onProviderDispatch,
+      });
+    } finally {
+      if (claimedHere) {
+        finishPanelRequest(body, item, getConversationKey(item), thisRequestId);
+      }
+    }
     return;
   }
   const ui = getPanelRequestUI(body);
@@ -8578,17 +10311,36 @@ export async function sendQuestion(
     panelRoot.dataset.webchatMode = "true";
   }
 
-  // Track this request
-  const thisRequestId = nextRequestId();
-  const initialConversationKey = getConversationKey(item);
-  setPendingRequestIdAndSync(initialConversationKey, thisRequestId, body, item);
-
   // Show cancel, hide send
   setRequestUIBusy(body, ui, initialConversationKey, "Preparing request...");
 
   const shownQuestion = displayQuestion || question;
-  await ensureConversationLoaded(item);
+  try {
+    await ensureConversationLoaded(item);
+  } catch (error) {
+    finishBeforeDispatch();
+    throw error;
+  }
   const provisionalConversationKey = getConversationKey(item);
+  if (provisionalConversationKey !== initialConversationKey) {
+    if (
+      !transferPanelRequest(
+        resolveConversationSystemForItem(item),
+        initialConversationKey,
+        provisionalConversationKey,
+        thisRequestId,
+      )
+    ) {
+      finishBeforeDispatch();
+      return;
+    }
+    syncRequestUIForConversation(initialConversationKey, body, item);
+    syncRequestUIForConversation(provisionalConversationKey, body, item);
+  }
+  if (!requestIsActive(provisionalConversationKey)) {
+    finishBeforeDispatch();
+    return;
+  }
   if (!chatHistory.has(provisionalConversationKey)) {
     chatHistory.set(provisionalConversationKey, []);
   }
@@ -8637,15 +10389,20 @@ export async function sendQuestion(
   optimisticHelpers.refreshChatSafely();
 
   const conversationKey = getConversationKey(item);
-  if (conversationKey !== initialConversationKey) {
-    clearPendingRequestIdAndSync(initialConversationKey, body, item);
-    setPendingRequestIdAndSync(conversationKey, thisRequestId, body, item);
-  }
+  const conversationGeneration =
+    getConversationWriteGeneration(conversationKey);
   const safeConversationScope = await validateConversationScopeForItem({
     item,
     conversationKey,
     conversationSystem: effectiveConversationSystem,
   });
+  if (!requestIsActive(conversationKey)) {
+    removeMessageReference(provisionalHistory, optimisticUserMessage);
+    removeMessageReference(provisionalHistory, optimisticAssistantMessage);
+    optimisticHelpers.refreshChatSafely();
+    finishBeforeDispatch();
+    return;
+  }
   if (!safeConversationScope) {
     removeMessageReference(provisionalHistory, optimisticUserMessage);
     removeMessageReference(provisionalHistory, optimisticAssistantMessage);
@@ -8654,8 +10411,8 @@ export async function sendQuestion(
       "Conversation identity mismatch; open a new chat.",
       "error",
     );
-    restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    clearPendingRequestIdAndSync(conversationKey, body, item);
+    if (claimedHere)
+      finishPanelRequest(body, item, conversationKey, thisRequestId);
     return;
   }
 
@@ -8671,9 +10428,12 @@ export async function sendQuestion(
     history.length >= 2 &&
     history[history.length - 2] === optimisticUserMessage &&
     history[history.length - 1] === optimisticAssistantMessage;
-  const historyForLLM = reuseOptimisticPair
-    ? history.slice(0, -2)
-    : history.slice();
+  // finalizeTurnsForConversation above is best-effort; when a finalizer fails
+  // the turn is still queued (and hidden), so the prompt must exclude it here.
+  const historyForLLM = filterMessagesInPendingTurns(
+    conversationKey,
+    reuseOptimisticPair ? history.slice(0, -2) : history.slice(),
+  );
   const effectiveRequestConfig = resolveEffectiveRequestConfig({
     item,
     model,
@@ -8758,12 +10518,8 @@ export async function sendQuestion(
       );
     };
 
-    const AbortControllerCtor = getAbortControllerCtor();
-    setAbortController(
-      conversationKey,
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
     try {
+      notifyProviderDispatch(body, ui, opts.onProviderDispatch);
       await compactCodexAppServerConversation({
         conversationKey,
         codexPath: getEffectiveCodexAppServerBinaryPath(
@@ -8819,14 +10575,16 @@ export async function sendQuestion(
       await persistCompactError(errMsg);
       setStatusSafely(`Error: ${errMsg.slice(0, 40)}`, "error");
     } finally {
-      restoreRequestUIIdle(body, conversationKey, thisRequestId);
-      setAbortController(conversationKey, null);
-      clearPendingRequestIdAndSync(conversationKey, body, item);
-      scheduleQueuedInputDrain(body, {
-        conversationSystem:
-          resolveConversationSystemForItem(item) || "upstream",
-        conversationKey,
-      });
+      if (
+        clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
+      ) {
+        restoreRequestUIIdle(body, conversationKey, thisRequestId);
+        scheduleQueuedInputDrain(body, {
+          conversationSystem:
+            resolveConversationSystemForItem(item) || "upstream",
+          conversationKey,
+        });
+      }
     }
     return;
   }
@@ -8870,8 +10628,8 @@ export async function sendQuestion(
     opts.webchatPdfPaperContexts ?? normalizedPdfPaperContexts,
   ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const pdfModePaperKeys = new Set(
-    normalizedPdfPaperContexts.map(
-      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    normalizedPdfPaperContexts.map((paper) =>
+      completePaperContextKey(paper, item.libraryID),
     ),
   );
   const normalizedFullTextPaperContexts = normalizePaperContexts(
@@ -8898,6 +10656,13 @@ export async function sendQuestion(
         enrichPaperContextsWithMineruCache(paperContextsForMessage),
         enrichPaperContextsWithMineruCache(fullTextPaperContextsForMessage),
       ]);
+    if (!requestIsActive(conversationKey)) {
+      removeMessageReference(provisionalHistory, optimisticUserMessage);
+      removeMessageReference(provisionalHistory, optimisticAssistantMessage);
+      optimisticHelpers.refreshChatSafely();
+      finishBeforeDispatch();
+      return;
+    }
     paperContextsForMessage = enrichedPaperContexts || paperContextsForMessage;
     fullTextPaperContextsForMessage =
       enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
@@ -8917,6 +10682,7 @@ export async function sendQuestion(
   const imageCount = screenshotImagesForMessage.length;
   const userMessageText = shownQuestion;
   const userMessage: Message = {
+    conversationGeneration,
     role: "user",
     text: userMessageText,
     timestamp: optimisticUserMessage.timestamp,
@@ -8988,6 +10754,7 @@ export async function sendQuestion(
     void persistConversationMessage(
       conversationKey,
       {
+        conversationGeneration,
         role: "user",
         text: userMessage.text,
         timestamp: userMessage.timestamp,
@@ -9018,6 +10785,7 @@ export async function sendQuestion(
   }
 
   const assistantMessage: Message = {
+    conversationGeneration,
     ...optimisticAssistantMessage,
     timestamp: optimisticAssistantMessage.timestamp,
     runMode: isCodexNativeTurn ? "agent" : effectiveRuntimeMode,
@@ -9040,12 +10808,8 @@ export async function sendQuestion(
   if (history.length > PERSISTED_HISTORY_LIMIT) {
     history.splice(0, history.length - PERSISTED_HISTORY_LIMIT);
   }
-  const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
-  );
+  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
+    createPanelUpdateHelpers(body, item, conversationKey, ui);
   refreshChatSafely();
 
   let assistantPersisted = false;
@@ -9056,6 +10820,7 @@ export async function sendQuestion(
     await persistConversationMessage(
       conversationKey,
       {
+        conversationGeneration,
         role: "assistant",
         text: assistantMessage.text,
         timestamp: assistantMessage.timestamp,
@@ -9064,6 +10829,7 @@ export async function sendQuestion(
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
         modelProviderLabel: assistantMessage.modelProviderLabel,
+        interrupted: assistantMessage.interrupted,
         reasoningSummary: assistantMessage.reasoningSummary,
         reasoningDetails: assistantMessage.reasoningDetails,
         webchatRunState: assistantMessage.webchatRunState,
@@ -9088,10 +10854,19 @@ export async function sendQuestion(
     await persistAssistantOnce();
     setStatusSafely("Cancelled", "ready");
   };
+  const stopInactiveRequest = async () => {
+    if (requestIsActive(conversationKey)) return false;
+    if (isRequestOwner(conversationKey, thisRequestId)) {
+      await markCancelled();
+    }
+    return true;
+  };
 
   // [webchat] Dedicated pipeline — bypass context assembly, send raw PDF + question
   if (effectiveRequestConfig.providerProtocol === "web_sync") {
-    const webChatQueueRefresh = createQueuedRefresh(refreshChatSafely);
+    const webChatQueueRefresh = createQueuedRefresh(() =>
+      refreshAssistantMessageSafely(assistantMessage),
+    );
     const reportWebChatSendOutcome = (
       outcome: "success" | "failed" | "cancelled",
     ) => {
@@ -9108,6 +10883,10 @@ export async function sendQuestion(
       const webchatLabel = webchatTargetEntry?.label || "ChatGPT";
       setStatusSafely(`Sending to ${webchatLabel}…`, "sending");
       const { sendWebChatQuestion } = await import("../../webchat/pipeline");
+      if (await stopInactiveRequest()) {
+        reportWebChatSendOutcome("cancelled");
+        return;
+      }
 
       // Note: `question` already includes selected text context via
       // buildQuestionWithSelectedTextContexts() — no need to prepend again.
@@ -9118,6 +10897,7 @@ export async function sendQuestion(
       // [webchat] Send PDF only when the caller explicitly requests it via chip state.
       // Always use dynamic port for the embedded relay server
       const { getRelayBaseUrl } = await import("../../webchat/relayServer");
+      notifyProviderDispatch(body, ui, opts.onProviderDispatch);
       const answer = await sendWebChatQuestion({
         item,
         question,
@@ -9175,7 +10955,6 @@ export async function sendQuestion(
 
       refreshChatSafely();
       await persistAssistantOnce();
-      restoreRequestUIIdle(body, conversationKey, thisRequestId);
       setStatusSafely(
         answer.runState === "incomplete"
           ? "Captured partial response — final answer not verified"
@@ -9190,7 +10969,6 @@ export async function sendQuestion(
         (err as { name?: string }).name === "AbortError";
       if (isCancelled) {
         await markCancelled();
-        restoreRequestUIIdle(body, conversationKey, thisRequestId);
         reportWebChatSendOutcome("cancelled");
         return;
       }
@@ -9210,12 +10988,14 @@ export async function sendQuestion(
       assistantMessage.streaming = false;
       refreshChatSafely();
       await persistAssistantOnce();
-      restoreRequestUIIdle(body, conversationKey, thisRequestId);
       setStatusSafely(errMsg, "error");
       reportWebChatSendOutcome("failed");
     } finally {
-      setAbortController(conversationKey, null);
-      clearPendingRequestIdAndSync(conversationKey, body, item);
+      if (
+        clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
+      ) {
+        restoreRequestUIIdle(body, conversationKey, thisRequestId);
+      }
     }
     return;
   }
@@ -9227,13 +11007,18 @@ export async function sendQuestion(
       applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
 
-    // Create AbortController early so the signal is available during context
-    // planning.
-    const AbortControllerCtor = getAbortControllerCtor();
-    setAbortController(
-      conversationKey,
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
+    if (effectiveConversationSystem === "upstream") {
+      await preflightRequestModelCapabilities({
+        prompt: question,
+        model: effectiveRequestConfig.model,
+        apiBase: effectiveRequestConfig.apiBase,
+        apiKey: effectiveRequestConfig.apiKey,
+        authMode: effectiveRequestConfig.authMode,
+        providerProtocol: effectiveRequestConfig.providerProtocol,
+        profileOverride: effectiveRequestConfig.advanced?.profileOverride,
+      });
+      if (await stopInactiveRequest()) return;
+    }
 
     const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
       ? buildLightCodexNativeMcpContextPlan({
@@ -9262,6 +11047,7 @@ export async function sendQuestion(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
+    if (await stopInactiveRequest()) return;
     const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
@@ -9280,6 +11066,7 @@ export async function sendQuestion(
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
       {
+        conversationGeneration,
         text: userMessage.text,
         timestamp: userMessage.timestamp,
         runMode: userMessage.runMode,
@@ -9305,13 +11092,14 @@ export async function sendQuestion(
       effectiveStorageSystem,
     );
 
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await markCancelled();
-      return;
-    }
+    if (await stopInactiveRequest()) return;
 
-    const queueRefresh = createQueuedRefresh(refreshChatSafely);
+    // Streaming flushes only mutate this assistant message, so re-render just
+    // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+    // not in the DOM yet.
+    const queueRefresh = createQueuedRefresh(() =>
+      refreshAssistantMessageSafely(assistantMessage),
+    );
     const codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
@@ -9326,11 +11114,7 @@ export async function sendQuestion(
       },
     });
 
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await markCancelled();
-      return;
-    }
+    if (await stopInactiveRequest()) return;
 
     // Models resolved as image-disabled reject image_url content, so drop all images.
     const allSendImages = supportsImageInputs(effectiveRequestConfig)
@@ -9351,7 +11135,10 @@ export async function sendQuestion(
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
+      maxTokensExplicit:
+        effectiveRequestConfig.advanced?.maxTokensExplicit === true,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
@@ -9361,6 +11148,7 @@ export async function sendQuestion(
         contextPlan,
         combinedContext,
       });
+    if (await stopInactiveRequest()) return;
     if (workflowTestIntercepted) {
       assistantMessage.text = "Workflow request intercepted before dispatch.";
       assistantMessage.streaming = false;
@@ -9371,6 +11159,7 @@ export async function sendQuestion(
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
+      inputLimitSource: finalPrepared.inputCap.limitSource,
       estimated: true,
       source: "estimated",
     });
@@ -9381,58 +11170,37 @@ export async function sendQuestion(
       if (!chunk) return;
       responseStreamCoalescer?.pushText(chunk);
     };
-    const handleReasoning = (reasoning: ReasoningEvent) => {
-      flushResponseStream("event");
-      if (reasoning.summary) {
-        assistantMessage.reasoningSummary = appendReasoningPart(
-          assistantMessage.reasoningSummary,
-          reasoning.summary,
-        );
-      }
-      if (reasoning.details) {
-        assistantMessage.reasoningDetails = appendReasoningPart(
-          assistantMessage.reasoningDetails,
-          reasoning.details,
-        );
-      }
-      queueRefresh();
-    };
-    const handleUsage = (usage: UsageStats) => {
-      recordContextCacheTelemetry(contextPlan.contextCache, usage);
-      const contextTokens =
-        typeof usage.contextTokens === "number" && usage.contextTokens > 0
-          ? usage.contextTokens
-          : 0;
-      if (contextTokens <= 0) return;
-      const snapshot = setContextUsageSnapshot(conversationKey, {
-        contextTokens,
-        contextWindow:
-          usage.contextWindow || finalPrepared.inputCap.limitTokens,
-        estimated: usage.contextWindowIsAuthoritative !== true,
-        source:
-          usage.contextWindowIsAuthoritative === true
-            ? "provider"
-            : "estimated",
-        contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
-        cacheReadTokens: usage.cacheReadTokens,
-        cacheWriteTokens: usage.cacheWriteTokens,
-        cacheMissTokens: usage.cacheMissTokens,
-        cacheHitRatio: usage.cacheHitRatio,
-        cacheProvider: usage.cacheProvider,
-      });
-      renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
-    };
+    const handleReasoning = createStreamReasoningHandler({
+      assistantMessage,
+      flushResponseStream,
+      queueRefresh,
+    });
+    const handleUsage = createStreamUsageHandler({
+      body,
+      tokenUsageEl: ui.tokenUsageEl,
+      conversationKey,
+      conversationGeneration,
+      contextCache: contextPlan.contextCache,
+      fallbackContextWindow: finalPrepared.inputCap.limitTokens,
+      fallbackInputLimitSource: finalPrepared.inputCap.limitSource,
+    });
+    const codexScope = isCodexNativeTurn
+      ? await enrichCodexNativeConversationScopeWithMineruCache(
+          resolveCodexNativeConversationScope({
+            item,
+            contextSource,
+            conversationKey,
+            title: shownQuestion,
+          }),
+        )
+      : null;
+    if (await stopInactiveRequest()) return;
+    notifyProviderDispatch(body, ui, opts.onProviderDispatch);
     const answer = isCodexNativeTurn
       ? (
           await runCodexAppServerNativeTurn({
-            scope: await enrichCodexNativeConversationScopeWithMineruCache(
-              resolveCodexNativeConversationScope({
-                item,
-                contextSource,
-                conversationKey,
-                title: shownQuestion,
-              }),
-            ),
+            scope: codexScope!,
+            conversationGeneration,
             model: effectiveRequestConfig.model,
             messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
@@ -9458,100 +11226,18 @@ export async function sendQuestion(
               screenshots: allSendImages,
               attachments,
             }),
-            onSkillActivated: (skillId) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteSkillActivated(skillId);
-              setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
-            },
-            onDelta: handleDelta,
-            onAgentMessageDelta: (event) => {
-              if (!codexActivityTrace?.appendAgentMessageDelta(event)) {
-                handleDelta(event.delta);
-              }
-            },
-            onReasoning: handleReasoning,
-            onUsage: handleUsage,
-            onItemStarted: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.appendItemStatus(event, "started");
-              const itemType = sanitizeText(event.type || "");
-              if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} started`, "sending");
-              }
-            },
-            onItemCompleted: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteAgentMessageCompleted(event);
-              codexActivityTrace?.appendItemStatus(event, "completed");
-              const itemType = sanitizeText(event.type || "");
-              if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} completed`, "sending");
-              }
-            },
-            onMcpToolActivity: (event) => {
-              flushResponseStream("event");
-              codexActivityTrace?.noteMcpToolActivity(event);
-              assistantMessage.quoteCitations = mergeQuoteCitations(
-                assistantMessage.quoteCitations,
-                event.quoteCitations,
-              );
-              const label =
-                sanitizeText(event.toolLabel || "").trim() ||
-                sanitizeText(event.toolName || "")
-                  .replace(/_/g, " ")
-                  .trim();
-              if (label) {
-                setStatusSafely(
-                  event.phase === "completed"
-                    ? `Codex: used ${label}`
-                    : `Codex: using ${label}`,
-                  "sending",
-                );
-              }
-            },
-            onMcpConfirmationRequest: async ({ requestId, action }) => {
-              flushResponseStream("event");
-              setStatusSafely(
-                action.mode === "review"
-                  ? "Codex is waiting for your Zotero review"
-                  : "Codex is waiting for your Zotero approval",
-                "sending",
-              );
-              codexActivityTrace?.noteMcpConfirmationRequired(
-                requestId,
-                action,
-              );
-              const resolution = await showNativeMcpActionCard(
-                body,
-                requestId,
-                action,
-              );
-              codexActivityTrace?.noteMcpConfirmationResolved(
-                requestId,
-                resolution,
-              );
-              return resolution;
-            },
-            onMcpSetupWarning: (message) => {
-              flushResponseStream("event");
-              setStatusSafely(message, "error");
-            },
-            onDiagnostics: (diagnostics) => {
-              flushResponseStream("event");
-              setStatusSafely(
-                formatCodexNativeDiagnosticsStatus(diagnostics),
-                "sending",
-              );
-            },
-            onApprovalRequest: async (request) => {
-              flushResponseStream("event");
-              return resolveCodexNativeApprovalWithOptionalReviewCard({
-                body,
-                request,
-                trace: codexActivityTrace,
-                setStatusSafely,
-              });
-            },
+            ...buildCodexNativeTurnCallbacks({
+              body,
+              assistantMessage,
+              codexActivityTrace,
+              flushResponseStream,
+              setStatusSafely,
+              handleDelta,
+              handleReasoning,
+              handleUsage,
+              conversationKey,
+              conversationGeneration,
+            }),
           })
         ).text
       : await callLLMStream(
@@ -9596,6 +11282,7 @@ export async function sendQuestion(
     if (assistantMessage.compactMarker && !assistantMessage.text.trim()) {
       assistantMessage.text = "Conversation compacted";
     }
+    assistantMessage.interrupted = undefined;
     assistantMessage.streaming = false;
     refreshChatSafely();
     await persistAssistantOnce();
@@ -9619,6 +11306,7 @@ export async function sendQuestion(
               ? String(baseItem?.getField?.("title") || "").trim() || undefined
               : undefined,
         }),
+        conversationGeneration,
       ).catch(() => null);
     }
 
@@ -9630,6 +11318,8 @@ export async function sendQuestion(
         apiBase: effectiveRequestConfig.apiBase,
         apiKey: effectiveRequestConfig.apiKey,
         authMode: effectiveRequestConfig.authMode,
+        providerProtocol: effectiveRequestConfig.providerProtocol,
+        profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       });
     }
 
@@ -9644,23 +11334,40 @@ export async function sendQuestion(
       return;
     }
 
-    const errMsg = (err as Error).message || "Error";
+    const technicalErrMsg = (err as Error).message || "Error";
+    const errMsg = isCodexNativeTurn
+      ? formatCodexZoteroMcpError(err, "Native conversation failed")
+      : technicalErrMsg;
     const retryHint = resolveMultimodalRetryHint(errMsg, imageCount);
+    // Preserve whatever streamed before the connection dropped instead of
+    // discarding it. getFullText() includes the last, not-yet-flushed chunk.
+    const partialText = sanitizeText(
+      responseStreamCoalescer?.getFullText() || assistantMessage.text || "",
+    );
     responseStreamCoalescer?.cancel();
-    assistantMessage.text = `Error: ${errMsg}${retryHint}`;
+    const outcome = resolveStreamInterruptionOutcome({
+      partialText,
+      errorMessage: errMsg,
+      retryHint,
+    });
+    assistantMessage.text = outcome.text;
+    assistantMessage.interrupted = outcome.interrupted;
     assistantMessage.streaming = false;
     refreshChatSafely();
     await persistAssistantOnce();
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");
   } finally {
-    restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    setAbortController(conversationKey, null);
-    clearPendingRequestIdAndSync(conversationKey, body, item);
-    scheduleQueuedInputDrain(body, {
-      conversationSystem: resolveConversationSystemForItem(item) || "upstream",
-      conversationKey,
-    });
+    if (
+      clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
+    ) {
+      restoreRequestUIIdle(body, conversationKey, thisRequestId);
+      scheduleQueuedInputDrain(body, {
+        conversationSystem:
+          resolveConversationSystemForItem(item) || "upstream",
+        conversationKey,
+      });
+    }
   }
 }
 
@@ -9744,7 +11451,7 @@ function buildInlineEditWidget(
     setInlineEditCleanup(null);
     setInlineEditTarget(null);
     const win = body.ownerDocument?.defaultView;
-    if (win) win.setTimeout(() => refreshChat(body, item), 0);
+    if (win) win.setTimeout(() => refreshConversationPanels(body, item), 0);
   };
 
   // Header: "Editing" label + Cancel button
@@ -9868,6 +11575,7 @@ export function refreshChat(
   item?: Zotero.Item | null,
   options: RefreshChatOptions = {},
 ) {
+  if (item && !isPanelConversationCurrent(body, item)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const doc = body.ownerDocument!;
@@ -9916,43 +11624,56 @@ export function refreshChat(
       : cachedSnapshot
         ? cachedSnapshot
         : buildChatScrollSnapshot(chatBox);
-  const history = chatHistory.get(conversationKey) || [];
+  const rawHistory = chatHistory.get(conversationKey) || [];
+  // Turns queued for deletion stay in memory and DB until the undo window
+  // closes; they are only hidden from the render.
+  const history = filterMessagesInPendingTurns(conversationKey, rawHistory);
   const requestedRerenders = options.rerenderAssistantMessages;
-  const targetedMessageWrappers = new Map<Message, HTMLElement>();
-  let useTargetedRerender = Boolean(requestedRerenders?.size);
-  if (useTargetedRerender) {
-    const renderedWrappers = Array.from(chatBox.children) as HTMLElement[];
-    for (const message of requestedRerenders || []) {
-      const messageIndex = history.indexOf(message);
-      if (message.role !== "assistant" || messageIndex < 0) {
-        useTargetedRerender = false;
-        break;
-      }
-      const wrapper = renderedWrappers.find(
-        (candidate) =>
-          candidate.dataset.messageRole === "assistant" &&
-          candidate.dataset.messageIndex === `${messageIndex}`,
-      );
-      if (!wrapper) {
-        useTargetedRerender = false;
-        break;
-      }
-      targetedMessageWrappers.set(message, wrapper);
-    }
-  }
+  const { useTargetedRerender, targetedMessageWrappers } =
+    resolveTargetedAssistantRerenders(
+      history,
+      requestedRerenders,
+      requestedRerenders?.size
+        ? (Array.from(chatBox.children) as HTMLElement[])
+        : [],
+    );
   const forkLink = conversationForkLinks.get(conversationKey) || null;
   if (tokenUsageEl && !useTargetedRerender) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
-    const liveSnapshot =
-      snapshot && snapshot.source !== "persisted" ? snapshot : undefined;
-    const recomputedSnapshot = liveSnapshot
-      ? undefined
-      : estimateHistoryContextUsageSnapshot(item, history);
+    const recomputedSnapshot = estimateHistoryContextUsageSnapshot(
+      item,
+      history,
+    );
+    const configuredLimitIsUserAuthoritative =
+      recomputedSnapshot?.inputLimitSource === "advanced" ||
+      recomputedSnapshot?.inputLimitSource === "user";
+    const providerWindowRemainsEligible =
+      snapshot?.source === "provider" && !configuredLimitIsUserAuthoritative;
+    const reconciledSnapshot =
+      snapshot && recomputedSnapshot && !providerWindowRemainsEligible
+        ? setContextUsageSnapshot(conversationKey, {
+            ...snapshot,
+            contextWindow: recomputedSnapshot.contextWindow,
+            inputLimitSource: recomputedSnapshot.inputLimitSource,
+            contextWindowIsAuthoritative: false,
+            estimated: true,
+            source: "estimated",
+          })
+        : snapshot;
     renderContextUsageSnapshot(
       body,
       tokenUsageEl,
-      liveSnapshot || recomputedSnapshot || snapshot,
+      reconciledSnapshot || recomputedSnapshot,
     );
+  } else if (tokenUsageEl) {
+    // Targeted streaming refreshes reach every panel showing the conversation,
+    // but mid-stream usage events render only into the initiating panel's
+    // counter. Sync the others from the live snapshot when one exists — never
+    // the O(history) estimate, which would defeat the targeted render.
+    const snapshot = contextUsageSnapshots.get(conversationKey);
+    if (snapshot && snapshot.source !== "persisted") {
+      renderContextUsageSnapshot(body, tokenUsageEl, snapshot);
+    }
   }
 
   if (history.length === 0) {
@@ -10393,10 +12114,7 @@ export function refreshChat(
         hasContextBadge = true;
       }
 
-      const paperContexts = normalizePaperContexts([
-        ...(msg.paperContexts || []),
-        ...(msg.pdfPaperContexts || []),
-      ]);
+      const paperContexts = getMessageDisplayPaperContexts(msg);
       hasUserContext = hasUserContext || paperContexts.length > 0;
       if (paperContexts.length) {
         const displayPaperContexts = paperContexts.map(
@@ -10783,7 +12501,7 @@ export function refreshChat(
               assistantTimestamp: Math.floor(assistantPairMsg!.timestamp),
               currentText: msg.text || "",
             });
-            win.setTimeout(() => refreshChat(body, item), 0);
+            win.setTimeout(() => refreshConversationPanels(body, item), 0);
           });
         }
       }
@@ -10871,6 +12589,7 @@ export function refreshChat(
       const traceEvents = cachedTraceEvents.length
         ? cachedTraceEvents
         : msg.pendingAgentTraceEvents || [];
+      const webSourceAnchors = getWebSourceAnchorsFromTrace(traceEvents);
       let agentUsesInterleavedText = false;
       const agentTraceEl =
         msg.runMode === "agent" && !msg.compactMarker
@@ -10891,7 +12610,10 @@ export function refreshChat(
             })
           : null;
       if (hasAnswerText && !agentUsesInterleavedText) {
-        const safeText = buildAssistantDisplayMarkdownForRender(msg);
+        const safeText = buildAssistantDisplayMarkdownForRender(
+          msg,
+          webSourceAnchors,
+        );
         if (msg.streaming) bubble.classList.add("streaming");
         if (msg.compactMarker) {
           renderCompactMarkerInto(
@@ -10916,6 +12638,7 @@ export function refreshChat(
             ztoolkit.log("LLM render error:", err);
             bubble.textContent = safeText;
           }
+        decorateWebSourceIndicators(bubble, doc, webSourceAnchors);
       }
 
       const bubbleHeaderNodes: HTMLElement[] = [];
@@ -11066,6 +12789,7 @@ export function refreshChat(
         bubble,
         assistantMessage: msg,
         pairedUserMessage: previousUserMessage,
+        webSourceAnchors,
       });
 
       if (
@@ -11259,7 +12983,13 @@ export function refreshChat(
               msg.webchatChatUrl || null,
               msg.webchatChatId || null,
             );
-            if (scraped.length > 0) {
+            if (
+              scraped.length > 0 &&
+              !pendingDeletionStore.isConversationPendingDeletion(
+                conversationKey,
+              ) &&
+              !isConversationKeyRetiredInMemory(conversationKey)
+            ) {
               const refreshed: Message[] = scraped.map((m) => ({
                 role: (m.kind === "user" ? "user" : "assistant") as
                   | "user"
@@ -11272,7 +13002,7 @@ export function refreshChat(
                 reasoningDetails: m.thinking || undefined,
               }));
               chatHistory.set(conversationKey, refreshed);
-              refreshChat(body, item);
+              refreshConversationPanels(body, item);
             } else {
               refreshBtn.title =
                 "No messages found — chat site may be on a different page";
@@ -11293,6 +13023,19 @@ export function refreshChat(
       }
     }
 
+    // Interrupted footer — a streamed reply was cut off before completion (e.g.
+    // a connectivity drop); the partial content above is preserved. Distinct
+    // from the webchat status row above.
+    let interruptedRow: HTMLDivElement | null = null;
+    if (!isUser && msg.interrupted) {
+      interruptedRow = doc.createElement("div") as HTMLDivElement;
+      interruptedRow.className = "llm-message-interrupted-row";
+      const note = doc.createElement("span") as HTMLSpanElement;
+      note.className = "llm-message-interrupted-note";
+      note.textContent = `⚠ ${getStreamInterruptionLabel()}`;
+      interruptedRow.appendChild(note);
+    }
+
     if (isUser && inlineEditEl) {
       wrapper.appendChild(inlineEditEl);
     } else {
@@ -11300,6 +13043,7 @@ export function refreshChat(
     }
     wrapper.appendChild(meta);
     if (webchatStatusRow) wrapper.appendChild(webchatStatusRow);
+    if (interruptedRow) wrapper.appendChild(interruptedRow);
     const existingTargetedWrapper = targetedMessageWrappers.get(msg);
     if (useTargetedRerender && existingTargetedWrapper) {
       existingTargetedWrapper.replaceWith(wrapper);
@@ -11353,12 +13097,17 @@ export function refreshConversationPanels(
   options: {
     includeChat?: boolean;
     includePanelState?: boolean;
+    chatOptions?: RefreshChatOptions;
   } = {},
 ): void {
-  const { includeChat = true, includePanelState = false } = options;
+  const {
+    includeChat = true,
+    includePanelState = false,
+    chatOptions,
+  } = options;
   if (!primaryItem) {
     if (includeChat) {
-      refreshChat(primaryBody, primaryItem);
+      refreshChat(primaryBody, primaryItem, chatOptions);
     }
     if (includePanelState) {
       activeContextPanelStateSync.get(primaryBody)?.();
@@ -11369,15 +13118,7 @@ export function refreshConversationPanels(
   const conversationKey = getConversationKey(primaryItem);
   const refreshedPanels = new Set<Element>();
   const refreshOne = (body: Element, item: Zotero.Item) => {
-    const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
-    const displayedKey = Number(panelRoot?.dataset.itemId || 0);
-    if (
-      Number.isFinite(displayedKey) &&
-      displayedKey > 0 &&
-      displayedKey !== conversationKey
-    ) {
-      return;
-    }
+    if (!isPanelConversationCurrent(body, item)) return;
     const chatBox = body.querySelector(
       "#llm-chat-box",
     ) as HTMLDivElement | null;
@@ -11385,7 +13126,7 @@ export function refreshConversationPanels(
     const syncPanelState = activeContextPanelStateSync.get(body);
     const updatePanel = () => {
       if (includeChat) {
-        refreshChat(body, item);
+        refreshChat(body, item, chatOptions);
       }
       if (includePanelState) {
         syncPanelState?.();

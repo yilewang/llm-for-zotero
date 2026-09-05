@@ -54,13 +54,13 @@ describe("tool guidance contracts", function () {
 
     assert.include(
       prompt,
-      "If you include a references or bibliography section after library_retrieve",
+      "If a references or bibliography section follows library_retrieve",
     );
     assert.include(
       prompt,
       "either include all planned papers, or label the list as body-evidence references",
     );
-    assert.include(prompt, "metadata/abstract-only papers");
+    assert.include(prompt, "metadata or abstract-only papers");
   });
 
   const stalePatterns: Array<{ label: string; pattern: RegExp }> = [
@@ -83,7 +83,6 @@ describe("tool guidance contracts", function () {
       label: "search_literature_online(mode:...)",
       pattern: /search_literature_online\(mode:/,
     },
-    { label: "web_search", pattern: /\bweb_search\b/ },
     {
       label: "import_identifiers(identifiers:...)",
       pattern: /import_identifiers\(identifiers:/,
@@ -135,20 +134,10 @@ describe("tool guidance contracts", function () {
       DEFAULT_SYSTEM_PROMPT,
       AGENT_PERSONA_INSTRUCTIONS.join("\n"),
     ]) {
-      assert.include(prompt, "Use diagrams selectively");
-      assert.include(prompt, "when visual structure materially improves");
-      assert.include(
-        prompt,
-        "For whole-paper overview diagrams, use fenced Mermaid flowcharts by default",
-      );
-      assert.include(prompt, "Use fenced SVG for local mechanism");
-      assert.include(
-        prompt,
-        "keep SVG focused on one mechanism, step, or module",
-      );
-      assert.include(prompt, "not a poster-style whole-paper map");
-      assert.include(prompt, "Do not add diagrams to every answer");
-      assert.include(prompt, "Do not invent visual structure unsupported");
+      assert.include(prompt, "Add a diagram only when helpful");
+      assert.include(prompt, "fenced Mermaid for a whole-paper overview");
+      assert.include(prompt, "focused fenced SVG for one mechanism");
+      assert.include(prompt, "never make a poster-style or unsupported map");
       assert.notInclude(prompt, "Use fenced SVG diagrams as the default");
       assert.notInclude(
         prompt,
@@ -222,25 +211,15 @@ describe("tool guidance contracts", function () {
     }
     assert.include(
       agentPersona,
-      "prefer paper_read for ordinary summaries, methods, key points, and targeted paper Q&A",
+      "Use paper_read overview for a broad single-paper understanding",
     );
     assert.include(
       fileIoTool,
       "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read",
     );
-    assert.include(
-      agentPersona,
-      "When direct MinerU cache inspection is explicitly needed",
-    );
-    assert.include(
-      agentPersona,
-      "file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })",
-    );
-    assert.include(
-      agentPersona,
-      "file_io({ action:'read', filePath:'{mineruCacheDir}/full.md'",
-    );
-    assert.include(agentPersona, "use paper_read mode:'figures'");
+    assert.notInclude(agentPersona, "mineruCacheDir}/manifest.json");
+    assert.notInclude(agentPersona, "mineruCacheDir}/full.md");
+    assert.include(agentPersona, "figures for extracted figure crops");
   });
 
   it("requires extracted PDF crop inspection and note embedding", function () {
@@ -271,17 +250,18 @@ describe("tool guidance contracts", function () {
       assert.isString(content);
     }
 
-    assert.include(analyzeFigures!, "paper_read({ mode:'figures'");
+    assert.include(analyzeFigures!, "use `paper_read({ mode:'figures'");
     assert.include(messageBuilder!, "precise PDF crops");
     assert.include(paperRead!, "mode:'figures'");
-    assert.include(agentPersona!, "embed extracted PDF crop paths");
-    assert.include(writeNote!, "Embed extracted PDF crop paths");
-    assert.include(noteTools!, "embed the extracted PDF crop path");
-    assert.include(noteTools!, "returns no_figures");
-    assert.include(noteTools!, "switch to text-only mode");
-    assert.include(writeNote!, "switch to text-only mode");
-    assert.include(analyzeFigures!, "switch to text-only mode");
-    assert.include(agentPersona!, "user manually attached or pasted");
+    assert.include(writeNote!, "extracted PDF crop paths returned");
+    assert.notInclude(noteTools!, "returns no_figures");
+    assert.notInclude(agentPersona!, "figure_crops");
+    assert.include(writeNote!, "write a text-only note");
+    assert.include(analyzeFigures!, "Switch to text-only mode");
+    assert.include(
+      analyzeFigures!,
+      "User-provided image inputs are unaffected",
+    );
     assert.include(
       messageBuilder!,
       "user-provided image inputs are unaffected",
@@ -310,6 +290,37 @@ describe("tool guidance contracts", function () {
     assert.deepEqual(failures, []);
   });
 
+  it("injects note-write tool guidance only for note intent or the matched note skill", function () {
+    const registry = createBuiltInToolRegistry({
+      zoteroGateway: {} as never,
+      pdfService: {} as never,
+      pdfPageService: {} as never,
+      retrievalService: {} as never,
+    });
+    const noteWrite = registry
+      .listToolDefinitions()
+      .find((tool) => tool.spec.name === "note_write");
+    assert.isDefined(noteWrite?.guidance);
+
+    const baseRequest = {
+      conversationKey: 1,
+      mode: "agent" as const,
+      userText: "Explain the main result.",
+    };
+    assert.isFalse(noteWrite!.guidance!.matches(baseRequest));
+    assert.isTrue(
+      noteWrite!.guidance!.matches(baseRequest, {
+        matchedSkillIds: ["write-note"],
+      }),
+    );
+    assert.isTrue(
+      noteWrite!.guidance!.matches({
+        ...baseRequest,
+        userText: "Create a Zotero note about this paper.",
+      }),
+    );
+  });
+
   it("keeps library_search examples explicit about entity and mode", function () {
     const failures: string[] = [];
     const callPattern = /library_search\(([^)]*)\)/g;
@@ -322,5 +333,24 @@ describe("tool guidance contracts", function () {
       }
     }
     assert.deepEqual(failures, []);
+  });
+});
+
+describe("persona reading strategy contract", function () {
+  it("keeps the collection-scope evidence floor and drops the global answer-immediately rule", function () {
+    const persona = AGENT_PERSONA_INSTRUCTIONS.join("\n");
+
+    assert.include(persona, "For bounded collection or tag synthesis");
+    assert.include(persona, "papersBodyRead > 0");
+    assert.include(persona, "naming what is missing");
+    assert.notInclude(persona, "If yes, answer immediately.");
+  });
+
+  it("organizes the persona into titled sections", function () {
+    const persona = AGENT_PERSONA_INSTRUCTIONS.join("\n");
+
+    assert.include(persona, "## Research behavior");
+    assert.include(persona, "## Zotero evidence routing");
+    assert.include(persona, "## Evidence and citations");
   });
 });

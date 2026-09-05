@@ -2,21 +2,39 @@ import { assert } from "chai";
 import { autoTagAction } from "../src/agent/actions/autoTag";
 import type { ActionExecutionContext } from "../src/agent/actions";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type {
   AgentToolDefinition,
   AgentToolInputValidation,
 } from "../src/agent/types";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 function createStubTool<TInput extends Record<string, unknown>, TResult>(
   spec: AgentToolDefinition<TInput, TResult>["spec"],
   validate: AgentToolDefinition<TInput, TResult>["validate"],
-  execute: AgentToolDefinition<TInput, TResult>["execute"],
+  execute: (
+    input: TInput,
+    context: Parameters<AgentToolDefinition<TInput, TResult>["execute"]>[1],
+  ) => TResult | Promise<TResult>,
   extras: Partial<AgentToolDefinition<TInput, TResult>> = {},
 ): AgentToolDefinition<TInput, TResult> {
   return {
     spec,
     validate,
-    execute,
+    execute: async (input, context) => {
+      const content = await execute(input, context);
+      return spec.mutability === "write"
+        ? { content, effect: "applied" as const }
+        : content;
+    },
+    ...(spec.mutability === "write"
+      ? {
+          planMutation: async () => ({
+            effect: "write" as const,
+            reversibility: "full" as const,
+          }),
+        }
+      : {}),
     ...extras,
   };
 }
@@ -29,7 +47,6 @@ function createActionContext(
   const ctx: ActionExecutionContext = {
     registry,
     zoteroGateway: {} as never,
-    services: {} as never,
     libraryID: 1,
     confirmationMode: "native_ui",
     onProgress: (event) => {
@@ -104,6 +121,10 @@ function registerReviewApplyTagsTool(
         args as { assignments: Array<{ itemId: number; tags: string[] }> },
       );
     },
+    planMutation: async () => ({
+      effect: "write",
+      reversibility: "full",
+    }),
     createPendingAction(input) {
       return {
         toolName: "apply_tags",
@@ -127,15 +148,108 @@ function registerReviewApplyTagsTool(
     async execute(input) {
       onExecute(input);
       return {
-        result: {
-          updatedCount: input.assignments.length,
+        content: {
+          result: {
+            updatedCount: input.assignments.length,
+          },
         },
+        effect: "applied",
       };
     },
   });
 }
 
 describe("autoTag action", function () {
+  const originalZotero = globalThis.Zotero;
+
+  beforeEach(async function () {
+    const db = new ChangeJournalTestDb();
+    globalThis.Zotero = {
+      DB: db,
+      Prefs: { get: () => "auto" },
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+  });
+
+  afterEach(function () {
+    globalThis.Zotero = originalZotero;
+  });
+
+  it("uses a frozen durable-batch target order and checkpoints exact remaining IDs", async function () {
+    const registry = new AgentToolRegistry();
+    const applied: number[] = [];
+    const checkpoints: Array<{
+      cursor: number;
+      plan?: Record<string, unknown>;
+    }> = [];
+    registry.register(
+      createStubTool(
+        {
+          name: "apply_tags",
+          description: "apply tags",
+          inputSchema: { type: "object" },
+          mutability: "write",
+          requiresConfirmation: false,
+        },
+        (args) => ok(args as Record<string, unknown>),
+        async (input) => {
+          const assignments = (
+            input as {
+              assignments: Array<{ itemId: number }>;
+            }
+          ).assignments;
+          applied.push(...assignments.map((entry) => entry.itemId));
+          return { result: { updatedCount: assignments.length } };
+        },
+      ),
+    );
+    const { ctx } = createActionContext(registry, {
+      confirmationMode: "auto_approve",
+      checkpoint: async (checkpoint) => {
+        checkpoints.push(checkpoint);
+      },
+      zoteroGateway: {
+        getBibliographicItemTargetsByItemIds: (itemIds: number[]) =>
+          itemIds.map((itemId) =>
+            makeBibliographicTarget(itemId, `Frozen Paper ${itemId}`),
+          ),
+        listBibliographicItemTargets: async () => {
+          throw new Error("resume must not re-query the dynamic scope");
+        },
+        getEditableArticleMetadata: () => ({
+          fields: { abstractNote: "stable batch abstract" },
+        }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+    });
+
+    const result = await autoTagAction.execute(
+      {
+        _batchItemIds: [19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9],
+        pageSize: 10,
+      },
+      ctx,
+    );
+
+    assert.isTrue(result.ok);
+    assert.deepEqual(applied, [19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9]);
+    assert.deepEqual(
+      checkpoints.map((checkpoint) => ({
+        cursor: checkpoint.cursor,
+        remainingItemIds: checkpoint.plan?.remainingItemIds,
+      })),
+      [
+        {
+          cursor: 0,
+          remainingItemIds: [19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9],
+        },
+        { cursor: 10, remainingItemIds: [9] },
+        { cursor: 11, remainingItemIds: [] },
+      ],
+    );
+  });
+
   it("targets explicit paper itemIds, filters non-papers, and includes already-tagged papers", async function () {
     const registry = new AgentToolRegistry();
     let applyArgs: Record<string, unknown> | null = null;
@@ -529,11 +643,14 @@ describe("autoTag action", function () {
       },
       async execute(input) {
         return {
-          result: {
-            updatedCount: input.assignments.filter(
-              (entry) => entry.tags.length > 0,
-            ).length,
+          content: {
+            result: {
+              updatedCount: input.assignments.filter(
+                (entry) => entry.tags.length > 0,
+              ).length,
+            },
           },
+          effect: "applied",
         };
       },
     });
@@ -586,6 +703,95 @@ describe("autoTag action", function () {
       tagged: 1,
       skipped: 1,
     });
+  });
+
+  it("tells the user when the model was unreachable instead of reporting no tags", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "apply_tags",
+        description: "apply tags",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: true,
+      },
+      validate(args) {
+        return ok(
+          args as {
+            action: "add";
+            assignments: Array<{ itemId: number; tags: string[] }>;
+          },
+        );
+      },
+      createPendingAction(input) {
+        return {
+          toolName: "apply_tags",
+          title: "Review tag additions",
+          confirmLabel: "Apply",
+          cancelLabel: "Cancel",
+          fields: [
+            {
+              type: "tag_assignment_table",
+              id: "tagAssignments:apply_tags",
+              label: "Suggested tags to add",
+              rows: input.assignments.map((assignment) => ({
+                id: `${assignment.itemId}`,
+                label: `Paper ${assignment.itemId}`,
+                value: assignment.tags,
+              })),
+            },
+          ],
+        };
+      },
+      applyConfirmation(input) {
+        return ok(input);
+      },
+      async execute() {
+        return {
+          content: { result: { updatedCount: 0 } },
+          effect: "none",
+        };
+      },
+    });
+
+    const { ctx, progress } = createActionContext(registry, {
+      zoteroGateway: {
+        listBibliographicItemTargets: async () => ({
+          items: [makeBibliographicTarget(1, "Paper One")],
+          totalCount: 1,
+        }),
+        getEditableArticleMetadata: () => ({
+          fields: { abstractNote: "Paper one abstract" },
+        }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+      llm: {
+        model: "gpt-5.4",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "key",
+        providerProtocol: "openai_chat_compat",
+        llmCall: async () => {
+          throw new Error("401 Unauthorized - Incorrect API key provided");
+        },
+      },
+      requestConfirmation: async () => ({ approved: false }),
+    });
+
+    await autoTagAction.execute({ scope: "all", limit: 1 }, ctx);
+
+    // Swallowing the failure into "" would leave the user with a green
+    // "No tags applied" card and no hint the key is wrong.
+    const summaries = progress
+      .map((event) => (event as { summary?: string }).summary || "")
+      .filter(Boolean);
+    const unavailable = summaries.find((summary) =>
+      summary.includes("AI suggestions unavailable"),
+    );
+    assert.isString(
+      unavailable,
+      `expected an unavailable notice, saw: ${summaries.join(" | ")}`,
+    );
+    assert.include(unavailable || "", "Incorrect API key");
   });
 
   it("navigates to the next page without applying current-page tags", async function () {
@@ -779,5 +985,64 @@ describe("autoTag action", function () {
     if (!result.ok) return;
     assert.equal(result.output.stopped, true);
     assert.equal(result.output.tagged, 0);
+  });
+
+  /**
+   * `ctx.signal` reached the LLM batch helper but never the outer page loop,
+   * so pressing Stop mid-page aborted the model calls, fell back to
+   * deterministic tags, and then *still opened the confirmation card* as if
+   * nothing had happened. Stop has to stop.
+   */
+  it("stops before opening a confirmation card when the run is aborted", async function () {
+    const registry = new AgentToolRegistry();
+    const executedItemIds: number[] = [];
+    registerReviewApplyTagsTool(registry, (input) => {
+      executedItemIds.push(
+        ...input.assignments.map((assignment) => assignment.itemId),
+      );
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    let confirmationCount = 0;
+    const { ctx } = createActionContext(registry, {
+      signal: controller.signal,
+      zoteroGateway: {
+        listBibliographicItemTargets: async () => ({
+          items: Array.from({ length: 6 }, (_entry, index) =>
+            makeBibliographicTarget(index + 1, `Paper ${index + 1}`),
+          ),
+          totalCount: 6,
+        }),
+        listLibraryTags: async () => [{ name: "existing", type: 0 }],
+        getEditableArticleMetadata: () => ({
+          fields: { abstractNote: "An abstract" },
+        }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+      requestConfirmation: async () => {
+        confirmationCount += 1;
+        return { approved: true, actionId: "confirm", data: {} };
+      },
+    });
+
+    const result = await autoTagAction.execute(
+      { scope: "all", pageSize: 2 },
+      ctx,
+    );
+
+    assert.equal(
+      confirmationCount,
+      0,
+      "an aborted run must not ask the user to approve anything",
+    );
+    assert.deepEqual(executedItemIds, [], "nothing may be applied after Stop");
+    assert.isTrue(result.ok);
+    assert.equal(
+      (result.output as { stopped?: boolean } | undefined)?.stopped,
+      true,
+      "the result should report that the run was stopped",
+    );
   });
 });

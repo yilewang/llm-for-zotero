@@ -17,19 +17,21 @@ export type CoalescedFrameScheduler = {
   isPending: () => boolean;
 };
 
+const THROTTLED_FRAME_FALLBACK_MS = 100;
+
 export function createCoalescedFrameScheduler(
   options: CoalescedFrameSchedulerOptions,
 ): CoalescedFrameScheduler {
   let pending = false;
   let frameHandle: number | null = null;
   let timeoutHandle: number | null = null;
-  let scheduledWithRaf = false;
 
   const clearScheduledHandle = () => {
     const win = options.getWindow();
-    if (frameHandle !== null && scheduledWithRaf) {
+    if (frameHandle !== null) {
       win?.cancelAnimationFrame?.(frameHandle);
-    } else if (timeoutHandle !== null) {
+    }
+    if (timeoutHandle !== null) {
       if (win?.clearTimeout) {
         win.clearTimeout(timeoutHandle);
       } else {
@@ -38,14 +40,12 @@ export function createCoalescedFrameScheduler(
     }
     frameHandle = null;
     timeoutHandle = null;
-    scheduledWithRaf = false;
   };
 
   const runNow = () => {
+    if (!pending) return;
+    clearScheduledHandle();
     pending = false;
-    frameHandle = null;
-    timeoutHandle = null;
-    scheduledWithRaf = false;
     options.run();
   };
 
@@ -55,15 +55,31 @@ export function createCoalescedFrameScheduler(
       pending = true;
       const win = options.getWindow();
       if (win?.requestAnimationFrame) {
-        scheduledWithRaf = true;
-        frameHandle = win.requestAnimationFrame(() => runNow());
+        frameHandle = win.requestAnimationFrame(() => {
+          frameHandle = null;
+          runNow();
+        });
+        // Background Zotero windows may expose requestAnimationFrame while
+        // throttling it indefinitely. Keep panel state synchronized even when
+        // no frame is delivered.
+        const timeoutFn =
+          win.setTimeout?.bind(win) ||
+          ((callback: () => void, delay?: number) =>
+            setTimeout(callback, delay) as unknown as number);
+        timeoutHandle = timeoutFn(() => {
+          timeoutHandle = null;
+          runNow();
+        }, THROTTLED_FRAME_FALLBACK_MS);
         return;
       }
       const timeoutFn =
         win?.setTimeout?.bind(win) ||
         ((callback: () => void, delay?: number) =>
           setTimeout(callback, delay) as unknown as number);
-      timeoutHandle = timeoutFn(() => runNow(), 0);
+      timeoutHandle = timeoutFn(() => {
+        timeoutHandle = null;
+        runNow();
+      }, 0);
     },
     flush: () => {
       if (!pending) return;

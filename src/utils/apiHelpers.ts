@@ -11,6 +11,49 @@ export const RESPONSES_ENDPOINT = "/v1/responses";
 export const EMBEDDINGS_ENDPOINT = "/v1/embeddings";
 export const FILES_ENDPOINT = "/v1/files";
 
+/**
+ * Ollama's native chat endpoint.
+ *
+ * The stored base is usually the bare origin (`http://localhost:11434`), but
+ * users routinely paste the OpenAI-compatible base instead, and a reverse proxy
+ * may add a path prefix. Strip a trailing `/v1` or an already-present `/api/...`
+ * suffix so all three land on `<prefix>/api/chat` rather than `/v1/api/chat` or
+ * `/api/chat/api/chat`.
+ *
+ * Lives here rather than in providerTransport so the capability layer can reach
+ * it without importing the transport module, which would close an import cycle
+ * back through modelProviders.
+ */
+export function resolveOllamaNativeEndpoint(apiBase: string): string {
+  const cleaned = (apiBase || "").trim().replace(/\/+$/, "");
+  if (!cleaned) return cleaned;
+  let parsed: URL;
+  try {
+    parsed = new URL(cleaned);
+  } catch (_error) {
+    return cleaned;
+  }
+  let path = parsed.pathname.replace(/\/+$/, "");
+  path = path.replace(/\/v1$/i, "");
+  path = path.replace(/\/api(?:\/(?:chat|generate|tags|show|version))?$/i, "");
+  return `${parsed.origin}${path}/api/chat`;
+}
+
+/** Base for Ollama's native metadata endpoints (`/api/tags`, `/api/show`). */
+export function resolveOllamaNativeApiRoot(apiBase: string): string {
+  return resolveOllamaNativeEndpoint(apiBase).replace(/\/chat$/, "");
+}
+
+/**
+ * AbortController is not guaranteed in Zotero's Gecko chrome context. Every
+ * fetch-with-timeout in the plugin must go through this one guarded lookup so
+ * a future fallback (or a platform change) lands everywhere at once.
+ */
+export function getAbortController(): typeof AbortController | undefined {
+  return (globalThis as unknown as { AbortController?: typeof AbortController })
+    .AbortController;
+}
+
 // =============================================================================
 // Functions
 // =============================================================================

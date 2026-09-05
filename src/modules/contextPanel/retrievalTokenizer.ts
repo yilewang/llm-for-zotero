@@ -170,6 +170,115 @@ export function tokenizeRetrievalQuery(query: string): string[] {
   );
 }
 
+const TERMINAL_PUNCTUATION_PATTERN = /[\s?？!！。．.;；:：,，、]+$/u;
+const PROTECTED_TERM_EXACT_PATTERN =
+  /^[\p{L}\p{N}]+(?:[-‐‑‒–—_./:+#][\p{L}\p{N}]+)+$/u;
+const ASCII_COMPOUND_CORE_PATTERN = /[0-9a-z]+(?:[-‐‑‒–—_./:+#][0-9a-z]+)+/g;
+
+export function stripTerminalPunctuation(text: string): string {
+  return (text || "").trim().replace(TERMINAL_PUNCTUATION_PATTERN, "");
+}
+
+function countPatternChars(text: string, pattern: RegExp): number {
+  return (text.match(pattern) || []).length;
+}
+
+export function isCjkDominantText(text: string): boolean {
+  const value = text || "";
+  const nonSpaceLength = value.replace(/\s+/g, "").length;
+  if (!nonSpaceLength) return false;
+  const scriptChars =
+    countPatternChars(value, CJK_PATTERN) +
+    countPatternChars(value, KANA_PATTERN) +
+    countPatternChars(value, HANGUL_PATTERN);
+  return scriptChars / nonSpaceLength >= 0.3;
+}
+
+// Interrogative/deictic and document-scope words that carry no search signal
+// when a CJK question is turned into keyword probes ("哪些论文讨论了X" should
+// probe for X's terms, not for 哪些/论文).
+const CJK_PROBE_STOPWORDS = new Set([
+  "这个",
+  "那个",
+  "这些",
+  "那些",
+  "哪些",
+  "哪个",
+  "什么",
+  "怎么",
+  "如何",
+  "为什么",
+  "多少",
+  "是否",
+  "文件夹",
+  "文件",
+  "论文",
+  "文章",
+  "これら",
+  "それら",
+  "どれ",
+  "どの",
+  "なに",
+  "について",
+  "とは",
+  "論文",
+  "어떤",
+  "무엇",
+  "어느",
+  "어떻게",
+  "논문",
+]);
+
+export function extractCjkKeywordProbes(text: string, maxProbes = 6): string[] {
+  const normalized = normalizeRetrievalText(stripTerminalPunctuation(text));
+  if (!normalized) return [];
+  const { tokens: protectedTokens } = collectProtectedTerms(normalized);
+  const probes: string[] = [];
+  const seen = new Set<string>();
+  const push = (token: string) => {
+    const trimmed = token.trim();
+    if (!trimmed || trimmed.length < 2) return;
+    if (isPlainAsciiStopword(trimmed)) return;
+    if (CJK_PROBE_STOPWORDS.has(trimmed)) return;
+    if (seen.has(trimmed)) return;
+    seen.add(trimmed);
+    probes.push(trimmed);
+  };
+  // Protected compounds (e.g. "gpt-4", "il-6") are the strongest probes; the
+  // split parts collected alongside them are too weak to search on their own.
+  // In CJK text the protected pattern absorbs adjacent CJK letters
+  // ("使用gpt-4的…" matches as one token), so recover the latin/numeric
+  // compound core in that case instead of pushing the merged run.
+  for (const token of protectedTokens) {
+    if (!PROTECTED_TERM_EXACT_PATTERN.test(token)) continue;
+    const containsCjkScript =
+      countPatternChars(token, CJK_PATTERN) +
+        countPatternChars(token, KANA_PATTERN) +
+        countPatternChars(token, HANGUL_PATTERN) >
+      0;
+    if (!containsCjkScript) {
+      push(token);
+      continue;
+    }
+    for (const core of token.match(ASCII_COMPOUND_CORE_PATTERN) || []) {
+      push(core);
+    }
+  }
+  if (getWordSegmenter()) {
+    // Segment the unmasked text: CJK words absorbed into protected spans
+    // still need to surface as probes.
+    for (const token of segmentWordTokens(normalized)) push(token);
+  } else {
+    // Without Intl.Segmenter the word fallback lumps a whole CJK run into one
+    // giant token; adjacent bigrams are what keep the probes matchable.
+    for (const bigram of collectScriptBigrams(normalized)) push(bigram);
+  }
+  const limit = Number.isFinite(maxProbes)
+    ? Math.max(1, Math.floor(maxProbes))
+    : 6;
+  return probes.slice(0, limit);
+}
+
 export function tokenizeRetrievalDiversity(text: string): Set<string> {
   return new Set(tokenizeRetrievalText(text, { maxTokens: 256 }));
 }

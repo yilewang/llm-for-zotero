@@ -1,6 +1,13 @@
 import { assert } from "chai";
 import { GeminiNativeAgentAdapter } from "../src/agent/model/geminiNative";
-import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
+import { getModelCapabilities } from "../src/modelCapabilities";
+import { computeProfileOverrideDraft } from "../src/modules/modelProfileEditor";
+import type {
+  AgentModelMessage,
+  AgentRuntimeRequest,
+  ToolSpec,
+} from "../src/agent/types";
+import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -94,6 +101,7 @@ describe("GeminiNativeAgentAdapter", function () {
     const step = await adapter.runStep({
       request: makeRequest(),
       messages: [
+        { role: "system", content: PAPER_CITATION_CONTRACT },
         {
           role: "user",
           content: [
@@ -116,6 +124,13 @@ describe("GeminiNativeAgentAdapter", function () {
       (capturedBody?.tools as Array<Record<string, unknown>>)?.[0]
         ?.functionDeclarations as Array<Record<string, unknown>>
     )?.[0]?.parameters as Record<string, unknown>) || { type: "" };
+    const systemParts = (
+      (capturedBody?.systemInstruction as { parts?: Array<{ text?: string }> })
+        ?.parts || []
+    )
+      .map((part) => part.text || "")
+      .join("\n");
+    assert.equal(systemParts.split(PAPER_CITATION_CONTRACT).length - 1, 1);
     assert.equal(
       ((firstParts?.[1]?.inlineData as Record<string, unknown>)
         ?.mimeType as string) || "",
@@ -581,7 +596,7 @@ describe("GeminiNativeAgentAdapter", function () {
     );
   });
 
-  it("filters cached Gemini function calls to executed continuation responses", async function () {
+  it("preserves the complete cached Gemini function step on continuation", async function () {
     const adapter = new GeminiNativeAgentAdapter();
     const requestBodies: Record<string, unknown>[] = [];
     let callCount = 0;
@@ -656,20 +671,22 @@ describe("GeminiNativeAgentAdapter", function () {
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
 
+    const firstToolResult: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: firstStep.calls[0].id,
+      name: firstStep.calls[0].name,
+      content: '{"results":[{"itemId":101}]}',
+    };
+    const secondToolResult: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: firstStep.calls[1].id,
+      name: firstStep.calls[1].name,
+      content: '{"results":[{"itemId":102}]}',
+    };
     await adapter.runStep({
       request: makeRequest(),
-      messages: [
-        {
-          ...firstStep.assistantMessage,
-          tool_calls: firstStep.calls.slice(0, 1),
-        },
-        {
-          role: "tool",
-          tool_call_id: firstStep.calls[0].id,
-          name: firstStep.calls[0].name,
-          content: '{"results":[{"itemId":101}]}',
-        },
-      ],
+      messages: [firstStep.assistantMessage, firstToolResult, secondToolResult],
+      continuationMessages: [firstToolResult, secondToolResult],
       tools,
     });
 
@@ -689,14 +706,534 @@ describe("GeminiNativeAgentAdapter", function () {
         .map((part) => part.functionCall as Record<string, unknown>)
         .filter(Boolean)
         .map((call) => call.args),
-      [{ filters: { collectionId: 55 } }],
+      [{ filters: { collectionId: 55 } }, { filters: { collectionId: 56 } }],
     );
     assert.deepEqual(
       secondContents[2]?.parts
         ?.map((part) => part.functionResponse as Record<string, unknown>)
         .filter(Boolean)
         .map((response) => response.response),
-      [{ results: [{ itemId: 101 }] }],
+      [{ results: [{ itemId: 101 }] }, { results: [{ itemId: 102 }] }],
     );
+  });
+
+  it("does not replay a function response after a corrected final answer", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts:
+                      callCount === 1
+                        ? [
+                            {
+                              functionCall: {
+                                name: "query_library",
+                                args: { query: "methods" },
+                              },
+                            },
+                          ]
+                        : callCount === 2
+                          ? [
+                              {
+                                text: "Need more evidence.",
+                                thought: true,
+                                thoughtSignature: "sig-final-reasoning",
+                              },
+                              { text: "Premature comparison." },
+                            ]
+                          : [
+                              {
+                                text: "Corrected comparison.",
+                              },
+                            ],
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const request = makeRequest();
+    const messages: AgentModelMessage[] = [
+      { role: "user", content: "Compare these papers" },
+    ];
+    const firstStep = await adapter.runStep({ request, messages, tools });
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+    const toolResultMessage: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: firstStep.calls[0].id,
+      name: firstStep.calls[0].name,
+      content: '{"results":[{"itemId":101},{"itemId":102}]}',
+    };
+    messages.push(firstStep.assistantMessage, toolResultMessage);
+
+    const secondStep = await adapter.runStep({
+      request,
+      messages,
+      continuationMessages: [toolResultMessage],
+      tools,
+    });
+    assert.equal(secondStep.kind, "final");
+    if (secondStep.kind !== "final") return;
+    assert.notInclude(
+      JSON.stringify(secondStep.assistantMessage),
+      "sig-final-reasoning",
+    );
+    const correctionMessage: AgentModelMessage = {
+      role: "user",
+      content: "Correction for this turn: retrieve body evidence first.",
+    };
+    messages.push(secondStep.assistantMessage, correctionMessage);
+
+    await adapter.runStep({
+      request,
+      messages,
+      continuationMessages: [correctionMessage],
+      tools,
+    });
+
+    const thirdContents = requestBodies[2]?.contents as Array<{
+      role?: string;
+      parts?: Array<Record<string, unknown>>;
+    }>;
+    assert.deepEqual(
+      thirdContents.map((message) => message.role),
+      ["user", "model", "user", "model", "user"],
+    );
+    const functionResponses = thirdContents.flatMap(
+      (message) =>
+        message.parts?.map((part) => part.functionResponse).filter(Boolean) ||
+        [],
+    );
+    assert.lengthOf(functionResponses, 1);
+    assert.property(thirdContents[1]?.parts?.[0] || {}, "functionCall");
+    assert.property(thirdContents[2]?.parts?.[0] || {}, "functionResponse");
+    assert.deepEqual(thirdContents[3]?.parts?.[0], {
+      text: "Need more evidence.",
+      thought: true,
+      thoughtSignature: "sig-final-reasoning",
+    });
+    assert.equal(thirdContents[3]?.parts?.[1]?.text, "Premature comparison.");
+    assert.equal(
+      thirdContents[4]?.parts?.[0]?.text,
+      "Correction for this turn: retrieve body evidence first.",
+    );
+  });
+
+  it("keeps a signed final answer part in the answer channel", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let callCount = 0;
+    const reasoning: string[] = [];
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => {
+          callCount += 1;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: makeSseStream([
+              'data: {"candidates":[{"content":{"parts":[{"text":"Signed final.","thoughtSignature":"sig-final"}]}}]}\n\n',
+            ]),
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      { text: "Signed final.", thoughtSignature: "sig-final" },
+                    ],
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const step = await adapter.runStep({
+      request: makeRequest({ model: "gemini-3.6-flash" }),
+      messages: [{ role: "user", content: "Summarize it" }],
+      tools,
+      onReasoning: async (event) => {
+        if (event.details) reasoning.push(event.details);
+      },
+    });
+
+    assert.equal(callCount, 1);
+    assert.equal(step.kind, "final");
+    if (step.kind !== "final") return;
+    assert.equal(step.text, "Signed final.");
+    assert.deepEqual(reasoning, []);
+  });
+
+  it("preserves parallel function calls split across stream chunks", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let callCount = 0;
+    let secondRequestBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              body: makeSseStream([
+                'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_paper","args":{"itemId":1}},"thoughtSignature":"sig-1"}]}}]}\n\n',
+                'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"query_library","args":{"query":"attention"}}}]}}]}\n\n',
+              ]),
+              json: async () => ({}),
+              text: async () => "",
+            };
+          }
+          secondRequestBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Done." }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const stepTools: ToolSpec[] = [
+      {
+        name: "read_paper",
+        description: "read",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      {
+        name: "query_library",
+        description: "search",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+    ];
+    const firstStep = await adapter.runStep({
+      request: makeRequest({ model: "gemini-3.6-flash" }),
+      messages: [{ role: "user", content: "Check the paper and the library" }],
+      tools: stepTools,
+    });
+
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+    assert.deepEqual(
+      firstStep.calls.map((call) => call.name),
+      ["read_paper", "query_library"],
+    );
+    assert.notEqual(firstStep.calls[0].id, firstStep.calls[1].id);
+
+    const secondStep = await adapter.runStep({
+      request: makeRequest({ model: "gemini-3.6-flash" }),
+      messages: [
+        { role: "user", content: "Check the paper and the library" },
+        firstStep.assistantMessage,
+        {
+          role: "tool",
+          tool_call_id: firstStep.calls[0].id,
+          name: firstStep.calls[0].name,
+          content: JSON.stringify({ ok: true }),
+        },
+        {
+          role: "tool",
+          tool_call_id: firstStep.calls[1].id,
+          name: firstStep.calls[1].name,
+          content: JSON.stringify({ results: [] }),
+        },
+      ],
+      tools: stepTools,
+    });
+
+    assert.equal(secondStep.kind, "final");
+    const contents =
+      (secondRequestBody?.contents as Array<{
+        role?: string;
+        parts?: Array<Record<string, unknown>>;
+      }>) || [];
+    const modelParts = contents[1]?.parts || [];
+    assert.deepEqual(
+      modelParts
+        .map((part) => part.functionCall as Record<string, unknown>)
+        .filter(Boolean)
+        .map((call) => call.name),
+      ["read_paper", "query_library"],
+    );
+    assert.equal(modelParts[0]?.thoughtSignature, "sig-1");
+  });
+
+  it("reattaches thought signatures when rebuilding history after resetState", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let callCount = 0;
+    let secondRequestBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              body: undefined,
+              json: async () => ({
+                candidates: [
+                  {
+                    content: {
+                      parts: [
+                        {
+                          functionCall: {
+                            name: "read_paper",
+                            args: { itemId: 1 },
+                          },
+                          thoughtSignature: "sig-123",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+              text: async () => "",
+            };
+          }
+          secondRequestBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Done." }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const stepTools: ToolSpec[] = [
+      {
+        name: "read_paper",
+        description: "read",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+    ];
+    const firstStep = await adapter.runStep({
+      request: makeRequest({ model: "gemini-3.6-flash" }),
+      messages: [{ role: "user", content: "Inspect this paper" }],
+      tools: stepTools,
+    });
+
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+
+    // Mid-turn prompt compaction wipes the adapter's cached conversation.
+    adapter.resetState();
+
+    const secondStep = await adapter.runStep({
+      request: makeRequest({ model: "gemini-3.6-flash" }),
+      messages: [
+        { role: "user", content: "Inspect this paper" },
+        firstStep.assistantMessage,
+        {
+          role: "tool",
+          tool_call_id: firstStep.calls[0].id,
+          name: firstStep.calls[0].name,
+          content: JSON.stringify({ ok: true }),
+        },
+      ],
+      tools: stepTools,
+    });
+
+    assert.equal(secondStep.kind, "final");
+    const contents =
+      (secondRequestBody?.contents as Array<{
+        role?: string;
+        parts?: Array<Record<string, unknown>>;
+      }>) || [];
+    const modelParts = contents[1]?.parts || [];
+    const functionCallPart = modelParts.find((part) => part.functionCall);
+    assert.isDefined(functionCallPart);
+    assert.equal(functionCallPart?.thoughtSignature, "sig-123");
+  });
+
+  it("sends a user-authored reasoning level on the wire", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "done" }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const model = "gemini-3-pro";
+    await adapter.runStep({
+      request: makeRequest({
+        model,
+        reasoning: { provider: "gemini", level: "ultra" as never },
+        advanced: {
+          profileOverride: computeProfileOverrideDraft({
+            rows: [{ id: "ultra" }],
+            extraJson: "",
+            detected: getModelCapabilities({
+              provider: "gemini",
+              model,
+              protocol: "gemini_native",
+            }),
+            modelName: model,
+          }).override,
+        },
+      }),
+      messages: [{ role: "user", content: "Inspect this paper" }],
+      tools: [],
+    });
+
+    // The editor promises the plugin owns the encoding, so a level the user
+    // typed has to arrive in the shape Gemini reads.  A flat reasoning_effort
+    // is not one: this builder would drop it and quietly think at the default
+    // level while the menu claimed "ultra".
+    const generationConfig = capturedBody?.generationConfig as Record<
+      string,
+      unknown
+    >;
+    const thinkingConfig = generationConfig?.thinkingConfig as Record<
+      string,
+      unknown
+    >;
+    assert.equal(thinkingConfig?.thinkingLevel, "ultra");
+    assert.notInclude(JSON.stringify(capturedBody), "reasoning_effort");
+    assert.equal(
+      thinkingConfig?.includeThoughts,
+      true,
+      "customizing the level must not silently cost the user the thought stream",
+    );
+  });
+
+  it("preserves explicit output above detected limits", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "done" }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest({
+        advanced: {
+          maxTokens: 200_000,
+          maxTokensExplicit: true,
+          profileOverride: {
+            forModel: "gemini-2.5-pro",
+            limits: { outputTokens: 64_000 },
+          },
+        },
+      }),
+      messages: [{ role: "user", content: "Inspect this paper" }],
+      tools: [],
+    });
+
+    const generationConfig = capturedBody?.generationConfig as Record<
+      string,
+      unknown
+    >;
+    assert.equal(generationConfig.maxOutputTokens, 200_000);
   });
 });

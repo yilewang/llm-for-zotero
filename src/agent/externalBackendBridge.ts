@@ -8,8 +8,15 @@ import {
   getClaudeCustomInstructionPref,
   getConversationSystemPref,
 } from "../claudeCode/prefs";
+import {
+  fetchClaudeModelCatalog,
+  type ClaudeModelCatalog,
+  type ClaudeModelCatalogRequestContext,
+} from "../claudeCode/modelCatalog";
 import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
+import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
+import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
 import {
   normalizeAgentPermissionMode,
@@ -38,6 +45,12 @@ import {
   createAgentRun,
   finishAgentRun,
 } from "./store/traceStore";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../shared/conversationWriteFence";
 import { AGENT_PERSONA_INSTRUCTIONS } from "./model/agentPersona";
 import { buildAgentModelCapabilities } from "./model/contentCapabilities";
 import type {
@@ -51,7 +64,9 @@ import type {
   AgentModelCapabilities,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
 } from "./types";
+import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import type {
   LocalDocumentResource,
   NoteContextRef,
@@ -66,6 +81,12 @@ import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
 } from "./context/turnContextEnvelope";
+import {
+  getActiveTurnPaper,
+  getSelectedPassagePaper,
+  listTurnPapersWithRoles,
+  type TurnPaperRole,
+} from "./context/turnPaperScope";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import {
@@ -75,10 +96,14 @@ import {
 } from "./privacy/localDocumentPathRedaction";
 
 export type RunTurnParams = {
-  request: AgentRuntimeRequest;
+  request: AgentRuntimeRequestInput;
   onEvent?: (event: AgentEvent) => void | Promise<void>;
   onStart?: (runId: string) => void | Promise<void>;
   signal?: AbortSignal;
+};
+
+type ResolvedRunTurnParams = Omit<RunTurnParams, "request"> & {
+  request: AgentRuntimeRequest;
 };
 
 type ResolveExternalConfirmation = (
@@ -95,6 +120,12 @@ type ResolveExternalConfirmation = (
   errorMessage?: string;
 }>;
 
+type SessionInvalidationParams = {
+  conversationKey: number;
+  scope?: BridgeScope;
+  metadata?: Record<string, unknown>;
+};
+
 export type AgentRuntimeLike = Pick<
   AgentRuntime,
   | "listTools"
@@ -105,7 +136,7 @@ export type AgentRuntimeLike = Pick<
   | "resolveConfirmation"
   | "getRunTrace"
 > & {
-  getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities;
+  getCapabilities(request: AgentRuntimeRequestInput): AgentModelCapabilities;
   runTurn(params: RunTurnParams): Promise<AgentRuntimeOutcome>;
   listExternalActionsSync(): Array<{
     name: string;
@@ -125,7 +156,14 @@ export type AgentRuntimeLike = Pick<
     source: "sdk" | "fallback";
   }>;
   refreshSlashCommands(force?: boolean): Promise<void>;
-  listEfforts(model?: string): Promise<string[]>;
+  listEfforts(
+    model?: string,
+    context?: ClaudeModelCatalogRequestContext,
+  ): Promise<string[]>;
+  listModels(
+    force?: boolean,
+    context?: ClaudeModelCatalogRequestContext,
+  ): Promise<ClaudeModelCatalog>;
   updateRuntimeRetention(params: {
     conversationKey: number;
     scope?: BridgeScope;
@@ -134,11 +172,13 @@ export type AgentRuntimeLike = Pick<
     probeId?: string;
     providerSessionId?: string;
   }): Promise<RuntimeRetentionResponse | null>;
-  invalidateSession(params: {
-    conversationKey: number;
-    scope?: BridgeScope;
-    metadata?: Record<string, unknown>;
-  }): Promise<SessionInvalidationResponse | null>;
+  invalidateSession(
+    params: SessionInvalidationParams,
+  ): Promise<SessionInvalidationResponse | null>;
+  /** Caller must already hold the conversation write lock. */
+  invalidateSessionWithinWriteLock(
+    params: SessionInvalidationParams,
+  ): Promise<SessionInvalidationResponse | null>;
   invalidateAllHotRuntimes(): Promise<{ invalidated: boolean } | null>;
   runExternalAction(
     name: string,
@@ -200,6 +240,7 @@ type ExternalSlashCommandDescriptor = {
 
 type ExternalEffortInfo = {
   efforts: string[];
+  expiresAt?: number;
 };
 
 type RuntimeRetentionResponse = {
@@ -412,6 +453,19 @@ type BridgeRuntimeRequest = {
   };
 };
 
+function requestPaperRefs(
+  request: AgentRuntimeRequest,
+  roles: readonly TurnPaperRole[],
+): PaperContextRef[] {
+  return [...listTurnPapersWithRoles(request.turnPaperScope, roles)];
+}
+
+function requestLocalDocuments(
+  request: AgentRuntimeRequest,
+): readonly LocalDocumentResource[] {
+  return (request.localDocuments || []).map((entry) => entry.resource);
+}
+
 const lastRunBridgeContextByConversationKey = new Map<
   number,
   LastRunBridgeContext
@@ -419,16 +473,6 @@ const lastRunBridgeContextByConversationKey = new Map<
 
 function isBridgeDebugEnabled(): boolean {
   return false;
-}
-
-function buildScopedConversationKey(
-  conversationKey: number,
-  scope?: { scopeType?: string; scopeId?: string },
-): string {
-  if (!scope?.scopeType || !scope.scopeId) {
-    return String(conversationKey);
-  }
-  return `${conversationKey}::${scope.scopeType}:${scope.scopeId}`;
 }
 
 async function resolveClaudeProviderSessionHint(
@@ -680,6 +724,13 @@ function isClaudeBridgeActive(): boolean {
   );
 }
 
+export function resolveClaudeBridgeModelForMetadata(
+  model: unknown,
+): string | undefined {
+  if (typeof model !== "string") return undefined;
+  return model.trim() || undefined;
+}
+
 function normalizeScopeType(value: unknown): BridgeScopeType | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
@@ -726,17 +777,7 @@ function resolvePaperScopeFromRequest(
   }
 
   if (!paperItemId || paperItemId <= 0) {
-    const allRefs = [
-      ...(Array.isArray(request.selectedPaperContexts)
-        ? request.selectedPaperContexts
-        : []),
-      ...(Array.isArray(request.fullTextPaperContexts)
-        ? request.fullTextPaperContexts
-        : []),
-      ...(Array.isArray(request.pinnedPaperContexts)
-        ? request.pinnedPaperContexts
-        : []),
-    ];
+    const allRefs = request.turnPaperScope.papers.map((entry) => entry.paper);
     const firstRef = allRefs.find(
       (entry) =>
         entry &&
@@ -753,11 +794,14 @@ function resolvePaperScopeFromRequest(
     return null;
   }
 
-  const titleItem = Zotero.Items.get(paperItemId);
+  const titleItem = Zotero?.Items?.get?.(paperItemId);
+  const scopedPaperTitle = request.turnPaperScope.papers.find(
+    (entry) => entry.paper.itemId === paperItemId,
+  )?.paper.title;
   const scopeLabel =
     titleItem?.isRegularItem?.() && typeof titleItem.getField === "function"
       ? String(titleItem.getField("title") || "").trim() || undefined
-      : undefined;
+      : scopedPaperTitle;
 
   const scopeId = `${getClaudeProfileSignature()}:${libraryID ?? 0}:${paperItemId}`;
   return { scopeType: "paper", scopeId, scopeLabel };
@@ -926,7 +970,7 @@ async function streamBridgeLines(
 
 async function runExternalBridgeTurn(
   baseUrl: string,
-  params: RunTurnParams & {
+  params: ResolvedRunTurnParams & {
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
     allowedTools?: string[];
@@ -1004,15 +1048,11 @@ async function runExternalBridgeTurn(
       settingSources: getClaudeSettingSourcesCsvByPref(),
       ...buildAgentPermissionMetadata(),
       customInstruction: buildClaudeBridgeCustomInstruction({
-        rawPdfMode: Boolean(params.request.localDocuments?.length),
+        rawPdfMode: requestLocalDocuments(params.request).length > 0,
       }),
       providerIdentity,
       providerIdentityStack,
-      model:
-        typeof params.request.model === "string" &&
-        params.request.model.trim().toLowerCase() !== "default"
-          ? params.request.model.trim()
-          : undefined,
+      model: resolveClaudeBridgeModelForMetadata(params.request.model),
       effort,
       activeItemId: params.request.activeItemId,
       libraryID: params.request.libraryID,
@@ -1196,11 +1236,11 @@ function resolveFallbackLibraryId(
   request: AgentRuntimeRequest,
 ): number | undefined {
   const selectedCollectionLibraryId = normalizeCollectionRefs(
-    request.selectedCollectionContexts,
+    request.turnPaperScope.collections,
     1,
   )[0]?.libraryID;
   const selectedTagLibraryId = normalizeTagRefs(
-    request.selectedTagContexts,
+    request.turnPaperScope.tags,
     1,
   )[0]?.libraryID;
   const userLibraryId = normalizePositiveInt(
@@ -1220,27 +1260,9 @@ function buildClaudeZoteroMcpScope(
   request: AgentRuntimeRequest,
   profileSignature: string,
 ): ZoteroMcpActiveScope {
-  const selectedPaperContexts = normalizePaperRefs(
-    request.selectedPaperContexts,
-    MAX_SELECTED_PAPER_CONTEXTS,
-  );
-  const fullTextPaperContexts = normalizePaperRefs(
-    request.fullTextPaperContexts,
-    MAX_FULL_TEXT_PAPER_CONTEXTS,
-  );
-  const pdfPaperContexts = normalizePaperRefs(
-    request.pdfPaperContexts,
-    MAX_SELECTED_PAPER_CONTEXTS,
-  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
-  const pinnedPaperContexts = normalizePaperRefs(
-    request.pinnedPaperContexts,
-    MAX_FULL_TEXT_PAPER_CONTEXTS,
-  );
   const selectedPaper =
-    selectedPaperContexts[0] ||
-    fullTextPaperContexts[0] ||
-    pinnedPaperContexts[0] ||
-    pdfPaperContexts[0];
+    getActiveTurnPaper(request.turnPaperScope) ||
+    request.turnPaperScope.papers[0]?.paper;
   const kind = request.conversationKind === "paper" ? "paper" : "global";
   const activeItemId =
     normalizePositiveInt(request.activeItemId) ||
@@ -1269,22 +1291,8 @@ function buildClaudeZoteroMcpScope(
     title: selectedPaper?.title,
     userText: request.userText,
     exhaustiveReadBackend: "unavailable",
-    paperContext: selectedPaper,
-    selectedPaperContexts: selectedPaperContexts.length
-      ? selectedPaperContexts
-      : undefined,
-    pdfPaperContexts: pdfPaperContexts.length ? pdfPaperContexts : undefined,
-    fullTextPaperContexts: fullTextPaperContexts.length
-      ? fullTextPaperContexts
-      : undefined,
-    pinnedPaperContexts: pinnedPaperContexts.length
-      ? pinnedPaperContexts
-      : undefined,
-    selectedCollectionContexts: normalizeCollectionRefs(
-      request.selectedCollectionContexts,
-      20,
-    ),
-    selectedTagContexts: normalizeTagRefs(request.selectedTagContexts, 20),
+    turnPaperScope: request.turnPaperScope,
+    turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
 }
 
@@ -1469,7 +1477,10 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     selectedTextContexts: request.selectedTextContexts,
     selectedTexts: request.selectedTexts,
     selectedTextSources: request.selectedTextSources,
-    selectedTextPaperContexts: request.selectedTextPaperContexts,
+    selectedTextPaperContexts: (request.selectedTextContexts || []).map(
+      (_context, index) =>
+        getSelectedPassagePaper(request.turnPaperScope, index),
+    ),
     selectedTextNoteContexts: request.selectedTextNoteContexts,
   });
   const selectedTexts = selectedTextContexts.map((context) => context.text);
@@ -1505,11 +1516,11 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     }))
     .filter((row) => row.text);
   const selectedPapers = normalizePaperRefs(
-    request.selectedPaperContexts,
+    requestPaperRefs(request, ["selected"]),
     MAX_SELECTED_PAPER_CONTEXTS,
   );
   const fullTextPapers = normalizePaperRefs(
-    request.fullTextPaperContexts,
+    requestPaperRefs(request, ["full_text"]),
     MAX_FULL_TEXT_PAPER_CONTEXTS,
   ).map((paper) => ({
     itemId: paper.itemId,
@@ -1517,7 +1528,7 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     title: paper.title,
   }));
   const pinnedPapers = normalizePaperRefs(
-    request.pinnedPaperContexts,
+    requestPaperRefs(request, ["pinned"]),
     MAX_FULL_TEXT_PAPER_CONTEXTS,
   ).map((paper) => ({
     itemId: paper.itemId,
@@ -1525,10 +1536,10 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     title: paper.title,
   }));
   const selectedCollections = normalizeCollectionRefs(
-    request.selectedCollectionContexts,
+    request.turnPaperScope.collections,
     8,
   );
-  const selectedTags = normalizeTagRefs(request.selectedTagContexts, 8);
+  const selectedTags = normalizeTagRefs(request.turnPaperScope.tags, 8);
   const attachments = (
     Array.isArray(request.attachments) ? request.attachments : []
   )
@@ -1554,21 +1565,11 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     activeItemId: request.activeItemId,
     libraryID: request.libraryID,
     selectedTextCount: selectedTexts.length,
-    selectedPaperCount: Array.isArray(request.selectedPaperContexts)
-      ? request.selectedPaperContexts.length
-      : 0,
-    selectedCollectionCount: Array.isArray(request.selectedCollectionContexts)
-      ? request.selectedCollectionContexts.length
-      : 0,
-    selectedTagCount: Array.isArray(request.selectedTagContexts)
-      ? request.selectedTagContexts.length
-      : 0,
-    fullTextPaperCount: Array.isArray(request.fullTextPaperContexts)
-      ? request.fullTextPaperContexts.length
-      : 0,
-    pinnedPaperCount: Array.isArray(request.pinnedPaperContexts)
-      ? request.pinnedPaperContexts.length
-      : 0,
+    selectedPaperCount: requestPaperRefs(request, ["selected"]).length,
+    selectedCollectionCount: request.turnPaperScope.collections.length,
+    selectedTagCount: request.turnPaperScope.tags.length,
+    fullTextPaperCount: requestPaperRefs(request, ["full_text"]).length,
+    pinnedPaperCount: requestPaperRefs(request, ["pinned"]).length,
     attachmentCount: Array.isArray(request.attachments)
       ? request.attachments.length
       : 0,
@@ -1779,9 +1780,9 @@ async function buildBridgeRuntimeRequest(
 
   const [selectedPaperContexts, fullTextPaperContexts, pinnedPaperContexts] =
     await Promise.all([
-      enrichPaperContexts(request.selectedPaperContexts),
-      enrichPaperContexts(request.fullTextPaperContexts),
-      enrichPaperContexts(request.pinnedPaperContexts),
+      enrichPaperContexts(requestPaperRefs(request, ["selected"])),
+      enrichPaperContexts(requestPaperRefs(request, ["full_text"])),
+      enrichPaperContexts(requestPaperRefs(request, ["pinned"])),
     ]);
 
   return {
@@ -1816,12 +1817,12 @@ async function buildBridgeRuntimeRequest(
     fullTextPaperContexts,
     pinnedPaperContexts,
     selectedCollectionContexts: normalizeCollectionRefs(
-      request.selectedCollectionContexts,
+      request.turnPaperScope.collections,
       20,
     ),
-    selectedTagContexts: normalizeTagRefs(request.selectedTagContexts, 20),
-    localDocuments: request.localDocuments?.length
-      ? request.localDocuments
+    selectedTagContexts: normalizeTagRefs(request.turnPaperScope.tags, 20),
+    localDocuments: requestLocalDocuments(request).length
+      ? requestLocalDocuments(request)
       : undefined,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
@@ -1844,15 +1845,15 @@ async function buildBridgeRuntimeRequest(
 }
 
 export function buildBridgeRuntimeRequestForTests(
-  request: AgentRuntimeRequest,
+  request: AgentRuntimeRequestInput,
 ): Promise<BridgeRuntimeRequest> {
-  return buildBridgeRuntimeRequest(request);
+  return buildBridgeRuntimeRequest(resolveAgentRuntimeRequest(request));
 }
 
 export function buildExternalBridgeContextEnvelopeForTests(
-  request: AgentRuntimeRequest,
+  request: AgentRuntimeRequestInput,
 ) {
-  return buildContextEnvelope(request);
+  return buildContextEnvelope(resolveAgentRuntimeRequest(request));
 }
 
 function signatureForContextEnvelope(envelope: ContextEnvelope): string {
@@ -1897,9 +1898,11 @@ function signatureForContextEnvelope(envelope: ContextEnvelope): string {
 }
 
 export function buildExternalBridgeContextSignatureForTests(
-  request: AgentRuntimeRequest,
+  request: AgentRuntimeRequestInput,
 ): string {
-  return signatureForContextEnvelope(buildContextEnvelope(request));
+  return signatureForContextEnvelope(
+    buildContextEnvelope(resolveAgentRuntimeRequest(request)),
+  );
 }
 
 async function fetchExternalTools(
@@ -1954,12 +1957,25 @@ async function fetchExternalEfforts(
   baseUrl: string,
   encodedSources: string,
   model?: string,
+  context?: ClaudeModelCatalogRequestContext,
 ): Promise<ExternalEffortInfo> {
-  const modelParam = model?.trim()
-    ? `&model=${encodeURIComponent(model.trim())}`
-    : "";
+  const query = new URLSearchParams({
+    settingSources: decodeURIComponent(encodedSources),
+  });
+  const normalizedModel = model?.trim();
+  if (normalizedModel) query.set("model", normalizedModel);
+  const conversationKey =
+    context === undefined ? "" : String(context.conversationKey).trim();
+  const scopeId = context?.scopeId.trim() || "";
+  if (context && conversationKey && scopeId) {
+    query.set("conversationKey", conversationKey);
+    query.set("scopeType", context.scopeType);
+    query.set("scopeId", scopeId);
+    const scopeLabel = context.scopeLabel?.trim();
+    if (scopeLabel) query.set("scopeLabel", scopeLabel);
+  }
   const response = await fetch(
-    `${normalizeBaseUrl(baseUrl)}/efforts?settingSources=${encodedSources}${modelParam}`,
+    `${normalizeBaseUrl(baseUrl)}/efforts?${query}`,
     {
       method: "GET",
       headers: { Accept: "application/json" },
@@ -2251,7 +2267,16 @@ export function createExternalBackendBridgeRuntime(options: {
   let slashCommandsCacheExpiresAt = 0;
   let slashCommandsRefreshInFlight: Promise<void> | null = null;
   const cachedEffortsByModel = new Map<string, ExternalEffortInfo>();
+  let cachedModelCatalog: ClaudeModelCatalog | null = null;
+  let cachedModelCatalogKey = "";
+  let modelCatalogCacheExpiresAt = 0;
+  let modelCatalogRefreshInFlight: Promise<ClaudeModelCatalog> | null = null;
+  let modelCatalogRefreshKey = "";
+  let modelCatalogRefreshForced = false;
+  let modelCatalogRefreshGeneration = 0;
   const SLASH_COMMANDS_CACHE_TTL_MS = 5 * 60_000;
+  const MODEL_CATALOG_CACHE_TTL_MS = 60_000;
+  const EFFORT_CACHE_TTL_MS = 60_000;
   const conversationContextSignature = new Map<number, string>();
   const conversationScopeByKey = new Map<number, BridgeScope>();
   const TOOL_CACHE_TTL_MS = 5 * 60_000;
@@ -2261,29 +2286,41 @@ export function createExternalBackendBridgeRuntime(options: {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
     const source = getClaudeConfigSourcePref();
     const settingSources = getClaudeSettingSourcesCsvByPref();
-    return `${bridgeUrl}|${source}|${settingSources}`;
+    let profileSignature = "";
+    try {
+      profileSignature = getClaudeProfileSignature();
+    } catch {
+      // The profile is always available in Zotero, but keep lightweight test
+      // and bootstrap callers from failing before the application is ready.
+    }
+    return `${bridgeUrl}|${source}|${settingSources}|${profileSignature}`;
+  };
+
+  // Every capability cache (tools, slash commands, efforts, model catalog) is
+  // keyed by the same config identity and must be cleared together whenever
+  // that identity changes; keep this the single place that does so.
+  const resetCapabilityCaches = (nextConfigKey: string): void => {
+    cachedTools = [];
+    cacheExpiresAt = 0;
+    cachedSlashCommands = [];
+    slashCommandsCacheExpiresAt = 0;
+    cachedEffortsByModel.clear();
+    cachedModelCatalog = null;
+    cachedModelCatalogKey = "";
+    modelCatalogCacheExpiresAt = 0;
+    lastCapabilityConfigKey = nextConfigKey;
   };
 
   const refreshExternalActions = async (force = false): Promise<void> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
     if (!bridgeUrl) {
-      cachedTools = [];
-      cacheExpiresAt = 0;
-      cachedSlashCommands = [];
-      slashCommandsCacheExpiresAt = 0;
-      cachedEffortsByModel.clear();
-      lastCapabilityConfigKey = "";
+      resetCapabilityCaches("");
       return;
     }
     const configKey = resolveCapabilityConfigKey();
     if (configKey !== lastCapabilityConfigKey) {
       force = true;
-      cachedTools = [];
-      cacheExpiresAt = 0;
-      cachedSlashCommands = [];
-      slashCommandsCacheExpiresAt = 0;
-      cachedEffortsByModel.clear();
-      lastCapabilityConfigKey = configKey;
+      resetCapabilityCaches(configKey);
     }
     if (!force && Date.now() < cacheExpiresAt && cachedTools.length > 0) {
       return;
@@ -2308,30 +2345,128 @@ export function createExternalBackendBridgeRuntime(options: {
     await refreshInFlight;
   };
 
-  const listEfforts = async (model?: string): Promise<string[]> => {
+  const listEfforts = async (
+    model?: string,
+    context?: ClaudeModelCatalogRequestContext,
+  ): Promise<string[]> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
     if (!bridgeUrl || !isClaudeBridgeActive()) {
       return [];
     }
     const configKey = resolveCapabilityConfigKey();
     if (configKey !== lastCapabilityConfigKey) {
-      cachedTools = [];
-      cacheExpiresAt = 0;
-      cachedSlashCommands = [];
-      slashCommandsCacheExpiresAt = 0;
-      cachedEffortsByModel.clear();
-      lastCapabilityConfigKey = configKey;
+      resetCapabilityCaches(configKey);
     }
-    const key = `${configKey}|${(model || "").trim().toLowerCase()}`;
-    if (cachedEffortsByModel.has(key)) {
-      return cachedEffortsByModel.get(key)?.efforts || [];
+    const requestKey = context
+      ? [
+          String(context.conversationKey).trim(),
+          context.scopeType,
+          context.scopeId.trim(),
+        ].join("|")
+      : "runtime-root";
+    const key = `${configKey}|${requestKey}|${(model || "").trim()}`;
+    const cached = cachedEffortsByModel.get(key);
+    if (cached && (cached.expiresAt || 0) > Date.now()) {
+      return cached.efforts;
     }
     const encodedSources = encodeURIComponent(
       getClaudeSettingSourcesByPref().join(","),
     );
-    const info = await fetchExternalEfforts(bridgeUrl, encodedSources, model);
-    cachedEffortsByModel.set(key, info);
+    const info = await fetchExternalEfforts(
+      bridgeUrl,
+      encodedSources,
+      model,
+      context,
+    );
+    cachedEffortsByModel.set(key, {
+      ...info,
+      expiresAt: Date.now() + EFFORT_CACHE_TTL_MS,
+    });
     return info.efforts;
+  };
+
+  const listModels = async (
+    force = false,
+    context?: ClaudeModelCatalogRequestContext,
+  ): Promise<ClaudeModelCatalog> => {
+    const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
+    if (!bridgeUrl || !isClaudeBridgeActive()) {
+      return { models: [], legacy: true };
+    }
+    const configKey = resolveCapabilityConfigKey();
+    if (configKey !== lastCapabilityConfigKey) {
+      resetCapabilityCaches(configKey);
+    }
+    const requestKey = context
+      ? [
+          configKey,
+          String(context.conversationKey).trim(),
+          context.scopeType,
+          context.scopeId.trim(),
+        ].join("|")
+      : `${configKey}|runtime-root`;
+    if (
+      !force &&
+      cachedModelCatalog &&
+      cachedModelCatalogKey === requestKey &&
+      Date.now() < modelCatalogCacheExpiresAt
+    ) {
+      return cachedModelCatalog;
+    }
+    if (
+      modelCatalogRefreshInFlight &&
+      modelCatalogRefreshKey === requestKey &&
+      (!force || modelCatalogRefreshForced)
+    ) {
+      // A forced request may piggyback on an in-flight FORCED refresh — that
+      // one is already bypassing every cache. An unforced in-flight fetch
+      // cannot satisfy it: its response may come from the bridge cache.
+      return modelCatalogRefreshInFlight;
+    }
+    if (force) cachedEffortsByModel.clear();
+    const refreshGeneration = ++modelCatalogRefreshGeneration;
+    const refreshPromise = fetchClaudeModelCatalog({
+      bridgeUrl,
+      settingSources: getClaudeSettingSourcesByPref(),
+      context,
+      forceRefresh: force,
+    })
+      .then((catalog) => {
+        if (
+          refreshGeneration === modelCatalogRefreshGeneration &&
+          resolveCapabilityConfigKey() === configKey
+        ) {
+          cachedModelCatalog = catalog;
+          cachedModelCatalogKey = requestKey;
+          modelCatalogCacheExpiresAt = Date.now() + MODEL_CATALOG_CACHE_TTL_MS;
+          cachedEffortsByModel.clear();
+        }
+        return catalog;
+      })
+      .catch((error: unknown) => {
+        const message = formatBridgeUserError(
+          error,
+          bridgeUrl,
+          "Failed to refresh Claude models",
+        );
+        ztoolkit.log(
+          "LLM Agent: Failed to refresh Claude model catalog",
+          message,
+          error,
+        );
+        throw new Error(message);
+      })
+      .finally(() => {
+        if (modelCatalogRefreshInFlight === refreshPromise) {
+          modelCatalogRefreshInFlight = null;
+          modelCatalogRefreshKey = "";
+          modelCatalogRefreshForced = false;
+        }
+      });
+    modelCatalogRefreshInFlight = refreshPromise;
+    modelCatalogRefreshKey = requestKey;
+    modelCatalogRefreshForced = force;
+    return refreshPromise;
   };
 
   const refreshSlashCommands = async (force = false): Promise<void> => {
@@ -2344,10 +2479,7 @@ export function createExternalBackendBridgeRuntime(options: {
     }
     if (!bridgeUrl) {
       dbg("refreshSlashCommands: no bridgeUrl, clearing cache");
-      cachedSlashCommands = [];
-      slashCommandsCacheExpiresAt = 0;
-      cachedEffortsByModel.clear();
-      lastCapabilityConfigKey = "";
+      resetCapabilityCaches("");
       return;
     }
     if (
@@ -2410,6 +2542,34 @@ export function createExternalBackendBridgeRuntime(options: {
     return cachedSlashCommands;
   };
 
+  const clearInvalidatedSessionStateWithinWriteLock = (
+    conversationKey: number,
+  ): void => {
+    clearLastRunBridgeContext(conversationKey);
+    conversationScopeByKey.delete(conversationKey);
+    conversationContextSignature.delete(conversationKey);
+  };
+
+  const invalidateSessionWithinWriteLock = async ({
+    conversationKey,
+    scope,
+    metadata,
+  }: SessionInvalidationParams): Promise<SessionInvalidationResponse | null> => {
+    const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
+    if (!bridgeUrl) {
+      clearInvalidatedSessionStateWithinWriteLock(conversationKey);
+      return null;
+    }
+    const outcome = await invalidateExternalBridgeSession({
+      baseUrl: bridgeUrl,
+      conversationKey,
+      scope,
+      metadata,
+    });
+    clearInvalidatedSessionStateWithinWriteLock(conversationKey);
+    return outcome;
+  };
+
   return {
     listTools: () => coreRuntime.listTools(),
     getToolDefinition: (name: string) => coreRuntime.getToolDefinition(name),
@@ -2456,6 +2616,7 @@ export function createExternalBackendBridgeRuntime(options: {
     listSlashCommandsSync,
     refreshSlashCommands,
     listEfforts,
+    listModels,
     updateRuntimeRetention: async ({
       conversationKey,
       scope,
@@ -2482,24 +2643,15 @@ export function createExternalBackendBridgeRuntime(options: {
             : undefined),
       });
     },
-    invalidateSession: async ({ conversationKey, scope, metadata }) => {
-      const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-      if (!bridgeUrl) {
-        clearLastRunBridgeContext(conversationKey);
-        conversationScopeByKey.delete(conversationKey);
-        return null;
-      }
-      const outcome = await invalidateExternalBridgeSession({
-        baseUrl: bridgeUrl,
-        conversationKey,
-        scope,
-        metadata,
-      });
-      clearLastRunBridgeContext(conversationKey);
-      conversationScopeByKey.delete(conversationKey);
-      conversationContextSignature.delete(conversationKey);
-      return outcome;
-    },
+    invalidateSession: ({ conversationKey, scope, metadata }) =>
+      withConversationWriteLock(conversationKey, () =>
+        invalidateSessionWithinWriteLock({
+          conversationKey,
+          scope,
+          metadata,
+        }),
+      ),
+    invalidateSessionWithinWriteLock,
     invalidateAllHotRuntimes: async () => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
       if (!bridgeUrl) {
@@ -2540,6 +2692,10 @@ export function createExternalBackendBridgeRuntime(options: {
         Number.isFinite(opts.conversationKey)
           ? Math.floor(opts.conversationKey)
           : Date.now();
+      const actionGeneration =
+        actionConversationKey > 0
+          ? getConversationWriteGeneration(actionConversationKey)
+          : 0;
       const actionScope = conversationScopeByKey.get(actionConversationKey);
 
       onProgress({
@@ -2551,34 +2707,61 @@ export function createExternalBackendBridgeRuntime(options: {
       const doRun = async (
         approved = false,
       ): Promise<ActionResult<unknown>> => {
+        if (
+          actionConversationKey > 0 &&
+          (areConversationWritesFrozen(actionConversationKey) ||
+            !isConversationWriteGenerationCurrent(
+              actionConversationKey,
+              actionGeneration,
+            ))
+        ) {
+          return {
+            ok: false,
+            error:
+              "Conversation lifecycle changed before this action could execute",
+          };
+        }
         const providerIdentityStack = await buildClaudeProviderIdentityStack();
         const providerIdentity = hashProviderIdentityStack(
           providerIdentityStack,
         );
-        const outcome = await runExternalBridgeAction(bridgeUrl, {
-          conversationKey: actionConversationKey,
-          toolName,
-          args: input,
-          libraryID: opts.libraryID,
-          approved,
-          metadata: {
-            runType: "action",
-            claudeConfigSource: getClaudeConfigSourcePref(),
-            claudeSettingSources: getClaudeSettingSourcesByPref(),
-            settingSources: getClaudeSettingSourcesCsvByPref(),
-            ...buildAgentPermissionMetadata(),
-            providerIdentity,
-            providerIdentityStack,
-            scopeType: actionScope?.scopeType,
-            scopeId: actionScope?.scopeId,
-            scopeLabel: actionScope?.scopeLabel,
-          },
-          onEvent: async (event) => {
-            if (event.type === "status") {
-              onProgress({ type: "status", message: event.text });
-            }
-          },
-        });
+        const run = () =>
+          runExternalBridgeAction(bridgeUrl, {
+            conversationKey: actionConversationKey,
+            toolName,
+            args: input,
+            libraryID: opts.libraryID,
+            approved,
+            metadata: {
+              runType: "action",
+              claudeConfigSource: getClaudeConfigSourcePref(),
+              claudeSettingSources: getClaudeSettingSourcesByPref(),
+              settingSources: getClaudeSettingSourcesCsvByPref(),
+              ...buildAgentPermissionMetadata(),
+              providerIdentity,
+              providerIdentityStack,
+              scopeType: actionScope?.scopeType,
+              scopeId: actionScope?.scopeId,
+              scopeLabel: actionScope?.scopeLabel,
+            },
+            onEvent: async (event) => {
+              if (event.type === "status") {
+                onProgress({ type: "status", message: event.text });
+              }
+            },
+          });
+        // A provider action that is already approved (or has no separate
+        // confirmation phase) is serialized with Clear/deletion.  An
+        // unapproved action that is expected to return `approval_required`
+        // must not hold the conversation lock while the UI confirmation card
+        // is waiting, otherwise Clear could never acquire the lock to cancel
+        // it.
+        const holdLifecycleLock =
+          actionConversationKey > 0 &&
+          (approved || tool?.requiresConfirmation !== true);
+        const outcome = holdLifecycleLock
+          ? await withConversationWriteLock(actionConversationKey, run)
+          : await run();
 
         if (
           outcome.kind === "fallback" &&
@@ -2613,6 +2796,19 @@ export function createExternalBackendBridgeRuntime(options: {
               requestId,
               pendingAction,
             );
+            if (
+              actionConversationKey > 0 &&
+              (areConversationWritesFrozen(actionConversationKey) ||
+                !isConversationWriteGenerationCurrent(
+                  actionConversationKey,
+                  actionGeneration,
+                ))
+            ) {
+              return {
+                ok: false,
+                error: "Conversation lifecycle changed before action approval",
+              };
+            }
             if (!resolution.approved) {
               return { ok: false, error: "User denied action" };
             }
@@ -2635,14 +2831,62 @@ export function createExternalBackendBridgeRuntime(options: {
       });
       return result;
     },
-    runTurn: async (params: RunTurnParams): Promise<AgentRuntimeOutcome> => {
+    runTurn: async (rawParams: RunTurnParams): Promise<AgentRuntimeOutcome> => {
+      const params: ResolvedRunTurnParams = {
+        ...rawParams,
+        request: resolveAgentRuntimeRequest(rawParams.request),
+      };
+      const requestMetadata =
+        params.request.metadata && typeof params.request.metadata === "object"
+          ? params.request.metadata
+          : {};
+      const conversationInstanceID =
+        typeof requestMetadata.conversationInstanceID === "string"
+          ? requestMetadata.conversationInstanceID.trim()
+          : "";
+      if (params.request.conversationKey > 0) {
+        try {
+          if (
+            await hasPendingEmptyClaudeCleanupJob({
+              conversationKey: params.request.conversationKey,
+              ...(conversationInstanceID
+                ? { instanceID: conversationInstanceID }
+                : {}),
+            })
+          ) {
+            // Clear may have had to defer an empty-session invalidation while
+            // the catalog had no provider ID. Do not resume the old bridge
+            // mapping; the adapter will invalidate it before starting fresh.
+            params.request = {
+              ...params.request,
+              metadata: {
+                ...requestMetadata,
+                forceFreshSession: true,
+              },
+            };
+          }
+        } catch {
+          // A pending empty-session cleanup is a deletion boundary, not an
+          // advisory hint. If the cleanup table cannot be read, fail closed
+          // by forcing a fresh provider session; reusing a hot mapping here
+          // could resurrect the pre-Clear runtime while the durable worker
+          // is still waiting to invalidate it.
+          params.request = {
+            ...params.request,
+            metadata: {
+              ...requestMetadata,
+              forceFreshSession: true,
+            },
+          };
+        }
+      }
       validateLocalPdfDocumentBatch({
-        pdfPaperContexts: params.request.pdfPaperContexts,
-        localDocuments: params.request.localDocuments,
+        pdfPaperContexts: requestPaperRefs(params.request, ["raw_pdf"]),
+        localDocuments: requestLocalDocuments(params.request),
       });
       const pathLease = acquireLocalDocumentPathLease(
         params.request.conversationKey,
-        params.request.localDocuments,
+        requestLocalDocuments(params.request),
       );
       try {
         const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
@@ -2651,9 +2895,29 @@ export function createExternalBackendBridgeRuntime(options: {
             "Claude bridge URL is empty. Set Bridge URL to http://127.0.0.1:19787.",
           );
         }
-        if (params.request.localDocuments?.length) {
+        if (requestLocalDocuments(params.request).length) {
           await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
         }
+        const writeAllowed = () =>
+          !areConversationWritesFrozen(params.request.conversationKey) &&
+          (params.request.conversationGeneration === undefined ||
+            isConversationWriteGenerationCurrent(
+              params.request.conversationKey,
+              params.request.conversationGeneration,
+            ));
+        const persistIfLive = async <T>(task: () => Promise<T>) => {
+          if (!writeAllowed()) return undefined;
+          return withConversationWriteLock(
+            params.request.conversationKey,
+            async () => {
+              if (!writeAllowed()) return undefined;
+              return task();
+            },
+          );
+        };
+        const notifyIfLive = async (event: AgentEvent): Promise<void> => {
+          if (writeAllowed()) await params.onEvent?.(event);
+        };
         let persistedRunId = "";
         let persistedRunCreated = false;
         let persistedSeq = 0;
@@ -2667,22 +2931,28 @@ export function createExternalBackendBridgeRuntime(options: {
         const ensurePersistedRun = async (runId: string): Promise<void> => {
           const normalized = (runId || "").trim();
           if (!normalized) return;
+          if (!writeAllowed()) return;
           if (!persistedRunCreated || persistedRunId !== normalized) {
             persistedRunId = normalized;
             persistedSeq = 0;
-            await createAgentRun({
-              runId: persistedRunId,
-              conversationKey: params.request.conversationKey,
-              mode: "agent",
-              model: params.request.model,
-              status: "running",
-              createdAt: Date.now(),
-            });
-            persistedRunCreated = true;
+            await persistIfLive(() =>
+              createAgentRun({
+                runId: persistedRunId,
+                conversationKey: params.request.conversationKey,
+                mode: "agent",
+                model: params.request.model,
+                status: "running",
+                createdAt: Date.now(),
+              }),
+            );
+            persistedRunCreated = writeAllowed();
+            if (!persistedRunCreated) return;
             if (pendingEventsBeforeRunId.length) {
               for (const event of pendingEventsBeforeRunId.splice(0)) {
                 persistedSeq += 1;
-                await appendAgentRunEvent(persistedRunId, persistedSeq, event);
+                await persistIfLive(() =>
+                  appendAgentRunEvent(persistedRunId, persistedSeq, event),
+                );
               }
             }
           }
@@ -2696,54 +2966,61 @@ export function createExternalBackendBridgeRuntime(options: {
             return;
           }
           persistedSeq += 1;
-          await appendAgentRunEvent(
-            persistedRunId,
-            persistedSeq,
-            redactedEvent,
+          await persistIfLive(() =>
+            appendAgentRunEvent(persistedRunId, persistedSeq, redactedEvent),
           );
         };
         await appendPersistedEvent(
           makeProfilingEvent("frontend.run_turn.enter"),
         );
-        await params.onEvent?.(makeProfilingEvent("frontend.run_turn.enter"));
+        await notifyIfLive(makeProfilingEvent("frontend.run_turn.enter"));
         const contextEnvelope = buildContextEnvelope(params.request);
         await appendPersistedEvent(
           makeProfilingEvent("frontend.context_envelope.ready"),
         );
-        await params.onEvent?.(
+        await notifyIfLive(
           makeProfilingEvent("frontend.context_envelope.ready"),
         );
         const runtimeRequest = await buildBridgeRuntimeRequest(params.request);
         await appendPersistedEvent(
           makeProfilingEvent("frontend.bridge_runtime_request.ready"),
         );
-        await params.onEvent?.(
+        await notifyIfLive(
           makeProfilingEvent("frontend.bridge_runtime_request.ready"),
         );
         const scope = resolveBridgeScope(params.request);
-        rememberLastRunBridgeContext(params.request.conversationKey, scope);
-        if (isBridgeDebugEnabled()) {
-          dbg("run-turn scope snapshot", {
-            conversationKey: params.request.conversationKey,
-            scopeType: scope.scopeType,
-            scopeId: scope.scopeId,
-            scopeLabel: scope.scopeLabel,
-            scopedConversationKey: buildScopedConversationKey(
-              params.request.conversationKey,
-              scope,
-            ),
-          });
-        }
-        conversationScopeByKey.set(params.request.conversationKey, scope);
-        const currentSignature = signatureForContextEnvelope(contextEnvelope);
-        conversationContextSignature.set(
+        await withConversationWriteLock(
           params.request.conversationKey,
-          currentSignature,
+          async () => {
+            if (!writeAllowed()) {
+              throw new Error("Conversation write generation changed");
+            }
+            rememberLastRunBridgeContext(params.request.conversationKey, scope);
+            if (isBridgeDebugEnabled()) {
+              dbg("run-turn scope snapshot", {
+                conversationKey: params.request.conversationKey,
+                scopeType: scope.scopeType,
+                scopeId: scope.scopeId,
+                scopeLabel: scope.scopeLabel,
+                scopedConversationKey: buildScopedConversationKey(
+                  params.request.conversationKey,
+                  scope,
+                ),
+              });
+            }
+            conversationScopeByKey.set(params.request.conversationKey, scope);
+            const currentSignature =
+              signatureForContextEnvelope(contextEnvelope);
+            conversationContextSignature.set(
+              params.request.conversationKey,
+              currentSignature,
+            );
+          },
         );
         const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
           for (const redactedEvent of eventStreamRedactor.process(event)) {
             await appendPersistedEvent(redactedEvent);
-            await params.onEvent?.(redactedEvent);
+            await notifyIfLive(redactedEvent);
           }
         };
         let mcpServers: ClaudeMcpServersConfig | undefined;
@@ -2754,7 +3031,7 @@ export function createExternalBackendBridgeRuntime(options: {
         let unregisterMcpToolActivity: () => void = () => undefined;
         try {
           if (isNativeZoteroMcpToolsEnabled()) {
-            const rawPdfMode = Boolean(params.request.localDocuments?.length);
+            const rawPdfMode = requestLocalDocuments(params.request).length > 0;
             const profileSignature = getClaudeProfileSignature();
             const mcpScope = buildClaudeZoteroMcpScope(
               params.request,
@@ -2831,7 +3108,7 @@ export function createExternalBackendBridgeRuntime(options: {
             ...params,
             onStart: async (runId) => {
               await ensurePersistedRun(runId);
-              await params.onStart?.(runId);
+              if (writeAllowed()) await params.onStart?.(runId);
             },
             onEvent: emitTurnEvent,
             contextEnvelope,
@@ -2892,7 +3169,7 @@ export function createExternalBackendBridgeRuntime(options: {
           });
           for (const redactedEvent of eventStreamRedactor.flush()) {
             await appendPersistedEvent(redactedEvent);
-            await params.onEvent?.(redactedEvent);
+            await notifyIfLive(redactedEvent);
           }
           const safeOutcome: AgentRuntimeOutcome =
             outcome.kind === "completed"
@@ -2907,22 +3184,26 @@ export function createExternalBackendBridgeRuntime(options: {
           const finalRunId = persistedRunId || safeOutcome.runId;
           if (finalRunId) {
             await ensurePersistedRun(finalRunId);
-            await finishAgentRun(
-              finalRunId,
-              safeOutcome.kind === "completed" ? "completed" : "failed",
-              safeOutcome.kind === "completed"
-                ? safeOutcome.text
-                : safeOutcome.reason,
+            await persistIfLive(() =>
+              finishAgentRun(
+                finalRunId,
+                safeOutcome.kind === "completed" ? "completed" : "failed",
+                safeOutcome.kind === "completed"
+                  ? safeOutcome.text
+                  : safeOutcome.reason,
+              ),
             );
           }
           return safeOutcome;
         } catch (error) {
           if (persistedRunId) {
-            await finishAgentRun(
-              persistedRunId,
-              "failed",
-              turnPathRedactor.redactTerminalText(
-                error instanceof Error ? error.message : String(error),
+            await persistIfLive(() =>
+              finishAgentRun(
+                persistedRunId,
+                "failed",
+                turnPathRedactor.redactTerminalText(
+                  error instanceof Error ? error.message : String(error),
+                ),
               ),
             );
           }
@@ -2944,21 +3225,23 @@ export function createExternalBackendBridgeRuntime(options: {
           const fallbackRunId = persistedRunId || `bridge-error-${Date.now()}`;
           if (!persistedRunCreated) {
             await ensurePersistedRun(fallbackRunId);
-            await params.onStart?.(fallbackRunId);
+            if (writeAllowed()) await params.onStart?.(fallbackRunId);
           }
           const statusEvent: AgentEvent = {
             type: "status",
             text: message,
           };
           await appendPersistedEvent(statusEvent);
-          await params.onEvent?.(statusEvent);
+          await notifyIfLive(statusEvent);
           const fallbackEvent: AgentEvent = {
             type: "fallback",
             reason: message,
           };
           await appendPersistedEvent(fallbackEvent);
-          await params.onEvent?.(fallbackEvent);
-          await finishAgentRun(fallbackRunId, "failed", message);
+          await notifyIfLive(fallbackEvent);
+          await persistIfLive(() =>
+            finishAgentRun(fallbackRunId, "failed", message),
+          );
           if (
             typeof ztoolkit !== "undefined" &&
             typeof ztoolkit.log === "function"

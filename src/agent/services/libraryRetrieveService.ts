@@ -1,15 +1,27 @@
-import { buildPaperRetrievalCandidates } from "../../modules/contextPanel/pdfContext";
+import {
+  buildChunkIndex,
+  buildPaperRetrievalCandidates,
+  scoreChunkBM25,
+} from "../../modules/contextPanel/pdfContext";
 import {
   buildRetrievalQueryPlan,
+  generateRetrievalProbeReformulation,
   resolveRetrievalQueryPlan,
+  RETRIEVAL_QUERY_VARIANT_HARD_LIMIT,
   type RetrievalQueryPlan,
 } from "../../modules/contextPanel/retrievalQueryPlan";
+import {
+  extractCjkKeywordProbes,
+  isCjkDominantText,
+  stripTerminalPunctuation,
+} from "../../modules/contextPanel/retrievalTokenizer";
 import type {
   PaperContextCandidate,
   PdfContext,
   PdfChunkKind,
 } from "../../modules/contextPanel/types";
 import type { AgentRuntimeRequest } from "../types";
+import { getTurnPaperScopeFromRequest } from "../context/requestTurnPaperScope";
 import type {
   PaperContextRef,
   QuoteCitation,
@@ -27,8 +39,10 @@ import {
   compareEvidenceCandidatesForQuestion,
   isBodyEvidenceSection,
   queryHasExplicitSectionPreference,
+  type WantedEvidenceSection,
 } from "../../shared/libraryChatEvidencePolicy";
 import { buildLibraryRetrieveEvidencePack } from "./libraryRetrieveEvidencePack";
+import { triageCandidatesWithModel } from "./libraryRetrieveTriage";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -38,12 +52,13 @@ import {
   mergeQuoteCitations,
 } from "../../modules/contextPanel/quoteCitations";
 import type {
-  AgentLibraryFilters,
   EditableArticleMetadataSnapshot,
   LibraryItemTarget,
   ZoteroGateway,
 } from "./zoteroGateway";
 import type { PdfService } from "./pdfService";
+import type { ModelProfileOverride } from "../../modelCapabilities";
+import { libraryIndexService } from "../../services/libraryIndexService";
 
 export type LibraryRetrieveDepth = "pool" | "metadata" | "evidence" | "verify";
 export type LibraryRetrieveIntent = "enumerate" | "verify" | "summarize";
@@ -90,6 +105,7 @@ export type LibraryRetrieveResourceState =
 
 export type LibraryRetrieveQueryState =
   | "matched_metadata"
+  | "matched_bm25"
   | "shortlisted"
   | "content_loaded"
   | "snippet_returned"
@@ -221,10 +237,16 @@ export type LibraryRetrieveResult = {
       metadataInspected: number;
       abstractsInspected: number;
       matchedMetadata: number;
+      /** Records matched via abstract/title BM25 token overlap only. */
+      matchedBm25: number;
       shortlisted: number;
       indexedTextAvailable: number;
       indexedTextScanned: number;
       indexedTextMatched: number;
+      /** Extra model-driven probe reformulation rounds that ran. */
+      probeRounds: number;
+      /** Distinct search probes tried across all quicksearch passes. */
+      variantsTried: number;
       snippetPapersExpanded: number;
       /** Deprecated compatibility alias for snippetPapersExpanded. */
       fullTextSearched: number;
@@ -368,6 +390,9 @@ type ResourceRecord = {
   queryState: Set<LibraryRetrieveQueryState>;
   metadataScore: number;
   ftsScore: number;
+  bm25Score: number;
+  bm25TermHits: number;
+  bm25DistinctiveHits: number;
   quicksearchMatched: boolean;
   matchedQueryVariants: Set<string>;
   score: number;
@@ -390,6 +415,98 @@ const DEFAULT_METHODS: LibraryRetrieveMethod[] = [
   "fts",
   "semantic",
 ];
+
+export const QUICKSEARCH_MAX_PROBES = 8;
+export const LIBRARY_RETRIEVE_MIN_MATCHED_SHORTLIST = 5;
+
+// In-service probe iteration: when the first quicksearch pass matches fewer
+// records than this, ask the model for fresh corpus-language probes and
+// rescan, bounded by rounds and wall clock. The initial query-plan LLM call
+// has its own separate 10s budget.
+const PROBE_WEAK_MATCH_THRESHOLD = 3;
+const MAX_EXTRA_PROBE_ROUNDS = 2;
+const PROBE_LOOP_DEADLINE_MS = 15_000;
+const TRIAGE_MAX_CANDIDATES = 40;
+
+// Normalized pool-BM25 contribution to a record's blended score: below a
+// title phrase match (10) so exact titles keep winning, above tag/creator
+// term weights so distinctive-vocabulary overlap outranks generic noise.
+const BM25_BLEND_WEIGHT = 8;
+
+const BM25_MIN_TERM_HITS = 2;
+
+/**
+ * Whether the query itself reached this paper — the one definition of "matched"
+ * this service has. Everything that ranks, shortlists or displaces a paper must
+ * ask this and nothing narrower: `quicksearchMatched` alone, for instance,
+ * silently demotes every paper found by metadata or BM25 rather than by the
+ * indexed-text probe.
+ */
+function recordMatchedQuery(record: ResourceRecord): boolean {
+  return (
+    record.metadataScore > 0 || record.ftsScore > 0 || recordBm25Matched(record)
+  );
+}
+
+function recordBm25Matched(record: ResourceRecord): boolean {
+  // A single shared token (often one CJK bigram) is noise, and tokens shared
+  // by most of the pool (generic vocabulary) carry no signal either — at
+  // least one hit must be distinctive to the pool.
+  return (
+    record.bm25Score > 0 &&
+    record.bm25TermHits >= BM25_MIN_TERM_HITS &&
+    record.bm25DistinctiveHits >= 1
+  );
+}
+const CJK_FULL_PHRASE_PROBE_MAX_CHARS = 12;
+const CJK_KEYWORD_PROBES_PER_QUERY = 4;
+
+/**
+ * Zotero's quicksearch treats a whitespace-free query as one literal
+ * substring, so a raw CJK question (often ending in ？) matches nothing.
+ * Derive bounded probes from the query plan instead: strip terminal
+ * punctuation everywhere, and for CJK-dominant queries send segmented
+ * keyword probes rather than the full sentence.
+ */
+/** Bounded quicksearch probes for one query/variant string. */
+export function expandProbeText(text: string): string[] {
+  const stripped = stripTerminalPunctuation(text);
+  if (!stripped) return [];
+  if (!isCjkDominantText(stripped)) return [stripped];
+  const probes: string[] = [];
+  if (stripped.length <= CJK_FULL_PHRASE_PROBE_MAX_CHARS) probes.push(stripped);
+  probes.push(
+    ...extractCjkKeywordProbes(stripped, CJK_KEYWORD_PROBES_PER_QUERY),
+  );
+  return probes;
+}
+
+export function buildQuicksearchProbes(
+  queryPlan: RetrievalQueryPlan,
+  options: { includeFullPhrases?: boolean } = {},
+): string[] {
+  const probes: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    probes.push(trimmed);
+  };
+  for (const query of queryPlan.effectiveQueries) {
+    if (probes.length >= QUICKSEARCH_MAX_PROBES) break;
+    if (options.includeFullPhrases) {
+      // verify/requireExact callers need the literal scanned pool-wide even
+      // when it is a long CJK phrase the keyword probes would replace.
+      const stripped = stripTerminalPunctuation(query);
+      if (stripped) push(stripped);
+    }
+    for (const probe of expandProbeText(query)) push(probe);
+  }
+  return probes.slice(0, QUICKSEARCH_MAX_PROBES);
+}
 
 const DEFAULT_INTENT: LibraryRetrieveIntent = "enumerate";
 
@@ -419,12 +536,19 @@ function normalizeIntent(
   value: unknown,
   depth: LibraryRetrieveDepth,
   query: string,
+  request?: AgentRuntimeRequest,
 ): LibraryRetrieveIntent {
   if (value === "enumerate" || value === "verify" || value === "summarize") {
     return value;
   }
   if (value === "discover") return "enumerate";
   if (depth === "verify") return "verify";
+  // Language-independent classifier default: beats the English regexes below,
+  // loses to explicit tool args and verify depth above.
+  const classified = request?.classifiedIntent;
+  if (classified && classified.retrievalIntent !== "none") {
+    return classified.retrievalIntent;
+  }
   const normalized = query.toLowerCase();
   if (
     /\b(?:all|which|how many|list|enumerate|papers?\s+that|contain|contains|containing|use|uses|using|discuss|discusses|mention|mentions)\b/.test(
@@ -455,10 +579,9 @@ function hasCollectionLikeScope(
   ) {
     return true;
   }
-  return Boolean(
-    request?.selectedCollectionContexts?.length ||
-    request?.selectedTagContexts?.length,
-  );
+  if (!request) return false;
+  const scope = getTurnPaperScopeFromRequest(request);
+  return Boolean(scope.collections.length || scope.tags.length);
 }
 
 function normalizeInput(
@@ -483,7 +606,7 @@ function normalizeInput(
           ),
         )
       : DEFAULT_METHODS;
-  const intent = normalizeIntent(input.intent, depth, input.query);
+  const intent = normalizeIntent(input.intent, depth, input.query, request);
   const collectionLikeScope = hasCollectionLikeScope(input, request);
   const comprehensiveIntent =
     intent === "enumerate" || intent === "verify" || intent === "summarize";
@@ -803,6 +926,65 @@ function resourceStates(
 
 function queryStates(record: ResourceRecord): LibraryRetrieveQueryState[] {
   return Array.from(record.queryState);
+}
+
+/**
+ * Fold the papers only a triage-suggested rescan matched into the shortlist.
+ *
+ * The shortlist is capped, and on the pool-fallback path that triage exists
+ * for it arrives already full — mostly of papers nothing matched, carried as
+ * leads to verify rather than as evidence. A paper the rescan matched outranks
+ * those, so it takes their seats instead of queueing behind them: appending
+ * would leave it past the snippet budget, which reads the shortlist in order,
+ * and at capacity it would not enter at all.
+ *
+ * Only unmatched leads may be displaced. Triage's own picks and every paper
+ * the query already reached — by metadata, FTS or BM25, not just by the
+ * indexed-text probe — keep their places, because a probe hit is the weaker
+ * evidence of the two. Whatever still does not fit is reported rather than
+ * dropped in silence.
+ */
+function mergeRescanDiscoveries<
+  TRecord extends { target: { itemId: number | string }; bm25Score: number },
+>(params: {
+  shortlist: readonly TRecord[];
+  discovered: readonly TRecord[];
+  /** True for a paper that is already evidence and so cannot be displaced. */
+  isEstablished: (record: TRecord) => boolean;
+  maxCandidatePapers: number;
+}): { shortlist: TRecord[]; displaced: TRecord[]; droppedDiscoveries: number } {
+  if (!params.discovered.length) {
+    return {
+      shortlist: [...params.shortlist],
+      displaced: [],
+      droppedDiscoveries: 0,
+    };
+  }
+  const established: TRecord[] = [];
+  const leads: TRecord[] = [];
+  for (const record of params.shortlist) {
+    (params.isEstablished(record) ? established : leads).push(record);
+  }
+  // Discoveries arrive in library order, which says nothing about relevance —
+  // and since they now sit ahead of the leads, that order would decide which
+  // ones are read. `score` is the pre-rescan ranking and is not recomputed, so
+  // it is uniform here; `bm25Score` is, against a plan that now carries the
+  // probe terms, which is exactly what separates these papers.
+  const ranked = [...params.discovered].sort(
+    (left, right) => right.bm25Score - left.bm25Score,
+  );
+  const merged = [...established, ...ranked, ...leads];
+  const shortlist = merged.slice(0, Math.max(0, params.maxCandidatePapers));
+  const kept = new Set(shortlist.map((record) => String(record.target.itemId)));
+  return {
+    shortlist,
+    displaced: params.shortlist.filter(
+      (record) => !kept.has(String(record.target.itemId)),
+    ),
+    droppedDiscoveries: params.discovered.filter(
+      (record) => !kept.has(String(record.target.itemId)),
+    ).length,
+  };
 }
 
 function candidateFromRecord(record: ResourceRecord): LibraryRetrieveCandidate {
@@ -1195,6 +1377,8 @@ export class LibraryRetrieveService {
     private readonly zoteroGateway: ZoteroGateway,
     private readonly pdfService: PdfService,
     private readonly candidateBuilder: CandidateBuilder = buildPaperRetrievalCandidates,
+    private readonly probeReformulator: typeof generateRetrievalProbeReformulation = generateRetrievalProbeReformulation,
+    private readonly triage: typeof triageCandidatesWithModel = triageCandidatesWithModel,
   ) {}
 
   async retrieve(
@@ -1206,12 +1390,21 @@ export class LibraryRetrieveService {
       apiKey?: string;
       authMode?: AgentRuntimeRequest["authMode"];
       providerProtocol?: AgentRuntimeRequest["providerProtocol"];
-      reasoning?: AgentRuntimeRequest["reasoning"];
+      profileOverride?: ModelProfileOverride;
       signal?: AbortSignal;
     },
   ): Promise<LibraryRetrieveResult> {
     const requestedIntent = params.intent;
     const requestedDepth = params.depth;
+    // Resolve the scope before planning (it only reads scope/budget inputs)
+    // so the query planner can see corpus samples for language and
+    // vocabulary matching.
+    const provisionalInput = normalizeInput(params, params.request);
+    const scope = await this.resolveScope(
+      provisionalInput,
+      params.request,
+      params.item,
+    );
     const queryPlan = await resolveRetrievalQueryPlan({
       query: params.query,
       queryVariants: params.queryVariants,
@@ -1223,13 +1416,17 @@ export class LibraryRetrieveService {
       authMode: params.authMode || params.request?.authMode,
       providerProtocol:
         params.providerProtocol || params.request?.providerProtocol,
-      reasoning: params.reasoning || params.request?.reasoning,
+      profileOverride:
+        params.profileOverride || params.request?.advanced?.profileOverride,
       signal: params.signal,
+      sourceSamples: this.buildScopeSourceSamples(scope),
     });
     let input = normalizeInput(params, params.request, queryPlan);
     const warnings: string[] = [];
+    for (const note of new Set(input.queryPlan.notes)) {
+      warnings.push(`Query planner: ${note}`);
+    }
     const methodsUsed = new Set<LibraryRetrieveMethod>();
-    const scope = await this.resolveScope(input, params.request, params.item);
     const readStrategyBase = resolveLibraryChatReadStrategy({
       query: input.query,
       intent: input.intent,
@@ -1248,6 +1445,16 @@ export class LibraryRetrieveService {
     }
 
     const records = this.buildResourceRecords(scope.items, input);
+    let poolBm25Corpus: ReturnType<typeof buildChunkIndex> | undefined;
+    const rescorePoolBm25 = (queryPlan: RetrievalQueryPlan): void => {
+      if (!queryPlan.lexicalTerms.length || !records.length) return;
+      poolBm25Corpus ??= buildChunkIndex(
+        records.map((record) =>
+          [record.target.title, record.abstractText].filter(Boolean).join("\n"),
+        ),
+      );
+      this.applyPoolBm25Scores(records, queryPlan, poolBm25Corpus);
+    };
     if (records.length) methodsUsed.add("metadata");
     if (records.some((record) => record.abstractText))
       methodsUsed.add("abstract");
@@ -1261,6 +1468,20 @@ export class LibraryRetrieveService {
       truncated: false,
     };
 
+    rescorePoolBm25(input.queryPlan);
+
+    let probeRounds = 0;
+    const variantsTried = new Set(
+      buildQuicksearchProbes(input.queryPlan).map((probe) =>
+        probe.toLowerCase(),
+      ),
+    );
+    const hasModelConfig = Boolean(
+      params.apiBase ||
+      params.apiKey ||
+      params.request?.apiBase ||
+      params.request?.apiKey,
+    );
     if (
       input.depth !== "pool" &&
       input.depth !== "metadata" &&
@@ -1273,15 +1494,105 @@ export class LibraryRetrieveService {
         warnings,
       );
       if (input.methods.includes("fts")) methodsUsed.add("fts");
+
+      const probeDeadline = Date.now() + PROBE_LOOP_DEADLINE_MS;
+      while (
+        hasModelConfig &&
+        probeRounds < MAX_EXTRA_PROBE_ROUNDS &&
+        this.countMatchedRecords(records, input.queryPlan) <
+          PROBE_WEAK_MATCH_THRESHOLD &&
+        Date.now() < probeDeadline &&
+        !params.signal?.aborted
+      ) {
+        const matchedProbes = Array.from(
+          new Set(
+            records.flatMap((record) =>
+              Array.from(record.matchedQueryVariants),
+            ),
+          ),
+        ).slice(0, 8);
+        const reformulation = await this.probeReformulator({
+          query: input.query,
+          triedProbes: Array.from(variantsTried),
+          matchedProbes,
+          scopeTitles: scope.items
+            .slice(0, 8)
+            .map((item) => item.title)
+            .filter(Boolean),
+          model: params.model || params.request?.model,
+          apiBase: params.apiBase || params.request?.apiBase,
+          apiKey: params.apiKey || params.request?.apiKey,
+          authMode: params.authMode || params.request?.authMode,
+          providerProtocol:
+            params.providerProtocol || params.request?.providerProtocol,
+          profileOverride:
+            params.profileOverride || params.request?.advanced?.profileOverride,
+          signal: params.signal,
+        });
+        warnings.push(...reformulation.notes);
+        const freshVariants = Array.from(
+          new Set(
+            reformulation.variants
+              .map((variant) => variant.trim())
+              .filter(Boolean),
+          ),
+        ).filter((variant) => !variantsTried.has(variant.toLowerCase()));
+        if (!freshVariants.length) break;
+        probeRounds += 1;
+        for (const variant of freshVariants) {
+          variantsTried.add(variant.toLowerCase());
+        }
+        // Fresh variants go first so the variant cap trims older ones.
+        input = {
+          ...input,
+          queryPlan: buildRetrievalQueryPlan({
+            query: input.query,
+            queryVariants: [...freshVariants, ...input.queryPlan.variants],
+            maxVariants: RETRIEVAL_QUERY_VARIANT_HARD_LIMIT,
+            notes: input.queryPlan.notes,
+            readIntent: input.queryPlan.readIntent,
+          }),
+        };
+        const rescan = await this.addQuicksearchMatches(
+          scope,
+          records,
+          input,
+          warnings,
+          {
+            probesOverride: freshVariants
+              .flatMap((variant) => expandProbeText(variant))
+              .slice(0, QUICKSEARCH_MAX_PROBES),
+          },
+        );
+        indexedScan = {
+          available: Math.max(indexedScan.available, rescan.available),
+          scanned: Math.max(indexedScan.scanned, rescan.scanned),
+          matched: indexedScan.matched,
+          truncated: indexedScan.truncated || rescan.truncated,
+        };
+        rescorePoolBm25(input.queryPlan);
+      }
+      indexedScan = {
+        ...indexedScan,
+        matched: records.filter((record) => record.quicksearchMatched).length,
+      };
     }
 
+    const maxBm25 = records.reduce(
+      (max, record) => Math.max(max, record.bm25Score),
+      0,
+    );
     for (const record of records) {
       record.score =
         record.metadataScore +
         record.ftsScore +
+        (maxBm25 > 0 ? (record.bm25Score / maxBm25) * BM25_BLEND_WEIGHT : 0) +
         (record.paperContext ? 0.5 : 0);
       if (record.metadataScore > 0) {
         record.queryState.add("matched_metadata");
+      }
+      if (recordBm25Matched(record)) {
+        record.queryState.add("matched_bm25");
       }
     }
 
@@ -1292,9 +1603,7 @@ export class LibraryRetrieveService {
       return left.target.title.localeCompare(right.target.title);
     });
 
-    const matchedRecords = sorted.filter(
-      (record) => record.metadataScore > 0 || record.ftsScore > 0,
-    );
+    const matchedRecords = sorted.filter(recordMatchedQuery);
     const shouldPreferMatchedLedger =
       input.intent === "enumerate" ||
       input.intent === "verify" ||
@@ -1302,25 +1611,190 @@ export class LibraryRetrieveService {
     const shouldUseBoundedSynthesisPool =
       readStrategyBase.resolvedStrategy === "deep_synthesis" &&
       scope.totalItems <= DEEP_SYNTHESIS_MAX_PAPERS;
+    const fallbackEligible =
+      shouldPreferMatchedLedger &&
+      scope.type !== "items" &&
+      !shouldUseBoundedSynthesisPool;
+    // A near-empty matched ledger must not silently produce zero candidates:
+    // fall back to the top-scored pool slice and say so.
+    const usedPoolFallback =
+      fallbackEligible &&
+      matchedRecords.length <
+        Math.min(LIBRARY_RETRIEVE_MIN_MATCHED_SHORTLIST, sorted.length) &&
+      sorted.length > matchedRecords.length;
     const candidateSource = shouldUseBoundedSynthesisPool
       ? sorted
-      : shouldPreferMatchedLedger && scope.type !== "items"
-        ? matchedRecords
+      : fallbackEligible
+        ? usedPoolFallback
+          ? sorted
+          : matchedRecords
         : sorted;
-    const candidateRecords =
+    if (usedPoolFallback && input.depth !== "pool") {
+      warnings.push(
+        `Lexical/metadata matching found only ${matchedRecords.length} direct match(es) in this scope; returning the top-scored pool slice instead (LOW CONFIDENCE). Treat unmatched candidates as leads to verify, not evidence.`,
+      );
+    }
+    let candidateRecords =
       input.depth === "pool"
         ? []
         : candidateSource.slice(0, input.maxCandidatePapers);
     candidateRecords.forEach((record) => record.queryState.add("shortlisted"));
 
+    // Evidence triage: when the lexical ordering is known-unreliable (pool
+    // fallback, or far more matches than expansion slots), one bounded LLM
+    // call picks which papers get the snippet slots and what to look for in
+    // each. Null keeps today's ordering.
+    let triagePerPaperQueries: Record<string, string> | undefined;
+    const shouldTriage =
+      input.depth !== "pool" &&
+      candidateRecords.length > 1 &&
+      (usedPoolFallback ||
+        matchedRecords.length > input.maxFullTextPapers * 2) &&
+      hasModelConfig;
+    if (shouldTriage) {
+      const triageResult = await this.triage({
+        query: input.query,
+        intent: input.intent,
+        candidates: candidateRecords
+          .slice(0, TRIAGE_MAX_CANDIDATES)
+          .map((record) => ({
+            itemId: String(record.target.itemId),
+            title: record.target.title,
+            abstract: truncateText(record.abstractText, 300),
+            matchedVia: record.why.slice(0, 2).join("; "),
+          })),
+        maxSelect: input.maxFullTextPapers,
+        model: params.model || params.request?.model,
+        apiBase: params.apiBase || params.request?.apiBase,
+        apiKey: params.apiKey || params.request?.apiKey,
+        authMode: params.authMode || params.request?.authMode,
+        providerProtocol:
+          params.providerProtocol || params.request?.providerProtocol,
+        profileOverride:
+          params.profileOverride || params.request?.advanced?.profileOverride,
+        signal: params.signal,
+      });
+      if (triageResult) {
+        const rank = new Map(
+          triageResult.selectedItemIds.map((itemId, index) => [itemId, index]),
+        );
+        // Stable sort: selected papers first in triage order, the rest keep
+        // their lexical relative order.
+        candidateRecords.sort((left, right) => {
+          const leftRank = rank.get(String(left.target.itemId));
+          const rightRank = rank.get(String(right.target.itemId));
+          if (leftRank !== undefined && rightRank !== undefined) {
+            return leftRank - rightRank;
+          }
+          if (leftRank !== undefined) return -1;
+          if (rightRank !== undefined) return 1;
+          return 0;
+        });
+        triagePerPaperQueries = triageResult.perPaperQueries;
+        warnings.push("Candidate triage refined selection by LLM.");
+        const suggestedProbes = triageResult.suggestedProbes || [];
+        const triageProbes = suggestedProbes
+          .flatMap((probe) => expandProbeText(probe))
+          .filter((probe) => !variantsTried.has(probe.toLowerCase()))
+          .slice(0, QUICKSEARCH_MAX_PROBES);
+        if (
+          triageProbes.length &&
+          input.depth !== "metadata" &&
+          probeRounds < MAX_EXTRA_PROBE_ROUNDS &&
+          this.countMatchedRecords(records, input.queryPlan) <
+            PROBE_WEAK_MATCH_THRESHOLD &&
+          !params.signal?.aborted
+        ) {
+          probeRounds += 1;
+          for (const probe of triageProbes) {
+            variantsTried.add(probe.toLowerCase());
+          }
+          // Mirror the reformulation loop: fold the probes into the plan so
+          // BM25 rescoring and downstream chunk retrieval see the new terms.
+          input = {
+            ...input,
+            queryPlan: buildRetrievalQueryPlan({
+              query: input.query,
+              queryVariants: [...suggestedProbes, ...input.queryPlan.variants],
+              maxVariants: RETRIEVAL_QUERY_VARIANT_HARD_LIMIT,
+              notes: input.queryPlan.notes,
+              readIntent: input.queryPlan.readIntent,
+            }),
+          };
+          const previouslyMatched = new Set(
+            records
+              .filter((record) => record.quicksearchMatched)
+              .map((record) => record.target.itemId),
+          );
+          const rescan = await this.addQuicksearchMatches(
+            scope,
+            records,
+            input,
+            warnings,
+            { probesOverride: triageProbes },
+          );
+          indexedScan = {
+            available: Math.max(indexedScan.available, rescan.available),
+            scanned: Math.max(indexedScan.scanned, rescan.scanned),
+            matched: records.filter((record) => record.quicksearchMatched)
+              .length,
+            truncated: indexedScan.truncated || rescan.truncated,
+          };
+          rescorePoolBm25(input.queryPlan);
+          // Papers matched only by the rescan must be able to reach the
+          // ledger and snippet expansion — counters alone would overstate
+          // coverage the answer never saw.
+          const candidateIds = new Set(
+            candidateRecords.map((record) => record.target.itemId),
+          );
+          const discovered = records.filter(
+            (record) =>
+              record.quicksearchMatched &&
+              !previouslyMatched.has(record.target.itemId) &&
+              !candidateIds.has(record.target.itemId),
+          );
+          const merged = mergeRescanDiscoveries({
+            shortlist: candidateRecords,
+            discovered,
+            isEstablished: (record) =>
+              rank.has(String(record.target.itemId)) ||
+              recordMatchedQuery(record),
+            maxCandidatePapers: input.maxCandidatePapers,
+          });
+          for (const record of merged.displaced) {
+            record.queryState.delete("shortlisted");
+          }
+          for (const record of merged.shortlist) {
+            record.queryState.add("shortlisted");
+          }
+          candidateRecords = merged.shortlist;
+          if (merged.droppedDiscoveries) {
+            warnings.push(
+              `${merged.droppedDiscoveries} paper(s) matched by the follow-up probes did not fit the candidate budget and were not read.`,
+            );
+          }
+        }
+      } else {
+        warnings.push("LLM triage unavailable; kept lexical ranking.");
+      }
+    }
+
     const snippets: LibraryRetrieveSnippet[] = [];
     let snippetPapersExpanded = 0;
     let evidencePapers = 0;
+    const wantedSections = params.request?.classifiedIntent?.wantedSections
+      ?.length
+      ? params.request.classifiedIntent.wantedSections
+      : undefined;
+    // Evidence depth defaults to body-first ranking: BM25 loves term-dense
+    // abstracts/intros, which is exactly the "answers from the introduction"
+    // failure this counteracts.
     const preferBodyEvidence =
+      input.depth === "evidence" ||
       readStrategyBase.resolvedStrategy === "deep_synthesis" ||
       (readStrategyBase.resolvedStrategy === "evidence_overview" &&
         input.intent === "summarize") ||
-      queryHasExplicitSectionPreference(input.query);
+      queryHasExplicitSectionPreference(input.query, wantedSections);
 
     if (input.depth === "evidence" || input.depth === "verify") {
       const fullTextRecords = candidateRecords
@@ -1334,6 +1808,8 @@ export class LibraryRetrieveService {
           input,
           maxSnippets: Math.min(input.perPaperTopK, remaining),
           preferBodyEvidence,
+          wantedSections,
+          queryOverride: triagePerPaperQueries?.[String(record.target.itemId)],
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           methodsUsed,
@@ -1462,10 +1938,15 @@ export class LibraryRetrieveService {
           matchedMetadata: records.filter((record) =>
             record.queryState.has("matched_metadata"),
           ).length,
+          matchedBm25: records.filter((record) =>
+            record.queryState.has("matched_bm25"),
+          ).length,
           shortlisted: candidateRecords.length,
           indexedTextAvailable,
           indexedTextScanned: indexedScan.scanned,
           indexedTextMatched: indexedScan.matched,
+          probeRounds,
+          variantsTried: variantsTried.size,
           snippetPapersExpanded,
           fullTextSearched: snippetPapersExpanded,
           snippetsReturned: dedupedSnippets.length,
@@ -1491,6 +1972,66 @@ export class LibraryRetrieveService {
     };
   }
 
+  private countMatchedRecords(
+    records: ResourceRecord[],
+    queryPlan: RetrievalQueryPlan,
+  ): number {
+    return records.filter(
+      (record) =>
+        record.metadataScore > 0 ||
+        record.ftsScore > 0 ||
+        recordBm25Matched(record),
+    ).length;
+  }
+
+  private applyPoolBm25Scores(
+    records: ResourceRecord[],
+    queryPlan: RetrievalQueryPlan,
+    corpus: ReturnType<typeof buildChunkIndex>,
+  ): void {
+    const { chunkStats, docFreq, avgChunkLength } = corpus;
+    records.forEach((record, index) => {
+      const stats = chunkStats[index];
+      if (!stats) return;
+      record.bm25Score = scoreChunkBM25(
+        stats,
+        queryPlan.lexicalTerms,
+        docFreq,
+        records.length,
+        avgChunkLength || 1,
+      );
+      const hits = queryPlan.lexicalTerms.filter((term) => stats.tf[term]);
+      record.bm25TermHits = hits.length;
+      const distinctiveCeiling = Math.max(1, Math.floor(records.length / 2));
+      record.bm25DistinctiveHits = hits.filter(
+        (term) => (docFreq[term] || 0) <= distinctiveCeiling,
+      ).length;
+      if (recordBm25Matched(record)) {
+        // The "abstract " prefix keeps recordHasAbstractMatch attributing
+        // this basis correctly in the paper-match ledger.
+        const why = `abstract bm25 match: ${hits.slice(0, 4).join(", ")}`;
+        if (!record.why.includes(why)) record.why.push(why);
+      }
+    });
+  }
+
+  private buildScopeSourceSamples(scope: ScopeResolution): string[] {
+    const withAbstract: string[] = [];
+    const titleOnly: string[] = [];
+    const snapshot = libraryIndexService.peekSnapshot(scope.libraryID);
+    for (const target of scope.items.slice(0, 20)) {
+      if (withAbstract.length >= 3) break;
+      const indexed = snapshot?.itemById.get(target.itemId);
+      const abstract = normalizeText(indexed?.abstractNote).slice(0, 240);
+      const sample = [normalizeText(target.title), abstract]
+        .filter(Boolean)
+        .join("\n");
+      if (!sample) continue;
+      (abstract ? withAbstract : titleOnly).push(sample);
+    }
+    return [...withAbstract, ...titleOnly].slice(0, 3);
+  }
+
   private async resolveScope(
     input: NormalizedLibraryRetrieveInput,
     request?: AgentRuntimeRequest,
@@ -1505,12 +2046,13 @@ export class LibraryRetrieveService {
       explicitScope.tagNames?.length ||
       explicitScope.tagScopes?.length,
     );
+    const turnScope = request
+      ? getTurnPaperScopeFromRequest(request)
+      : undefined;
     const selectedCollections = !hasExplicitScope
-      ? request?.selectedCollectionContexts || []
+      ? turnScope?.collections || []
       : [];
-    const selectedTags = !hasExplicitScope
-      ? request?.selectedTagContexts || []
-      : [];
+    const selectedTags = !hasExplicitScope ? turnScope?.tags || [] : [];
     const collectionIds = dedupeNumbers(
       explicitScope.collectionIds ||
         selectedCollections.map((collection) => collection.collectionId),
@@ -1563,103 +2105,81 @@ export class LibraryRetrieveService {
       ? selectedTags
       : explicitTagContexts;
 
-    if (explicitItemIds.length) {
-      const items =
-        this.zoteroGateway.getBibliographicItemTargetsByItemIds(
-          explicitItemIds,
-        );
-      return {
-        type: "items",
-        name: `${items.length} selected items`,
+    if (explicitItemIds.length || collectionIds.length || tagContexts.length) {
+      const resolved = await this.zoteroGateway.resolveLibraryScopeItemIds({
         libraryID,
-        collectionIds: [],
-        tagContexts: [],
-        tagItemIds: [],
-        explicitItemIds,
-        items,
-        totalItems: items.length,
-        warnings,
-      };
-    }
-
-    if (collectionIds.length || tagContexts.length) {
-      const byItemId = new Map<number, LibraryItemTarget>();
-      const tagItemIds = new Set<number>();
-      let totalItems = 0;
-      const names: string[] = [];
-      for (const collectionId of collectionIds) {
-        const result = await this.zoteroGateway.listCollectionItemTargets({
-          libraryID,
-          collectionId,
-          limit: input.maxMetadataItems,
-        });
-        totalItems += result.totalCount;
-        names.push(result.collection.path || result.collection.name);
-        for (const target of result.items) {
-          if (
-            byItemId.size >= input.maxMetadataItems &&
-            !byItemId.has(target.itemId)
-          ) {
-            continue;
-          }
-          byItemId.set(target.itemId, target);
-        }
+        itemIds: explicitItemIds,
+        collectionIds,
+        tagContexts: [...tagContexts],
+      });
+      const cappedIds = resolved.itemIds.slice(0, input.maxMetadataItems);
+      // Materialize each unique target exactly once, after the complete union
+      // and the single metadata budget have been applied.
+      const items =
+        this.zoteroGateway.getBibliographicItemTargetsByItemIds(cappedIds);
+      const included = new Set(items.map((target) => target.itemId));
+      const filteredExplicitIds = explicitItemIds.filter((id) =>
+        resolved.itemIds.includes(id),
+      );
+      if (filteredExplicitIds.length < explicitItemIds.length) {
+        warnings.push(
+          "Some explicit item IDs were not bibliographic items in the resolved library and were excluded.",
+        );
       }
-      if (collectionIds.length > 1 && byItemId.size < totalItems) {
+      if (
+        resolved.summedScopeCount > resolved.itemIds.length &&
+        collectionIds.length > 1
+      ) {
         warnings.push(
           "Multiple collection totals may include overlapping items; retrieval uses unique item IDs.",
         );
       }
-      for (const tagContext of tagContexts) {
-        const result = await this.zoteroGateway.listTagItemTargets({
-          libraryID,
-          tagContext,
-          limit: input.maxMetadataItems,
-        });
-        totalItems += result.totalCount;
-        names.push(result.tagName);
-        for (const target of result.items) {
-          if (
-            byItemId.size >= input.maxMetadataItems &&
-            !byItemId.has(target.itemId)
-          ) {
-            continue;
-          }
-          byItemId.set(target.itemId, target);
-          tagItemIds.add(target.itemId);
-        }
-      }
-      if (tagContexts.length > 1 && byItemId.size < totalItems) {
+      if (
+        resolved.summedScopeCount > resolved.itemIds.length &&
+        tagContexts.length > 1
+      ) {
         warnings.push(
           "Multiple tag totals may include overlapping items; retrieval uses unique item IDs.",
         );
       }
       if (
+        resolved.summedScopeCount > resolved.itemIds.length &&
         collectionIds.length &&
-        tagContexts.length &&
-        byItemId.size < totalItems
+        tagContexts.length
       ) {
         warnings.push(
           "Selected collection and tag totals may include overlapping items; retrieval uses unique item IDs.",
         );
       }
-      const isMetadataCapped =
-        byItemId.size >= input.maxMetadataItems && totalItems > byItemId.size;
+      const scopeKinds = [
+        explicitItemIds.length ? "items" : "",
+        collectionIds.length ? "collection" : "",
+        tagContexts.length ? "tag" : "",
+      ].filter(Boolean);
+      const names = [
+        ...(explicitItemIds.length
+          ? [`${filteredExplicitIds.length} selected items`]
+          : []),
+        ...resolved.collectionNames,
+        ...resolved.tagNames,
+      ];
       return {
         type:
-          collectionIds.length && tagContexts.length
+          scopeKinds.length > 1
             ? "mixed"
-            : collectionIds.length
-              ? "collection"
-              : "tag",
+            : explicitItemIds.length
+              ? "items"
+              : collectionIds.length
+                ? "collection"
+                : "tag",
         name: names.join(" + "),
         libraryID,
         collectionIds,
-        tagContexts,
-        tagItemIds: Array.from(tagItemIds),
-        explicitItemIds: [],
-        items: Array.from(byItemId.values()),
-        totalItems: isMetadataCapped ? totalItems : byItemId.size,
+        tagContexts: [...tagContexts],
+        tagItemIds: resolved.tagItemIds.filter((id) => included.has(id)),
+        explicitItemIds: filteredExplicitIds,
+        items,
+        totalItems: resolved.itemIds.length,
         warnings,
       };
     }
@@ -1728,6 +2248,9 @@ export class LibraryRetrieveService {
         queryState: new Set<LibraryRetrieveQueryState>(),
         metadataScore: scored.score,
         ftsScore: 0,
+        bm25Score: 0,
+        bm25TermHits: 0,
+        bm25DistinctiveHits: 0,
         quicksearchMatched: false,
         matchedQueryVariants: new Set(scored.matchedQueryVariants),
         score: scored.score,
@@ -1741,7 +2264,13 @@ export class LibraryRetrieveService {
     records: ResourceRecord[],
     input: NormalizedLibraryRetrieveInput,
     warnings: string[],
+    options: { probesOverride?: string[] } = {},
   ): Promise<IndexedTextScanResult> {
+    const probes = options.probesOverride?.length
+      ? options.probesOverride
+      : buildQuicksearchProbes(input.queryPlan, {
+          includeFullPhrases: input.requireExact || input.depth === "verify",
+        });
     const scan: IndexedTextScanResult = {
       available: records.filter((record) =>
         record.resourceState.has("text_available"),
@@ -1776,53 +2305,28 @@ export class LibraryRetrieveService {
         ? records.length
         : input.maxCandidatePapers;
     try {
-      const allRecordItemIds = Array.from(byItemId.keys());
       const runQuicksearch = async (
         query: string,
-        options: {
-          filters?: AgentLibraryFilters;
-          allowedItemIds?: number[];
-        } = {},
+        allowedItemIds?: number[],
       ): Promise<void> => {
         const result = await this.zoteroGateway.searchAllLibraryItems({
           libraryID: scope.libraryID,
           query,
-          filters: options.filters,
-          allowedItemIds: options.allowedItemIds,
+          allowedItemIds,
           limit: scanLimit,
         });
         if (result.totalCount > result.items.length) scan.truncated = true;
         result.items.forEach((target) => mark(target.itemId, query));
       };
 
-      if (scope.collectionIds.length) {
-        for (const query of input.queryPlan.effectiveQueries) {
-          for (const collectionId of scope.collectionIds) {
-            await runQuicksearch(query, {
-              filters: { collectionId },
-            });
-          }
-        }
-      }
-      if (scope.tagContexts.length) {
-        for (const query of input.queryPlan.effectiveQueries) {
-          if (scope.tagItemIds.length) {
-            await runQuicksearch(query, {
-              allowedItemIds: scope.tagItemIds,
-            });
-          }
-        }
-      }
-      if (scope.collectionIds.length || scope.tagContexts.length) {
-        scan.matched = matchedIds.size;
-        return scan;
-      }
-      const explicit = new Set(scope.explicitItemIds);
-      for (const query of input.queryPlan.effectiveQueries) {
-        await runQuicksearch(
-          query,
-          explicit.size ? { allowedItemIds: allRecordItemIds } : {},
-        );
+      const scoped = Boolean(
+        scope.collectionIds.length ||
+        scope.tagContexts.length ||
+        scope.explicitItemIds.length,
+      );
+      const allowedItemIds = scoped ? Array.from(byItemId.keys()) : undefined;
+      for (const query of probes) {
+        await runQuicksearch(query, allowedItemIds);
       }
       scan.matched = matchedIds.size;
       return scan;
@@ -1842,6 +2346,10 @@ export class LibraryRetrieveService {
     input: NormalizedLibraryRetrieveInput;
     maxSnippets: number;
     preferBodyEvidence?: boolean;
+    /** Classifier-provided sections to prefer, language-independent. */
+    wantedSections?: WantedEvidenceSection[];
+    /** Triage-provided per-paper question; falls back to the main query. */
+    queryOverride?: string;
     apiBase?: string;
     apiKey?: string;
     methodsUsed: Set<LibraryRetrieveMethod>;
@@ -1884,29 +2392,44 @@ export class LibraryRetrieveService {
       const candidateTopK = params.preferBodyEvidence
         ? Math.max(params.maxSnippets, 5)
         : params.maxSnippets;
+      const retrievalQuestion = params.queryOverride || params.input.query;
+      // With a per-paper override, build a per-paper plan around it: the
+      // shared plan's lexicalTerms would otherwise win (queryPlanTerms
+      // precedence) and make the override a no-op, while dropping the plan
+      // entirely would lose the corpus-language variants on exactly the
+      // papers triage prioritized.
+      const paperQueryPlan = params.queryOverride
+        ? buildRetrievalQueryPlan({
+            query: retrievalQuestion,
+            queryVariants: params.input.queryPlan.variants,
+            maxVariants: RETRIEVAL_QUERY_VARIANT_HARD_LIMIT,
+            readIntent: params.input.queryPlan.readIntent,
+          })
+        : params.input.queryPlan;
       const candidates = await this.candidateBuilder(
         paperContext,
         pdfContext,
-        params.input.query,
+        retrievalQuestion,
         {
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           disableEmbeddings: !params.input.methods.includes("semantic"),
-          queryPlan: params.input.queryPlan,
+          queryPlan: paperQueryPlan,
         },
         {
           topK: candidateTopK,
           mode: "evidence",
           disableEmbeddings: !params.input.methods.includes("semantic"),
-          queryPlan: params.input.queryPlan,
+          queryPlan: paperQueryPlan,
         },
       ).then((rows) =>
         params.preferBodyEvidence
           ? rows.sort(
               compareEvidenceCandidatesForQuestion(
-                params.input.query,
+                retrievalQuestion,
                 (candidate) =>
                   candidate.evidenceScore || candidate.hybridScore || 0,
+                params.wantedSections,
               ),
             )
           : rows,
@@ -1916,15 +2439,15 @@ export class LibraryRetrieveService {
           .map((snippet) => snippetChunkKey(snippet))
           .filter((key): key is string => Boolean(key)),
       );
-      for (const candidate of candidates) {
-        if (snippets.length >= params.maxSnippets) break;
+      const admitCandidate = (candidate: PaperContextCandidate): boolean => {
+        if (snippets.length >= params.maxSnippets) return false;
         const matchMethod = matchMethodFromCandidate(
           candidate,
           params.input.methods.includes("semantic"),
         );
         if (matchMethod === "semantic") params.methodsUsed.add("semantic");
         const key = candidateChunkKey(candidate);
-        if (seenChunks.has(key)) continue;
+        if (seenChunks.has(key)) return false;
         seenChunks.add(key);
         for (const query of candidate.matchedQueryVariants || []) {
           params.record.matchedQueryVariants.add(query);
@@ -1952,6 +2475,31 @@ export class LibraryRetrieveService {
               ? "Semantic retrieval ranked this passage highly"
               : "Full-text BM25 retrieval ranked this passage highly",
         });
+        return true;
+      };
+      if (params.preferBodyEvidence) {
+        // Body evidence fills the slots first; front matter (abstract/intro)
+        // is capped at one snippet and only when slots remain. Exact-match
+        // snippets above are exempt — verify mode keeps literal hits.
+        const isFrontMatterCandidate = (candidate: PaperContextCandidate) =>
+          !isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
+        for (const candidate of candidates) {
+          if (isFrontMatterCandidate(candidate)) continue;
+          if (snippets.length >= params.maxSnippets) break;
+          admitCandidate(candidate);
+        }
+        let frontMatterAdmitted = 0;
+        for (const candidate of candidates) {
+          if (!isFrontMatterCandidate(candidate)) continue;
+          if (frontMatterAdmitted >= 1) break;
+          if (snippets.length >= params.maxSnippets) break;
+          if (admitCandidate(candidate)) frontMatterAdmitted += 1;
+        }
+      } else {
+        for (const candidate of candidates) {
+          if (snippets.length >= params.maxSnippets) break;
+          admitCandidate(candidate);
+        }
       }
     }
     return snippets;

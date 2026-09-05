@@ -1,5 +1,9 @@
 import type { PaperContextRef } from "../../../shared/types";
-import type { AgentToolDefinition } from "../../types";
+import type {
+  AgentRuntimeRequest,
+  AgentToolDefinition,
+  AgentTraceDetail,
+} from "../../types";
 import { LiteratureSearchService } from "../../services/literatureSearchService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
@@ -38,6 +42,121 @@ type SearchLiteratureOnlineInput = {
   limit?: number;
   libraryID?: number;
 };
+
+const LITERATURE_SEARCH_FALLBACK_PATTERN =
+  /\b(?:(?:related|similar)\s+(?:papers?|studies|articles?)|(?:find|discover|recommend|search|look up)(?:\s+\S+){0,8}\s+(?:papers?|studies|scholarly articles?|academic literature|research literature)|(?:search|review)\s+(?:the\s+)?literature|literature search|scholarly search|citations?|references?|papers?\s+(?:by|from)|publications?\s+(?:by|from)|doi|arxiv)\b/i;
+
+export function matchesLiteratureSearchGuidance(
+  request: Pick<AgentRuntimeRequest, "userText" | "classifiedIntent">,
+): boolean {
+  const intent = request.classifiedIntent?.externalSearchIntent;
+  if (intent !== undefined) {
+    return intent === "literature" || intent === "both";
+  }
+  return LITERATURE_SEARCH_FALLBACK_PATTERN.test(request.userText || "");
+}
+
+function readTraceString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function buildLiteratureTraceUrl(
+  result: Record<string, unknown>,
+): string | undefined {
+  const directUrl =
+    readTraceString(result.openAccessUrl) || readTraceString(result.sourceUrl);
+  if (directUrl) return directUrl;
+  const doi = readTraceString(result.doi)?.replace(
+    /^https?:\/\/(?:dx\.)?doi\.org\//i,
+    "",
+  );
+  return doi ? `https://doi.org/${doi}` : undefined;
+}
+
+function buildLiteratureTraceCreator(
+  paper: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): string {
+  const authors = Array.isArray(paper.authors)
+    ? paper.authors.map(readTraceString).filter(Boolean)
+    : [];
+  if (authors.length) {
+    return `${authors[0]}${authors.length > 1 ? " et al." : ""}`;
+  }
+
+  const creators = Array.isArray(patch.creators) ? patch.creators : [];
+  for (const entry of creators) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const creator = entry as Record<string, unknown>;
+    const name =
+      readTraceString(creator.name) ||
+      [readTraceString(creator.firstName), readTraceString(creator.lastName)]
+        .filter(Boolean)
+        .join(" ");
+    if (name) return name;
+  }
+  return "Unknown creator";
+}
+
+function buildLiteratureTraceYear(
+  paper: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): string {
+  if (typeof paper.year === "number" && Number.isFinite(paper.year)) {
+    return String(Math.trunc(paper.year));
+  }
+  const explicitYear = readTraceString(paper.year);
+  if (explicitYear && /^\d{4}$/.test(explicitYear)) return explicitYear;
+  const date = readTraceString(patch.date);
+  return date?.match(/\b\d{4}\b/)?.[0] || "n.d.";
+}
+
+function buildLiteratureTraceDetails(
+  args: unknown,
+  content: unknown,
+): AgentTraceDetail[] {
+  const input =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : {};
+  const result =
+    content && typeof content === "object" && !Array.isArray(content)
+      ? (content as Record<string, unknown>)
+      : {};
+  const details: AgentTraceDetail[] = [];
+  const query =
+    readTraceString(input.query) ||
+    readTraceString(input.title) ||
+    readTraceString(input.author);
+  if (query) details.push({ label: "Query", value: query });
+
+  const results = Array.isArray(result.results) ? result.results : [];
+  for (const entry of results) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const paper = entry as Record<string, unknown>;
+    const patch =
+      paper.patch &&
+      typeof paper.patch === "object" &&
+      !Array.isArray(paper.patch)
+        ? (paper.patch as Record<string, unknown>)
+        : {};
+    const title =
+      readTraceString(paper.title) ||
+      readTraceString(paper.displayTitle) ||
+      readTraceString(patch.title);
+    if (!title) continue;
+    const creator = buildLiteratureTraceCreator(paper, patch);
+    const year = buildLiteratureTraceYear(paper, patch);
+    const value = `${creator}, ${year}, ${title}`;
+    const href = buildLiteratureTraceUrl({ ...patch, ...paper });
+    details.push({
+      label: "Paper",
+      value,
+      timeline: { icon: "paper", ...(href ? { href } : {}) },
+    });
+  }
+  return details;
+}
 
 export function createSearchLiteratureOnlineTool(
   zoteroGateway: ZoteroGateway,
@@ -94,12 +213,9 @@ export function createSearchLiteratureOnlineTool(
       requiresConfirmation: false,
     },
     guidance: {
-      matches: (request) =>
-        /\b(related papers?|similar papers?|find papers?|search (the )?(internet|online|web|literature)|online search|web search|citations?|references?|papers? (by|from)|publications? (by|from))\b/i.test(
-          request.userText,
-        ),
+      matches: matchesLiteratureSearchGuidance,
       instruction:
-        "When the user explicitly asks to search online or search the literature, use search_literature_online with workflow:'answer' by default so the model can answer from scholarly results and cite sources. Use workflow:'review' only when the user wants to import/add papers to Zotero, save selected search results to a note, refine results inside the card, or review metadata changes. Do not use this tool for questions about the content of papers already in context (e.g. counting references, summarizing, explaining)." +
+        "When the request needs external scholarly evidence, use search_literature_online with workflow:'answer' by default so the model can answer from scholarly results and cite sources. A mixed request may also use web_search for distinct general-web evidence. Use workflow:'review' only when the user wants to import/add papers to Zotero, save selected search results to a note, refine results inside the card, or review metadata changes. Do not use this tool for questions about the content of papers already in context (e.g. counting references, summarizing, explaining). Preserve the user's language by default." +
         "\n\nSource selection:" +
         "\n• recommendations, references, citations modes → always use source:'openalex' (only OpenAlex supports these)." +
         "\n• search mode → source:'openalex' (default, broadest coverage), source:'arxiv' (preprints, CS/ML/physics), or source:'europepmc' (biomedical/life sciences)." +
@@ -110,6 +226,10 @@ export function createSearchLiteratureOnlineTool(
     },
     presentation: {
       label: "Search Literature Online",
+      traceIcon: "library",
+      mergeResultIntoCallTrace: true,
+      buildTraceDetails: ({ args, content }) =>
+        buildLiteratureTraceDetails(args, content),
       summaries: {
         onCall: ({ args }) => {
           const a =

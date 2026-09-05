@@ -1,20 +1,30 @@
-import type { AgentRuntimeRequest } from "../types";
+import type {
+  AgentRuntimeRequestInput,
+  ResolvedAgentRuntimeRequest,
+} from "../types";
 import type {
   ActiveNoteContext,
   ChatAttachment,
-  CollectionContextRef,
-  LocalDocumentResource,
   NoteContextRef,
   PaperContextRef,
-  ResolvedSelectedTextAnchor,
-  SelectedTextContext,
   SelectedTextSource,
-  TagContextRef,
 } from "../../shared/types";
 import { safeJsonStringify } from "../../utils/safeJsonStringify";
+import {
+  buildTurnPaperScope,
+  getActiveTurnPaper,
+  getSelectedPassagePaper,
+  type ResolvedTurnSelectedTextAnchor,
+  type ResolvedTurnSelectedTextContext,
+  type TurnLocalDocument,
+  type TurnPaperRef,
+  type TurnPaperRole,
+  type TurnPaperScope,
+  type TurnPaperScopeWarning,
+} from "./turnPaperScope";
 
-export type TurnContextEnvelopeInput = Pick<
-  AgentRuntimeRequest,
+type LegacyTurnContextEnvelopeInput = Pick<
+  AgentRuntimeRequestInput,
   | "activeItemId"
   | "attachments"
   | "conversationKind"
@@ -40,47 +50,66 @@ export type TurnContextEnvelopeInput = Pick<
   libraryName?: string;
 };
 
-export type TurnContextPaper = PaperContextRef & {
-  roles: string[];
+type ResolvedTurnContextEnvelopeInput = Pick<
+  ResolvedAgentRuntimeRequest,
+  | "activeItemId"
+  | "activeNoteContext"
+  | "attachments"
+  | "conversationKind"
+  | "localDocuments"
+  | "resolvedSelectedTextAnchors"
+  | "screenshots"
+  | "selectedTextContexts"
+  | "selectedTextNoteContexts"
+  | "selectedTextSources"
+  | "selectedTexts"
+  | "turnPaperScope"
+  | "turnPaperScopeWarnings"
+  | "zoteroMetadataContext"
+> & {
+  activePaperTitle?: string;
 };
 
-export type TurnContextEnvelope = {
-  libraryID?: number;
-  libraryName?: string;
-  conversationKind?: "global" | "paper";
+export type TurnContextEnvelopeInput =
+  | LegacyTurnContextEnvelopeInput
+  | ResolvedTurnContextEnvelopeInput;
+
+export type TurnContextEnvelope = Readonly<{
+  paperScope: TurnPaperScope;
+  zoteroMetadataContext?: ResolvedAgentRuntimeRequest["zoteroMetadataContext"];
   activeItemId?: number;
   activePaperTitle?: string;
-  papers: TurnContextPaper[];
-  collections: CollectionContextRef[];
-  tags: TagContextRef[];
   selectedTextCount: number;
-  selectedTextSources: SelectedTextSource[];
-  selectedTextPaperTitles: string[];
-  selectedTextLocators: string[];
-  selectedTextNotes: Array<{
+  selectedTextContexts: readonly ResolvedTurnSelectedTextContext[];
+  resolvedSelectedTextAnchors: readonly ResolvedTurnSelectedTextAnchor[];
+  selectedTextSources: readonly SelectedTextSource[];
+  selectedTextLocators: readonly string[];
+  selectedTextNotes: readonly Readonly<{
     index: number;
     noteId?: number;
     title: string;
     noteKind: NoteContextRef["noteKind"];
     parentItemId?: number;
-  }>;
+  }>[];
   screenshotCount: number;
-  attachments: ChatAttachment[];
-  localDocuments: readonly LocalDocumentResource[];
+  attachments: readonly ChatAttachment[];
+  localDocuments: readonly TurnLocalDocument[];
+  paperScopeWarnings: readonly TurnPaperScopeWarning[];
   activeNote?: Pick<
     ActiveNoteContext,
     "noteId" | "noteKind" | "parentItemId" | "title"
   >;
-};
+}>;
 
 function formatSelectionLocator(
-  context: SelectedTextContext,
-  anchor?: ResolvedSelectedTextAnchor,
+  context: ResolvedTurnSelectedTextContext,
+  anchor: ResolvedTurnSelectedTextAnchor | undefined,
+  paper: TurnPaperRef | undefined,
 ): string {
   if (context.source !== "pdf") return "";
   const contextItemId =
     normalizeNumber(context.contextItemId) ||
-    normalizeNumber(context.paperContext?.contextItemId) ||
+    normalizeNumber(paper?.contextItemId) ||
     anchor?.contextItemId;
   const pageIndex = Number.isFinite(context.pageIndex)
     ? Math.max(0, Math.floor(context.pageIndex as number))
@@ -106,121 +135,24 @@ function normalizeNumber(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
-function paperKey(paper: PaperContextRef): string {
-  const contextItemId = normalizeNumber(paper.contextItemId);
-  if (contextItemId) return `context:${contextItemId}`;
-  const itemId = normalizeNumber(paper.itemId);
-  if (itemId) return `item:${itemId}`;
-  return `title:${normalizeText(paper.title).toLowerCase()}`;
-}
-
-function mergePaperFields(
-  existing: TurnContextPaper,
-  next: PaperContextRef,
-): TurnContextPaper {
-  return {
-    ...existing,
-    itemId: existing.itemId || next.itemId,
-    contextItemId: existing.contextItemId || next.contextItemId,
-    title: existing.title || next.title,
-    attachmentTitle: existing.attachmentTitle || next.attachmentTitle,
-    citationKey: existing.citationKey || next.citationKey,
-    firstCreator: existing.firstCreator || next.firstCreator,
-    year: existing.year || next.year,
-    contentSourceMode: existing.contentSourceMode || next.contentSourceMode,
-    mineruCacheDir: existing.mineruCacheDir || next.mineruCacheDir,
-  };
-}
-
-function pushPaper(
-  papers: TurnContextPaper[],
-  indexByKey: Map<string, number>,
-  paper: PaperContextRef | undefined,
-  role: string,
-): void {
-  if (!paper) return;
-  const key = paperKey(paper);
-  if (!key || key === "title:") return;
-  const existingIndex = indexByKey.get(key);
-  if (existingIndex !== undefined) {
-    const existing = papers[existingIndex];
-    papers[existingIndex] = {
-      ...mergePaperFields(existing, paper),
-      roles: existing.roles.includes(role)
-        ? existing.roles
-        : [...existing.roles, role],
-    };
-    return;
-  }
-  indexByKey.set(key, papers.length);
-  papers.push({ ...paper, roles: [role] });
-}
-
-function normalizeCollections(
-  collections: CollectionContextRef[] | undefined,
-): CollectionContextRef[] {
-  const seen = new Set<string>();
-  const out: CollectionContextRef[] = [];
-  for (const collection of collections || []) {
-    const collectionId = normalizeNumber(collection.collectionId);
-    const libraryID = normalizeNumber(collection.libraryID);
-    if (!collectionId || !libraryID) continue;
-    const key = `${libraryID}:${collectionId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ ...collection, collectionId, libraryID });
-  }
-  return out;
-}
-
-function normalizeTags(tags: TagContextRef[] | undefined): TagContextRef[] {
-  const seen = new Set<string>();
-  const out: TagContextRef[] = [];
-  for (const tag of tags || []) {
-    const libraryID = normalizeNumber(tag.libraryID);
-    if (!libraryID) continue;
-    const name = normalizeText(tag.name);
-    const normalizedName = normalizeText(tag.normalizedName);
-    const key = [
-      libraryID,
-      tag.scope || "",
-      normalizedName || name.toLowerCase(),
-      tag.includeAutomatic === true ? "auto" : "manual",
-    ].join(":");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      ...tag,
-      name,
-      normalizedName: normalizedName || undefined,
-      libraryID,
-    });
-  }
-  return out;
-}
-
 export function buildTurnContextEnvelope(
   input: TurnContextEnvelopeInput,
 ): TurnContextEnvelope {
-  const papers: TurnContextPaper[] = [];
-  const indexByKey = new Map<string, number>();
-  pushPaper(papers, indexByKey, input.activePaperContext, "active paper");
-  for (const paper of input.selectedPaperContexts || []) {
-    pushPaper(papers, indexByKey, paper, "selected");
+  const paperScopeResult =
+    "turnPaperScope" in input
+      ? {
+          ok: true as const,
+          scope: input.turnPaperScope,
+          selectedTextContexts: input.selectedTextContexts || [],
+          resolvedSelectedTextAnchors: input.resolvedSelectedTextAnchors || [],
+          localDocuments: input.localDocuments || [],
+          warnings: input.turnPaperScopeWarnings || [],
+        }
+      : buildTurnPaperScope(input);
+  if (!paperScopeResult.ok) {
+    throw new Error(`${paperScopeResult.code}: ${paperScopeResult.message}`);
   }
-  for (const paper of input.fullTextPaperContexts || []) {
-    pushPaper(papers, indexByKey, paper, "full-text");
-  }
-  for (const paper of input.pdfPaperContexts || []) {
-    pushPaper(papers, indexByKey, paper, "raw PDF");
-  }
-  for (const paper of input.pinnedPaperContexts || []) {
-    pushPaper(papers, indexByKey, paper, "pinned");
-  }
-
-  const selectedTextContexts = Array.isArray(input.selectedTextContexts)
-    ? input.selectedTextContexts
-    : [];
+  const selectedTextContexts = paperScopeResult.selectedTextContexts;
   const selectedTexts = selectedTextContexts.length
     ? selectedTextContexts.map((context) => context.text)
     : Array.isArray(input.selectedTexts)
@@ -231,24 +163,24 @@ export function buildTurnContextEnvelope(
     : selectedTexts.map(
         (_, index) => input.selectedTextSources?.[index] || "pdf",
       );
-  const selectedTextPaperContexts = selectedTextContexts.length
-    ? selectedTextContexts.map((context) => context.paperContext)
-    : input.selectedTextPaperContexts || [];
-  const selectedTextPaperTitles = selectedTextPaperContexts
-    .map((paper) => normalizeText(paper?.title))
-    .filter(Boolean);
   const anchorsByIndex = new Map(
-    (input.resolvedSelectedTextAnchors || []).map((anchor) => [
+    paperScopeResult.resolvedSelectedTextAnchors.map((anchor) => [
       anchor.contextIndex,
       anchor,
     ]),
   );
   const selectedTextLocators = selectedTextContexts
     .map((context, index) =>
-      formatSelectionLocator(context, anchorsByIndex.get(index)),
+      formatSelectionLocator(
+        context,
+        anchorsByIndex.get(index),
+        getSelectedPassagePaper(paperScopeResult.scope, index),
+      ),
     )
     .filter(Boolean);
-  const selectedTextNotes: TurnContextEnvelope["selectedTextNotes"] = [];
+  const selectedTextNotes: Array<
+    TurnContextEnvelope["selectedTextNotes"][number]
+  > = [];
   (input.selectedTextNoteContexts || []).forEach((note, index) => {
     if (!note) return;
     const title = normalizeText(note.title);
@@ -272,22 +204,26 @@ export function buildTurnContextEnvelope(
     : undefined;
 
   return {
-    libraryID: normalizeNumber(input.libraryID),
-    libraryName: normalizeText(input.libraryName) || undefined,
-    conversationKind: input.conversationKind,
+    paperScope: paperScopeResult.scope,
+    zoteroMetadataContext:
+      "zoteroMetadataContext" in input
+        ? input.zoteroMetadataContext
+        : undefined,
     activeItemId: normalizeNumber(input.activeItemId),
-    activePaperTitle: normalizeText(input.activePaperTitle) || undefined,
-    papers,
-    collections: normalizeCollections(input.selectedCollectionContexts),
-    tags: normalizeTags(input.selectedTagContexts),
+    activePaperTitle:
+      normalizeText(input.activePaperTitle) ||
+      getActiveTurnPaper(paperScopeResult.scope)?.title ||
+      undefined,
     selectedTextCount: selectedTexts.length,
+    selectedTextContexts,
+    resolvedSelectedTextAnchors: paperScopeResult.resolvedSelectedTextAnchors,
     selectedTextSources,
-    selectedTextPaperTitles,
     selectedTextLocators,
     selectedTextNotes,
     screenshotCount: (input.screenshots || []).filter(Boolean).length,
     attachments: (input.attachments || []).filter(Boolean),
-    localDocuments: (input.localDocuments || []).filter(Boolean),
+    localDocuments: paperScopeResult.localDocuments,
+    paperScopeWarnings: paperScopeResult.warnings,
     activeNote,
   };
 }
@@ -310,32 +246,66 @@ export function renderTurnContextEnvelopeForModel(
   envelope: TurnContextEnvelope,
 ): string {
   const lines: string[] = [];
+  const activePaper = getActiveTurnPaper(envelope.paperScope);
   const libraryFields = renderFields([
-    ["libraryID", envelope.libraryID],
-    ["name", envelope.libraryName],
-    ["scope", envelope.conversationKind],
+    ["libraryID", envelope.paperScope.libraryID || undefined],
+    ["name", envelope.paperScope.libraryName],
+    ["scope", envelope.paperScope.conversationKind],
     ["activeItemId", envelope.activeItemId],
-    ["activePaperTitle", envelope.activePaperTitle],
+    [
+      "activePaperTitle",
+      envelope.paperScope.papers.length
+        ? undefined
+        : envelope.activePaperTitle || activePaper?.title,
+    ],
   ]);
   if (libraryFields) lines.push(`Library scope: ${libraryFields}`);
 
-  envelope.papers.forEach((paper, index) => {
+  envelope.paperScope.papers.forEach((entry, index) => {
+    const paper = entry.paper;
+    const projected = envelope.zoteroMetadataContext?.papers.find(
+      (candidate) =>
+        candidate.itemId === paper.itemId &&
+        candidate.contextItemId === paper.contextItemId,
+    )?.metadata;
+    const contentSource = projected?.contentSource;
     lines.push(
       `Paper ${index + 1}: ${renderFields([
-        ["title", paper.title],
-        ["creator", paper.firstCreator],
-        ["year", paper.year],
+        ["title", projected ? projected.title : paper.title],
+        ["creators", projected ? projected.creatorDisplay : paper.firstCreator],
+        ["publicationDate", projected?.publicationDate],
+        ["year", projected ? projected.year : paper.year],
         ["itemId", paper.itemId],
         ["contextItemId", paper.contextItemId],
-        ["citationKey", paper.citationKey],
-        ["source", paper.roles.join(", ")],
-        ["attachmentTitle", paper.attachmentTitle],
+        ["citationKey", projected ? projected.citationKey : paper.citationKey],
+        ["doi", projected?.doi],
+        ["containerTitle", projected?.containerTitle],
+        ["containerSourceField", projected?.containerSourceField],
+        ["eventTitle", projected?.eventTitle],
+        ["eventSourceField", projected?.eventSourceField],
+        ["journalAbbreviation", projected?.journalAbbreviation],
+        ["source", entry.roles.map(renderPaperRole).join(", ")],
+        [
+          "contentSourceTitle",
+          projected ? contentSource?.title : paper.attachmentTitle,
+        ],
+        ["contentSourceFilename", contentSource?.filename],
+        ["contentSourceType", contentSource?.contentType],
         ["contentSourceMode", paper.contentSourceMode],
+        [
+          "metadataSource",
+          projected?.source === "stored_fallback"
+            ? "stored fallback; live Zotero item unavailable"
+            : undefined,
+        ],
       ])}`,
     );
+    for (const warning of projected?.warnings || []) {
+      lines.push(`Paper ${index + 1} metadata warning: ${warning.message}`);
+    }
   });
 
-  envelope.collections.forEach((collection, index) => {
+  envelope.paperScope.collections.forEach((collection, index) => {
     lines.push(
       `Collection ${index + 1}: ${renderFields([
         ["name", collection.name],
@@ -346,7 +316,7 @@ export function renderTurnContextEnvelopeForModel(
     );
   });
 
-  envelope.tags.forEach((tag, index) => {
+  envelope.paperScope.tags.forEach((tag, index) => {
     lines.push(
       `Tag ${index + 1}: ${renderFields([
         ["name", tag.name],
@@ -363,9 +333,23 @@ export function renderTurnContextEnvelopeForModel(
     lines.push(
       `Selected text: count=${envelope.selectedTextCount}, sources=${envelope.selectedTextSources.join(", ")}`,
     );
-    if (envelope.selectedTextPaperTitles.length) {
+    if (envelope.paperScope.selectedPassagePaperRefs.length) {
       lines.push(
-        `Selected text papers: ${envelope.selectedTextPaperTitles.join("; ")}`,
+        `Selected text papers: ${envelope.paperScope.selectedPassagePaperRefs
+          .map((entry) => {
+            const projected = envelope.zoteroMetadataContext?.papers.find(
+              (candidate) =>
+                candidate.itemId === entry.paper.itemId &&
+                candidate.contextItemId === entry.paper.contextItemId,
+            )?.metadata;
+            return renderFields([
+              ["selection", entry.contextIndex + 1],
+              ["title", projected ? projected.title : entry.paper.title],
+              ["itemId", entry.paper.itemId],
+              ["contextItemId", entry.paper.contextItemId],
+            ]);
+          })
+          .join(" | ")}`,
       );
     }
     if (envelope.selectedTextLocators.length) {
@@ -410,8 +394,8 @@ export function renderTurnContextEnvelopeForModel(
     lines.push(
       "Raw PDFs explicitly selected for this turn:",
       ...envelope.localDocuments.map(
-        (document, index) =>
-          `${index + 1}. sourceKey=${document.sourceKey}, itemId=${document.itemId}, contextItemId=${document.contextItemId}, title=${safeJsonStringify(document.title)}, name=${safeJsonStringify(document.name)}, path=${safeJsonStringify(document.absolutePath)}`,
+        ({ paperKey, resource }, index) =>
+          `${index + 1}. paperKey=${paperKey}, sourceKey=${resource.sourceKey}, title=${safeJsonStringify(resource.title)}, name=${safeJsonStringify(resource.name)}, path=${safeJsonStringify(resource.absolutePath)}`,
       ),
       "Read exactly these paths. The current-turn list is authoritative. Do not substitute other Zotero attachments, MinerU full.md, extracted text, generic attachments, or PDF paths from earlier turns.",
     );
@@ -432,12 +416,23 @@ export function renderTurnContextEnvelopeForModel(
     );
   }
 
+  for (const warning of envelope.paperScopeWarnings) {
+    lines.push(`Paper scope warning: ${warning.message}`);
+  }
+
   if (!lines.length) return "";
   return [
     "Zotero context for this turn:",
     ...lines,
-    'Resolve references like "these papers", "both papers", "this collection", "this tag", "the selected library", and ordinal phrases like "the second paper" from the context listed above. Do not infer missing resource identity from old thread history or local memory when the current turn lists resources.',
+    'Resolve current-resource references only from the context listed above. "This paper" means the active paper. In Paper Chat, "these papers" or "both papers" means the active paper plus visibly added concrete papers; in Library Chat it means all visibly attached concrete papers. Collections and tags remain lazy resource pools and are never silently included in "these papers". Do not infer missing resource identity from old thread history, citation provenance, retrieved candidates, local PDF transport, or local memory.',
   ].join("\n");
+}
+
+function renderPaperRole(role: TurnPaperRole): string {
+  if (role === "active") return "active paper";
+  if (role === "full_text") return "full-text";
+  if (role === "raw_pdf") return "raw PDF";
+  return role;
 }
 
 export function buildVisibleTurnContextBlock(

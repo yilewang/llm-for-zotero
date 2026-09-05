@@ -10,10 +10,20 @@ describe("editCurrentNote path imports", function () {
       userText: "embed this figure",
       activeItemId: 9,
       libraryID: 1,
+      activeNoteContext: {
+        noteId: 55,
+        title: "Draft Note",
+        noteKind: "standalone",
+        noteText: "Original body",
+      },
     },
     item: null,
     currentAnswerText: "",
     modelName: "gpt-5.4",
+    // These tests intentionally invoke the tool directly without the registry
+    // or a Zotero DB. Production receives this witness only after the explicit
+    // fallback confirmation card is approved.
+    journalFallbackApproved: true,
   };
 
   it("imports markdown Windows file URLs using native paths", async function () {

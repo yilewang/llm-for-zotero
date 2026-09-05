@@ -1,13 +1,18 @@
 import type { PaperContextRef } from "../../../shared/types";
 import type { AgentToolDefinition } from "../../types";
 import {
+  type LibrarySortKey,
+  type LibrarySortOrder,
   LibraryQueryService,
   type QueryLibraryEntity,
   type QueryLibraryFilters,
   type QueryLibraryInclude,
   type QueryLibraryMode,
 } from "../../services/libraryQueryService";
-import type { ZoteroGateway } from "../../services/zoteroGateway";
+import type {
+  AgentSearchCondition,
+  ZoteroGateway,
+} from "../../services/zoteroGateway";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 
 type QueryLibraryInput = {
@@ -17,8 +22,15 @@ type QueryLibraryInput = {
   refs?: Array<number | PaperContextRef>;
   filters?: QueryLibraryFilters;
   limit?: number;
+  offset?: number;
+  sort?: LibrarySortKey;
+  order?: LibrarySortOrder;
   include?: QueryLibraryInclude[];
   view?: "flat" | "tree";
+  conditions?: AgentSearchCondition[];
+  joinMode?: "all" | "any";
+  resolveToParents?: boolean;
+  libraryID?: number;
 };
 
 const QUERY_LIBRARY_SHAPE_HINT =
@@ -43,6 +55,40 @@ function normalizeInclude(value: unknown): QueryLibraryInclude[] | undefined {
       VALID_INCLUDE.has(entry as QueryLibraryInclude),
     );
   return includes.length ? Array.from(new Set(includes)) : undefined;
+}
+
+/**
+ * Reads `conditions[]` without validating the vocabulary.
+ *
+ * Whether a condition and operator actually pair up is Zotero's question, not
+ * ours -- `Zotero.SearchConditions` is the authority and answers it at
+ * execution time with the list of valid operators. Duplicating that table
+ * here is how the nine hand-written filters came to exist in the first place.
+ */
+function normalizeConditions(
+  value: unknown,
+): AgentSearchCondition[] | undefined {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const conditions: AgentSearchCondition[] = [];
+  for (const entry of value) {
+    if (!validateObject<Record<string, unknown>>(entry)) continue;
+    const condition =
+      typeof entry.condition === "string" ? entry.condition.trim() : "";
+    const operator =
+      typeof entry.operator === "string" ? entry.operator.trim() : "";
+    if (!condition) continue;
+    conditions.push({
+      condition,
+      operator,
+      value:
+        typeof entry.value === "string" || typeof entry.value === "number"
+          ? entry.value
+          : undefined,
+      mode: typeof entry.mode === "string" ? entry.mode.trim() : undefined,
+      required: entry.required === true ? true : undefined,
+    });
+  }
+  return conditions.length ? conditions : undefined;
 }
 
 function normalizeRef(value: unknown): number | PaperContextRef | null {
@@ -123,6 +169,7 @@ function normalizeFilters(value: unknown): QueryLibraryFilters | undefined {
       typeof value.tag === "string" && value.tag.trim()
         ? value.tag.trim()
         : undefined,
+    deleted: value.deleted === true || value.deleted === "true",
   };
 }
 
@@ -197,8 +244,8 @@ function resolveReferenceItemId(
   }
   if (
     context.request.conversationKind === "global" ||
-    context.request.selectedCollectionContexts?.length ||
-    context.request.selectedTagContexts?.length
+    context.request.turnPaperScope.collections.length ||
+    context.request.turnPaperScope.tags.length
   ) {
     return null;
   }
@@ -238,7 +285,8 @@ export function createQueryLibraryTool(
     spec: {
       name: "query_library",
       description:
-        "Discover Zotero items and collections. Every call must include entity and mode. Use text, not query, for search terms. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only. For 'how many papers/items...' questions, use totalCount/returnedCount/limited instead of hand-counting the returned rows.",
+        "Discover Zotero items and collections. Every call must include entity and mode. Use text, not query, for search terms. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only. For 'how many papers/items...' questions, use totalCount/returnedCount/limited instead of hand-counting the returned rows. " +
+        "For anything the simple filters cannot express, pass conditions[] — Zotero's own advanced-search vocabulary, covering full text, abstract, DOI, publisher, dates added or modified, note and annotation text, citation key, retraction status and every other condition. Use filters.deleted:true to list the trash.",
       inputSchema: {
         type: "object",
         required: ["entity", "mode"],
@@ -246,9 +294,17 @@ export function createQueryLibraryTool(
         properties: {
           entity: {
             type: "string",
-            enum: ["items", "collections", "notes", "tags", "libraries"],
+            enum: [
+              "items",
+              "collections",
+              "notes",
+              "tags",
+              "libraries",
+              "itemTypes",
+              "savedSearches",
+            ],
             description:
-              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group).",
+              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group), 'itemTypes' to discover Zotero's item types and the exact fields and creator types each one accepts (use this before creating an item or setting an unfamiliar field — a field the type does not have is rejected, not ignored), 'savedSearches' to list the library's saved searches and the conditions behind them.",
           },
           mode: {
             type: "string",
@@ -301,7 +357,64 @@ export function createQueryLibraryTool(
                 description:
                   "Filter by exact tag name (e.g. 'machine learning'). Only items with this tag are returned.",
               },
+              deleted: {
+                type: "boolean",
+                description:
+                  "Set true to list the trash instead of the library. Needed before restoring anything, since nothing else can enumerate what is in the trash.",
+              },
             },
+          },
+          conditions: {
+            type: "array",
+            description:
+              "Advanced search clauses, forwarded to Zotero's own search engine. Use this for anything the nine simple filters cannot express — fulltextContent, abstractNote, DOI, publisher, dateAdded, dateModified, note, annotationText, citationKey, retracted, publications, and every other Zotero search condition. Only valid with entity:'items'.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["condition", "operator"],
+              properties: {
+                condition: {
+                  type: "string",
+                  description:
+                    "A Zotero search condition, e.g. 'title', 'abstractNote', 'fulltextContent', 'dateAdded', 'DOI', 'itemType', 'tag', 'collection', 'note', 'annotationText', 'citationKey', 'retracted'.",
+                },
+                operator: {
+                  type: "string",
+                  description:
+                    "An operator the condition accepts, e.g. is, isNot, contains, doesNotContain, beginsWith, isBefore, isAfter, isInTheLast, isLessThan, isGreaterThan, true, false. An invalid pairing is rejected with the list of valid operators for that condition.",
+                },
+                value: {
+                  description: "The value to compare against.",
+                  anyOf: [{ type: "string" }, { type: "number" }],
+                },
+                mode: {
+                  type: "string",
+                  description:
+                    "Sub-mode for conditions that take one, notably fulltextContent with 'phrase' or 'regexp'.",
+                },
+                required: {
+                  type: "boolean",
+                  description:
+                    "Force this clause to be required even under joinMode:'any'.",
+                },
+              },
+            },
+          },
+          joinMode: {
+            type: "string",
+            enum: ["all", "any"],
+            description:
+              "Whether every condition must match ('all', the default) or any one of them ('any'). Applies to conditions[].",
+          },
+          resolveToParents: {
+            type: "boolean",
+            description:
+              "Return the parent paper for matches that are child items. Required for conditions that match children — fulltextContent, annotationText and childNote match an attachment or note, and without this those matches are dropped and the search looks empty.",
+          },
+          libraryID: {
+            type: "number",
+            description:
+              "Search a specific library. Defaults to the active one; a group library ID searches that group instead.",
           },
           view: {
             type: "string",
@@ -310,6 +423,23 @@ export function createQueryLibraryTool(
               "For entity:'collections' mode:'list': 'flat' returns a list, 'tree' returns the full hierarchy with paper counts. Default: flat.",
           },
           limit: { type: "number" },
+          offset: {
+            type: "number",
+            description:
+              "Skip this many results before returning. Use with limit to page through a large result set across several calls. Applies to entity:'items' with mode:'list'.",
+          },
+          sort: {
+            type: "string",
+            enum: ["dateAdded", "title"],
+            description:
+              "Order results before limit/offset are applied. Use sort:'dateAdded' for requests like 'the most recently added papers'. Applies to entity:'items' with mode:'list'; text search returns relevance order and ignores this.",
+          },
+          order: {
+            type: "string",
+            enum: ["asc", "desc"],
+            description:
+              "Sort direction. Defaults to 'desc' for dates (newest first) and 'asc' for title.",
+          },
           include: {
             type: "array",
             items: {
@@ -405,7 +535,9 @@ export function createQueryLibraryTool(
         normalizedArgs.entity === "collections" ||
         normalizedArgs.entity === "notes" ||
         normalizedArgs.entity === "tags" ||
-        normalizedArgs.entity === "libraries"
+        normalizedArgs.entity === "libraries" ||
+        normalizedArgs.entity === "itemTypes" ||
+        normalizedArgs.entity === "savedSearches"
           ? (normalizedArgs.entity as QueryLibraryEntity)
           : null;
       const mode =
@@ -430,14 +562,47 @@ export function createQueryLibraryTool(
       if (entity === "libraries" && mode !== "list") {
         return fail("libraries only support mode:'list'");
       }
-      if ((entity === "items" || entity === "notes") && mode === "search") {
+      if (entity === "itemTypes" && !["list", "search"].includes(mode)) {
+        return fail("itemTypes only support mode:'list' or mode:'search'");
+      }
+      if (entity === "savedSearches" && !["list", "search"].includes(mode)) {
+        return fail("savedSearches only support mode:'list' or mode:'search'");
+      }
+      const conditions = normalizeConditions(normalizedArgs.conditions);
+      if (conditions && entity !== "items") {
+        return fail(
+          "conditions[] is only valid with entity:'items'. Collections, notes, tags and libraries are not searched through Zotero's condition engine.",
+        );
+      }
+      if (conditions) {
+        // hasPdf routes to a different engine entirely and untagged is a JS
+        // filter applied after the fact, so neither can honour a condition
+        // set. Silently ignoring one of them would return a confidently wrong
+        // result.
+        const filters = normalizedArgs.filters as
+          | Record<string, unknown>
+          | undefined;
+        const conflicting = ["hasPdf", "untagged"].filter(
+          (key) => filters?.[key] !== undefined,
+        );
+        if (conflicting.length) {
+          return fail(
+            `filters.${conflicting.join(" and filters.")} cannot be combined with conditions[], because ${conflicting.length === 1 ? "it is" : "they are"} applied outside Zotero's search engine. Express the same thing as a condition, or drop conditions[].`,
+          );
+        }
+      }
+      if (
+        (entity === "items" || entity === "notes") &&
+        mode === "search" &&
+        !conditions
+      ) {
         const text =
           typeof normalizedArgs.text === "string"
             ? normalizedArgs.text.trim()
             : "";
         if (!text) {
           return fail(
-            "text is required for search mode. Use library_search({ entity:'items', mode:'search', text:'<terms>' })",
+            "text is required for search mode. Use library_search({ entity:'items', mode:'search', text:'<terms>' }), or pass conditions[] for an advanced search.",
           );
         }
       }
@@ -453,6 +618,13 @@ export function createQueryLibraryTool(
       return ok<QueryLibraryInput>({
         entity,
         mode,
+        conditions,
+        joinMode:
+          normalizedArgs.joinMode === "any" || normalizedArgs.joinMode === "all"
+            ? normalizedArgs.joinMode
+            : undefined,
+        resolveToParents: normalizedArgs.resolveToParents === true,
+        libraryID: normalizePositiveInt(normalizedArgs.libraryID),
         text:
           typeof normalizedArgs.text === "string" && normalizedArgs.text.trim()
             ? normalizedArgs.text.trim()
@@ -460,17 +632,61 @@ export function createQueryLibraryTool(
         refs: normalizeRefs(normalizedArgs.refs),
         filters: normalizeFilters(normalizedArgs.filters),
         limit: normalizePositiveInt(normalizedArgs.limit),
+        // offset is deliberately not normalizePositiveInt: 0 is a valid
+        // starting offset and that helper rejects it.
+        offset:
+          Number.isFinite(normalizedArgs.offset) &&
+          Number(normalizedArgs.offset) > 0
+            ? Math.floor(Number(normalizedArgs.offset))
+            : undefined,
+        sort:
+          normalizedArgs.sort === "dateAdded" || normalizedArgs.sort === "title"
+            ? normalizedArgs.sort
+            : undefined,
+        // Pass the direction through verbatim. Collapsing anything that was
+        // not "asc" to undefined made an explicit order:'desc' on a title
+        // sort silently return A-Z.
+        order:
+          normalizedArgs.order === "asc" || normalizedArgs.order === "desc"
+            ? normalizedArgs.order
+            : undefined,
         include: normalizeInclude(normalizedArgs.include),
         view,
       });
     },
     execute: async (input, context) => {
-      const libraryID = zoteroGateway.resolveLibraryID({
-        request: context.request,
-        item: context.item,
-      });
+      const libraryID =
+        input.libraryID ||
+        zoteroGateway.resolveLibraryID({
+          request: context.request,
+          item: context.item,
+        });
       if (!libraryID) {
         throw new Error("No active library available");
+      }
+      if (input.conditions) {
+        const result = await zoteroGateway.searchItemsByConditions({
+          libraryID,
+          conditions: input.conditions,
+          joinMode: input.joinMode,
+          resolveToParents: input.resolveToParents,
+          includeTrashed: input.filters?.deleted === true,
+          limit: input.limit,
+          offset: input.offset,
+        });
+        return {
+          entity: input.entity,
+          mode: input.mode,
+          results: result.items,
+          totalCount: result.totalCount,
+          returnedCount: result.returnedCount,
+          offset: result.offset,
+          // Present only when more remains, so its absence is a reliable
+          // signal that the walk is finished.
+          nextOffset: result.nextOffset,
+          limited: result.nextOffset !== undefined,
+          warnings: [],
+        };
       }
       if (input.entity === "notes") {
         if (input.mode === "search") {
@@ -501,6 +717,33 @@ export function createQueryLibraryTool(
           },
           { totalCount: result.totalCount },
         );
+      }
+      if (input.entity === "savedSearches") {
+        const results = zoteroGateway.listSavedSearches(libraryID);
+        const query = (input.text || "").trim().toLowerCase();
+        const filtered =
+          input.mode === "search" && query
+            ? results.filter((entry) =>
+                entry.name.toLowerCase().includes(query),
+              )
+            : results;
+        return withResultCounts({
+          entity: input.entity,
+          mode: input.mode,
+          results: filtered,
+        });
+      }
+      if (input.entity === "itemTypes") {
+        // Fields come back for a named type only. All ~35 types with their
+        // full field lists is a large payload to spend on "what types exist".
+        const result = zoteroGateway.listItemTypes({
+          itemType: input.filters?.itemType || input.text,
+        });
+        return withResultCounts({
+          entity: input.entity,
+          mode: input.mode,
+          results: result.itemTypes,
+        });
       }
       if (input.entity === "libraries") {
         const results = zoteroGateway.listAllLibraries();
@@ -574,6 +817,9 @@ export function createQueryLibraryTool(
           libraryID,
           filters: input.filters,
           limit: input.limit,
+          offset: input.offset,
+          sort: input.sort,
+          order: input.order,
           include: input.include,
         });
         return withResultCounts(

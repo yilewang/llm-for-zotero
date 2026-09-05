@@ -1,5 +1,8 @@
 import { assert } from "chai";
 import {
+  extractCjkKeywordProbes,
+  isCjkDominantText,
+  stripTerminalPunctuation,
   tokenizeRetrievalDiversity,
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
@@ -78,5 +81,60 @@ describe("retrievalTokenizer", function () {
     assert.isTrue(first.has("학습"));
     assert.isTrue(second.has("표현"));
     assert.isTrue(second.has("학습"));
+  });
+});
+
+describe("quicksearch probe helpers", function () {
+  it("strips trailing fullwidth and ascii terminal punctuation", function () {
+    assert.equal(
+      stripTerminalPunctuation("哪些论文讨论了神经形态计算？"),
+      "哪些论文讨论了神经形态计算",
+    );
+    assert.equal(
+      stripTerminalPunctuation("What methods do they use?  "),
+      "What methods do they use",
+    );
+    assert.equal(stripTerminalPunctuation("GPT-4: a study."), "GPT-4: a study");
+    assert.equal(
+      stripTerminalPunctuation("表現学習とは何か。"),
+      "表現学習とは何か",
+    );
+  });
+
+  it("detects CJK-dominant text", function () {
+    assert.isTrue(isCjkDominantText("这些论文讨论了什么方法"));
+    assert.isTrue(isCjkDominantText("使用GPT-4的论文"));
+    assert.isFalse(isCjkDominantText("calcium imaging analysis"));
+    assert.isFalse(isCjkDominantText("A GPT-4 study of neural imaging (中文)"));
+  });
+
+  it("segments a CJK question into keyword probes instead of one sentence", function () {
+    const question = "这些论文中哪些讨论了神经形态计算";
+    const probes = extractCjkKeywordProbes(question);
+
+    assert.isAbove(probes.length, 1);
+    for (const probe of probes) {
+      assert.isAtLeast(probe.length, 2);
+      assert.isBelow(probe.length, question.length);
+      assert.notMatch(probe, /[？?]/);
+    }
+    assert.isTrue(
+      probes.some((probe) => probe.includes("计算") || probe.includes("形态")),
+    );
+  });
+
+  it("keeps protected compounds intact in CJK probes", function () {
+    const probes = extractCjkKeywordProbes("使用GPT-4的脑机接口研究");
+
+    assert.include(probes, "gpt-4");
+  });
+
+  it("caps the probe count", function () {
+    const probes = extractCjkKeywordProbes(
+      "神经形态计算与脉冲神经网络在类脑芯片中的应用研究进展综述",
+      3,
+    );
+
+    assert.isAtMost(probes.length, 3);
   });
 });

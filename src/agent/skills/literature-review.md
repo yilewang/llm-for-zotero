@@ -1,7 +1,7 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 3
+version: 4
 contexts: paper-set,library-corpus
 activation: auto
 match: /\b(literature review|lit review|review of (the )?literature)\b/i
@@ -34,7 +34,7 @@ When the user asks for a literature review, follow this three-phase workflow. Th
 
 Identify the corpus of papers to review:
 
-- **Papers already in context**: If the user has pinned or selected papers (visible in `selectedPaperContexts` or `fullTextPaperContexts`), use those directly. No discovery step needed. Treat a selected finite corpus as the user's requested evidence pool, not as a sample to skim.
+- **Papers already in context**: If the current-turn Zotero context lists pinned, selected, or full-text papers, use those directly. No discovery step is needed. Treat a selected finite corpus as the user's requested evidence pool, not as a sample to skim.
 - **Topic search**: If the user provides a topic or keywords and wants evidence from their Zotero library, use `library_retrieve({ query:'<topic>', queryVariants:[...], intent:'enumerate', depth:'metadata'|'evidence' })` to search metadata/abstracts/indexed text broadly when translation, acronyms, notation variants, or terminology equivalents would improve recall. Use `intent:'summarize', depth:'evidence'` for method or theme taxonomies.
 - **Collection**: If the user names a collection, use `library_search({ entity:'collections', mode:'search', text:'<collection name>' })` to resolve it, then `library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'<review topic>', queryVariants:[...], intent:'enumerate', depth:'metadata'|'evidence' })` when variants would help. Use `intent:'summarize'` for collection-grounded taxonomies.
 - **Whole library**: If the user wants a review across their entire library, use `zotero_script({ mode:'read', description:'Summarize candidate papers for a literature review', script:'...' })` to aggregate candidates in Zotero's runtime (same pattern as `library-analysis`).
@@ -90,34 +90,12 @@ Use its returned crop paths/artifacts as-is and do not inspect or validate `figu
 Place figures within the thematic sections they relate to, not in a separate section.
 Do not embed MinerU source image paths.
 
-### Citation rules
+### Citation style for the review
 
-- Use citations and short quotes to make important paper-specific claims checkable, not to decorate every paragraph.
-  Use retrieved paper text as evidence for reasoning, not as material to rewrite.
-  For paper-specific questions with exact passages available, state the answer in your own words, quote or anchor 1-3 high-signal snippets only when they support a key claim, then explain what each snippet establishes and how it answers the user's question.
-  After a direct quote, do not merely paraphrase it; explain the inference, implication, limitation, or contrast it supports.
-  A useful quote should do real work: define a term, show a method, report a result, state a limitation, capture the authors' interpretation, or resolve an ambiguity.
-  Cite concrete claims about methods, datasets, results, definitions, equations, limitations, and the authors' own interpretations.
-  Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
-  For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
-  `>` Markdown blockquotes are reserved only for direct original source text.
-  Verified quote anchors are available only for direct source quotes; use the exact anchor token only when exact wording is useful.
-  For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
-  Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
-  Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
-  Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
-  Never use quotes as decoration or as a substitute for reasoning.
-  Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
-- Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
-- The citation label should match the Zotero item metadata (use `creators` and `date` fields).
-- Do NOT invent citations or cite papers not in the user's library.
-- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote.
-  Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.
-  Put any translation outside the blockquote as explanation.
-  If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
-- Copy the Source label string exactly.
-- Do not invent author/year/page/section labels.
-- Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
+- Use `(Author, Year)` for a single author, `(Author & Author, Year)` for two authors, and `(Author et al., Year)` for three or more.
+- Match citation labels to Zotero creator and date metadata.
+- Cite only papers in the review corpus and never invent missing citations.
+- Apply the system citation contract to any direct quotations or source labels.
 
 ### After writing
 

@@ -1,7 +1,7 @@
 ---
 id: write-note
 description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 7
+version: 9
 contexts: any
 activation: auto
 match: /\b(create|make|write|draft|generate)\b.*\b(note|summary note|reading note|notes?)\b.*\b(for|from|about|on)\b.*\b(paper|article|this)\b/i
@@ -16,8 +16,8 @@ match: /\b(write|save|export|send)\b.*\bobsidian\b/i
 match: /\bobsidian\b.*\b(note|write|save|export)\b/i
 match: /\bto\s+obsidian\b/i
 match: /\bobsidian\b.*\bvault\b/i
-match: /\b(save|write|export)\b.*\bnote\b.*\b(to\s+)?(file|disk|local|directory|folder)\b/i
-match: /\b(note|notes?)\b.*\b(to\s+)?(file|disk|local|directory|folder)\b/i
+match: /\b(save|write|export)\b.*\bnote\b.*\b(to\s+)?(file|disk|local|directory)\b/i
+match: /\b(note|notes?)\b.*\b(to\s+)?(file|disk|local|directory)\b/i
 match: /\b(use|apply|with)\b.*\btemplate\b/i
 ---
 
@@ -47,8 +47,10 @@ match: /\b(use|apply|with)\b.*\btemplate\b/i
 
 Decide the destination based on what the user says:
 
-- **File-based** (`file_io`): user mentions Obsidian, the notes directory nickname, or "save to file/directory/folder".
-- **Zotero note** (`note_write`): user says "create a note", "save to note", "edit my note", or anything without a file destination.
+- **File-based** (`file_io`): user mentions Obsidian, the notes directory nickname, a path, a `.md` filename, or "save to file/disk/directory".
+- **Zotero note** (`note_write`): user says "create a note", "save to note", "edit my note", names a **folder** or collection, or says anything without an explicit file destination.
+
+> A bare "folder" means a Zotero **collection**, not a filesystem directory. Zotero's own UI calls collections folders and this plugin's tool descriptions say "collections (folders)", so routing "save this note into folder X" to disk sent notes nowhere at all (issue #374). File it with `note_write({ mode:'create', target:'standalone', collections:[<id>] })`, resolving the name with `library_search({ entity:'collections', mode:'list' })`.
 
 If unclear, default to Zotero note.
 
@@ -251,11 +253,17 @@ Do NOT fall back to MinerU source images, `file:///`, absolute paths, or any of 
 
 ### Step 4b — Write to file (`file_io`)
 
+**USER CUSTOMIZATIONS COME FIRST.**
+Before applying anything below, check the end of this skill file — after the managed section — for a `## Your customizations` section (it may use a similar title such as `## User customizations`).
+If present, its rules are authoritative: filename pattern, folder layout, destination, or anything else it defines OVERRIDES the corresponding default in this section absolutely.
+Custom path patterns may include subfolders (e.g. one folder per paper); `file_io` creates missing directories automatically, so no `mkdir` step is needed for the note path.
+
 **Prerequisites:**
 
 - The user's notes directory path, default folder, and resolved default target path are provided in the system prompt under "Notes directory configuration". If missing, tell the user to configure the notes directory in the plugin preferences (Settings > Agent tab).
 - The `Default target path` is the already-resolved directory for default file notes. When the user doesn't specify another folder, use `Default target path/<filename>.md` directly. Do not append the default folder to the default target path again.
-- The default folder is used when the user doesn't specify a folder. If the user specifies a different folder, write there instead.
+- The default folder is used when neither the user's message nor their `## Your customizations` section specifies a folder or path pattern.
+  If either does, write there instead.
 
 **Filename pattern (default):** `{papertitle}-{notetitle}-{date}.md`
 
@@ -285,15 +293,17 @@ Three components, joined by single hyphens:
 
 **Writing steps:**
 
-1. Construct the file path: `{defaultTargetPath}/<filename>.md` unless the user explicitly specifies another folder, using the native path separator from the runtime platform section.
+1. Construct the file path: `{defaultTargetPath}/<filename>.md` unless the user's message or their `## Your customizations` section specifies another folder or path pattern, using the native path separator from the runtime platform section.
 2. Call `file_io({ action:'write', filePath, content:noteContent })`.
+   Missing parent directories are created automatically.
 3. If writing fails, report the error clearly with the attempted path.
 
 **Filename is independent of frontmatter.** The frontmatter `title:` stays the paper's full title (paper notes) or the user's note title (general notes) per the template. Do NOT put the subtopic or the date into `title:`.
 
-#### Customize the filename pattern
+#### Customize the filename and folder layout
 
-Users can override the default pattern by adding a `## Your customizations` section **AFTER** the `LLM-FOR-ZOTERO:MANAGED-END` marker at the bottom of this skill file. The agent will follow the custom pattern instead of the default above (see Key rules).
+Users can override the default filename pattern AND the folder layout by adding a `## Your customizations` section **AFTER** the `LLM-FOR-ZOTERO:MANAGED-END` marker at the bottom of this skill file.
+The agent follows the customization instead of the defaults above, absolutely (see Key rules).
 
 Example customizations:
 
@@ -307,9 +317,13 @@ Example: Buschman2020-figure-1.md
 ```
 ## Your customizations
 
-Filename pattern: `{year}-{firstauthor}-{notetitle}.md`
-Example: 2020-Buschman-figure-1.md
+Path pattern: `{papertitle}/{papertitle}.md`
+Example: attention-is-all-you-need/attention-is-all-you-need.md
 ```
+
+The second example creates one folder per paper under the target directory — useful for growing a paper's notes over time.
+Path patterns may nest folders freely (`{year}/{firstauthor}/{notetitle}.md`, …); missing directories are created automatically by `file_io`.
+A customization may also name a different base directory entirely — honor it.
 
 Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`, etc.) should be resolved from the same Zotero metadata the frontmatter fields use.
 
@@ -320,7 +334,8 @@ Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`
 - Use `[@citekey]` Pandoc syntax inline **only when `citekey` is non-empty**. When `citekey` is missing/empty, reference in prose (`First-Author et al. (Year)`) and rely on the full citation in `## References`. **Never emit `[@]`.** Adapt citation syntax to the target format (e.g., `[cite:@citekey]` for Org-mode) when citekey exists.
 - **Every note ends with the footer** `---\n\nWritten by LLM-for-Zotero.` — no exceptions, no omissions, regardless of destination or format.
 - Use the native path separator provided in the runtime platform section. Never mix separators.
-- If the user has replaced this skill's managed block with their own customization (either by editing the block directly or by writing their own template outside the MANAGED markers), follow their customization instead of the defaults above.
+- If the user has customized this skill in any way — editing the managed block, replacing it, or **adding sections after the MANAGED-END marker** (e.g. `## Your customizations`) — their customization is authoritative.
+  Follow it absolutely and let it override any conflicting default above: filename pattern, folder layout, destination, template structure, citation style, anything.
 
 ### Budget
 

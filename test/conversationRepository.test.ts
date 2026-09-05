@@ -599,6 +599,7 @@ describe("conversationRepository", function () {
         ...(originalZotero || {}),
         DB: {
           queryAsync: async (sql: string, params?: unknown[]) => {
+            if (sql.includes("SELECT 1 AS present")) return [{ present: 1 }];
             if (
               sql.includes("FROM llm_for_zotero_codex_conversations c") &&
               sql.includes("WHERE c.conversation_key = ?")
@@ -651,6 +652,10 @@ describe("conversationRepository", function () {
   });
 
   it("forks a latest Codex conversation through native thread fork and local message copy", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Profile: { dir: "/tmp/zotero-profile" },
+    };
     const sourceConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21;
     const targetConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 99;
     const sourceConversationID = buildConversationID({
@@ -672,20 +677,45 @@ describe("conversationRepository", function () {
     const originalGetCatalogEntry = conversationRepository.getCatalogEntry;
     const originalSetCatalogTitle = conversationRepository.setCatalogTitle;
     const forkCalls: string[] = [];
+    const forkTargetConversationKeys: (number | undefined)[] = [];
     const archiveCalls: string[] = [];
     const insertedMessages: unknown[][] = [];
     const registryRows = new Map<number, Record<string, unknown>>();
+    registryRows.set(sourceConversationKey, {
+      conversationID: sourceConversationID,
+      conversationKey: sourceConversationKey,
+      system: "codex",
+      kind: "global",
+      profileSignature: "",
+      libraryID: 7,
+      paperItemID: null,
+      instanceID: "instance-codex-source",
+      valid: 1,
+    });
+    const sourceLedgerEntry = {
+      conversationKey: sourceConversationKey,
+      instanceID: "instance-codex-source",
+      conversationID: sourceConversationID,
+      profileSignature: "profile-65092053",
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+      issuedAt: 100,
+      retiredAt: null,
+    };
     let persistedProviderSessionId = "";
     let targetTitle = "";
 
     codexAppServerForkService.forkThread = async (params) => {
       forkCalls.push(params.threadId);
+      forkTargetConversationKeys.push(params.targetConversationKey);
       return "thread-forked";
     };
     codexAppServerForkService.archiveThread = async (params) => {
       archiveCalls.push(params.threadId);
     };
     conversationRepository.createCatalogEntry = async (params) => ({
+      instanceID: "instance-codex-target",
       conversationID: targetConversationID,
       conversationKey: targetConversationKey,
       system: params.system,
@@ -700,6 +730,7 @@ describe("conversationRepository", function () {
       if (target.conversationKey === sourceConversationKey) {
         return {
           conversationID: sourceConversationID,
+          instanceID: "instance-codex-source",
           conversationKey: sourceConversationKey,
           system: "codex",
           kind: "global",
@@ -714,6 +745,7 @@ describe("conversationRepository", function () {
       if (target.conversationKey === targetConversationKey) {
         return {
           conversationID: targetConversationID,
+          instanceID: "instance-codex-target",
           conversationKey: targetConversationKey,
           system: "codex",
           kind: "global",
@@ -739,6 +771,96 @@ describe("conversationRepository", function () {
           executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
           queryAsync: async (sql: string, params?: unknown[]) => {
             if (
+              sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+              sql.includes("SELECT c.conversation_id AS conversationID")
+            ) {
+              const key = Number(params?.[0] || 0);
+              if (
+                key === sourceConversationKey ||
+                key === targetConversationKey
+              ) {
+                return [
+                  {
+                    conversationID:
+                      key === sourceConversationKey
+                        ? sourceConversationID
+                        : targetConversationID,
+                    instanceID:
+                      key === sourceConversationKey
+                        ? "instance-codex-source"
+                        : "instance-codex-target",
+                    conversationKey: key,
+                    libraryID: 7,
+                    kind: "global",
+                    paperItemID: null,
+                    createdAt: 100,
+                    updatedAt: 200,
+                    title:
+                      key === sourceConversationKey
+                        ? "Codex source"
+                        : targetTitle,
+                    providerSessionId:
+                      key === sourceConversationKey
+                        ? "thread-source"
+                        : "thread-forked",
+                    userTurnCount: 1,
+                  },
+                ];
+              }
+            }
+            if (sql.includes("SELECT 1 AS present")) return [{ present: 1 }];
+            if (
+              sql.includes("SELECT conversation_id AS conversationID") &&
+              sql.includes("FROM llm_for_zotero_codex_conversations")
+            ) {
+              const key = Number(params?.[0] || 0);
+              if (
+                key === sourceConversationKey ||
+                key === targetConversationKey
+              ) {
+                return [
+                  {
+                    conversationID:
+                      key === sourceConversationKey
+                        ? sourceConversationID
+                        : targetConversationID,
+                  },
+                ];
+              }
+              return [];
+            }
+            if (
+              sql.includes("FROM llm_for_zotero_conversation_key_ledger") &&
+              sql.includes("WHERE conversation_key = ?")
+            ) {
+              const key = Number(params?.[0] || 0);
+              if (
+                key === sourceConversationKey ||
+                key === targetConversationKey
+              ) {
+                return [
+                  {
+                    conversationKey: key,
+                    instanceID:
+                      key === sourceConversationKey
+                        ? "instance-codex-source"
+                        : "instance-codex-target",
+                    conversationID:
+                      key === sourceConversationKey
+                        ? sourceConversationID
+                        : targetConversationID,
+                    profileSignature: "profile-65092053",
+                    system: "codex",
+                    kind: "global",
+                    libraryID: 7,
+                    issuedAt: 100,
+                    retiredAt: null,
+                  },
+                ];
+              }
+              return [];
+            }
+            if (
               sql.includes("FROM llm_for_zotero_conversation_registry") &&
               sql.includes("WHERE legacy_conversation_key = ?")
             ) {
@@ -758,6 +880,7 @@ describe("conversationRepository", function () {
                 profileSignature: params?.[4],
                 libraryID: params?.[5],
                 paperItemID: params?.[6],
+                instanceID: params?.[10],
                 valid: 1,
               });
               return [];
@@ -788,7 +911,22 @@ describe("conversationRepository", function () {
               sql.includes("FROM llm_for_zotero_codex_messages")
             ) {
               return [
-                { role: "user", text: "Prompt", timestamp: 100 },
+                {
+                  role: "user",
+                  text: "Prompt",
+                  timestamp: 100,
+                  collection_contexts_json: JSON.stringify([
+                    { collectionId: 55, libraryID: 7, name: "Methods" },
+                  ]),
+                  tag_contexts_json: JSON.stringify([
+                    {
+                      libraryID: 7,
+                      name: "Stability",
+                      normalizedName: "stability",
+                      includeAutomatic: false,
+                    },
+                  ]),
+                },
                 {
                   role: "assistant",
                   text: "Answer",
@@ -814,13 +952,28 @@ describe("conversationRepository", function () {
         sourceConversationKey,
         throughAssistantTimestamp: 200,
       });
-
       assert.equal(result?.entry.conversationKey, targetConversationKey);
       assert.equal(result?.copiedMessageCount, 2);
       assert.deepEqual(forkCalls, ["thread-source"]);
+      assert.deepEqual(forkTargetConversationKeys, [targetConversationKey]);
       assert.deepEqual(archiveCalls, []);
       assert.equal(persistedProviderSessionId, "thread-forked");
       assert.lengthOf(insertedMessages, 2);
+      assert.include(
+        insertedMessages[0],
+        JSON.stringify([{ collectionId: 55, libraryID: 7, name: "Methods" }]),
+      );
+      assert.include(
+        insertedMessages[0],
+        JSON.stringify([
+          {
+            libraryID: 7,
+            name: "Stability",
+            normalizedName: "stability",
+            includeAutomatic: false,
+          },
+        ]),
+      );
       assert.deepEqual(
         insertedMessages.map((params) => params.slice(1, 7)),
         [
@@ -961,6 +1114,7 @@ describe("conversationRepository", function () {
                 profileSignature: params?.[4],
                 libraryID: params?.[5],
                 paperItemID: params?.[6],
+                instanceID: params?.[10],
                 valid: 1,
               });
               return [];
@@ -1028,6 +1182,7 @@ describe("conversationRepository", function () {
     const insertedMessages: unknown[][] = [];
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const registryRows = new Map<number, Record<string, unknown>>();
+    const ledgerRows = new Map<number, Record<string, unknown>>();
     const registryRowForGlobalConversation = (conversationKey: number) => ({
       conversationID: buildConversationID({
         conversationKey,
@@ -1036,6 +1191,7 @@ describe("conversationRepository", function () {
         libraryID: 7,
       }),
       conversationKey,
+      instanceID: `instance-upstream-${conversationKey}`,
       system: "upstream",
       kind: "global",
       profileSignature: "",
@@ -1054,12 +1210,33 @@ describe("conversationRepository", function () {
         libraryID: 7,
       }),
       conversationKey,
+      instanceID: `instance-upstream-${conversationKey}`,
       libraryID: 7,
       createdAt: 100,
       title,
       lastActivityAt: 300,
       userTurnCount: 2,
     });
+    ledgerRows.set(sourceConversationKey, {
+      conversationKey: sourceConversationKey,
+      instanceID: `instance-upstream-${sourceConversationKey}`,
+      conversationID: buildConversationID({
+        conversationKey: sourceConversationKey,
+        system: "upstream",
+        kind: "global",
+        libraryID: 7,
+      }),
+      profileSignature: "profile-default",
+      system: "upstream",
+      kind: "global",
+      libraryID: 7,
+      issuedAt: 100,
+      retiredAt: null,
+    });
+    registryRows.set(
+      sourceConversationKey,
+      registryRowForGlobalConversation(sourceConversationKey),
+    );
 
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -1069,7 +1246,64 @@ describe("conversationRepository", function () {
       DB: {
         executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
         queryAsync: async (sql: string, params?: unknown[]) => {
+          if (
+            sql.includes("SELECT 1 AS present") &&
+            (sql.includes("llm_for_zotero_global_conversations") ||
+              sql.includes("llm_for_zotero_paper_conversations"))
+          ) {
+            return [{ present: 1 }];
+          }
+          if (
+            sql.includes("SELECT conversation_id AS conversationID") &&
+            sql.includes("FROM llm_for_zotero_global_conversations")
+          ) {
+            const key = Number(params?.[0] || 0);
+            const row =
+              key === sourceConversationKey
+                ? rowForGlobalConversation(key, "Source title")
+                : key === targetConversationKey
+                  ? rowForGlobalConversation(key, targetTitle)
+                  : null;
+            return row ? [{ conversationID: row.conversationID }] : [];
+          }
           queries.push({ sql, params });
+          if (
+            sql.includes("FROM llm_for_zotero_conversation_key_ledger") &&
+            sql.includes("WHERE conversation_key = ?")
+          ) {
+            const row = ledgerRows.get(Number(params?.[0] || 0));
+            return row ? [row] : [];
+          }
+          if (
+            sql.includes("INSERT INTO llm_for_zotero_conversation_key_ledger")
+          ) {
+            const key = Number(params?.[0] || 0);
+            ledgerRows.set(key, {
+              conversationKey: key,
+              instanceID: params?.[1],
+              conversationID: params?.[2],
+              system: params?.[3],
+              kind: params?.[4],
+              profileSignature: params?.[5],
+              libraryID: params?.[6],
+              paperItemID: params?.[7],
+              issuedAt: params?.[8],
+              retiredAt: params?.[9],
+            });
+            return [];
+          }
+          if (
+            sql.includes("UPDATE llm_for_zotero_conversation_key_ledger") &&
+            sql.includes("conversation_id")
+          ) {
+            const key = Number(params?.[1] || 0);
+            const row = ledgerRows.get(key);
+            if (row) {
+              row.conversationID = params?.[0];
+              ledgerRows.set(key, row);
+            }
+            return [];
+          }
           if (
             sql.includes("FROM llm_for_zotero_conversation_registry") &&
             sql.includes("WHERE legacy_conversation_key = ?")
@@ -1083,7 +1317,14 @@ describe("conversationRepository", function () {
           ) {
             const key = Number(params?.[1] || 0);
             if (key) {
-              registryRows.set(key, registryRowForGlobalConversation(key));
+              registryRows.set(key, {
+                ...registryRowForGlobalConversation(key),
+                conversationID: params?.[0],
+                profileSignature: params?.[4],
+                libraryID: params?.[5],
+                paperItemID: params?.[6],
+                instanceID: params?.[10],
+              });
             }
             return [];
           }
@@ -1113,7 +1354,7 @@ describe("conversationRepository", function () {
             return [];
           }
           if (sql.includes("INSERT INTO llm_for_zotero_global_conversations")) {
-            targetConversationKey = Number(params?.[1] || 0);
+            targetConversationKey = Number(params?.[2] || 0);
             return [];
           }
           if (
@@ -1136,7 +1377,22 @@ describe("conversationRepository", function () {
             sql.includes("ORDER BY timestamp ASC")
           ) {
             return [
-              { role: "user", text: "First", timestamp: 100 },
+              {
+                role: "user",
+                text: "First",
+                timestamp: 100,
+                collection_contexts_json: JSON.stringify([
+                  { collectionId: 55, libraryID: 7, name: "Methods" },
+                ]),
+                tag_contexts_json: JSON.stringify([
+                  {
+                    libraryID: 7,
+                    name: "Stability",
+                    normalizedName: "stability",
+                    includeAutomatic: false,
+                  },
+                ]),
+              },
               { role: "assistant", text: "Answer", timestamp: 200 },
             ];
           }
@@ -1176,6 +1432,21 @@ describe("conversationRepository", function () {
     });
     assert.equal(targetTitle, "Fork: Source title");
     assert.lengthOf(insertedMessages, 2);
+    assert.include(
+      insertedMessages[0],
+      JSON.stringify([{ collectionId: 55, libraryID: 7, name: "Methods" }]),
+    );
+    assert.include(
+      insertedMessages[0],
+      JSON.stringify([
+        {
+          libraryID: 7,
+          name: "Stability",
+          normalizedName: "stability",
+          includeAutomatic: false,
+        },
+      ]),
+    );
     assert.equal(
       insertedMessages[0]?.[0],
       buildConversationID({
@@ -1212,7 +1483,11 @@ describe("conversationRepository", function () {
     let insertAttempted = false;
     let deletedConversationKey = 0;
     const registryRows = new Map<number, Record<string, unknown>>();
-    const registryRowForGlobalConversation = (conversationKey: number) => ({
+    const ledgerRows = new Map<number, Record<string, unknown>>();
+    const registryRowForGlobalConversation = (
+      conversationKey: number,
+      instanceID = "",
+    ) => ({
       conversationID: buildConversationID({
         conversationKey,
         system: "upstream",
@@ -1225,6 +1500,7 @@ describe("conversationRepository", function () {
       profileSignature: "",
       libraryID: 7,
       paperItemID: 0,
+      instanceID,
       valid: 1,
     });
     const rowForGlobalConversation = (conversationKey: number) => ({
@@ -1235,6 +1511,7 @@ describe("conversationRepository", function () {
         libraryID: 7,
       }),
       conversationKey,
+      instanceID: `instance-upstream-${conversationKey}`,
       libraryID: 7,
       createdAt: 100,
       title: "Source title",
@@ -1263,9 +1540,62 @@ describe("conversationRepository", function () {
           ) {
             const key = Number(params?.[1] || 0);
             if (key) {
-              registryRows.set(key, registryRowForGlobalConversation(key));
+              registryRows.set(
+                key,
+                registryRowForGlobalConversation(
+                  key,
+                  String(params?.[12] || ""),
+                ),
+              );
             }
             return [];
+          }
+          if (
+            sql.includes("FROM llm_for_zotero_conversation_key_ledger") &&
+            sql.includes("WHERE conversation_key = ?") &&
+            sql.includes("instance_id AS instanceID")
+          ) {
+            const key = Number(params?.[0] || 0);
+            const row = ledgerRows.get(key);
+            return row ? [row] : [];
+          }
+          if (
+            sql.includes("INSERT INTO llm_for_zotero_conversation_key_ledger")
+          ) {
+            const key = Number(params?.[0] || 0);
+            if (key) {
+              ledgerRows.set(key, {
+                conversationKey: key,
+                instanceID: String(params?.[1] || ""),
+                conversationID: String(params?.[2] || ""),
+                system: params?.[3],
+                kind: params?.[4],
+                profileSignature: params?.[5],
+                libraryID: params?.[6],
+                paperItemID: params?.[7],
+                issuedAt: params?.[8],
+                retiredAt: params?.[9],
+                retirementReason: params?.[10],
+              });
+            }
+            return [];
+          }
+          if (
+            sql.includes("UPDATE llm_for_zotero_conversation_key_ledger") &&
+            sql.includes("SET conversation_id = ?")
+          ) {
+            const key = Number(params?.[1] || 0);
+            const row = ledgerRows.get(key);
+            if (row) row.conversationID = params?.[0];
+            return [];
+          }
+          if (
+            sql.includes("SELECT 1 AS present") &&
+            sql.includes("FROM llm_for_zotero_global_conversations") &&
+            sql.includes("conversation_instance_id = ?")
+          ) {
+            const key = Number(params?.[0] || 0);
+            return key === targetConversationKey ? [{ present: 1 }] : [];
           }
           if (
             sql.includes("FROM llm_for_zotero_global_conversations gc") &&
@@ -1288,7 +1618,7 @@ describe("conversationRepository", function () {
             return [];
           }
           if (sql.includes("INSERT INTO llm_for_zotero_global_conversations")) {
-            targetConversationKey = Number(params?.[1] || 0);
+            targetConversationKey = Number(params?.[2] || 0);
             return [];
           }
           if (

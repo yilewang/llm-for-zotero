@@ -5,12 +5,14 @@ import type {
   AgentRunEventRecord,
   AgentTraceDetail,
   AgentToolArtifact,
+  AgentToolEffect,
   AgentToolResultCard,
   AgentTraceChip,
   AgentTraceRequestSummary,
   AgentToolPresentationSummary,
 } from "../../../agent/types";
 import type { Message, PaperContextRef } from "../types";
+import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
 import { sanitizeText } from "../textUtils";
 import { renderRenderedMarkdownInto } from "../renderedMarkdown";
 import { buildQuoteDisplayMarkdown } from "../quoteRenderPlan";
@@ -44,12 +46,15 @@ import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
 } from "./toolResultTraceInfo";
+import { stripWebSourceMarkersForDisplay } from "../../../webAccess/attribution";
+import { createWebFaviconImage } from "../webFavicon";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
   icon: string;
+  iconName?: "library" | "web";
   text: string;
   /** Optional code block shown below the summary text (e.g. shell commands). */
   codeBlock?: string;
@@ -211,7 +216,9 @@ export function buildAgentTraceMarkdownForRender(
           message?.quoteCitations,
       };
   return buildQuoteDisplayMarkdown({
-    markdown: sanitizeText(display.markdown || text || ""),
+    markdown: stripWebSourceMarkersForDisplay(
+      sanitizeText(display.markdown || text || ""),
+    ),
     quoteCitations: display.quoteCitations,
   });
 }
@@ -2518,6 +2525,7 @@ function resolveToolPresentationSummary(
     label: string;
     args?: unknown;
     content?: unknown;
+    effect?: AgentToolEffect;
     request?: AgentTraceRequestSummary;
   },
 ): string | null {
@@ -2689,9 +2697,17 @@ export function buildAgentTraceChipDetails(
     ...(chip.detail ? [chip.detail] : []),
     ...(Array.isArray(chip.details) ? chip.details : []),
   ]
-    .map((entry) =>
-      normalizeAgentTraceDetail(entry.label, entry.value, entry.kind || "text"),
-    )
+    .map((entry) => {
+      const normalized = normalizeAgentTraceDetail(
+        entry.label,
+        entry.value,
+        entry.kind || "text",
+      );
+      if (normalized && entry.timeline) {
+        normalized.timeline = { ...entry.timeline };
+      }
+      return normalized;
+    })
     .filter((entry): entry is AgentTraceDetail => Boolean(entry));
   if (explicit.length) return explicit;
 
@@ -2726,7 +2742,10 @@ function dedupeAgentTraceDetails(
       detail.kind || "text",
     );
     if (!normalized) continue;
-    const key = `${normalized.label}\u0000${normalized.value}`;
+    if (detail.timeline) normalized.timeline = { ...detail.timeline };
+    const key = `${normalized.label}\u0000${normalized.value}\u0000${
+      normalized.timeline?.href || ""
+    }`;
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(normalized);
@@ -2866,6 +2885,7 @@ function summarizeAgentTraceToolCall(
   resultInfo?: ToolResultTraceInfo,
 ): AgentTraceSummaryRow {
   const label = toolLabelFromName(name);
+  const presentation = getToolDefinition(name)?.presentation;
   const a =
     args && typeof args === "object" ? (args as Record<string, unknown>) : {};
   const skillName =
@@ -2879,10 +2899,11 @@ function summarizeAgentTraceToolCall(
   const fallbackFileIoSummary =
     name === "file_io" ? summarizeFileIOCall(args) : null;
   const text =
-    resolveToolPresentationSummary(
-      getToolDefinition(name)?.presentation?.summaries?.onCall,
-      { label, args, request },
-    ) ||
+    resolveToolPresentationSummary(presentation?.summaries?.onCall, {
+      label,
+      args,
+      request,
+    }) ||
     fallbackFileIoSummary ||
     (skillName ? `${skillVerb}: ${skillName}` : `Using ${label}`);
   const displayText =
@@ -2901,6 +2922,7 @@ function summarizeAgentTraceToolCall(
   return {
     kind: "tool",
     icon: "→",
+    ...(presentation?.traceIcon ? { iconName: presentation.traceIcon } : {}),
     // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
     // instead of the generic label. For other tools (run_command), keep label.
     text: codeBlock && name !== "file_io" ? label : displayText,
@@ -2986,6 +3008,7 @@ function summarizeAgentTraceToolResult(
   name: string,
   ok: boolean,
   content: unknown,
+  effect?: AgentToolEffect,
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow | null {
   const label = toolLabelFromName(name);
@@ -2998,7 +3021,7 @@ function summarizeAgentTraceToolResult(
     const text =
       resolveToolPresentationSummary(
         getToolDefinition(name)?.presentation?.summaries?.onError,
-        { label, content, request },
+        { label, content, effect, request },
       ) || `Could not complete ${label}: ${rawError || "Tool failed"}`;
     return {
       kind: "skip",
@@ -3013,11 +3036,11 @@ function summarizeAgentTraceToolResult(
       isEmpty
         ? getToolDefinition(name)?.presentation?.summaries?.onEmpty
         : getToolDefinition(name)?.presentation?.summaries?.onSuccess,
-      { label, content, request },
+      { label, content, effect, request },
     ) ||
     resolveToolPresentationSummary(
       getToolDefinition(name)?.presentation?.summaries?.onSuccess,
-      { label, content, request },
+      { label, content, effect, request },
     ) ||
     (isEmpty ? `No results from ${label}` : "");
   if (!text) {
@@ -3456,22 +3479,55 @@ function appendLegacyAgentTraceEvent(
       return true;
     }
     case "tool_call": {
+      const resultEvent = ctx.toolResultsByCallId.get(entry.payload.callId);
       const resultInfo = buildToolResultTraceInfo(
         entry.payload.name,
-        ctx.toolResultsByCallId.get(entry.payload.callId),
+        resultEvent,
       );
-      const details = [
-        ...buildAgentTraceArgsDetails(entry.payload.name, entry.payload.args),
-        ...(resultInfo?.details || []),
-      ];
+      let presentationDetails: AgentTraceDetail[] = [];
+      if (resultEvent) {
+        try {
+          presentationDetails =
+            getToolDefinition(
+              entry.payload.name,
+            )?.presentation?.buildTraceDetails?.({
+              args: entry.payload.args,
+              content: resultEvent.content,
+            }) ?? [];
+        } catch {
+          presentationDetails = [];
+        }
+      }
+      const details = presentationDetails.length
+        ? presentationDetails
+        : [
+            ...buildAgentTraceArgsDetails(
+              entry.payload.name,
+              entry.payload.args,
+            ),
+            ...(resultInfo?.details || []),
+          ];
+      const presentation = getToolDefinition(entry.payload.name)?.presentation;
+      let row = summarizeAgentTraceToolCall(
+        entry.payload.name,
+        entry.payload.args,
+        ctx.requestSummary,
+        resultInfo || undefined,
+      );
+      if (resultEvent?.ok && presentation?.buildTraceSummary) {
+        try {
+          const summary = presentation.buildTraceSummary({
+            args: entry.payload.args,
+            content: resultEvent.content,
+          });
+          if (summary) row = { ...row, text: summary };
+        } catch {
+          // Keep the regular call summary when display-only formatting fails.
+        }
+      }
       ctx.items.push({
         type: "action",
-        row: summarizeAgentTraceToolCall(
-          entry.payload.name,
-          entry.payload.args,
-          ctx.requestSummary,
-          resultInfo || undefined,
-        ),
+        row,
         chips: buildAgentTraceToolChips(
           entry.payload.name,
           entry.payload.args,
@@ -3487,10 +3543,18 @@ function appendLegacyAgentTraceEvent(
       appendReasoningTraceItem(ctx, entry.payload);
       return true;
     case "tool_result": {
+      if (
+        entry.payload.ok &&
+        getToolDefinition(entry.payload.name)?.presentation
+          ?.mergeResultIntoCallTrace
+      ) {
+        return true;
+      }
       const row = summarizeAgentTraceToolResult(
         entry.payload.name,
         entry.payload.ok,
         entry.payload.content,
+        entry.payload.effect,
         ctx.requestSummary,
       );
       if (row) {
@@ -3819,7 +3883,67 @@ function renderAgentTraceDetailsBody(
 ): HTMLDivElement {
   const body = doc.createElement("div") as HTMLDivElement;
   body.className = "llm-agent-process-details";
+  if (details.some((detail) => detail.timeline)) {
+    body.classList.add("llm-agent-process-details-with-timeline");
+  }
+  let timeline: HTMLDivElement | null = null;
   for (const detail of details) {
+    if (detail.timeline) {
+      if (!timeline) {
+        timeline = doc.createElement("div") as HTMLDivElement;
+        timeline.className = "llm-agent-trace-timeline";
+        body.appendChild(timeline);
+      }
+      let safeHref: string | null = null;
+      if (detail.timeline.href) {
+        try {
+          safeHref = normalizePublicWebUrl(detail.timeline.href);
+        } catch {
+          safeHref = null;
+        }
+      }
+      const row = doc.createElement(safeHref ? "button" : "div") as
+        | HTMLButtonElement
+        | HTMLDivElement;
+      row.className = `llm-agent-trace-timeline-row llm-agent-trace-timeline-row-${detail.timeline.icon}${
+        safeHref ? " llm-agent-trace-timeline-row-link" : ""
+      }`;
+      if (safeHref) {
+        (row as HTMLButtonElement).type = "button";
+        row.setAttribute("aria-label", `Open ${detail.label}: ${detail.value}`);
+        row.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          Zotero.launchURL(safeHref!);
+        });
+      }
+      row.title = detail.value;
+
+      const icon = doc.createElement("span") as HTMLSpanElement;
+      icon.className = `llm-agent-trace-timeline-icon llm-agent-trace-timeline-icon-${detail.timeline.icon}`;
+      icon.setAttribute("aria-hidden", "true");
+      if (detail.timeline.icon === "website") {
+        const favicon = createWebFaviconImage(
+          doc,
+          detail.timeline.faviconUrl,
+          "llm-agent-trace-timeline-favicon",
+        );
+        if (favicon) {
+          icon.classList.add("llm-agent-trace-timeline-icon-has-favicon");
+          favicon.addEventListener("error", () => {
+            icon.classList.remove("llm-agent-trace-timeline-icon-has-favicon");
+          });
+          icon.appendChild(favicon);
+        }
+      }
+      const value = doc.createElement("span") as HTMLSpanElement;
+      value.className = "llm-agent-trace-timeline-value";
+      value.textContent = detail.value;
+      row.append(icon, value);
+      timeline.appendChild(row);
+      continue;
+    }
+    timeline = null;
     const item = doc.createElement("div") as HTMLDivElement;
     item.className = "llm-agent-process-detail";
 
@@ -3847,6 +3971,8 @@ function renderAgentTraceDetailsBody(
   }
   return body;
 }
+
+export const renderAgentTraceDetailsBodyForTests = renderAgentTraceDetailsBody;
 
 export function renderAgentTrace({
   doc,
@@ -4037,8 +4163,11 @@ export function renderAgentTrace({
     const row = doc.createElement("div");
     row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
     const icon = doc.createElement("span");
-    icon.className = "llm-at-icon";
-    icon.textContent = itemEntry.row.icon;
+    icon.className = `llm-at-icon${
+      itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+    }`;
+    icon.setAttribute("aria-hidden", "true");
+    if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
     const text = doc.createElement("span");
     text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
     text.textContent = itemEntry.row.text;

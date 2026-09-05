@@ -1,15 +1,21 @@
 declare const Zotero: any;
 
 import type { ConversationSystem } from "./types";
+import {
+  getConversationKeyLedgerEntry,
+  isConversationKeyLedgerStoreInitialized,
+} from "./conversationKeyLedger";
 
 export type ConversationForkScopeKind = "global" | "paper";
 
 export type ConversationForkLink = {
   targetConversationKey: number;
+  targetInstanceID?: string;
   targetConversationID?: string;
   targetSystem: ConversationSystem;
   targetKind: ConversationForkScopeKind;
   sourceConversationKey: number;
+  sourceInstanceID?: string;
   sourceConversationID?: string;
   sourceSystem: ConversationSystem;
   sourceKind: ConversationForkScopeKind;
@@ -25,6 +31,12 @@ const CONVERSATION_FORK_LINKS_SOURCE_INDEX =
   "llm_for_zotero_conversation_fork_links_source_idx";
 
 let initPromise: Promise<void> | null = null;
+
+function isAlreadyExistingColumnError(error: unknown): boolean {
+  return /duplicate column|already exists/i.test(
+    String(error instanceof Error ? error.message : error || ""),
+  );
+}
 
 function normalizePositiveInt(value: unknown): number {
   const parsed = Number(value);
@@ -86,10 +98,12 @@ function normalizeLink(value: ConversationForkLink): ConversationForkLink {
 
   return {
     targetConversationKey,
+    targetInstanceID: normalizeString(value.targetInstanceID),
     targetConversationID: normalizeString(value.targetConversationID),
     targetSystem,
     targetKind,
     sourceConversationKey,
+    sourceInstanceID: normalizeString(value.sourceInstanceID),
     sourceConversationID: normalizeString(value.sourceConversationID),
     sourceSystem,
     sourceKind,
@@ -132,10 +146,12 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
   }
   return {
     targetConversationKey,
+    targetInstanceID: normalizeString(row.targetInstanceID),
     targetConversationID: normalizeString(row.targetConversationID),
     targetSystem,
     targetKind,
     sourceConversationKey,
+    sourceInstanceID: normalizeString(row.sourceInstanceID),
     sourceConversationID: normalizeString(row.sourceConversationID),
     sourceSystem,
     sourceKind,
@@ -156,10 +172,12 @@ export async function initConversationForkLinksStore(): Promise<void> {
     await Zotero.DB.queryAsync(
       `CREATE TABLE IF NOT EXISTS ${CONVERSATION_FORK_LINKS_TABLE} (
         target_conversation_key INTEGER PRIMARY KEY,
+        target_instance_id TEXT,
         target_conversation_id TEXT,
         target_system TEXT NOT NULL,
         target_kind TEXT NOT NULL,
         source_conversation_key INTEGER NOT NULL,
+        source_instance_id TEXT,
         source_conversation_id TEXT,
         source_system TEXT NOT NULL,
         source_kind TEXT NOT NULL,
@@ -170,13 +188,31 @@ export async function initConversationForkLinksStore(): Promise<void> {
         created_at INTEGER NOT NULL
       )`,
     );
+    for (const definition of [
+      "target_instance_id TEXT",
+      "source_instance_id TEXT",
+    ]) {
+      try {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${CONVERSATION_FORK_LINKS_TABLE} ADD COLUMN ${definition}`,
+        );
+      } catch (error) {
+        if (!isAlreadyExistingColumnError(error)) throw error;
+        // Existing installations already have the column.
+      }
+    }
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${CONVERSATION_FORK_LINKS_SOURCE_INDEX}
        ON ${CONVERSATION_FORK_LINKS_TABLE}
          (source_system, source_conversation_key)`,
     );
   });
-  await initPromise;
+  try {
+    await initPromise;
+  } catch (error) {
+    initPromise = null;
+    throw error;
+  }
 }
 
 export async function recordConversationForkLink(
@@ -184,13 +220,51 @@ export async function recordConversationForkLink(
 ): Promise<ConversationForkLink> {
   const link = normalizeLink(value);
   await initConversationForkLinksStore();
-  await Zotero.DB.queryAsync(
-    `INSERT OR REPLACE INTO ${CONVERSATION_FORK_LINKS_TABLE}
+  const ledgerInitialized = isConversationKeyLedgerStoreInitialized();
+  const write = async (): Promise<void> => {
+    for (const witness of [
+      {
+        key: link.targetConversationKey,
+        instanceID: link.targetInstanceID,
+        conversationID: link.targetConversationID,
+        label: "target",
+      },
+      {
+        key: link.sourceConversationKey,
+        instanceID: link.sourceInstanceID,
+        conversationID: link.sourceConversationID,
+        label: "source",
+      },
+    ]) {
+      if (!witness.instanceID) {
+        if (!ledgerInitialized) continue;
+        throw new Error(
+          `Cannot record fork link: ${witness.label} identity witness is required`,
+        );
+      }
+      const ledgerEntry = await getConversationKeyLedgerEntry(witness.key);
+      if (!ledgerInitialized) continue;
+      if (
+        !ledgerEntry ||
+        ledgerEntry.retiredAt ||
+        ledgerEntry.instanceID !== witness.instanceID ||
+        (witness.conversationID &&
+          ledgerEntry.conversationID !== witness.conversationID)
+      ) {
+        throw new Error(
+          `Cannot record fork link: ${witness.label} identity is not live`,
+        );
+      }
+    }
+    await Zotero.DB.queryAsync(
+      `INSERT OR REPLACE INTO ${CONVERSATION_FORK_LINKS_TABLE}
       (target_conversation_key,
+       target_instance_id,
        target_conversation_id,
        target_system,
        target_kind,
        source_conversation_key,
+       source_instance_id,
        source_conversation_id,
        source_system,
        source_kind,
@@ -199,23 +273,31 @@ export async function recordConversationForkLink(
        source_assistant_timestamp,
        target_anchor_assistant_timestamp,
        created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      link.targetConversationKey,
-      link.targetConversationID || null,
-      link.targetSystem,
-      link.targetKind,
-      link.sourceConversationKey,
-      link.sourceConversationID || null,
-      link.sourceSystem,
-      link.sourceKind,
-      link.sourceLibraryID,
-      link.sourcePaperItemID || null,
-      link.sourceAssistantTimestamp,
-      link.targetAnchorAssistantTimestamp,
-      link.createdAt,
-    ],
-  );
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        link.targetConversationKey,
+        link.targetInstanceID || null,
+        link.targetConversationID || null,
+        link.targetSystem,
+        link.targetKind,
+        link.sourceConversationKey,
+        link.sourceInstanceID || null,
+        link.sourceConversationID || null,
+        link.sourceSystem,
+        link.sourceKind,
+        link.sourceLibraryID,
+        link.sourcePaperItemID || null,
+        link.sourceAssistantTimestamp,
+        link.targetAnchorAssistantTimestamp,
+        link.createdAt,
+      ],
+    );
+  };
+  if (typeof Zotero.DB.executeTransaction === "function") {
+    await Zotero.DB.executeTransaction(write);
+  } else {
+    await write();
+  }
   return link;
 }
 
@@ -227,10 +309,12 @@ export async function getConversationForkLink(
   await initConversationForkLinksStore();
   const rows = (await Zotero.DB.queryAsync(
     `SELECT target_conversation_key AS targetConversationKey,
+            target_instance_id AS targetInstanceID,
             target_conversation_id AS targetConversationID,
             target_system AS targetSystem,
             target_kind AS targetKind,
             source_conversation_key AS sourceConversationKey,
+            source_instance_id AS sourceInstanceID,
             source_conversation_id AS sourceConversationID,
             source_system AS sourceSystem,
             source_kind AS sourceKind,
@@ -257,5 +341,59 @@ export async function deleteConversationForkLink(
     `DELETE FROM ${CONVERSATION_FORK_LINKS_TABLE}
      WHERE target_conversation_key = ?`,
     [normalizedKey],
+  );
+}
+
+/** Remove provenance edges touching the deleted instance on either side. */
+export async function deleteConversationForkLinksForInstance(params: {
+  conversationKey: number;
+  system: ConversationSystem;
+  conversationID?: string;
+}): Promise<void> {
+  const normalizedKey = normalizePositiveInt(params.conversationKey);
+  const conversationID = normalizeString(params.conversationID);
+  if (!normalizedKey) return;
+  await initConversationForkLinksStore();
+  await deleteConversationForkLinksForInstanceInTransaction({
+    ...params,
+    conversationKey: normalizedKey,
+    conversationID,
+  });
+}
+
+/**
+ * Delete provenance edges without opening a nested transaction.
+ *
+ * Callers that already own the Zotero DB transaction use this primitive so a
+ * catalog/message failure rolls back the edge deletion as well.
+ */
+export async function deleteConversationForkLinksForInstanceInTransaction(params: {
+  conversationKey: number;
+  system: ConversationSystem;
+  conversationID?: string;
+}): Promise<void> {
+  const normalizedKey = normalizePositiveInt(params.conversationKey);
+  const conversationID = normalizeString(params.conversationID);
+  if (!normalizedKey) return;
+  const targetKeyClause = conversationID
+    ? "(target_conversation_id = ? OR (target_conversation_id IS NULL AND target_system = ? AND target_conversation_key = ?))"
+    : "(target_system = ? AND target_conversation_key = ?)";
+  const sourceKeyClause = conversationID
+    ? "(source_conversation_id = ? OR (source_conversation_id IS NULL AND source_system = ? AND source_conversation_key = ?))"
+    : "(source_system = ? AND source_conversation_key = ?)";
+  await Zotero.DB.queryAsync(
+    `DELETE FROM ${CONVERSATION_FORK_LINKS_TABLE}
+     WHERE ${targetKeyClause}
+        OR ${sourceKeyClause}`,
+    conversationID
+      ? [
+          conversationID,
+          params.system,
+          normalizedKey,
+          conversationID,
+          params.system,
+          normalizedKey,
+        ]
+      : [params.system, normalizedKey, params.system, normalizedKey],
   );
 }

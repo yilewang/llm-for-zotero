@@ -222,6 +222,7 @@ describe("conversationDeletion", function () {
     assert.isTrue(result.ok);
     assert.deepEqual(calls, [
       "cancel:7101",
+      "preflight-global:7101",
       "local-global:7101",
       "tokens:7101",
       "compose:7101",
@@ -317,7 +318,7 @@ describe("conversationDeletion", function () {
     assert.includeMembers(calls, ["local-paper:7102"]);
   });
 
-  it("validates local Codex rows before archiving the native thread", async function () {
+  it("validates local Codex rows before committing local deletion", async function () {
     const calls: string[] = [];
     const result = await finalizeConversationDeletion(
       {
@@ -341,11 +342,11 @@ describe("conversationDeletion", function () {
     assert.isTrue(result.ok);
     assert.deepEqual(calls.slice(0, 6), [
       "preflight-codex:8101",
-      "archive:thread-abc",
       "local-codex:8101",
       "tool:8101",
       "agent:8101",
       "refs:8101",
+      "files:8101",
     ]);
   });
 
@@ -378,7 +379,7 @@ describe("conversationDeletion", function () {
     assert.deepEqual(calls, ["preflight-codex:8105"]);
   });
 
-  it("blocks local Codex deletion if native thread archival fails", async function () {
+  it("does not block local Codex deletion if native thread archival fails", async function () {
     const calls: string[] = [];
     const operations = createOperations(calls);
     operations.archiveCodexThread = async (threadId: string) => {
@@ -409,9 +410,10 @@ describe("conversationDeletion", function () {
       },
     );
 
-    assert.isFalse(result.ok);
-    assert.isTrue(result.blocked);
-    assert.deepEqual(calls, ["preflight-codex:8102", "archive:thread-blocked"]);
+    assert.isTrue(result.ok);
+    assert.isFalse(result.blocked);
+    assert.include(calls, "preflight-codex:8102");
+    assert.include(calls, "local-codex:8102");
   });
 
   it("allows local Codex deletion when there is no stored native thread id", async function () {
@@ -477,7 +479,7 @@ describe("conversationDeletion", function () {
     assert.notInclude(calls, "selection");
   });
 
-  it("invalidates Claude before deleting local Claude rows", async function () {
+  it("deletes local Claude rows before optional provider cleanup", async function () {
     const calls: string[] = [];
     const result = await finalizeConversationDeletion(
       {
@@ -500,7 +502,7 @@ describe("conversationDeletion", function () {
 
     assert.isTrue(result.ok);
     assert.deepEqual(calls.slice(0, 5), [
-      "invalidate-claude:9101",
+      "preflight-claude:9101",
       "local-claude:9101",
       "tool:9101",
       "agent:9101",

@@ -49,6 +49,49 @@ describe("runtime system control layout", function () {
     );
   });
 
+  it("scales the mode chip label with the plugin font setting at every width", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const modeChipRule = extractCssRule(css, ".llm-mode-chip");
+
+    // The label follows --llm-font-scale like the rest of the plugin's text.
+    // A static chip, or one frozen behind a width breakpoint, is a downgrade at
+    // the sidebar widths people actually use — it stops responding to the font
+    // size shortcuts.
+    assert.include(modeChipRule, "font-size: var(--llm-fs-12)");
+
+    // No width breakpoint may pin it either: the compact header shrinks buttons
+    // to icons, but the chip keeps scaling.
+    const compactBlock =
+      css.match(/@container \(max-width: 380px\) \{[\s\S]*?\n\}/)?.[0] || "";
+    assert.notEqual(compactBlock, "", "compact header block must still exist");
+    assert.notInclude(compactBlock, ".llm-mode-chip");
+  });
+
+  it("tightens the leading gaps in the compact header without resizing the icons", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const compactBlock =
+      css.match(/@container \(max-width: 380px\) \{[\s\S]*?\n\}/)?.[0] || "";
+    const historyBarCompactRule = extractCssRule(
+      compactBlock,
+      ".llm-history-bar",
+    );
+    // Both selectors appear in a shared rule before their sized ones, so
+    // collect every rule that targets them rather than just the first match.
+    const historyIconRules = (
+      css.match(/\.llm-history-(?:new|toggle)\s*\{[^}]*\}/g) || []
+    ).join("\n");
+
+    // The chip is the only element in this row that scales with
+    // --llm-font-scale, and it is pinned rigid, so it can only grow into space
+    // the fixed chrome gives up. Reclaim that from the spacing, not from the
+    // icons — their 20px size is deliberate and must not follow the width.
+    assert.include(historyBarCompactRule, "gap: 4px");
+    assert.include(historyIconRules, "width: 20px");
+    assert.notInclude(historyIconRules, "width: 16px");
+    assert.notInclude(compactBlock, ".llm-history-new");
+    assert.notInclude(compactBlock, ".llm-history-toggle");
+  });
+
   it("keeps both runtime buttons fixed at 24px and in normal flow", function () {
     const css = source("addon/content/zoteroPane.css");
     const buttonRule = extractCssRule(css, ".llm-runtime-system-toggle");
@@ -83,21 +126,42 @@ describe("runtime system control layout", function () {
     assert.notInclude(standaloneSource, "20.998 10.949");
   });
 
-  it("reuses the standalone clear icon for the responsive sidebar button", function () {
+  it("uses the existing compact trash icon at every sidebar width", function () {
     const css = source("addon/content/zoteroPane.css");
     const sidebarSource = source("src/modules/contextPanel/buildUI.ts");
     const handlerSource = source("src/modules/contextPanel/setupHandlers.ts");
+    const standaloneSource = source(
+      "src/modules/contextPanel/standaloneWindow.ts",
+    );
+    const deleteButtonRule = extractCssRule(css, ".llm-clear-btn");
+    const deleteIconRule = extractCssRule(css, ".llm-clear-btn::before");
 
     assert.include(sidebarSource, "llm-btn-icon llm-clear-btn");
-    assert.include(css, '.llm-clear-btn[data-compact="true"]');
+    assert.include(sidebarSource, 'title: t("Delete conversation")');
+    assert.include(
+      sidebarSource,
+      'clearBtn.setAttribute("aria-label", t("Delete conversation"))',
+    );
+    assert.notInclude(sidebarSource, 'textContent: t("Clear")');
+    assert.include(deleteButtonRule, "width: 28px");
+    assert.include(deleteButtonRule, "font-size: 0");
+    assert.include(deleteIconRule, "display: block");
+    assert.notInclude(css, '.llm-clear-btn[data-compact="true"]');
     assert.include(css, "@container (max-width: 380px)");
     assert.equal(
       css.split('url("icons/action-clear.svg")').length - 1,
       4,
-      "the sidebar and standalone masks must share the same clear asset",
+      "the sidebar and standalone masks must share the existing trash asset",
     );
-    assert.include(handlerSource, "syncResponsiveHeaderClearButton");
-    assert.include(handlerSource, "shouldCompactHeaderClearButton");
+    assert.notInclude(handlerSource, "syncResponsiveHeaderClearButton");
+    assert.notInclude(handlerSource, "shouldCompactHeaderClearButton");
+    assert.include(handlerSource, 'clearBtn.textContent = ""');
+    assert.include(handlerSource, 't("Delete conversation")');
+    assert.include(
+      standaloneSource,
+      'iconClear.title = t("Delete conversation")',
+    );
+    assert.notInclude(standaloneSource, 'iconClear.title = t("Clear")');
   });
 
   it("keeps the sidebar export icon fixed when plugin text scales", function () {

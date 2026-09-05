@@ -22,9 +22,11 @@ import { parseSkill, setUserSkills } from "../src/agent/skills";
 import type {
   AgentModelMessage,
   AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
   AgentToolDefinition,
 } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 function paper(
   itemId: number,
@@ -42,9 +44,9 @@ function paper(
 }
 
 function request(
-  overrides: Partial<AgentRuntimeRequest> = {},
+  overrides: Partial<AgentRuntimeRequestInput> = {},
 ): AgentRuntimeRequest {
-  return {
+  return resolvedAgentRequest({
     conversationKey: 101,
     mode: "agent",
     userText: "What should I do next?",
@@ -52,7 +54,7 @@ function request(
     libraryID: 1,
     selectedPaperContexts: [paper(1, 10, "Baseline Paper")],
     ...overrides,
-  };
+  });
 }
 
 function messageText(message: AgentModelMessage): string {
@@ -398,7 +400,7 @@ describe("agent resource context plan", function () {
     assert.include(text, 'title="Baseline Paper"');
     assert.include(text, "Paper 2:");
     assert.include(text, 'title="Second Paper"');
-    assert.include(text, "the second paper");
+    assert.include(text, '"these papers" or "both papers"');
     assert.include(text, "User request:\nNow summarize the implication.");
   });
 
@@ -423,7 +425,7 @@ describe("agent resource context plan", function () {
   });
 
   it("renders contentful resources directly in the current turn", async function () {
-    const cases: Array<Partial<AgentRuntimeRequest>> = [
+    const cases: Array<Partial<AgentRuntimeRequestInput>> = [
       { selectedTexts: ["quoted text"] },
       {
         activeNoteContext: {
@@ -623,6 +625,71 @@ describe("agent resource context plan", function () {
     assert.include(userText, "Quote the exact supporting passages.");
     assert.include(userText, "Use the mock guided tool only for this test.");
     assert.include(userText, "Current-turn dynamic agent guidance");
+  });
+
+  it("flags user customizations after the managed block in skill guidance", async function () {
+    const req = request({
+      conversationKey: 102,
+      userText: "Summarize this paper",
+      forcedSkillIds: ["customized-note-skill", "plain-skill"],
+    });
+    const managedBegin = "<!-- LLM-FOR-ZOTERO:MANAGED-BEGIN -->";
+    const managedEnd = "<!-- LLM-FOR-ZOTERO:MANAGED-END -->";
+    setUserSkills([
+      parseSkill(
+        [
+          "---",
+          "id: customized-note-skill",
+          "description: customized skill",
+          "---",
+          managedBegin,
+          "Default filename pattern: default-pattern.md",
+          managedEnd,
+          "",
+          "## Your customizations",
+          "",
+          "Path pattern: `{papertitle}/{papertitle}.md`",
+        ].join("\n"),
+      ),
+      parseSkill(
+        [
+          "---",
+          "id: plain-skill",
+          "description: unmodified skill",
+          "---",
+          managedBegin,
+          "Managed-only instructions.",
+          managedEnd,
+        ].join("\n"),
+      ),
+    ]);
+    let messages!: AgentModelMessage[];
+    try {
+      messages = await buildAgentInitialMessages(
+        req,
+        [],
+        ["customized-note-skill", "plain-skill"],
+        buildAgentResourceContextPlan(req),
+      );
+    } finally {
+      setUserSkills([]);
+    }
+    const userText = messageText(messages[messages.length - 1]);
+
+    const customizedBlock = userText.slice(
+      userText.indexOf("### Skill: customized-note-skill"),
+      userText.indexOf("### Skill: plain-skill"),
+    );
+    const plainBlock = userText.slice(
+      userText.indexOf("### Skill: plain-skill"),
+    );
+    assert.include(customizedBlock, "USER CUSTOMIZATIONS");
+    assert.include(customizedBlock, "OVERRIDE any conflicting defaults");
+    assert.include(
+      customizedBlock,
+      "Path pattern: `{papertitle}/{papertitle}.md`",
+    );
+    assert.notInclude(plainBlock, "USER CUSTOMIZATIONS");
   });
 
   it("keys prompt-cache planning to stable resources instead of evidence or history", async function () {

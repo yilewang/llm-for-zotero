@@ -23,6 +23,7 @@ import {
   resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
+  shouldSearchLibraryForCitationForTests,
   INLINE_CITATION_SKIP_SELECTOR,
   type AssistantCitationPaperCandidate,
 } from "../src/modules/contextPanel/assistantCitationLinks";
@@ -1824,8 +1825,8 @@ describe("assistantCitationLinks", function () {
       assert.include(source, "new WeakMap<");
       assert.include(source, "citationButtonCandidateCache.set(citationButton");
       assert.include(source, "citationButtonCandidateCache.get(params.button)");
-      assert.include(source, "allowLibrarySearchForCitationNavigation");
-      assert.include(source, "hasUsefulLocalCandidate");
+      assert.include(source, "resolveCitationNavigationLibrarySearchMode");
+      assert.include(source, "shouldSearchLibraryForCitation");
     });
 
     it("keeps active-reader tie breaking below stored provenance", function () {
@@ -1891,7 +1892,7 @@ describe("assistantCitationLinks", function () {
       assert.include(searchSection, '"library-search"');
     });
 
-    it("does not allow whole-library fallback for quote-card navigation", function () {
+    it("keeps distinct navigation modes for inline, trusted and untrusted citations", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1902,16 +1903,15 @@ describe("assistantCitationLinks", function () {
 
       assert.include(source, "type CitationNavigationMode");
       assert.include(source, "getCitationNavigationMode");
-      assert.include(source, "allowLibrarySearchForCitationNavigation");
+      assert.include(source, "resolveCitationNavigationLibrarySearchMode");
       assert.include(source, 'navigationMode: "trusted-quote"');
       assert.include(source, 'navigationMode: "untrusted-quote"');
-      assert.notInclude(
-        source,
-        "{ allowLibrarySearch: !staticCandidates.length }",
-      );
+      // The mode is the whole point: a bare boolean could not say the
+      // difference between "search anyway" and "only if nothing local fits".
+      assert.notInclude(source, "allowLibrarySearch");
     });
 
-    it("routes untrusted quote-card clicks through constrained source search", function () {
+    it("lets an untrusted quote-card click find its paper anywhere in the library", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1919,14 +1919,78 @@ describe("assistantCitationLinks", function () {
         ),
         "utf8",
       );
+      const start = source.indexOf(
+        "async function navigateUntrustedQuoteCitation(params: {",
+      );
+      const end = source.indexOf(
+        "async function resolveAndNavigateAssistantCitation(params: {",
+        start,
+      );
+      const navigateSection = source.slice(start, end);
 
-      assert.include(source, "navigateUntrustedQuoteCitation");
-      assert.include(source, "resolveCandidatesForCitationNavigation");
-      assert.include(source, "skipFindController: true");
-      assert.include(source, "matchedCandidates.length > 1");
-      assert.include(source, "quote matched more than one explicit PDF");
-      assert.include(source, "preferRawCitationLabel");
+      assert.isAtLeast(start, 0);
+      assert.isAbove(end, start);
+      // Library chat discovers its sources at runtime, so the answer's papers
+      // are not attached to the message. A quote click must still be able to
+      // find them instead of refusing because nothing was attached — and the
+      // quote it verifies against is what makes searching that wide safe, so
+      // no local lookalike may cut the search short.
+      assert.include(navigateSection, 'librarySearch: "always"');
       assert.include(source, "preferRawCitationLabel: true");
+    });
+
+    it("verifies the quote before moving the reader and opens only the winner", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+      const start = source.indexOf(
+        "async function navigateUntrustedQuoteCitation(params: {",
+      );
+      const end = source.indexOf(
+        "async function resolveAndNavigateAssistantCitation(params: {",
+        start,
+      );
+      const navigateSection = source.slice(start, end);
+
+      // Candidates are checked against background PDF text; the single
+      // openReaderForItem call in this function is the verified winner.
+      assert.include(navigateSection, "resolveVerifiedQuoteTarget");
+      assert.include(navigateSection, "verify: verifyQuoteInCitationCandidate");
+      assert.lengthOf(navigateSection.match(/openReaderForItem\(/g) || [], 1);
+      // How many PDFs a click had to read is the number to watch when a jump
+      // feels slow, so it is recorded rather than left to guesswork.
+      assert.include(navigateSection, "pdfsRead:");
+      assert.notInclude(
+        navigateSection,
+        "no explicit PDF context is available",
+      );
+    });
+
+    it("verifies candidates without opening them", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+      const start = source.indexOf(
+        "async function verifyQuoteInCitationCandidate(",
+      );
+      const end = source.indexOf(
+        "async function locateQuoteByOpeningCitationCandidates(",
+        start,
+      );
+      const verifySection = source.slice(start, end);
+
+      assert.isAtLeast(start, 0);
+      assert.isAbove(end, start);
+      assert.include(verifySection, "verifyQuoteLocationForAttachment");
+      assert.notInclude(verifySection, "openReaderForItem");
     });
 
     it("renders untrusted quote-card citation controls without static candidates", function () {
@@ -2141,6 +2205,80 @@ describe("assistantCitationLinks", function () {
       assert.equal(
         formatSourceLabelWithPage("(Paper)", "10"),
         "(Paper, page 10)",
+      );
+    });
+  });
+
+  describe("library search mode", function () {
+    const extracted = extractStandalonePaperSourceLabel("(Smith et al., 2021)");
+    /** A local paper that shares only the year with the citation. */
+    const coincidence = makeCitationCandidate({
+      itemId: 1,
+      contextItemId: 11,
+      title: "Something else entirely",
+      firstCreator: "Okafor",
+      year: "2021",
+    });
+    const exactMatch = makeCitationCandidate({
+      itemId: 2,
+      contextItemId: 22,
+      title: "The cited paper",
+      firstCreator: "Smith et al.",
+      year: "2021",
+    });
+
+    it("searches regardless of local candidates when the quote will be verified", function () {
+      // Every hit still has to contain the quote before the reader moves, so
+      // widening the search costs a read at worst — while not widening it
+      // means the real source is never even considered.
+      assert.isTrue(
+        shouldSearchLibraryForCitationForTests({
+          mode: "always",
+          extractedCitation: extracted,
+          localCandidates: [exactMatch],
+        }),
+      );
+    });
+
+    it("does not let a year-only coincidence stand in for the cited paper", function () {
+      // Sharing a year scores above zero, which used to be enough to call the
+      // local list "useful" and skip the library entirely.
+      assert.isTrue(
+        shouldSearchLibraryForCitationForTests({
+          mode: "local-first",
+          extractedCitation: extracted,
+          localCandidates: [coincidence],
+        }),
+      );
+    });
+
+    it("keeps a confident local match from paying for a library search", function () {
+      assert.isFalse(
+        shouldSearchLibraryForCitationForTests({
+          mode: "local-first",
+          extractedCitation: extracted,
+          localCandidates: [exactMatch],
+        }),
+      );
+    });
+
+    it("never searches when the caller supplied its own paper", function () {
+      assert.isFalse(
+        shouldSearchLibraryForCitationForTests({
+          mode: "never",
+          extractedCitation: extracted,
+          localCandidates: [],
+        }),
+      );
+    });
+
+    it("treats any local candidate as enough when there is no label to match", function () {
+      assert.isFalse(
+        shouldSearchLibraryForCitationForTests({
+          mode: "local-first",
+          extractedCitation: null,
+          localCandidates: [coincidence],
+        }),
       );
     });
   });

@@ -10,6 +10,7 @@ import {
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
   compactCodexAppServerThread,
+  forkCodexAppServerThread,
   isDeniedTrustedZoteroMcpGuardianReviewForTests,
   listCodexAppServerModels,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
@@ -27,7 +28,17 @@ import {
   CodexAppServerProcess,
   destroyCachedCodexAppServerProcess,
 } from "../src/utils/codexAppServerProcess";
+import {
+  invokeRegisteredZoteroMcpEndpoint,
+  registerMcpServer,
+  resolveConversationScopeToken,
+  unregisterMcpServer,
+  ZOTERO_MCP_SCOPE_HEADER,
+} from "../src/agent/mcp/server";
+import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { getCodexProfileSignature } from "../src/codexAppServer/constants";
 import { getUserSkillsRuntimeRootDir } from "../src/agent/skills/userSkills";
+import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 import {
   BUILTIN_SKILL_FILES,
   parseSkill,
@@ -213,7 +224,7 @@ describe("Codex app-server native client", function () {
       contextItemId: 32,
       title: "UNC paper",
       name: "third.pdf",
-      absolutePath: "\\\\\\\\server\\\\share\\\\third.pdf",
+      absolutePath: "\\\\server\\share\\third.pdf",
     });
 
     const context = buildCodexNativeVisibleTurnContextBlockForTests({
@@ -228,9 +239,9 @@ describe("Codex app-server native client", function () {
       },
     });
 
-    const firstLine = `1. sourceKey=${first.document.sourceKey}, itemId=10, contextItemId=12, title=${JSON.stringify(first.document.title)}, name=${JSON.stringify(first.document.name)}, path=${JSON.stringify(first.document.absolutePath)}`;
-    const secondLine = `2. sourceKey=${second.document.sourceKey}, itemId=20, contextItemId=22, title=${JSON.stringify(second.document.title)}, name=${JSON.stringify(second.document.name)}, path=${JSON.stringify(second.document.absolutePath)}`;
-    const thirdLine = `3. sourceKey=${third.document.sourceKey}, itemId=30, contextItemId=32, title=${JSON.stringify(third.document.title)}, name=${JSON.stringify(third.document.name)}, path=${JSON.stringify(third.document.absolutePath)}`;
+    const firstLine = `1. paperKey=1:10:12, sourceKey=${first.document.sourceKey}, title=${JSON.stringify(first.document.title)}, name=${JSON.stringify(first.document.name)}, path=${JSON.stringify(first.document.absolutePath)}`;
+    const secondLine = `2. paperKey=1:20:22, sourceKey=${second.document.sourceKey}, title=${JSON.stringify(second.document.title)}, name=${JSON.stringify(second.document.name)}, path=${JSON.stringify(second.document.absolutePath)}`;
+    const thirdLine = `3. paperKey=1:30:32, sourceKey=${third.document.sourceKey}, title=${JSON.stringify(third.document.title)}, name=${JSON.stringify(third.document.name)}, path=${JSON.stringify(third.document.absolutePath)}`;
     assert.include(context, firstLine);
     assert.include(context, secondLine);
     assert.include(context, thirdLine);
@@ -630,10 +641,10 @@ describe("Codex app-server native client", function () {
     const restorePrefs = installDirectPathTestPrefs("native");
     const expectedCwd = getUserSkillsRuntimeRootDir();
     const writeNoteSkillPath = `${expectedCwd}/.agents/skills/write-note/SKILL.md`;
-    const listedWriteNoteSkillPath = writeNoteSkillPath.replace(
-      /^\/tmp\//,
-      "/private/tmp/",
-    );
+    const listedWriteNoteSkillPath =
+      process.platform === "darwin"
+        ? writeNoteSkillPath.replace(/^\/tmp\//, "/private/tmp/")
+        : writeNoteSkillPath;
     const simplePaperQaSkillPath = `${expectedCwd}/.agents/skills/simple-paper-qa/SKILL.md`;
     const proc = createNativeLifecycleTestProcess({
       newThreadIds: ["thread-pdf-explicit-skill"],
@@ -1082,6 +1093,210 @@ describe("Codex app-server native client", function () {
     });
   });
 
+  it("forks a thread with the target conversation's scope header, not the source's", async function () {
+    const processKey = "native-fork-scope-header";
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const originalZotero = (globalThis as { Zotero?: unknown }).Zotero;
+    const prefStore = new Map<string, unknown>();
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          writes.push(chunk);
+          const request = JSON.parse(chunk) as {
+            id: number;
+            method: string;
+            params?: Record<string, any>;
+          };
+          if (request.method !== "thread/fork") return;
+          void (async () => {
+            const servers = request.params?.config?.mcp_servers as Record<
+              string,
+              { http_headers?: Record<string, string> }
+            >;
+            const serverConfig = Object.values(servers || {})[0];
+            const response = await invokeRegisteredZoteroMcpEndpoint({
+              method: "POST",
+              data: {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "tools/list",
+                params: {},
+              },
+              headers: serverConfig?.http_headers,
+            });
+            const responseBody = JSON.parse(response?.[2] || "{}");
+            const handleMessage = (
+              proc as unknown as {
+                handleMessage: (msg: Record<string, unknown>) => void;
+              }
+            ).handleMessage.bind(proc);
+            if (responseBody.error) {
+              handleMessage({ id: request.id, error: responseBody.error });
+              return;
+            }
+            handleMessage({
+              id: request.id,
+              result: { thread: { id: "thread-forked" } },
+            });
+          })();
+        },
+      },
+      kill: () => {},
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+    (globalThis as { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get: (key: string) => prefStore.get(key),
+        set: (key: string, value: unknown) => prefStore.set(key, value),
+      },
+      Profile: { dir: "/tmp/lfz-fork-scope-profile" },
+      DataDirectory: { dir: "/tmp/lfz-fork-scope-data" },
+      Server: { Endpoints: {} },
+    };
+    registerMcpServer({
+      toolRegistry: new AgentToolRegistry(),
+      zoteroGateway: {} as never,
+    });
+
+    try {
+      const threadId = await forkCodexAppServerThread({
+        threadId: "thread-source",
+        targetConversationKey: 6_000_000_311,
+        processKey,
+        codexPath: "codex",
+      });
+      assert.equal(threadId, "thread-forked");
+
+      const forkRequest = writes
+        .map(
+          (chunk) =>
+            JSON.parse(chunk) as {
+              method: string;
+              params: Record<string, any>;
+            },
+        )
+        .find((entry) => entry.method === "thread/fork");
+      assert.equal(forkRequest?.params.threadId, "thread-source");
+
+      const servers = forkRequest?.params.config?.mcp_servers as Record<
+        string,
+        { http_headers?: Record<string, string> }
+      >;
+      const serverConfig = Object.values(servers || {})[0];
+      const sentScopeToken =
+        serverConfig?.http_headers?.[ZOTERO_MCP_SCOPE_HEADER];
+      const profileSignature = getCodexProfileSignature();
+      assert.equal(
+        sentScopeToken,
+        resolveConversationScopeToken({
+          profileSignature,
+          conversationKey: 6_000_000_311,
+        }),
+      );
+      assert.notEqual(
+        sentScopeToken,
+        resolveConversationScopeToken({
+          profileSignature,
+          conversationKey: 6_000_000_310,
+        }),
+      );
+    } finally {
+      unregisterMcpServer();
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc, {
+        codexPath: "codex",
+      });
+      (globalThis as { Zotero?: unknown }).Zotero = originalZotero;
+    }
+  });
+
+  it("overrides the inherited MCP server while tools are disabled", async function () {
+    const processKey = "native-fork-disabled-scope-header";
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const originalZotero = (globalThis as { Zotero?: unknown }).Zotero;
+    const prefStore = new Map<string, unknown>();
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          writes.push(chunk);
+          const request = JSON.parse(chunk) as { id: number; method: string };
+          if (request.method !== "thread/fork") return;
+          setTimeout(() => {
+            (
+              proc as unknown as {
+                handleMessage: (msg: Record<string, unknown>) => void;
+              }
+            ).handleMessage({
+              id: request.id,
+              result: { thread: { id: "thread-forked-disabled" } },
+            });
+          }, 0);
+        },
+      },
+      kill: () => {},
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+    (globalThis as { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get: (key: string) =>
+          key.endsWith(".codexAppServerZoteroMcpToolsEnabled")
+            ? false
+            : prefStore.get(key),
+        set: (key: string, value: unknown) => prefStore.set(key, value),
+      },
+      Profile: { dir: "/tmp/lfz-fork-disabled-scope-profile" },
+      DataDirectory: { dir: "/tmp/lfz-fork-disabled-scope-data" },
+      Server: { Endpoints: {} },
+    };
+
+    try {
+      const threadId = await forkCodexAppServerThread({
+        threadId: "thread-source",
+        targetConversationKey: 6_000_000_313,
+        processKey,
+        codexPath: "codex",
+      });
+      assert.equal(threadId, "thread-forked-disabled");
+
+      const forkRequest = writes
+        .map(
+          (chunk) =>
+            JSON.parse(chunk) as {
+              method: string;
+              params: Record<string, any>;
+            },
+        )
+        .find((entry) => entry.method === "thread/fork");
+      const servers = forkRequest?.params.config?.mcp_servers as Record<
+        string,
+        {
+          enabled?: boolean;
+          required?: boolean;
+          http_headers?: Record<string, string>;
+        }
+      >;
+      const serverConfig = Object.values(servers || {})[0];
+      assert.equal(serverConfig?.enabled, false);
+      assert.notProperty(serverConfig || {}, "required");
+      assert.equal(
+        serverConfig?.http_headers?.[ZOTERO_MCP_SCOPE_HEADER],
+        resolveConversationScopeToken({
+          profileSignature: getCodexProfileSignature(),
+          conversationKey: 6_000_000_313,
+        }),
+      );
+    } finally {
+      unregisterMcpServer();
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc, {
+        codexPath: "codex",
+      });
+      (globalThis as { Zotero?: unknown }).Zotero = originalZotero;
+    }
+  });
+
   it("auto-approves trusted Zotero MCP approval prompts except self-confirmation", function () {
     const legacyReadDecision = resolveSafeCodexNativeApprovalRequest({
       method: "tool/requestUserInput",
@@ -1408,19 +1623,14 @@ describe("Codex app-server native client", function () {
       mcpEnabled: true,
       mcpReady: true,
     });
-    assert.include(manifest, "You are Codex");
+    assert.include(manifest, "Zotero MCP is ready");
+    assert.include(manifest, "facts or actions absent from context");
+    assert.include(manifest, PAPER_CITATION_CONTRACT);
+    assert.equal(manifest.split(PAPER_CITATION_CONTRACT).length - 1, 1);
+    assert.include(manifest, "verified quote anchors like [[quote:Q_x7a2]]");
     assert.include(
       manifest,
-      "Zotero resources and MCP tools are available when useful",
-    );
-    assert.include(
-      manifest,
-      "Use tools only when they materially improve the answer",
-    );
-    assert.include(manifest, "quote anchors like [[quote:Q_x7a2]]");
-    assert.include(
-      manifest,
-      "Do not call tools solely to discover quotes or page numbers",
+      "Do not call additional tools solely to discover quotes or page numbers",
     );
     assert.notInclude(manifest, "page N");
     assert.notInclude(manifest, "use shell creatively");
@@ -1583,7 +1793,7 @@ describe("Codex app-server native client", function () {
     assert.include(block, 'name="Representation Drift"');
     assert.include(block, "Tag 1");
     assert.include(block, 'name="Learning"');
-    assert.include(block, '"the second paper"');
+    assert.include(block, '"these papers"');
   });
 
   it("puts current two-paper context in developer instructions without user-prefix duplication", async function () {
@@ -2606,14 +2816,31 @@ describe("Codex app-server native client", function () {
       },
     });
 
-    assert.deepEqual(scope.selectedPaperContexts, [selectedPaper]);
-    assert.deepEqual(scope.fullTextPaperContexts, [fullTextPaper]);
-    assert.deepEqual(scope.pinnedPaperContexts, [pinnedPaper]);
-    assert.deepEqual(scope.selectedCollectionContexts, [
+    assert.deepEqual(scope.turnPaperScope?.papers, [
+      {
+        paper: { ...selectedPaper, libraryID: 1 },
+        roles: ["selected"],
+      },
+      {
+        paper: { ...fullTextPaper, libraryID: 1, citationKey: undefined },
+        roles: ["full_text"],
+      },
+      {
+        paper: { ...pinnedPaper, libraryID: 1, citationKey: undefined },
+        roles: ["pinned"],
+      },
+    ]);
+    assert.deepEqual(scope.turnPaperScope?.collections, [
       { collectionId: 9, libraryID: 1, name: "Native Collection" },
     ]);
-    assert.deepEqual(scope.selectedTagContexts, [
-      { name: "Stable", normalizedName: "stable", libraryID: 1 },
+    assert.deepEqual(scope.turnPaperScope?.tags, [
+      {
+        name: "Stable",
+        normalizedName: "stable",
+        libraryID: 1,
+        scope: undefined,
+        includeAutomatic: undefined,
+      },
     ]);
     assert.equal(scope.model, "gpt-5.5");
     assert.equal(scope.codexPath, "/tmp/codex-native");

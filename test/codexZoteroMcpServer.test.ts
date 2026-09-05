@@ -6,14 +6,18 @@ import {
   getZoteroMcpServerUrl,
   registerScopedZoteroMcpScope,
   registerMcpServer,
+  releaseConversationScopeToken,
+  resolveConversationScopeToken,
   setActiveZoteroMcpScope,
   unregisterMcpServer,
   ZOTERO_MCP_ENDPOINT_PATH,
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 type EndpointReply = [number, string, string];
 
@@ -41,7 +45,7 @@ function createWriteTool(name: string): AgentToolDefinition<unknown, unknown> {
       requiresConfirmation: true,
     },
     validate: (args) => ({ ok: true, value: args ?? {} }),
-    execute: async () => ({ ok: true }),
+    execute: async () => ({ content: { ok: true }, effect: "applied" }),
   };
 }
 
@@ -69,9 +73,10 @@ describe("Zotero MCP server", function () {
   const originalZotero = globalThis.Zotero;
   const prefStore = new Map<string, unknown>();
 
-  beforeEach(function () {
+  beforeEach(async function () {
     prefStore.clear();
     (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      DB: new ChangeJournalTestDb(),
       Prefs: {
         get: (key: string) => {
           if (key === "httpServer.port") return 24680;
@@ -91,6 +96,7 @@ describe("Zotero MCP server", function () {
         Endpoints: {},
       },
     } as unknown as typeof Zotero;
+    await initAgentChangeJournal();
   });
 
   afterEach(function () {
@@ -822,7 +828,7 @@ describe("Zotero MCP server", function () {
           validate: (args) => ({ ok: true, value: args ?? {} }),
           execute: async (input) => {
             executed.push({ name, input });
-            return { name, input };
+            return { content: { name, input }, effect: "applied" };
           },
         });
       }
@@ -940,9 +946,13 @@ describe("Zotero MCP server", function () {
           requiresConfirmation: false,
         },
         validate: (args) => ({ ok: true, value: args ?? {} }),
+        planMutation: async () => ({
+          effect: "none",
+          reversibility: "none",
+        }),
         execute: async () => {
           executed.push(name);
-          return { name };
+          return { content: { name }, effect: "none" };
         },
       });
     }
@@ -1197,12 +1207,7 @@ describe("Zotero MCP server", function () {
           conversationKey: context.request.conversationKey,
           libraryID: context.request.libraryID,
           activeItemId: context.request.activeItemId,
-          selectedPaperContexts: context.request.selectedPaperContexts,
-          fullTextPaperContexts: context.request.fullTextPaperContexts,
-          pinnedPaperContexts: context.request.pinnedPaperContexts,
-          selectedCollectionContexts:
-            context.request.selectedCollectionContexts,
-          selectedTagContexts: context.request.selectedTagContexts,
+          turnPaperScope: context.request.turnPaperScope,
         },
       }),
     });
@@ -1263,44 +1268,41 @@ describe("Zotero MCP server", function () {
         conversationKey: 123,
         libraryID: 7,
         activeItemId: 55,
-        selectedPaperContexts: [
-          {
-            itemId: 55,
-            contextItemId: 66,
-            title: "Scoped Paper",
-            attachmentTitle: "Scoped PDF",
-            firstCreator: "Ng",
-            year: "2026",
-            contentSourceMode: "mineru",
-            mineruCacheDir: "/tmp/mineru-cache/scoped-paper",
-          },
-        ],
-        fullTextPaperContexts: [
-          {
-            itemId: 55,
-            contextItemId: 66,
-            title: "Scoped Paper",
-            attachmentTitle: "Scoped PDF",
-            firstCreator: "Ng",
-            year: "2026",
-            contentSourceMode: "mineru",
-            mineruCacheDir: "/tmp/mineru-cache/scoped-paper",
-          },
-        ],
-        selectedCollectionContexts: [
-          {
-            collectionId: 9,
-            libraryID: 7,
-            name: "Scoped Collection",
-          },
-        ],
-        selectedTagContexts: [
-          {
-            name: "Stable",
-            normalizedName: "stable",
-            libraryID: 7,
-          },
-        ],
+        turnPaperScope: {
+          libraryID: 7,
+          conversationKind: "paper",
+          papers: [
+            {
+              paper: {
+                libraryID: 7,
+                itemId: 55,
+                contextItemId: 66,
+                title: "Scoped Paper",
+                attachmentTitle: "Scoped PDF",
+                firstCreator: "Ng",
+                year: "2026",
+                contentSourceMode: "mineru",
+                mineruCacheDir: "/tmp/mineru-cache/scoped-paper",
+              },
+              roles: ["active", "full_text"],
+            },
+          ],
+          collections: [
+            {
+              collectionId: 9,
+              libraryID: 7,
+              name: "Scoped Collection",
+            },
+          ],
+          tags: [
+            {
+              name: "Stable",
+              normalizedName: "stable",
+              libraryID: 7,
+            },
+          ],
+          selectedPassagePaperRefs: [],
+        },
       });
     } finally {
       clearScope();
@@ -1319,11 +1321,7 @@ describe("Zotero MCP server", function () {
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
       execute: async (_input, context: AgentToolContext) => ({
-        request: {
-          selectedPaperContexts: context.request.selectedPaperContexts,
-          fullTextPaperContexts: context.request.fullTextPaperContexts,
-          pinnedPaperContexts: context.request.pinnedPaperContexts,
-        },
+        request: { turnPaperScope: context.request.turnPaperScope },
       }),
     });
     registerMcpServer({
@@ -1395,15 +1393,19 @@ describe("Zotero MCP server", function () {
       const payload = JSON.parse(response[2]);
       const content = JSON.parse(payload.result.content[0].text);
       assert.equal(content.ok, true);
-      assert.deepEqual(content.result.request.selectedPaperContexts, [
-        selectedPaper,
-      ]);
-      assert.deepEqual(content.result.request.fullTextPaperContexts, [
-        fullTextPaper,
-      ]);
-      assert.deepEqual(content.result.request.pinnedPaperContexts, [
-        pinnedPaper,
-      ]);
+      assert.deepEqual(
+        content.result.request.turnPaperScope.papers.map(
+          (entry: { paper: unknown; roles: string[] }) => ({
+            paper: entry.paper,
+            roles: entry.roles,
+          }),
+        ),
+        [
+          { paper: { ...selectedPaper, libraryID: 7 }, roles: ["selected"] },
+          { paper: { ...fullTextPaper, libraryID: 7 }, roles: ["full_text"] },
+          { paper: { ...pinnedPaper, libraryID: 7 }, roles: ["pinned"] },
+        ],
+      );
     } finally {
       scoped.clear();
     }
@@ -1422,7 +1424,7 @@ describe("Zotero MCP server", function () {
       validate: (args) => ({ ok: true, value: args ?? {} }),
       execute: async (input, context: AgentToolContext) => ({
         input,
-        selectedTagContexts: context.request.selectedTagContexts,
+        selectedTagContexts: context.request.turnPaperScope.tags,
       }),
     });
     registerMcpServer({
@@ -1474,6 +1476,134 @@ describe("Zotero MCP server", function () {
       ]);
     } finally {
       clearScope();
+    }
+  });
+
+  it("rejects mixed canonical and legacy MCP paper scope representations", function () {
+    assert.throws(
+      () =>
+        setActiveZoteroMcpScope({
+          conversationKey: 457,
+          libraryID: 1,
+          kind: "paper",
+          turnPaperScope: {
+            libraryID: 1,
+            conversationKind: "paper",
+            papers: [],
+            collections: [],
+            tags: [],
+            selectedPassagePaperRefs: [],
+          },
+          selectedPaperContexts: [
+            { itemId: 1, contextItemId: 2, title: "Legacy" },
+          ],
+        }),
+      /conflicting_paper_scope/,
+    );
+    assert.throws(
+      () =>
+        setActiveZoteroMcpScope({
+          conversationKey: 457,
+          libraryID: 1,
+          kind: "paper",
+          turnPaperScope: {
+            libraryID: 1,
+            conversationKind: "paper",
+            papers: [],
+            collections: [],
+            tags: [],
+            selectedPassagePaperRefs: [],
+          },
+          selectedPaperContexts: [],
+        } as never),
+      /conflicting_paper_scope/,
+    );
+  });
+
+  it("accepts raw target empty object through MCP semantic validation", async function () {
+    const paper = {
+      libraryID: 1,
+      itemId: 71,
+      contextItemId: 72,
+      title: "Issue 393 paper",
+    };
+    let ensuredPaper: unknown;
+    const gateway = {
+      listPaperContexts: () => [paper],
+      resolvePaperContextTarget: () => paper,
+    } as never;
+    const registry = new AgentToolRegistry();
+    registry.register(
+      createPaperReadTool(
+        {
+          ensurePaperContext: async (paperContext: unknown) => {
+            ensuredPaper = paperContext;
+          },
+        } as never,
+        {
+          retrieveEvidence: async () => [
+            {
+              itemId: paper.itemId,
+              contextItemId: paper.contextItemId,
+              title: paper.title,
+              text: "method evidence",
+            },
+          ],
+        } as never,
+        {} as never,
+        gateway,
+      ),
+    );
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: gateway });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 458,
+      libraryID: 1,
+      kind: "paper",
+      activeItemId: paper.itemId,
+      activeContextItemId: paper.contextItemId,
+      userText: "Use the actual PDF/full text to explain the method.",
+      turnPaperScope: {
+        libraryID: 1,
+        conversationKind: "paper",
+        papers: [{ paper, roles: ["active"] }],
+        collections: [],
+        tags: [],
+        selectedPassagePaperRefs: [],
+      },
+    });
+    try {
+      const listResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const listedPaperRead = JSON.parse(listResponse[2]).result.tools.find(
+        (tool: { name: string }) => tool.name === "paper_read",
+      );
+      assert.isArray(listedPaperRead.inputSchema.properties.target.anyOf);
+
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              mode: "targeted",
+              target: {},
+              query: "Use the actual PDF/full text to explain the method.",
+            },
+          },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isNotTrue(payload.result.isError);
+      assert.deepEqual(ensuredPaper, paper);
+    } finally {
+      scoped.clear();
     }
   });
 
@@ -1707,9 +1837,16 @@ describe("Zotero MCP server", function () {
         requiresConfirmation: false,
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
+      planMutation: async () => ({
+        effect: "write",
+        reversibility: "full",
+      }),
       execute: async () => {
         writeExecuteCount += 1;
-        return { writeExecuteCount };
+        return {
+          content: { writeExecuteCount },
+          effect: "applied",
+        };
       },
     });
     registerMcpServer({
@@ -2121,7 +2258,7 @@ describe("Zotero MCP server", function () {
       }),
       execute: async () => {
         executeCount += 1;
-        return { applied: true };
+        return { content: { applied: true }, effect: "applied" };
       },
     });
     registerMcpServer({
@@ -2184,6 +2321,10 @@ describe("Zotero MCP server", function () {
           requiresConfirmation: true,
         },
         validate: (args) => ({ ok: true, value: args ?? {} }),
+        planMutation: async () => ({
+          effect: "none",
+          reversibility: "none",
+        }),
         shouldRequireConfirmation: async () => false,
         createPendingAction: async () => ({
           toolName: name,
@@ -2194,7 +2335,7 @@ describe("Zotero MCP server", function () {
         }),
         execute: async () => {
           executed.push(name);
-          return { direct: true, name };
+          return { content: { direct: true, name }, effect: "none" };
         },
       });
     }
@@ -2274,10 +2415,13 @@ describe("Zotero MCP server", function () {
         };
       },
       execute: async (input) => ({
-        status: "created",
-        noteId: 99,
-        target: (input as { target?: unknown }).target,
-        noteContent: (input as { content?: unknown }).content,
+        content: {
+          status: "created",
+          noteId: 99,
+          target: (input as { target?: unknown }).target,
+          noteContent: (input as { content?: unknown }).content,
+        },
+        effect: "applied",
       }),
     });
     registerMcpServer({
@@ -2393,8 +2537,11 @@ describe("Zotero MCP server", function () {
         };
       },
       execute: async (_input, context) => ({
-        status: "updated",
-        noteId: context.request.activeNoteContext?.noteId,
+        content: {
+          status: "updated",
+          noteId: context.request.activeNoteContext?.noteId,
+        },
+        effect: "applied",
       }),
     });
     registerMcpServer({
@@ -2462,6 +2609,140 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("keeps a conversation scope token usable across turns and rebinds it to the newest turn", async function () {
+    let seenActiveItemId: number | undefined;
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "library_read",
+        description: "Read an item",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (_input, context: AgentToolContext) => {
+        seenActiveItemId = context.request.activeItemId;
+        return { activeItemId: context.request.activeItemId };
+      },
+    });
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const registerTurn = (activeItemId: number) =>
+      registerScopedZoteroMcpScope(
+        {
+          profileSignature: "profile-conv",
+          conversationKey: 501,
+          libraryID: 1,
+          kind: "global",
+          activeItemId,
+        },
+        {
+          token: resolveConversationScopeToken({
+            profileSignature: "profile-conv",
+            conversationKey: 501,
+          }),
+        },
+      );
+    const firstTurn = registerTurn(10);
+    // Turn teardown releases the scope; only the token stays registered.
+    firstTurn.clear();
+    const secondTurn = registerTurn(20);
+    try {
+      assert.equal(secondTurn.token, firstTurn.token);
+
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: firstTurn.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+      });
+      assert.isUndefined(JSON.parse(response[2]).error);
+      assert.equal(seenActiveItemId, 20);
+    } finally {
+      secondTurn.clear();
+    }
+  });
+
+  it("keeps a conversation scope token stable across MCP endpoint restarts", function () {
+    const firstToken = resolveConversationScopeToken({
+      profileSignature: "profile-restart",
+      conversationKey: 503,
+    });
+
+    unregisterMcpServer();
+
+    assert.equal(
+      resolveConversationScopeToken({
+        profileSignature: "profile-restart",
+        conversationKey: 503,
+      }),
+      firstToken,
+    );
+  });
+
+  it("releases only the deleted conversation's stable scope token", async function () {
+    registerMcpServer({
+      toolRegistry: new AgentToolRegistry(),
+      zoteroGateway: {} as never,
+    });
+    const firstToken = resolveConversationScopeToken({
+      profileSignature: "profile-cleanup-a",
+      conversationKey: 502,
+    });
+    const otherProfileToken = resolveConversationScopeToken({
+      profileSignature: "profile-cleanup-b",
+      conversationKey: 502,
+    });
+    const activeScope = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-cleanup-a",
+        conversationKey: 502,
+        libraryID: 1,
+        kind: "global",
+      },
+      { token: firstToken },
+    );
+
+    releaseConversationScopeToken({
+      profileSignature: "profile-cleanup-a",
+      conversationKey: 502,
+    });
+
+    assert.notEqual(
+      resolveConversationScopeToken({
+        profileSignature: "profile-cleanup-a",
+        conversationKey: 502,
+      }),
+      firstToken,
+    );
+    assert.equal(
+      resolveConversationScopeToken({
+        profileSignature: "profile-cleanup-b",
+        conversationKey: 502,
+      }),
+      otherProfileToken,
+    );
+    const staleResponse = await invokeMcpEndpoint({
+      token: getOrCreateZoteroMcpBearerToken(),
+      headers: { [ZOTERO_MCP_SCOPE_HEADER]: firstToken },
+      body: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      },
+    });
+    assert.match(
+      JSON.parse(staleResponse[2]).error.message,
+      /scope token is invalid or expired/i,
+    );
+    activeScope.clear();
+  });
+
   it("rejects stale cached MCP write headers instead of rebinding them", async function () {
     let pendingConversationKey: number | undefined;
     const registry = new AgentToolRegistry();
@@ -2485,11 +2766,14 @@ describe("Zotero MCP server", function () {
         };
       },
       execute: async (_input, context: AgentToolContext) => ({
-        request: {
-          conversationKey: context.request.conversationKey,
-          libraryID: context.request.libraryID,
-          activeItemId: context.request.activeItemId,
+        content: {
+          request: {
+            conversationKey: context.request.conversationKey,
+            libraryID: context.request.libraryID,
+            activeItemId: context.request.activeItemId,
+          },
         },
+        effect: "applied",
       }),
     });
     registerMcpServer({
@@ -2560,12 +2844,16 @@ describe("Zotero MCP server", function () {
         requiresConfirmation: false,
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
+      planMutation: async () => ({
+        effect: "write",
+        reversibility: "full",
+      }),
       createPendingAction: async () => {
         throw new Error("zotero_script should not request confirmation");
       },
       execute: async () => {
         executed = true;
-        return { status: "ran" };
+        return { content: { status: "ran" }, effect: "applied" };
       },
     });
     registerMcpServer({
@@ -2595,7 +2883,8 @@ describe("Zotero MCP server", function () {
             arguments: {
               mode: "write",
               description: "Run directly",
-              script: "env.addUndoStep(async () => {});",
+              script:
+                "env.addInverse({ version: 1, kind: 'library_operations', operations: [] });",
             },
           },
         },

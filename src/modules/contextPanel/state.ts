@@ -17,7 +17,24 @@ import type {
   GeneratedChatImage,
 } from "./types";
 import { TTLMap } from "./contexts/ttlMap";
+import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import type { ConversationForkLink } from "../../shared/conversationForkLinks";
+export {
+  areConversationWritesFrozen,
+  bumpConversationWriteGeneration,
+  freezeConversationWrites,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  unfreezeConversationWrites,
+} from "../../shared/conversationWriteFence";
+import {
+  areConversationWritesFrozen,
+  bumpConversationWriteGeneration,
+  freezeConversationWrites,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  unfreezeConversationWrites,
+} from "../../shared/conversationWriteFence";
 // =============================================================================
 // Module State
 // =============================================================================
@@ -28,9 +45,6 @@ export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
 const webChatForceNewChatConversationKeys = new Set<number>();
-const webChatPdfUploadedSourceKeys = new Map<number, readonly string[]>();
-const webChatPdfUploadUnknownConversationKeys = new Set<number>();
-export const selectedModelCache = new Map<number, string>();
 export const selectedReasoningCache = new Map<
   number,
   ReasoningLevelSelection
@@ -88,8 +102,6 @@ export function markWebChatConversationForceNewChat(
   const key = normalizeConversationKey(conversationKey);
   if (!key) return;
   webChatForceNewChatConversationKeys.add(key);
-  webChatPdfUploadedSourceKeys.delete(key);
-  webChatPdfUploadUnknownConversationKeys.delete(key);
 }
 
 export function clearWebChatConversationForceNewChat(
@@ -110,74 +122,83 @@ export function consumeWebChatConversationForceNewChat(
   return shouldForce;
 }
 
-export function hasWebChatPdfUploadedForConversation(
-  conversationKey: number,
-): boolean {
-  const key = normalizeConversationKey(conversationKey);
-  return key > 0 && webChatPdfUploadedSourceKeys.has(key);
-}
-
-export function markWebChatPdfUploadedForConversation(
-  conversationKey: number,
-  sourceKeys: readonly string[],
-): void {
-  const key = normalizeConversationKey(conversationKey);
-  if (!key) return;
-  const normalizedSourceKeys = sourceKeys
-    .filter((sourceKey): sourceKey is string => typeof sourceKey === "string")
-    .map((sourceKey) => sourceKey.trim())
-    .filter(Boolean);
-  if (!normalizedSourceKeys.length) return;
-  webChatPdfUploadedSourceKeys.set(key, Object.freeze(normalizedSourceKeys));
-  webChatPdfUploadUnknownConversationKeys.delete(key);
-}
-
-export function getWebChatUploadedPdfSourceKeysForConversation(
-  conversationKey: number,
-): readonly string[] {
-  const key = normalizeConversationKey(conversationKey);
-  return key > 0 ? webChatPdfUploadedSourceKeys.get(key) || [] : [];
-}
-
-export function markWebChatPdfUploadStateUnknownForConversation(
-  conversationKey: number,
-): void {
-  const key = normalizeConversationKey(conversationKey);
-  if (!key) return;
-  webChatPdfUploadedSourceKeys.delete(key);
-  webChatPdfUploadUnknownConversationKeys.add(key);
-}
-
-export function isWebChatPdfUploadStateUnknownForConversation(
-  conversationKey: number,
-): boolean {
-  const key = normalizeConversationKey(conversationKey);
-  return key > 0 && webChatPdfUploadUnknownConversationKeys.has(key);
-}
-
-export function resetWebChatPdfUploadedForConversation(
-  conversationKey: number,
-): void {
-  const key = normalizeConversationKey(conversationKey);
-  if (!key) return;
-  webChatPdfUploadedSourceKeys.delete(key);
-  webChatPdfUploadUnknownConversationKeys.delete(key);
-}
-
 export function resetWebChatConversationSessionState(
   conversationKey: number,
 ): void {
   const key = normalizeConversationKey(conversationKey);
   if (!key) return;
   webChatForceNewChatConversationKeys.delete(key);
-  webChatPdfUploadedSourceKeys.delete(key);
-  webChatPdfUploadUnknownConversationKeys.delete(key);
 }
 
 export function getPendingRequestId(conversationKey: number): number {
   return pendingRequestIds.get(conversationKey) || 0;
 }
-export function setPendingRequestId(conversationKey: number, id: number): void {
+
+export function tryBeginRequest(
+  conversationKey: number,
+  requestId: number,
+  abortController: AbortController | null,
+): boolean {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
+  pendingRequestIds.set(key, requestId);
+  if (abortController) abortControllers.set(key, abortController);
+  return true;
+}
+
+export function isRequestOwner(
+  conversationKey: number,
+  requestId: number,
+): boolean {
+  const key = normalizeConversationKey(conversationKey);
+  return Boolean(
+    key && requestId > 0 && pendingRequestIds.get(key) === requestId,
+  );
+}
+
+export function finishRequest(
+  conversationKey: number,
+  requestId: number,
+): boolean {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key || pendingRequestIds.get(key) !== requestId) return false;
+  pendingRequestIds.delete(key);
+  abortControllers.delete(key);
+  return true;
+}
+
+export function transferRequest(
+  fromConversationKey: number,
+  toConversationKey: number,
+  requestId: number,
+): boolean {
+  const fromKey = normalizeConversationKey(fromConversationKey);
+  const toKey = normalizeConversationKey(toConversationKey);
+  if (!fromKey || !toKey || pendingRequestIds.get(fromKey) !== requestId) {
+    return false;
+  }
+  if (fromKey === toKey) return true;
+  if (pendingRequestIds.has(toKey)) return false;
+  const abortController = abortControllers.get(fromKey) || null;
+  pendingRequestIds.delete(fromKey);
+  abortControllers.delete(fromKey);
+  pendingRequestIds.set(toKey, requestId);
+  if (abortController) abortControllers.set(toKey, abortController);
+  return true;
+}
+
+export function setPendingRequestId(
+  conversationKey: number,
+  id: number,
+  expectedCurrentId?: number,
+): void {
+  if (
+    id <= 0 &&
+    expectedCurrentId !== undefined &&
+    (pendingRequestIds.get(conversationKey) || 0) !== expectedCurrentId
+  ) {
+    return;
+  }
   if (id <= 0) {
     pendingRequestIds.delete(conversationKey);
   } else {
@@ -203,7 +224,15 @@ export function getAbortController(
 export function setAbortController(
   conversationKey: number,
   value: AbortController | null,
+  expectedRequestId?: number,
 ): void {
+  if (
+    value === null &&
+    expectedRequestId !== undefined &&
+    (pendingRequestIds.get(conversationKey) || 0) !== expectedRequestId
+  ) {
+    return;
+  }
   if (value === null) {
     abortControllers.delete(conversationKey);
   } else {
@@ -222,6 +251,62 @@ export function isAnyRequestPending(): boolean {
     if (id > 0) return true;
   }
   return false;
+}
+
+/**
+ * Drop only state owned by one immutable conversation instance.
+ *
+ * Paper context selections, attachment previews, and model/reasoning
+ * preferences are keyed by Zotero item and intentionally remain intact when a
+ * conversation for that item is deleted.  The maps below are keyed by the
+ * conversation itself, so they can be removed without disturbing a sibling
+ * conversation or a newer instance that reuses the numeric key.
+ */
+export function clearConversationOwnedRuntimeState(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+
+  bumpConversationWriteGeneration(key);
+
+  chatHistory.delete(key);
+  conversationForkLinks.delete(key);
+  loadedConversationKeys.delete(key);
+  loadingConversationTasks.delete(key);
+  webChatIsolatedConversationKeys.delete(key);
+  webChatForceNewChatConversationKeys.delete(key);
+  selectedRuntimeModeCache.delete(key);
+  draftInputCache.delete(key);
+  webChatDraftInputCache.delete(key);
+  pendingRequestIds.delete(key);
+  abortControllers.delete(key);
+  autoLockedGlobalConversationKeys.delete(key);
+
+  for (const [libraryID, activeKey] of activeGlobalConversationByLibrary) {
+    if (normalizeConversationKey(activeKey) === key) {
+      activeGlobalConversationByLibrary.delete(libraryID);
+    }
+  }
+  for (const [stateKey, activeKey] of activePaperConversationByPaper) {
+    if (normalizeConversationKey(activeKey) === key) {
+      activePaperConversationByPaper.delete(stateKey);
+    }
+  }
+
+  if (promptMenuTarget?.conversationKey === key) promptMenuTarget = null;
+  if (responseMenuTarget?.conversationKey === key) responseMenuTarget = null;
+  if (inlineEditTarget?.conversationKey === key) {
+    // The finalizer may run without a mounted panel, so do not invoke the DOM
+    // cleanup callback here.  Releasing the references is enough to prevent a
+    // stale callback from writing the deleted conversation back into the UI.
+    inlineEditCleanup = null;
+    inlineEditTarget = null;
+    inlineEditInputSectionEl = null;
+    inlineEditInputSectionParent = null;
+    inlineEditInputSectionNextSib = null;
+    inlineEditSavedDraft = "";
+  }
 }
 export let panelFontScalePercent = 120; // FONT_SCALE_DEFAULT_PERCENT — overwritten by initFontScale()
 export function setPanelFontScalePercent(value: number) {
@@ -367,6 +452,9 @@ export const selectedCollectionContextCache = new Map<
   CollectionContextRef[]
 >();
 export const selectedTagContextCache = new Map<number, TagContextRef[]>();
+// Conversations whose paper/collection/tag composer state has been initialized.
+// Membership is significant even when every corresponding context cache is empty.
+export const initializedConversationComposeContextKeys = new Set<number>();
 // Flat override maps: key = "ownerItemId:paperItemId:contextItemId"
 export const paperContextModeOverrides = new Map<
   string,
@@ -389,6 +477,12 @@ export const activeConversationModeByLibrary = new Map<
 >();
 // Draft text per conversation — capped to prevent unbounded growth (24h TTL, max 100).
 export const draftInputCache = new TTLMap<number, string>(
+  24 * 60 * 60 * 1000,
+  100,
+);
+// WebChat drafts stay local and isolated from the normal paper-chat composer.
+// They use the same bounded lifetime as other unsent drafts.
+export const webChatDraftInputCache = new TTLMap<number, string>(
   24 * 60 * 60 * 1000,
   100,
 );
@@ -486,9 +580,6 @@ export function clearAllState(): void {
   loadedConversationKeys.clear();
   loadingConversationTasks.clear();
   webChatForceNewChatConversationKeys.clear();
-  webChatPdfUploadedSourceKeys.clear();
-  webChatPdfUploadUnknownConversationKeys.clear();
-  selectedModelCache.clear();
   selectedReasoningCache.clear();
   selectedReasoningProviderCache.clear();
   selectedRuntimeModeCache.clear();
@@ -504,6 +595,7 @@ export function clearAllState(): void {
   selectedPaperContextCache.clear();
   selectedOtherRefContextCache.clear();
   selectedCollectionContextCache.clear();
+  initializedConversationComposeContextKeys.clear();
   paperContextModeOverrides.clear();
   paperContentSourceOverrides.clear();
   selectedPaperPreviewExpandedCache.clear();
@@ -511,6 +603,7 @@ export function clearAllState(): void {
   activeGlobalConversationByLibrary.clear();
   activeConversationModeByLibrary.clear();
   draftInputCache.clear();
+  webChatDraftInputCache.clear();
   selectedTextCache.clear();
   selectedTextPreviewExpandedCache.clear();
   selectedNotePreviewExpandedCache.clear();
@@ -526,4 +619,7 @@ export function clearAllState(): void {
   cancelledRequestIds.clear();
   abortControllers.clear();
   autoLockedGlobalConversationKeys.clear();
+  selectedTagContextCache.clear();
+  webChatIsolatedConversationKeys.clear();
+  clearMermaidSvgCache();
 }

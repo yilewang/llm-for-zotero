@@ -1,8 +1,5 @@
 import { assert } from "chai";
-import {
-  clearActiveConversationForPendingDeletion,
-  shouldRestoreActiveConversationOnDeletionUndo,
-} from "../src/modules/contextPanel/conversationDeletionActivation";
+import { clearActiveConversationForPendingDeletion } from "../src/modules/contextPanel/conversationDeletionActivation";
 
 describe("conversationDeletionActivation", function () {
   it("clears active global deletes by switching to a fresh global conversation", async function () {
@@ -46,9 +43,5 @@ describe("conversationDeletionActivation", function () {
     });
 
     assert.isFalse(cleared);
-  });
-
-  it("does not restore the deleted conversation on undo", function () {
-    assert.isFalse(shouldRestoreActiveConversationOnDeletionUndo());
   });
 });

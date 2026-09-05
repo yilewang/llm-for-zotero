@@ -9,10 +9,34 @@ import {
   getTrackedAssistantNoteForParent,
   rememberAssistantNoteForParent,
 } from "../src/modules/contextPanel/prefHelpers";
-import { resolveSvgFigureRasterSize } from "../src/modules/contextPanel/figureExport";
+import {
+  containsVisualFigureFences,
+  resolveSvgFigureRasterSize,
+} from "../src/modules/contextPanel/figureExport";
 import type { AgentToolContext } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { revertActions } from "../src/agent/services/changeReverter";
+import {
+  initAgentChangeJournal,
+  listJournalActions,
+} from "../src/agent/store/changeJournal";
+import { sha256Text } from "../src/agent/store/journalRecoveryBlobStore";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 describe("editCurrentNote create tracking", function () {
+  it("only defers notes that contain supported visual figure fences", function () {
+    assert.isFalse(containsVisualFigureFences("Plain text"));
+    assert.isFalse(
+      containsVisualFigureFences("```ts\nconst svg = '<svg />';\n```"),
+    );
+    assert.isTrue(
+      containsVisualFigureFences('```svg\n<svg viewBox="0 0 10 10" />\n```'),
+    );
+    assert.isTrue(
+      containsVisualFigureFences("```mermaid\ngraph TD\nA-->B\n```"),
+    );
+  });
+
   const baseContext: AgentToolContext = {
     request: {
       conversationKey: 91,
@@ -24,6 +48,7 @@ describe("editCurrentNote create tracking", function () {
     item: null,
     currentAnswerText: "",
     modelName: "gpt-5.4",
+    journalFallbackApproved: true,
   };
 
   const globalScope = globalThis as typeof globalThis & {
@@ -43,7 +68,12 @@ describe("editCurrentNote create tracking", function () {
         importEmbeddedImage?: (params: {
           blob: Blob;
           parentItemID: number;
+          saveOptions?: { notifierQueue?: unknown };
         }) => Promise<{ key: string } | null>;
+      };
+      Notifier?: {
+        Queue: new () => unknown;
+        commit: (queue: unknown) => Promise<void>;
       };
     };
     IOUtils?: {
@@ -60,14 +90,23 @@ describe("editCurrentNote create tracking", function () {
   const importedImagePaths: string[] = [];
   const importedImageMimeTypes: string[] = [];
   const importedImageByteSizes: number[] = [];
+  const importedImageNotifierQueues: unknown[] = [];
+  const committedNotifierQueues: unknown[] = [];
   let nextNoteId = 100;
   let parentItem: Zotero.Item;
 
   class MockNoteItem {
     id = 0;
     libraryID = 0;
+    key = "NOTEKEY";
+    itemTypeID = 1;
     parentID?: number;
+    dateAdded = "";
+    dateModified = "";
+    version = 0;
     deleted = false;
+    readonly saveOptionsHistory: Array<{ notifierQueue?: unknown }> = [];
+    wrapOnReload = false;
     private noteHtml = "";
 
     constructor(itemType: string) {
@@ -78,6 +117,10 @@ describe("editCurrentNote create tracking", function () {
       return true;
     }
 
+    isAttachment() {
+      return false;
+    }
+
     setNote(html: string) {
       this.noteHtml = html;
     }
@@ -86,19 +129,42 @@ describe("editCurrentNote create tracking", function () {
       return this.noteHtml;
     }
 
-    getField(_field: string) {
+    getField(field: string) {
+      if (field === "dateAdded") return this.dateAdded;
+      if (field === "dateModified") return this.dateModified;
       return "";
     }
 
-    async saveTx() {
+    getNoteTitle() {
+      return "";
+    }
+
+    getDisplayTitle() {
+      return "";
+    }
+
+    async saveTx(options: { notifierQueue?: unknown } = {}) {
+      this.saveOptionsHistory.push(options);
       if (!this.id) {
         this.id = nextNoteId++;
+        this.dateAdded = "2026-08-28 10:00:00";
       }
+      this.version += 1;
+      this.dateModified = `2026-08-28 10:00:0${this.version}`;
       savedItems.set(this.id, this as unknown as Zotero.Item);
       if (this.parentID && !parentNoteIds.includes(this.id)) {
         parentNoteIds.push(this.id);
       }
       return this.id;
+    }
+
+    async reload() {
+      if (
+        this.wrapOnReload &&
+        !this.noteHtml.startsWith('<div class="zotero-note ')
+      ) {
+        this.noteHtml = `<div class="zotero-note znv3">${this.noteHtml}</div>`;
+      }
     }
   }
 
@@ -134,6 +200,8 @@ describe("editCurrentNote create tracking", function () {
     importedImagePaths.splice(0);
     importedImageMimeTypes.splice(0);
     importedImageByteSizes.splice(0);
+    importedImageNotifierQueues.splice(0);
+    committedNotifierQueues.splice(0);
     nextNoteId = 100;
     parentItem = {
       id: 9,
@@ -156,11 +224,18 @@ describe("editCurrentNote create tracking", function () {
           savedItems.get(id) || (id === 9 ? parentItem : null),
       },
       Item: MockNoteItem as unknown as new (itemType: string) => Zotero.Item,
+      Notifier: {
+        Queue: class {},
+        commit: async (queue) => {
+          committedNotifierQueues.push(queue);
+        },
+      },
       Attachments: {
-        importEmbeddedImage: async ({ blob, parentItemID }) => {
+        importEmbeddedImage: async ({ blob, parentItemID, saveOptions }) => {
           importedImageParents.push(parentItemID);
           importedImageMimeTypes.push(blob.type);
           importedImageByteSizes.push(blob.size);
+          importedImageNotifierQueues.push(saveOptions?.notifierQueue);
           return { key: `IMG${parentItemID}_${importedImageParents.length}` };
         },
       },
@@ -208,23 +283,64 @@ describe("editCurrentNote create tracking", function () {
           : null,
     } as never);
 
-    const result = await tool.execute(
-      {
-        mode: "create",
-        content: '<div style="color: red">Styled note</div>',
-        _isHtml: true,
-        target: "item",
-      },
-      baseContext,
-    );
+    const result = (
+      await tool.execute(
+        {
+          mode: "create",
+          content: '<div style="color: red">Styled note</div>',
+          _isHtml: true,
+          target: "item",
+        },
+        baseContext,
+      )
+    ).content;
     assert.deepEqual(result, {
       status: "created",
       noteId: 100,
       title: "",
+      // Present-but-undefined: this note asked for no collections. The key
+      // exists so the manual (image) branch reports where a note landed,
+      // matching the mutation-service branch.
+      collections: undefined,
+      createdNoteReceipt: {
+        schemaVersion: 1,
+        operation: "created",
+        note: {
+          itemId: 100,
+          libraryID: 1,
+          key: "NOTEKEY",
+          noteKind: "item",
+          parentItemId: 9,
+          dateAdded: "2026-08-28 10:00:00",
+          dateModified: "2026-08-28 10:00:01",
+          version: 1,
+        },
+      },
     });
 
     const tracked = getTrackedAssistantNoteForParent(9);
     assert.isNull(tracked);
+  });
+
+  it("preserves styled HTML when note creation skips the review card", async function () {
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const validated = tool.validate({
+      mode: "create",
+      content:
+        '<div style="color: rgb(180, 20, 20)"><strong>Styled note</strong></div>',
+      target: "item",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    await tool.execute(validated.value, baseContext);
+
+    assert.lengthOf(childNotes(9), 1);
+    assert.include(
+      childNotes(9)[0].getNote(),
+      'style="color: rgb(180, 20, 20)"',
+    );
+    assert.include(childNotes(9)[0].getNote(), "<strong>Styled note</strong>");
   });
 
   it("agent create makes a new item note even when a response-save note is tracked", async function () {
@@ -232,14 +348,16 @@ describe("editCurrentNote create tracking", function () {
     rememberAssistantNoteForParent(9, 50);
 
     const tool = createEditCurrentNoteTool(new ZoteroGateway());
-    const result = await tool.execute(
-      {
-        mode: "create",
-        content: "Agent-created note",
-        target: "item",
-      },
-      baseContext,
-    );
+    const result = (
+      await tool.execute(
+        {
+          mode: "create",
+          content: "Agent-created note",
+          target: "item",
+        },
+        baseContext,
+      )
+    ).content;
 
     assert.equal((result as any).result.status, "created");
     assert.equal(trackedNote.getNote(), "<p>Tracked response save</p>");
@@ -250,27 +368,30 @@ describe("editCurrentNote create tracking", function () {
 
   it("agent create attaches to the only selected paper when no active item exists", async function () {
     const tool = createEditCurrentNoteTool(new ZoteroGateway());
-    const result = await tool.execute(
-      {
-        mode: "create",
-        content: "Selected-paper note",
-        target: "item",
-      },
-      {
-        ...baseContext,
-        request: {
-          ...baseContext.request,
-          activeItemId: undefined,
-          selectedPaperContexts: [
-            {
-              itemId: 9,
-              contextItemId: 9,
-              title: "Parent Paper",
-            },
-          ],
+    const result = (
+      await tool.execute(
+        {
+          mode: "create",
+          content: "Selected-paper note",
+          target: "item",
         },
-      },
-    );
+        {
+          ...baseContext,
+          request: resolvedAgentRequest({
+            ...baseContext.request,
+            activeItemId: undefined,
+            libraryID: 1,
+            selectedPaperContexts: [
+              {
+                itemId: 9,
+                contextItemId: 9,
+                title: "Parent Paper",
+              },
+            ],
+          }),
+        },
+      )
+    ).content;
 
     assert.equal((result as any).result.status, "created");
     assert.lengthOf(childNotes(9), 1);
@@ -281,7 +402,34 @@ describe("editCurrentNote create tracking", function () {
     const existing = saveExistingNote(60, 9, "<p>Existing body</p>");
     const tool = createEditCurrentNoteTool(new ZoteroGateway());
 
-    const result = await tool.execute(
+    const result = (
+      await tool.execute(
+        {
+          mode: "append",
+          targetNoteId: 60,
+          content: "Appended body",
+        },
+        baseContext,
+      )
+    ).content;
+
+    assert.equal((result as any).status, "appended");
+    assert.equal((result as any).noteId, 60);
+    assert.include(existing.getNote(), "Existing body");
+    assert.include(existing.getNote(), "<hr/>");
+    assert.include(existing.getNote(), "Appended body");
+  });
+
+  it("journals Zotero's reloaded append HTML so immediate undo does not conflict", async function () {
+    const db = new ChangeJournalTestDb();
+    (globalScope.Zotero as unknown as { DB: ChangeJournalTestDb }).DB = db;
+    await initAgentChangeJournal();
+    const existing = saveExistingNote(60, 9, "<p>Existing body</p>");
+    existing.wrapOnReload = true;
+    const gateway = new ZoteroGateway();
+    const tool = createEditCurrentNoteTool(gateway);
+
+    await tool.execute(
       {
         mode: "append",
         targetNoteId: 60,
@@ -289,12 +437,24 @@ describe("editCurrentNote create tracking", function () {
       },
       baseContext,
     );
+    const persistedHtml = existing.getNote();
+    const [action] = await listJournalActions({
+      conversationKey: baseContext.request.conversationKey,
+      limit: 1,
+    });
+    const postcondition = JSON.parse(
+      action.steps[0].expectedPostconditionJson || "{}",
+    ) as { checksum?: string };
 
-    assert.equal((result as any).status, "appended");
-    assert.equal((result as any).noteId, 60);
+    assert.equal(postcondition.checksum, await sha256Text(persistedHtml));
+    const reverted = await revertActions({
+      actions: [action],
+      zoteroGateway: gateway,
+      context: baseContext,
+    });
+    assert.equal(reverted.reverted, 1);
     assert.include(existing.getNote(), "Existing body");
-    assert.include(existing.getNote(), "<hr/>");
-    assert.include(existing.getNote(), "Appended body");
+    assert.notInclude(existing.getNote(), "Appended body");
   });
 
   it("append mode refuses ambiguous child-note targets", async function () {
@@ -369,6 +529,18 @@ describe("editCurrentNote create tracking", function () {
     assert.notInclude(note.getNote(), "spine.png</p>");
     assert.deepEqual(importedImageParents, [100]);
     assert.deepEqual(importedImagePaths, ["/tmp/spine.png"]);
+    assert.lengthOf(note.saveOptionsHistory, 2);
+    assert.isOk(note.saveOptionsHistory[0].notifierQueue);
+    assert.strictEqual(
+      note.saveOptionsHistory[0].notifierQueue,
+      note.saveOptionsHistory[1].notifierQueue,
+    );
+    assert.deepEqual(importedImageNotifierQueues, [
+      note.saveOptionsHistory[0].notifierQueue,
+    ]);
+    assert.deepEqual(committedNotifierQueues, [
+      note.saveOptionsHistory[0].notifierQueue,
+    ]);
   });
 
   it("response-menu generated images attach to the newly created item note", async function () {
@@ -519,6 +691,55 @@ describe("editCurrentNote create tracking", function () {
     assert.include(note!.getNote(), "Standalone generated figure.");
     assert.include(note!.getNote(), 'data-attachment-key="IMG100_1"');
     assert.deepEqual(importedImageParents, [100]);
+  });
+
+  it("keeps complete response text and reports a warning when an image cannot be embedded", async function () {
+    globalScope.Zotero!.Attachments!.importEmbeddedImage = async () => null;
+
+    const result = await createAssistantResponseNote({
+      destination: { kind: "item", item: parentItem },
+      queryText: "Generate a figure.",
+      contentText: "The complete answer remains available.",
+      modelName: "Codex",
+      generatedImages: [
+        {
+          id: "img-missing",
+          label: "missing.png",
+          path: "/tmp/missing.png",
+        },
+      ],
+    });
+
+    const note = childNotes(9)[0];
+    assert.include(note.getNote(), "Generate a figure.");
+    assert.include(note.getNote(), "The complete answer remains available.");
+    assert.notInclude(note.getNote(), "Preparing note figures");
+    assert.deepEqual(result.warnings, [
+      "1 generated image(s) could not be embedded",
+    ]);
+  });
+
+  it("chat-history text export finalizes authoritative creation metadata", async function () {
+    await createNoteFromChatHistory(parentItem, [
+      {
+        role: "user",
+        text: "What is the main result?",
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        text: "The complete text-only answer.",
+        timestamp: 2,
+        modelName: "Codex",
+      },
+    ]);
+
+    assert.lengthOf(childNotes(9), 1);
+    const note = childNotes(9)[0];
+    assert.lengthOf(note.saveOptionsHistory, 2);
+    assert.include(note.getNote(), "What is the main result?");
+    assert.include(note.getNote(), "The complete text-only answer.");
+    assert.notInclude(note.getNote(), "Preparing chat history export");
   });
 
   it("chat-history note export embeds assistant generated images and keeps user screenshots", async function () {

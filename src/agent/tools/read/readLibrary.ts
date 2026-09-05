@@ -8,7 +8,6 @@ import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   fail,
   normalizePositiveInt,
-  normalizePositiveIntArray,
   normalizeToolPaperContext,
   ok,
   PAPER_CONTEXT_REF_SCHEMA,
@@ -18,6 +17,7 @@ import {
 type ReadLibraryInput = {
   itemIds?: number[];
   paperContexts?: PaperContextRef[];
+  selectorMode: "explicit" | "ambient";
   sections: ReadLibrarySection[];
   maxNotes?: number;
   maxAnnotations?: number;
@@ -42,8 +42,26 @@ function normalizeSections(value: unknown): ReadLibrarySection[] | null {
   return sections.length ? Array.from(new Set(sections)) : null;
 }
 
-function normalizePaperContexts(value: unknown): PaperContextRef[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+function normalizeExplicitItemIds(value: unknown): number[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  if (
+    value.some(
+      (entry) =>
+        typeof entry !== "number" ||
+        !Number.isFinite(entry) ||
+        entry <= 0 ||
+        !Number.isInteger(entry),
+    )
+  ) {
+    return null;
+  }
+  return Array.from(new Set(value));
+}
+
+function normalizeExplicitPaperContexts(
+  value: unknown,
+): PaperContextRef[] | null {
+  if (!Array.isArray(value) || !value.length) return null;
   const contexts = value
     .map((entry) =>
       validateObject<Record<string, unknown>>(entry)
@@ -56,7 +74,7 @@ function normalizePaperContexts(value: unknown): PaperContextRef[] | undefined {
       ): entry is NonNullable<ReturnType<typeof normalizeToolPaperContext>> =>
         Boolean(entry),
     );
-  return contexts.length ? contexts : undefined;
+  return contexts.length === value.length ? contexts : null;
 }
 
 export function createReadLibraryTool(
@@ -144,26 +162,50 @@ export function createReadLibraryTool(
             `Valid sections: metadata, notes, content, annotations, attachments, collections.`,
         );
       }
+      const hasItemIds = Object.prototype.hasOwnProperty.call(args, "itemIds");
+      const hasPaperContexts = Object.prototype.hasOwnProperty.call(
+        args,
+        "paperContexts",
+      );
+      const itemIds = hasItemIds
+        ? normalizeExplicitItemIds(args.itemIds)
+        : undefined;
+      if (hasItemIds && !itemIds) {
+        return fail(
+          "itemIds must be a non-empty array of positive integer Zotero item IDs",
+        );
+      }
+      const paperContexts = hasPaperContexts
+        ? normalizeExplicitPaperContexts(args.paperContexts)
+        : undefined;
+      if (hasPaperContexts && !paperContexts) {
+        return fail(
+          "paperContexts must be a non-empty array of complete paper context references",
+        );
+      }
       return ok<ReadLibraryInput>({
-        itemIds: normalizePositiveIntArray(args.itemIds) || undefined,
-        paperContexts: normalizePaperContexts(args.paperContexts),
+        itemIds: itemIds || undefined,
+        paperContexts: paperContexts || undefined,
+        selectorMode: hasItemIds || hasPaperContexts ? "explicit" : "ambient",
         sections,
         maxNotes: normalizePositiveInt(args.maxNotes),
         maxAnnotations: normalizePositiveInt(args.maxAnnotations),
       });
     },
     execute: async (input, context) => {
+      const read = await readService.readItems({
+        request: context.request,
+        itemIds: input.itemIds,
+        paperContexts: input.paperContexts,
+        selectorMode: input.selectorMode,
+        sections: input.sections,
+        maxNotes: input.maxNotes,
+        maxAnnotations: input.maxAnnotations,
+      });
       return {
         sections: input.sections,
-        results: await readService.readItems({
-          request: context.request,
-          itemIds: input.itemIds,
-          paperContexts: input.paperContexts,
-          sections: input.sections,
-          maxNotes: input.maxNotes,
-          maxAnnotations: input.maxAnnotations,
-        }),
-        warnings: [],
+        results: read.results,
+        warnings: read.warnings,
       };
     },
   };

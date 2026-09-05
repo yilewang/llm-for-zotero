@@ -18,7 +18,11 @@ import {
   CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
 } from "../src/shared/conversationKeySpace";
-import type { SelectedTextContext } from "../src/shared/types";
+import type {
+  CollectionContextRef,
+  SelectedTextContext,
+  TagContextRef,
+} from "../src/shared/types";
 
 type RecordedQuery = { sql: string; params: unknown[] };
 
@@ -28,6 +32,29 @@ const canonicalContext: SelectedTextContext = {
   contextItemId: 902,
   pageIndex: 587,
   pageLabel: "588",
+};
+const collectionContext: CollectionContextRef = {
+  collectionId: 55,
+  libraryID: 1,
+  name: "Methods",
+};
+const tagContext: TagContextRef = {
+  libraryID: 1,
+  name: "Stability",
+  normalizedName: "stability",
+  includeAutomatic: false,
+};
+const storedCollectionContext: CollectionContextRef = {
+  collectionId: 55,
+  name: "Methods",
+  libraryID: 1,
+};
+const storedTagContext: TagContextRef = {
+  name: "Stability",
+  libraryID: 1,
+  normalizedName: "stability",
+  scope: undefined,
+  includeAutomatic: false,
 };
 
 function installRecordingDb(
@@ -95,6 +122,34 @@ describe("selected text context message stores", function () {
     }
   });
 
+  it("writes collection and tag context in every message store", async function () {
+    const queries = installRecordingDb();
+    const message = {
+      role: "user" as const,
+      text: "Compare this scope",
+      timestamp: 100,
+      selectedCollectionContexts: [collectionContext],
+      selectedTagContexts: [tagContext],
+    };
+
+    await appendMessage(42, message);
+    await appendClaudeMessage(CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+    await appendCodexMessage(CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+
+    for (const table of [
+      "llm_for_zotero_chat_messages",
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]) {
+      const insert = findQuery(queries, `INSERT INTO ${table}`);
+      assert.include(insert.sql, "collection_contexts_json");
+      assert.include(insert.sql, "tag_contexts_json");
+      assert.equal(insert.sql.match(/\?/g)?.length || 0, insert.params.length);
+      assert.include(insert.params, JSON.stringify([storedCollectionContext]));
+      assert.include(insert.params, JSON.stringify([storedTagContext]));
+    }
+  });
+
   it("loads canonical JSON as the source of truth in every store", async function () {
     installRecordingDb((sql) => {
       if (!sql.includes("ORDER BY timestamp ASC")) return undefined;
@@ -128,6 +183,38 @@ describe("selected text context message stores", function () {
       );
       assert.deepEqual(messages[0]?.selectedTexts, [canonicalContext.text]);
       assert.deepEqual(messages[0]?.selectedTextSources, ["pdf"]);
+    }
+  });
+
+  it("loads collection and tag context from every message store", async function () {
+    installRecordingDb((sql) => {
+      if (!sql.includes("ORDER BY timestamp ASC")) return undefined;
+      return [
+        {
+          role: "user",
+          text: "Compare this scope",
+          timestamp: 100,
+          collectionContextsJson: JSON.stringify([collectionContext]),
+          tagContextsJson: JSON.stringify([tagContext]),
+        },
+      ];
+    });
+
+    const standard = await loadConversation(42, 20);
+    const claude = await loadClaudeConversation(
+      CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      20,
+    );
+    const codex = await loadCodexConversation(
+      CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      20,
+    );
+
+    for (const messages of [standard, claude, codex]) {
+      assert.deepEqual(messages[0]?.selectedCollectionContexts, [
+        storedCollectionContext,
+      ]);
+      assert.deepEqual(messages[0]?.selectedTagContexts, [storedTagContext]);
     }
   });
 
@@ -192,6 +279,38 @@ describe("selected text context message stores", function () {
       const query = findQuery(queries, `UPDATE ${table}`);
       assert.include(query.sql, "selected_text_contexts_json = ?");
       assert.include(query.params, JSON.stringify([canonicalContext]));
+    }
+  });
+
+  it("updates collection and tag context in every message store", async function () {
+    const queries = installRecordingDb();
+    const update = {
+      text: "Edited scope",
+      timestamp: 200,
+      selectedCollectionContexts: [collectionContext],
+      selectedTagContexts: [tagContext],
+    };
+
+    await updateLatestUserMessage(42, update);
+    await updateLatestClaudeUserMessage(
+      CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      update,
+    );
+    await updateLatestCodexUserMessage(
+      CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      update,
+    );
+
+    for (const table of [
+      "llm_for_zotero_chat_messages",
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]) {
+      const query = findQuery(queries, `UPDATE ${table}`);
+      assert.include(query.sql, "collection_contexts_json = ?");
+      assert.include(query.sql, "tag_contexts_json = ?");
+      assert.include(query.params, JSON.stringify([storedCollectionContext]));
+      assert.include(query.params, JSON.stringify([storedTagContext]));
     }
   });
 });

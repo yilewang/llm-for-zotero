@@ -209,6 +209,7 @@ export async function repairRecoverableCatalogMessageConversationIDs(params: {
       queryAsync: params.queryAsync,
       tableName: params.messageTable,
       registered: {
+        instanceID: "",
         conversationID,
         conversationKey,
         system: params.system,

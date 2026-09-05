@@ -59,6 +59,7 @@ function createDeps(params: {
 }): AgentEngineDeps {
   const chatHistory = new Map<number, any[]>();
   const abortControllers = new Map<number, AbortController | null>();
+  const pendingRequests = new Map<number, number>();
   const contextSnapshots = new Map<number, { contextTokens: number }>();
   return {
     chatHistory,
@@ -66,13 +67,37 @@ function createDeps(params: {
     cancelledRequestId: () => 0,
     currentAbortController: (conversationKey) =>
       abortControllers.get(conversationKey) || null,
-    setCurrentAbortController: (conversationKey, ctrl) => {
-      abortControllers.set(conversationKey, ctrl);
-    },
     getAbortControllerCtor: () => AbortController,
     nextRequestId: () => 77,
-    setPendingRequestId: (conversationKey, id) => {
-      params.pendingWrites.push([conversationKey, id]);
+    tryBeginRequest: (conversationKey, requestId, abortController) => {
+      if (pendingRequests.has(conversationKey)) return false;
+      pendingRequests.set(conversationKey, requestId);
+      abortControllers.set(conversationKey, abortController);
+      params.pendingWrites.push([conversationKey, requestId]);
+      return true;
+    },
+    isRequestOwner: (conversationKey, requestId) =>
+      pendingRequests.get(conversationKey) === requestId,
+    finishRequest: (conversationKey, requestId) => {
+      if (pendingRequests.get(conversationKey) !== requestId) return false;
+      pendingRequests.delete(conversationKey);
+      abortControllers.delete(conversationKey);
+      params.pendingWrites.push([conversationKey, 0]);
+      return true;
+    },
+    transferRequest: (fromConversationKey, toConversationKey, requestId) => {
+      if (
+        pendingRequests.get(fromConversationKey) !== requestId ||
+        pendingRequests.has(toConversationKey)
+      ) {
+        return false;
+      }
+      pendingRequests.delete(fromConversationKey);
+      pendingRequests.set(toConversationKey, requestId);
+      const controller = abortControllers.get(fromConversationKey) || null;
+      abortControllers.delete(fromConversationKey);
+      abortControllers.set(toConversationKey, controller);
+      return true;
     },
     getPanelRequestUI: () => ({}),
     setRequestUIBusy: () => undefined,
@@ -82,6 +107,7 @@ function createDeps(params: {
     scheduleQueuedInputDrain: () => undefined,
     createPanelUpdateHelpers: () => ({
       refreshChatSafely: () => undefined,
+      refreshAssistantMessageSafely: () => undefined,
       setStatusSafely: (text) => {
         params.statuses.push(text);
       },
@@ -171,6 +197,203 @@ function createDeps(params: {
 }
 
 describe("agent engine final UI release", function () {
+  it("preserves exact active paper identity for retries and edited-message overrides", async function () {
+    const retry = async (
+      conversationKey: number,
+      activePaperContextOverride?: {
+        libraryID: number;
+        itemId: number;
+        contextItemId: number;
+        title: string;
+      },
+    ) => {
+      const userMessage = {
+        role: "user" as const,
+        text: "summarize",
+        timestamp: 100,
+        runMode: "agent" as const,
+      };
+      const assistantMessage: any = {
+        role: "assistant" as const,
+        text: "previous",
+        timestamp: 200,
+        runMode: "agent" as const,
+      };
+      const runtime = {
+        getCapabilities: () => ({
+          streaming: true,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        runTurn: async () =>
+          ({
+            kind: "completed",
+            runId: `run-${conversationKey}`,
+            text: "Done.",
+            usedFallback: false,
+          }) as AgentRuntimeOutcome,
+      } as unknown as AgentRuntime;
+      const deps = createDeps({
+        runtime,
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+      deps.findLatestRetryPair = () => ({
+        userIndex: 0,
+        userMessage,
+        assistantMessage,
+      });
+      deps.reconstructRetryPayload = () => ({
+        question: userMessage.text,
+        screenshotImages: [],
+        paperContexts: [],
+        pdfPaperContexts: [],
+        fullTextPaperContexts: [],
+        selectedCollectionContexts: [],
+        selectedTagContexts: [],
+      });
+      deps.includeAutoLoadedPaperContext = (
+        _item,
+        paperContexts,
+        fullTextPaperContexts,
+      ) => ({
+        paperContexts: paperContexts || [],
+        fullTextPaperContexts: fullTextPaperContexts || [],
+        activePaperContext: {
+          libraryID: 1,
+          itemId: 42,
+          contextItemId: 100,
+          title: "Default attachment",
+        },
+      });
+      let capturedActivePaperContext: unknown;
+      const buildRequest = deps.buildAgentRuntimeRequest;
+      deps.buildAgentRuntimeRequest = async (params) => {
+        capturedActivePaperContext = params.activePaperContext;
+        return await buildRequest(params);
+      };
+
+      await retryAgentTurn(
+        {} as Element,
+        fakeItem(conversationKey),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+        undefined,
+        undefined,
+        activePaperContextOverride,
+      );
+      return capturedActivePaperContext;
+    };
+
+    assert.deepInclude((await retry(120)) as Record<string, unknown>, {
+      libraryID: 1,
+      itemId: 42,
+      contextItemId: 100,
+    });
+    assert.deepInclude(
+      (await retry(121, {
+        libraryID: 1,
+        itemId: 42,
+        contextItemId: 101,
+        title: "Edited active attachment",
+      })) as Record<string, unknown>,
+      { libraryID: 1, itemId: 42, contextItemId: 101 },
+    );
+  });
+
+  it("admits only one rapid retry while conversation loading is deferred", async function () {
+    const conversationKey = 122;
+    const userMessage = {
+      role: "user" as const,
+      text: "retry this",
+      timestamp: 100,
+      runMode: "agent" as const,
+    };
+    const assistantMessage: any = {
+      role: "assistant" as const,
+      text: "previous answer",
+      timestamp: 200,
+      runMode: "agent" as const,
+    };
+    let runtimeCalls = 0;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async () => {
+        runtimeCalls += 1;
+        throw new Error("stop after admission");
+      },
+    } as unknown as AgentRuntime;
+    const pendingWrites: Array<[number, number]> = [];
+    const deps = createDeps({
+      runtime,
+      pendingWrites,
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    let resolveLoaded: () => void = () => undefined;
+    const loaded = new Promise<void>((resolve) => {
+      resolveLoaded = resolve;
+    });
+    deps.ensureConversationLoaded = () => loaded;
+    const retry = () =>
+      retryAgentTurn(
+        {} as Element,
+        fakeItem(conversationKey),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+      );
+
+    const first = retry();
+    const second = retry();
+    resolveLoaded();
+    await Promise.all([first, second]);
+
+    assert.equal(runtimeCalls, 1);
+    assert.deepEqual(pendingWrites, [
+      [conversationKey, 77],
+      [conversationKey, 0],
+    ]);
+  });
+
   it("releases the request UI when a final event arrives before runtime bookkeeping settles", async function () {
     const conversationKey = 123;
     const pendingWrites: Array<[number, number]> = [];
@@ -431,21 +654,34 @@ describe("agent engine final UI release", function () {
       storedUpdates.push(update as unknown as Record<string, unknown>);
     };
 
-    await retryAgentTurn(
-      {} as Element,
-      fakeItem(conversationKey),
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      deps,
-    );
+    // finalizeAgentTurnOutcome resolves the Claude scope from the global
+    // Zotero profile; without this stub the completed turn would fall into
+    // the failure path and this test would assert against the wrong flow.
+    const zoteroBefore = (globalThis as any).Zotero;
+    (globalThis as any).Zotero = {
+      Profile: { dir: "/tmp/zotero-profile" },
+      Prefs: { get: () => undefined },
+    };
+    try {
+      await retryAgentTurn(
+        {} as Element,
+        fakeItem(conversationKey),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+      );
+    } finally {
+      if (zoteroBefore === undefined) delete (globalThis as any).Zotero;
+      else (globalThis as any).Zotero = zoteroBefore;
+    }
 
     assert.lengthOf(storedUpdates, 2);
     for (const update of storedUpdates) {
@@ -620,6 +856,427 @@ describe("agent engine final UI release", function () {
     );
 
     assert.equal(assistantMessage.text, "Previous grounded answer.");
-    assert.deepEqual(pendingWrites, []);
+    assert.deepEqual(pendingWrites, [
+      [conversationKey, 77],
+      [conversationKey, 0],
+    ]);
+  });
+
+  it("preserves partial text and flags interruption when the runtime drops mid-stream", async function () {
+    const conversationKey = 555;
+    const statuses: string[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        onEvent?: (event: any) => Promise<void> | void;
+      }) => {
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "Partial answer that ",
+        });
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "streamed before the drop.",
+        });
+        throw new Error("Error in input stream");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses,
+    });
+    // Production seeds the conversation history before a turn starts.
+    const history: any[] = [];
+    (deps as any).chatHistory.set(conversationKey, history);
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "summarize the methods",
+      },
+      deps,
+    );
+
+    const assistantMessage = history[history.length - 1];
+    assert.strictEqual(
+      assistantMessage.text,
+      "Partial answer that streamed before the drop.",
+    );
+    assert.isTrue(assistantMessage.interrupted);
+    assert.isUndefined(assistantMessage.pendingFinalText);
+    assert.isFalse(Boolean(assistantMessage.streaming));
+    assert.include(statuses.join("\n"), "Error: Error in input stream");
+  });
+
+  it("keeps the bare error text when nothing streamed before the failure", async function () {
+    const conversationKey = 556;
+    const statuses: string[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async () => {
+        throw new Error("boom");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses,
+    });
+    // Production seeds the conversation history before a turn starts.
+    const history: any[] = [];
+    (deps as any).chatHistory.set(conversationKey, history);
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "summarize the methods",
+      },
+      deps,
+    );
+
+    const assistantMessage = history[history.length - 1];
+    assert.strictEqual(assistantMessage.text, "Error: boom");
+    assert.isFalse(Boolean(assistantMessage.interrupted));
+  });
+
+  it("does not resurrect rolled-back text in the preserved partial", async function () {
+    const conversationKey = 557;
+    const retracted = "Thinking about which tool to use. ";
+    // The rollback handler consults a Zotero pref (block-streaming toggle).
+    const zoteroBefore = (globalThis as any).Zotero;
+    (globalThis as any).Zotero = { Prefs: { get: () => true } };
+    try {
+      const runtime = {
+        getCapabilities: () => ({
+          streaming: true,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        runTurn: async (params: {
+          onEvent?: (event: any) => Promise<void> | void;
+        }) => {
+          // Round 1 streams intermediate text the runtime then retracts
+          // (message_rollback), exactly like a tool-call round does.
+          await params.onEvent?.({ type: "message_delta", text: retracted });
+          await params.onEvent?.({
+            type: "message_rollback",
+            length: retracted.length,
+          });
+          // Round 2 streams part of the real answer, then the stream drops.
+          await params.onEvent?.({
+            type: "message_delta",
+            text: "Real partial answer",
+          });
+          throw new Error("Error in input stream");
+        },
+      } as unknown as AgentRuntime;
+      const deps = createDeps({
+        runtime,
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      const history: any[] = [];
+      (deps as any).chatHistory.set(conversationKey, history);
+
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question: "summarize the methods",
+        },
+        deps,
+      );
+
+      const assistantMessage = history[history.length - 1];
+      assert.strictEqual(assistantMessage.text, "Real partial answer");
+      assert.isTrue(assistantMessage.interrupted);
+    } finally {
+      if (zoteroBefore === undefined) delete (globalThis as any).Zotero;
+      else (globalThis as any).Zotero = zoteroBefore;
+    }
+  });
+
+  it("honors the sticky reasoning-expanded preference on a fresh agent send", async function () {
+    const conversationKey = 559;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async () =>
+        ({
+          kind: "completed",
+          runId: "run-reasoning-open",
+          text: "Done.",
+          usedFallback: false,
+        }) as AgentRuntimeOutcome,
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.isReasoningExpandedByDefault = () => true;
+    const history: any[] = [];
+    deps.chatHistory.set(conversationKey, history);
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "summarize the methods",
+      },
+      deps,
+    );
+
+    const assistantMessage = history[history.length - 1];
+    assert.isTrue(assistantMessage.reasoningOpen);
+  });
+
+  it("restores the previous assistant message when a retry fails before streaming", async function () {
+    const conversationKey = 558;
+    const userMessage = {
+      role: "user" as const,
+      text: "summarize",
+      timestamp: 100,
+      runMode: "agent" as const,
+    };
+    const assistantMessage: any = {
+      role: "assistant" as const,
+      text: "Preserved partial answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+      interrupted: true,
+    };
+    const assistantStoreWrites: unknown[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async () => {
+        throw new Error("NetworkError when attempting to fetch resource.");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    deps.updateStoredLatestAssistantMessage = async (_key, update) => {
+      assistantStoreWrites.push(update);
+    };
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.strictEqual(assistantMessage.text, "Preserved partial answer.");
+    assert.isTrue(assistantMessage.interrupted);
+    assert.isFalse(Boolean(assistantMessage.streaming));
+    // The stored row must keep the partial — no error-text write.
+    assert.lengthOf(assistantStoreWrites, 0);
+  });
+
+  it("restores the paired user row when a zero-output retry fails after persisting", async function () {
+    const conversationKey = 560;
+    const oldPaperContexts = [{ itemId: 1, title: "Old paper" }];
+    const userMessage: any = {
+      role: "user" as const,
+      text: "summarize",
+      timestamp: 100,
+      runMode: "agent" as const,
+      agentRunId: "run-old",
+      paperContexts: oldPaperContexts,
+      modelName: "model-a",
+      modelEntryId: "entry-a",
+      modelProviderLabel: "Provider A",
+    };
+    const assistantMessage: any = {
+      role: "assistant" as const,
+      text: "Old answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+      modelName: "model-a",
+    };
+    const userStoreWrites: Array<Record<string, unknown>> = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        onStart?: (runId: string) => Promise<void> | void;
+      }) => {
+        // The run registers (persisting the user row with retry metadata)
+        // and then dies without streaming anything.
+        await params.onStart?.("run-new");
+        throw new Error("NetworkError when attempting to fetch resource.");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [{ itemId: 77, title: "Rebuilt during retry" }],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    deps.updateStoredLatestUserMessage = async (_key, update) => {
+      userStoreWrites.push(update as unknown as Record<string, unknown>);
+    };
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    // In-memory user message is back to its pre-retry identity.
+    assert.strictEqual(userMessage.modelName, "model-a");
+    assert.strictEqual(userMessage.modelEntryId, "entry-a");
+    assert.strictEqual(userMessage.modelProviderLabel, "Provider A");
+    assert.strictEqual(userMessage.agentRunId, "run-old");
+    assert.deepEqual(userMessage.paperContexts, oldPaperContexts);
+    // The stored row was rewritten with the restored values after the
+    // onStart persistence stamped the failed retry's metadata onto it.
+    assert.isAtLeast(userStoreWrites.length, 2);
+    const lastWrite = userStoreWrites[userStoreWrites.length - 1];
+    assert.strictEqual(lastWrite.modelName, "model-a");
+    assert.strictEqual(lastWrite.agentRunId, "run-old");
+    assert.deepEqual(lastWrite.paperContexts, oldPaperContexts);
+  });
+
+  it("restores the turn when a retry has nothing to send", async function () {
+    const conversationKey = 561;
+    const userMessage: any = {
+      role: "user" as const,
+      text: "",
+      timestamp: 100,
+      runMode: "agent" as const,
+      modelName: "model-a",
+      paperContexts: [{ itemId: 1, title: "Old paper" }],
+    };
+    const assistantMessage: any = {
+      role: "assistant" as const,
+      text: "Old answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+    };
+    const deps = createDeps({
+      runtime: createFinalThenHangingRuntime(() => undefined),
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: "",
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    // The bail-out must not leave the turn half-reset: the previous answer
+    // stays visible and the message is not stuck in streaming mode.
+    assert.strictEqual(assistantMessage.text, "Old answer.");
+    assert.isFalse(Boolean(assistantMessage.streaming));
+    assert.strictEqual(userMessage.modelName, "model-a");
+    assert.deepEqual(userMessage.paperContexts, [
+      { itemId: 1, title: "Old paper" },
+    ]);
   });
 });

@@ -3,8 +3,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnthropicMessagesAgentAdapter } from "../src/agent/model/anthropicMessages";
-import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
+import type {
+  AgentModelMessage,
+  AgentRuntimeRequest,
+  ToolSpec,
+} from "../src/agent/types";
 import { isMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
+import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -92,7 +97,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
     const step = await adapter.runStep({
       request: makeRequest(),
       messages: [
-        { role: "system", content: "System" },
+        { role: "system", content: PAPER_CITATION_CONTRACT },
         { role: "user", content: "Search methods" },
       ],
       tools,
@@ -102,11 +107,85 @@ describe("AnthropicMessagesAgentAdapter", function () {
       (capturedBody?.tools as Array<Record<string, unknown>>)[0]?.name,
       "read_paper",
     );
+    const serializedSystem = Array.isArray(capturedBody?.system)
+      ? (capturedBody.system as Array<{ text?: string }>)
+          .map((entry) => entry.text || "")
+          .join("\n")
+      : String(capturedBody?.system || "");
+    assert.equal(serializedSystem.split(PAPER_CITATION_CONTRACT).length - 1, 1);
     assert.equal(step.kind, "tool_calls");
     if (step.kind !== "tool_calls") return;
     assert.equal(step.calls[0].id, "toolu_123");
     assert.deepEqual(step.calls[0].arguments, { query: "methods" });
   });
+
+  for (const provider of [
+    {
+      name: "DeepSeek",
+      model: "deepseek-chat",
+      apiBase: "https://api.deepseek.com/v1",
+      endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+    },
+    {
+      name: "MiniMax",
+      model: "MiniMax-M2.1",
+      apiBase: "https://api.minimax.io/v1",
+      endpoint: "https://api.minimax.io/anthropic/v1/messages",
+    },
+  ]) {
+    it(`serializes the canonical citation contract through ${provider.name}'s Anthropic-compatible protocol`, async function () {
+      let capturedUrl = "";
+      let capturedBody: Record<string, unknown> = {};
+      (
+        globalThis as typeof globalThis & {
+          ztoolkit: { getGlobal: (name: string) => unknown };
+        }
+      ).ztoolkit = {
+        getGlobal: (name: string) => {
+          if (name !== "fetch") return undefined;
+          return async (url: string, init?: RequestInit) => {
+            capturedUrl = url;
+            capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+              string,
+              unknown
+            >;
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              json: async () => ({ content: [{ type: "text", text: "OK" }] }),
+              text: async () => "",
+            };
+          };
+        },
+      };
+
+      await new AnthropicMessagesAgentAdapter().runStep({
+        request: makeRequest({
+          model: provider.model,
+          apiBase: provider.apiBase,
+          apiKey: "provider-test",
+          providerProtocol: "anthropic_messages",
+        }),
+        messages: [
+          { role: "system", content: PAPER_CITATION_CONTRACT },
+          { role: "user", content: "Explain the result." },
+        ],
+        tools: [],
+      });
+
+      const serializedSystem = Array.isArray(capturedBody.system)
+        ? (capturedBody.system as Array<{ text?: string }>)
+            .map((entry) => entry.text || "")
+            .join("\n")
+        : String(capturedBody.system || "");
+      assert.equal(capturedUrl, provider.endpoint);
+      assert.equal(
+        serializedSystem.split(PAPER_CITATION_CONTRACT).length - 1,
+        1,
+      );
+    });
+  }
 
   it("applies cache_control to the marked stable system block", async function () {
     const adapter = new AnthropicMessagesAgentAdapter();
@@ -603,7 +682,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
     assert.equal(bodyMessages[3]?.content?.[0]?.text, "Use those results now");
   });
 
-  it("filters cached native tool uses to the executed continuation ids", async function () {
+  it("preserves the complete cached native tool step on continuation", async function () {
     const adapter = new AnthropicMessagesAgentAdapter();
     const requestBodies: Record<string, unknown>[] = [];
     let callCount = 0;
@@ -657,20 +736,22 @@ describe("AnthropicMessagesAgentAdapter", function () {
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
 
+    const firstToolResult: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: "toolu_1",
+      name: "read_paper",
+      content: '{"matches":["a"]}',
+    };
+    const secondToolResult: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: "toolu_2",
+      name: "read_paper",
+      content: '{"matches":["b"]}',
+    };
     await adapter.runStep({
       request: makeRequest(),
-      messages: [
-        {
-          ...firstStep.assistantMessage,
-          tool_calls: firstStep.calls.slice(0, 1),
-        },
-        {
-          role: "tool",
-          tool_call_id: "toolu_1",
-          name: "read_paper",
-          content: '{"matches":["a"]}',
-        },
-      ],
+      messages: [firstStep.assistantMessage, firstToolResult, secondToolResult],
+      continuationMessages: [firstToolResult, secondToolResult],
       tools,
     });
 
@@ -687,14 +768,150 @@ describe("AnthropicMessagesAgentAdapter", function () {
       assistantContent
         .filter((block) => block.type === "tool_use")
         .map((block) => block.id),
-      ["toolu_1"],
+      ["toolu_1", "toolu_2"],
     );
     assert.deepEqual(
       secondRequestMessages[2]?.content?.map((block) => ({
         type: block.type,
         tool_use_id: block.tool_use_id,
       })),
-      [{ type: "tool_result", tool_use_id: "toolu_1" }],
+      [
+        { type: "tool_result", tool_use_id: "toolu_1" },
+        { type: "tool_result", tool_use_id: "toolu_2" },
+      ],
+    );
+  });
+
+  it("does not replay a tool result after a corrected final answer", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content:
+                callCount === 1
+                  ? [
+                      {
+                        type: "tool_use",
+                        id: "call_issue_387",
+                        name: "read_paper",
+                        input: { query: "methods" },
+                      },
+                    ]
+                  : callCount === 2
+                    ? [
+                        {
+                          type: "thinking",
+                          thinking: "Need more evidence.",
+                          signature: "sig-final-reasoning",
+                        },
+                        {
+                          type: "text",
+                          text: "Premature comparison.",
+                        },
+                      ]
+                    : [
+                        {
+                          type: "text",
+                          text: "Corrected comparison.",
+                        },
+                      ],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const request = makeRequest({
+      model: "deepseek-v4-pro",
+      apiBase: "https://api.deepseek.com/anthropic",
+    });
+    const messages: AgentModelMessage[] = [
+      { role: "user", content: "Compare these papers" },
+    ];
+    const firstStep = await adapter.runStep({ request, messages, tools });
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+    const toolResultMessage: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: firstStep.calls[0].id,
+      name: firstStep.calls[0].name,
+      content: '{"matches":["paper-a","paper-b"]}',
+    };
+    messages.push(firstStep.assistantMessage, toolResultMessage);
+
+    const secondStep = await adapter.runStep({
+      request,
+      messages,
+      continuationMessages: [toolResultMessage],
+      tools,
+    });
+    assert.equal(secondStep.kind, "final");
+    if (secondStep.kind !== "final") return;
+    assert.notInclude(
+      JSON.stringify(secondStep.assistantMessage),
+      "sig-final-reasoning",
+    );
+    const correctionMessage: AgentModelMessage = {
+      role: "user",
+      content: "Correction for this turn: retrieve body evidence first.",
+    };
+    messages.push(secondStep.assistantMessage, correctionMessage);
+
+    await adapter.runStep({
+      request,
+      messages,
+      continuationMessages: [correctionMessage],
+      tools,
+    });
+
+    const thirdRequestMessages = requestBodies[2]?.messages as Array<{
+      role?: string;
+      content?: Array<Record<string, unknown>>;
+    }>;
+    assert.deepEqual(
+      thirdRequestMessages.map((message) => message.role),
+      ["user", "assistant", "user", "assistant", "user"],
+    );
+    const toolResults = thirdRequestMessages.flatMap(
+      (message) =>
+        message.content?.filter((block) => block.type === "tool_result") || [],
+    );
+    assert.deepEqual(
+      toolResults.map((block) => block.tool_use_id),
+      ["call_issue_387"],
+    );
+    assert.equal(thirdRequestMessages[1]?.content?.[0]?.type, "tool_use");
+    assert.equal(thirdRequestMessages[2]?.content?.[0]?.type, "tool_result");
+    assert.deepEqual(thirdRequestMessages[3]?.content?.[0], {
+      type: "thinking",
+      thinking: "Need more evidence.",
+      signature: "sig-final-reasoning",
+    });
+    assert.equal(
+      thirdRequestMessages[3]?.content?.[1]?.text,
+      "Premature comparison.",
+    );
+    assert.equal(
+      thirdRequestMessages[4]?.content?.[0]?.text,
+      "Correction for this turn: retrieve body evidence first.",
     );
   });
 
@@ -815,7 +1032,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
     assert.equal(requestBodies[2]?.temperature, 0.4);
   });
 
-  it("omits image blocks and PDF documents for DeepSeek Anthropic-compatible models", async function () {
+  it("keeps images but omits PDF documents for DeepSeek Anthropic-compatible models", async function () {
     const adapter = new AnthropicMessagesAgentAdapter();
     let capturedBody: Record<string, unknown> | null = null;
     const restoreIOUtils = (
@@ -868,7 +1085,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
     try {
       await adapter.runStep({
         request: makeRequest({
-          model: "deepseek-v4-flash",
+          model: "deepseek-v4-flash-vision-exp",
           apiBase: "https://api.deepseek.com/anthropic",
         }),
         messages: [
@@ -896,26 +1113,23 @@ describe("AnthropicMessagesAgentAdapter", function () {
 
       const capabilities = adapter.getCapabilities(
         makeRequest({
-          model: "deepseek-v4-flash",
+          model: "deepseek-v4-flash-vision-exp",
           apiBase: "https://api.deepseek.com/anthropic",
         }),
       );
       const serialized = JSON.stringify(capturedBody);
       assert.isFalse(capabilities.fileInputs);
       assert.deepEqual(capabilities.contentInputs, {
-        images: false,
+        images: true,
         pdfDocuments: false,
         nativeFiles: false,
       });
-      assert.notInclude(serialized, '"type":"image"');
-      assert.notInclude(serialized, '"media_type":"image/png"');
+      assert.include(serialized, '"type":"image"');
+      assert.include(serialized, '"media_type":"image/png"');
       assert.notInclude(serialized, '"type":"document"');
       assert.notInclude(serialized, '"media_type":"application/pdf"');
       assert.include(serialized, "Inspect the image and PDF.");
-      assert.include(
-        serialized,
-        "does not support image input or PDF/document input",
-      );
+      assert.include(serialized, "does not support PDF/document input");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
       (

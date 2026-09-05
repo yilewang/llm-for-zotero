@@ -10,6 +10,7 @@ import {
 } from "../agent/mcp/server";
 import { MCP_METHODS } from "../agent/mcp/protocol";
 import {
+  extractCodexAppServerThreadId,
   getOrCreateCodexAppServerProcess,
   resolveCodexAppServerBinaryPath,
   type CodexAppServerProcess,
@@ -18,6 +19,7 @@ import {
 const DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const MCP_PREFLIGHT_SUCCESS_TTL_MS = 5 * 60 * 1000;
 const MCP_PREFLIGHT_FAILURE_TTL_MS = 10 * 1000;
+let codexMcpProbeSequence = 0;
 export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
   "library_read",
@@ -518,6 +520,44 @@ export async function readCodexNativeMcpSetupStatus(
   };
 }
 
+export async function probeCodexZoteroMcpThroughAppServer(
+  params: SetupParams = {},
+): Promise<void> {
+  const proc = await resolveProcess(params);
+  codexMcpProbeSequence += 1;
+  const profileSignature = `connection_probe_${Date.now().toString(36)}_${codexMcpProbeSequence}`;
+  const threadConfig = buildCodexZoteroMcpThreadConfig({
+    profileSignature,
+    required: true,
+  });
+  let threadId = "";
+  try {
+    const threadResult = await proc.sendRequest("thread/start", {
+      ephemeral: true,
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      config: threadConfig.config,
+    });
+    threadId = extractCodexAppServerThreadId(threadResult);
+    if (!threadId) {
+      throw new Error(
+        `Zotero MCP probe did not return a Codex thread ID for ${threadConfig.serverName}`,
+      );
+    }
+  } finally {
+    if (threadId) {
+      try {
+        await proc.sendRequest("thread/archive", { threadId });
+      } catch (error) {
+        ztoolkit.log(
+          "Codex app-server MCP probe: failed to archive disposable thread",
+          error,
+        );
+      }
+    }
+  }
+}
+
 export async function installOrUpdateCodexZoteroMcpConfig(
   params: SetupParams = {},
 ): Promise<CodexNativeMcpSetupStatus> {
@@ -557,7 +597,9 @@ export async function installOrUpdateCodexZoteroMcpConfig(
   }
 
   clearCodexZoteroMcpPreflightCache();
-  return readCodexNativeMcpSetupStatus({ ...params, proc });
+  await probeCodexZoteroMcpThroughAppServer({ ...params, proc });
+  const status = await readCodexNativeMcpSetupStatus({ ...params, proc });
+  return { ...status, connected: true };
 }
 
 export async function ensureCodexZoteroMcpConfig(
@@ -572,6 +614,7 @@ export function buildCodexZoteroMcpThreadConfig(params: {
   required?: boolean;
   enableShellTool?: boolean;
   rawPdfMode?: boolean;
+  enabled?: boolean;
 }): { serverName: string; config: Record<string, unknown> } {
   const serverName = getZoteroMcpServerName(params.profileSignature);
   return {
@@ -585,6 +628,7 @@ export function buildCodexZoteroMcpThreadConfig(params: {
           scopeToken: params.scopeToken,
           required: params.required,
           rawPdfMode: params.rawPdfMode,
+          enabled: params.enabled,
         }),
       },
     },

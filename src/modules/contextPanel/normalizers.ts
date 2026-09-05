@@ -313,6 +313,7 @@ export function normalizePaperContextRefs(
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
     const typed = entry as Record<string, unknown>;
+    const libraryID = normalizePositiveInt(typed.libraryID);
     const itemId = normalizePositiveInt(typed.itemId);
     const contextItemId = normalizePositiveInt(typed.contextItemId);
     if (!itemId || !contextItemId) continue;
@@ -325,10 +326,11 @@ export function normalizePaperContextRefs(
     const contentSourceMode = normalizePaperContentSourceMode(
       typed.contentSourceMode,
     );
-    const dedupeKey = `${itemId}:${contextItemId}`;
+    const dedupeKey = `${libraryID || 0}:${itemId}:${contextItemId}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     const normalized: PaperContextRef = {
+      ...(libraryID ? { libraryID } : {}),
       itemId,
       contextItemId,
       title,

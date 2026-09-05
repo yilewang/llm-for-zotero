@@ -133,9 +133,9 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 34);
-    assert.equal(insert.params[32], 1234);
-    assert.equal(insert.params[33], 200000);
+    assert.lengthOf(insert.params, 35);
+    assert.equal(insert.params[33], 1234);
+    assert.equal(insert.params[34], 200000);
   });
 
   it("persists forced skill ids when appending a user message", async function () {

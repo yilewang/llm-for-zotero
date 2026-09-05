@@ -24,7 +24,3 @@ export async function clearActiveConversationForPendingDeletion(
     return false;
   }
 }
-
-export function shouldRestoreActiveConversationOnDeletionUndo(): boolean {
-  return false;
-}

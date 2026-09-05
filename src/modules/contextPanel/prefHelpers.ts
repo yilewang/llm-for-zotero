@@ -1,3 +1,4 @@
+import { isValidReasoningLevelId } from "../../modelCapabilities";
 import {
   config,
   ASSISTANT_NOTE_MAP_PREF_KEY,
@@ -19,14 +20,18 @@ import {
   MESSAGE_WORD_SPACING_MAX_PX,
   isUpstreamGlobalConversationKey,
 } from "./constants";
-import type { CustomShortcut, ReasoningLevelSelection } from "./types";
+import type {
+  ChatRuntimeMode,
+  CustomShortcut,
+  ReasoningLevelSelection,
+} from "./types";
 import {
-  selectedModelCache,
   panelFontScalePercent,
   messageLineSpacingPercent,
   messageParagraphSpacingPx,
   messageWordSpacingPx,
   messageFontFamily,
+  webChatIsolatedConversationKeys,
 } from "./state";
 import {
   deriveProviderLabel,
@@ -43,6 +48,11 @@ import {
   clampStandaloneSidebarPreferredWidth,
   STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
 } from "./standaloneWindowSizing";
+import {
+  forgetPaperRestoreTarget,
+  getPaperRestoreTarget,
+  rememberPaperRestoreTarget,
+} from "../../shared/paperConversationRestore";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -80,13 +90,13 @@ export function getClaudeCodeModeEnabled(): boolean {
   return getBoolPref("enableClaudeCodeMode", false);
 }
 
+const LAST_RUNTIME_MODE_PREF_KEY = "lastUsedRuntimeMode";
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY =
   "lastUsedReasoningLevelByProvider";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
 const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
-const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
 const STANDALONE_SIDEBAR_WIDTH_PREF_KEY = "standaloneSidebarWidth";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
@@ -109,15 +119,27 @@ const GENERIC_FONT_FAMILIES = new Set([
   "math",
   "fangsong",
 ]);
-const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
-  "none",
-  "default",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+/**
+ * A remembered reasoning level, validated by shape rather than by a fixed list.
+ *
+ * Providers introduce new effort values (`ultra`, and whatever comes next), and
+ * users can define their own levels in the per-model parameter editor. An
+ * allowlist of the seven levels the plugin happened to know about would let
+ * such a level be selected for one session and then silently forgotten on
+ * restart. The shared pattern keeps the sanitising intent — bounded length,
+ * safe charset, no injection into the pref store — without freezing the
+ * vocabulary, and is the same one the editor warns against, so "will be
+ * remembered" means the same thing in both places.
+ */
+function isReasoningLevelSelection(
+  value: string,
+): value is ReasoningLevelSelection {
+  return isValidReasoningLevelId(value);
+}
+
+const REASONING_LEVEL_SELECTIONS = {
+  has: (value: string) => isReasoningLevelSelection(value),
+};
 const REASONING_PROVIDER_SELECTION_KEYS = new Set([
   "openai",
   "gemini",
@@ -126,6 +148,7 @@ const REASONING_PROVIDER_SELECTION_KEYS = new Set([
   "qwen",
   "grok",
   "anthropic",
+  "local",
 ]);
 
 const BUILTIN_SHORTCUT_IDS = new Set<string>(
@@ -145,6 +168,28 @@ export function buildPaperStateKey(
 
 function buildLibraryStateKey(libraryID: number): string {
   return `${Math.floor(libraryID)}`;
+}
+
+const RUNTIME_MODES = new Set<ChatRuntimeMode>(["chat", "agent"]);
+
+/**
+ * The runtime mode the user last picked explicitly, remembered across
+ * conversations and restarts so the Agent toggle stops resetting itself.
+ * `null` means the user has never touched the toggle.
+ */
+export function getLastUsedRuntimeMode(): ChatRuntimeMode | null {
+  const raw = getStringPref(LAST_RUNTIME_MODE_PREF_KEY).trim().toLowerCase();
+  if (!RUNTIME_MODES.has(raw as ChatRuntimeMode)) return null;
+  return raw as ChatRuntimeMode;
+}
+
+export function setLastUsedRuntimeMode(mode: ChatRuntimeMode): void {
+  if (!RUNTIME_MODES.has(mode)) return;
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${LAST_RUNTIME_MODE_PREF_KEY}`,
+    mode,
+    true,
+  );
 }
 
 export function getLastUsedReasoningLevel(): ReasoningLevelSelection | null {
@@ -240,26 +285,6 @@ export function setLastReasoningExpanded(expanded: boolean): void {
     Boolean(expanded),
     true,
   );
-}
-
-function getLastPaperConversationMap(): Record<string, number> {
-  const raw = getZoteroPrefs()?.get?.(
-    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
-    true,
-  );
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const out: Record<string, number> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const normalized = Number(value);
-      if (!Number.isFinite(normalized) || normalized <= 0) continue;
-      out[key] = Math.floor(normalized);
-    }
-    return out;
-  } catch (_err) {
-    return {};
-  }
 }
 
 function getLastConversationModeMap(): Record<string, "global" | "paper"> {
@@ -371,6 +396,11 @@ export function setLastUsedUpstreamGlobalConversationKey(
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
   const normalizedKey = Math.floor(conversationKey);
   if (!isUpstreamGlobalConversationKey(normalizedKey)) return;
+  // Ephemeral webchat session rows are swept at the next startup; persisting
+  // one as the restore target would leave the pref dangling. Guarded here —
+  // the single chokepoint — because several independent callers (conversation
+  // switches, identity sync, history navigation priming) all write this pref.
+  if (webChatIsolatedConversationKeys.has(normalizedKey)) return;
   const map = getLastGlobalConversationMap();
   map[buildLibraryStateKey(libraryID)] = normalizedKey;
   setLastGlobalConversationMap(map);
@@ -387,25 +417,15 @@ export function removeLastUsedUpstreamGlobalConversationKey(
   setLastGlobalConversationMap(map);
 }
 
-function setLastPaperConversationMap(value: Record<string, number>): void {
-  getZoteroPrefs()?.set?.(
-    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
-    JSON.stringify(value),
-    true,
-  );
-}
-
 export function getLastUsedPaperConversationKey(
   libraryID: number,
   paperItemID: number,
 ): number | null {
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  const value = Number(map[key]);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor(value);
+  return getPaperRestoreTarget({
+    system: "upstream",
+    libraryID,
+    paperItemID,
+  });
 }
 
 export function setLastUsedPaperConversationKey(
@@ -416,10 +436,14 @@ export function setLastUsedPaperConversationKey(
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  map[key] = Math.floor(conversationKey);
-  setLastPaperConversationMap(map);
+  // See setLastUsedUpstreamGlobalConversationKey: webchat session rows must
+  // never become restore targets, and this writer is the chokepoint shared by
+  // every caller.
+  if (webChatIsolatedConversationKeys.has(Math.floor(conversationKey))) return;
+  rememberPaperRestoreTarget(
+    { system: "upstream", libraryID, paperItemID },
+    conversationKey,
+  );
 }
 
 export function removeLastUsedPaperConversationKey(
@@ -428,11 +452,7 @@ export function removeLastUsedPaperConversationKey(
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  if (!(key in map)) return;
-  delete map[key];
-  setLastPaperConversationMap(map);
+  forgetPaperRestoreTarget({ system: "upstream", libraryID, paperItemID });
 }
 
 export function getModelConfigGroups(): ModelProviderGroup[] {
@@ -443,38 +463,22 @@ export function getAvailableModelEntries(): RuntimeModelEntry[] {
   return getRuntimeModelEntries();
 }
 
-export function getSelectedModelEntryForItem(
-  itemId: number,
-): RuntimeModelEntry | null {
+export function getSelectedModelEntry(): RuntimeModelEntry | null {
   const entries = getRuntimeModelEntries();
-  if (!entries.length) {
-    selectedModelCache.delete(itemId);
-    return null;
-  }
+  if (!entries.length) return null;
 
-  const preferredId =
-    getLastUsedModelEntryId() || selectedModelCache.get(itemId) || "";
-  const selected =
+  const preferredId = getLastUsedModelEntryId();
+  return (
     entries.find((entry) => entry.entryId === preferredId) ||
     getDefaultModelEntry() ||
     entries[0] ||
-    null;
-  if (!selected) {
-    selectedModelCache.delete(itemId);
-    return null;
-  }
-
-  selectedModelCache.set(itemId, selected.entryId);
-  return selected;
+    null
+  );
 }
 
-export function setSelectedModelEntryForItem(
-  itemId: number,
-  entryId: string,
-): void {
+export function setSelectedModelEntry(entryId: string): void {
   const selected = getModelEntryById(entryId);
   if (!selected) return;
-  selectedModelCache.set(itemId, selected.entryId);
   setLastUsedModelEntryId(selected.entryId);
 }
 

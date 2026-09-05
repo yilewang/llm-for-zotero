@@ -8,14 +8,16 @@ import type {
   AgentToolContext,
   AgentToolResult,
 } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 const baseContext: AgentToolContext = {
-  request: {
+  request: resolvedAgentRequest({
     conversationKey: 9,
     mode: "agent",
     userText: "find related papers",
     activeItemId: 55,
-  },
+    libraryID: 1,
+  }),
   item: {
     getDisplayTitle: () => "Climer et al. (2025)",
   } as never,

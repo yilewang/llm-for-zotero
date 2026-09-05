@@ -5,6 +5,7 @@ import type {
   PreparedToolExecution,
 } from "../types";
 import type { ActionExecutionContext } from "./types";
+import { resolveAgentRuntimeRequest } from "../context/resolvedAgentRequest";
 
 let _callCounter = 0;
 function nextCallId(): string {
@@ -24,8 +25,11 @@ function buildToolContext(
     : null;
   return {
     // Actions run outside an agent turn, so we build a synthetic request.
-    request: {
-      conversationKey: 0,
+    request: resolveAgentRuntimeRequest({
+      // Carried from the caller. Hard-coding 0 filed every action-driven
+      // change under a conversation nothing queries, so neither undo path
+      // could find them.
+      conversationKey: ctx.conversationKey ?? 0,
       mode: "agent",
       userText: stepDescription,
       libraryID: ctx.libraryID,
@@ -35,10 +39,15 @@ function buildToolContext(
       selectedCollectionContexts:
         ctx.requestContext?.selectedCollectionContexts,
       selectedTagContexts: ctx.requestContext?.selectedTagContexts,
-    },
+      actionContract: ctx.requestContext?.actionContract,
+      actionProgress: ctx.requestContext?.actionProgress,
+    }),
+    runId: ctx.runId,
     item: syntheticItem,
     currentAnswerText: "",
     modelName: "action",
+    journalActionScope: ctx.journalActionScope,
+    journalToolName: ctx.journalToolName,
   };
 }
 
@@ -107,6 +116,16 @@ export async function callTool(
   const prepared: PreparedToolExecution = await ctx.registry.prepareExecution(
     call,
     toolContext,
+    // An action is started by an explicit user gesture (a slash command or
+    // the action picker), which is its own consent — autonomy gates that
+    // bound the model's tool loop do not apply here.
+    {
+      callerKind: "action",
+      // Native action pages are an explicit review workflow. Preserve that
+      // workflow even when the operation is fully reversible and the global
+      // write mode would otherwise auto-approve it.
+      forceConfirmation: ctx.confirmationMode !== "auto_approve",
+    },
   );
 
   if (prepared.kind === "result") {

@@ -71,7 +71,7 @@ describe("paperAttribution", function () {
     assert.equal(label, "Smith et al., 2021");
   });
 
-  it("formats parenthetical source labels and quote guidance", function () {
+  it("formats parenthetical source labels and citation data", function () {
     const paper = {
       itemId: 1,
       contextItemId: 2,
@@ -86,35 +86,23 @@ describe("paperAttribution", function () {
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "Citation data for this paper:",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "sourceLabel: (Smith et al., 2021)",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "Use this exact sourceLabel only for a direct quote that has no verified quote anchor",
+    );
+    assert.notInclude(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
       "include short direct-source blockquotes",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "Use `>` only for text copied from the paper",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "next non-empty line after the blockquote, before any commentary",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "If verified quote anchors are provided, use the exact [[quote:<id>]] token",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "Copy the Source label string exactly",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "Do not invent author/year/page/section labels",
-    );
-    assert.include(
-      buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "Do not write [[source=...]], section=..., or chunk=...",
     );
   });
 
-  it("formats child attachment source labels and quote guidance", function () {
+  it("formats child attachment source labels and citation data", function () {
     const attachmentContext = {
       itemId: 1,
       contextItemId: 2,
@@ -131,32 +119,22 @@ describe("paperAttribution", function () {
     );
     const guidance =
       buildPaperQuoteCitationGuidance(attachmentContext).join("\n");
-    assert.include(guidance, "quoting this selected attachment");
-    assert.include(
-      guidance,
-      "Use `>` only for text copied from the selected attachment",
-    );
-    assert.include(
-      guidance,
-      "> quoted text copied from the selected attachment",
-    );
+    assert.include(guidance, "Citation data for this selected attachment:");
     assert.include(
       guidance,
       "(test.md, attachment under Chandra et al., 2025)",
     );
   });
 
-  it("keeps generic quote guidance citation-adjacent", function () {
+  it("keeps generic citation context data-only", function () {
     const guidance = buildPaperQuoteCitationGuidance().join("\n");
 
+    assert.include(guidance, "Paper citation data:");
     assert.include(
       guidance,
-      "> quoted text copied from the paper\n\nthe exact sourceLabel shown for the relevant paper",
+      "Each evidence record supplies its own sourceLabel",
     );
-    assert.include(
-      guidance,
-      "next non-empty line after the blockquote, before any commentary",
-    );
+    assert.notInclude(guidance, "> quoted text copied from the paper");
   });
 
   it("falls back deterministically when metadata is missing", function () {

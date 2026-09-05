@@ -1,6 +1,8 @@
 import {
   buildQuoteTextIndex,
+  collectQuoteTextAlignmentRunsAllowingLayoutFragments,
   countCanonicalTextMatches,
+  quoteTextAlignmentBudgetExceeded,
   extractQuoteTextTokens,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   normalizeQuoteTextCanonical,
@@ -86,6 +88,85 @@ export type QuoteTextSearchQueryKind =
   | "raw-middle"
   | "progressive";
 
+export type PairedInlineMathQuote = {
+  proseSegments: string[];
+  mathSpanCount: number;
+};
+
+function isEscapedCharacter(value: string, index: number): boolean {
+  let backslashCount = 0;
+  for (
+    let cursor = index - 1;
+    cursor >= 0 && value[cursor] === "\\";
+    cursor--
+  ) {
+    backslashCount += 1;
+  }
+  return backslashCount % 2 === 1;
+}
+
+/**
+ * Split only well-formed inline Markdown/LaTeX math. Display math and
+ * malformed delimiters deliberately return null so callers cannot broaden a
+ * prose search by guessing which characters were intended to be mathematics.
+ */
+export function splitQuoteAtPairedInlineMath(
+  value: string,
+): PairedInlineMathQuote | null {
+  const proseSegments: string[] = [];
+  let proseStart = 0;
+  let mathSpanCount = 0;
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    if (
+      value.startsWith("\\[", cursor) ||
+      value.startsWith("\\]", cursor) ||
+      value.startsWith("$$", cursor)
+    ) {
+      return null;
+    }
+
+    if (value.startsWith("\\)", cursor)) return null;
+    if (value.startsWith("\\(", cursor)) {
+      const close = value.indexOf("\\)", cursor + 2);
+      if (close < 0 || close === cursor + 2) return null;
+      proseSegments.push(value.slice(proseStart, cursor));
+      mathSpanCount += 1;
+      cursor = close + 2;
+      proseStart = cursor;
+      continue;
+    }
+
+    if (value[cursor] === "$" && !isEscapedCharacter(value, cursor)) {
+      let close = cursor + 1;
+      for (; close < value.length; close += 1) {
+        if (value[close] === "\n") return null;
+        if (
+          value[close] === "$" &&
+          !isEscapedCharacter(value, close) &&
+          value[close - 1] !== "$" &&
+          value[close + 1] !== "$"
+        ) {
+          break;
+        }
+      }
+      if (close >= value.length || close === cursor + 1) return null;
+      proseSegments.push(value.slice(proseStart, cursor));
+      mathSpanCount += 1;
+      cursor = close + 1;
+      proseStart = cursor;
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  if (!mathSpanCount) return null;
+  proseSegments.push(value.slice(proseStart));
+  return { proseSegments, mathSpanCount };
+}
+
 export type QuoteTextSearchQuery = {
   query: string;
   kind: QuoteTextSearchQueryKind;
@@ -135,6 +216,10 @@ export type QuoteTextAnchorMatch = {
   quoteTokenSupportCoverage: number;
   quoteStartTokenSupported: boolean;
   quoteEndTokenSupported: boolean;
+  literalSupportedQuoteTokenCount: number;
+  literalQuoteTokenSupportCoverage: number;
+  literalQuoteStartTokenSupported: boolean;
+  literalQuoteEndTokenSupported: boolean;
   quoteTokenStart: number;
   quoteTokenEnd: number;
 };
@@ -685,6 +770,29 @@ function collectCommonQuoteTokenRuns(
   entry: NormalizedQuoteTextSearchEntry,
   quoteIndex: QuoteTextIndex,
 ): CommonQuoteTokenRun[] {
+  // Above its state budget the alignment collector returns nothing at all.
+  // Dense CJK entries reach that budget routinely (each Han/Kana/Hangul
+  // character is one token), so fall back to the uncapped literal collector
+  // rather than silently losing all partial support for the entry.
+  if (quoteTextAlignmentBudgetExceeded(entry.textIndex, quoteIndex)) {
+    return collectLiteralCommonQuoteTokenRuns(entry, quoteIndex);
+  }
+  return collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+    entry.textIndex,
+    quoteIndex,
+  ).map((run) => ({
+    entry,
+    quoteTokenStart: run.queryTokenStart,
+    quoteTokenEnd: run.queryTokenEnd,
+    sourceTokenStart: run.sourceTokenStart,
+    sourceTokenEnd: run.sourceTokenEnd,
+  }));
+}
+
+function collectLiteralCommonQuoteTokenRuns(
+  entry: NormalizedQuoteTextSearchEntry,
+  quoteIndex: QuoteTextIndex,
+): CommonQuoteTokenRun[] {
   const quotePositions = new Map<string, number[]>();
   for (let index = 0; index < quoteIndex.tokens.length; index += 1) {
     const token = quoteIndex.tokens[index];
@@ -692,7 +800,6 @@ function collectCommonQuoteTokenRuns(
     positions.push(index);
     quotePositions.set(token.text, positions);
   }
-
   const completed: CommonQuoteTokenRun[] = [];
   let active = new Map<number, CommonQuoteTokenRun>();
   for (
@@ -762,6 +869,148 @@ function sourceTextForTokenRun(
     .trim();
 }
 
+/**
+ * A run has to carry real content before it counts as evidence that a source
+ * accounts for part of a quote; a couple of shared short words do not.
+ */
+const MIN_SUPPORTING_RUN_TOKENS = 3;
+const MIN_SUPPORTING_RUN_CHARS = 12;
+
+type QuoteTokenRunCandidate = {
+  run: CommonQuoteTokenRun;
+  query: string;
+  normalizedQuery: string;
+  matchedTokenCount: number;
+  score: number;
+};
+
+function collectQuoteTokenRunCandidates(
+  normalizedEntries: NormalizedQuoteTextSearchEntry[],
+  quoteIndex: QuoteTextIndex,
+  options: { minQueryLength: number; rejectWeakQueries: boolean },
+  collectRuns: (
+    entry: NormalizedQuoteTextSearchEntry,
+    quoteIndex: QuoteTextIndex,
+  ) => CommonQuoteTokenRun[] = collectCommonQuoteTokenRuns,
+): QuoteTokenRunCandidate[] {
+  return normalizedEntries
+    .flatMap((entry) => collectRuns(entry, quoteIndex))
+    .map((run) => {
+      const query = sourceTextForTokenRun(run, quoteIndex.tokens.length);
+      const normalizedQuery = normalizeLocatorText(query);
+      const matchedTokenCount = run.quoteTokenEnd - run.quoteTokenStart;
+      return {
+        run,
+        query,
+        normalizedQuery,
+        matchedTokenCount,
+        score: quoteIndex.tokens
+          .slice(run.quoteTokenStart, run.quoteTokenEnd)
+          .reduce((sum, token) => sum + scoreSearchToken(token.text), 0),
+      };
+    })
+    .filter(
+      (candidate) =>
+        isLocatorQueryLongEnough(
+          candidate.normalizedQuery,
+          options.minQueryLength,
+        ) &&
+        (!options.rejectWeakQueries ||
+          !isWeakQuoteSearchQuery(candidate.normalizedQuery)),
+    );
+}
+
+function runCountsAsQuoteSupport(candidate: QuoteTokenRunCandidate): boolean {
+  return (
+    candidate.matchedTokenCount >= MIN_SUPPORTING_RUN_TOKENS &&
+    candidate.normalizedQuery.length >= MIN_SUPPORTING_RUN_CHARS
+  );
+}
+
+export type QuoteTextSupportSummary = {
+  quoteTokenCount: number;
+  supportedQuoteTokenCount: number;
+  /** Supported fraction of the quote, 0..1. */
+  coverage: number;
+  /**
+   * Longest single contiguous run, in tokens.  Coverage alone cannot tell a
+   * real passage from several stock phrases unioned together, so callers that
+   * decide "is this the source?" need to see this too.
+   */
+  longestRunTokenCount: number;
+  /** That run as a fraction of the quote, 0..1. */
+  longestRunCoverage: number;
+};
+
+/**
+ * How much of a quote a set of sources accounts for **in total**, counting
+ * every contiguous run they share rather than only the longest one.
+ *
+ * Writers quote by stitching: a displayed quote is routinely assembled from
+ * two or three passages, sometimes marked with an ellipsis and sometimes not.
+ * Judging such a quote by its longest single run understates it badly — a
+ * quote entirely present in a paper, in three pieces, can score below half.
+ * Judging it by the union answers the question that actually matters: how much
+ * of this quote does this source account for?
+ *
+ * Entries are pooled deliberately, so a quote whose pieces straddle two pages
+ * of one PDF is summarised over the whole document rather than per page.
+ */
+export function summarizeQuoteTextSupport(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextSupportSummary {
+  const normalizedEntries = normalizeEntries(entries);
+  const cleanQuote = stripBoundaryEllipsis(
+    sanitizeText(quoteText || "").trim(),
+  );
+  const quoteIndex = buildQuoteTextIndex(cleanQuote);
+  const quoteTokenCount = quoteIndex.tokens.length;
+  if (!quoteTokenCount || !normalizedEntries.length) {
+    return {
+      quoteTokenCount,
+      supportedQuoteTokenCount: 0,
+      coverage: 0,
+      longestRunTokenCount: 0,
+      longestRunCoverage: 0,
+    };
+  }
+  const supported = new Set<number>();
+  let longestRunTokenCount = 0;
+  for (const candidate of collectQuoteTokenRunCandidates(
+    normalizedEntries,
+    quoteIndex,
+    {
+      minQueryLength: Math.max(1, options?.minQueryLength ?? 24),
+      rejectWeakQueries: options?.rejectWeakQueries ?? true,
+    },
+  )) {
+    if (!runCountsAsQuoteSupport(candidate)) continue;
+    longestRunTokenCount = Math.max(
+      longestRunTokenCount,
+      candidate.matchedTokenCount,
+    );
+    for (
+      let tokenIndex = candidate.run.quoteTokenStart;
+      tokenIndex < candidate.run.quoteTokenEnd;
+      tokenIndex += 1
+    ) {
+      supported.add(tokenIndex);
+    }
+  }
+  return {
+    quoteTokenCount,
+    supportedQuoteTokenCount: supported.size,
+    coverage: supported.size / quoteTokenCount,
+    longestRunTokenCount,
+    longestRunCoverage: longestRunTokenCount / quoteTokenCount,
+  };
+}
+
 function buildQuoteTextAnchorMatches(
   entries: QuoteTextSearchEntry[],
   quoteText: string,
@@ -807,46 +1056,53 @@ function buildQuoteTextAnchorMatches(
         quoteTokenSupportCoverage: 1,
         quoteStartTokenSupported: true,
         quoteEndTokenSupported: true,
+        literalSupportedQuoteTokenCount: quoteIndex.tokens.length,
+        literalQuoteTokenSupportCoverage: 1,
+        literalQuoteStartTokenSupported: true,
+        literalQuoteEndTokenSupported: true,
         quoteTokenStart: 0,
         quoteTokenEnd: quoteIndex.tokens.length,
       },
     ];
   }
 
-  const candidates = normalizedEntries
-    .flatMap((entry) => collectCommonQuoteTokenRuns(entry, quoteIndex))
-    .map((run) => {
-      const query = sourceTextForTokenRun(run, quoteIndex.tokens.length);
-      const normalizedQuery = normalizeLocatorText(query);
-      const matchedTokenCount = run.quoteTokenEnd - run.quoteTokenStart;
-      return {
-        run,
-        query,
-        normalizedQuery,
-        matchedTokenCount,
-        score: quoteIndex.tokens
-          .slice(run.quoteTokenStart, run.quoteTokenEnd)
-          .reduce((sum, token) => sum + scoreSearchToken(token.text), 0),
-      };
-    })
-    .filter(
-      (candidate) =>
-        isLocatorQueryLongEnough(candidate.normalizedQuery, minQueryLength) &&
-        (!rejectWeakQueries ||
-          !isWeakQuoteSearchQuery(candidate.normalizedQuery)),
-    );
+  const candidates = collectQuoteTokenRunCandidates(
+    normalizedEntries,
+    quoteIndex,
+    { minQueryLength, rejectWeakQueries },
+  );
   const supportedQuoteTokensByEntry = new Map<string, Set<number>>();
   for (const candidate of candidates) {
-    if (
-      candidate.matchedTokenCount < 3 ||
-      candidate.normalizedQuery.length < 12
-    ) {
+    if (!runCountsAsQuoteSupport(candidate)) {
       continue;
     }
     let supported = supportedQuoteTokensByEntry.get(candidate.run.entry.id);
     if (!supported) {
       supported = new Set();
       supportedQuoteTokensByEntry.set(candidate.run.entry.id, supported);
+    }
+    for (
+      let tokenIndex = candidate.run.quoteTokenStart;
+      tokenIndex < candidate.run.quoteTokenEnd;
+      tokenIndex += 1
+    ) {
+      supported.add(tokenIndex);
+    }
+  }
+  const literalSupportedQuoteTokensByEntry = new Map<string, Set<number>>();
+  for (const candidate of collectQuoteTokenRunCandidates(
+    normalizedEntries,
+    quoteIndex,
+    { minQueryLength, rejectWeakQueries },
+    collectLiteralCommonQuoteTokenRuns,
+  )) {
+    if (!runCountsAsQuoteSupport(candidate)) continue;
+    let supported = literalSupportedQuoteTokensByEntry.get(
+      candidate.run.entry.id,
+    );
+    if (!supported) {
+      supported = new Set();
+      literalSupportedQuoteTokensByEntry.set(candidate.run.entry.id, supported);
     }
     for (
       let tokenIndex = candidate.run.quoteTokenStart;
@@ -892,6 +1148,11 @@ function buildQuoteTextAnchorMatches(
     const supportedQuoteTokens = supportedQuoteTokensByEntry.get(
       candidate.run.entry.id,
     );
+    const literalSupportedQuoteTokens = literalSupportedQuoteTokensByEntry.get(
+      candidate.run.entry.id,
+    );
+    const literalSupportedQuoteTokenCount =
+      literalSupportedQuoteTokens?.size || 0;
     out.push({
       entryId: candidate.run.entry.id,
       query: candidate.query,
@@ -922,6 +1183,17 @@ function buildQuoteTextAnchorMatches(
       quoteStartTokenSupported: Boolean(supportedQuoteTokens?.has(0)),
       quoteEndTokenSupported: Boolean(
         supportedQuoteTokens?.has(quoteIndex.tokens.length - 1),
+      ),
+      literalSupportedQuoteTokenCount,
+      literalQuoteTokenSupportCoverage: Math.min(
+        1,
+        literalSupportedQuoteTokenCount / quoteIndex.tokens.length,
+      ),
+      literalQuoteStartTokenSupported: Boolean(
+        literalSupportedQuoteTokens?.has(0),
+      ),
+      literalQuoteEndTokenSupported: Boolean(
+        literalSupportedQuoteTokens?.has(quoteIndex.tokens.length - 1),
       ),
       quoteTokenStart: candidate.run.quoteTokenStart,
       quoteTokenEnd: candidate.run.quoteTokenEnd,

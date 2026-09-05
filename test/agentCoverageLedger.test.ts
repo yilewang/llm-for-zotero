@@ -12,8 +12,10 @@ import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
 import type {
   AgentModelMessage,
   AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
 } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 function paper(
   itemId: number,
@@ -31,16 +33,16 @@ function paper(
 }
 
 function request(
-  overrides: Partial<AgentRuntimeRequest> = {},
+  overrides: Partial<AgentRuntimeRequestInput> = {},
 ): AgentRuntimeRequest {
-  return {
+  return resolvedAgentRequest({
     conversationKey: 901,
     mode: "agent",
     userText: "What methods evidence do we already have?",
     libraryID: 1,
     selectedPaperContexts: [paper(1, 10, "Coverage Paper")],
     ...overrides,
-  };
+  });
 }
 
 function messageText(message: AgentModelMessage): string {
@@ -168,7 +170,7 @@ describe("agent coverage ledger", function () {
         mode: "targeted",
         papers: [
           {
-            paperContext: req.selectedPaperContexts?.[0],
+            paperContext: req.turnPaperScope.papers[0]?.paper,
             passages: [{ text: "The method used a stable readout." }],
           },
         ],
@@ -185,21 +187,20 @@ describe("agent coverage ledger", function () {
         length: 50,
       },
       content: { content: "MinerU methods section." },
-      request: {
-        ...req,
+      request: request({
         selectedPaperContexts: [
           {
-            ...req.selectedPaperContexts![0],
+            ...req.turnPaperScope.papers[0]?.paper,
             mineruCacheDir: "/tmp/mineru/10",
           },
         ],
-      },
+      }),
       timestamp: 3,
     });
     const visualEntries = buildAgentCoverageEntriesForActivity({
       toolName: "view_pdf_pages",
       input: {
-        target: { paperContext: req.selectedPaperContexts?.[0] },
+        target: { paperContext: req.turnPaperScope.papers[0]?.paper },
         pages: [3],
       },
       content: { pages: [{ pageLabel: "3", text: "figure page" }] },
@@ -321,7 +322,7 @@ describe("agent coverage ledger", function () {
               mode: "targeted",
               papers: [
                 {
-                  paperContext: req.selectedPaperContexts?.[0],
+                  paperContext: req.turnPaperScope.papers[0]?.paper,
                   passages: [{ text: "Persisted coverage evidence." }],
                 },
               ],

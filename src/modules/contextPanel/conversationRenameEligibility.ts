@@ -4,6 +4,7 @@ export type ConversationRenameIdentity = {
   system: ConversationSystem;
   kind: "paper" | "global";
   conversationKey: number;
+  expectedGeneration?: number;
 };
 
 export function isConversationRenameEligible(params: {

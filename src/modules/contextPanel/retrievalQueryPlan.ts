@@ -1,9 +1,15 @@
-import {
-  callLLM,
-  type ChatParams,
-  type ReasoningConfig,
-} from "../../utils/llmClient";
+import type { ChatParams } from "../../utils/llmClient";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
+import {
+  callLLMWithTimeout,
+  type LLMCallWithTimeoutParams,
+} from "../../utils/llmCallTimeout";
+import {
+  callUtilityLLM,
+  describeUtilityLLMFailure,
+  logUtilityLLMFailure,
+} from "../../utils/utilityLLM";
+import type { ModelProfileOverride } from "../../modelCapabilities";
 import { tokenizeRetrievalQuery } from "./retrievalTokenizer";
 import {
   buildCanonicalReferenceQuery,
@@ -37,7 +43,9 @@ export const RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT = 6;
 export const RETRIEVAL_QUERY_VARIANT_HARD_LIMIT = 8;
 const RETRIEVAL_QUERY_VARIANT_MAX_CHARS = 160;
 const RETRIEVAL_SEMANTIC_QUERY_MAX_CHARS = 700;
-const RETRIEVAL_QUERY_PLAN_TIMEOUT_MS = 2500;
+// Generous enough for slower OpenAI-compatible providers to return first
+// tokens; the parse-retry loop makes the worst case roughly twice this.
+export const RETRIEVAL_QUERY_PLAN_TIMEOUT_MS = 10_000;
 
 function normalizeQueryText(value: unknown, maxChars = 0): string {
   const normalized = `${value ?? ""}`.replace(/\s+/g, " ").trim();
@@ -251,7 +259,7 @@ function hasCompoundNounAfterDocument(value: string): boolean {
 
 function hasEnglishFullDocumentModifierIntent(normalized: string): boolean {
   const commandPattern =
-    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b[^;.!?。！？；\n]{0,64}?\b(?:the\s+)?(?:entire|whole|complete|full)\b/gi;
+    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b[^;.!?。！？；\n]{0,64}?\b(?:the\s+)?(entire|whole|complete|full)\b/gi;
   for (const match of normalized.matchAll(commandPattern)) {
     if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
     if (excludesEnglishFullRead(match[0])) continue;
@@ -263,6 +271,14 @@ function hasEnglishFullDocumentModifierIntent(normalized: string): boolean {
       /\b(?:papers?|articles?|documents?|texts?|pdfs?)\b/i,
     );
     if (!documentMatch || documentMatch.index === undefined) continue;
+    if (
+      match[1]?.toLocaleLowerCase() === "full" &&
+      /^texts?$/i.test(documentMatch[0])
+    ) {
+      // "Full text" selects document evidence. It does not by itself ask to
+      // process every chunk of the document.
+      continue;
+    }
     const selector = tail.slice(0, documentMatch.index);
     if (selectorTreatsDocumentAsContainer(selector)) continue;
     const afterDocument = tail.slice(
@@ -440,6 +456,46 @@ export function detectExplicitFullReadIntent(query: string): boolean {
   );
 }
 
+export type PaperEvidenceSource =
+  | "metadata"
+  | "document_text"
+  | "rendered_pages";
+
+export type PaperReadCoverage = "overview" | "targeted" | "exhaustive";
+
+export type PaperReadIntent = Readonly<{
+  source: PaperEvidenceSource;
+  coverage: PaperReadCoverage;
+}>;
+
+/**
+ * Keep the requested evidence source independent from how comprehensively the
+ * document should be processed. In particular, "full text" means document
+ * evidence, not an exhaustive read.
+ */
+export function classifyPaperReadIntent(query: string): PaperReadIntent {
+  const normalized = normalizeQueryText(query).toLocaleLowerCase();
+  const source: PaperEvidenceSource =
+    /\b(?:rendered?\s+(?:pdf\s+)?pages?|page\s+(?:layout|image|render|screenshot)|(?:layout|image|render|screenshot)\s+of\s+(?:pdf\s+)?pages?|pdf\s+(?:layout|render|screenshot))\b/i.test(
+      normalized,
+    )
+      ? "rendered_pages"
+      : /\b(?:metadata|bibliographic|catalog)\b/i.test(normalized) &&
+          !/\b(?:pdf|full[-\s]?text|paper\s+text|document\s+text)\b/i.test(
+            normalized,
+          )
+        ? "metadata"
+        : "document_text";
+  const coverage: PaperReadCoverage = detectExplicitFullReadIntent(normalized)
+    ? "exhaustive"
+    : /\b(?:summari[sz]e|summary|overview|main\s+(?:message|points?)|key\s+points?)\b/i.test(
+          normalized,
+        )
+      ? "overview"
+      : "targeted";
+  return { source, coverage };
+}
+
 export function reconcilePlannerReadIntent(
   query: string,
   plannedIntent: DocumentReadIntent,
@@ -458,52 +514,109 @@ export function shouldAutoGenerateQueryVariants(params: {
   return !isLikelyExactLookupQuery(query);
 }
 
-async function callWithTimeout(
-  params: Omit<ChatParams, "signal"> & {
-    parentSignal?: AbortSignal;
-    timeoutMs?: number;
-  },
-): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    params.timeoutMs || RETRIEVAL_QUERY_PLAN_TIMEOUT_MS,
-  );
-  const onAbort = () => controller.abort();
-  params.parentSignal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    return await callLLM({
-      ...params,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-    params.parentSignal?.removeEventListener("abort", onAbort);
-  }
-}
+// Kept as a compatibility export for retrieval and focused runtime tests;
+// the implementation lives in the dependency-neutral utility layer.
+export { callLLMWithTimeout };
+export type { LLMCallWithTimeoutParams };
 
-export async function generateRetrievalQueryPlanWithModel(params: {
+const RETRIEVAL_PROBE_REFORMULATION_TIMEOUT_MS = 6000;
+
+/**
+ * Ask the model for fresh corpus-language search probes after a weak
+ * quicksearch pass. Any failure degrades to an empty variant list with an
+ * explanatory note — callers must treat that as "keep the existing probes".
+ */
+export async function generateRetrievalProbeReformulation(params: {
   query: string;
-  hasRetrievalContext: boolean;
+  triedProbes: string[];
+  matchedProbes: string[];
+  scopeTitles: string[];
   model?: string;
   apiBase?: string;
   apiKey?: string;
   authMode?: ChatParams["authMode"];
   providerProtocol?: ProviderProtocol;
-  reasoning?: ReasoningConfig;
+  profileOverride?: ModelProfileOverride;
   signal?: AbortSignal;
   timeoutMs?: number;
-  sourceSamples?: string[];
-}): Promise<RetrievalQueryPlan> {
-  const fallback = buildRetrievalQueryPlan({ query: params.query });
-  if (!shouldAutoGenerateQueryVariants(params)) return fallback;
-  if (!params.apiBase && !params.apiKey) return fallback;
+  llmCall?: LLMCallWithTimeoutParams["llmCall"];
+}): Promise<{ variants: string[]; notes: string[] }> {
+  const failure = {
+    variants: [] as string[],
+    notes: ["Probe reformulation failed; kept the existing probes."],
+  };
+  if (!params.apiBase && !params.apiKey) return failure;
+  const scopeTitles = params.scopeTitles
+    .map((title) => normalizeQueryText(title, 160))
+    .filter(Boolean)
+    .slice(0, 8);
+  const prompt = [
+    "Reformulate library search probes for a Zotero corpus search that found too few matches.",
+    'Return strict JSON only in this shape: {"variants":["..."]}.',
+    "Propose at most 4 NEW short keyword probes that were not tried before.",
+    "Use the corpus language(s) shown by the sample titles, including translations of the query's key terms when languages differ.",
+    "Prefer distinctive technical vocabulary over generic words.",
+    "",
+    `User query: ${params.query}`,
+    `Probes already tried: ${params.triedProbes.slice(0, 16).join(" | ") || "none"}`,
+    `Probes that matched documents: ${
+      params.matchedProbes.slice(0, 8).join(" | ") || "none"
+    }`,
+    ...(scopeTitles.length
+      ? [
+          "Sample titles from the search scope:",
+          ...scopeTitles.map((title) => `- ${title}`),
+        ]
+      : []),
+  ].join("\n");
+  try {
+    const result = await callUtilityLLM({
+      prompt,
+      model: params.model,
+      apiBase: params.apiBase,
+      apiKey: params.apiKey,
+      authMode: params.authMode,
+      providerProtocol: params.providerProtocol,
+      profileOverride: params.profileOverride,
+      jsonBudget: 200,
+      temperature: 0,
+      signal: params.signal,
+      timeoutMs: params.timeoutMs || RETRIEVAL_PROBE_REFORMULATION_TIMEOUT_MS,
+      llmCall: params.llmCall,
+      systemMessages: [
+        "You are a search probe reformulator. Return JSON only. Do not answer the user's question.",
+      ],
+    });
+    if (!result.ok) {
+      logUtilityLLMFailure("Probe reformulation skipped", result);
+      return failure;
+    }
+    const raw = result.text;
+    const parsed = extractJsonObject(raw);
+    const variants = Array.isArray(
+      (parsed as { variants?: unknown[] } | null)?.variants,
+    )
+      ? ((parsed as { variants: unknown[] }).variants || [])
+          .map((variant) => normalizeQueryText(variant, 120))
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+    if (!variants.length) return failure;
+    return { variants, notes: [] };
+  } catch {
+    return failure;
+  }
+}
 
+export function buildRetrievalPlannerPrompt(params: {
+  query: string;
+  sourceSamples?: string[];
+}): string {
   const sourceSamples = (params.sourceSamples || [])
     .map((sample) => normalizeQueryText(sample, 800))
     .filter(Boolean)
     .slice(0, 3);
-  const prompt = [
+  return [
     "Plan document retrieval for a user's Zotero papers.",
     'Return strict JSON only in this shape: {"readIntent":"targeted|full-once","variants":["..."]}.',
     "Generate search probes, not an answer.",
@@ -511,6 +624,7 @@ export async function generateRetrievalQueryPlanWithModel(params: {
     'Use readIntent "full-once" only when the user explicitly asks to read, use, analyze, or send the complete document.',
     "Keep readIntent targeted when complete, entire, or whole describes an explanation, mechanism, argument, figure, table, section, or other requested answer rather than the document itself.",
     "Generate variants in the language used by the supplied document samples, including translation when query and source languages differ.",
+    "If the user query language differs from the document samples' language, include at least one probe in each language.",
     "Include common acronyms, notation variants, and technical equivalents when useful.",
     "Preserve literal figure and table identifiers exactly.",
     "Avoid broad conceptual drift and do not invent paper-specific claims.",
@@ -521,26 +635,61 @@ export async function generateRetrievalQueryPlanWithModel(params: {
       ? ["", "Bounded document samples:", ...sourceSamples]
       : []),
   ].join("\n");
+}
+
+export async function generateRetrievalQueryPlanWithModel(params: {
+  query: string;
+  hasRetrievalContext: boolean;
+  model?: string;
+  apiBase?: string;
+  apiKey?: string;
+  authMode?: ChatParams["authMode"];
+  providerProtocol?: ProviderProtocol;
+  profileOverride?: ModelProfileOverride;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  sourceSamples?: string[];
+  llmCall?: LLMCallWithTimeoutParams["llmCall"];
+}): Promise<RetrievalQueryPlan> {
+  const fallback = buildRetrievalQueryPlan({ query: params.query });
+  if (!shouldAutoGenerateQueryVariants(params)) return fallback;
+  if (!params.apiBase && !params.apiKey) return fallback;
+
+  const prompt = buildRetrievalPlannerPrompt({
+    query: params.query,
+    sourceSamples: params.sourceSamples,
+  });
 
   try {
     let parsed: ReturnType<typeof extractJsonObject> = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const raw = await callWithTimeout({
+      const result = await callUtilityLLM({
         prompt,
         model: params.model,
         apiBase: params.apiBase,
         apiKey: params.apiKey,
         authMode: params.authMode,
         providerProtocol: params.providerProtocol,
-        reasoning: params.reasoning,
-        maxTokens: 260,
+        profileOverride: params.profileOverride,
+        jsonBudget: 260,
         temperature: 0,
-        parentSignal: params.signal,
-        timeoutMs: params.timeoutMs,
+        signal: params.signal,
+        timeoutMs: params.timeoutMs || RETRIEVAL_QUERY_PLAN_TIMEOUT_MS,
+        llmCall: params.llmCall,
         systemMessages: [
           "You are a retrieval query planner. Return JSON only. Do not answer the user's research question.",
         ],
       });
+      if (!result.ok) {
+        // A blank response is exactly what the second attempt exists for —
+        // re-prompting often lands the JSON. Every other reason is either
+        // terminal or would just burn another timeout.
+        if (result.reason === "empty") continue;
+        throw new Error(
+          `Retrieval planner ${describeUtilityLLMFailure(result)}`,
+        );
+      }
+      const raw = result.text;
       const candidate = extractJsonObject(raw);
       if (isValidPlannerOutput(candidate)) {
         parsed = candidate;
@@ -587,10 +736,11 @@ export async function resolveRetrievalQueryPlan(params: {
   apiKey?: string;
   authMode?: ChatParams["authMode"];
   providerProtocol?: ProviderProtocol;
-  reasoning?: ReasoningConfig;
+  profileOverride?: ModelProfileOverride;
   signal?: AbortSignal;
   timeoutMs?: number;
   sourceSamples?: string[];
+  llmCall?: LLMCallWithTimeoutParams["llmCall"];
 }): Promise<RetrievalQueryPlan> {
   if (params.queryPlan) return params.queryPlan;
   if (hasUsableVariants(params.queryVariants)) {
@@ -608,9 +758,10 @@ export async function resolveRetrievalQueryPlan(params: {
     apiKey: params.apiKey,
     authMode: params.authMode,
     providerProtocol: params.providerProtocol,
-    reasoning: params.reasoning,
+    profileOverride: params.profileOverride,
     signal: params.signal,
     timeoutMs: params.timeoutMs,
     sourceSamples: params.sourceSamples,
+    llmCall: params.llmCall,
   });
 }

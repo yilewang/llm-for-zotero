@@ -2,6 +2,7 @@ import { assert } from "chai";
 import type {
   ChatAttachment,
   CollectionContextRef,
+  Message,
   PaperContextRef,
   ResolvedSelectedTextAnchor,
   ResolvedContextSource,
@@ -10,6 +11,8 @@ import type {
 } from "../src/modules/contextPanel/types";
 import {
   buildAgentRuntimeRequestForTests,
+  deriveConversationComposeContextSnapshotForTests,
+  getMessageDisplayPaperContextsForTests,
   includeAutoLoadedPaperContextForTests,
   normalizeStoredPaperContextRoutesForTests,
 } from "../src/modules/contextPanel/chat";
@@ -71,6 +74,7 @@ describe("sendFlowController", function () {
   it("uses explicit Markdown source context before ambient reader context", function () {
     const currentItem = {
       id: 707,
+      libraryID: 1,
       isAttachment: () => false,
       isRegularItem: () => true,
     } as unknown as Zotero.Item;
@@ -110,6 +114,11 @@ describe("sendFlowController", function () {
       markdownContext.contextItemId,
     );
     assert.equal(result.paperContexts[0].contentSourceMode, "markdown");
+    assert.deepInclude(result.activePaperContext, {
+      libraryID: 1,
+      itemId: 707,
+      contextItemId: 808,
+    });
     assert.lengthOf(result.fullTextPaperContexts, 1);
     assert.equal(
       result.fullTextPaperContexts[0].contextItemId,
@@ -121,6 +130,7 @@ describe("sendFlowController", function () {
   it("keeps an auto-loaded raw PDF out of ordinary paper pipelines", function () {
     const currentItem = {
       id: 707,
+      libraryID: 1,
       isAttachment: () => false,
       isRegularItem: () => true,
     } as unknown as Zotero.Item;
@@ -135,7 +145,7 @@ describe("sendFlowController", function () {
       currentItem,
       [],
       [],
-      new Set(["707:808"]),
+      new Set(["1:707:808"]),
       {
         contextItem: null,
         paperContext: pdfContext,
@@ -145,6 +155,106 @@ describe("sendFlowController", function () {
 
     assert.deepEqual(result.paperContexts, []);
     assert.deepEqual(result.fullTextPaperContexts, []);
+    assert.deepInclude(result.activePaperContext, {
+      libraryID: 1,
+      itemId: 707,
+      contextItemId: 808,
+    });
+  });
+
+  it("does not invent an active paper for a standalone-note turn", function () {
+    const previousZotero = globalThis.Zotero;
+    globalThis.Zotero = {
+      Items: { get: () => null },
+      getMainWindow: () => null,
+      getActiveZoteroPane: () => null,
+    } as unknown as typeof Zotero;
+    try {
+      const standaloneNote = {
+        id: 700,
+        libraryID: 1,
+        parentID: false,
+        isNote: () => true,
+        getDisplayTitle: () => "Standalone note",
+      } as unknown as Zotero.Item;
+      const selectedPaper = {
+        libraryID: 1,
+        itemId: 42,
+        contextItemId: 101,
+        title: "Selected paper",
+      };
+
+      const result = includeAutoLoadedPaperContextForTests(
+        standaloneNote,
+        [selectedPaper],
+        [selectedPaper],
+      );
+
+      assert.isUndefined(result.activePaperContext);
+      assert.deepInclude(result.paperContexts[0], selectedPaper);
+    } finally {
+      globalThis.Zotero = previousZotero;
+    }
+  });
+
+  it("keeps the exact active PDF identity through request enrichment", async function () {
+    const firstPdf: PaperContextRef = {
+      libraryID: 1,
+      itemId: 42,
+      contextItemId: 100,
+      title: "Parent paper",
+    };
+    const activePdf: PaperContextRef = {
+      libraryID: 1,
+      itemId: 42,
+      contextItemId: 101,
+      title: "Parent paper",
+      contentSourceMode: "pdf",
+    };
+    const previousZotero = globalThis.Zotero;
+    globalThis.Zotero = {
+      Items: { get: () => null },
+      Prefs: { get: () => undefined },
+    } as unknown as typeof Zotero;
+    try {
+      const request = await buildAgentRuntimeRequestForTests({
+        conversationKey: 7001,
+        item: {
+          id: 9001,
+          libraryID: 1,
+          isAttachment: () => false,
+          isRegularItem: () => true,
+          isNote: () => false,
+        } as unknown as Zotero.Item,
+        userText: "Compare these papers.",
+        selectedTexts: [],
+        activePaperContext: activePdf,
+        paperContexts: [firstPdf],
+        pdfPaperContexts: [activePdf],
+        fullTextPaperContexts: [],
+        attachments: undefined,
+        screenshots: undefined,
+        effectiveRequestConfig: {
+          model: "gpt-5",
+          apiBase: "https://api.openai.com/v1",
+          apiKey: "test",
+          authMode: "api_key",
+          providerProtocol: "responses_api",
+          modelEntryId: "openai:gpt-5",
+          modelProviderLabel: "OpenAI",
+        },
+        history: [],
+      });
+
+      assert.deepInclude(request.activePaperContext, {
+        libraryID: 1,
+        itemId: 42,
+        contextItemId: 101,
+      });
+      assert.notDeepInclude(request.activePaperContext, firstPdf);
+    } finally {
+      globalThis.Zotero = previousZotero;
+    }
   });
 
   it("repairs legacy stored rows that duplicated a raw PDF into text routes", function () {
@@ -259,6 +369,125 @@ describe("sendFlowController", function () {
     assert.deepInclude(normalized.fullTextPaperContexts[0], full);
   });
 
+  it("renders every sent paper route exactly once after stored-route normalization", function () {
+    const activePaper = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Active paper",
+    };
+    const libraryPaper = {
+      itemId: 2,
+      contextItemId: 22,
+      title: "Library paper",
+      contentSourceMode: "mineru" as const,
+    };
+    const pdfPaper = {
+      itemId: 3,
+      contextItemId: 33,
+      title: "PDF paper",
+      contentSourceMode: "pdf" as const,
+    };
+    const storedRoutes = normalizeStoredPaperContextRoutesForTests({
+      paperContexts: [activePaper, libraryPaper],
+      pdfPaperContexts: [pdfPaper],
+      fullTextPaperContexts: [activePaper, libraryPaper],
+    });
+
+    const display = getMessageDisplayPaperContextsForTests(storedRoutes);
+
+    assert.deepEqual(
+      display.map((paper) => paper.title),
+      ["Active paper", "Library paper", "PDF paper"],
+    );
+    assert.deepEqual(
+      display.map((paper) => `${paper.itemId}:${paper.contextItemId}`),
+      ["1:11", "2:22", "3:33"],
+    );
+  });
+
+  it("derives a retrieval-only continuation snapshot from the latest user turn", function () {
+    const activePaper = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Active paper",
+    };
+    const ordinaryPaper = {
+      itemId: 2,
+      contextItemId: 22,
+      title: "Ordinary paper",
+    };
+    const fullTextPaper = {
+      itemId: 3,
+      contextItemId: 33,
+      title: "Full-text paper",
+      contentSourceMode: "mineru" as const,
+    };
+    const pdfPaper = {
+      itemId: 4,
+      contextItemId: 44,
+      title: "PDF paper",
+      contentSourceMode: "pdf" as const,
+    };
+    const latestUserMessage: Message = {
+      role: "user",
+      text: "Continue with these sources",
+      timestamp: 200,
+      paperContexts: [activePaper, ordinaryPaper],
+      fullTextPaperContexts: [activePaper, fullTextPaper],
+      pdfPaperContexts: [pdfPaper],
+      selectedCollectionContexts: [selectedCollection, selectedCollection],
+      selectedTagContexts: [selectedTag, selectedTag],
+    };
+
+    const snapshot = deriveConversationComposeContextSnapshotForTests(
+      123,
+      [
+        {
+          role: "user",
+          text: "Older context",
+          timestamp: 100,
+          paperContexts: [{ itemId: 9, contextItemId: 99, title: "Old" }],
+        },
+        latestUserMessage,
+        { role: "assistant", text: "Answer", timestamp: 300 },
+      ],
+      activePaper,
+    );
+
+    assert.deepEqual(
+      snapshot.paperContexts.map((paper) => paper.title),
+      ["Ordinary paper", "Full-text paper", "PDF paper"],
+    );
+    assert.isTrue(
+      snapshot.paperContexts.every(
+        (paper) => paper.contentSourceMode === undefined,
+      ),
+    );
+    assert.deepEqual(snapshot.collectionContexts, [selectedCollection]);
+    assert.lengthOf(snapshot.tagContexts, 1);
+    assert.deepInclude(snapshot.tagContexts[0], selectedTag);
+  });
+
+  it("treats a context-free latest user turn as an intentionally empty snapshot", function () {
+    const snapshot = deriveConversationComposeContextSnapshotForTests(123, [
+      {
+        role: "user",
+        text: "Older context",
+        timestamp: 100,
+        paperContexts: [{ itemId: 9, contextItemId: 99, title: "Old" }],
+        selectedCollectionContexts: [selectedCollection],
+        selectedTagContexts: [selectedTag],
+      },
+      { role: "user", text: "No context now", timestamp: 200 },
+    ]);
+
+    assert.deepEqual(snapshot, {
+      paperContexts: [],
+      collectionContexts: [],
+      tagContexts: [],
+    });
+  });
+
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
     const inputBox = {
       value: "ask question",
@@ -275,6 +504,11 @@ describe("sendFlowController", function () {
     let persistDraftInputCalls = 0;
     let setActiveEditSessionCalls = 0;
     let composerDraftClearedCalls = 0;
+    const restoredPaperModes: Array<{
+      itemId: number;
+      paperContext: PaperContextRef;
+      mode: string;
+    }> = [];
     let lastSentQuestion = "";
     let lastSentDisplayQuestion: string | undefined;
     let lastRuntimeMode = "";
@@ -289,9 +523,6 @@ describe("sendFlowController", function () {
     let lastSentPdfPaperContexts: PaperContextRef[] | undefined;
     let lastSentWebchatSendPdf = false;
     let lastSentWebchatPdfPaperContexts: PaperContextRef[] | undefined;
-    let lastMarkedWebchatPdfPaperContexts:
-      | readonly PaperContextRef[]
-      | undefined;
     let lastSentLocalDocuments: readonly LocalDocumentResource[] | undefined;
     let lastEditRuntimeMode = "";
     let lastEditDisplayQuestion = "";
@@ -306,11 +537,38 @@ describe("sendFlowController", function () {
     let lastEditTagContexts: TagContextRef[] | undefined;
     let lastStatus: { message: string; level: string } | null = null;
     const statuses: Array<{ message: string; level: string }> = [];
+    let activeRequestId = 0;
+    let nextRequestId = 1;
+    let activeAbortController: AbortController | null = null;
 
     const deps = {
       body: {} as Element,
       inputBox,
       getItem: () => item,
+      beginRequest: () => {
+        if (activeRequestId) return null;
+        activeRequestId = nextRequestId++;
+        activeAbortController = new AbortController();
+        return {
+          conversationKey: item.id,
+          requestId: activeRequestId,
+          signal: activeAbortController.signal,
+        };
+      },
+      isRequestOwner: (_conversationKey: number, requestId: number) =>
+        activeRequestId === requestId,
+      finishRequest: (
+        _body: Element,
+        _item: Zotero.Item,
+        _conversationKey: number,
+        requestId: number,
+      ) => {
+        if (activeRequestId !== requestId) return false;
+        activeRequestId = 0;
+        activeAbortController = null;
+        return true;
+      },
+      queueFollowUpInput: () => undefined,
       resolveContextSource: async () => ({
         contextItem: item,
         paperContext: null,
@@ -324,6 +582,14 @@ describe("sendFlowController", function () {
       getSelectedTagContexts: () => [],
       getFullTextPaperContexts: () => [selectedPaper],
       getPdfModePaperContexts: () => [],
+      resolvePaperContextNextSendMode: () => "full-next" as const,
+      setPaperModeOverride: (
+        itemId: number,
+        paperContext: PaperContextRef,
+        mode: string,
+      ) => {
+        restoredPaperModes.push({ itemId, paperContext, mode });
+      },
       resolvePdfPaperAttachments: async () => [],
       resolveLocalPdfResources: async () => [],
       preflightLocalPdfCapability: async () => undefined,
@@ -365,6 +631,7 @@ describe("sendFlowController", function () {
       getLatestEditablePair: async () => null,
       editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
+        opts.onProviderDispatch?.();
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
         lastEditDisplayQuestion = opts.displayQuestion || "";
         lastEditImages = opts.screenshotImages;
@@ -374,10 +641,13 @@ describe("sendFlowController", function () {
         lastEditCollectionContexts = opts.selectedCollectionContexts;
         lastEditTagContexts = opts.selectedTagContexts;
         lastEditContextSource = opts.contextSource;
+        activeRequestId = 0;
+        activeAbortController = null;
         return "ok" as const;
       },
       sendQuestion: async (opts: any) => {
         sendCalled += 1;
+        opts.onProviderDispatch?.();
         lastSentQuestion = opts.question;
         lastSentDisplayQuestion = opts.displayQuestion;
         lastRuntimeMode = opts.runtimeMode || "";
@@ -396,6 +666,8 @@ describe("sendFlowController", function () {
         lastSentWebchatPdfPaperContexts = opts.webchatPdfPaperContexts;
         lastSentLocalDocuments = opts.localDocuments;
         opts.onWebChatSendOutcome?.("success");
+        activeRequestId = 0;
+        activeAbortController = null;
       },
       retainPinnedImageState: () => {
         retainImageCalled += 1;
@@ -431,11 +703,6 @@ describe("sendFlowController", function () {
       editStaleStatusText: "stale",
       onComposerDraftCleared: () => {
         composerDraftClearedCalls += 1;
-      },
-      markWebChatPdfUploadedForCurrentConversation: (
-        paperContexts: readonly PaperContextRef[],
-      ) => {
-        lastMarkedWebchatPdfPaperContexts = paperContexts;
       },
       ...overrides,
     };
@@ -474,7 +741,6 @@ describe("sendFlowController", function () {
         lastSentPdfPaperContexts,
         lastSentWebchatSendPdf,
         lastSentWebchatPdfPaperContexts,
-        lastMarkedWebchatPdfPaperContexts,
         lastSentLocalDocuments,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
@@ -488,6 +754,7 @@ describe("sendFlowController", function () {
       getLastEditContextSource: () => lastEditContextSource,
       getLastStatus: () => lastStatus,
       getStatuses: () => statuses.slice(),
+      getRestoredPaperModes: () => restoredPaperModes.slice(),
     };
   }
 
@@ -504,6 +771,46 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainPaperStateCalled, 1);
     assert.equal(counts.retainFileCalled, 1);
     assert.equal(counts.retainTextCalled, 1);
+  });
+
+  it("never seeds local conversation titles from webchat sends", async function () {
+    const touchedTitles: string[] = [];
+    const { controller } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "webchat-chatgpt",
+        model: "chatgpt.com",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+        providerLabel: "WebChat",
+      }),
+      touchPaperConversationTitle: async (_key: number, seed: string) => {
+        touchedTitles.push(seed);
+      },
+      touchGlobalConversationTitle: async (_key: number, seed: string) => {
+        touchedTitles.push(seed);
+      },
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(
+      touchedTitles,
+      [],
+      "webchat sends must not write catalog titles",
+    );
+  });
+
+  it("still seeds local conversation titles for non-webchat sends", async function () {
+    const touchedTitles: string[] = [];
+    const { controller } = createBaseDeps({
+      touchPaperConversationTitle: async (_key: number, seed: string) => {
+        touchedTitles.push(seed);
+      },
+    });
+
+    await controller.doSend();
+
+    assert.isNotEmpty(touchedTitles, "normal sends keep seeding titles");
   });
 
   it("resolves and forwards canonical selected-text anchors at send time", async function () {
@@ -743,16 +1050,21 @@ describe("sendFlowController", function () {
       buildModelPromptWithFileContext: (question: string) => question,
     });
     inputBox.value = "draft typed while waiting";
+    let restoreCalls = 0;
 
     await controller.doSend({
       overrideText: "queued follow-up",
       preserveInputDraft: true,
+      restoreQueuedInput: () => {
+        restoreCalls += 1;
+      },
     });
 
     assert.equal(getLastSend().lastSentQuestion, "queued follow-up");
     assert.equal(inputBox.value, "draft typed while waiting");
     assert.equal(getCounts().persistDraftInputCalls, 0);
     assert.equal(getCounts().composerDraftClearedCalls, 0);
+    assert.equal(restoreCalls, 0);
   });
 
   it("uses retain-pinned callbacks for edit-latest flow", async function () {
@@ -1073,7 +1385,7 @@ describe("sendFlowController", function () {
 
     assert.equal(getCounts().sendCalled, 0);
     assert.equal(getCounts().editCalled, 0);
-    assert.equal(getCounts().composerDraftClearedCalls, 0);
+    assert.equal(getCounts().composerDraftClearedCalls, 1);
     assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
       message: FULL_PDF_UNSUPPORTED_MESSAGE,
@@ -1677,7 +1989,6 @@ describe("sendFlowController", function () {
       getActiveWebChatPdfPaperContexts: () => pdfPaperContexts,
       getFullTextPaperContexts: () => [],
       hasActivePdfFullTextPapers: () => true,
-      hasUploadedPdfInCurrentWebChatConversation: () => false,
       getSelectedFiles: () => [],
     });
 
@@ -1688,22 +1999,49 @@ describe("sendFlowController", function () {
       getLastSend().lastSentWebchatPdfPaperContexts,
       pdfPaperContexts,
     );
-    assert.deepEqual(
-      getLastSend().lastMarkedWebchatPdfPaperContexts,
-      pdfPaperContexts,
-    );
     assert.deepEqual(getLastSend().lastSentPdfPaperContexts, pdfPaperContexts);
     assert.equal(getCounts().consumePaperModeStateCalled, 1);
   });
 
-  it("blocks PDF B after PDF A was uploaded in the same WebChat", async function () {
+  it("sends an active WebChat PDF on a later turn", async function () {
+    const pdf: PaperContextRef = {
+      itemId: 10,
+      contextItemId: 102,
+      title: "Persistent PDF",
+      contentSourceMode: "pdf",
+    };
+    const { controller, getLastSend, getCounts } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "chatgpt-web",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "ChatGPT",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+      }),
+      getSelectedPaperContexts: () => [pdf],
+      getPdfModePaperContexts: () => [pdf],
+      getActiveWebChatPdfPaperContexts: () => [pdf],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.isTrue(getLastSend().lastSentWebchatSendPdf);
+    assert.deepEqual(getLastSend().lastSentWebchatPdfPaperContexts, [pdf]);
+  });
+
+  it("allows a different PDF on a later turn in the same WebChat", async function () {
     const pdfB: PaperContextRef = {
       itemId: 10,
       contextItemId: 102,
       title: "PDF B",
       contentSourceMode: "pdf",
     };
-    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+    const { controller, getCounts, getLastSend } = createBaseDeps({
       getSelectedProfile: () => ({
         entryId: "entry-1",
         model: "chatgpt-web",
@@ -1716,20 +2054,15 @@ describe("sendFlowController", function () {
       getSelectedPaperContexts: () => [pdfB],
       getPdfModePaperContexts: () => [pdfB],
       getActiveWebChatPdfPaperContexts: () => [pdfB],
-      getUploadedWebChatPdfSourceKeys: () => ["zotero-pdf:10:101"],
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [],
     });
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 0);
-    assert.equal(inputBox.value, "ask question");
-    assert.deepEqual(getLastStatus(), {
-      message:
-        "The selected PDF differs from the PDF already attached to this web chat. Start a new web chat before sending.",
-      level: "error",
-    });
+    assert.equal(getCounts().sendCalled, 1);
+    assert.isTrue(getLastSend().lastSentWebchatSendPdf);
+    assert.deepEqual(getLastSend().lastSentWebchatPdfPaperContexts, [pdfB]);
   });
 
   it("blocks multiple active WebChat PDFs before clearing the draft", async function () {
@@ -1775,14 +2108,14 @@ describe("sendFlowController", function () {
     });
   });
 
-  it("blocks PDF upload into a restored WebChat with unknown attachment state", async function () {
+  it("allows a PDF upload after restoring a previous WebChat", async function () {
     const pdf: PaperContextRef = {
       itemId: 10,
       contextItemId: 101,
       title: "Selected PDF",
       contentSourceMode: "pdf",
     };
-    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+    const { controller, getCounts, getLastSend } = createBaseDeps({
       getSelectedProfile: () => ({
         entryId: "entry-1",
         model: "chatgpt-web",
@@ -1795,20 +2128,15 @@ describe("sendFlowController", function () {
       getSelectedPaperContexts: () => [pdf],
       getPdfModePaperContexts: () => [pdf],
       getActiveWebChatPdfPaperContexts: () => [pdf],
-      isWebChatPdfUploadStateUnknown: () => true,
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [],
     });
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 0);
-    assert.equal(inputBox.value, "ask question");
-    assert.deepEqual(getLastStatus(), {
-      message:
-        "This web chat may already contain a different PDF. Start a new web chat before attaching the selected PDF.",
-      level: "error",
-    });
+    assert.equal(getCounts().sendCalled, 1);
+    assert.isTrue(getLastSend().lastSentWebchatSendPdf);
+    assert.deepEqual(getLastSend().lastSentWebchatPdfPaperContexts, [pdf]);
   });
 
   it("re-arms a forced-new WebChat PDF send after dispatch failure", async function () {
@@ -1819,7 +2147,6 @@ describe("sendFlowController", function () {
       contentSourceMode: "pdf",
     };
     let forceNewChatIntent = true;
-    let uploadStateUnknown = false;
     let sendAttempts = 0;
     const forceFlags: boolean[] = [];
     const { controller, inputBox } = createBaseDeps({
@@ -1844,11 +2171,6 @@ describe("sendFlowController", function () {
       },
       markWebChatForceNewChatIntent: () => {
         forceNewChatIntent = true;
-        uploadStateUnknown = false;
-      },
-      isWebChatPdfUploadStateUnknown: () => uploadStateUnknown,
-      markWebChatPdfUploadStateUnknown: () => {
-        uploadStateUnknown = true;
       },
       sendQuestion: async (options: {
         webchatForceNewChat?: boolean;
@@ -1871,7 +2193,6 @@ describe("sendFlowController", function () {
     }
     assert.instanceOf(firstError, Error);
     assert.isTrue(forceNewChatIntent);
-    assert.isFalse(uploadStateUnknown);
 
     inputBox.value = "retry question";
     await controller.doSend();
@@ -1880,16 +2201,15 @@ describe("sendFlowController", function () {
     assert.isFalse(forceNewChatIntent);
   });
 
-  it("marks a failed non-forced WebChat PDF upload state unknown", async function () {
+  it("allows a non-forced WebChat PDF retry after dispatch failure", async function () {
     const pdf: PaperContextRef = {
       itemId: 10,
       contextItemId: 101,
       title: "Selected PDF",
       contentSourceMode: "pdf",
     };
-    let uploadStateUnknown = false;
     let sendAttempts = 0;
-    const { controller, inputBox, getLastStatus } = createBaseDeps({
+    const { controller, inputBox, getCounts } = createBaseDeps({
       getSelectedProfile: () => ({
         entryId: "entry-1",
         model: "chatgpt-web",
@@ -1904,30 +2224,25 @@ describe("sendFlowController", function () {
       getActiveWebChatPdfPaperContexts: () => [pdf],
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [],
-      isWebChatPdfUploadStateUnknown: () => uploadStateUnknown,
-      markWebChatPdfUploadStateUnknown: () => {
-        uploadStateUnknown = true;
-      },
-      sendQuestion: async () => {
+      sendQuestion: async (options: {
+        onWebChatSendOutcome?: (outcome: "success") => void;
+      }) => {
         sendAttempts += 1;
-        throw new Error("relay outcome unknown");
+        if (sendAttempts === 1) {
+          throw new Error("relay outcome unknown");
+        }
+        options.onWebChatSendOutcome?.("success");
       },
     });
 
     await controller.doSend().catch(() => undefined);
-    assert.isTrue(uploadStateUnknown);
     assert.equal(sendAttempts, 1);
 
     inputBox.value = "retry question";
     await controller.doSend();
 
-    assert.equal(sendAttempts, 1);
-    assert.equal(inputBox.value, "retry question");
-    assert.deepEqual(getLastStatus(), {
-      message:
-        "This web chat may already contain a different PDF. Start a new web chat before attaching the selected PDF.",
-      level: "error",
-    });
+    assert.equal(sendAttempts, 2);
+    assert.equal(getCounts().consumePaperModeStateCalled, 1);
   });
 
   it("honors a swallowed WebChat pipeline failure outcome", async function () {
@@ -1937,9 +2252,7 @@ describe("sendFlowController", function () {
       title: "Selected PDF",
       contentSourceMode: "pdf",
     };
-    let uploadStateUnknown = false;
-    let markedUploaded = false;
-    const { controller, getCounts } = createBaseDeps({
+    const { controller, getCounts, getRestoredPaperModes } = createBaseDeps({
       getSelectedProfile: () => ({
         entryId: "entry-1",
         model: "chatgpt-web",
@@ -1954,12 +2267,6 @@ describe("sendFlowController", function () {
       getActiveWebChatPdfPaperContexts: () => [pdf],
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [],
-      markWebChatPdfUploadStateUnknown: () => {
-        uploadStateUnknown = true;
-      },
-      markWebChatPdfUploadedForCurrentConversation: () => {
-        markedUploaded = true;
-      },
       sendQuestion: async (options: {
         onWebChatSendOutcome?: (outcome: "failed") => void;
       }) => {
@@ -1969,9 +2276,55 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
-    assert.isTrue(uploadStateUnknown);
-    assert.isFalse(markedUploaded);
     assert.equal(getCounts().consumePaperModeStateCalled, 0);
+    assert.deepEqual(getRestoredPaperModes(), [
+      {
+        itemId: item.id,
+        paperContext: pdf,
+        mode: "full-next",
+      },
+    ]);
+  });
+
+  it("restores a sticky WebChat PDF mode after a verified failure", async function () {
+    const pdf: PaperContextRef = {
+      itemId: 10,
+      contextItemId: 101,
+      title: "Selected PDF",
+      contentSourceMode: "pdf",
+    };
+    const { controller, getRestoredPaperModes } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "chatgpt-web",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "ChatGPT",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+      }),
+      getSelectedPaperContexts: () => [pdf],
+      getPdfModePaperContexts: () => [pdf],
+      getActiveWebChatPdfPaperContexts: () => [pdf],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      resolvePaperContextNextSendMode: () => "full-sticky",
+      sendQuestion: async (options: {
+        onWebChatSendOutcome?: (outcome: "failed") => void;
+      }) => {
+        options.onWebChatSendOutcome?.("failed");
+      },
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getRestoredPaperModes(), [
+      {
+        itemId: item.id,
+        paperContext: pdf,
+        mode: "full-sticky",
+      },
+    ]);
   });
 
   it("re-arms a swallowed forced-new text-only WebChat failure", async function () {
@@ -2039,7 +2392,6 @@ describe("sendFlowController", function () {
       getPdfModePaperContexts: () => allPdfContexts,
       getActiveWebChatPdfPaperContexts: () => [activePdf],
       getFullTextPaperContexts: () => [],
-      hasUploadedPdfInCurrentWebChatConversation: () => false,
       getSelectedFiles: () => [],
     });
 
@@ -2349,5 +2701,163 @@ describe("sendFlowController", function () {
         "Codex native app-server does not support pinned PDF or binary file attachments directly (archive.zip). Remove them and try again.",
       level: "error",
     });
+  });
+
+  it("admits only one of three rapid sends while context is preparing", async function () {
+    let resolveContext: ((value: ResolvedContextSource | null) => void) | null =
+      null;
+    const contextReady = new Promise<ResolvedContextSource | null>(
+      (resolve) => {
+        resolveContext = resolve;
+      },
+    );
+    const queued: string[] = [];
+    const { controller, inputBox, getCounts } = createBaseDeps({
+      resolveContextSource: () => contextReady,
+      queueFollowUpInput: (text: string) => queued.push(text),
+    });
+
+    const first = controller.doSend();
+    assert.equal(inputBox.value, "", "the admitted draft clears synchronously");
+    const second = controller.doSend();
+    const third = controller.doSend();
+    resolveContext?.(null);
+    await Promise.all([first, second, third]);
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(queued, []);
+  });
+
+  it("queues one genuinely new follow-up while preparation owns the conversation", async function () {
+    let resolveContext: ((value: ResolvedContextSource | null) => void) | null =
+      null;
+    const contextReady = new Promise<ResolvedContextSource | null>(
+      (resolve) => {
+        resolveContext = resolve;
+      },
+    );
+    const queued: string[] = [];
+    const { controller, inputBox, getCounts } = createBaseDeps({
+      resolveContextSource: () => contextReady,
+      queueFollowUpInput: (text: string) => {
+        queued.push(text);
+        inputBox.value = "";
+      },
+    });
+
+    const first = controller.doSend();
+    inputBox.value = "a real follow-up";
+    await controller.doSend();
+    await controller.doSend();
+    resolveContext?.(null);
+    await first;
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(queued, ["a real follow-up"]);
+  });
+
+  it("restores the captured draft when preparation is cancelled", async function () {
+    let resolveContext: ((value: ResolvedContextSource | null) => void) | null =
+      null;
+    const contextReady = new Promise<ResolvedContextSource | null>(
+      (resolve) => {
+        resolveContext = resolve;
+      },
+    );
+    const abortController = new AbortController();
+    let owner = 91;
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      resolveContextSource: () => contextReady,
+      beginRequest: () => ({
+        conversationKey: item.id,
+        requestId: 91,
+        signal: abortController.signal,
+      }),
+      isRequestOwner: (_conversationKey: number, requestId: number) =>
+        owner === requestId,
+      finishRequest: (
+        _body: Element,
+        _item: Zotero.Item,
+        _conversationKey: number,
+        requestId: number,
+      ) => {
+        if (owner !== requestId) return false;
+        owner = 0;
+        return true;
+      },
+    });
+
+    const send = controller.doSend();
+    assert.equal(inputBox.value, "");
+    abortController.abort();
+    resolveContext?.(null);
+    await send;
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(owner, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.equal(getDraftValue(), "ask question");
+  });
+
+  it("restores a queued follow-up when preparation is cancelled", async function () {
+    let resolveContext: ((value: ResolvedContextSource | null) => void) | null =
+      null;
+    const contextReady = new Promise<ResolvedContextSource | null>(
+      (resolve) => {
+        resolveContext = resolve;
+      },
+    );
+    const abortController = new AbortController();
+    const queued = ["later follow-up"];
+    let owner = 92;
+    const { controller, inputBox, getCounts } = createBaseDeps({
+      resolveContextSource: () => contextReady,
+      beginRequest: () => ({
+        conversationKey: item.id,
+        requestId: 92,
+        signal: abortController.signal,
+      }),
+      isRequestOwner: (_conversationKey: number, requestId: number) =>
+        owner === requestId,
+      finishRequest: (
+        _body: Element,
+        _item: Zotero.Item,
+        _conversationKey: number,
+        requestId: number,
+      ) => {
+        if (owner !== requestId) return false;
+        owner = 0;
+        return true;
+      },
+    });
+    inputBox.value = "draft typed while waiting";
+
+    const send = controller.doSend({
+      overrideText: "queued follow-up",
+      preserveInputDraft: true,
+      restoreQueuedInput: () => queued.unshift("queued follow-up"),
+    });
+    abortController.abort();
+    resolveContext?.(null);
+    await send;
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(owner, 0);
+    assert.deepEqual(queued, ["queued follow-up", "later follow-up"]);
+    assert.equal(inputBox.value, "draft typed while waiting");
+  });
+
+  it("restores the captured draft when preparation fails", async function () {
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      resolveContextSource: async () => {
+        throw new Error("context failed");
+      },
+    });
+
+    await controller.doSend().catch(() => undefined);
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.equal(getDraftValue(), "ask question");
   });
 });

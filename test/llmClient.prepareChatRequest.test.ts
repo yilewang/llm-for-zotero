@@ -5,7 +5,14 @@ import {
   callLLMStream,
   getResolvedEmbeddingConfig,
   prepareChatRequest,
+  ReasoningBudgetError,
 } from "../src/utils/llmClient";
+import {
+  loadCodexDirectCatalog,
+  resetCodexDirectCatalogForTests,
+} from "../src/codexAuth/modelCatalog";
+import { CODEX_DIRECT_RESPONSES_URL } from "../src/codexAuth/auth";
+import { CORE_RESEARCH_CONTRACT } from "../src/shared/instructionContracts";
 
 describe("llmClient prepareChatRequest", function () {
   const originalZotero = globalThis.Zotero;
@@ -53,6 +60,7 @@ describe("llmClient prepareChatRequest", function () {
   }
 
   beforeEach(function () {
+    resetCodexDirectCatalogForTests();
     const prefStore = new Map<string, unknown>();
     (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
       Prefs: {
@@ -62,6 +70,10 @@ describe("llmClient prepareChatRequest", function () {
         },
       },
     } as typeof Zotero;
+  });
+
+  afterEach(function () {
+    resetCodexDirectCatalogForTests();
   });
 
   after(function () {
@@ -143,10 +155,7 @@ describe("llmClient prepareChatRequest", function () {
     assert.isArray(capturedBody?.input);
     const input = capturedBody?.input as Array<Record<string, unknown>>;
     assert.equal(input[0]?.role, "system");
-    assert.include(
-      String(input[0]?.content || ""),
-      "You are an intelligent research assistant",
-    );
+    assert.include(String(input[0]?.content || ""), CORE_RESEARCH_CONTRACT);
     assert.equal(input[input.length - 1]?.role, "user");
   });
 
@@ -246,20 +255,190 @@ describe("llmClient prepareChatRequest", function () {
     assert.equal(prepared.authMode, "codex_auth");
   });
 
-  it("strips image content from DeepSeek V4 chat requests", function () {
+  it("sends exact Codex Direct effort while ignoring dormant advanced settings", async function () {
+    await loadCodexDirectCatalog({
+      authPath: "/test/codex/auth.json",
+      readText: async () =>
+        JSON.stringify({
+          tokens: { access_token: "catalog", refresh_token: "refresh" },
+        }),
+      fetchFn: (async () =>
+        new Response(
+          JSON.stringify({
+            models: [
+              {
+                slug: "gpt-codex",
+                display_name: "GPT Codex",
+                visibility: "list",
+                priority: 1,
+                supported_reasoning_levels: [
+                  { effort: "low" },
+                  { effort: "medium" },
+                  { effort: "high" },
+                  { effort: "xhigh" },
+                  { effort: "max" },
+                  { effort: "ultra" },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch,
+    });
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+    let capturedHeaders = new Headers();
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: {
+          getGlobal: (name: string) => unknown;
+          log: () => void;
+        };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name === "process") return { env: { HOME: "/home/tester" } };
+        if (name === "IOUtils") {
+          return {
+            read: async () =>
+              new TextEncoder().encode(
+                JSON.stringify({
+                  tokens: {
+                    access_token: "direct-token",
+                    refresh_token: "direct-refresh",
+                    account_id: "account-789",
+                  },
+                }),
+              ),
+          };
+        }
+        if (name !== "fetch") return undefined;
+        return async (url: string, init?: RequestInit) => {
+          capturedUrl = url;
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          capturedHeaders = new Headers(init?.headers);
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: makeSseStream([
+              'data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
+              'data: {"type":"response.completed","response":{"output_text":"OK"}}\n\n',
+            ]),
+            json: async () => ({}),
+            text: async () => "",
+          };
+        };
+      },
+      log: () => undefined,
+    };
+
+    const output = await callLLMStream(
+      {
+        prompt: "Hello",
+        model: "gpt-codex",
+        apiBase: "https://malicious.example/v1/responses",
+        authMode: "codex_auth",
+        providerProtocol: "gemini_native",
+        temperature: 1.8,
+        maxTokens: 7,
+        maxTokensExplicit: true,
+        profileOverride: {
+          forModel: "gpt-codex",
+          extraBody: { dormant_advanced_value: true },
+        },
+        reasoning: {
+          provider: "openai",
+          level: "default",
+          effort: "max",
+        },
+      },
+      () => undefined,
+    );
+
+    assert.equal(output, "OK");
+    assert.equal(capturedUrl, CODEX_DIRECT_RESPONSES_URL);
+    assert.deepEqual(capturedBody.reasoning, {
+      effort: "max",
+      summary: "detailed",
+    });
+    for (const key of [
+      "temperature",
+      "max_output_tokens",
+      "dormant_advanced_value",
+    ]) {
+      assert.notProperty(capturedBody, key);
+    }
+    assert.equal(capturedHeaders.get("Authorization"), "Bearer direct-token");
+    assert.equal(capturedHeaders.get("ChatGPT-Account-ID"), "account-789");
+
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      await callLLMStream(
+        {
+          prompt: `Use ${effort}`,
+          model: "gpt-codex",
+          authMode: "codex_auth",
+          reasoning: {
+            provider: "openai",
+            level: "default",
+            effort,
+          },
+        },
+        () => undefined,
+      );
+      assert.equal(
+        (capturedBody.reasoning as { effort?: string } | undefined)?.effort,
+        effort,
+      );
+    }
+
+    await callLLMStream(
+      {
+        prompt: "Hello again",
+        model: "gpt-codex",
+        authMode: "codex_auth",
+        reasoning: {
+          provider: "openai",
+          level: "default",
+          effort: "ultra",
+        },
+      },
+      () => undefined,
+    );
+    assert.notProperty(capturedBody, "reasoning");
+  });
+
+  it("keeps image content for DeepSeek vision models in automatic mode", function () {
     const prepared = prepareChatRequest({
       prompt: "Describe this image.",
       images: ["data:image/png;base64,AAAA"],
-      model: "deepseek-v4-pro",
+      model: "deepseek-v4-flash-vision-exp",
       apiBase: "https://api.deepseek.com/v1",
     });
 
     const lastMessage = prepared.messages[prepared.messages.length - 1];
     assert.equal(lastMessage.role, "user");
-    assert.isString(lastMessage.content);
-    assert.include(String(lastMessage.content), "Describe this image.");
-    assert.include(String(lastMessage.content), "image input");
-    assert.notInclude(JSON.stringify(prepared.messages), "image_url");
+    assert.isArray(lastMessage.content);
+    assert.include(JSON.stringify(prepared.messages), "image_url");
+  });
+
+  it("strips image content from known DeepSeek text models in automatic mode", function () {
+    for (const model of ["deepseek-chat", "deepseek-reasoner"]) {
+      const prepared = prepareChatRequest({
+        prompt: "Describe this image.",
+        images: ["data:image/png;base64,AAAA"],
+        model,
+        apiBase: "https://api.deepseek.com/v1",
+      });
+
+      const lastMessage = prepared.messages[prepared.messages.length - 1];
+      assert.equal(lastMessage.role, "user");
+      assert.isString(lastMessage.content, model);
+      assert.notInclude(JSON.stringify(prepared.messages), "image_url", model);
+    }
   });
 
   it("strips image content from explicit text-only chat requests", function () {
@@ -282,9 +461,8 @@ describe("llmClient prepareChatRequest", function () {
     const prepared = prepareChatRequest({
       prompt: "Describe this image.",
       images: ["data:image/png;base64,AAAA"],
-      model: "gpt-5.5",
-      apiBase: "https://api.openai.com/v1/responses",
-      providerProtocol: "responses_api",
+      model: "deepseek-vl2",
+      apiBase: "https://api.deepseek.com/v1",
       inputMode: "text_only",
     });
 
@@ -300,8 +478,8 @@ describe("llmClient prepareChatRequest", function () {
     const prepared = prepareChatRequest({
       prompt: "Describe this image.",
       images: ["data:image/png;base64,AAAA"],
-      model: "local-text-only",
-      apiBase: "https://api.example.test/v1",
+      model: "deepseek-chat",
+      apiBase: "https://api.deepseek.com/v1",
       inputMode: "vision_allowed",
     });
 
@@ -757,6 +935,11 @@ describe("llmClient prepareChatRequest", function () {
       );
       assert.fail("expected max_tokens validation to fail locally");
     } catch (error) {
+      assert.instanceOf(error, ReasoningBudgetError);
+      assert.equal(
+        (error as ReasoningBudgetError).code,
+        "reasoning_budget_too_small",
+      );
       assert.include(
         (error as Error).message,
         "extended thinking requires max_tokens of at least 2048",

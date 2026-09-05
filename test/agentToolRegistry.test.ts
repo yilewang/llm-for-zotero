@@ -1,9 +1,17 @@
 import { assert } from "chai";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type { AgentToolContext } from "../src/agent/types";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 describe("AgentToolRegistry", function () {
+  const originalZotero = globalThis.Zotero;
+
+  afterEach(function () {
+    globalThis.Zotero = originalZotero;
+  });
+
   const baseContext: AgentToolContext = {
     request: {
       conversationKey: 1,
@@ -50,7 +58,10 @@ describe("AgentToolRegistry", function () {
         validateCalls += 1;
         return { ok: false, error: "mode must be 'read' or 'write'" };
       },
-      execute: async () => ({ ok: true }),
+      execute: async () => ({
+        content: { ok: true },
+        effect: "applied",
+      }),
     });
 
     const result = await registry.prepareExecution(
@@ -152,7 +163,10 @@ describe("AgentToolRegistry", function () {
           },
         };
       },
-      execute: async (input) => ({ applied: input.operations.length }),
+      execute: async (input) => ({
+        content: { applied: input.operations.length },
+        effect: "applied",
+      }),
     });
 
     const result = await registry.prepareExecution(
@@ -174,7 +188,7 @@ describe("AgentToolRegistry", function () {
     assert.equal(result.action.toolName, "mutate_library");
     assert.deepEqual(
       result.action.fields.map((field) => field.id),
-      ["selectedOperations", "operationsJson"],
+      ["selectedOperations", "operationsJson", "journalRecoveryWarning"],
     );
     assert.equal(result.deny().result.ok, false);
     const approved = await result.execute({
@@ -188,6 +202,11 @@ describe("AgentToolRegistry", function () {
   });
 
   it("lets tools opt into explicit inherited approval", async function () {
+    globalThis.Zotero = {
+      DB: new ChangeJournalTestDb(),
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
@@ -215,7 +234,10 @@ describe("AgentToolRegistry", function () {
         cancelLabel: "Cancel",
         fields: [],
       }),
-      execute: async () => ({ applied: 1 }),
+      execute: async () => ({
+        content: { applied: 1 },
+        effect: "applied",
+      }),
     });
 
     const result = await registry.prepareExecution(
@@ -240,6 +262,59 @@ describe("AgentToolRegistry", function () {
     assert.deepEqual(result.execution.result.content, { applied: 1 });
   });
 
+  it("does not inherit consent for an unjournalled fallback", async function () {
+    globalThis.Zotero = { debug: () => undefined } as never;
+    const registry = new AgentToolRegistry();
+    let executions = 0;
+    registry.register({
+      spec: {
+        name: "mutate_library",
+        description: "apply changes",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: true,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      planMutation: () => ({ effect: "write", reversibility: "full" }),
+      acceptInheritedApproval: () => true,
+      createPendingAction: () => ({
+        toolName: "mutate_library",
+        title: "Apply changes?",
+        confirmLabel: "Approve",
+        cancelLabel: "Cancel",
+        fields: [],
+      }),
+      execute: async () => {
+        executions += 1;
+        return { content: { applied: 1 }, effect: "applied" };
+      },
+    });
+
+    const result = await registry.prepareExecution(
+      { id: "call-unavailable", name: "mutate_library", arguments: {} },
+      baseContext,
+      {
+        inheritedApproval: {
+          sourceToolName: "search_literature_online",
+          sourceActionId: "import",
+          sourceMode: "review",
+        },
+      },
+    );
+
+    assert.equal(result.kind, "confirmation");
+    assert.equal(executions, 0);
+    if (result.kind !== "confirmation") return;
+    assert.include(result.action.description, "Recovery warning");
+    assert.include(
+      result.action.fields.map((field) => field.id),
+      "journalRecoveryWarning",
+    );
+    const confirmed = await result.execute();
+    assert.isTrue(confirmed.result.ok);
+    assert.equal(executions, 1);
+  });
+
   it("filters request-scoped tools when they are unavailable", async function () {
     const registry = new AgentToolRegistry();
     registry.register({
@@ -259,7 +334,10 @@ describe("AgentToolRegistry", function () {
         cancelLabel: "Cancel",
         fields: [],
       }),
-      execute: async () => ({ status: "updated" }),
+      execute: async () => ({
+        content: { status: "updated" },
+        effect: "applied",
+      }),
     });
 
     assert.deepEqual(registry.listToolsForRequest(baseContext.request), []);
@@ -291,6 +369,221 @@ describe("AgentToolRegistry", function () {
     assert.include(
       String((result.execution.result.content as { error?: string }).error),
       "not available",
+    );
+  });
+
+  it("does not acquire the conversation write lock for reads or read-only write modes", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "read_tool",
+        description: "read",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => ({ value: "read" }),
+    });
+    registry.register({
+      spec: {
+        name: "write_tool_list",
+        description: "list write-tool state",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      planMutation: () => ({ effect: "none", reversibility: "full" }),
+      execute: async () => ({
+        content: { value: "listed" },
+        effect: "none",
+      }),
+    });
+    let lockCalls = 0;
+    const options = {
+      executeWithLock: async <T>(task: () => Promise<T>) => {
+        lockCalls += 1;
+        return task();
+      },
+    };
+
+    const read = await registry.prepareExecution(
+      { id: "read", name: "read_tool", arguments: {} },
+      baseContext,
+      options,
+    );
+    const list = await registry.prepareExecution(
+      { id: "list", name: "write_tool_list", arguments: {} },
+      baseContext,
+      options,
+    );
+
+    assert.equal(lockCalls, 0);
+    assert.equal(read.kind, "result");
+    assert.equal(list.kind, "result");
+    if (read.kind === "result") {
+      assert.isUndefined(read.execution.result.effect);
+    }
+    if (list.kind === "result") {
+      assert.equal(list.execution.result.effect, "none");
+    }
+  });
+
+  it("acquires the conversation write lock for a planned write", async function () {
+    globalThis.Zotero = {
+      DB: new ChangeJournalTestDb(),
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "write_tool",
+        description: "write",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      planMutation: () => ({ effect: "write", reversibility: "full" }),
+      execute: async () => ({
+        content: { value: "written" },
+        effect: "applied",
+      }),
+    });
+    let lockCalls = 0;
+
+    const prepared = await registry.prepareExecution(
+      { id: "write", name: "write_tool", arguments: {} },
+      baseContext,
+      {
+        executeWithLock: async (task) => {
+          lockCalls += 1;
+          return task();
+        },
+      },
+    );
+
+    assert.equal(prepared.kind, "result");
+    assert.equal(lockCalls, 1);
+    if (prepared.kind === "result") {
+      assert.equal(prepared.execution.result.effect, "applied");
+    }
+  });
+
+  it("discards a result and its artifacts when the lifecycle changes during execution", async function () {
+    const registry = new AgentToolRegistry();
+    let allowed = true;
+    registry.register({
+      spec: {
+        name: "slow_read",
+        description: "read",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => {
+        allowed = false;
+        return {
+          content: { privateResult: true },
+          artifacts: [{ type: "image", dataUrl: "data:image/png;base64,AA==" }],
+        };
+      },
+    });
+
+    const prepared = await registry.prepareExecution(
+      { id: "slow", name: "slow_read", arguments: {} },
+      baseContext,
+      { isExecutionAllowed: () => allowed },
+    );
+
+    assert.equal(prepared.kind, "result");
+    if (prepared.kind !== "result") return;
+    assert.isFalse(prepared.execution.result.ok);
+    assert.isUndefined(prepared.execution.result.artifacts);
+    assert.notInclude(
+      JSON.stringify(prepared.execution.result.content),
+      "privateResult",
+    );
+    assert.include(
+      JSON.stringify(prepared.execution.result.content),
+      "lifecycle changed",
+    );
+  });
+
+  it("rejects a dynamically registered write with no explicit effect", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "unknown_write",
+        description: "write",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      planMutation: () => ({ effect: "none", reversibility: "full" }),
+      execute: async () => ({ status: "finished" }),
+    });
+
+    const prepared = await registry.prepareExecution(
+      { id: "unknown", name: "unknown_write", arguments: {} },
+      baseContext,
+    );
+
+    assert.equal(prepared.kind, "result");
+    if (prepared.kind !== "result") return;
+    assert.isFalse(prepared.execution.result.ok);
+    assert.include(
+      JSON.stringify(prepared.execution.result.content),
+      "outcome is unknown",
+    );
+  });
+
+  it("fails closed when Agent mode has no configured contract verifier", async function () {
+    const registry = new AgentToolRegistry();
+    let executed = false;
+    registry.register({
+      spec: {
+        name: "unverified_write",
+        description: "write",
+        inputSchema: { type: "object" },
+        mutability: "write",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => {
+        executed = true;
+        return { content: { ok: true }, effect: "applied" as const };
+      },
+    });
+    const prepared = await registry.prepareExecution(
+      { id: "unverified", name: "unverified_write", arguments: {} },
+      {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          actionContract: {
+            version: 2,
+            id: "contract:no-write",
+            writeDisposition: "none",
+            interpretationSource: "classifier",
+            obligations: [],
+          },
+        },
+      },
+      { callerKind: "model" },
+    );
+
+    assert.equal(prepared.kind, "result");
+    if (prepared.kind !== "result") return;
+    assert.isFalse(prepared.execution.result.ok);
+    assert.isFalse(executed);
+    assert.include(
+      JSON.stringify(prepared.execution.result.content),
+      "no configured Action Contract verifier",
     );
   });
 });

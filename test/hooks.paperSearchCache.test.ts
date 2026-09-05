@@ -85,7 +85,7 @@ describe("hooks paper search cache invalidation", function () {
     ).ztoolkit = originalToolkit;
   });
 
-  it("clears cached library search results on relevant notifier events", async function () {
+  it("patches cached library search results on relevant notifier events", async function () {
     await searchPaperCandidates(1, "notify cache");
     await searchPaperCandidates(1, "notify author");
     assert.equal(getAllCount, 1);
@@ -93,6 +93,10 @@ describe("hooks paper search cache invalidation", function () {
     await hooks.onNotify("modify", "item", [1], {});
     flushPaperSearchInvalidationForTests();
     await searchPaperCandidates(1, "notify");
-    assert.equal(getAllCount, 2);
+    assert.equal(
+      getAllCount,
+      1,
+      "an item notifier should patch the canonical index, not rescan the library",
+    );
   });
 });

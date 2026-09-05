@@ -4,10 +4,10 @@
  * Supports two input modes:
  * - Single item: `{ itemId?, metadata: {...} }` — used by the LLM directly
  * - Batch: `{ operations: [{ itemId, metadata, paperContext? }, ...] }` — used
- *   internally by the syncMetadata action and review cards
+ *   internally by review cards
  */
 import type { PaperContextRef } from "../../../shared/types";
-import type { AgentToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
   buildPagedReviewActionConfig,
   buildPageSizeSelectField,
@@ -33,6 +33,7 @@ import {
   executeAndRecordUndo,
   executeAndRecordUndoBatch,
   normalizeMetadataPatch,
+  planLibraryMutations,
 } from "./mutateLibraryShared";
 
 type UpdateMetadataInput = {
@@ -74,7 +75,7 @@ function normalizeOperationEntry(
 
 export function createUpdateMetadataTool(
   zoteroGateway: ZoteroGateway,
-): AgentToolDefinition<UpdateMetadataInput, unknown> {
+): AgentWriteToolDefinition<UpdateMetadataInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
@@ -328,6 +329,9 @@ export function createUpdateMetadataTool(
       // review_table is read-only; pass through unchanged
       return ok(input);
     },
+
+    planMutation: (input, context) =>
+      planLibraryMutations(mutationService, input.operations, context),
 
     async execute(input, context) {
       if (input.operations.length === 1) {

@@ -56,6 +56,10 @@ export type QuoteDisplayOverride = {
 };
 
 export interface Message {
+  /** Immutable database row identity when this message came from persistence. */
+  id?: number;
+  /** Internal lifecycle witness; never persisted as conversation content. */
+  conversationGeneration?: number;
   role: "user" | "assistant";
   text: string;
   timestamp: number;
@@ -102,6 +106,13 @@ export interface Message {
   reasoningSummary?: string;
   reasoningDetails?: string;
   reasoningOpen?: boolean;
+  /**
+   * Set when a streamed reply was cut off before completion (e.g. a mid-stream
+   * connectivity drop). The partial text stays in `text`; this drives a neutral
+   * "interrupted" footer. Session-only — the preserved text persists via the
+   * normal `text` column, but this flag is not stored across restarts.
+   */
+  interrupted?: boolean;
   webchatRunState?: "done" | "incomplete" | "error";
   webchatCompletionReason?:
     | "settled"
@@ -128,6 +139,7 @@ export type ReasoningProviderKind =
   | "qwen"
   | "grok"
   | "anthropic"
+  | "local"
   | "unsupported";
 export type ReasoningLevelSelection = "none" | LLMReasoningLevel;
 export type ReasoningOption = {
@@ -422,6 +434,10 @@ import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClien
 export type SendQuestionOptions = {
   body: Element;
   item: Zotero.Item;
+  /** Existing conversation request ownership claimed by the compose flow. */
+  requestId?: number;
+  /** Internal notification that asynchronous preparation has handed off to the provider. */
+  onProviderDispatch?: () => void;
   /** Resolved panel/source context selected by compose UI. */
   contextSource?: ResolvedContextSource | null;
   question: string;
@@ -484,6 +500,10 @@ export type SendQuestionOptions = {
 export type EditRetryOptions = {
   body: Element;
   item: Zotero.Item;
+  /** Existing conversation request ownership claimed by the compose flow. */
+  requestId?: number;
+  /** Internal notification that asynchronous preparation has handed off to the provider. */
+  onProviderDispatch?: () => void;
   /** Resolved panel/source context selected by compose UI. */
   contextSource?: ResolvedContextSource | null;
   displayQuestion: string;

@@ -2,21 +2,39 @@ import { assert } from "chai";
 import { completeMetadataAction } from "../src/agent/actions/completeMetadata";
 import type { ActionExecutionContext } from "../src/agent/actions";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type {
   AgentToolDefinition,
   AgentToolInputValidation,
 } from "../src/agent/types";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 function createStubTool<TInput extends Record<string, unknown>, TResult>(
   spec: AgentToolDefinition<TInput, TResult>["spec"],
   validate: AgentToolDefinition<TInput, TResult>["validate"],
-  execute: AgentToolDefinition<TInput, TResult>["execute"],
+  execute: (
+    input: TInput,
+    context: Parameters<AgentToolDefinition<TInput, TResult>["execute"]>[1],
+  ) => TResult | Promise<TResult>,
   extras: Partial<AgentToolDefinition<TInput, TResult>> = {},
 ): AgentToolDefinition<TInput, TResult> {
   return {
     spec,
     validate,
-    execute,
+    execute: async (input, context) => {
+      const content = await execute(input, context);
+      return spec.mutability === "write"
+        ? { content, effect: "applied" as const }
+        : content;
+    },
+    ...(spec.mutability === "write"
+      ? {
+          planMutation: async () => ({
+            effect: "write" as const,
+            reversibility: "full" as const,
+          }),
+        }
+      : {}),
     ...extras,
   };
 }
@@ -29,7 +47,6 @@ function createActionContext(
   const ctx: ActionExecutionContext = {
     registry,
     zoteroGateway: {} as never,
-    services: {} as never,
     libraryID: 1,
     confirmationMode: "native_ui",
     onProgress: (event) => {
@@ -74,6 +91,22 @@ function ok<T>(value: T): AgentToolInputValidation<T> {
 }
 
 describe("completeMetadata action", function () {
+  const originalZotero = globalThis.Zotero;
+
+  beforeEach(async function () {
+    const db = new ChangeJournalTestDb();
+    globalThis.Zotero = {
+      DB: db,
+      Prefs: { get: () => "auto" },
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+  });
+
+  afterEach(function () {
+    globalThis.Zotero = originalZotero;
+  });
+
   it("supports legacy itemId input and only fills empty fields", async function () {
     const registry = new AgentToolRegistry();
     let updateArgs: Record<string, unknown> | null = null;

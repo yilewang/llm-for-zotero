@@ -1,4 +1,4 @@
-import { isResponsesBase } from "./apiHelpers";
+import { isGeminiBase, isResponsesBase } from "./apiHelpers";
 import { WEBCHAT_TARGETS } from "../webchat/types";
 
 export type ProviderProtocol =
@@ -7,6 +7,7 @@ export type ProviderProtocol =
   | "openai_chat_compat"
   | "anthropic_messages"
   | "gemini_native"
+  | "ollama_native"
   | "web_sync"; // [webchat]
 
 export type ProviderProtocolSpec = {
@@ -74,6 +75,18 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
     label: "Gemini Native",
     helperText:
       "Use Gemini's native generateContent API with streaming tool calls and image input.",
+    streaming: true,
+    toolCalls: true,
+    multimodal: true,
+    fileInputs: false,
+    reasoning: true,
+  },
+  {
+    id: "ollama_native",
+    label: "Ollama Native",
+    helperText:
+      "Use Ollama's native /api/chat endpoint. Keeps thinking separate from the " +
+      "answer and can turn it off, which the OpenAI-compatible endpoint cannot.",
     streaming: true,
     toolCalls: true,
     multimodal: true,
@@ -156,6 +169,13 @@ export function inferLegacyProviderProtocol(params: {
   }
   if (isResponsesBase(params.apiBase || "")) {
     return "responses_api";
+  }
+  if (isGeminiBase(params.apiBase || "")) {
+    // Gemini URLs default to the native generateContent protocol unless the
+    // user pointed at the OpenAI-compatibility sub-path explicitly.
+    return getApiBasePathname(params.apiBase).includes("/openai")
+      ? "openai_chat_compat"
+      : "gemini_native";
   }
   if (isAnthropicMessagesBase(params.apiBase)) {
     return "anthropic_messages";

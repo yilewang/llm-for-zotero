@@ -520,9 +520,9 @@ describe("historyLoader", function () {
           }
           if (sql.includes("INSERT INTO llm_for_zotero_global_conversations")) {
             conversations.push({
-              conversationKey: Number(normalizedParams[1]),
-              libraryID: Number(normalizedParams[2]),
-              createdAt: Number(normalizedParams[3]),
+              conversationKey: Number(normalizedParams[2]),
+              libraryID: Number(normalizedParams[3]),
+              createdAt: Number(normalizedParams[4]),
               title: "",
             });
             return [];

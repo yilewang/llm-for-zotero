@@ -30,6 +30,8 @@ import type {
 
 type OrganizeUnfiledInput = PagedActionInput & {
   userQuery?: string;
+  /** Internal durable-batch target set. Never accepted from model input. */
+  _batchItemIds?: number[];
 };
 
 type OrganizeUnfiledOutput = {
@@ -37,6 +39,7 @@ type OrganizeUnfiledOutput = {
   moved: number;
   remaining: number;
   processed?: number;
+  skippedUnmatched?: number;
   stopped?: boolean;
 };
 
@@ -56,6 +59,12 @@ type Collection = {
 };
 
 const LLM_BATCH_SIZE = 12;
+/**
+ * The largest utility budget in the plugin: 1200 JSON tokens for 12 items,
+ * plus the reasoning reserve. Sits above auto-tag's 30s for the extra items
+ * and the longer collection list in the prompt.
+ */
+const LLM_BATCH_TIMEOUT_MS = 45_000;
 
 /**
  * Finds unfiled library items and pages through native
@@ -97,6 +106,7 @@ export const organizeUnfiledAction: AgentAction<
     ctx: ActionExecutionContext,
   ): Promise<ActionResult<OrganizeUnfiledOutput>> {
     let options = getPagedActionOptions(input);
+    const initialStartOffset = options.startOffset;
     const windowEndOffset =
       options.limit !== undefined
         ? options.startOffset + options.limit
@@ -113,8 +123,26 @@ export const organizeUnfiledAction: AgentAction<
     let pages = getPagedActionPages<UnfiledItem>([], options);
     const reloadUnfiledPages = async (): Promise<void> => {
       invalidateLibraryCaches(ctx);
-      unfiledItems = await loadFreshUnfiledItems(ctx);
+      unfiledItems = Array.isArray(input._batchItemIds)
+        ? loadUnfiledItemsByIds(input._batchItemIds, ctx)
+        : await loadFreshUnfiledItems(ctx);
       pages = getPagedActionPages(unfiledItems, options);
+    };
+    const targetWindowCount = (): number => {
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, unfiledItems.length)
+          : unfiledItems.length;
+      return Math.max(0, end - Math.min(initialStartOffset, end));
+    };
+    const remainingTargetIds = (nextOffset: number): number[] => {
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, unfiledItems.length)
+          : unfiledItems.length;
+      return unfiledItems
+        .slice(Math.max(initialStartOffset, nextOffset), end)
+        .map((item) => item.itemId);
     };
     try {
       await reloadUnfiledPages();
@@ -127,6 +155,16 @@ export const organizeUnfiledAction: AgentAction<
             : "Failed to load unfiled items",
       };
     }
+
+    await ctx.checkpoint?.({
+      cursor: 0,
+      appliedCount: 0,
+      totalCount: targetWindowCount(),
+      plan: {
+        remainingItemIds: remainingTargetIds(initialStartOffset),
+        pageSize: options.pageSize,
+      },
+    });
 
     ctx.onProgress({
       type: "step_done",
@@ -147,11 +185,17 @@ export const organizeUnfiledAction: AgentAction<
 
     let moved = 0;
     let processed = 0;
+    let skippedUnmatched = 0;
     let stopped = false;
     let confirmed = false;
 
     let pageCursor = 0;
     while (pageCursor < pages.length) {
+      // See autoTag: without this the run kept prompting after Stop.
+      if (ctx.signal?.aborted) {
+        stopped = true;
+        break;
+      }
       const page = pages[pageCursor];
       invalidateLibraryCaches(ctx);
       const collections = await loadFreshCollections(ctx);
@@ -196,15 +240,33 @@ export const organizeUnfiledAction: AgentAction<
         total: page.totalPages,
       });
 
+      // Under native_ui an item with no confident suggestion becomes a blank
+      // row the user can fill in. Under auto_approve there is nobody to fill
+      // it in, so it is dropped — but it must be *reported*, not silently
+      // vanish from a run the user is not watching.
       const includeManualRows = ctx.confirmationMode !== "auto_approve";
+      const unmatched: number[] = [];
       const assignments = page.items.flatMap((item) => {
         const suggestedId = suggestionsByItemId.get(item.itemId);
-        return suggestedId
-          ? [{ itemId: item.itemId, targetCollectionId: suggestedId }]
-          : includeManualRows
-            ? [{ itemId: item.itemId }]
-            : [];
+        if (suggestedId) {
+          return [{ itemId: item.itemId, targetCollectionId: suggestedId }];
+        }
+        if (includeManualRows) {
+          return [{ itemId: item.itemId }];
+        }
+        unmatched.push(item.itemId);
+        return [];
       });
+      if (unmatched.length) {
+        skippedUnmatched += unmatched.length;
+        ctx.onProgress({
+          type: "step_done",
+          step: `${pageLabel}: Assigning items to collections`,
+          summary: `Skipped ${unmatched.length} item${
+            unmatched.length === 1 ? "" : "s"
+          } with no confident collection match (auto-approve leaves nothing to review)`,
+        });
+      }
 
       if (!assignments.length) {
         processed += page.items.length;
@@ -212,6 +274,17 @@ export const organizeUnfiledAction: AgentAction<
           type: "step_done",
           step: `${pageLabel}: Assigning items to collections`,
           summary: "No confident collection assignments for this page",
+        });
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: moved,
+          totalCount: targetWindowCount(),
+          plan: {
+            remainingItemIds: remainingTargetIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+          },
         });
         pageCursor += 1;
         continue;
@@ -295,6 +368,17 @@ export const organizeUnfiledAction: AgentAction<
           step: `${pageLabel}: Assigning items to collections`,
           summary: `Moved ${movedCount} item${movedCount === 1 ? "" : "s"}`,
         });
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: moved,
+          totalCount: targetWindowCount(),
+          plan: {
+            remainingItemIds: remainingTargetIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+          },
+        });
         if (confirmationActionId === "confirm") {
           if (pageCursor >= pages.length - 1) {
             confirmed = true;
@@ -343,6 +427,9 @@ export const organizeUnfiledAction: AgentAction<
         moved,
         remaining: Math.max(0, unfiledItems.length - moved),
         processed,
+        // Surfaced so an unattended auto-approve run reports what it left
+        // behind rather than appearing to have organised everything.
+        skippedUnmatched: skippedUnmatched || undefined,
         stopped: stopped || undefined,
       },
     };
@@ -384,6 +471,15 @@ async function loadFreshUnfiledItems(
     ? queryContent.results
     : [];
   return normalizeUnfiledItems(unfiledRaw);
+}
+
+function loadUnfiledItemsByIds(
+  itemIds: number[],
+  ctx: ActionExecutionContext,
+): UnfiledItem[] {
+  return ctx.zoteroGateway
+    .getBibliographicItemTargetsByItemIds(itemIds)
+    .map((item) => normalizeUnfiledTarget(item, ctx));
 }
 
 async function loadFreshCollections(
@@ -561,8 +657,21 @@ async function suggestCollectionsForItems(
   ctx: ActionExecutionContext,
 ): Promise<Array<{ itemId: number; collectionId: number }>> {
   if (!ctx.llm || !collections.length) return [];
-  return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
-    suggestCollectionsBatch(batch, collections, userQuery, ctx),
+  return collectActionLlmBatchResults(
+    items,
+    LLM_BATCH_SIZE,
+    (batch) => suggestCollectionsBatch(batch, collections, userQuery, ctx),
+    {
+      signal: ctx.signal,
+      onBatchError: (error) =>
+        ctx.onProgress({
+          type: "step_done",
+          step: "Matching items to collections",
+          summary: `A batch of ${LLM_BATCH_SIZE} fell back to deterministic matching (${
+            error instanceof Error ? error.message : "error"
+          })`,
+        }),
+    },
   );
 }
 
@@ -578,6 +687,7 @@ async function suggestCollectionsBatch(
     ctx,
     prompt,
     maxTokens: 1200,
+    timeoutMs: LLM_BATCH_TIMEOUT_MS,
   });
   return parseCollectionResponse(raw, batch, collections);
 }

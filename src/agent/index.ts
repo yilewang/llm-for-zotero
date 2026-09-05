@@ -12,11 +12,17 @@ import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
+import { createLibraryBatchTool } from "./tools/write/libraryBatch";
+import {
+  initAgentBatchJobStore,
+  sweepInterruptedBatchJobs,
+} from "./store/batchJobStore";
+import { initAgentChangeJournal } from "./store/changeJournal";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
-  AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
   AgentToolDefinition,
 } from "./types";
 import {
@@ -29,6 +35,8 @@ import {
   resetClaudeBridgeRuntime,
 } from "../claudeCode/runtime";
 import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
+import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
+import { setLibraryOverviewGateway } from "./context/libraryOverview";
 
 let runtime: AgentRuntime | null = null;
 let runtimeInitTask: Promise<AgentRuntime> | null = null;
@@ -85,8 +93,26 @@ async function createAgentSubsystemRuntime(
   const nextRuntime = new AgentRuntime({
     registry: toolRegistry,
     adapterFactory: (request) => createAgentModelAdapter(request),
+    paperContextResolver: (selector) =>
+      zoteroGateway.resolvePaperContextTarget(selector),
   });
   const actionRegistry = createBuiltInActionRegistry();
+
+  // Registered here rather than inside createBuiltInToolRegistry: the batch
+  // tool needs both registries, and the action registry is built after the
+  // tool one. Wiring it this way keeps the two from depending on each other.
+  toolRegistry.register(
+    createLibraryBatchTool({
+      actionRegistry,
+      toolRegistry,
+      zoteroGateway,
+    }),
+  );
+  await initAgentBatchJobStore();
+  // Claim abandoned rows before the runtime is published. A deferred sweep
+  // can race with a newly started job and misclassify live work as failed.
+  await sweepInterruptedBatchJobs({ now: Date.now() });
+  await initAgentChangeJournal();
 
   assertAgentInitCurrent(generation);
   registerMcpServer({
@@ -96,6 +122,9 @@ async function createAgentSubsystemRuntime(
 
   assertAgentInitCurrent(generation);
   _zoteroGateway = zoteroGateway;
+  // The prompt layer cannot import this module without creating a cycle,
+  // so the gateway is pushed to it instead.
+  setLibraryOverviewGateway(zoteroGateway);
   _toolRegistry = toolRegistry;
   runtime = nextRuntime;
   _actionRegistry = actionRegistry;
@@ -130,6 +159,7 @@ export function shutdownAgentSubsystem(): void {
   resetClaudeBridgeRuntime();
   runtime = null;
   _zoteroGateway = null;
+  setLibraryOverviewGateway(null);
 }
 
 export function getCoreAgentRuntime(): AgentRuntime {
@@ -165,13 +195,25 @@ export function getAgentApi() {
   return {
     // ── Core turn API ──────────────────────────────────────────────────────
     runTurn: (
-      request: AgentRuntimeRequest,
+      request: AgentRuntimeRequestInput,
       onEvent?: (event: AgentEvent) => void | Promise<void>,
-    ) => getAgentRuntime().runTurn({ request, onEvent }),
+    ) =>
+      getAgentRuntime().runTurn({
+        request:
+          request.conversationGeneration === undefined
+            ? {
+                ...request,
+                conversationGeneration: getConversationWriteGeneration(
+                  request.conversationKey,
+                ),
+              }
+            : request,
+        onEvent,
+      }),
     listTools: () => getAgentRuntime().listTools(),
     getToolDefinition: (name: string) =>
       getAgentRuntime().getToolDefinition(name),
-    getCapabilities: (request: AgentRuntimeRequest) =>
+    getCapabilities: (request: AgentRuntimeRequestInput) =>
       getAgentRuntime().getCapabilities(request),
     getRunTrace: (runId: string) => getAgentRunTrace(runId),
     resolveConfirmation: (
@@ -282,6 +324,7 @@ export function getAgentApi() {
       opts: {
         libraryID?: number;
         requestContext?: import("./actions").ActionRequestContext;
+        conversationKey?: number;
         confirmationMode?: import("./actions").ActionConfirmationMode;
         onProgress?: (event: import("./actions").ActionProgressEvent) => void;
         requestConfirmation?: (
@@ -290,6 +333,8 @@ export function getAgentApi() {
         ) => Promise<import("./types").AgentConfirmationResolution>;
         /** LLM credentials for actions that propose per-item suggestions. */
         llm?: import("./actions").ActionLLMConfig;
+        /** Cancels a long batched run part-way through. */
+        signal?: AbortSignal;
       } = {},
     ) => {
       if (!_actionRegistry || !_toolRegistry)
@@ -302,8 +347,10 @@ export function getAgentApi() {
           .Libraries.userLibraryID;
       const ctx: import("./actions").ActionExecutionContext = {
         registry: _toolRegistry,
+        // Without this, every change an action makes is journalled under
+        // conversation 0 and neither undo path can find it.
+        conversationKey: opts.conversationKey,
         zoteroGateway: _zoteroGateway,
-        services: {} as import("./actions").ActionServices,
         libraryID,
         confirmationMode: opts.confirmationMode ?? "native_ui",
         onProgress: opts.onProgress ?? (() => {}),
@@ -311,6 +358,7 @@ export function getAgentApi() {
           opts.requestConfirmation ?? (async () => ({ approved: true })),
         llm: opts.llm,
         requestContext: opts.requestContext,
+        signal: opts.signal,
       };
       return _actionRegistry.run(name, input, ctx);
     },

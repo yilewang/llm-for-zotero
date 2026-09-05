@@ -492,7 +492,7 @@ describe("pdfContext multi-context helpers", function () {
     assert.include(text, "Title: Paper B");
     assert.include(text, "Citation key: Smith2023");
     assert.include(text, "Source label: (Smith et al., 2023)");
-    assert.include(text, "Answer format when quoting this paper:");
+    assert.include(text, "Citation data for this paper:");
     assert.include(text, "Paper Text:");
   });
 
@@ -590,10 +590,7 @@ describe("pdfContext multi-context helpers", function () {
         },
       ],
     });
-    assert.include(
-      rendered,
-      "Paper-grounded citation format for the final answer:",
-    );
+    assert.include(rendered, "Paper citation data:");
     assert.include(rendered, "Source label: (Zheng et al., 2026)");
     assert.include(
       rendered,
@@ -907,10 +904,7 @@ describe("pdfContext multi-context helpers", function () {
       pack.quoteCitations[0].citationLabel,
       "(translation.md, attachment under Rivera, 2024)",
     );
-    assert.include(
-      pack.contextText,
-      "Source-grounded citation format for the final answer:",
-    );
+    assert.include(pack.contextText, "Selected-source citation data:");
     assert.include(
       pack.contextText,
       "Source label: (translation.md, attachment under Rivera, 2024)",

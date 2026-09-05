@@ -246,7 +246,17 @@ describe("workflow: standalone document chat", function () {
     );
     const paperConversationKey = initial.conversationKey;
     const paperMarker = "workflow remembered paper chat";
-    await api.seedStandaloneUserMessage(paperMarker);
+    const seededPaper = await api.seedStandaloneUserMessage(paperMarker);
+    assert.equal(
+      seededPaper.conversationKey,
+      paperConversationKey,
+      diagnosticsMessage(seededPaper),
+    );
+    assert.include(
+      seededPaper.messageText || "",
+      paperMarker,
+      diagnosticsMessage(seededPaper),
+    );
 
     const openMode = await api.clickStandaloneTab("open");
     assert.equal(openMode.activeTab, "open", diagnosticsMessage(openMode));
@@ -257,7 +267,17 @@ describe("workflow: standalone document chat", function () {
       diagnosticsMessage(openMode),
     );
     const libraryMarker = "workflow remembered library chat";
-    await api.seedStandaloneUserMessage(libraryMarker);
+    const seededLibrary = await api.seedStandaloneUserMessage(libraryMarker);
+    assert.equal(
+      seededLibrary.conversationKey,
+      libraryConversationKey,
+      diagnosticsMessage(seededLibrary),
+    );
+    assert.include(
+      seededLibrary.messageText || "",
+      libraryMarker,
+      diagnosticsMessage(seededLibrary),
+    );
 
     const paperMode = await api.clickStandaloneTab("paper");
     assert.equal(paperMode.activeTab, "paper", diagnosticsMessage(paperMode));

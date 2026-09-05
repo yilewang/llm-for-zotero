@@ -4,6 +4,7 @@ import {
   type ExhaustiveBatchAnalyzer,
 } from "../shared/exhaustiveDocumentReader";
 import { callLLM, DEFAULT_CODEX_API_BASE } from "../utils/llmClient";
+import type { ModelProfileOverride } from "../modelCapabilities";
 
 export type CodexAppServerExhaustiveReaderSession = {
   analyzeBatch: ExhaustiveBatchAnalyzer;
@@ -30,6 +31,7 @@ function requireModel(model: string): string {
 export function createCodexAppServerExhaustiveReaderSession(params: {
   model: string;
   reasoning?: ReasoningConfig;
+  profileOverride?: ModelProfileOverride;
 }): CodexAppServerExhaustiveReaderSession {
   const model = requireModel(params.model);
   let disposed = false;
@@ -55,6 +57,7 @@ export function createCodexAppServerExhaustiveReaderSession(params: {
         apiBase: DEFAULT_CODEX_API_BASE,
         authMode: "codex_auth",
         providerProtocol: "codex_responses",
+        profileOverride: params.profileOverride,
       });
     },
   );

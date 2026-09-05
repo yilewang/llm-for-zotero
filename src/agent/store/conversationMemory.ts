@@ -1,3 +1,13 @@
+import {
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyRetiredInMemory,
+} from "../../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "../../shared/conversationWriteFence";
+
 /**
  * Per-conversation agent turn memory.
  *
@@ -52,6 +62,7 @@ async function ensureConversationMemoryStore(): Promise<boolean> {
           created_at INTEGER NOT NULL
         )`,
       );
+      await installConversationKeyLedgerAgentTriggers();
       return true;
     } catch (error) {
       ztoolkit.log(
@@ -165,13 +176,18 @@ export async function recordAgentTurn(
 ): Promise<void> {
   const key = normalizeConversationKey(conversationKey);
   if (!key) return;
+  if (isConversationKeyRetiredInMemory(key)) return;
   const entry = clipTurnMemory(question, toolsUsed, finalAnswer);
   const existing = store.get(key) ?? [];
-  existing.push(entry);
-  store.set(key, existing.slice(-MAX_MEMORY_TURNS));
 
   const dbReady = await ensureConversationMemoryStore();
   const db = getDb();
+  if (isConversationKeyRetiredInMemory(key)) {
+    store.delete(key);
+    return;
+  }
+  existing.push(entry);
+  store.set(key, existing.slice(-MAX_MEMORY_TURNS));
   if (!dbReady || !db) return;
   try {
     await db.queryAsync(
@@ -199,6 +215,7 @@ export async function recordAgentTurn(
       [key, key, MAX_MEMORY_TURNS],
     );
   } catch (error) {
+    if (isConversationKeyRetiredInMemory(key)) store.delete(key);
     ztoolkit.log("LLM Agent: Failed to persist conversation memory", error);
   }
 }
@@ -214,7 +231,15 @@ export async function buildAgentMemoryBlock(
   if (!key) return "";
   let turns = store.get(key);
   if (!turns?.length) {
+    const expectedGeneration = getConversationWriteGeneration(key);
     turns = await loadConversationMemory(key);
+    if (
+      isConversationKeyRetiredInMemory(key) ||
+      areConversationWritesFrozen(key) ||
+      !isConversationWriteGenerationCurrent(key, expectedGeneration)
+    ) {
+      return "";
+    }
     if (turns.length) {
       store.set(key, turns);
     }

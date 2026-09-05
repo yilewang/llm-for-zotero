@@ -20,7 +20,6 @@ type WebChatHistoryControllerDeps = {
   ) => void;
   refreshChatPreservingScroll: () => void;
   isWebChatMode: () => boolean;
-  markWebChatPdfUploadStateUnknownForCurrentConversation: () => void;
   clearNextWebChatNewChatIntent: () => void;
   setSelectedReasoningLevel: (itemId: number, level: "high" | "none") => void;
   setSelectedReasoningProvider: (
@@ -180,7 +179,6 @@ export function createWebChatHistoryController(
 
             const { loadChatSession } =
               await import("../../../../webchat/client");
-            deps.markWebChatPdfUploadStateUnknownForCurrentConversation();
             deps.clearNextWebChatNewChatIntent();
             const result = await loadChatSession(host, session.id);
             const messages: Message[] = [];

@@ -13,105 +13,87 @@ import {
   buildGenericSourceQuoteCitationGuidance,
   buildPaperQuoteCitationGuidance,
 } from "../src/modules/contextPanel/paperAttribution";
+import {
+  AGENT_ACTION_CONTRACT,
+  PAPER_CITATION_CONTRACT,
+  CORE_RESEARCH_CONTRACT,
+  RUNTIME_CAPABILITY_CONTEXT,
+} from "../src/shared/instructionContracts";
 import { BALANCED_EVIDENCE_GUIDANCE } from "../src/shared/quoteGuidance";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/utils/llmDefaults";
-import type { AgentRuntimeRequest } from "../src/agent/types";
+import type {
+  AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
+} from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 const BALANCED_EVIDENCE_PHRASES = [
   "important paper-specific claims checkable",
   "not to decorate every paragraph",
-  "repetitive citations or low-information quotes",
-  "not use them for publication metadata, DOI links, journal names, or source labels alone",
+  "quote or anchor 1-3 high-signal snippets",
+  "After a direct quote, do not merely paraphrase it",
+  "source labels on their own line belong only after direct blockquotes",
   "Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence",
 ];
 
-const EVIDENCE_TO_EXPLANATION_PHRASES = [
-  "Use retrieved paper text as evidence for reasoning, not as material to rewrite",
-  "quote or anchor 1-3 high-signal snippets",
-  "After a direct quote, do not merely paraphrase it",
-  "A useful quote should do real work",
-  "Never use quotes as decoration or as a substitute for reasoning",
-];
-
-const SOURCE_LABEL_PLACEMENT_PHRASES = [
-  "Do not append a standalone source label or citation-only final line",
-  "source labels on their own line belong only after direct blockquotes",
-];
-
-const STRICT_BLOCKQUOTE_SOURCE_PHRASES = [
-  "`>` Markdown blockquotes are reserved only for direct original source text",
-  "Verified quote anchors are available only for direct source quotes",
-  "For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks",
-];
-
 const DIRECT_QUOTE_SAFETY_PHRASES = [
-  "Direct quote text must be copied verbatim in the original source language",
-  "Copy the Source label string exactly",
+  "copied verbatim in the original source language",
+  "put the sourceLabel on the next non-empty line",
   "Do not invent author/year/page/section labels",
   "[[source=...]]",
-  "section=...",
   "chunk=...",
 ];
 
-function assertBalancedEvidenceGuidance(text: string): void {
-  const normalized = text.replace(/\s+/g, " ");
-  for (const phrase of BALANCED_EVIDENCE_PHRASES) {
-    assert.include(normalized, phrase);
-  }
-  assertEvidenceToExplanationGuidance(text);
-  assertSourceLabelPlacementGuidance(text);
-  assertStrictBlockquoteSourceGuidance(text);
+function countOccurrences(text: string, needle: string): number {
+  if (!needle) return 0;
+  return text.split(needle).length - 1;
 }
 
-function assertEvidenceToExplanationGuidance(text: string): void {
-  const normalized = text.replace(/\s+/g, " ");
-  for (const phrase of EVIDENCE_TO_EXPLANATION_PHRASES) {
-    assert.include(normalized, phrase);
+function fingerprintText(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function assertSourceLabelPlacementGuidance(text: string): void {
-  const normalized = text.replace(/\s+/g, " ");
-  for (const phrase of SOURCE_LABEL_PLACEMENT_PHRASES) {
-    assert.include(normalized, phrase);
-  }
-}
-
-function assertStrictBlockquoteSourceGuidance(text: string): void {
-  const normalized = text.replace(/\s+/g, " ");
-  for (const phrase of STRICT_BLOCKQUOTE_SOURCE_PHRASES) {
-    assert.include(normalized, phrase);
+function assertCanonicalCitationContract(text: string): void {
+  assert.equal(countOccurrences(text, PAPER_CITATION_CONTRACT), 1);
+  for (const phrase of [
+    ...BALANCED_EVIDENCE_PHRASES,
+    ...DIRECT_QUOTE_SAFETY_PHRASES,
+  ]) {
+    assert.include(text.replace(/\s+/g, " "), phrase);
   }
 }
 
-function assertDirectQuoteSafety(text: string): void {
-  const normalized = text.replace(/\s+/g, " ");
-  for (const phrase of DIRECT_QUOTE_SAFETY_PHRASES) {
-    assert.include(normalized, phrase);
-  }
-}
-
-function paper(): PaperContextRef {
+function paper(itemId = 11): PaperContextRef {
   return {
-    itemId: 11,
-    contextItemId: 12,
-    title: "Prompt Paper",
+    itemId,
+    contextItemId: itemId + 1,
+    title: `Prompt Paper ${itemId}`,
     firstCreator: "Smith",
     year: "2024",
   };
 }
 
-function request(): AgentRuntimeRequest {
+function request(
+  overrides: Partial<AgentRuntimeRequestInput> = {},
+): AgentRuntimeRequest {
   const paperContext = paper();
-  return {
+  return resolvedAgentRequest({
     conversationKey: 909,
     mode: "agent",
     userText: "Explain the method.",
     activeItemId: paperContext.itemId,
     libraryID: 1,
+    conversationKind: "paper",
     selectedPaperContexts: [paperContext],
-  };
+    fullTextPaperContexts: [paperContext, paper(21)],
+    ...overrides,
+  });
 }
 
 function readSkill(relativePath: string): string {
@@ -123,23 +105,30 @@ describe("quote guidance prompts", function () {
     clearAgentEvidenceCache();
   });
 
-  it("centralizes the balanced evidence wording for runtime prompts", function () {
-    assertBalancedEvidenceGuidance(BALANCED_EVIDENCE_GUIDANCE);
+  it("preserves the proven evidence wording inside one canonical contract", function () {
+    assert.include(PAPER_CITATION_CONTRACT, BALANCED_EVIDENCE_GUIDANCE);
+    assert.equal(fingerprintText(PAPER_CITATION_CONTRACT), "fnv1a32-61855269");
+    assertCanonicalCitationContract(PAPER_CITATION_CONTRACT);
   });
 
-  it("keeps direct chat guidance from requesting dangling source labels", function () {
-    assertEvidenceToExplanationGuidance(DEFAULT_SYSTEM_PROMPT);
-    assertSourceLabelPlacementGuidance(DEFAULT_SYSTEM_PROMPT);
-    assertStrictBlockquoteSourceGuidance(DEFAULT_SYSTEM_PROMPT);
+  it("includes the canonical contract once in direct chat and the agent persona", function () {
+    assertCanonicalCitationContract(DEFAULT_SYSTEM_PROMPT);
+    assert.include(DEFAULT_SYSTEM_PROMPT, CORE_RESEARCH_CONTRACT);
+
+    const persona = AGENT_PERSONA_INSTRUCTIONS.join("\n");
+    assertCanonicalCitationContract(persona);
+    assert.include(persona, CORE_RESEARCH_CONTRACT);
   });
 
-  it("includes balanced evidence guidance in the core agent persona", function () {
-    const text = AGENT_PERSONA_INSTRUCTIONS.join("\n");
-    assert.include(text, BALANCED_EVIDENCE_GUIDANCE);
-    assertDirectQuoteSafety(text);
+  it("includes the canonical contract once in an assembled multi-paper agent request", async function () {
+    const messages = await buildAgentInitialMessages(request(), [], []);
+    const text = messages.map((message) => message.content).join("\n");
+
+    assertCanonicalCitationContract(text);
+    assert.equal(countOccurrences(text, BALANCED_EVIDENCE_GUIDANCE), 1);
   });
 
-  it("includes balanced evidence guidance in Codex native MCP instructions", function () {
+  it("includes the canonical contract once in Codex native MCP instructions", function () {
     const manifest = buildZoteroEnvironmentManifest({
       scope: {
         conversationKey: 1,
@@ -154,29 +143,28 @@ describe("quote guidance prompts", function () {
       mcpReady: true,
     });
 
-    assertBalancedEvidenceGuidance(manifest);
-    assertDirectQuoteSafety(manifest);
+    assertCanonicalCitationContract(manifest);
+    for (const contract of [
+      CORE_RESEARCH_CONTRACT,
+      AGENT_ACTION_CONTRACT,
+      RUNTIME_CAPABILITY_CONTEXT,
+    ]) {
+      assert.include(manifest, contract);
+    }
   });
 
-  it("includes balanced evidence guidance in stable resource context", function () {
-    const text = buildAgentStableResourceContextBlock(request());
-    assertBalancedEvidenceGuidance(text);
-    assertDirectQuoteSafety(text);
-  });
-
-  it("includes balanced evidence guidance in paper and source quote helpers", function () {
-    const paperGuidance = buildPaperQuoteCitationGuidance(paper()).join("\n");
-    const genericGuidance =
-      buildGenericSourceQuoteCitationGuidance().join("\n");
-
-    assertBalancedEvidenceGuidance(paperGuidance);
-    assertDirectQuoteSafety(paperGuidance);
-    assertBalancedEvidenceGuidance(genericGuidance);
-    assertDirectQuoteSafety(genericGuidance);
-  });
-
-  it("includes balanced evidence guidance in preserved evidence context", async function () {
+  it("keeps paper, source, stable-context, and cache helpers data-only", async function () {
     const req = request();
+    const helperText = [
+      buildAgentStableResourceContextBlock(req),
+      buildPaperQuoteCitationGuidance(paper()).join("\n"),
+      buildGenericSourceQuoteCitationGuidance().join("\n"),
+    ].join("\n");
+
+    assert.notInclude(helperText, BALANCED_EVIDENCE_GUIDANCE);
+    assert.notInclude(helperText, PAPER_CITATION_CONTRACT);
+    assert.include(helperText, "sourceLabel");
+
     await commitAgentCacheEvidenceActivities({
       conversationKey: req.conversationKey,
       activities: [
@@ -204,58 +192,89 @@ describe("quote guidance prompts", function () {
       ],
     });
 
-    const text = buildAgentEvidenceContextBlock({
+    const cached = buildAgentEvidenceContextBlock({
       conversationKey: req.conversationKey,
       request: req,
     });
-
-    assertBalancedEvidenceGuidance(text);
-    assertDirectQuoteSafety(text);
+    assert.notInclude(cached, BALANCED_EVIDENCE_GUIDANCE);
+    assert.include(
+      cached,
+      "citation data governed by the system citation contract",
+    );
   });
 
-  it("keeps static skill prompts aligned with balanced evidence guidance", function () {
+  it("keeps stock skills free of the shared citation policy", function () {
     const skills = [
       "../src/agent/skills/simple-paper-qa.md",
       "../src/agent/skills/compare-papers.md",
       "../src/agent/skills/evidence-based-qa.md",
       "../src/agent/skills/literature-review.md",
+      "../src/agent/skills/analyze-figures.md",
+      "../src/agent/skills/library-analysis.md",
+      "../src/agent/skills/import-cited-reference.md",
+      "../src/agent/skills/write-note.md",
     ];
 
     for (const skill of skills) {
       const text = readSkill(skill);
-      assertBalancedEvidenceGuidance(text);
-      assertDirectQuoteSafety(text);
+      assert.notInclude(text, BALANCED_EVIDENCE_GUIDANCE);
+      assert.notInclude(text, PAPER_CITATION_CONTRACT);
     }
   });
 
-  it("guides figure tasks with MinerU cache through extracted PDF crops", async function () {
+  it("injects figure guidance only for figure intent or the matched figure skill", async function () {
     const paperContext: PaperContextRef = {
       ...paper(),
       title: "Figure Paper",
       mineruCacheDir: "/tmp/llm-for-zotero-mineru/12",
     };
-    const messages = await buildAgentInitialMessages(
-      {
-        ...request(),
+    const plainRequest = request({
+      userText: "Explain the main result.",
+      selectedPaperContexts: [paperContext],
+      fullTextPaperContexts: [],
+    });
+    const unmatched = await buildAgentInitialMessages(plainRequest, [], []);
+    const conceptualGraphQuestion = await buildAgentInitialMessages(
+      request({
+        userText: "Explain graph neural networks and image representations.",
+        selectedPaperContexts: [paperContext],
+        fullTextPaperContexts: [],
+      }),
+      [],
+      [],
+    );
+    const intentMatched = await buildAgentInitialMessages(
+      request({
         userText: "Explain Figure 1.",
         selectedPaperContexts: [paperContext],
-      },
+        fullTextPaperContexts: [],
+      }),
+      [],
+      [],
+    );
+    const matched = await buildAgentInitialMessages(
+      plainRequest,
       [],
       ["analyze-figures"],
     );
-    const text = messages.map((message) => message.content).join("\n");
 
-    assert.include(text, "paper_read({ mode:'figures'");
-    assert.include(text, "precise PDF crops");
-    assert.include(text, "full.md");
-    assert.include(text, "do not read or embed MinerU image paths");
-    assert.include(text, "/tmp/llm-for-zotero-mineru/12");
-    assert.include(text, "Use `paper_read({ mode:'visual'");
-    assert.include(text, "only when the user explicitly asks");
-    assert.notInclude(text, "read the extracted image path with `file_io`");
+    for (const messages of [unmatched, conceptualGraphQuestion]) {
+      const unmatchedText = messages
+        .map((message) => message.content)
+        .join("\n");
+      assert.notInclude(unmatchedText, "Available MinerU cache directories");
+      assert.notInclude(unmatchedText, "For figure workflows");
+      assert.notInclude(unmatchedText, "paper_read({ mode:'figures'");
+    }
+    for (const messages of [intentMatched, matched]) {
+      const matchedText = messages.map((message) => message.content).join("\n");
+      assert.include(matchedText, "paper_read({ mode:'figures'");
+      assert.include(matchedText, "precise PDF crops");
+      assert.include(matchedText, "/tmp/llm-for-zotero-mineru/12");
+    }
   });
 
-  it("describes figure image support generically without naming specific models", function () {
+  it("describes image support generically without naming model vendors", function () {
     const text = readSkill("../src/agent/skills/analyze-figures.md");
 
     assert.include(text, "Visual models");

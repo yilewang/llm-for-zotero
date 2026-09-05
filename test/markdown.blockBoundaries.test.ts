@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   __setMarkdownParserDisabledForTest,
   normalizeBlockBoundaries,
+  renderMathPreviewHtml,
   renderMarkdown,
   renderMarkdownForNote,
 } from "../src/utils/markdown";
@@ -37,6 +38,21 @@ describe("normalizeBlockBoundaries", function () {
       const input = "see [1] #### Subsection";
       const result = normalizeBlockBoundaries(input);
       assert.include(result, "[1]\n\n#### Subsection");
+    });
+
+    it("inserts newline before ##### mid-line", function () {
+      // The repair regex was capped at #{1,4} while the rest of the module
+      // recognizes #{1,6}, so a mid-line h5 was never split and rendered as
+      // literal "##### " text inside the paragraph.
+      const input = "as discussed above. ##### Implementation Details";
+      const result = normalizeBlockBoundaries(input);
+      assert.include(result, "above.\n\n##### Implementation Details");
+    });
+
+    it("inserts newline before ###### mid-line", function () {
+      const input = "see below. ###### Deepest Subsection";
+      const result = normalizeBlockBoundaries(input);
+      assert.include(result, "below.\n\n###### Deepest Subsection");
     });
 
     it("preserves header at line start (no extra newline)", function () {
@@ -241,6 +257,77 @@ describe("normalizeBlockBoundaries", function () {
       const result = normalizeBlockBoundaries(input);
       assert.equal(result, input);
     });
+  });
+});
+
+describe("heading level rendering", function () {
+  const markdown = [
+    "# One",
+    "## Two",
+    "### Three",
+    "#### Four",
+    "##### Five",
+    "###### Six",
+  ].join("\n\n");
+
+  it("preserves all Markdown heading levels for Zotero notes", function () {
+    const html = renderMarkdownForNote(markdown);
+
+    assert.equal(
+      html,
+      "<h1>One</h1><h2>Two</h2><h3>Three</h3><h4>Four</h4><h5>Five</h5><h6>Six</h6>",
+    );
+  });
+
+  it("retains the chat renderer heading offset and cap", function () {
+    const html = renderMarkdown(markdown);
+
+    assert.equal(
+      html,
+      "<h2>One</h2><h3>Two</h3><h4>Three</h4><h5>Four</h5><h5>Five</h5><h5>Six</h5>",
+    );
+  });
+
+  it("preserves all heading levels when the legacy parser renders a note", function () {
+    __setMarkdownParserDisabledForTest(true);
+    try {
+      const html = renderMarkdownForNote(markdown);
+      const levels = Array.from(
+        html.matchAll(/<h([1-6])>/g),
+        (match) => match[1],
+      );
+      assert.deepEqual(levels, ["1", "2", "3", "4", "5", "6"]);
+    } finally {
+      __setMarkdownParserDisabledForTest(false);
+    }
+  });
+
+  it("retains the chat heading offset when the legacy parser is used", function () {
+    __setMarkdownParserDisabledForTest(true);
+    try {
+      const html = renderMarkdown(markdown);
+      const levels = Array.from(
+        html.matchAll(/<h([1-6])>/g),
+        (match) => match[1],
+      );
+      assert.deepEqual(levels, ["2", "3", "4", "5", "5", "5"]);
+    } finally {
+      __setMarkdownParserDisabledForTest(false);
+    }
+  });
+
+  it("preserves safe raw and escaped headings for notes", function () {
+    const raw = renderMarkdownForNote(
+      "<h1>Raw One</h1><h6>Raw Six</h6>\n\n&lt;h1&gt;Escaped One&lt;/h1&gt;&lt;h6&gt;Escaped Six&lt;/h6&gt;",
+    );
+    assert.include(raw, "<h1>Raw One</h1>");
+    assert.include(raw, "<h6>Raw Six</h6>");
+    assert.include(raw, "<h1>Escaped One</h1>");
+    assert.include(raw, "<h6>Escaped Six</h6>");
+
+    const chat = renderMarkdown("<h1>Raw One</h1><h6>Raw Six</h6>");
+    assert.include(chat, "<h2>Raw One</h2>");
+    assert.include(chat, "<h5>Raw Six</h5>");
   });
 });
 
@@ -524,6 +611,67 @@ describe("renderMarkdown with inline block tokens", function () {
       '<annotation encoding="application/x-tex">x</annotation>',
     );
     assert.include(html, " costs $5 in the toy example.");
+  });
+
+  it("renders the reported Fisher-information equation in a math-only preview", function () {
+    const input =
+      "Fisher information provides a lower bound on the variance \\(\\sigma_{\\hat{s}}^2\\) of any estimator.";
+    const html = renderMathPreviewHtml(input);
+
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">\\sigma_{\\hat{s}}^2</annotation>',
+    );
+    assert.notInclude(html, "\\(\\sigma");
+    assert.include(html, "Fisher information provides a lower bound");
+    assert.include(html, "of any estimator.");
+  });
+
+  it("renders every supported math delimiter in preview prose", function () {
+    const html = renderMathPreviewHtml(
+      "$a$ begins, \\(b\\) is inline, $$c$$ is displayed, and ends with \\[d\\]",
+    );
+
+    for (const math of ["a", "b", "c", "d"]) {
+      assert.include(
+        html,
+        `<annotation encoding="application/x-tex">${math}</annotation>`,
+      );
+    }
+    assert.equal((html.match(/class="math-inline"/g) || []).length, 2);
+    assert.equal((html.match(/class="math-display-inline"/g) || []).length, 2);
+  });
+
+  it("keeps non-math preview content literal and safe", function () {
+    const input =
+      "**literal emphasis** <img src=x onerror=alert(1)> `$code$` ```\\(fenced\\)``` and $5 plus $10.";
+    const html = renderMathPreviewHtml(input);
+
+    assert.include(html, "**literal emphasis**");
+    assert.include(html, "&lt;img src=x onerror=alert(1)&gt;");
+    assert.include(html, "`$code$`");
+    assert.include(html, "```\\(fenced\\)```");
+    assert.include(html, "$5 plus $10");
+    assert.notInclude(html, "<strong>");
+    assert.notInclude(html, "<img");
+    assert.notInclude(html, "application/x-tex");
+  });
+
+  it("leaves unmatched delimiters and invalid LaTeX literal in previews", function () {
+    const unmatched = "The estimate \\(\\hat{s} is incomplete.";
+    const invalid = "The estimate \\(\\frac{\\) is invalid.";
+    const unmatchedDisplay = "Unmatched $$x; valid $y$.";
+    const escapedDisplay = "Escaped \\$$x$$ stays literal.";
+
+    assert.equal(renderMathPreviewHtml(unmatched), unmatched);
+    assert.equal(renderMathPreviewHtml(invalid), invalid);
+    assert.equal(renderMathPreviewHtml(escapedDisplay), escapedDisplay);
+    const displayHtml = renderMathPreviewHtml(unmatchedDisplay);
+    assert.include(displayHtml, "Unmatched $$x; valid ");
+    assert.include(
+      displayHtml,
+      '<annotation encoding="application/x-tex">y</annotation>',
+    );
   });
 
   it("renders nested lists without flattening child items", function () {

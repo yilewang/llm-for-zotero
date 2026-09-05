@@ -1303,6 +1303,9 @@ export async function registerMineruManagerScript(
     count: number,
   ): HTMLElement {
     const row = doc.createElement("div");
+    // A click-to-filter control, not a label: it keeps user-select: none like
+    // any other button, and now says so for assistive technology.
+    row.setAttribute("role", "button");
     row.style.cssText =
       "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
     row.style.paddingLeft = `${8 + indent * 14}px`;
@@ -1341,6 +1344,9 @@ export async function registerMineruManagerScript(
     const hasChildren = node.children.length > 0;
     const collapsed = collapsedSidebar.has(node.collectionId);
     const row = doc.createElement("div");
+    // A click-to-filter control, not a label: it keeps user-select: none like
+    // any other button, and now says so for assistive technology.
+    row.setAttribute("role", "button");
     row.style.cssText =
       "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
     row.style.paddingLeft = `${8 + indent * 14}px`;

@@ -110,6 +110,15 @@ export function getActiveReaderForSelectedTab(): any | null {
   );
 }
 
+export function getAllOpenReaders(): any[] {
+  const readers = (
+    Zotero as unknown as {
+      Reader?: { _readers?: unknown[] };
+    }
+  ).Reader?._readers;
+  return Array.isArray(readers) ? readers.filter(Boolean) : [];
+}
+
 function parseItemID(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {

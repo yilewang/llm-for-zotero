@@ -5,8 +5,10 @@ import { recordAgentTurn } from "./store/conversationMemory";
 import {
   appendAgentTranscriptMessages,
   buildAgentTranscriptCompatibilityKey,
+  loadLatestAgentTranscriptSegment,
   loadAgentTranscriptSegment,
   replaceAgentTranscriptSegment,
+  type AgentTranscriptWriteResult,
 } from "./store/transcriptStore";
 import type {
   AgentInheritedApproval,
@@ -15,16 +17,31 @@ import type {
   AgentModelContentPart,
   AgentConfirmationResolution,
   AgentEvent,
+  AgentAssistantMessage,
   AgentModelMessage,
   AgentModelStep,
   AgentPendingAction,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
+  AgentRuntimeRequestInput,
+  ResolvedAgentRuntimeRequest,
   AgentToolCall,
   AgentToolArtifact,
   AgentToolContext,
   AgentToolResult,
+  AgentToolEffect,
+  AgentToolMessage,
+  AgentUserMessage,
+  AgentRunRecord,
 } from "./types";
+import {
+  resolveAgentRuntimeRequest,
+  type AgentRequestPaperContextResolver,
+} from "./context/resolvedAgentRequest";
+import {
+  getTurnPapersWithRoles,
+  getTurnPaperScopeFromRequest,
+} from "./context/requestTurnPaperScope";
 import type { AgentModelAdapter } from "./model/adapter";
 import type {
   AgentAdapterToolCallResult,
@@ -37,11 +54,26 @@ import {
 import { resolveAgentLimits } from "./model/limits";
 import { classifyRequest } from "./model/requestClassifier";
 import {
-  buildAgentInitialMessages,
+  buildAgentPromptInstructionInventory,
+  composeAgentModelInput,
   normalizeHistoryMessages,
+  renderAgentPromptEnvelope,
 } from "./model/messageBuilder";
 import { classifyWriteNoteDestination } from "./writeNoteDestination";
-import { detectSkillIntent } from "./model/skillClassifier";
+import { WRITE_NOTE_SKILL_ID } from "./skills/noteIntent";
+import {
+  detectTurnIntent,
+  inferActionIntentsFromRequest,
+} from "./model/skillClassifier";
+import { reconcileNoteDestinationActionIntents } from "./model/actionIntent";
+import { createUnverifiedReceipt } from "./contracts/actionEvaluation";
+import {
+  ActionContractRunSession,
+  readLatestActionContractCheckpoint,
+  type ActionContractCheckpoint,
+} from "./contracts/actionContractRunSession";
+import { AgentRunContinuationSession } from "./continuation/runContinuationSession";
+import { AgentFinalAnswerController } from "./finalization/finalAnswerController";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
 import {
   buildAgentResourceContextPlan,
@@ -54,42 +86,62 @@ import {
   hydrateAgentCoverageLedger,
 } from "./context/coverageLedger";
 import {
-  buildNotesDirectoryWritePolicy,
+  getNotesDirectoryConfig,
   getNotesDirectoryNickname,
-  isNotesDirectoryConfigured,
 } from "../utils/notesDirectoryConfig";
 import {
   buildAgentContextBudgetState,
   resolveAgentContextBudgetPolicy,
 } from "./context/budgetPolicy";
-import { compactAgentTranscript } from "./context/transcriptCompactor";
+import {
+  buildAgentSemanticCheckpoint,
+  compactAgentTranscript,
+  readAgentSemanticCheckpointRootGoal,
+} from "./context/transcriptCompactor";
 import {
   AgentEventLocalDocumentStreamRedactor,
   acquireLocalDocumentPathLease,
   LocalDocumentPathStreamRedactor,
 } from "./privacy/localDocumentPathRedaction";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
+import { ensureModelCapabilities } from "../modelCapabilities";
 import {
   AgentPromptBudgetError,
   enforceAgentPromptBudget,
+  resolveAgentPromptBudgetLimits,
 } from "./context/promptBudget";
 import {
   appendAgentRunEvent,
   createAgentRun,
   finishAgentRun,
   getAgentRunTrace,
+  getLatestAgentRunForConversation,
+  INTERRUPTED_AGENT_RUN_MARKER,
 } from "./store/traceStore";
+import {
+  listJournalActions,
+  type JournalActionWithSteps,
+} from "./store/changeJournal";
 import {
   hasAgentToolResultHandles,
   hydrateAgentToolResultHandles,
+  type AgentToolResultHandleRecord,
   upsertAgentToolResultHandles,
 } from "./store/toolResultHandles";
+import {
+  areConversationWritesFrozen,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../shared/conversationWriteFence";
+import type { WebAttributionAssessment } from "../webAccess/attribution";
+import { clearWebSourcesForRun } from "../webAccess/runSources";
 
 const TOOL_RESULT_READ_TOOL_NAME = "tool_result_read";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
-  adapterFactory: (request: AgentRuntimeRequest) => AgentModelAdapter;
+  adapterFactory: (request: ResolvedAgentRuntimeRequest) => AgentModelAdapter;
+  paperContextResolver?: AgentRequestPaperContextResolver;
   now?: () => number;
 };
 
@@ -523,6 +575,61 @@ function isCurrentTurnUserTranscriptMessage(
   );
 }
 
+function readLatestTranscriptGoal(
+  messages: readonly AgentModelMessage[],
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    const checkpointGoal = readAgentSemanticCheckpointRootGoal(message);
+    if (checkpointGoal) {
+      return checkpointGoal.length > 600
+        ? `${checkpointGoal.slice(0, 597)}...`
+        : checkpointGoal;
+    }
+    const goal = normalizeTranscriptUserText(
+      transcriptContentToPlainText(message.content),
+    );
+    if (!goal) continue;
+    return goal.length > 600 ? `${goal.slice(0, 597)}...` : goal;
+  }
+  return undefined;
+}
+
+function buildInterruptedRunRecoveryMessage(params: {
+  run: AgentRunRecord;
+  actions: JournalActionWithSteps[];
+  priorGoal?: string;
+}): AgentModelMessage {
+  const actions = [...params.actions].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt ||
+      left.actionId.localeCompare(right.actionId),
+  );
+  const lines = [
+    `Recovery note for interrupted run ${params.run.runId}.`,
+    "Do not automatically repeat any prior write.",
+  ];
+  if (params.priorGoal) lines.push(`Prior goal: ${params.priorGoal}`);
+  if (actions.length) {
+    lines.push("Recorded journal actions:");
+    for (const action of actions) {
+      lines.push(
+        `- actionId=${action.actionId}; status=${action.status}; affectedCount=${action.affectedCount}; reversibility=${action.reversibility}`,
+      );
+    }
+  } else {
+    lines.push("No journaled writes were recorded.");
+  }
+  lines.push(
+    "Any unfinished confirmation was discarded and must be proposed and approved again.",
+  );
+  return {
+    role: "user",
+    content: lines.join("\n"),
+  };
+}
+
 type ExecutedToolCall = {
   toolResult: AgentToolResult;
   toolDefinition?: import("./types").AgentToolDefinition<any, any>;
@@ -568,42 +675,60 @@ function filterTransientRecoveryTool<T extends { name: string }>(
   return tools.filter((tool) => tool.name !== TOOL_RESULT_READ_TOOL_NAME);
 }
 
-function isWriteNoteFileRequest(
+function writeNoteDestinationForRequest(
   request: AgentRuntimeRequest,
   matchedSkills: ReadonlyArray<string>,
-): boolean {
+): import("./writeNoteDestination").WriteNoteDestination {
   const activeSkillIds = new Set([
     ...matchedSkills,
     ...(request.forcedSkillIds || []),
   ]);
-  if (!activeSkillIds.has("write-note")) return false;
-  return (
-    classifyWriteNoteDestination(
-      request.userText,
-      getNotesDirectoryNickname(),
-    ) === "file"
+  if (!activeSkillIds.has(WRITE_NOTE_SKILL_ID)) return "none";
+  return classifyWriteNoteDestination(
+    request.userText,
+    getNotesDirectoryNickname(),
   );
 }
 
-function isSuccessfulFileIoWrite(record: {
+function stabilizeProgressValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stabilizeProgressValue);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const stable: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    if (record[key] !== undefined) {
+      stable[key] = stabilizeProgressValue(record[key]);
+    }
+  }
+  return stable;
+}
+
+function buildToolProgressFingerprint(record: {
   name: string;
-  ok: boolean;
+  effect?: AgentToolEffect;
   input?: unknown;
   content?: unknown;
-}): boolean {
-  if (record.name !== "file_io" || !record.ok) return false;
-  if (!record.input || typeof record.input !== "object") return false;
-  if ((record.input as { action?: unknown }).action !== "write") return false;
-  return !(
-    record.content &&
-    typeof record.content === "object" &&
-    "error" in record.content
-  );
+}): string {
+  try {
+    return JSON.stringify(
+      stabilizeProgressValue({
+        name: record.name,
+        effect: record.effect,
+        input: record.input,
+        content: record.content,
+      }),
+    );
+  } catch {
+    return `${record.name}:${String(record.effect || "read")}:${String(
+      record.input,
+    )}:${String(record.content)}`;
+  }
 }
 
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
+  private readonly paperContextResolver?: AgentRequestPaperContextResolver;
   private readonly now: () => number;
   private readonly pendingConfirmations = new Map<
     string,
@@ -613,6 +738,7 @@ export class AgentRuntime {
   constructor(deps: AgentRuntimeDeps) {
     this.registry = deps.registry;
     this.adapterFactory = deps.adapterFactory;
+    this.paperContextResolver = deps.paperContextResolver;
     this.now = deps.now || (() => Date.now());
   }
 
@@ -634,8 +760,13 @@ export class AgentRuntime {
     return this.registry.unregister(name);
   }
 
-  getCapabilities(request: AgentRuntimeRequest) {
-    return this.adapterFactory(request).getCapabilities(request);
+  getCapabilities(request: AgentRuntimeRequestInput) {
+    const resolved = resolveAgentRuntimeRequest(request, {
+      resolvePaperContext: this.paperContextResolver,
+    });
+    return this.adapterFactory(resolved).getCapabilities(
+      resolved as unknown as AgentRuntimeRequest,
+    );
   }
 
   /**
@@ -679,22 +810,65 @@ export class AgentRuntime {
   }
 
   async runTurn(params: {
-    request: AgentRuntimeRequest;
+    request: AgentRuntimeRequestInput;
     onEvent?: (event: AgentEvent) => void | Promise<void>;
     onStart?: (runId: string) => void | Promise<void>;
     signal?: AbortSignal;
   }): Promise<AgentRuntimeOutcome> {
-    const request = params.request;
+    const request = resolveAgentRuntimeRequest(params.request, {
+      resolvePaperContext: this.paperContextResolver,
+    });
+    const writeAllowed = () =>
+      !areConversationWritesFrozen(request.conversationKey) &&
+      (request.conversationGeneration === undefined ||
+        isConversationWriteGenerationCurrent(
+          request.conversationKey,
+          request.conversationGeneration,
+        ));
+    const persistIfLive = async <T>(
+      task: () => Promise<T>,
+    ): Promise<T | undefined> => {
+      if (!writeAllowed()) return undefined;
+      return withConversationWriteLock(request.conversationKey, async () => {
+        if (!writeAllowed()) return undefined;
+        return task();
+      });
+    };
+    try {
+      await ensureModelCapabilities(
+        {
+          model: request.model || "",
+          apiBase: request.apiBase,
+          protocol: request.providerProtocol,
+          authMode: request.authMode,
+          apiKey: request.apiKey,
+        },
+        { timeoutMs: 5_000 },
+      );
+    } catch {
+      // Capability discovery is advisory; the adapter retains its fallback
+      // profile when a provider does not expose a catalog.
+    }
     validateLocalPdfDocumentBatch({
-      pdfPaperContexts: request.pdfPaperContexts,
-      localDocuments: request.localDocuments,
+      pdfPaperContexts: getTurnPapersWithRoles(request, ["raw_pdf"]),
+      localDocuments: request.localDocuments?.map((entry) => entry.resource),
     });
     const pathLease = acquireLocalDocumentPathLease(
       request.conversationKey,
-      request.localDocuments,
+      request.localDocuments?.map((entry) => entry.resource),
     );
+    let webSourceRunId: string | undefined;
     try {
+      const latestPriorRun = await getLatestAgentRunForConversation(
+        request.conversationKey,
+      );
+      const interruptedPriorRun =
+        latestPriorRun?.status === "failed" &&
+        latestPriorRun.finalText === INTERRUPTED_AGENT_RUN_MARKER
+          ? latestPriorRun
+          : null;
       const runId = createRunId();
+      webSourceRunId = runId;
       const adapter = this.adapterFactory(request);
       const adapterCapabilities = adapter.getCapabilities(request);
       const eventStreamRedactor = new AgentEventLocalDocumentStreamRedactor(
@@ -703,26 +877,47 @@ export class AgentRuntime {
       const turnPathRedactor = new LocalDocumentPathStreamRedactor(
         request.conversationKey,
       );
+      const persistToolResultHandles = async (
+        records: AgentToolResultHandleRecord[],
+      ): Promise<void> => {
+        if (!records.length) return;
+        const sanitized = turnPathRedactor.redactTerminalValue(records);
+        await persistIfLive(() => upsertAgentToolResultHandles(sanitized));
+      };
       let eventSeq = 0;
       let currentAnswerText = "";
       const item = request.item || null;
-      await createAgentRun({
-        runId,
-        conversationKey: request.conversationKey,
-        mode: "agent",
-        model: request.model,
-        status: "running",
-        createdAt: this.now(),
-      });
-      await params.onStart?.(runId);
+      await persistIfLive(() =>
+        createAgentRun({
+          runId,
+          conversationKey: request.conversationKey,
+          mode: "agent",
+          model: request.model,
+          status: "running",
+          createdAt: this.now(),
+        }),
+      );
+      // createAgentRun may have waited on the provider/DB.  Clear can commit
+      // during that await and intentionally leave the conversation key live,
+      // so a retired-key check alone is insufficient.  Never publish a late
+      // run ID into the cleared generation's UI/cache.
+      if (writeAllowed()) await params.onStart?.(runId);
 
       const emit = async (event: AgentEvent) => {
+        if (!writeAllowed()) return;
         for (const redactedEvent of eventStreamRedactor.process(event)) {
           eventSeq += 1;
-          await appendAgentRunEvent(runId, eventSeq, redactedEvent);
-          await params.onEvent?.(redactedEvent);
+          await persistIfLive(() =>
+            appendAgentRunEvent(runId, eventSeq, redactedEvent),
+          );
+          if (writeAllowed()) await params.onEvent?.(redactedEvent);
         }
       };
+      const actionContractSession = new ActionContractRunSession({
+        request,
+        contracts: this.registry,
+        emit,
+      });
 
       if (!adapter.supportsTools(request)) {
         const reason =
@@ -731,7 +926,7 @@ export class AgentRuntime {
           type: "fallback",
           reason,
         });
-        await finishAgentRun(runId, "completed");
+        await persistIfLive(() => finishAgentRun(runId, "completed"));
         return {
           kind: "fallback",
           runId,
@@ -742,16 +937,20 @@ export class AgentRuntime {
 
       const context: AgentToolContext = {
         request,
+        runId,
         item,
         currentAnswerText,
         modelName: request.model || "unknown",
         modelProviderLabel: request.modelProviderLabel,
         signal: params.signal,
+        checkpointActionProgress: () => actionContractSession.checkpoint(),
       };
       const toolsUsedThisTurn: string[] = [];
       const toolExecutionRecords: Array<{
         name: string;
         ok: boolean;
+        mutability?: "read" | "write";
+        effect?: AgentToolEffect;
         input?: unknown;
         content?: unknown;
       }> = [];
@@ -784,9 +983,78 @@ export class AgentRuntime {
         conversationKey: request.conversationKey,
         compatibilityKey: transcriptCompatibilityKey,
       });
+      const hadCompatibleTranscript = transcriptSegment.messages.length > 0;
       let transcriptMessagesForPrompt = transcriptSegment.messages.length
         ? transcriptSegment.messages
         : normalizeHistoryMessages(request);
+      let recoveryMessage: AgentModelMessage | null = null;
+      let interruptedActionCheckpoint: ActionContractCheckpoint | null = null;
+      if (interruptedPriorRun) {
+        const [actions, latestTranscriptSegment, interruptedTrace] =
+          await Promise.all([
+            listJournalActions({
+              runId: interruptedPriorRun.runId,
+              limit: 50,
+            }),
+            loadLatestAgentTranscriptSegment(request.conversationKey),
+            getAgentRunTrace(interruptedPriorRun.runId),
+          ]);
+        interruptedActionCheckpoint = readLatestActionContractCheckpoint(
+          interruptedTrace.events.map((event) => event.payload),
+        );
+        const compatibilityMatches =
+          latestTranscriptSegment?.compatibilityKey ===
+          transcriptCompatibilityKey;
+        recoveryMessage = buildInterruptedRunRecoveryMessage({
+          run: interruptedPriorRun,
+          actions,
+          priorGoal: compatibilityMatches
+            ? undefined
+            : readLatestTranscriptGoal(latestTranscriptSegment?.messages || []),
+        });
+        transcriptMessagesForPrompt = compatibilityMatches
+          ? [...transcriptMessagesForPrompt, recoveryMessage]
+          : [recoveryMessage];
+      }
+
+      if (
+        transcriptMessagesForPrompt.some(
+          (message) => message.role === "assistant" || message.role === "tool",
+        )
+      ) {
+        const legacyBudget = buildAgentContextBudgetState({
+          messages: transcriptMessagesForPrompt,
+          model: request.model,
+          inputTokenCap: request.advanced?.inputTokenCap,
+          apiBase: request.apiBase,
+          providerProtocol: request.providerProtocol,
+          authMode: request.authMode,
+          profileOverride: request.advanced?.profileOverride,
+          recentlyCompacted: false,
+        });
+        const semantic = buildAgentSemanticCheckpoint({
+          messages: transcriptMessagesForPrompt,
+          summaryTokens: legacyBudget.summaryTokens,
+          conversationKey: request.conversationKey,
+          resourceSignature: resourceContextPlan.resourceSignature,
+        });
+        const checkpoint: AgentUserMessage = {
+          ...semantic.checkpoint,
+          content: turnPathRedactor.redactTerminalText(
+            semantic.checkpoint.content,
+          ),
+        };
+        await persistToolResultHandles(semantic.handleRecords);
+        transcriptMessagesForPrompt = [checkpoint];
+        transcriptSegment = {
+          ...transcriptSegment,
+          messages: [checkpoint],
+          compactedAt: this.now(),
+        };
+        await persistIfLive(() =>
+          replaceAgentTranscriptSegment(transcriptSegment),
+        );
+      }
 
       if (isManualCompactRequest(request)) {
         const policy = resolveAgentContextBudgetPolicy();
@@ -794,6 +1062,10 @@ export class AgentRuntime {
           messages: transcriptMessagesForPrompt,
           model: request.model,
           inputTokenCap: request.advanced?.inputTokenCap,
+          apiBase: request.apiBase,
+          providerProtocol: request.providerProtocol,
+          authMode: request.authMode,
+          profileOverride: request.advanced?.profileOverride,
           policy,
           forceCompact: true,
         });
@@ -813,15 +1085,17 @@ export class AgentRuntime {
             messages: compacted.messages,
             compactedAt: this.now(),
           };
-          await upsertAgentToolResultHandles(compacted.handleRecords);
+          await persistToolResultHandles(compacted.handleRecords);
           if (compacted.handleRecords.length) toolResultReadAvailable = true;
-          await replaceAgentTranscriptSegment(
-            turnPathRedactor.redactTerminalValue(transcriptSegment),
+          await persistIfLive(() =>
+            replaceAgentTranscriptSegment(
+              turnPathRedactor.redactTerminalValue(transcriptSegment),
+            ),
           );
           await emit({ type: "context_compacted", automatic: false });
         }
         await emit({ type: "final", text });
-        await finishAgentRun(runId, "completed", text);
+        await persistIfLive(() => finishAgentRun(runId, "completed", text));
         return {
           kind: "completed",
           runId,
@@ -830,30 +1104,170 @@ export class AgentRuntime {
         };
       }
 
+      const currentUserTranscriptMessage = buildTranscriptUserMessage(request);
+      const turnStartTranscriptMessages: AgentModelMessage[] = transcriptSegment
+        .messages.length
+        ? recoveryMessage
+          ? [recoveryMessage]
+          : []
+        : [...transcriptMessagesForPrompt];
+      const transcriptTail =
+        turnStartTranscriptMessages[turnStartTranscriptMessages.length - 1] ||
+        transcriptSegment.messages[transcriptSegment.messages.length - 1];
+      if (
+        hadCompatibleTranscript ||
+        !isCurrentTurnUserTranscriptMessage(transcriptTail, request)
+      ) {
+        turnStartTranscriptMessages.push(currentUserTranscriptMessage);
+      }
+      if (turnStartTranscriptMessages.length) {
+        await persistIfLive(() =>
+          appendAgentTranscriptMessages({
+            conversationKey: request.conversationKey,
+            compatibilityKey: transcriptCompatibilityKey,
+            messages: turnPathRedactor.redactTerminalValue(
+              turnStartTranscriptMessages,
+            ),
+          }),
+        );
+        if (writeAllowed()) {
+          transcriptSegment = {
+            ...transcriptSegment,
+            messages: [
+              ...transcriptSegment.messages,
+              ...turnStartTranscriptMessages,
+            ],
+          };
+        }
+      }
+
       // Intent/skill selection runs ONCE per user turn, before the system
       // prompt is built. The flow:
-      //   1. detectSkillIntent — one LLM call against the primary model,
-      //      returns which skills the user's message is asking for. Falls
-      //      back to regex `match:` patterns on any error.
+      //   1. detectTurnIntent — one bounded LLM call against the primary
+      //      model, returns which skills apply plus the language-independent
+      //      retrieval intent (stored on request.classifiedIntent as a
+      //      default for retrieval/routing). Falls back to regex `match:`
+      //      patterns with a null intent on any error.
       //   2. getMatchedSkillIds — unions classifier output with explicit
       //      forcedSkillIds (slash menu) and runtime-context forces
       //      (e.g. notes-directory nickname mention).
-      //   3. matchedSkills is threaded into buildAgentInitialMessages so
+      //   3. matchedSkills is threaded into renderAgentPromptEnvelope so
       //      only those skills' instructions ship in current-turn guidance,
       //      and emitted as trace events for UI visibility.
       // The resulting prompt package is reused across every model inference
       // inside the agent loop — no per-step classification cost.
-      const classifiedSkillIds = await detectSkillIntent(
-        request,
-        getAllSkills(),
-      );
-      const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
-      const requiresFileNoteWrite = isWriteNoteFileRequest(
+      const preclassifiedIntent = request.classifiedIntent;
+      const turnIntent = await detectTurnIntent(request, getAllSkills(), {
+        signal: params.signal,
+      });
+      if (!preclassifiedIntent && turnIntent.classifiedIntent) {
+        request.classifiedIntent = turnIntent.classifiedIntent;
+      } else if (!preclassifiedIntent && !turnIntent.classifiedIntent) {
+        const fallbackActions = inferActionIntentsFromRequest(request);
+        if (fallbackActions.length) {
+          request.classifiedIntent = {
+            retrievalIntent: "none",
+            wantedSections: [],
+            writeDisposition: fallbackActions.some(
+              (intent) => intent.operation !== "read_full",
+            )
+              ? "required"
+              : "none",
+            actionInterpretationSource: "deterministic_fallback",
+            actionIntents: fallbackActions,
+          };
+        }
+      }
+      if (turnIntent.degraded) {
+        // Surface the silent-regression case: a usable model config was
+        // present but classification fell back to regex matching, reverting
+        // every classifier-driven default for this turn.
+        await emit({
+          type: "provider_event",
+          providerType: "turn_intent_classifier",
+          payload: {
+            status: "degraded_to_regex",
+            reason: turnIntent.failureReason,
+          },
+        });
+      }
+      const matchedSkills = getMatchedSkillIds(request, turnIntent.skillIds);
+      const requestIntent = classifyRequest(request);
+      const noteDestination = writeNoteDestinationForRequest(
         request,
         matchedSkills,
       );
+      if (noteDestination !== "none" && !request.classifiedIntent) {
+        request.classifiedIntent = {
+          retrievalIntent: "none",
+          wantedSections: [],
+          writeDisposition: "required",
+          actionInterpretationSource: "deterministic_fallback",
+          actionIntents: [],
+        };
+      }
+      if (
+        noteDestination !== "none" &&
+        request.classifiedIntent!.actionInterpretationSource !== "classifier"
+      ) {
+        request.classifiedIntent!.actionIntents =
+          reconcileNoteDestinationActionIntents(
+            request.classifiedIntent!.actionIntents,
+            noteDestination,
+          );
+        request.classifiedIntent!.writeDisposition = "required";
+      }
+      const requiresFileNoteWrite = Boolean(
+        request.classifiedIntent?.actionIntents?.some(
+          (intent) => intent.operation === "file_write",
+        ),
+      );
+      const hasPaperReadScope =
+        request.conversationKind === "paper" ||
+        Boolean(request.activeItemId) ||
+        request.turnPaperScope.papers.length > 0;
+      if (requestIntent.requiresFullPaperRead && hasPaperReadScope) {
+        if (!request.classifiedIntent) {
+          request.classifiedIntent = {
+            retrievalIntent: "none",
+            wantedSections: [],
+            writeDisposition: "none",
+            actionInterpretationSource: "deterministic_fallback",
+            actionIntents: [],
+          };
+        }
+        if (
+          !request.classifiedIntent.actionIntents.some(
+            (action) => action.constraints?.readMode === "full",
+          )
+        ) {
+          request.classifiedIntent.actionIntents.push({
+            capability: "zotero.read",
+            operation: "read_full",
+            proofDomain: "zotero_state",
+            coverage: "all",
+            targetKind: "papers",
+            constraints: { readMode: "full" },
+          });
+        }
+      }
+      const actionContractInitialization =
+        await actionContractSession.initialize({
+          checkpoint: interruptedActionCheckpoint,
+        });
+      if (actionContractInitialization.kind === "failed") {
+        const text = actionContractInitialization.userMessage;
+        await emit({ type: "final", text });
+        await persistIfLive(() => finishAgentRun(runId, "failed", text));
+        return {
+          kind: "completed",
+          runId,
+          text,
+          usedFallback: false,
+        };
+      }
       const noteWritePolicy = requiresFileNoteWrite
-        ? buildNotesDirectoryWritePolicy({ userText: request.userText })
+        ? getNotesDirectoryConfig()
         : null;
       if (noteWritePolicy) {
         request.metadata = {
@@ -866,32 +1280,65 @@ export class AgentRuntime {
         providerType: "agent_context_envelope",
         payload: {
           resourceSignature: resourceContextPlan.resourceSignature,
-          selectedPaperCount: request.selectedPaperContexts?.length || 0,
-          fullTextPaperCount: request.fullTextPaperContexts?.length || 0,
-          selectedCollectionCount:
-            request.selectedCollectionContexts?.length || 0,
-          selectedTagCount: request.selectedTagContexts?.length || 0,
+          selectedPaperCount: getTurnPapersWithRoles(request, ["selected"])
+            .length,
+          fullTextPaperCount: getTurnPapersWithRoles(request, ["full_text"])
+            .length,
+          selectedCollectionCount: request.turnPaperScope.collections.length,
+          selectedTagCount: request.turnPaperScope.tags.length,
           attachmentCount: request.attachments?.length || 0,
           screenshotCount: request.screenshots?.length || 0,
         },
       });
-      const messages = (await buildAgentInitialMessages(
+      const captureInstructionInventory =
+        request.metadata?.instructionHarnessInventory === true;
+      const renderedPrompt = await renderAgentPromptEnvelope(
         request,
         toolDefinitions,
         matchedSkills,
         resourceContextPlan,
         {
-          transcriptMessages: transcriptMessagesForPrompt,
           contentInputs: resolveCapabilitiesContentInputs(adapterCapabilities),
         },
-      )) as AgentModelMessage[];
+      );
+      const messages = composeAgentModelInput(renderedPrompt.envelope, {
+        transcriptMessages: transcriptMessagesForPrompt,
+      });
+      const instructionInventory = captureInstructionInventory
+        ? buildAgentPromptInstructionInventory(renderedPrompt, messages)
+        : undefined;
+      if (captureInstructionInventory && instructionInventory) {
+        await emit({
+          type: "provider_event",
+          providerType: "instruction_harness_inventory",
+          payload: {
+            model: request.model || "",
+            protocol: request.providerProtocol || "",
+            matchedSkillIds: matchedSkills,
+            ...instructionInventory,
+          },
+        });
+      }
+      const continuationSession = new AgentRunContinuationSession(messages);
 
       const budgetState = buildAgentContextBudgetState({
         messages,
         model: request.model,
         inputTokenCap: request.advanced?.inputTokenCap,
+        apiBase: request.apiBase,
+        providerProtocol: request.providerProtocol,
+        authMode: request.authMode,
+        profileOverride: request.advanced?.profileOverride,
         recentlyCompacted: Boolean(transcriptSegment.compactedAt),
       });
+      const providerReplaySoftLimit = resolveAgentPromptBudgetLimits({
+        model: request.model,
+        inputTokenCap: request.advanced?.inputTokenCap,
+        apiBase: request.apiBase,
+        providerProtocol: request.providerProtocol,
+        authMode: request.authMode,
+        profileOverride: request.advanced?.profileOverride,
+      }).softLimitTokens;
       if (budgetState.shouldCompact && transcriptMessagesForPrompt.length) {
         await emit({ type: "status", text: "Compacting context…" });
         const compacted = compactAgentTranscript({
@@ -901,77 +1348,163 @@ export class AgentRuntime {
           resourceSignature: resourceContextPlan.resourceSignature,
         });
         if (compacted.compacted) {
+          transcriptMessagesForPrompt = compacted.messages;
           transcriptSegment = {
             ...transcriptSegment,
-            messages: compacted.messages,
+            messages:
+              !hadCompatibleTranscript &&
+              isCurrentTurnUserTranscriptMessage(
+                compacted.messages[compacted.messages.length - 1],
+                request,
+              )
+                ? compacted.messages
+                : [...compacted.messages, currentUserTranscriptMessage],
             compactedAt: this.now(),
           };
-          transcriptMessagesForPrompt = transcriptSegment.messages;
-          await upsertAgentToolResultHandles(compacted.handleRecords);
+          await persistToolResultHandles(compacted.handleRecords);
           if (compacted.handleRecords.length) toolResultReadAvailable = true;
-          await replaceAgentTranscriptSegment(
-            turnPathRedactor.redactTerminalValue(transcriptSegment),
+          await persistIfLive(() =>
+            replaceAgentTranscriptSegment(
+              turnPathRedactor.redactTerminalValue(transcriptSegment),
+            ),
           );
           await emit({ type: "context_compacted", automatic: true });
           messages.splice(
             0,
             messages.length,
-            ...((await buildAgentInitialMessages(
-              request,
-              toolDefinitions,
-              matchedSkills,
-              resourceContextPlan,
-              {
-                transcriptMessages: transcriptMessagesForPrompt,
-                contentInputs:
-                  resolveCapabilitiesContentInputs(adapterCapabilities),
-              },
-            )) as AgentModelMessage[]),
+            ...composeAgentModelInput(renderedPrompt.envelope, {
+              transcriptMessages: transcriptMessagesForPrompt,
+            }),
           );
         }
       }
-      const seedTranscriptMessages = transcriptSegment.messages.length
-        ? []
-        : transcriptMessagesForPrompt;
-      const currentUserTranscriptMessage = buildTranscriptUserMessage(request);
-      const newTranscriptMessages: AgentModelMessage[] = [
-        ...seedTranscriptMessages,
-        ...(isCurrentTurnUserTranscriptMessage(
-          seedTranscriptMessages[seedTranscriptMessages.length - 1],
-          request,
-        )
-          ? []
-          : [currentUserTranscriptMessage]),
-      ];
+      const newTranscriptMessages: AgentModelMessage[] = [];
+      let latestProviderReplayTokens = 0;
+      const commitSemanticCheckpoint = async (params: {
+        sourceMessages: AgentModelMessage[];
+        preservedHandleRecords?: AgentToolResultHandleRecord[];
+        retryInstruction?: string;
+      }): Promise<{
+        checkpoint: AgentUserMessage;
+        writeResult: AgentTranscriptWriteResult | undefined;
+        handleCount: number;
+      }> => {
+        const semantic = buildAgentSemanticCheckpoint({
+          messages: params.sourceMessages,
+          summaryTokens: budgetState.summaryTokens,
+          conversationKey: request.conversationKey,
+          resourceSignature: resourceContextPlan.resourceSignature,
+          preservedHandleRecords: params.preservedHandleRecords,
+        });
+        const checkpoint: AgentUserMessage = {
+          ...semantic.checkpoint,
+          content: [
+            turnPathRedactor.redactTerminalText(semantic.checkpoint.content),
+            params.retryInstruction
+              ? turnPathRedactor.redactTerminalText(params.retryInstruction)
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        };
+        await persistToolResultHandles(semantic.handleRecords);
+        const nextSegment = {
+          ...transcriptSegment,
+          messages: [checkpoint],
+          compactedAt: this.now(),
+        };
+        const writeResult = await persistIfLive(() =>
+          replaceAgentTranscriptSegment(nextSegment),
+        );
+        if (
+          writeAllowed() &&
+          (writeResult === "persisted" || writeResult === "memory_only")
+        ) {
+          transcriptSegment = nextSegment;
+        }
+        return {
+          checkpoint,
+          writeResult,
+          handleCount: semantic.handleRecords.length,
+        };
+      };
+      const requireAcceptedCheckpointWrite = (
+        result: AgentTranscriptWriteResult | undefined,
+      ): void => {
+        if (result === "persisted" || result === "memory_only") return;
+        throw new Error(
+          result === "failed"
+            ? "Agent transcript checkpoint storage failed."
+            : "Agent transcript checkpoint was skipped because the conversation is no longer writable.",
+        );
+      };
+      const persistTranscriptCheckpoint = async (
+        options: {
+          requireAccepted?: boolean;
+        } = {},
+      ): Promise<AgentTranscriptWriteResult | undefined> => {
+        if (!newTranscriptMessages.length) return "skipped";
+        const committed = await commitSemanticCheckpoint({
+          sourceMessages: [
+            ...transcriptSegment.messages,
+            ...newTranscriptMessages,
+          ],
+        });
+        if (options.requireAccepted) {
+          requireAcceptedCheckpointWrite(committed.writeResult);
+        }
+        if (
+          committed.writeResult !== "persisted" &&
+          committed.writeResult !== "memory_only"
+        ) {
+          return committed.writeResult;
+        }
+        newTranscriptMessages.splice(0, newTranscriptMessages.length);
+        return committed.writeResult;
+      };
+      const restartFromSemanticCheckpoint = async (params: {
+        sourceMessages: AgentModelMessage[];
+        handleRecords?: AgentToolResultHandleRecord[];
+        retryInstruction?: string;
+      }): Promise<void> => {
+        const committed = await commitSemanticCheckpoint({
+          sourceMessages: params.sourceMessages,
+          preservedHandleRecords: params.handleRecords,
+          retryInstruction: params.retryInstruction,
+        });
+        requireAcceptedCheckpointWrite(committed.writeResult);
+        if (committed.handleCount) {
+          toolResultReadAvailable = true;
+          setToolResultReadAvailability(request, true);
+        }
+        const restartMessages = composeAgentModelInput(
+          renderedPrompt.envelope,
+          {
+            transcriptMessages: [],
+            postTurnMessages: [committed.checkpoint],
+          },
+        );
+        continuationSession.restartWithMessages(restartMessages);
+        newTranscriptMessages.splice(0, newTranscriptMessages.length);
+        latestProviderReplayTokens = 0;
+        adapter.resetState?.();
+      };
 
       for (const skillId of matchedSkills) {
         await emit({ type: "status", text: `Skill activated: ${skillId}` });
       }
 
       let consecutiveToolErrors = 0;
-      const intent = classifyRequest(request);
+      const intent = requestIntent;
       const { maxRounds, maxToolCallsPerRound } = resolveAgentLimits(
         intent.isBulkOperation,
       );
-      let noteWriteCorrectionUsed = false;
-      let fullReadCorrectionUsed = false;
-      const hasSuccessfulFileWrite = () =>
-        toolExecutionRecords.some((record) => isSuccessfulFileIoWrite(record));
-      const hasFullReadAttempt = () =>
-        toolExecutionRecords.some(
-          (record) =>
-            record.name === "paper_read" &&
-            record.ok &&
-            record.input &&
-            typeof record.input === "object" &&
-            (record.input as { mode?: unknown }).mode === "full",
-        );
-      const hasPaperReadScope =
-        request.conversationKind === "paper" ||
-        Boolean(request.activeItemId) ||
-        Boolean(request.selectedPaperContexts?.length) ||
-        Boolean(request.fullTextPaperContexts?.length) ||
-        Boolean(request.pinnedPaperContexts?.length);
+      const finalAnswerController = new AgentFinalAnswerController(
+        request,
+        actionContractSession,
+        transcriptMessagesForPrompt,
+      );
+      let toolCallOverflowCorrectionUsed = false;
       const shouldFlushStreamBuffer = (value: string): boolean => {
         if (!value) return false;
         if (value.length >= 8) return true;
@@ -980,7 +1513,10 @@ export class AgentRuntime {
       const completeRun = async (
         finalText: string,
         status: "completed" | "failed" = "completed",
-        options: { emitFinalEvent?: boolean } = {},
+        options: {
+          emitFinalEvent?: boolean;
+          webAttribution?: WebAttributionAssessment;
+        } = {},
       ): Promise<AgentRuntimeOutcome> => {
         const redactedFinalText =
           turnPathRedactor.redactTerminalText(finalText);
@@ -988,32 +1524,48 @@ export class AgentRuntime {
           await emit({
             type: "final",
             text: redactedFinalText,
+            ...(options.webAttribution?.status === "valid" &&
+            options.webAttribution.anchors.length
+              ? {
+                  webSourceAnchors: options.webAttribution.anchors,
+                }
+              : {}),
           });
         }
-        await finishAgentRun(runId, status, redactedFinalText);
-        if (status === "completed") {
-          await commitAgentReadActivities({
-            conversationKey: request.conversationKey,
-            activities: pendingReadActivities,
-            resourceSignature: resourceContextPlan.resourceSignature,
-          });
-          await commitAgentCoverageActivities({
-            conversationKey: request.conversationKey,
-            activities: pendingReadActivities,
-          });
-          await appendAgentTranscriptMessages({
-            conversationKey: request.conversationKey,
-            compatibilityKey: transcriptCompatibilityKey,
-            messages: turnPathRedactor.redactTerminalValue(
-              newTranscriptMessages,
-            ),
-          });
-          if (redactedFinalText) {
-            await recordAgentTurn(
-              request.conversationKey,
-              turnPathRedactor.redactTerminalText(request.userText),
-              toolsUsedThisTurn,
-              redactedFinalText,
+        await persistIfLive(() =>
+          finishAgentRun(runId, status, redactedFinalText),
+        );
+        // The transcript and the read/coverage ledgers record what this run
+        // DID. Gating them on a clean finish meant a run that exhausted its
+        // rounds -- or was failed by three cancellations -- threw away its own
+        // memory *after* its library writes had already landed, so "continue"
+        // started blind on a library that had already changed.
+        //
+        // recordAgentTurn stays gated below: it is the turn summary, and
+        // summarising an unfinished turn as an answer would be its own lie.
+        {
+          await persistIfLive(() =>
+            commitAgentReadActivities({
+              conversationKey: request.conversationKey,
+              activities: pendingReadActivities,
+              resourceSignature: resourceContextPlan.resourceSignature,
+            }),
+          );
+          await persistIfLive(() =>
+            commitAgentCoverageActivities({
+              conversationKey: request.conversationKey,
+              activities: pendingReadActivities,
+            }),
+          );
+          await persistTranscriptCheckpoint();
+          if (status === "completed" && redactedFinalText) {
+            await persistIfLive(() =>
+              recordAgentTurn(
+                request.conversationKey,
+                turnPathRedactor.redactTerminalText(request.userText),
+                toolsUsedThisTurn,
+                redactedFinalText,
+              ),
             );
           }
         }
@@ -1022,21 +1574,18 @@ export class AgentRuntime {
           runId,
           text: redactedFinalText,
           usedFallback: false,
-        };
+        } as const;
       };
       const emitFinalStep = async (
         step: Extract<AgentModelStep, { kind: "final" }>,
         stepStreamedText: string,
+        webAttribution: WebAttributionAssessment,
       ): Promise<AgentRuntimeOutcome> => {
-        const returnedText = step.text || "";
-        const streamedTextOffset = stepStreamedText
-          ? returnedText.indexOf(stepStreamedText)
-          : -1;
-        const finalText = stepStreamedText
-          ? streamedTextOffset >= 0
-            ? returnedText.slice(streamedTextOffset)
-            : stepStreamedText
-          : returnedText || currentAnswerText || "No response.";
+        const modelFinalText = webAttribution.cleanText;
+        const receiptStatus = actionContractSession.receiptStatus();
+        const finalText = receiptStatus
+          ? `${modelFinalText}\n\n${receiptStatus}`
+          : modelFinalText;
         if (finalText) {
           if (!stepStreamedText) {
             currentAnswerText = finalText;
@@ -1058,22 +1607,23 @@ export class AgentRuntime {
           }
         }
         newTranscriptMessages.push(
-          step.assistantMessage ?? {
-            role: "assistant",
-            content: finalText,
-          },
+          step.assistantMessage
+            ? { ...step.assistantMessage, content: finalText }
+            : { role: "assistant", content: finalText },
         );
-        return completeRun(finalText, "completed");
+        return completeRun(finalText, "completed", { webAttribution });
       };
       const runModelStep = async (
         round: number,
         statusText: string,
       ): Promise<{ step: AgentModelStep; stepStreamedText: string }> => {
         if (params.signal?.aborted) {
-          await finishAgentRun(
-            runId,
-            "cancelled",
-            turnPathRedactor.redactTerminalText(currentAnswerText),
+          await persistIfLive(() =>
+            finishAgentRun(
+              runId,
+              "cancelled",
+              turnPathRedactor.redactTerminalText(currentAnswerText),
+            ),
           );
           throw new Error("Aborted");
         }
@@ -1108,18 +1658,35 @@ export class AgentRuntime {
           stepStreamedText = "";
           stepPendingDelta = "";
         };
+        if (latestProviderReplayTokens > providerReplaySoftLimit) {
+          const replayTokens = latestProviderReplayTokens;
+          await restartFromSemanticCheckpoint({ sourceMessages: messages });
+          await emit({
+            type: "provider_event",
+            providerType: "agent_context_budget",
+            payload: {
+              action: "checkpoint_provider_replay_usage",
+              providerReplayTokens: replayTokens,
+              softLimitTokens: providerReplaySoftLimit,
+            },
+          });
+        }
         const preflight = enforceAgentPromptBudget({
           messages,
           model: request.model,
           inputTokenCap: request.advanced?.inputTokenCap,
+          apiBase: request.apiBase,
+          providerProtocol: request.providerProtocol,
+          authMode: request.authMode,
+          profileOverride: request.advanced?.profileOverride,
           conversationKey: request.conversationKey,
           resourceSignature: resourceContextPlan.resourceSignature,
         });
         if (preflight.changed) {
-          await upsertAgentToolResultHandles(preflight.handleRecords);
-          if (preflight.handleRecords.length) toolResultReadAvailable = true;
-          messages.splice(0, messages.length, ...preflight.messages);
-          adapter.resetState?.();
+          await restartFromSemanticCheckpoint({
+            sourceMessages: preflight.messages,
+            handleRecords: preflight.handleRecords,
+          });
           await emit({
             type: "provider_event",
             providerType: "agent_context_budget",
@@ -1139,6 +1706,9 @@ export class AgentRuntime {
         setToolResultReadAvailability(request, stepToolResultReadAvailable);
         const stepToolSpecs = this.registry.listToolsForRequest(request);
         const stepContextWindow = preflight.contextWindow;
+        const stepInputLimitIsUserAuthoritative =
+          preflight.inputLimitSource === "advanced" ||
+          preflight.inputLimitSource === "user";
         const stepContextTokens = preflight.estimatedAfterTokens;
         if (stepContextTokens > 0 && stepContextWindow > 0) {
           await emit({
@@ -1151,9 +1721,11 @@ export class AgentRuntime {
             contextWindow: stepContextWindow,
           });
         }
+        const modelInput = continuationSession.inputForNextStep();
         const step = await adapter.runStep({
           request,
-          messages,
+          messages: modelInput.messages,
+          continuationMessages: modelInput.continuationMessages,
           tools: stepToolSpecs,
           signal: params.signal,
           onTextDelta: async (delta) => {
@@ -1185,14 +1757,19 @@ export class AgentRuntime {
               Number.isFinite(usageRecord.contextTokens)
                 ? Math.max(0, usageRecord.contextTokens)
                 : undefined;
-            const contextWindow =
+            const providerContextWindow =
               typeof usageRecord.contextWindow === "number" &&
               Number.isFinite(usageRecord.contextWindow)
                 ? Math.max(0, usageRecord.contextWindow)
-                : typeof contextTokens === "number" && contextTokens > 0
+                : undefined;
+            const contextWindow = stepInputLimitIsUserAuthoritative
+              ? stepContextWindow
+              : providerContextWindow ||
+                (typeof contextTokens === "number" && contextTokens > 0
                   ? stepContextWindow
-                  : undefined;
+                  : undefined);
             const contextWindowIsAuthoritative =
+              !stepInputLimitIsUserAuthoritative &&
               usageRecord.contextWindowIsAuthoritative === true;
             const percentage =
               typeof usageRecord.percentage === "number" &&
@@ -1233,6 +1810,11 @@ export class AgentRuntime {
               usageRecord.cacheProvider.trim()
                 ? usageRecord.cacheProvider.trim()
                 : undefined;
+            latestProviderReplayTokens = Math.max(
+              latestProviderReplayTokens,
+              totalTokens,
+              typeof contextTokens === "number" ? contextTokens : 0,
+            );
             if (
               totalTokens <= 0 &&
               promptTokens <= 0 &&
@@ -1298,9 +1880,11 @@ export class AgentRuntime {
                 content: outcome.finalText,
               });
             }
+            await persistTranscriptCheckpoint();
             return buildAdapterToolCallResult(outcome);
           },
         });
+        continuationSession.commitProviderResponse();
         await flushStepDelta();
         return {
           step,
@@ -1344,6 +1928,25 @@ export class AgentRuntime {
           inheritedApproval?: AgentInheritedApproval;
         } = {},
       ): Promise<ExecutedToolCall> => {
+        const lifecycleError = (): ExecutedToolCall => ({
+          toolResult: {
+            callId: call.id,
+            name: call.name,
+            ok: false,
+            actionReceipts: [
+              createUnverifiedReceipt({
+                reason: "Conversation lifecycle changed before execution.",
+              }),
+            ],
+            content: {
+              error:
+                "Conversation lifecycle changed before this tool could execute.",
+            },
+          },
+        });
+        const executionAllowed = () =>
+          !params.signal?.aborted && writeAllowed();
+        if (!executionAllowed()) return lifecycleError();
         await emit({
           type: "tool_call",
           callId: call.id,
@@ -1358,7 +1961,11 @@ export class AgentRuntime {
             currentAnswerText,
           },
           {
+            callerKind: options.inheritedApproval ? "action" : "model",
             inheritedApproval: options.inheritedApproval,
+            isExecutionAllowed: executionAllowed,
+            executeWithLock: (task) =>
+              withConversationWriteLock(request.conversationKey, task),
           },
         );
         let executedCall: {
@@ -1370,6 +1977,7 @@ export class AgentRuntime {
           const { resolution } = await requestActionResolution(
             execution.action,
           );
+          if (!executionAllowed()) return lifecycleError();
           const confirmedExecution = resolution.approved
             ? await execution.execute(resolution.data)
             : execution.deny(resolution.data);
@@ -1379,6 +1987,7 @@ export class AgentRuntime {
             input: confirmedExecution.input,
           };
         } else {
+          if (!executionAllowed()) return lifecycleError();
           executedCall = {
             toolResult: execution.execution.result,
             toolDefinition: execution.execution.tool,
@@ -1389,6 +1998,8 @@ export class AgentRuntime {
         toolExecutionRecords.push({
           name: toolResult.name,
           ok: toolResult.ok,
+          mutability: executedCall.toolDefinition?.spec.mutability,
+          effect: toolResult.effect,
           input: executedCall.input,
           content: toolResult.content,
         });
@@ -1408,9 +2019,17 @@ export class AgentRuntime {
             timestamp: this.now(),
           });
         } else {
-          consecutiveToolErrors += 1;
           const rawError = readToolError(toolResult);
-          if (rawError && rawError.toLowerCase() !== "user denied action") {
+          const userDenied =
+            !!rawError && rawError.toLowerCase() === "user denied action";
+          // A denial is the user steering, not the tool failing. Counting it
+          // meant three careful "Cancel" clicks failed the run outright and
+          // -- because persistence is gated on completion -- discarded its
+          // memory along with it.
+          if (!userDenied) {
+            consecutiveToolErrors += 1;
+          }
+          if (rawError && !userDenied) {
             await emit({
               type: "tool_error",
               callId: toolResult.callId,
@@ -1425,9 +2044,14 @@ export class AgentRuntime {
           callId: toolResult.callId,
           name: toolResult.name,
           ok: toolResult.ok,
+          effect: toolResult.effect,
+          actionReceipts: toolResult.actionReceipts,
           content: toolResult.content,
           artifacts: toolResult.artifacts,
         });
+        await actionContractSession.recordToolReceipts(
+          toolResult.actionReceipts,
+        );
         return executedCall;
       };
       const buildToolDelivery = async (
@@ -1464,10 +2088,23 @@ export class AgentRuntime {
         if (filteredFollowupMessage) {
           followupMessages.push(filteredFollowupMessage);
         }
+        const rawContent = contentOverride ?? toolResult.content;
+        const contentWithReceipt =
+          rawContent &&
+          typeof rawContent === "object" &&
+          !Array.isArray(rawContent)
+            ? {
+                ...(rawContent as Record<string, unknown>),
+                actionReceipts: toolResult.actionReceipts,
+              }
+            : {
+                content: rawContent,
+                actionReceipts: toolResult.actionReceipts,
+              };
         return {
           callId,
           name: toolResult.name,
-          content: contentOverride ?? toolResult.content,
+          content: contentWithReceipt,
           followupMessages,
         };
       };
@@ -1480,6 +2117,24 @@ export class AgentRuntime {
           inheritedApproval?: AgentInheritedApproval;
         } = {},
       ): Promise<ToolWorkflowOutcome> => {
+        if (params.signal?.aborted || !writeAllowed()) {
+          return {
+            toolResult: {
+              callId: call.id,
+              name: call.name,
+              ok: false,
+              actionReceipts: [
+                createUnverifiedReceipt({
+                  reason: "Conversation lifecycle changed before execution.",
+                }),
+              ],
+              content: {
+                error:
+                  "Conversation lifecycle changed before this tool could execute.",
+              },
+            },
+          };
+        }
         const executedCall = await executePreparedToolCall(call, round, {
           inheritedApproval: options.inheritedApproval,
         });
@@ -1517,6 +2172,9 @@ export class AgentRuntime {
             }
 
             const { resolution } = await requestActionResolution(reviewAction);
+            if (params.signal?.aborted || !writeAllowed()) {
+              return { toolResult: currentResult };
+            }
             const reviewOutcome = await toolDefinition.resolveResultReview(
               currentInput as never,
               currentResult,
@@ -1605,150 +2263,221 @@ export class AgentRuntime {
           text: stepStreamedText,
         });
       };
-      for (let round = 1; round <= maxRounds; round += 1) {
-        let stepResult: { step: AgentModelStep; stepStreamedText: string };
-        try {
-          stepResult = await runModelStep(
-            round,
-            round === 1
-              ? "Running agent"
-              : `Continuing agent (${round}/${maxRounds})`,
-          );
-        } catch (err) {
-          if (err instanceof AgentPromptBudgetError) {
-            return completeRun(err.message, "failed");
-          }
-          throw err;
-        }
-        const { step, stepStreamedText } = stepResult;
-        if (step.kind === "final") {
-          if (
-            intent.requiresFullPaperRead &&
-            hasPaperReadScope &&
-            !hasFullReadAttempt()
-          ) {
-            await rollbackCommittedStreamedText(stepStreamedText);
-            if (!fullReadCorrectionUsed) {
-              fullReadCorrectionUsed = true;
-              const assistantCorrectionMessage: AgentModelMessage =
-                step.assistantMessage ?? {
-                  role: "assistant",
-                  content: step.text || stepStreamedText,
-                };
-              const userCorrectionMessage: AgentModelMessage = {
-                role: "user",
-                content:
-                  "Correction for this turn: the user explicitly requested exhaustive full-text reading. Call `paper_read({ mode:'full' })` for the active or explicitly targeted paper now. Overview and targeted retrieval do not satisfy this request. Preserve the returned coverage receipt, and if it is partial or unreadable, state that limitation instead of claiming the whole text was read.",
-              };
-              messages.push(assistantCorrectionMessage, userCorrectionMessage);
-              newTranscriptMessages.push(
-                assistantCorrectionMessage,
-                userCorrectionMessage,
-              );
-              continue;
+      let round = 0;
+      let segment = 1;
+      const seenProgressFingerprints = new Set<string>();
+      while (true) {
+        const segmentRecordStart = toolExecutionRecords.length;
+        for (
+          let segmentRound = 1;
+          segmentRound <= maxRounds;
+          segmentRound += 1
+        ) {
+          round += 1;
+          let stepResult: { step: AgentModelStep; stepStreamedText: string };
+          try {
+            stepResult = await runModelStep(
+              round,
+              round === 1
+                ? "Running agent"
+                : segment === 1
+                  ? `Continuing agent (${segmentRound}/${maxRounds})`
+                  : `Continuing agent (segment ${segment}, ${segmentRound}/${maxRounds})`,
+            );
+          } catch (err) {
+            if (err instanceof AgentPromptBudgetError) {
+              return completeRun(err.message, "failed");
             }
-            return completeRun(
-              "I could not complete the requested full-text read because the model did not call `paper_read({ mode:'full' })` after being corrected.",
-              "failed",
+            throw err;
+          }
+          const { step, stepStreamedText } = stepResult;
+          if (step.kind === "final") {
+            const returnedText = step.text || "";
+            const streamedTextOffset = stepStreamedText
+              ? returnedText.indexOf(stepStreamedText)
+              : -1;
+            const rawModelFinalText = stepStreamedText
+              ? streamedTextOffset >= 0
+                ? returnedText.slice(streamedTextOffset)
+                : stepStreamedText
+              : returnedText || currentAnswerText || "No response.";
+            const finalDecision = await finalAnswerController.evaluate({
+              candidateText:
+                turnPathRedactor.redactTerminalText(rawModelFinalText),
+              canCorrect: segmentRound < maxRounds,
+              toolExecutionRecords,
+            });
+            if (finalDecision.kind !== "accept") {
+              await rollbackCommittedStreamedText(stepStreamedText);
+              if (finalDecision.kind === "correct") {
+                const assistantCorrectionMessage: AgentAssistantMessage = {
+                  ...(step.assistantMessage ?? {
+                    role: "assistant" as const,
+                    content: step.text || stepStreamedText,
+                  }),
+                  ...(typeof finalDecision.assistantContent === "string"
+                    ? { content: finalDecision.assistantContent }
+                    : {}),
+                };
+                const userCorrectionMessage: AgentUserMessage = {
+                  role: "user",
+                  content: finalDecision.correction,
+                };
+                newTranscriptMessages.push(
+                  ...continuationSession.appendFinalCorrection({
+                    assistantMessage: assistantCorrectionMessage,
+                    correctionMessage: userCorrectionMessage,
+                  }),
+                );
+                await persistTranscriptCheckpoint({
+                  requireAccepted: Boolean(
+                    finalDecision.actionContractRejection,
+                  ),
+                });
+                if (finalDecision.actionContractRejection) {
+                  actionContractSession.commitRejectedFinal(
+                    finalDecision.actionContractRejection,
+                  );
+                }
+                continue;
+              }
+              if (finalDecision.actionContractRejection) {
+                actionContractSession.commitRejectedFinal(
+                  finalDecision.actionContractRejection,
+                );
+              }
+              return completeRun(finalDecision.userMessage, "failed");
+            }
+            return emitFinalStep(
+              step,
+              stepStreamedText,
+              finalDecision.webAttribution,
             );
           }
-          if (
-            requiresFileNoteWrite &&
-            !hasSuccessfulFileWrite() &&
-            isNotesDirectoryConfigured()
-          ) {
-            await rollbackCommittedStreamedText(stepStreamedText);
-            if (!noteWriteCorrectionUsed) {
-              noteWriteCorrectionUsed = true;
-              const assistantCorrectionMessage: AgentModelMessage =
-                step.assistantMessage ?? {
-                  role: "assistant",
-                  content: stepStreamedText,
-                };
-              const userCorrectionMessage: AgentModelMessage = {
-                role: "user",
-                content:
-                  'Correction for this turn: the user\'s request requires writing a Markdown note to the configured notes directory. Call `file_io` with `action: "write"` now, using the configured notes directory/default target path and a clear `.md` filename.' +
-                  (noteWritePolicy
-                    ? ` Default target path: ${noteWritePolicy.defaultTargetPath}.`
-                    : "") +
-                  " Do not put the note body in chat. If a write is impossible, explain the setup problem briefly.",
-              };
-              messages.push(assistantCorrectionMessage, userCorrectionMessage);
-              newTranscriptMessages.push(
-                assistantCorrectionMessage,
-                userCorrectionMessage,
+
+          // The step returned tool_calls, not a final answer.  Any text the
+          // model streamed during this step is intermediate "thinking" text
+          // (e.g. "Let me read more of the paper...") that should appear in
+          // the agent trace but NOT in the final chat answer.  Roll it back.
+          await rollbackCommittedStreamedText(stepStreamedText);
+
+          if (step.calls.length > maxToolCallsPerRound) {
+            const overflowMessage = `The model returned ${step.calls.length} tool calls in one step, exceeding the safe limit of ${maxToolCallsPerRound}. None of those calls were executed.`;
+            if (toolCallOverflowCorrectionUsed || segmentRound >= maxRounds) {
+              return completeRun(
+                `${overflowMessage} Please narrow the request and try again.`,
+                "failed",
               );
-              continue;
             }
-            const nickname = getNotesDirectoryNickname().trim();
-            const targetLabel = nickname ? `${nickname} note` : "note";
-            return completeRun(
-              `I could not complete the ${targetLabel} write because the model did not call \`file_io({ action:'write', filePath, content })\` after being corrected.`,
-              "failed",
-            );
+            toolCallOverflowCorrectionUsed = true;
+            await restartFromSemanticCheckpoint({
+              sourceMessages: messages,
+              retryInstruction: `${overflowMessage} Retry with a complete new step containing at most ${maxToolCallsPerRound} tool calls. Do not assume that any result exists for the rejected calls.`,
+            });
+            await emit({
+              type: "provider_event",
+              providerType: "agent_tool_call_overflow",
+              payload: {
+                action: "checkpoint_and_retry",
+                returnedToolCalls: step.calls.length,
+                maxToolCallsPerRound,
+              },
+            });
+            continue;
           }
-          return emitFinalStep(step, stepStreamedText);
+
+          const calls = step.calls;
+          const assistantToolMessage: AgentAssistantMessage =
+            step.assistantMessage;
+          if (!calls.length) break;
+          continuationSession.beginToolStep(assistantToolMessage);
+          newTranscriptMessages.push(assistantToolMessage);
+          const roundToolMessages: AgentToolMessage[] = [];
+          const roundFollowupMessages: AgentModelMessage[] = [];
+          const appendRoundContinuation = () => {
+            const delta = continuationSession.completeToolStep({
+              toolMessages: roundToolMessages,
+              followupMessages: roundFollowupMessages,
+            });
+            newTranscriptMessages.push(...delta);
+          };
+          for (const call of calls) {
+            const outcome = await executeToolWorkflow(call, round, {
+              modelCallId: call.id,
+            });
+            if (outcome.delivery) {
+              const toolMessage: AgentToolMessage = {
+                role: "tool",
+                tool_call_id: outcome.delivery.callId,
+                name: outcome.delivery.name,
+                content: JSON.stringify(
+                  outcome.delivery.content ?? {},
+                  null,
+                  2,
+                ),
+              };
+              roundToolMessages.push(toolMessage);
+              for (const followupMessage of outcome.delivery.followupMessages) {
+                roundFollowupMessages.push(followupMessage);
+              }
+            }
+            if (outcome.stopRun) {
+              appendRoundContinuation();
+              const stopFinalText = outcome.finalText || currentAnswerText;
+              if (stopFinalText) {
+                newTranscriptMessages.push({
+                  role: "assistant",
+                  content: stopFinalText,
+                });
+              }
+              await persistTranscriptCheckpoint();
+              return completeRun(stopFinalText, "completed");
+            }
+            if (consecutiveToolErrors >= 3) {
+              appendRoundContinuation();
+              await persistTranscriptCheckpoint();
+              const finalText =
+                currentAnswerText ||
+                "Agent stopped after repeated tool errors. Please adjust the request and try again.";
+              return completeRun(finalText, "failed");
+            }
+          }
+          appendRoundContinuation();
+          await persistTranscriptCheckpoint();
         }
 
-        // The step returned tool_calls, not a final answer.  Any text the
-        // model streamed during this step is intermediate "thinking" text
-        // (e.g. "Let me read more of the paper...") that should appear in
-        // the agent trace but NOT in the final chat answer.  Roll it back.
-        await rollbackCommittedStreamedText(stepStreamedText);
-
-        const calls = step.calls.slice(0, maxToolCallsPerRound);
-        const assistantToolMessage: AgentModelMessage = {
-          ...step.assistantMessage,
-          tool_calls: Array.isArray(step.assistantMessage.tool_calls)
-            ? step.assistantMessage.tool_calls.slice(0, maxToolCallsPerRound)
-            : step.assistantMessage.tool_calls,
-        };
-        messages.push(assistantToolMessage);
-        newTranscriptMessages.push(assistantToolMessage);
-        if (!calls.length) break;
-        for (const call of calls) {
-          const outcome = await executeToolWorkflow(call, round, {
-            modelCallId: call.id,
-          });
-          if (outcome.delivery) {
-            const toolMessage: AgentModelMessage = {
-              role: "tool",
-              tool_call_id: outcome.delivery.callId,
-              name: outcome.delivery.name,
-              content: JSON.stringify(outcome.delivery.content ?? {}, null, 2),
-            };
-            messages.push(toolMessage);
-            newTranscriptMessages.push(toolMessage);
-            for (const followupMessage of outcome.delivery.followupMessages) {
-              messages.push(followupMessage);
-              newTranscriptMessages.push(followupMessage);
-            }
-          }
-          if (outcome.stopRun) {
-            const stopFinalText = outcome.finalText || currentAnswerText;
-            if (stopFinalText) {
-              newTranscriptMessages.push({
-                role: "assistant",
-                content: stopFinalText,
-              });
-            }
-            return completeRun(stopFinalText, "completed");
-          }
-          if (consecutiveToolErrors >= 3) {
-            const finalText =
-              currentAnswerText ||
-              "Agent stopped after repeated tool errors. Please adjust the request and try again.";
-            return completeRun(finalText, "failed");
-          }
+        const newFingerprints = toolExecutionRecords
+          .slice(segmentRecordStart)
+          .filter(
+            (record) =>
+              record.ok &&
+              (record.mutability !== "write" ||
+                record.effect === "applied" ||
+                record.effect === "partial"),
+          )
+          .map(buildToolProgressFingerprint)
+          .filter((fingerprint) => !seenProgressFingerprints.has(fingerprint));
+        if (!newFingerprints.length) {
+          const finalText =
+            currentAnswerText ||
+            `Agent stopped after segment ${segment} produced no new successful tool result. The completed transcript was saved; narrow or redirect the request before continuing.`;
+          return completeRun(finalText, "failed");
         }
+        for (const fingerprint of newFingerprints) {
+          seenProgressFingerprints.add(fingerprint);
+        }
+        // This is the durable continuation boundary. If Zotero or the model
+        // process exits later, the next turn can continue from the complete
+        // tool-call/result pairs checkpointed here instead of starting blind.
+        await persistTranscriptCheckpoint();
+        await emit({
+          type: "status",
+          text: `Checkpointed agent segment ${segment}; continuing`,
+        });
+        segment += 1;
       }
-
-      const finalText =
-        currentAnswerText ||
-        "Agent stopped before reaching a final answer. Try narrowing the request.";
-      return completeRun(finalText, "failed");
     } finally {
+      if (webSourceRunId) clearWebSourcesForRun(webSourceRunId);
       pathLease.release();
     }
   }

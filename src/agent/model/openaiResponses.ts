@@ -1,15 +1,13 @@
 import {
   buildReasoningPayload,
   buildPromptCachePayloadHints,
+  normalizeMaxTokensForRequest,
   postWithReasoningFallback,
   resolveRequestAuthState,
   uploadFilesForResponses,
   type ChatFileAttachment,
 } from "../../utils/llmClient";
-import {
-  normalizeMaxTokensForModel,
-  normalizeTemperature,
-} from "../../utils/normalization";
+import { normalizeTemperature } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
 import type {
   AgentModelCapabilities,
@@ -22,15 +20,11 @@ import { buildAgentModelCapabilities } from "./contentCapabilities";
 import {
   buildResponsesContinuationInput,
   buildResponsesInitialInput,
-  limitNormalizedResponsesStep,
   type ResponsesPayload,
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import {
-  buildResponsesFunctionTools,
-  getToolContinuationMessages,
-} from "./shared";
+import { buildResponsesFunctionTools } from "./shared";
 import { resolveRequestContentInputs } from "./messageBuilder";
 
 async function uploadFilePart(
@@ -96,7 +90,7 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
       "You are the agent runtime inside a Zotero plugin.";
     const followupInput = this.conversationItems
       ? await buildResponsesContinuationInput(
-          getToolContinuationMessages(params.messages),
+          params.continuationMessages || [],
           {
             resolveFilePart: async (part, signal) =>
               uploadFilePart(part, request, signal),
@@ -124,6 +118,7 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           request.model,
           request.apiBase,
           "responses_api",
+          { profileOverride: request.advanced?.profileOverride },
         );
         return {
           model: request.model,
@@ -135,10 +130,15 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           tool_choice: "auto",
           store: false,
           stream: true,
-          max_output_tokens: normalizeMaxTokensForModel(
-            request.advanced?.maxTokens,
-            request.model,
-          ),
+          max_output_tokens: normalizeMaxTokensForRequest({
+            value: request.advanced?.maxTokens,
+            maxTokensExplicit: request.advanced?.maxTokensExplicit,
+            model: request.model || "",
+            apiBase: request.apiBase,
+            protocol: "responses_api",
+            authMode: request.authMode,
+            profileOverride: request.advanced?.profileOverride,
+          }),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
             ? {}
@@ -151,18 +151,16 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
       },
       signal: params.signal,
     });
-    const normalized = limitNormalizedResponsesStep(
-      response.body
-        ? await parseResponsesStepStream(
-            response.body,
-            params.onTextDelta,
-            params.onReasoning,
-            params.onUsage,
-          )
-        : normalizeResponsesStepFromPayload(
-            (await response.json()) as ResponsesPayload,
-          ),
-    );
+    const normalized = response.body
+      ? await parseResponsesStepStream(
+          response.body,
+          params.onTextDelta,
+          params.onReasoning,
+          params.onUsage,
+        )
+      : normalizeResponsesStepFromPayload(
+          (await response.json()) as ResponsesPayload,
+        );
     this.conversationItems = [...inputItems, ...normalized.outputItems];
     if (normalized.toolCalls.length) {
       return {

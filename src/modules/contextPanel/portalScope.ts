@@ -489,7 +489,7 @@ export function resolveRememberedGlobalPanelItem(
       : createGlobalPortalItem(normalizedLibraryID, conversationKey);
 }
 
-function resolvePaperConversationKeyForBaseItem(
+export function resolvePaperConversationKeyForBaseItem(
   basePaperItem: Zotero.Item,
   system: ConversationSystem,
 ): number {

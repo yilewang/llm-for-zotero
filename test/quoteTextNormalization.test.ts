@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   buildQuoteTextIndex,
+  collectQuoteTextAlignmentRunsAllowingLayoutFragments,
   findCanonicalQuoteSourceSpan,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   findQuoteSourceSpansAllowingLayoutArtifactsFromIndex,
@@ -9,6 +10,39 @@ import {
 } from "../src/modules/contextPanel/quoteTextNormalization";
 
 describe("quoteTextNormalization", function () {
+  it("keeps repetitive fragment alignment bounded below the state ceiling", function () {
+    this.timeout(1500);
+    const sourceIndex = buildQuoteTextIndex(
+      Array.from({ length: 400 }, () => "repeat").join(" "),
+    );
+    const queryIndex = buildQuoteTextIndex(
+      Array.from({ length: 400 }, () => "repeat").join(" "),
+    );
+
+    assert.isNotEmpty(
+      collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+        sourceIndex,
+        queryIndex,
+      ),
+    );
+  });
+
+  it("fails closed when fragment alignment exceeds the state ceiling", function () {
+    const sourceIndex = buildQuoteTextIndex(
+      Array.from({ length: 500 }, () => "repeat").join(" "),
+    );
+    const queryIndex = buildQuoteTextIndex(
+      Array.from({ length: 500 }, () => "repeat").join(" "),
+    );
+
+    assert.isEmpty(
+      collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+        sourceIndex,
+        queryIndex,
+      ),
+    );
+  });
+
   it("normalizes MinerU math and PDF punctuation without content-word repairs", function () {
     assert.equal(
       normalizeQuoteTextCanonical(

@@ -105,7 +105,13 @@ describe("menu action controller note routing", function () {
   class MockNoteItem {
     id = 0;
     libraryID = 0;
+    key = "NOTEKEY";
+    itemTypeID = 1;
     parentID?: number;
+    dateAdded = "";
+    dateModified = "";
+    version = 0;
+    readonly persistedNoteHtml: string[] = [];
     private noteHtml = "";
 
     constructor(itemType: string) {
@@ -116,6 +122,10 @@ describe("menu action controller note routing", function () {
       return true;
     }
 
+    isAttachment() {
+      return false;
+    }
+
     setNote(html: string) {
       this.noteHtml = html;
     }
@@ -124,11 +134,29 @@ describe("menu action controller note routing", function () {
       return this.noteHtml;
     }
 
+    getField(fieldName: string) {
+      if (fieldName === "dateAdded") return this.dateAdded;
+      if (fieldName === "dateModified") return this.dateModified;
+      return "";
+    }
+
+    getNoteTitle() {
+      return "";
+    }
+
+    getDisplayTitle() {
+      return "";
+    }
+
     async saveTx() {
+      this.persistedNoteHtml.push(this.noteHtml);
       if (!this.id) {
         this.id = 100 + savedNotes.length;
+        this.dateAdded = "2026-08-28 10:00:00";
         savedNotes.push(this);
       }
+      this.version += 1;
+      this.dateModified = `2026-08-28 10:00:0${this.version}`;
       return this.id;
     }
   }
@@ -296,7 +324,7 @@ describe("menu action controller note routing", function () {
     assert.deepEqual(target?.generatedImages, [generatedImage]);
   });
 
-  it("saves response notes as child item notes in paper chat mode", async function () {
+  it("deduplicates concurrent response-note saves in paper chat mode", async function () {
     const responseMenu = new FakeElement();
     const responseMenuNoteBtn = new FakeElement();
     const status = new FakeElement();
@@ -353,7 +381,10 @@ describe("menu action controller note routing", function () {
       },
     });
 
-    await responseMenuNoteBtn.dispatch("click");
+    await Promise.all([
+      responseMenuNoteBtn.dispatch("click"),
+      responseMenuNoteBtn.dispatch("click"),
+    ]);
 
     assert.lengthOf(savedNotes, 1);
     assert.equal(savedNotes[0].libraryID, 1);
@@ -552,6 +583,15 @@ describe("menu action controller note routing", function () {
     assert.equal(savedNotes[0].parentID, 42);
     assert.include(savedNotes[0].getNote(), "Footer mapped question");
     assert.include(savedNotes[0].getNote(), "Footer mapped answer.");
+    assert.lengthOf(savedNotes[0].persistedNoteHtml, 2);
+    assert.equal(
+      savedNotes[0].persistedNoteHtml.at(-1),
+      savedNotes[0].getNote(),
+    );
+    assert.notInclude(
+      savedNotes[0].persistedNoteHtml.join("\n"),
+      "Preparing note figures",
+    );
     assert.equal(status.textContent, "Created a new note");
   });
 

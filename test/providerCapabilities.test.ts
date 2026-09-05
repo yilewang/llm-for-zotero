@@ -167,7 +167,7 @@ describe("provider capabilities", function () {
     }
   });
 
-  it("keeps known DeepSeek API models image-disabled", function () {
+  it("keeps known DeepSeek text families conservative in automatic mode", function () {
     for (const model of [
       "deepseek-chat",
       "deepseek-reasoner",
@@ -186,6 +186,28 @@ describe("provider capabilities", function () {
           pdf: "none",
           images: false,
           multimodal: false,
+        },
+      );
+    }
+  });
+
+  it("allows explicit and unknown DeepSeek vision-capable names", function () {
+    for (const model of [
+      "deepseek-v4-flash-vision-exp",
+      "deepseek-vl2",
+      "deepseek-custom",
+    ]) {
+      assert.isFalse(isTextOnlyModel(model), model);
+      assert.deepInclude(
+        resolveProviderCapabilities({
+          model,
+          apiBase: "https://api.deepseek.com/v1",
+          protocol: "openai_chat_compat",
+        }),
+        {
+          pdf: "none",
+          images: true,
+          multimodal: true,
         },
       );
     }
@@ -256,6 +278,7 @@ describe("provider capabilities", function () {
       "local-text-only",
       "local-reasoner",
       "deepseek-embedding",
+      "deepseek-vl2-text-only",
     ]) {
       assert.isTrue(isTextOnlyModel(model), model);
     }

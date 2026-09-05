@@ -185,9 +185,7 @@ function describeMetadataResult(result: Record<string, unknown>): string {
 
 function getReferencePaperTitle(context: AgentToolContext): string | undefined {
   return (
-    context.request.selectedPaperContexts?.[0]?.title ||
-    context.request.fullTextPaperContexts?.[0]?.title ||
-    context.request.pinnedPaperContexts?.[0]?.title ||
+    context.request.turnPaperScope.papers[0]?.paper.title ||
     context.item?.getDisplayTitle?.() ||
     undefined
   );
@@ -196,12 +194,7 @@ function getReferencePaperTitle(context: AgentToolContext): string | undefined {
 function getReferencePaperContext(
   context: AgentToolContext,
 ): PaperContextRef | undefined {
-  return (
-    context.request.selectedPaperContexts?.[0] ||
-    context.request.fullTextPaperContexts?.[0] ||
-    context.request.pinnedPaperContexts?.[0] ||
-    undefined
-  );
+  return context.request.turnPaperScope.papers[0]?.paper;
 }
 
 function normalizeTitleKey(title: string): string {
@@ -1000,6 +993,19 @@ export function resolveSearchLiteratureReview(
           kind: "identifiers",
           identifiers,
           libraryID: normalizedArgs.libraryID || context.request.libraryID,
+          // The card dropped this entirely, so the path the UI actually
+          // steers users toward — search, review, Import — could never file
+          // into a collection and dumped everything into the library root.
+          // The collection the turn was scoped to is the obvious default.
+          targetCollectionId:
+            readPositiveInt(
+              (normalizedArgs as { targetCollectionId?: unknown })
+                .targetCollectionId,
+            ) ||
+            readPositiveInt(
+              context.request.turnPaperScope.collections[0]?.collectionId,
+            ) ||
+            undefined,
         },
         inheritedApproval: {
           sourceToolName: "literature_search",

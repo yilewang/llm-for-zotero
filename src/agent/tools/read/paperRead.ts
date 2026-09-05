@@ -30,8 +30,7 @@ import {
 import {
   buildCaptureFollowupMessage,
   inferPdfMode,
-  normalizeTarget,
-  normalizeTargets,
+  normalizeExplicitTargetSyntax,
   describeNoDefaultPaperTarget,
   resolveDefaultTargets,
 } from "./pdfToolUtils";
@@ -44,8 +43,15 @@ import {
   type FullReadPaperResult,
 } from "../../../shared/exhaustiveDocumentReader";
 import { resolveFullReadPaperTargets } from "../../../shared/fullReadTargetResolver";
+import { getTurnPapersWithRoles } from "../../context/requestTurnPaperScope";
 import { detectExplicitFullReadIntent } from "../../../modules/contextPanel/retrievalQueryPlan";
 import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppServer/exhaustiveReader";
+import { createZoteroMetadataResolver } from "../../../services/zoteroMetadata/resolver";
+import { projectPaperMetadata } from "../../../services/zoteroMetadata/projections";
+import type {
+  ProjectedPaperMetadata,
+  ZoteroMetadataResolver,
+} from "../../../services/zoteroMetadata/types";
 
 type PaperReadMode =
   | "overview"
@@ -137,7 +143,7 @@ function dedupePaperContexts(
 ): NonNullable<PdfTarget["paperContext"]>[] {
   const seen = new Set<string>();
   return paperContexts.filter((paperContext) => {
-    const key = `${paperContext.itemId}:${paperContext.contextItemId}`;
+    const key = `${paperContext.libraryID || 0}:${paperContext.itemId}:${paperContext.contextItemId}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -167,22 +173,18 @@ function resolveFullReadTargets(params: {
   }
   const requestText = userText || params.input.query || "";
   if (!requestText && explicitTargets.length) return explicitTargets;
-  const selected = dedupePaperContexts(
-    params.context.request.selectedPaperContexts || [],
-  );
+  const selected = dedupePaperContexts([
+    ...getTurnPapersWithRoles(params.context.request, ["selected"]),
+  ]);
+  const activePaper = getTurnPapersWithRoles(params.context.request, [
+    "active",
+  ])[0];
   const available = dedupePaperContexts([
     ...params.zoteroGateway.listPaperContexts(params.context.request),
+    ...(activePaper ? [activePaper] : []),
     ...selected,
     ...explicitTargets,
   ]);
-  const activeItemId = Math.floor(
-    Number(params.context.request.activeItemId || 0),
-  );
-  const activePaper = available.find(
-    (paperContext) =>
-      paperContext.itemId === activeItemId ||
-      paperContext.contextItemId === activeItemId,
-  );
   const intendedTargets = resolveFullReadPaperTargets({
     question: requestText,
     availablePapers: available,
@@ -193,13 +195,13 @@ function resolveFullReadTargets(params: {
     const intendedKeys = new Set(
       intendedTargets.map(
         (paperContext) =>
-          `${paperContext.itemId}:${paperContext.contextItemId}`,
+          `${paperContext.libraryID || 0}:${paperContext.itemId}:${paperContext.contextItemId}`,
       ),
     );
     const explicitKeys = new Set(
       explicitTargets.map(
         (paperContext) =>
-          `${paperContext.itemId}:${paperContext.contextItemId}`,
+          `${paperContext.libraryID || 0}:${paperContext.itemId}:${paperContext.contextItemId}`,
       ),
     );
     const targetsAgree =
@@ -427,54 +429,47 @@ function normalizeMetadataValue(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
-function formatCreatorList(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  const creators = value
-    .map((creator) => {
-      if (!creator || typeof creator !== "object") return "";
-      const record = creator as Record<string, unknown>;
-      const name = normalizeMetadataValue(record.name);
-      if (name) return name;
-      return [record.firstName, record.lastName]
-        .map(normalizeMetadataValue)
-        .filter(Boolean)
-        .join(" ");
-    })
-    .filter(Boolean);
-  return creators.join(", ");
+function resolveMetadataOverviewTitle(
+  metadata: ProjectedPaperMetadata,
+): string {
+  const bibliographicTitle = normalizeMetadataValue(metadata.title);
+  if (bibliographicTitle) return bibliographicTitle;
+  const contentSource = metadata.contentSource;
+  const standaloneContentTitle =
+    contentSource?.itemId === metadata.itemId &&
+    contentSource.parentItemId === undefined
+      ? normalizeMetadataValue(contentSource.title)
+      : "";
+  return standaloneContentTitle || `Paper ${metadata.itemId}`;
 }
+
+export const resolveMetadataOverviewTitleForTests =
+  resolveMetadataOverviewTitle;
 
 function buildMetadataOverview(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
-  context: AgentToolContext;
-  zoteroGateway: ZoteroGateway;
+  metadataResolver: ZoteroMetadataResolver;
   warning?: string;
 }): unknown | null {
-  const item = params.zoteroGateway.resolveMetadataItem({
-    request: params.context.request,
-    item: params.context.item,
-    paperContext: params.paperContext,
-  });
-  const metadata = params.zoteroGateway.getEditableArticleMetadata(item);
-  const fields = (metadata?.fields || {}) as Record<string, unknown>;
-  const title =
-    normalizeMetadataValue(metadata?.title) ||
-    normalizeMetadataValue(params.paperContext.title) ||
-    `Paper ${params.paperContext.itemId}`;
-  const authors = formatCreatorList(metadata?.creators);
-  const abstract = normalizeMetadataValue(fields.abstractNote);
+  const metadata = projectPaperMetadata(
+    params.metadataResolver.resolvePaperMetadata(params.paperContext),
+    params.paperContext,
+  );
+  const title = resolveMetadataOverviewTitle(metadata);
+  const authors = normalizeMetadataValue(metadata.creatorDisplay);
+  const abstract = normalizeMetadataValue(metadata.abstract);
   const lines = [
     `Title: ${title}`,
     authors ? `Authors: ${authors}` : "",
-    normalizeMetadataValue(fields.date)
-      ? `Date: ${normalizeMetadataValue(fields.date)}`
+    metadata.publicationDate ? `Date: ${metadata.publicationDate}` : "",
+    metadata.year ? `Year: ${metadata.year}` : "",
+    metadata.containerTitle
+      ? `Container: ${metadata.containerTitle} (Zotero field: ${metadata.containerSourceField})`
       : "",
-    normalizeMetadataValue(fields.publicationTitle)
-      ? `Publication: ${normalizeMetadataValue(fields.publicationTitle)}`
+    metadata.eventTitle
+      ? `Event: ${metadata.eventTitle} (Zotero field: ${metadata.eventSourceField})`
       : "",
-    normalizeMetadataValue(fields.DOI)
-      ? `DOI: ${normalizeMetadataValue(fields.DOI)}`
-      : "",
+    metadata.doi ? `DOI: ${metadata.doi}` : "",
     abstract ? `Abstract: ${abstract}` : "",
   ].filter(Boolean);
   if (!lines.length) return null;
@@ -895,6 +890,13 @@ export function createPaperReadTool(
       inputSchema: {
         type: "object",
         additionalProperties: false,
+        allOf: [
+          {
+            not: {
+              required: ["target", "targets"],
+            },
+          },
+        ],
         properties: {
           mode: {
             type: "string",
@@ -911,6 +913,8 @@ export function createPaperReadTool(
           },
           target: {
             type: "object",
+            description:
+              "Optional explicit paper or visual target. Omit this property to use the current turn's paper scope.",
             properties: {
               contextItemId: { type: "number" },
               itemId: { type: "number" },
@@ -919,9 +923,19 @@ export function createPaperReadTool(
               name: { type: "string" },
             },
             additionalProperties: false,
+            anyOf: [
+              { required: ["contextItemId"] },
+              { required: ["itemId"] },
+              { required: ["paperContext"] },
+              { required: ["attachmentId"] },
+              { required: ["name"] },
+            ],
           },
           targets: {
             type: "array",
+            minItems: 1,
+            description:
+              "Optional explicit paper targets. Omit this property to use the current turn's paper scope.",
             items: {
               type: "object",
               properties: {
@@ -930,6 +944,11 @@ export function createPaperReadTool(
                 paperContext: PAPER_CONTEXT_REF_SCHEMA,
               },
               additionalProperties: false,
+              anyOf: [
+                { required: ["contextItemId"] },
+                { required: ["itemId"] },
+                { required: ["paperContext"] },
+              ],
             },
           },
           query: { type: "string" },
@@ -1037,17 +1056,38 @@ export function createPaperReadTool(
         return fail("Expected an object");
       }
       const mode = normalizeMode(args.mode);
+      const maxTargets =
+        mode === "overview"
+          ? MAX_OVERVIEW_TARGETS
+          : mode === "full"
+            ? MAX_FULL_TARGETS
+            : MAX_TARGETED_TARGETS;
+      const targetSyntax = normalizeExplicitTargetSyntax({
+        targetProvided: Object.prototype.hasOwnProperty.call(args, "target"),
+        target: args.target,
+        targetsProvided: Object.prototype.hasOwnProperty.call(args, "targets"),
+        targets: args.targets,
+        mode: mode === "visual" || mode === "capture" ? "visual" : "paper",
+        maxCount: maxTargets,
+      });
+      if (targetSyntax.kind === "invalid") {
+        return fail(`${targetSyntax.code}: ${targetSyntax.message}`);
+      }
+      const explicitTarget =
+        targetSyntax.kind === "visual_selector"
+          ? {
+              ...targetSyntax.selector.paperSelector,
+              attachmentId: targetSyntax.selector.attachmentId,
+              name: targetSyntax.selector.name,
+            }
+          : undefined;
       const input: PaperReadInput = {
         mode,
-        target: normalizeTarget(args.target),
-        targets: normalizeTargets(
-          args.targets,
-          mode === "overview"
-            ? MAX_OVERVIEW_TARGETS
-            : mode === "full"
-              ? MAX_FULL_TARGETS
-              : MAX_TARGETED_TARGETS,
-        ),
+        target: explicitTarget,
+        targets:
+          targetSyntax.kind === "paper_selectors"
+            ? [...targetSyntax.selectors]
+            : undefined,
         query: normalizeString(args.query),
         queryVariants: normalizeStringArray(args.queryVariants),
         sections: normalizeStringArray(args.sections),
@@ -1191,6 +1231,7 @@ export function createPaperReadTool(
             ? createCodexAppServerExhaustiveReaderSession({
                 model: nativeFullReadModel,
                 reasoning: context.request.reasoning,
+                profileOverride: context.request.advanced?.profileOverride,
               })
             : null;
         const result = await (async () => {
@@ -1216,6 +1257,7 @@ export function createPaperReadTool(
                 authMode: context.request.authMode,
                 providerProtocol: context.request.providerProtocol,
                 reasoning: context.request.reasoning,
+                profileOverride: context.request.advanced?.profileOverride,
               },
             });
           } finally {
@@ -1235,6 +1277,9 @@ export function createPaperReadTool(
       if (input.mode === "overview") {
         const maxChars = input.maxChars || 6000;
         const results = [];
+        const metadataResolver = createZoteroMetadataResolver({
+          getItem: (itemId) => zoteroGateway.getItem(itemId),
+        });
         for (const paperContext of targets) {
           const mineru = await tryReadMineruOverview(paperContext, maxChars);
           if (mineru && (mineru as { ok?: boolean }).ok !== false) {
@@ -1252,8 +1297,7 @@ export function createPaperReadTool(
             );
             const metadataOverview = buildMetadataOverview({
               paperContext,
-              context,
-              zoteroGateway,
+              metadataResolver,
               warning,
             });
             if (metadataOverview) {
@@ -1304,7 +1348,7 @@ export function createPaperReadTool(
         apiKey: context.request.apiKey,
         authMode: context.request.authMode,
         providerProtocol: context.request.providerProtocol,
-        reasoning: context.request.reasoning,
+        profileOverride: context.request.advanced?.profileOverride,
         topK: input.topK,
         perPaperTopK: input.topK,
       });

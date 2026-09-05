@@ -35,6 +35,8 @@ type AutoTagInput = PaperScopedActionInput &
   PagedActionInput & {
     userQuery?: string;
     tagsPerPaper?: number;
+    /** Internal durable-batch target set. Never accepted from model input. */
+    _batchItemIds?: number[];
   };
 
 type AutoTagOutput = {
@@ -57,6 +59,13 @@ type TargetPaper = {
 };
 
 const LLM_BATCH_SIZE = 10;
+/**
+ * One batch asks for 800 JSON tokens on top of the reasoning reserve, which
+ * is well past the 10s the short utility calls use. Nothing blocks on this —
+ * the action reports progress per batch — so the budget favors completing
+ * over failing fast.
+ */
+const LLM_BATCH_TIMEOUT_MS = 30_000;
 const DEFAULT_TAGS_PER_ITEM = 5;
 const MAX_TAGS_PER_ITEM = 6;
 
@@ -178,16 +187,39 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
           : targetPapers.length;
       return Math.max(0, end - start);
     };
+    const remainingTargetIds = (nextOffset: number): number[] => {
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, targetPapers.length)
+          : targetPapers.length;
+      return targetPapers
+        .slice(Math.max(initialStartOffset, nextOffset), end)
+        .map((paper) => paper.itemId);
+    };
     const reloadTargets = async (): Promise<void> => {
       ctx.zoteroGateway.invalidateLibrarySearchCache?.(ctx.libraryID);
-      targetPapers = (await resolveTargetPapers(input, ctx)).sort(
-        compareTargetPaperDateAddedDesc,
-      );
+      const resolved = await resolveTargetPapers(input, ctx);
+      // A resumed batch carries the exact remaining IDs in their frozen
+      // order. Re-sorting would change the meaning of its durable cursor.
+      targetPapers = Array.isArray(input._batchItemIds)
+        ? resolved
+        : resolved.sort(compareTargetPaperDateAddedDesc);
       pages = getPagedActionPages(targetPapers, options);
       pagedTargetCount = countTargetWindow();
       existingTags = await fetchExistingLibraryTags(ctx);
     };
     await reloadTargets();
+
+    await ctx.checkpoint?.({
+      cursor: 0,
+      appliedCount: 0,
+      totalCount: pagedTargetCount,
+      plan: {
+        remainingItemIds: remainingTargetIds(initialStartOffset),
+        pageSize: options.pageSize,
+        tagsPerPaper,
+      },
+    });
 
     ctx.onProgress({
       type: "step_done",
@@ -217,6 +249,13 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
 
     let pageCursor = 0;
     while (pageCursor < pages.length) {
+      // Stop has to stop. The signal already reaches the LLM batch helper,
+      // but without this check an abort mid-page merely fell back to
+      // deterministic tags and then opened the confirmation card anyway.
+      if (ctx.signal?.aborted) {
+        stopped = true;
+        break;
+      }
       const page = pages[pageCursor];
       const pageLabel = formatActionPageLabel(page);
       const pageTargets = page.items;
@@ -260,6 +299,18 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
           type: "step_done",
           step: `${pageLabel}: Suggesting tags`,
           summary: "No confident tag suggestions for this page",
+        });
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: tagged,
+          totalCount: pagedTargetCount,
+          plan: {
+            remainingItemIds: remainingTargetIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+            tagsPerPaper,
+          },
         });
         pageCursor += 1;
         continue;
@@ -357,6 +408,18 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
           step: `${pageLabel}: Reviewing tag suggestions`,
           summary: `Tagged ${taggedCount} item${taggedCount === 1 ? "" : "s"}`,
         });
+        await ctx.checkpoint?.({
+          cursor: page.offset + page.items.length,
+          appliedCount: tagged,
+          totalCount: pagedTargetCount,
+          plan: {
+            remainingItemIds: remainingTargetIds(
+              page.offset + page.items.length,
+            ),
+            pageSize: options.pageSize,
+            tagsPerPaper,
+          },
+        });
         if (confirmationActionId === "confirm") {
           if (pageCursor >= pages.length - 1) {
             confirmed = true;
@@ -417,6 +480,15 @@ async function resolveTargetPapers(
   input: AutoTagInput,
   ctx: ActionExecutionContext,
 ): Promise<TargetPaper[]> {
+  if (Array.isArray(input._batchItemIds)) {
+    if (!input._batchItemIds.length) return [];
+    const targets = await resolvePaperScopedActionTargets(
+      { itemIds: input._batchItemIds },
+      ctx,
+      autoTagPaperScopeProfile,
+    );
+    return hydratePaperTargets(targets, ctx);
+  }
   const explicitTarget =
     input.itemId ||
     input.itemIds?.length ||
@@ -709,8 +781,21 @@ async function suggestTagsForItems(
   ctx: ActionExecutionContext,
 ): Promise<Array<{ itemId: number; tags: string[] }>> {
   if (!ctx.llm) return [];
-  return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
-    suggestTagsBatch(batch, existingTags, maxTags, userQuery, ctx),
+  return collectActionLlmBatchResults(
+    items,
+    LLM_BATCH_SIZE,
+    (batch) => suggestTagsBatch(batch, existingTags, maxTags, userQuery, ctx),
+    {
+      signal: ctx.signal,
+      onBatchError: (error) =>
+        ctx.onProgress({
+          type: "step_done",
+          step: "Suggesting tags",
+          summary: `A batch of ${LLM_BATCH_SIZE} fell back to deterministic tags (${
+            error instanceof Error ? error.message : "error"
+          })`,
+        }),
+    },
   );
 }
 
@@ -727,6 +812,7 @@ async function suggestTagsBatch(
     ctx,
     prompt,
     maxTokens: 800,
+    timeoutMs: LLM_BATCH_TIMEOUT_MS,
   });
   return parseTagResponse(raw, batch, maxTags);
 }

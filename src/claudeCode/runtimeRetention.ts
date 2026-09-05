@@ -11,6 +11,11 @@ import {
   resolveDisplayConversationKind,
 } from "../modules/contextPanel/portalScope";
 import { getConversationKey } from "../modules/contextPanel/conversationIdentity";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "../shared/conversationWriteFence";
 
 type RetentionTarget = {
   conversationKey: number;
@@ -26,6 +31,7 @@ type ThreadRetentionEntry = {
   retainedRemotely: boolean;
   retainInFlight: Promise<void> | null;
   lastRetainBody: Element | null;
+  expectedGeneration: number;
 };
 
 const retainedThreadKeyByBody = new WeakMap<Element, string>();
@@ -62,6 +68,15 @@ async function ensureRemoteRetention(
   entry: ThreadRetentionEntry,
   body: Element,
 ): Promise<void> {
+  if (
+    areConversationWritesFrozen(entry.target.conversationKey) ||
+    !isConversationWriteGenerationCurrent(
+      entry.target.conversationKey,
+      entry.expectedGeneration,
+    )
+  ) {
+    return;
+  }
   if (entry.retainInFlight) {
     pushRetentionEvent(body, "frontend.runtime_retention.await_inflight", {
       conversationKey: entry.target.conversationKey,
@@ -90,7 +105,7 @@ async function ensureRemoteRetention(
         probeId: entry.probeId,
       }),
     )
-    .then((retained) => {
+    .then(async (retained) => {
       entry.retainedRemotely = retained;
       pushRetentionEvent(body, "frontend.runtime_retention.retain_result", {
         conversationKey: entry.target.conversationKey,
@@ -100,6 +115,24 @@ async function ensureRemoteRetention(
         probeId: entry.probeId,
         retainedRemotely: retained,
       });
+      if (
+        retained &&
+        (areConversationWritesFrozen(entry.target.conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            entry.target.conversationKey,
+            entry.expectedGeneration,
+          ))
+      ) {
+        return updateClaudeRuntimeRetention(await getCoreRuntime(), {
+          conversationKey: entry.target.conversationKey,
+          scope: entry.target.scope,
+          mountId: entry.mountId,
+          retain: false,
+          probeId: entry.probeId,
+        }).then(() => {
+          entry.retainedRemotely = false;
+        });
+      }
     })
     .catch((error) => {
       pushRetentionEvent(body, "frontend.runtime_retention.retain_error", {
@@ -232,6 +265,9 @@ export async function retainClaudeRuntimeForBody(
       retainedRemotely: false,
       retainInFlight: null,
       lastRetainBody: body,
+      expectedGeneration: getConversationWriteGeneration(
+        target.conversationKey,
+      ),
     };
     retainedThreads.set(nextThreadKey, entry);
   } else {
@@ -246,6 +282,41 @@ export async function retainClaudeRuntimeForBody(
   entry.bodies.add(body);
   retainedThreadKeyByBody.set(body, nextThreadKey);
   await ensureRemoteRetention(entry, body).catch(() => {});
+}
+
+/**
+ * Clear must release every hot runtime retained for this immutable
+ * conversation immediately.  The normal body-unmount grace period is not
+ * safe here because Clear is an explicit user deletion boundary.
+ */
+export async function releaseClaudeRuntimeForConversation(
+  conversationKey: number,
+): Promise<void> {
+  const entries = [...retainedThreads.entries()].filter(
+    ([, entry]) => entry.target.conversationKey === conversationKey,
+  );
+  for (const [threadKey, entry] of entries) {
+    if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+    retainedThreads.delete(threadKey);
+    for (const body of entry.bodies) {
+      retainedThreadKeyByBody.delete(body);
+    }
+    entry.bodies.clear();
+    try {
+      await entry.retainInFlight;
+    } catch {
+      // A failed retain still must not prevent the release attempt.
+    }
+    if (!entry.retainedRemotely) continue;
+    await updateClaudeRuntimeRetention(await getCoreRuntime(), {
+      conversationKey,
+      scope: entry.target.scope,
+      mountId: entry.mountId,
+      retain: false,
+      probeId: entry.probeId,
+    }).catch(() => {});
+    entry.retainedRemotely = false;
+  }
 }
 
 export async function releaseClaudeRuntimeForBody(

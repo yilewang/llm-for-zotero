@@ -3,6 +3,8 @@ import type {
   ActionProgressEvent,
   ActionRequestContext,
 } from "../../../../agent/actions";
+import type { ModelProfileOverride } from "../../../../modelCapabilities";
+import { getAbortController as getAbortControllerCtor } from "../../../../utils/apiHelpers";
 import type { ModelProviderAuthMode } from "../../../../utils/modelProviders";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import {
@@ -11,6 +13,7 @@ import {
   resolveActionCompletionStatusText,
   resolveActionFailureFeedback,
 } from "../../actionStatusText";
+import { getAbortController, setAbortController } from "../../state";
 import type { ActionCommandLifecycle } from "./actionCommandLifecycle";
 
 export type ActionExecutionLlmConfig = {
@@ -19,7 +22,36 @@ export type ActionExecutionLlmConfig = {
   apiKey?: string;
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
+  profileOverride?: ModelProfileOverride;
 };
+
+/**
+ * Publish the run's controller so the panel's existing stop button cancels it.
+ *
+ * A slash action can start while a chat turn is still streaming, and that turn
+ * owns the same slot. Claiming it only when free — and releasing it only while
+ * it is still ours — keeps the action cancellable without ever stranding the
+ * chat's controller.
+ */
+function claimActionAbortSlot(conversationKey: number | null): {
+  signal?: AbortSignal;
+  release: () => void;
+} {
+  // The Zotero chrome scope does not dependably expose AbortController.
+  const Ctor = getAbortControllerCtor();
+  if (!Ctor || conversationKey === null) return { release: () => {} };
+  if (getAbortController(conversationKey)) return { release: () => {} };
+  const controller = new Ctor();
+  setAbortController(conversationKey, controller);
+  return {
+    signal: controller.signal,
+    release: () => {
+      if (getAbortController(conversationKey) === controller) {
+        setAbortController(conversationKey, null);
+      }
+    },
+  };
+}
 
 export async function runAgentActionWithLifecycle(params: {
   actionName: string;
@@ -28,12 +60,14 @@ export async function runAgentActionWithLifecycle(params: {
   libraryID: number;
   llm?: ActionExecutionLlmConfig;
   isPagedLibraryAction?: boolean;
+  conversationKey?: number | null;
   lifecycle: ActionCommandLifecycle;
   setStatus: (message: string, level: "ready" | "warning" | "error") => void;
   logError: (message: string, error?: unknown) => void;
 }): Promise<void> {
   const {
     actionName,
+    conversationKey,
     input,
     isPagedLibraryAction,
     libraryID,
@@ -43,6 +77,7 @@ export async function runAgentActionWithLifecycle(params: {
     requestContext,
     setStatus,
   } = params;
+  const abortSlot = claimActionAbortSlot(conversationKey ?? null);
   setStatus(`Running: ${formatActionLabel(actionName)}...`, "ready");
   const progressIndicator = lifecycle.createActionProgressIndicator(actionName);
   let lastProgressSummary = "";
@@ -50,8 +85,12 @@ export async function runAgentActionWithLifecycle(params: {
     const agentApi = getAgentApi();
     const commonOptions = {
       libraryID,
+      // Files the run's changes under the user's conversation so undo and
+      // the change history can find them.
+      conversationKey: conversationKey ?? undefined,
       requestContext,
       llm,
+      signal: abortSlot.signal,
       onProgress: (event: ActionProgressEvent) => {
         if (event.type === "step_start") {
           progressIndicator.setStep(event.step, event.index, event.total);
@@ -116,6 +155,7 @@ export async function runAgentActionWithLifecycle(params: {
       }),
     );
   } finally {
+    abortSlot.release();
     progressIndicator.remove();
   }
 }

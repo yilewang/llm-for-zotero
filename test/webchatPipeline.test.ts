@@ -93,6 +93,9 @@ describe("webchat PDF pipeline", function () {
   beforeEach(function () {
     items.clear();
     relayServer.relayResetForTests();
+    relayServer.relaySetExtensionCapabilitiesForTests([
+      relayServer.ATTACHMENT_DELIVERY_CONTRACT_VERSION,
+    ]);
   });
 
   after(function () {
@@ -142,6 +145,7 @@ describe("webchat PDF pipeline", function () {
     };
     const abortController = new AbortController();
     let send: Promise<unknown> | null = null;
+    const seqBeforeSend = relayServer.relayGetStateSnapshot().query.seq;
 
     try {
       send = pipeline.sendWebChatQuestion({
@@ -157,7 +161,7 @@ describe("webchat PDF pipeline", function () {
       let snapshot = relayServer.relayGetStateSnapshot();
       for (
         let attempt = 0;
-        attempt < 20 && snapshot.query.seq === 0;
+        attempt < 20 && snapshot.query.seq === seqBeforeSend;
         attempt++
       ) {
         await new Promise((resolve) => setTimeout(resolve, 0));

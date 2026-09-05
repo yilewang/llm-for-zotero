@@ -5,14 +5,16 @@
  *
  * Uses Mozilla's Subprocess module (Gecko runtime).
  */
-import type { AgentToolContext, AgentToolDefinition } from "../../types";
+import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
 import { getRuntimePlatformInfo } from "../../../utils/runtimePlatform";
 import {
   isLocalPathInsideOrEqual,
   parseNotesDirectoryWritePolicy,
 } from "../../../utils/notesDirectoryConfig";
 import { ok, fail, validateObject } from "../shared";
-import { pushUndoEntry } from "../../store/undoStore";
+import { executeExternalMutation } from "../../services/mutationCoordinator";
+import { sha256Bytes } from "../../store/journalRecoveryBlobStore";
+import { fingerprintText } from "../../contracts/actionOperationEvidence";
 
 type RunCommandInput = {
   command: string;
@@ -24,6 +26,7 @@ type RunCommandInput = {
 type ReversibleCommandWrite = {
   kind: "file" | "directory";
   path: string;
+  sourcePath?: string;
   description: string;
 };
 
@@ -297,6 +300,52 @@ async function pathExists(path: string): Promise<boolean | null> {
   return null;
 }
 
+async function pathKind(path: string): Promise<"file" | "directory" | null> {
+  const IOUtils = (globalThis as any).IOUtils;
+  if (IOUtils?.stat) {
+    try {
+      const stat = await IOUtils.stat(path);
+      if (stat?.type === "directory") return "directory";
+      if (stat?.type === "regular" || stat?.type === "file") return "file";
+    } catch {
+      return null;
+    }
+  }
+  const OSFile = (globalThis as any).OS?.File;
+  if (OSFile?.stat) {
+    try {
+      const stat = await OSFile.stat(path);
+      if (stat?.isDir === true) return "directory";
+      if (stat) return "file";
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function childPath(directory: string, sourcePath: string): string {
+  const sourceName = sourcePath
+    .replace(/[\\/]+$/g, "")
+    .split(/[\\/]/)
+    .pop();
+  if (!sourceName) return directory;
+  const separator =
+    directory.includes("\\") && !directory.includes("/") ? "\\" : "/";
+  return `${directory.replace(/[\\/]+$/g, "")}${separator}${sourceName}`;
+}
+
+async function resolveReversibleOutputPath(
+  write: ReversibleCommandWrite,
+  cwd: string | undefined,
+): Promise<string> {
+  const destination = resolveCommandPath(write.path, cwd);
+  if (write.sourcePath && (await pathKind(destination)) === "directory") {
+    return childPath(destination, write.sourcePath);
+  }
+  return destination;
+}
+
 async function removePathIfExists(path: string): Promise<void> {
   const IOUtils = (globalThis as any).IOUtils;
   if (IOUtils?.remove) {
@@ -500,6 +549,7 @@ function parseReversibleCommandWrite(
     return {
       kind: "file",
       path: args[1],
+      sourcePath: args[0],
       description: `Delete copied file: ${args[1]}`,
     };
   }
@@ -551,11 +601,25 @@ async function getRunCommandConfirmationReason(
   return null;
 }
 
-export function createRunCommandTool(): AgentToolDefinition<
+export function createRunCommandTool(): AgentWriteToolDefinition<
   RunCommandInput,
   unknown
 > {
   return {
+    describeAction: (input) => [
+      {
+        id: `command_execute:${fingerprintText(input.command)}`,
+        proofDomain: "execution",
+        capability: "command.execute",
+        operation: "command_execute",
+        source: "command",
+        parameters: {
+          commandFingerprint: fingerprintText(input.command),
+        },
+        requestedTargets: [],
+        destinationCollectionIds: [],
+      },
+    ],
     spec: {
       name: "run_command",
       description:
@@ -656,6 +720,33 @@ export function createRunCommandTool(): AgentToolDefinition<
       return Boolean(await getRunCommandConfirmationReason(input));
     },
 
+    async planMutation(input, context) {
+      if (getNoteWriteBypassRefusal(input, context)) {
+        return { effect: "none", reversibility: "full" };
+      }
+      const reversibleWrite = parseReversibleCommandWrite(input.command);
+      if (reversibleWrite) {
+        const outputPath = resolveCommandPath(reversibleWrite.path, input.cwd);
+        const exists = await pathExists(outputPath);
+        return {
+          effect: "write",
+          reversibility: exists === false ? "partial" : "none",
+          reason:
+            exists === false
+              ? "The declared new output can be removed, but other command effects cannot be proven reversible."
+              : "The command may affect paths or external state that have no complete declarative inverse.",
+        };
+      }
+      const confirmationReason = await getRunCommandConfirmationReason(input);
+      return {
+        effect: "write",
+        reversibility: "none",
+        reason:
+          confirmationReason ||
+          "Shell commands receive mutable local-machine access, so side effects cannot be proven absent or given a complete declarative inverse.",
+      };
+    },
+
     createPendingAction(input) {
       return {
         toolName: "run_command",
@@ -691,66 +782,155 @@ export function createRunCommandTool(): AgentToolDefinition<
 
     async execute(input, context) {
       const reversibleWrite = parseReversibleCommandWrite(input.command);
-      const existedBeforeWrite = reversibleWrite
-        ? await pathExists(resolveCommandPath(reversibleWrite.path, input.cwd))
-        : null;
       const noteWriteRefusal = getNoteWriteBypassRefusal(input, context);
       if (noteWriteRefusal) {
         return {
-          exitCode: -1,
-          stdout: "",
-          stderr: noteWriteRefusal,
-          command: input.command,
+          content: {
+            exitCode: -1,
+            stdout: "",
+            stderr: noteWriteRefusal,
+            command: input.command,
+          },
+          effect: "none",
         };
       }
       const confirmationReason = await getRunCommandConfirmationReason(input);
       if (confirmationReason && !input.allowUnsafe) {
         return {
-          exitCode: -1,
-          stdout: "",
-          stderr: confirmationReason,
-          command: input.command,
+          content: {
+            exitCode: -1,
+            stdout: "",
+            stderr: confirmationReason,
+            command: input.command,
+          },
+          effect: "none",
         };
       }
-      const result = await executeCommand({
-        command: input.command,
-        cwd: input.cwd,
-        timeoutMs: input.timeoutMs,
-      });
-      if (
-        result.exitCode === 0 &&
-        reversibleWrite &&
-        existedBeforeWrite === false
-      ) {
-        pushUndoEntry(context.request.conversationKey, {
-          id: `command-write-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-          toolName: "run_command",
-          description: reversibleWrite.description,
-          revert: async () => {
-            await removePathIfExists(
-              resolveCommandPath(reversibleWrite.path, input.cwd),
-            );
-          },
+      let outputPath: string | undefined;
+      const run = () =>
+        executeCommand({
+          command: input.command,
+          cwd: input.cwd,
+          timeoutMs: input.timeoutMs,
         });
-      }
+      let existedBeforeWrite: boolean | null = null;
+      const result = await executeExternalMutation({
+        context,
+        toolName: "run_command",
+        plan: async () => {
+          outputPath = reversibleWrite
+            ? await resolveReversibleOutputPath(reversibleWrite, input.cwd)
+            : undefined;
+          existedBeforeWrite = outputPath ? await pathExists(outputPath) : null;
+          return {
+            operation: "run_command",
+            description: reversibleWrite
+              ? reversibleWrite.description
+              : "Run an arbitrary shell command",
+            forward: {
+              command: input.command,
+              cwd: input.cwd,
+              declaredOutputPath: outputPath,
+            },
+            inverse:
+              outputPath && existedBeforeWrite === false
+                ? {
+                    version: 1,
+                    kind: "file",
+                    operation: "delete",
+                    path: outputPath,
+                  }
+                : undefined,
+            precondition: outputPath
+              ? {
+                  kind: reversibleWrite?.kind === "directory" ? "path" : "file",
+                  path: outputPath,
+                  exists: existedBeforeWrite === true,
+                  ...(reversibleWrite?.kind === "directory"
+                    ? { pathKind: "directory" }
+                    : { checksum: null }),
+                }
+              : undefined,
+            reversibility:
+              outputPath && existedBeforeWrite === false
+                ? ("partial" as const)
+                : ("none" as const),
+            reason:
+              outputPath && existedBeforeWrite === false
+                ? "The declared new output can be removed, but arbitrary command side effects cannot be proven reversible."
+                : "Arbitrary shell command effects have no complete declarative inverse.",
+          };
+        },
+        execute: async () => {
+          const commandResult = await run();
+          let expectedPostcondition: unknown;
+          if (outputPath) {
+            const io = (globalThis as { IOUtils?: any }).IOUtils;
+            const exists = Boolean(await io?.exists?.(outputPath));
+            if (reversibleWrite?.kind === "directory") {
+              expectedPostcondition = {
+                kind: "path",
+                path: outputPath,
+                pathKind: "directory",
+                exists,
+              };
+            } else {
+              const bytes = exists
+                ? new Uint8Array(await io.read(outputPath))
+                : null;
+              expectedPostcondition = {
+                kind: "file",
+                path: outputPath,
+                exists,
+                checksum: bytes ? await sha256Bytes(bytes) : null,
+              };
+            }
+          }
+          // A non-zero exit code does not mean that the shell made no changes:
+          // redirects are opened before the command runs, and an earlier
+          // command in a sequence may have succeeded. Treat every failed
+          // execution as potentially mutating. The only no-effect case we can
+          // prove here is a successful idempotent mkdir of an existing path.
+          const changed =
+            commandResult.exitCode !== 0 ||
+            !(
+              reversibleWrite?.kind === "directory" &&
+              existedBeforeWrite === true
+            );
+          return {
+            result: commandResult,
+            expectedPostcondition,
+            reversibility:
+              outputPath && existedBeforeWrite === false
+                ? ("partial" as const)
+                : ("none" as const),
+            affectedCount: changed ? 1 : 0,
+            effect: changed ? "applied" : "none",
+          };
+        },
+      });
+      const commandResult = result.content;
 
       const maxLen = 8000;
       const stdout =
-        result.stdout.length > maxLen
-          ? result.stdout.slice(0, maxLen) +
-            `\n... [truncated, ${result.stdout.length} chars total]`
-          : result.stdout;
+        commandResult.stdout.length > maxLen
+          ? commandResult.stdout.slice(0, maxLen) +
+            `\n... [truncated, ${commandResult.stdout.length} chars total]`
+          : commandResult.stdout;
       const stderr =
-        result.stderr.length > maxLen
-          ? result.stderr.slice(0, maxLen) +
-            `\n... [truncated, ${result.stderr.length} chars total]`
-          : result.stderr;
+        commandResult.stderr.length > maxLen
+          ? commandResult.stderr.slice(0, maxLen) +
+            `\n... [truncated, ${commandResult.stderr.length} chars total]`
+          : commandResult.stderr;
 
       return {
-        exitCode: result.exitCode,
-        stdout,
-        stderr,
-        command: input.command,
+        content: {
+          exitCode: commandResult.exitCode,
+          stdout,
+          stderr,
+          command: input.command,
+        },
+        effect: result.effect,
       };
     },
   };

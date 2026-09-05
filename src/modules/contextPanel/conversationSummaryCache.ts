@@ -17,8 +17,16 @@
  * pair at the start of the history so it is compatible with all model APIs.
  */
 
-import type { ChatMessage } from "../../utils/llmClient";
-import { callLLMStream } from "../../utils/llmClient";
+import type { ChatMessage, ChatParams } from "../../utils/llmClient";
+import { fingerprintSecret } from "../../utils/secretFingerprint";
+import {
+  callUtilityLLM,
+  describeUtilityLLMFailure,
+  type UtilityLLMFailure,
+  type UtilityLLMFailureReason,
+  type UtilityLLMParams,
+} from "../../utils/utilityLLM";
+import type { ModelProfileOverride } from "../../modelCapabilities";
 import { sanitizeText } from "./textUtils";
 
 // --- tunables ---
@@ -26,6 +34,20 @@ import { sanitizeText } from "./textUtils";
 export const SUMMARY_TRIGGER_PAIRS = 10;
 /** Keep this many recent pairs verbatim after compression. */
 export const SUMMARY_RETAIN_PAIRS = 5;
+/**
+ * Longest a background summary may run.
+ *
+ * Deliberately above the 20s the turn classifier allows: this has the largest
+ * input of any internal call and it grows by two messages every turn, and
+ * unlike the classifier nothing waits on the result. Kept below the 60s tier
+ * because an in-flight summary suppresses the next turn's attempt.
+ */
+export const SUMMARY_TIMEOUT_MS = 30_000;
+/**
+ * Consecutive failures tolerated for the same config before the conversation
+ * stops trying. Reasons that cannot change on a retry latch on the first one.
+ */
+const MAX_SUMMARY_ATTEMPTS = 2;
 /** Max characters taken from each user turn for rule-based summary. */
 const USER_EXCERPT_LEN = 250;
 /** Max characters taken from each assistant turn for rule-based summary. */
@@ -46,13 +68,88 @@ type LLMConfig = {
   model?: string;
   apiBase?: string;
   apiKey?: string;
-  authMode?: string;
+  authMode?: ChatParams["authMode"];
+  providerProtocol?: ChatParams["providerProtocol"];
+  profileOverride?: ModelProfileOverride;
+  /** Test seam: replaces the actual model call. */
+  llmCall?: UtilityLLMParams["llmCall"];
+};
+
+type SummaryFailure = {
+  configKey: string;
+  reason: UtilityLLMFailureReason;
+  attempts: number;
 };
 
 // --- module-level cache ---
 const summaryCache = new Map<number, SummaryEntry>();
 /** Tracks in-flight background summarisation tasks to avoid duplicates. */
-const pendingSummaries = new Set<number>();
+const pendingSummaries = new Map<number, Promise<void>>();
+/**
+ * Conversations that have stopped attempting a summary, and the config they
+ * gave up on. Without this a hard failure re-fires on every single turn
+ * forever, because nothing is ever written to `summaryCache` to stop it.
+ */
+const summaryFailures = new Map<number, SummaryFailure>();
+
+/**
+ * Identity of everything that could change the outcome of a retry.
+ *
+ * Conversation length is deliberately absent: it grows every turn, so keying
+ * on it would reset the latch every turn and make this a no-op. Switching
+ * model, endpoint, credential or profile is what genuinely warrants another
+ * try — and each of those changes this key.
+ */
+function buildSummaryConfigKey(llmConfig: LLMConfig): string {
+  return [
+    llmConfig.model || "",
+    llmConfig.apiBase || "",
+    llmConfig.authMode || "",
+    llmConfig.providerProtocol || "",
+    `auth=${fingerprintSecret(llmConfig.apiKey || "")}`,
+    `profile=${JSON.stringify(llmConfig.profileOverride ?? null)}`,
+  ].join("\u0000");
+}
+
+/**
+ * How many times a reason is worth retrying.
+ *
+ * A timeout latches immediately rather than getting the extra attempt a
+ * transport blip earns: the message set only grows, so a request that timed
+ * out at this length is strictly harder next turn, not likelier to succeed.
+ */
+function attemptsAllowedFor(reason: UtilityLLMFailureReason): number {
+  return reason === "transport" || reason === "empty"
+    ? MAX_SUMMARY_ATTEMPTS
+    : 1;
+}
+
+function recordSummaryFailure(
+  key: number,
+  configKey: string,
+  failure: UtilityLLMFailure,
+): void {
+  const previous = summaryFailures.get(key);
+  const attempts =
+    previous && previous.configKey === configKey ? previous.attempts + 1 : 1;
+  summaryFailures.set(key, { configKey, reason: failure.reason, attempts });
+  if (attempts >= attemptsAllowedFor(failure.reason)) {
+    // Logged once, at the point the conversation gives up — logging every
+    // attempt would reintroduce the per-turn noise this exists to remove.
+    if (typeof ztoolkit !== "undefined") {
+      ztoolkit.log(
+        `LLM: conversation ${key} stopped attempting background summaries after ${attempts} failure(s)`,
+        describeUtilityLLMFailure(failure),
+      );
+    }
+  }
+}
+
+function summaryAttemptsExhausted(key: number, configKey: string): boolean {
+  const failure = summaryFailures.get(key);
+  if (!failure || failure.configKey !== configKey) return false;
+  return failure.attempts >= attemptsAllowedFor(failure.reason);
+}
 
 // --- public API ---
 
@@ -65,6 +162,20 @@ export function getConversationSummaryEntry(
 export function clearConversationSummary(conversationKey: number): void {
   summaryCache.delete(Math.floor(conversationKey));
   pendingSummaries.delete(Math.floor(conversationKey));
+  // A new conversation can reuse a numeric key, and must not inherit a latch.
+  summaryFailures.delete(Math.floor(conversationKey));
+}
+
+/** Test seam: awaits every in-flight background summary. */
+export async function flushPendingSummaries(): Promise<void> {
+  await Promise.all([...pendingSummaries.values()]);
+}
+
+/** Test seam: module state outlives a single mocha file otherwise. */
+export function resetConversationSummaryStateForTests(): void {
+  summaryCache.clear();
+  pendingSummaries.clear();
+  summaryFailures.clear();
 }
 
 /**
@@ -127,15 +238,22 @@ export function scheduleLLMSummary(
   const cached = summaryCache.get(key);
   if (cached && cached.coversCount >= toSummarize.length) return;
 
-  pendingSummaries.add(key);
-  void (async () => {
+  const configKey = buildSummaryConfigKey(llmConfig);
+  if (summaryAttemptsExhausted(key, configKey)) return;
+
+  const task = (async () => {
     try {
-      const summaryText = await generateLLMSummary(toSummarize, llmConfig);
-      if (summaryText) {
-        summaryCache.set(key, {
-          text: summaryText,
-          coversCount: toSummarize.length,
-        });
+      const result = await generateLLMSummary(toSummarize, llmConfig);
+      if (result.ok) {
+        summaryFailures.delete(key);
+        if (result.text) {
+          summaryCache.set(key, {
+            text: result.text,
+            coversCount: toSummarize.length,
+          });
+        }
+      } else {
+        recordSummaryFailure(key, configKey, result.failure);
       }
     } catch {
       // background task — errors are silently ignored
@@ -143,6 +261,7 @@ export function scheduleLLMSummary(
       pendingSummaries.delete(key);
     }
   })();
+  pendingSummaries.set(key, task);
 }
 
 // --- internal helpers ---
@@ -168,12 +287,18 @@ function buildRuleBasedSummary(messages: ChatMessage[]): string {
   return `Earlier conversation (${pairs.length} exchange${pairs.length === 1 ? "" : "s"}):\n\n${pairs.join("\n\n")}`;
 }
 
+type SummaryAttempt =
+  | { ok: true; text: string }
+  | { ok: false; failure: UtilityLLMFailure };
+
 async function generateLLMSummary(
   messages: ChatMessage[],
   llmConfig: LLMConfig,
-): Promise<string> {
+): Promise<SummaryAttempt> {
   const excerpts = buildRuleBasedSummary(messages);
-  if (!excerpts) return "";
+  // Nothing to summarise is a success with no text, not a failed attempt —
+  // it must never count toward the failure latch.
+  if (!excerpts) return { ok: true, text: "" };
 
   const prompt =
     "Summarise the following conversation exchanges in 3–6 concise bullet points. " +
@@ -181,28 +306,26 @@ async function generateLLMSummary(
     "Be factual and specific — preserve paper titles, author names, and technical terms.\n\n" +
     excerpts;
 
-  let result = "";
-  await callLLMStream(
-    {
-      prompt,
-      context: "",
-      history: [],
-      systemMessages: [
-        "You are a precise summariser. Output only the bullet-point summary, nothing else.",
-      ],
-      model: llmConfig.model,
-      apiBase: llmConfig.apiBase,
-      apiKey: llmConfig.apiKey,
-      authMode: llmConfig.authMode as Parameters<
-        typeof callLLMStream
-      >[0]["authMode"],
-      maxTokens: 400,
-    },
-    (delta) => {
-      result += delta;
-    },
-  );
-  return sanitizeText(result).trim()
-    ? `Earlier conversation summary:\n${sanitizeText(result).trim()}`
-    : "";
+  const result = await callUtilityLLM({
+    prompt,
+    model: llmConfig.model,
+    apiBase: llmConfig.apiBase,
+    apiKey: llmConfig.apiKey,
+    authMode: llmConfig.authMode,
+    providerProtocol: llmConfig.providerProtocol,
+    profileOverride: llmConfig.profileOverride,
+    temperature: 0,
+    jsonBudget: 400,
+    timeoutMs: SUMMARY_TIMEOUT_MS,
+    llmCall: llmConfig.llmCall,
+    systemMessages: [
+      "You are a precise summariser. Output only the bullet-point summary, nothing else.",
+    ],
+  });
+  if (!result.ok) return { ok: false, failure: result };
+  const summary = sanitizeText(result.text).trim();
+  return {
+    ok: true,
+    text: summary ? `Earlier conversation summary:\n${summary}` : "",
+  };
 }

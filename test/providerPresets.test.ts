@@ -19,6 +19,20 @@ describe("providerPresets", function () {
       "gemini",
     );
     assert.equal(
+      detectProviderPreset("https://generativelanguage.googleapis.com/v1"),
+      "gemini",
+    );
+    assert.equal(
+      detectProviderPreset("https://api.kimi.com/coding/v1"),
+      "kimi",
+    );
+    assert.equal(detectProviderPreset("https://api.kimi.com/coding"), "kimi");
+    assert.equal(detectProviderPreset("https://api.moonshot.ai/v1"), "kimi");
+    assert.equal(
+      detectProviderPreset("https://generativelanguage.googleapis.com/v1alpha"),
+      "gemini",
+    );
+    assert.equal(
       detectProviderPreset("https://api.anthropic.com/v1/chat/completions"),
       "anthropic",
     );

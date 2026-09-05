@@ -8,8 +8,12 @@ import {
   setUserSkills,
 } from "../src/agent/skills";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
-import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import {
+  createPaperReadTool as createResolvedPaperReadTool,
+  resolveMetadataOverviewTitleForTests,
+} from "../src/agent/tools/read/paperRead";
 import type { AgentToolContext } from "../src/agent/types";
+import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
@@ -17,6 +21,52 @@ import {
   buildPdfFigureCropPdfFingerprint,
 } from "../src/modules/contextPanel/pdfFigureCropCache";
 import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+
+function createPaperReadTool(
+  ...args: Parameters<typeof createResolvedPaperReadTool>
+): ReturnType<typeof createResolvedPaperReadTool> {
+  const tool = createResolvedPaperReadTool(...args);
+  const gateway = args[3] as {
+    listPaperContexts?: (request: AgentToolContext["request"]) => Array<{
+      itemId: number;
+      contextItemId: number;
+      title: string;
+    }>;
+  };
+  return {
+    ...tool,
+    execute: (input, context) => {
+      const request = context.request as AgentToolContext["request"] & {
+        selectedPaperContexts?: ReturnType<
+          NonNullable<typeof gateway.listPaperContexts>
+        >;
+      };
+      const hasConcreteScope = Boolean(
+        request.turnPaperScope?.papers.length ||
+        request.selectedPaperContexts?.length ||
+        (request as { fullTextPaperContexts?: unknown[] }).fullTextPaperContexts
+          ?.length ||
+        (request as { pdfPaperContexts?: unknown[] }).pdfPaperContexts?.length,
+      );
+      const selectedPaperContexts = hasConcreteScope
+        ? request.selectedPaperContexts
+        : gateway.listPaperContexts?.(request);
+      const inferredActivePaper = selectedPaperContexts?.[0];
+      return tool.execute(input, {
+        ...context,
+        request: resolvedAgentRequest({
+          ...request,
+          conversationKind:
+            request.conversationKind ||
+            (inferredActivePaper ? "paper" : "global"),
+          activeItemId: request.activeItemId || inferredActivePaper?.itemId,
+          ...(selectedPaperContexts?.length ? { selectedPaperContexts } : {}),
+        }),
+      });
+    },
+  };
+}
 
 describe("semantic tool surface", function () {
   const encoder = new TextEncoder();
@@ -39,6 +89,66 @@ describe("semantic tool surface", function () {
     currentAnswerText: "",
     modelName: "gpt-5.5",
   };
+
+  it("uses content-source titles only for genuinely standalone attachments", function () {
+    assert.equal(
+      resolveMetadataOverviewTitleForTests({
+        source: "live",
+        itemId: 77,
+        contextItemId: 77,
+        creators: [],
+        contentSource: {
+          itemId: 77,
+          title: "Standalone preprint.pdf",
+        },
+        warnings: [],
+      }),
+      "Standalone preprint.pdf",
+    );
+    assert.equal(
+      resolveMetadataOverviewTitleForTests({
+        source: "live",
+        itemId: 42,
+        contextItemId: 101,
+        title: "Bibliographic title",
+        creators: [],
+        contentSource: {
+          itemId: 101,
+          parentItemId: 42,
+          title: "Full Text PDF",
+        },
+        warnings: [],
+      }),
+      "Bibliographic title",
+    );
+    assert.equal(
+      resolveMetadataOverviewTitleForTests({
+        source: "live",
+        itemId: 42,
+        contextItemId: 101,
+        creators: [],
+        contentSource: {
+          itemId: 101,
+          parentItemId: 42,
+          title: "Full Text PDF",
+        },
+        warnings: [],
+      }),
+      "Paper 42",
+    );
+  });
+
+  function resolvedSkillRequest(
+    fields: Partial<import("../src/agent/types").AgentRuntimeRequestInput>,
+  ) {
+    return resolveAgentRuntimeRequest({
+      conversationKey: 1,
+      mode: "agent",
+      userText: "",
+      libraryID: 1,
+      ...fields,
+    });
+  }
 
   function createTestBuiltInRegistry() {
     return createBuiltInToolRegistry({
@@ -105,19 +215,25 @@ describe("semantic tool surface", function () {
     const names = tools.map((tool) => tool.name).sort();
 
     assert.deepEqual(names, [
+      "annotate_pdf",
       "attachment_update",
       "collection_update",
       "file_io",
+      "library_cite",
       "library_delete",
       "library_import",
       "library_read",
       "library_retrieve",
       "library_search",
+      "library_settings",
       "library_update",
       "literature_search",
       "note_write",
+      "note_write_batch",
       "paper_read",
+      "revert_changes",
       "run_command",
+      "saved_search_update",
       "undo_last_action",
       "zotero_script",
     ]);
@@ -149,7 +265,10 @@ describe("semantic tool surface", function () {
         `${legacyName} remains internally callable`,
       );
     }
-    assert.isUndefined(registry.getTool("web_search"));
+    assert.exists(registry.getTool("web_search"));
+    assert.exists(registry.getTool("web_read"));
+    assert.notInclude(names, "web_search");
+    assert.notInclude(names, "web_read");
     for (const name of ["file_io", "run_command", "zotero_script"]) {
       assert.equal(
         tools.find((tool) => tool.name === name)?.tier,
@@ -349,6 +468,158 @@ describe("semantic tool surface", function () {
     }
   });
 
+  it("paper_read treats an exactly empty target as omitted through the tool registry", async function () {
+    const activePaper = {
+      itemId: 1,
+      contextItemId: 2,
+      title: "Readable paper",
+    };
+    let ensuredPaper: unknown;
+    const registry = new AgentToolRegistry();
+    registry.register(
+      createPaperReadTool(
+        {
+          ensurePaperContext: async (paperContext: unknown) => {
+            ensuredPaper = paperContext;
+          },
+        } as never,
+        {
+          retrieveEvidence: async () => [
+            {
+              itemId: activePaper.itemId,
+              contextItemId: activePaper.contextItemId,
+              title: activePaper.title,
+              text: "method evidence",
+            },
+          ],
+        } as never,
+        {} as never,
+        {
+          listPaperContexts: () => [activePaper],
+          resolvePaperContextTarget: () => activePaper,
+        } as never,
+      ),
+    );
+
+    const request = resolvedAgentRequest({
+      ...baseContext.request,
+      userText: "Use the actual PDF/full text to explain the method.",
+      conversationKind: "paper",
+      activeItemId: activePaper.itemId,
+      selectedPaperContexts: [activePaper],
+    });
+    assert.deepEqual(request.turnPaperScope.papers[0]?.roles, ["active"]);
+
+    const prepared = await registry.prepareExecution(
+      {
+        id: "issue-393-empty-target",
+        name: "paper_read",
+        arguments: {
+          mode: "targeted",
+          target: {},
+          query: "Use the actual PDF/full text to explain the method.",
+        },
+      },
+      {
+        ...baseContext,
+        request,
+      },
+    );
+
+    assert.equal(prepared.kind, "result");
+    if (prepared.kind !== "result") return;
+    assert.isTrue(
+      prepared.execution.result.ok,
+      JSON.stringify(prepared.execution.result.content),
+    );
+    assert.deepInclude(ensuredPaper as Record<string, unknown>, activePaper);
+  });
+
+  it("paper_read rejects malformed non-empty selector syntax", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const emptyEntry = tool.validate({
+      mode: "targeted",
+      targets: [{}],
+    });
+    assert.equal(emptyEntry.ok, false);
+    if (!emptyEntry.ok) {
+      assert.include(emptyEntry.error, "empty_target_entry");
+    }
+
+    const conflicting = tool.validate({
+      mode: "targeted",
+      target: {},
+      targets: [],
+    });
+    assert.equal(conflicting.ok, false);
+    if (!conflicting.ok) {
+      assert.include(conflicting.error, "conflicting_target_arguments");
+    }
+
+    const visualOnly = tool.validate({
+      mode: "targeted",
+      target: { attachmentId: "upload-1" },
+    });
+    assert.equal(visualOnly.ok, false);
+    if (!visualOnly.ok) {
+      assert.include(visualOnly.error, "selector_not_supported_for_mode");
+    }
+
+    const lateEmptyEntry = tool.validate({
+      mode: "targeted",
+      targets: [
+        ...Array.from({ length: 20 }, (_, index) => ({ itemId: index + 1 })),
+        {},
+      ],
+    });
+    assert.equal(lateEmptyEntry.ok, false);
+    if (!lateEmptyEntry.ok) {
+      assert.include(lateEmptyEntry.error, "empty_target_entry");
+    }
+
+    const visualTargets = tool.validate({
+      mode: "visual",
+      targets: [{ itemId: 1 }],
+    });
+    assert.equal(visualTargets.ok, false);
+    if (!visualTargets.ok) {
+      assert.include(visualTargets.error, "selector_not_supported_for_mode");
+    }
+
+    const visualPaperTarget = tool.validate({
+      mode: "visual",
+      target: { itemId: 1 },
+      pages: [1],
+    });
+    assert.equal(visualPaperTarget.ok, true);
+  });
+
+  it("paper_read advertises non-empty mutually exclusive target shapes", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const schema = tool.spec.inputSchema as {
+      allOf?: unknown[];
+      properties?: {
+        target?: { anyOf?: unknown[] };
+        targets?: { minItems?: number; items?: { anyOf?: unknown[] } };
+      };
+    };
+    assert.isNotEmpty(schema.allOf);
+    assert.isNotEmpty(schema.properties?.target?.anyOf);
+    assert.isNotEmpty(schema.properties?.targets?.items?.anyOf);
+    assert.equal(schema.properties?.targets?.minItems, 1);
+  });
+
   it("paper_read refuses active-reader fallback in collection-scoped library chat", async function () {
     const activeReaderPaper = {
       itemId: 99,
@@ -437,7 +708,10 @@ describe("semantic tool surface", function () {
     });
     const first = (output as { results: Array<Record<string, unknown>> })
       .results[0];
-    assert.deepEqual(first.paperContext, activeReaderPaper);
+    assert.deepInclude(
+      first.paperContext as Record<string, unknown>,
+      activeReaderPaper,
+    );
   });
 
   it("paper_read still accepts explicit collection-enumerated targets in library chat", async function () {
@@ -506,6 +780,37 @@ describe("semantic tool surface", function () {
       {
         listPaperContexts: () => [paperContext],
         resolvePaperContextTarget: () => paperContext,
+        getItem: (itemId: number) =>
+          itemId === 11
+            ? ({
+                id: 11,
+                libraryID: 1,
+                key: "METAONLY",
+                itemTypeID: 1,
+                itemType: "journalArticle",
+                isRegularItem: () => true,
+                isAttachment: () => false,
+                isNote: () => false,
+                getDisplayTitle: () => "Metadata Only Paper",
+                getField: (fieldName: string) =>
+                  ({
+                    title: "Metadata Only Paper",
+                    abstractNote:
+                      "This abstract is enough for a high-level overview.",
+                    publicationTitle: "Journal of Tests",
+                    date: "2014",
+                    DOI: "10.1000/meta",
+                  })[fieldName] || "",
+                getCreatorsJSON: () => [
+                  {
+                    creatorType: "author",
+                    firstName: "Iva",
+                    lastName: "Charest",
+                    fieldMode: 0,
+                  },
+                ],
+              } as unknown as Zotero.Item)
+            : null,
         resolveMetadataItem: () => ({ id: 11 }),
         getEditableArticleMetadata: () => ({
           itemId: 11,
@@ -550,12 +855,86 @@ describe("semantic tool surface", function () {
     assert.equal(result?.backend, "zotero_metadata");
     assert.equal(result?.sourceKind, "zotero_metadata");
     assert.equal(result?.contentStatus, "no_extractable_pdf_text");
+    assert.include(String(result?.text || ""), "Title: Metadata Only Paper");
     assert.include(String(result?.text || ""), "This abstract is enough");
     assert.equal(result?.sourceLabel, "(Charest, 2014)");
     assert.lengthOf(
       (output as { quoteCitations?: unknown[] }).quoteCitations || [],
       0,
     );
+  });
+
+  it("paper_read overview never promotes a child attachment title over a cleared live paper title", async function () {
+    const paperContext = {
+      libraryID: 1,
+      itemId: 42,
+      contextItemId: 101,
+      title: "Stored stale title",
+    };
+    const items = new Map<number, Zotero.Item>([
+      [
+        42,
+        {
+          id: 42,
+          libraryID: 1,
+          key: "PARENT42",
+          itemTypeID: 1,
+          itemType: "journalArticle",
+          isRegularItem: () => true,
+          isAttachment: () => false,
+          isNote: () => false,
+          getDisplayTitle: () => "Item 42",
+          getField: () => "",
+          getCreatorsJSON: () => [],
+        } as unknown as Zotero.Item,
+      ],
+      [
+        101,
+        {
+          id: 101,
+          libraryID: 1,
+          key: "PDF101",
+          parentID: 42,
+          itemTypeID: 14,
+          itemType: "attachment",
+          attachmentFilename: "paper.pdf",
+          attachmentContentType: "application/pdf",
+          isRegularItem: () => false,
+          isAttachment: () => true,
+          isNote: () => false,
+          getDisplayTitle: () => "Full Text PDF",
+          getField: (fieldName: string) =>
+            fieldName === "title" ? "Full Text PDF" : "",
+          getCreatorsJSON: () => [],
+          getFilename: () => "paper.pdf",
+        } as unknown as Zotero.Item,
+      ],
+    ]);
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => {
+          throw new Error("No extractable PDF text available");
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+        getItem: (itemId: number) => items.get(itemId) || null,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const output = await tool.execute(validated.value, baseContext);
+    const result = (output as { results?: Array<Record<string, unknown>> })
+      .results?.[0];
+    const text = String(result?.text || "");
+    assert.include(text, "Title: Paper 42");
+    assert.notInclude(text, "Full Text PDF");
+    assert.notInclude(text, "Stored stale title");
   });
 
   it("paper_read overview keeps MinerU failure warning while using Zotero metadata fallback", async function () {
@@ -588,6 +967,34 @@ describe("semantic tool surface", function () {
         {
           listPaperContexts: () => [paperContext],
           resolvePaperContextTarget: () => paperContext,
+          getItem: (itemId: number) =>
+            itemId === 11
+              ? ({
+                  id: 11,
+                  libraryID: 1,
+                  key: "METAAFTERFAILURE",
+                  itemTypeID: 1,
+                  itemType: "journalArticle",
+                  isRegularItem: () => true,
+                  isAttachment: () => false,
+                  isNote: () => false,
+                  getDisplayTitle: () => "Metadata After MinerU Failure",
+                  getField: (fieldName: string) =>
+                    ({
+                      title: "Metadata After MinerU Failure",
+                      abstractNote:
+                        "Abstract fallback should still be available.",
+                    })[fieldName] || "",
+                  getCreatorsJSON: () => [
+                    {
+                      creatorType: "author",
+                      firstName: "Iva",
+                      lastName: "Charest",
+                      fieldMode: 0,
+                    },
+                  ],
+                } as unknown as Zotero.Item)
+              : null,
           resolveMetadataItem: () => ({ id: 11 }),
           getEditableArticleMetadata: () => ({
             itemId: 11,
@@ -650,6 +1057,33 @@ describe("semantic tool surface", function () {
       {
         listPaperContexts: () => [paperContext],
         resolvePaperContextTarget: () => paperContext,
+        getItem: (itemId: number) =>
+          itemId === 11
+            ? ({
+                id: 11,
+                libraryID: 1,
+                key: "NOPDF",
+                itemTypeID: 1,
+                itemType: "journalArticle",
+                isRegularItem: () => true,
+                isAttachment: () => false,
+                isNote: () => false,
+                getDisplayTitle: () => "Metadata Only Paper",
+                getField: (fieldName: string) =>
+                  ({
+                    title: "Metadata Only Paper",
+                    abstractNote: "This abstract is all that exists locally.",
+                  })[fieldName] || "",
+                getCreatorsJSON: () => [
+                  {
+                    creatorType: "author",
+                    firstName: "Iva",
+                    lastName: "Charest",
+                    fieldMode: 0,
+                  },
+                ],
+              } as unknown as Zotero.Item)
+            : null,
         resolveMetadataItem: () => ({ id: 11 }),
         getEditableArticleMetadata: () => ({
           itemId: 11,
@@ -1108,7 +1542,10 @@ describe("semantic tool surface", function () {
 
     assert.equal(output.mode, "figures");
     assert.equal(output.status, "ok");
-    assert.deepEqual(extractionContexts, [paperContext]);
+    assert.deepInclude(
+      extractionContexts[0] as Record<string, unknown>,
+      paperContext,
+    );
   });
 
   it("paper_read figures hydrates MinerU cache metadata from the Zotero attachment", async function () {
@@ -1172,8 +1609,9 @@ describe("semantic tool surface", function () {
     })) as Record<string, unknown>;
 
     assert.equal(output.status, "ok");
-    assert.deepInclude(extractionContexts, {
+    assert.deepInclude(extractionContexts[0] as Record<string, unknown>, {
       ...scopedPaperContext,
+      libraryID: 1,
       mineruCacheDir: "/tmp/mineru-paper",
       contentSourceMode: "mineru",
     });
@@ -1407,11 +1845,11 @@ describe("semantic tool surface", function () {
 
       const output = (await tool!.execute(validated.value, {
         ...baseContext,
-        request: {
+        request: resolvedAgentRequest({
           ...baseContext.request,
           userText: "Explain Figure 1",
           selectedPaperContexts: [paperContext],
-        },
+        }),
       })) as {
         content?: { status?: string; figures?: Array<{ cropPath?: string }> };
         artifacts?: Array<{ storedPath?: string }>;
@@ -2026,7 +2464,7 @@ describe("semantic tool surface", function () {
       assert.exists(tool);
       const validated = tool!.validate({
         mode: "full",
-        target: paperContext,
+        target: { paperContext },
         query: "Read the complete text.",
       });
       assert.equal(validated.ok, true);
@@ -2034,13 +2472,14 @@ describe("semantic tool surface", function () {
 
       const output = (await tool!.execute(validated.value, {
         ...baseContext,
-        request: {
+        request: resolvedAgentRequest({
           ...baseContext.request,
           userText: "Read the complete text.",
           authMode: "codex_app_server",
           model: "gpt-5.5",
           apiBase: "/tmp/codex",
-        },
+          selectedPaperContexts: [paperContext],
+        }),
       })) as {
         status: string;
         coverageReceipt: {
@@ -2111,6 +2550,18 @@ describe("semantic tool surface", function () {
       {} as never,
       {
         listPaperContexts: () => [firstPaper, activePaper],
+        resolvePaperContextTarget: ({
+          itemId,
+          contextItemId,
+        }: {
+          itemId?: number;
+          contextItemId?: number;
+        }) =>
+          [firstPaper, activePaper].find(
+            (paper) =>
+              (!itemId || paper.itemId === itemId) &&
+              (!contextItemId || paper.contextItemId === contextItemId),
+          ) || null,
       } as never,
       undefined,
       async (batch) => ({
@@ -2137,7 +2588,7 @@ describe("semantic tool surface", function () {
           conversationKind: "paper",
           activeItemId: activePaper.itemId,
           selectedPaperContexts: [activePaper, firstPaper],
-          userText: "Read the complete second selected paper.",
+          userText: "Read the complete first selected paper.",
         },
       });
       assert.fail("Expected a conflicting model-supplied target to fail");
@@ -2189,7 +2640,7 @@ describe("semantic tool surface", function () {
         conversationKind: "paper",
         activeItemId: activePaper.itemId,
         selectedPaperContexts: [activePaper, firstPaper],
-        userText: "Read the complete second selected paper.",
+        userText: "Read the complete first selected paper.",
       },
     });
     assert.deepEqual(prepared, [firstPaper.title]);
@@ -2202,11 +2653,11 @@ describe("semantic tool surface", function () {
         conversationKind: "paper",
         activeItemId: activePaper.itemId,
         selectedPaperContexts: [firstPaper, activePaper],
-        userText: "Read the full text of all selected papers.",
+        userText: "Read all selected papers in full.",
       },
     })) as { coverageReceipt: { paperCount: number } };
-    assert.deepEqual(prepared, [firstPaper.title, activePaper.title]);
-    assert.equal(allSelectedOutput.coverageReceipt.paperCount, 2);
+    assert.deepEqual(prepared, [firstPaper.title]);
+    assert.equal(allSelectedOutput.coverageReceipt.paperCount, 1);
   });
 
   it("paper_read targeted honors explicit pages even when a query is present", async function () {
@@ -2575,12 +3026,14 @@ describe("semantic tool surface", function () {
   it("matches simple-paper-qa for understand-this-paper typo requests", function () {
     setUserSkills([parseSkill(BUILTIN_SKILL_FILES["simple-paper-qa.md"])]);
     assert.include(
-      getMatchedSkillIds({
-        userText: "can you help me understand this ppaer",
-        selectedPaperContexts: [
-          { itemId: 1, contextItemId: 2, title: "Paper" },
-        ],
-      }),
+      getMatchedSkillIds(
+        resolvedSkillRequest({
+          userText: "can you help me understand this ppaer",
+          selectedPaperContexts: [
+            { itemId: 1, contextItemId: 2, title: "Paper" },
+          ],
+        }),
+      ),
       "simple-paper-qa",
     );
   });
@@ -2588,40 +3041,32 @@ describe("semantic tool surface", function () {
   it("compare-papers guidance prefers one targeted batched read for method comparisons", function () {
     const raw = BUILTIN_SKILL_FILES["compare-papers.md"];
     assert.include(raw, "contexts: paper-set,library-corpus");
-    assert.include(raw, "targeted first when the dimension is known");
+    assert.include(raw, "start with one batched targeted read");
     assert.include(
       raw,
       "A selected Zotero collection/folder is also a valid comparison corpus",
     );
+    assert.include(raw, "prefer one scoped `library_retrieve(");
     assert.include(
       raw,
-      "library_retrieve({ query:'methods methodology method section'",
+      "Make follow-up `paper_read({ mode:'targeted', ... })` calls only for concrete missing dimensions",
     );
-    assert.include(
-      raw,
-      "paper_read({ mode:'targeted', query:'methods methodology method section', targets:[...] })",
-    );
-    assert.include(
-      raw,
-      "For method-section requests, do not call overview first",
-    );
-    assert.include(raw, "include short direct-source blockquotes");
-    assert.include(
-      raw,
-      "Do not call visual/page tools, `file_io`, or `run_command`",
-    );
+    assert.include(raw, "Apply the system citation contract");
+    assert.notInclude(raw, "include short direct-source blockquotes");
   });
 
   it("matches compare-papers for collection-scoped comparison requests", function () {
     setUserSkills([parseSkill(BUILTIN_SKILL_FILES["compare-papers.md"])]);
 
     assert.include(
-      getMatchedSkillIds({
-        userText: "compare the methods of all papers in this folder",
-        selectedCollectionContexts: [
-          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
-        ],
-      }),
+      getMatchedSkillIds(
+        resolvedSkillRequest({
+          userText: "compare the methods of all papers in this folder",
+          selectedCollectionContexts: [
+            { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+          ],
+        }),
+      ),
       "compare-papers",
     );
   });
@@ -2644,12 +3089,14 @@ describe("semantic tool surface", function () {
     setUserSkills([parseSkill(BUILTIN_SKILL_FILES["evidence-based-qa.md"])]);
 
     assert.include(
-      getMatchedSkillIds({
-        userText: "find evidence in these papers for this claim",
-        selectedCollectionContexts: [
-          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
-        ],
-      }),
+      getMatchedSkillIds(
+        resolvedSkillRequest({
+          userText: "find evidence in these papers for this claim",
+          selectedCollectionContexts: [
+            { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+          ],
+        }),
+      ),
       "evidence-based-qa",
     );
   });

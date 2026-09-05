@@ -5,6 +5,8 @@ import {
 } from "../../core/conversations/repository";
 import type { ConversationSystem } from "../../shared/types";
 import { isReusableConversationDraft } from "./standaloneConversationResolution";
+import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
+import { getConversationKeyLedgerEntry } from "../../shared/conversationKeyLedger";
 
 declare const ztoolkit: any;
 
@@ -87,7 +89,11 @@ export async function resolveFreshConversationDraft(params: {
 
   if (
     currentConversationKey > 0 &&
-    currentConversationKey !== excludeConversationKey
+    currentConversationKey !== excludeConversationKey &&
+    // Same rule as the listed-candidates branch below: a chat queued for
+    // deletion must never be handed back as the user's "new" chat, or it is
+    // destroyed under them ~6s later.
+    !pendingDeletionStore.isConversationPendingDeletion(currentConversationKey)
   ) {
     try {
       const currentSummary = await repository.getCatalogEntry({
@@ -102,6 +108,8 @@ export async function resolveFreshConversationDraft(params: {
           libraryID,
           paperItemID,
         }) &&
+        !(await getConversationKeyLedgerEntry(currentConversationKey))
+          ?.retiredAt &&
         !(await hasStoredMessages(
           repository,
           params.system,
@@ -132,16 +140,29 @@ export async function resolveFreshConversationDraft(params: {
       limit,
       includeEmpty: true,
     });
-    const reusableCandidates = summaries.filter((summary) => {
+    const reusableCandidates: ConversationCatalogEntry[] = [];
+    for (const summary of summaries) {
       const key = normalizePositiveInt(summary.conversationKey);
-      if (!key || key === excludeConversationKey) return false;
-      return isReusableConversationDraft({
-        summary,
-        kind: params.kind,
-        libraryID,
-        paperItemID,
-      });
-    });
+      if (!key || key === excludeConversationKey) continue;
+      // Never hand back a chat the user just asked to delete. Besides being
+      // the wrong chat to reuse, adopting it rewrites its catalog createdAt
+      // (touchEmptyCatalogActivity), which is the identity witness the queued
+      // deletion is verified against — the deletion would then be silently
+      // abandoned as "stale".
+      if (pendingDeletionStore.isConversationPendingDeletion(key)) continue;
+      const ledger = await getConversationKeyLedgerEntry(key);
+      if (ledger?.retiredAt) continue;
+      if (
+        !isReusableConversationDraft({
+          summary,
+          kind: params.kind,
+          libraryID,
+          paperItemID,
+        })
+      )
+        continue;
+      reusableCandidates.push(summary);
+    }
     for (const summary of reusableCandidates) {
       const key = normalizePositiveInt(summary.conversationKey);
       if (

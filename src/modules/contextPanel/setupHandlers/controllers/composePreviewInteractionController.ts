@@ -41,6 +41,7 @@ import {
   selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
   selectedTagContextCache,
+  initializedConversationComposeContextKeys,
 } from "../../state";
 import type {
   PaperContentSourceMode,
@@ -412,6 +413,7 @@ export function attachComposePreviewInteractionController(
           } else {
             selectedCollectionContextCache.delete(item.id);
           }
+          initializedConversationComposeContextKeys.add(item.id);
           deps.updatePaperPreviewPreservingScroll();
           setStatus(t("Collection context removed."), "ready");
         }
@@ -433,6 +435,7 @@ export function attachComposePreviewInteractionController(
           } else {
             selectedTagContextCache.delete(item.id);
           }
+          initializedConversationComposeContextKeys.add(item.id);
           deps.updatePaperPreviewPreservingScroll();
           setStatus(t("Tag context removed."), "ready");
         }
@@ -474,6 +477,7 @@ export function attachComposePreviewInteractionController(
       } else {
         clearSelectedPaperState(item.id);
       }
+      initializedConversationComposeContextKeys.add(item.id);
       deps.updatePaperPreviewPreservingScroll();
       setStatus(`Paper context removed (${nextPapers.length})`, "ready");
       deps.closePaperChipMenu();
@@ -525,18 +529,18 @@ export function attachComposePreviewInteractionController(
       paperChip.dataset.fullText = nextIsFullText ? "true" : "false";
       paperChip.classList.toggle("llm-paper-context-chip-full", nextIsFullText);
       if (contentSource === "pdf") {
-        paperChip.classList.toggle(
-          "llm-paper-context-chip-pdf",
-          nextIsFullText,
-        );
+        paperChip.classList.add("llm-paper-context-chip-pdf");
       }
+      paperChip.classList.toggle(
+        "llm-paper-context-chip-webchat-inactive",
+        deps.isWebChatMode() && contentSource === "pdf" && !nextIsFullText,
+      );
+      deps.updatePaperPreviewPreservingScroll();
       deps.closePaperChipMenu();
       if (deps.isWebChatMode() && contentSource === "pdf") {
         setStatus(
           nextIsFullText
-            ? t(
-                "WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.",
-              )
+            ? t("Next query will attach this PDF.")
             : t("Next query will not attach PDF."),
           "ready",
         );

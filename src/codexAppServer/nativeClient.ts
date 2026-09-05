@@ -16,10 +16,13 @@ import type {
   NoteContextRef,
   PaperContextRef,
 } from "../shared/types";
+import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../shared/quoteGuidance";
 import {
-  BALANCED_EVIDENCE_GUIDANCE,
-  NOTE_EDITING_QUOTE_BLOCK_GUIDANCE,
-} from "../shared/quoteGuidance";
+  AGENT_ACTION_CONTRACT,
+  CORE_RESEARCH_CONTRACT,
+  PAPER_CITATION_CONTRACT,
+  RUNTIME_CAPABILITY_CONTEXT,
+} from "../shared/instructionContracts";
 import {
   addZoteroMcpToolActivityObserver,
   addZoteroMcpConfirmationHandler,
@@ -28,6 +31,7 @@ import {
   ZOTERO_MCP_WRITE_TOOL_NAMES,
   getZoteroMcpDirectPdfToolNames,
   registerScopedZoteroMcpScope,
+  resolveConversationScopeToken,
   setActiveZoteroMcpScope,
   type ZoteroMcpActiveScope,
   type ZoteroMcpConfirmationRequest,
@@ -71,6 +75,7 @@ import {
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
+  buildCodexNativeSkillRequest,
   resolveExplicitCodexNativeSkillIds,
   resolveCodexNativeSkills,
   type CodexNativeSkillContext,
@@ -92,6 +97,13 @@ import {
 } from "../agent/privacy/localDocumentPathRedaction";
 import { validateLocalPdfDocumentBatch } from "../agent/context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "../agent/context/rawPdfTransportPolicy";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../shared/conversationWriteFence";
+import { enqueueConversationCleanupJob } from "../core/conversations/conversationCleanupJobs";
 
 export const CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
@@ -109,6 +121,8 @@ function resolveCodexNativeRuntimeCwd(): string | undefined {
 export type CodexNativeConversationScope = {
   profileSignature?: string;
   conversationKey: number;
+  instanceID?: string;
+  conversationGeneration?: number;
   libraryID: number;
   kind: CodexConversationKind;
   paperItemID?: number;
@@ -1134,6 +1148,7 @@ function registerNativeGuardianReviewHandlers(params: {
   threadId: string;
   redactText?: (value: string) => string;
   redactValue?: <T>(value: T) => T;
+  isTurnStillLive?: () => void;
 }): () => void {
   return params.proc.onNotification(
     CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -1146,6 +1161,15 @@ function registerNativeGuardianReviewHandlers(params: {
             : getApprovalRequestTarget(rawParams),
           trustedZoteroMcp: false,
         });
+        return;
+      }
+      try {
+        params.isTurnStillLive?.();
+      } catch (error) {
+        ztoolkit.log(
+          "Codex app-server native: ignored guardian approval after lifecycle change",
+          error,
+        );
         return;
       }
       const event = buildGuardianAssessmentEvent(rawParams);
@@ -1297,20 +1321,36 @@ function buildCodexNativeScopedMcpScope(params: {
   reasoning?: ReasoningConfig;
   skillContext?: CodexNativeSkillContext;
 }): ZoteroMcpActiveScope {
+  const resolvedRequest = buildCodexNativeSkillRequest({
+    scope: params.scope,
+    userText: params.userText,
+    model: params.model || "",
+    apiBase: params.codexPath,
+    skillContext: params.skillContext,
+  });
   return {
-    ...params.scope,
     profileSignature: params.profileSignature,
+    conversationKey: params.scope.conversationKey,
+    instanceID: params.scope.instanceID,
+    conversationGeneration: params.scope.conversationGeneration,
+    libraryID: params.scope.libraryID,
+    kind: params.scope.kind,
+    paperItemID: params.scope.paperItemID,
+    activeItemId: params.scope.activeItemId,
+    activeContextItemId: params.scope.activeContextItemId,
+    activeNoteId: params.scope.activeNoteId,
+    activeNoteKind: params.scope.activeNoteKind,
+    activeNoteTitle: params.scope.activeNoteTitle,
+    activeNoteParentItemId: params.scope.activeNoteParentItemId,
+    libraryName: params.scope.libraryName,
+    title: params.scope.title || params.scope.paperTitle,
     userText: params.userText,
     model: params.model,
     codexPath: params.codexPath,
     reasoning: params.reasoning,
     exhaustiveReadBackend: "codex_responses",
-    selectedPaperContexts: params.skillContext?.selectedPaperContexts,
-    pdfPaperContexts: params.skillContext?.pdfPaperContexts,
-    fullTextPaperContexts: params.skillContext?.fullTextPaperContexts,
-    pinnedPaperContexts: params.skillContext?.pinnedPaperContexts,
-    selectedCollectionContexts: params.skillContext?.selectedCollectionContexts,
-    selectedTagContexts: params.skillContext?.selectedTagContexts,
+    turnPaperScope: resolvedRequest.turnPaperScope,
+    turnPaperScopeWarnings: resolvedRequest.turnPaperScopeWarnings,
   };
 }
 
@@ -1392,6 +1432,13 @@ export function buildZoteroEnvironmentManifest(params: {
     );
   }
 
+  lines.push(
+    CORE_RESEARCH_CONTRACT,
+    PAPER_CITATION_CONTRACT,
+    AGENT_ACTION_CONTRACT,
+    RUNTIME_CAPABILITY_CONTEXT,
+  );
+
   if (!params.mcpEnabled) {
     lines.push(
       "- Zotero MCP tools: disabled for this turn. Do not claim access to Zotero library or PDF tools unless another tool source is available.",
@@ -1425,37 +1472,17 @@ export function buildZoteroEnvironmentManifest(params: {
   }
 
   lines.push(
-    "- You are Codex. Zotero resources and MCP tools are available when useful; they are not mandatory for every response.",
-    "- Use tools only when they materially improve the answer or are required to inspect/update Zotero. If available context is enough, answer directly.",
-    "- For Zotero library, profile, item, PDF, and note facts not shown in context, use Zotero MCP tools instead of local Zotero database/filesystem copies.",
+    "- Zotero MCP is ready for facts or actions absent from context.",
     ...(params.rawPdfMode
       ? [
           "- Raw PDF content: read only the exact current-turn local paths with native shell or file capabilities. Never use paper_read, MinerU, extracted-text context, sibling attachments, or paths from earlier turns as a substitute.",
         ]
       : [
-          "- Paper content: use paper_read overview for broad single-paper summaries, targeted for specific sections/results/methods, and visual/capture only for figures, layout, pages, or current reader capture. For bounded selected multi-paper synthesis, comparison, commonality, or theme questions, overview is the answer style, not the read depth; use library_retrieve or the supplied evidence ledger for body-evidence coverage before answering.",
-        ]),
-    `- ${BALANCED_EVIDENCE_GUIDANCE}`,
-    "- Citations: use the provided sourceLabel for paper-grounded claims. When paper_read provides verified quote anchors like [[quote:Q_x7a2]], use those anchor tokens only when exact wording is useful instead of manually copying the quote or sourceLabel. Use `>` blockquotes only for direct original source text. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. If a translation, interpretation, emphasis, example, or opinion is useful, write it outside the blockquote as explanation or in a fenced `text` block, not as the quoted source passage. If no quote anchor is provided for a direct quote, put the sourceLabel on the next non-empty line after the blockquote. Copy the Source label string exactly. Do not invent author/year/page/section labels. Do not write [[source=...]], section=..., or chunk=... metadata in the final answer. Do not call tools solely to discover quotes or page numbers; the UI citation binder may resolve page links after rendering.",
-    "- External lookup is allowed when the user asks for current web information, or when paper_read shows local paper content is unavailable and Zotero metadata/abstract is insufficient. Label external sources separately.",
-    "- Write/update requests should use semantic Zotero MCP write tools. Review cards or direct tool results are the deliverable for tool-backed writes.",
-    ...(params.rawPdfMode
-      ? []
-      : [
-          "- Advanced tools run_command, file_io, and zotero_script are escape hatches for explicit shell/file/script tasks or unsupported formats, not ordinary paper/library reading.",
+          "- Paper reading: use overview for broad single-paper answers, targeted for specific details, and visual/capture only for figures, layout, or pages. For bounded multi-paper synthesis, use library_retrieve or the supplied body-evidence ledger; overview is the answer style, not the read depth.",
         ]),
   );
   if (scope.activeNoteId) {
     lines.push(`- ${NOTE_EDITING_QUOTE_BLOCK_GUIDANCE}`);
-  }
-  if (scope.kind === "paper" && !params.rawPdfMode) {
-    lines.push(
-      "- Active paper resources are listed above. Use their IDs directly when a paper_read call is useful.",
-    );
-  } else if (scope.kind !== "paper") {
-    lines.push(
-      "- Library resources are listed above. Use library_search/library_read when the answer needs library data that is not already visible.",
-    );
   }
   return [
     lines.join("\n"),
@@ -1581,6 +1608,7 @@ async function loadStoredProviderSession(params: {
 
 async function clearStoredProviderSession(params: {
   conversationKey: number;
+  expectedProviderSessionId?: string;
   hooks?: CodexNativeStoreHooks;
 }): Promise<void> {
   if (params.hooks?.clearProviderSessionId) {
@@ -1592,7 +1620,12 @@ async function clearStoredProviderSession(params: {
       "Codex cannot clear the prior provider session after a raw-PDF turn.",
     );
   }
-  await clearCodexConversationSessionMetadata(params.conversationKey);
+  const current = await getCodexConversationSummary(params.conversationKey);
+  await clearCodexConversationSessionMetadata(
+    params.conversationKey,
+    params.expectedProviderSessionId,
+    current?.instanceID,
+  );
 }
 
 async function loadResumableProviderSession(params: {
@@ -1608,20 +1641,43 @@ async function persistProviderSessionId(params: {
   model: string;
   effort?: string;
   hooks?: CodexNativeStoreHooks;
+  expectedProviderSessionId?: string | null;
+  expectedGeneration?: number;
 }): Promise<void> {
   await params.hooks?.persistProviderSessionId?.(params.threadId);
   if (params.hooks?.persistProviderSessionId) return;
-  await upsertCodexConversationSummary({
-    conversationKey: params.scope.conversationKey,
-    libraryID: params.scope.libraryID,
-    kind: params.scope.kind,
-    paperItemID: params.scope.paperItemID,
-    title: params.scope.title,
-    providerSessionId: params.threadId,
-    model: params.model,
-    effort: params.effort,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+  const expectedGeneration =
+    params.expectedGeneration ??
+    getConversationWriteGeneration(params.scope.conversationKey);
+  await withConversationWriteLock(params.scope.conversationKey, async () => {
+    const current = await getCodexConversationSummary(
+      params.scope.conversationKey,
+    );
+    if (!current) return;
+    if (
+      areConversationWritesFrozen(params.scope.conversationKey) ||
+      !isConversationWriteGenerationCurrent(
+        params.scope.conversationKey,
+        expectedGeneration,
+      )
+    ) {
+      throw new Error("Conversation write generation changed");
+    }
+    const expected = normalizeNonEmptyString(params.expectedProviderSessionId);
+    if (expected !== normalizeNonEmptyString(current.providerSessionId)) return;
+    await upsertCodexConversationSummary({
+      conversationKey: params.scope.conversationKey,
+      libraryID: params.scope.libraryID,
+      kind: params.scope.kind,
+      paperItemID: params.scope.paperItemID,
+      title: params.scope.title,
+      instanceID: current.instanceID,
+      providerSessionId: params.threadId,
+      model: params.model,
+      effort: params.effort,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
   });
 }
 
@@ -1744,6 +1800,61 @@ async function resumeNativeThread(params: {
   };
 }
 
+async function enqueueCodexArchiveRecovery(params: {
+  scope: CodexNativeConversationScope;
+  threadId: string;
+}): Promise<boolean> {
+  try {
+    const job = await enqueueConversationCleanupJob({
+      operation: "codex_archive",
+      system: "codex",
+      conversationKey: params.scope.conversationKey,
+      instanceID: params.scope.instanceID,
+      conversationKind: params.scope.kind,
+      libraryID: params.scope.libraryID,
+      paperItemID: params.scope.paperItemID,
+      providerSessionId: params.threadId,
+    });
+    if (!job) return false;
+    return true;
+  } catch (error) {
+    ztoolkit.log(
+      "Codex app-server native: failed to persist archive recovery job",
+      error,
+    );
+    return false;
+  }
+}
+
+/**
+ * Preserve an exact provider thread before its local witness is replaced or
+ * discarded.  A durable job is preferred; when the cleanup table is
+ * unavailable, fail closed unless the provider archive itself succeeds.
+ */
+async function ensureCodexThreadCleanup(params: {
+  proc: CodexAppServerProcess;
+  scope: CodexNativeConversationScope;
+  threadId: string;
+}): Promise<void> {
+  if (await enqueueCodexArchiveRecovery(params)) return;
+  try {
+    await params.proc.sendRequest("thread/archive", {
+      threadId: params.threadId,
+    });
+  } catch (error) {
+    if (
+      /no rollout found|thread not found|unknown thread|no such thread/i.test(
+        String(error),
+      )
+    ) {
+      return;
+    }
+    throw new Error(
+      `Codex archive recovery could not be persisted or completed: ${String(error)}`,
+    );
+  }
+}
+
 async function resolveNativeThread(params: {
   proc: CodexAppServerProcess;
   scope: CodexNativeConversationScope;
@@ -1756,6 +1867,9 @@ async function resolveNativeThread(params: {
   hooks?: CodexNativeStoreHooks;
   storedThreadId?: string | null;
 }): Promise<NativeThreadResolution> {
+  const expectedGeneration = getConversationWriteGeneration(
+    params.scope.conversationKey,
+  );
   const storedSession =
     params.storedThreadId !== undefined
       ? {
@@ -1767,6 +1881,7 @@ async function resolveNativeThread(params: {
         });
   const storedThreadId = storedSession.threadId;
   if (storedThreadId) {
+    let replacementThreadId: string | undefined;
     try {
       const resumedThread = await resumeNativeThread({
         proc: params.proc,
@@ -1776,14 +1891,38 @@ async function resolveNativeThread(params: {
         config: params.config,
         cwd: params.cwd,
       });
+      replacementThreadId =
+        resumedThread.threadId !== storedThreadId
+          ? resumedThread.threadId
+          : undefined;
       if (resumedThread.threadId !== storedThreadId) {
+        if (
+          areConversationWritesFrozen(params.scope.conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            params.scope.conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          throw new Error("Conversation write generation changed");
+        }
         await persistProviderSessionId({
           scope: params.scope,
           threadId: resumedThread.threadId,
           model: params.model,
           effort: params.effort,
           hooks: params.hooks,
+          expectedProviderSessionId: storedThreadId,
+          expectedGeneration,
         });
+      }
+      if (
+        areConversationWritesFrozen(params.scope.conversationKey) ||
+        !isConversationWriteGenerationCurrent(
+          params.scope.conversationKey,
+          expectedGeneration,
+        )
+      ) {
+        throw new Error("Conversation write generation changed");
       }
       return { ...resumedThread, resumed: true };
     } catch (error) {
@@ -1791,6 +1930,31 @@ async function resolveNativeThread(params: {
         "Codex app-server native: thread/resume failed; starting a new persistent thread",
         error,
       );
+      if (replacementThreadId) {
+        await ensureCodexThreadCleanup({
+          proc: params.proc,
+          scope: params.scope,
+          threadId: replacementThreadId,
+        });
+      }
+      // A resume failure does not prove that the remote thread is gone. Keep
+      // its exact ID durable before moving to a new thread so a transient
+      // provider outage cannot orphan the old history forever.
+      const recoveryQueued = await enqueueCodexArchiveRecovery({
+        scope: params.scope,
+        threadId: storedThreadId,
+      });
+      if (!recoveryQueued) {
+        try {
+          await params.proc.sendRequest("thread/archive", {
+            threadId: storedThreadId,
+          });
+        } catch (archiveError) {
+          throw new Error(
+            `Codex resume failed and archive recovery could not be persisted: ${String(archiveError)}`,
+          );
+        }
+      }
     }
   }
 
@@ -1802,13 +1966,48 @@ async function resolveNativeThread(params: {
     config: params.config,
     cwd: params.cwd,
   });
-  await persistProviderSessionId({
-    scope: params.scope,
-    threadId: thread.threadId,
-    model: params.model,
-    effort: params.effort,
-    hooks: params.hooks,
-  });
+  if (
+    areConversationWritesFrozen(params.scope.conversationKey) ||
+    !isConversationWriteGenerationCurrent(
+      params.scope.conversationKey,
+      expectedGeneration,
+    )
+  ) {
+    try {
+      await params.proc.sendRequest("thread/archive", {
+        threadId: thread.threadId,
+      });
+    } catch (error) {
+      ztoolkit.log(
+        "Codex app-server native: failed to archive stale thread after conversation clear",
+        error,
+      );
+      await ensureCodexThreadCleanup({
+        proc: params.proc,
+        scope: params.scope,
+        threadId: thread.threadId,
+      });
+    }
+    throw new Error("Conversation write generation changed");
+  }
+  try {
+    await persistProviderSessionId({
+      scope: params.scope,
+      threadId: thread.threadId,
+      model: params.model,
+      effort: params.effort,
+      hooks: params.hooks,
+      expectedProviderSessionId: storedThreadId,
+      expectedGeneration,
+    });
+  } catch (error) {
+    await ensureCodexThreadCleanup({
+      proc: params.proc,
+      scope: params.scope,
+      threadId: thread.threadId,
+    });
+    throw error;
+  }
   return { ...thread, resumed: false };
 }
 
@@ -1835,14 +2034,17 @@ function registerNativeApprovalRequestHandlers(params: {
     request: CodexNativeApprovalRequest,
   ) => unknown | Promise<unknown>;
   redactText?: (value: string) => string;
+  isTurnStillLive?: () => void;
 }): () => void {
   const disposers = CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS.map((method) =>
     params.proc.onRequest(method, async (rawParams) => {
+      params.isTurnStillLive?.();
       if (params.onApprovalRequest) {
         const response = await params.onApprovalRequest({
           method,
           params: rawParams,
         });
+        params.isTurnStillLive?.();
         logCodexNativeApprovalDecision({
           method,
           requestParams: rawParams,
@@ -1908,8 +2110,42 @@ export async function listCodexAppServerModels(
   return proc.sendRequest("model/list", requestParams);
 }
 
+/**
+ * Builds the MCP thread config a forked conversation must be created with.
+ *
+ * `thread/fork` creates the target conversation from the source thread, so
+ * without an override it inherits the source conversation's scope header. Resume
+ * does not reliably rebind headers on a loaded thread, so that header would keep
+ * resolving to the source scope for the whole life of the fork. The override is
+ * also required while tools are disabled so the fork cannot retain an enabled
+ * source MCP server behind the preference.
+ */
+export function buildForkedCodexThreadMcpConfig(
+  targetConversationKey?: number,
+  targetInstanceID?: string,
+): Record<string, unknown> | undefined {
+  const conversationKey = Math.floor(Number(targetConversationKey));
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+    return undefined;
+  }
+  const mcpEnabled = isCodexZoteroMcpToolsEnabled();
+  const profileSignature = getCodexProfileSignature();
+  return buildCodexZoteroMcpThreadConfig({
+    profileSignature,
+    scopeToken: resolveConversationScopeToken({
+      profileSignature,
+      conversationKey,
+      instanceID: targetInstanceID,
+    }),
+    required: mcpEnabled,
+    enabled: mcpEnabled,
+  }).config;
+}
+
 export async function forkCodexAppServerThread(params: {
   threadId: string;
+  targetConversationKey?: number;
+  targetInstanceID?: string;
   codexPath?: string;
   processKey?: string;
 }): Promise<string> {
@@ -1918,12 +2154,50 @@ export async function forkCodexAppServerThread(params: {
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
   );
-  const result = await proc.sendRequest("thread/fork", {
+  const requestParams: Record<string, unknown> = {
     threadId: params.threadId,
-  });
-  const threadId = extractCodexAppServerThreadId(result);
-  if (!threadId) throw new Error("Codex app-server did not return a thread ID");
-  return threadId;
+  };
+  const config = buildForkedCodexThreadMcpConfig(
+    params.targetConversationKey,
+    params.targetInstanceID,
+  );
+  if (config) requestParams.config = config;
+  const targetConversationKey = Math.floor(
+    Number(params.targetConversationKey),
+  );
+  const profileSignature = getCodexProfileSignature();
+  const provisionalMcpScope =
+    config &&
+    isCodexZoteroMcpToolsEnabled() &&
+    Number.isFinite(targetConversationKey) &&
+    targetConversationKey > 0
+      ? registerScopedZoteroMcpScope(
+          {
+            profileSignature,
+            conversationKey: targetConversationKey,
+          },
+          {
+            token: resolveConversationScopeToken({
+              profileSignature,
+              conversationKey: targetConversationKey,
+              instanceID: params.targetInstanceID,
+            }),
+          },
+        )
+      : null;
+  try {
+    // A required MCP server performs tools/list while the fork is being
+    // created. Keep the target token resolvable for that handshake; the first
+    // target turn will register the complete conversation scope under it.
+    const result = await proc.sendRequest("thread/fork", requestParams);
+    const threadId = extractCodexAppServerThreadId(result);
+    if (!threadId) {
+      throw new Error("Codex app-server did not return a thread ID");
+    }
+    return threadId;
+  } finally {
+    provisionalMcpScope?.clear();
+  }
 }
 
 export async function archiveCodexAppServerThread(params: {
@@ -2091,6 +2365,7 @@ function buildNativeDiagnostics(params: {
 
 export async function runCodexAppServerNativeTurn(params: {
   scope: CodexNativeConversationScope;
+  conversationGeneration?: number;
   model: string;
   messages: ChatMessage[];
   reasoning?: ReasoningConfig;
@@ -2117,6 +2392,21 @@ export async function runCodexAppServerNativeTurn(params: {
     request: CodexNativeApprovalRequest,
   ) => unknown | Promise<unknown>;
 }): Promise<CodexNativeTurnResult> {
+  const expectedGeneration = Number.isFinite(params.conversationGeneration)
+    ? Number(params.conversationGeneration)
+    : getConversationWriteGeneration(params.scope.conversationKey);
+  if (
+    params.signal?.aborted ||
+    areConversationWritesFrozen(params.scope.conversationKey) ||
+    !isConversationWriteGenerationCurrent(
+      params.scope.conversationKey,
+      expectedGeneration,
+    )
+  ) {
+    throw params.signal?.aborted
+      ? createNativeClientAbortError()
+      : new Error("Conversation write generation changed");
+  }
   const originalLocalDocuments = params.skillContext?.localDocuments || [];
   validateLocalPdfDocumentBatch({
     pdfPaperContexts: params.skillContext?.pdfPaperContexts,
@@ -2142,6 +2432,18 @@ export async function runCodexAppServerNativeTurn(params: {
       codexPath,
     });
     return await proc.runTurnExclusive(async () => {
+      const assertApprovalTurnStillLive = () => {
+        if (params.signal?.aborted) throw createNativeClientAbortError();
+        if (
+          areConversationWritesFrozen(params.scope.conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            params.scope.conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          throw new Error("Conversation write generation changed");
+        }
+      };
       const unregisterApprovalHandlers = registerNativeApprovalRequestHandlers({
         proc,
         onApprovalRequest: params.onApprovalRequest
@@ -2149,6 +2451,7 @@ export async function runCodexAppServerNativeTurn(params: {
               params.onApprovalRequest?.(redactTerminalValue(request))
           : undefined,
         redactText,
+        isTurnStillLive: assertApprovalTurnStillLive,
       });
       const mcpEnabled = isCodexZoteroMcpToolsEnabled();
       const profileSignature =
@@ -2163,7 +2466,15 @@ export async function runCodexAppServerNativeTurn(params: {
         hooks: params.hooks,
       });
       const storedThreadId = storedSession.threadId;
-      const scopeWithProfile = { ...params.scope, profileSignature };
+      const summary = await getCodexConversationSummary(
+        params.scope.conversationKey,
+      );
+      const scopeWithProfile = {
+        ...params.scope,
+        profileSignature,
+        instanceID: params.scope.instanceID || summary?.instanceID,
+        conversationGeneration: expectedGeneration,
+      };
       const scopedMcpScope = buildCodexNativeScopedMcpScope({
         scope: scopeWithProfile,
         profileSignature,
@@ -2173,8 +2484,22 @@ export async function runCodexAppServerNativeTurn(params: {
         reasoning: params.reasoning,
         skillContext,
       });
+      // Raw-PDF turns always run on a fresh ephemeral thread, so they keep a
+      // single-turn token. Persistent threads are resumed with the scope header
+      // Codex captured when the thread was created, so they need a token that
+      // stays stable for the whole conversation.
+      const persistentScopeToken = currentTurnHasLocalPdfs
+        ? ""
+        : resolveConversationScopeToken({
+            profileSignature,
+            conversationKey: params.scope.conversationKey,
+            instanceID: scopeWithProfile.instanceID,
+          });
       const scopedMcp = mcpEnabled
-        ? registerScopedZoteroMcpScope(scopedMcpScope)
+        ? registerScopedZoteroMcpScope(
+            scopedMcpScope,
+            persistentScopeToken ? { token: persistentScopeToken } : {},
+          )
         : null;
       const mcpThreadConfig = scopedMcp
         ? buildCodexZoteroMcpThreadConfig({
@@ -2238,16 +2563,36 @@ export async function runCodexAppServerNativeTurn(params: {
           params.reasoning,
           params.model,
         );
+        const assertTurnStillLive = () => {
+          if (params.signal?.aborted) {
+            throw createNativeClientAbortError();
+          }
+          if (
+            areConversationWritesFrozen(params.scope.conversationKey) ||
+            !isConversationWriteGenerationCurrent(
+              params.scope.conversationKey,
+              expectedGeneration,
+            )
+          ) {
+            throw new Error("Conversation write generation changed");
+          }
+        };
         const executePreparedThread = async (args: {
           thread: NativeThreadResolution;
           input: unknown;
           skillIds: string[];
         }): Promise<CodexNativeTurnResult> => {
+          // A thread may have been prepared while Clear was waiting on an
+          // earlier provider/database operation. Re-check immediately before
+          // the destructive provider action; the app-server must never start
+          // work for a cleared generation.
+          assertTurnStillLive();
           unregisterGuardianReviews = registerNativeGuardianReviewHandlers({
             proc,
             threadId: args.thread.threadId,
             redactText,
             redactValue: redactTerminalValue,
+            isTurnStillLive: assertTurnStillLive,
           });
           params.onDiagnostics?.(
             redactTerminalValue(
@@ -2417,6 +2762,7 @@ export async function runCodexAppServerNativeTurn(params: {
           : buildCodexNativePriorReadContextBlock({
               profileSignature,
               conversationKey: params.scope.conversationKey,
+              instanceID: scopeWithProfile.instanceID,
               threadId: storedThreadId,
             });
         if (unavailableExplicitPdfSkillIds.length) {
@@ -2539,18 +2885,25 @@ export async function runCodexAppServerNativeTurn(params: {
           }
         }
         const thread: NativeThreadResolution = rawPdfMode
-          ? {
-              ...(await startNativeThread({
-                proc,
-                model: params.model,
-                developerInstructions:
-                  developerPreparedTurn.developerInstructions,
-                config: threadConfig,
-                cwd: codexNativeRuntimeCwd,
-                ephemeral: true,
-              })),
-              resumed: false,
-            }
+          ? await (async () => {
+              // Do not start an ephemeral provider thread after Clear has
+              // already invalidated this turn.  The post-start check below
+              // remains necessary for the race between this preflight and
+              // the provider response.
+              assertTurnStillLive();
+              return {
+                ...(await startNativeThread({
+                  proc,
+                  model: params.model,
+                  developerInstructions:
+                    developerPreparedTurn.developerInstructions,
+                  config: threadConfig,
+                  cwd: codexNativeRuntimeCwd,
+                  ephemeral: true,
+                })),
+                resumed: false,
+              };
+            })()
           : await resolveNativeThread({
               proc,
               scope: scopeWithProfile,
@@ -2563,6 +2916,18 @@ export async function runCodexAppServerNativeTurn(params: {
               hooks: params.hooks,
               storedThreadId: storedThreadId || null,
             });
+        if (rawPdfMode) {
+          try {
+            assertTurnStillLive();
+          } catch (error) {
+            await ensureCodexThreadCleanup({
+              proc,
+              scope: scopeWithProfile,
+              threadId: thread.threadId,
+            });
+            throw error;
+          }
+        }
         if (!rawPdfMode && !thread.resumed) {
           await setNativeThreadName({
             proc,
@@ -2637,15 +3002,24 @@ export async function runCodexAppServerNativeTurn(params: {
               "Codex app-server native: failed to archive the prior persistent thread after a raw-PDF turn",
               redactTerminalValue(error),
             );
+            const recoveryQueued = await enqueueCodexArchiveRecovery({
+              scope: scopeWithProfile,
+              threadId: storedThreadId,
+            });
+            if (!recoveryQueued) throw error;
           }
           await clearStoredProviderSession({
             conversationKey: params.scope.conversationKey,
+            expectedProviderSessionId: storedThreadId,
             hooks: params.hooks,
           });
         }
         return result;
       } finally {
         unregisterGuardianReviews();
+        // The scope registration only lives for the turn. The next turn resolves
+        // the same conversation-stable token and registers its own scope under
+        // it, so the header Codex captured at thread creation stays valid.
         scopedMcp?.clear();
         clearMcpConfirmationHandler();
         clearMcpScope();

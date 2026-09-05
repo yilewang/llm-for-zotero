@@ -7,18 +7,20 @@ import { createSearchPaperTool } from "../src/agent/tools/read/searchPaper";
 import { createReadAttachmentTool } from "../src/agent/tools/read/readAttachment";
 import { createViewPdfPagesTool } from "../src/agent/tools/read/viewPdfPages";
 import type { AgentToolContext, AgentToolResult } from "../src/agent/types";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 describe("search_paper tool", function () {
   const baseContext: AgentToolContext = {
-    request: {
+    request: resolvedAgentRequest({
       conversationKey: 5,
       mode: "agent",
       userText: "Explain what I'm looking at",
+      libraryID: 1,
       selectedPaperContexts: [
         { itemId: 1, contextItemId: 101, title: "Paper One" },
         { itemId: 2, contextItemId: 202, title: "Paper Two" },
       ],
-    },
+    }),
     item: null,
     currentAnswerText: "",
     modelName: "gpt-5.4",
@@ -48,8 +50,18 @@ describe("search_paper tool", function () {
         ensurePaperContext: async () => {},
       } as never,
       {
-        listPaperContexts: (request: AgentToolContext["request"]) =>
-          request.selectedPaperContexts || [],
+        resolvePaperContextTarget: ({
+          itemId,
+          contextItemId,
+        }: {
+          itemId?: number;
+          contextItemId?: number;
+        }) =>
+          baseContext.request.turnPaperScope.papers.find(
+            (entry) =>
+              (!itemId || entry.paper.itemId === itemId) &&
+              (!contextItemId || entry.paper.contextItemId === contextItemId),
+          )?.paper || null,
       } as never,
     );
 

@@ -5,6 +5,7 @@ import {
   buildExternalBridgeContextEnvelopeForTests,
   buildBridgeRuntimeRequestForTests,
   buildClaudeBridgeCustomInstructionForTests,
+  resolveClaudeBridgeModelForMetadata,
   supportsClaudeBridgeLocalPdfPathsForTests,
   fetchExternalBridgeSessionInfo,
 } from "../src/agent/externalBackendBridge";
@@ -22,6 +23,15 @@ function paper(index: number) {
 }
 
 describe("external bridge session-info fallback", function () {
+  it("forwards every non-empty Claude model value exactly, including default", function () {
+    assert.equal(resolveClaudeBridgeModelForMetadata("default"), "default");
+    assert.equal(
+      resolveClaudeBridgeModelForMetadata("  FutureModel-V7[2m]  "),
+      "FutureModel-V7[2m]",
+    );
+    assert.isUndefined(resolveClaudeBridgeModelForMetadata("   "));
+  });
+
   it("makes the raw PDF policy authoritative after Claude skill guidance", function () {
     const previousZotero = (globalThis as { Zotero?: unknown }).Zotero;
     (globalThis as { Zotero?: unknown }).Zotero = {
@@ -62,6 +72,8 @@ describe("external bridge session-info fallback", function () {
       conversationKey: 42,
       mode: "agent",
       userText: "read it",
+      libraryID: 1,
+      pdfPaperContexts: [{ itemId: 10, contextItemId: 20, title: "Paper" }],
       localDocuments,
     });
 
@@ -140,6 +152,7 @@ describe("external bridge session-info fallback", function () {
       conversationKey: 1,
       mode: "agent",
       userText: "Use the selected papers.",
+      libraryID: 1,
       selectedPaperContexts: papers,
       fullTextPaperContexts: papers,
       pinnedPaperContexts: papers,

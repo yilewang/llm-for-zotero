@@ -249,8 +249,9 @@ describe("Codex native skills", function () {
     assert.deepEqual(resolved.matchedSkillIds, ["evidence-based-qa"]);
     assert.include(
       resolved.instructionBlock,
-      "a particular claim in a paper or selected collection",
+      "For a selected collection/folder or whole-library evidence question",
     );
+    assert.include(resolved.instructionBlock, "for exact presence/absence");
   });
 
   it("builds native request context from scope and UI context", function () {
@@ -278,13 +279,22 @@ describe("Codex native skills", function () {
     assert.equal(request.authMode, "codex_app_server");
     assert.equal(request.providerProtocol, "codex_responses");
     assert.equal(request.activeItemId, 42);
-    assert.deepEqual(request.selectedPaperContexts, [
-      {
-        itemId: 42,
-        contextItemId: 99,
-        title: "Native Skills Paper",
-      },
-    ]);
+    assert.deepEqual(
+      request.turnPaperScope.papers.map(({ paper, roles }) => ({
+        itemId: paper.itemId,
+        contextItemId: paper.contextItemId,
+        title: paper.title,
+        roles,
+      })),
+      [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "Native Skills Paper",
+          roles: ["active"],
+        },
+      ],
+    );
     assert.equal(request.activeNoteContext?.noteId, 55);
     assert.deepEqual(request.selectedTexts, ["Figure caption"]);
     assert.deepEqual(request.screenshots, ["data:image/png;base64,AAAA"]);
@@ -332,13 +342,14 @@ describe("Codex native skills", function () {
     );
 
     assert.deepEqual(
-      request.pdfPaperContexts?.map((paper) => [
-        paper.itemId,
-        paper.contextItemId,
-      ]),
+      request.turnPaperScope.papers
+        .filter((entry) => entry.roles.includes("raw_pdf"))
+        .map(({ paper }) => [paper.itemId, paper.contextItemId]),
       [[42, 99]],
     );
-    assert.deepEqual(request.localDocuments, [localDocument]);
+    assert.deepEqual(request.localDocuments, [
+      { paperKey: "7:42:99", resource: localDocument },
+    ]);
     assert.include(block, "Call paper_read overview.");
     assert.include(block, "overrides conflicting paper-reading routes");
     assert.notInclude(
@@ -356,5 +367,42 @@ describe("Codex native skills", function () {
       buildCodexNativeSkillInstructionBlock(["missing-skill"], []),
       "",
     );
+  });
+
+  it("flags user customizations after the managed block in the instruction block", function () {
+    const managedBegin = "<!-- LLM-FOR-ZOTERO:MANAGED-BEGIN -->";
+    const managedEnd = "<!-- LLM-FOR-ZOTERO:MANAGED-END -->";
+    const customized = makeSkill(
+      "write-note",
+      /note/i,
+      [
+        managedBegin,
+        "Default filename pattern: default-pattern.md",
+        managedEnd,
+        "",
+        "## Your customizations",
+        "",
+        "Path pattern: `{papertitle}/{papertitle}.md`",
+      ].join("\n"),
+    );
+    const plain = makeSkill(
+      "simple-paper-qa",
+      /summarize/i,
+      [managedBegin, "Managed-only instructions.", managedEnd].join("\n"),
+    );
+
+    const block = buildCodexNativeSkillInstructionBlock(
+      ["write-note", "simple-paper-qa"],
+      [customized, plain],
+    );
+
+    const customizedSection = block.slice(
+      block.indexOf("Skill: write-note"),
+      block.indexOf("Skill: simple-paper-qa"),
+    );
+    const plainSection = block.slice(block.indexOf("Skill: simple-paper-qa"));
+    assert.include(customizedSection, "USER CUSTOMIZATIONS");
+    assert.include(customizedSection, "OVERRIDE any conflicting defaults");
+    assert.notInclude(plainSection, "USER CUSTOMIZATIONS");
   });
 });

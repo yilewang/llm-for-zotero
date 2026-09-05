@@ -27,4 +27,19 @@ describe("modelDisplayLabel", function () {
     );
     assert.equal(formatDisplayModelName("", "OpenAI (codex auth, legacy)"), "");
   });
+
+  it("preserves opaque Claude model values when provider prefixes are suppressed", function () {
+    assert.equal(
+      formatDisplayModelName("FutureModel-V7[2m]", "Claude Code", {
+        suppressProviderPrefix: true,
+      }),
+      "FutureModel-V7[2m]",
+    );
+    assert.equal(
+      formatDisplayModelName("gpt-5.6", "OpenAI (app server)", {
+        suppressProviderPrefix: true,
+      }),
+      "codex-app/gpt-5.6",
+    );
+  });
 });

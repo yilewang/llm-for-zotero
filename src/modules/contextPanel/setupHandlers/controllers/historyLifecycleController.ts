@@ -12,6 +12,7 @@ import {
   type ConversationCatalogEntry,
 } from "../../../../core/conversations/repository";
 import { resolveFreshConversationDraft } from "../../freshConversationDraft";
+import { resolveWebChatSessionConversation } from "../../webchatSessionConversation";
 import {
   evaluateConversationForkEligibility,
   type ConversationForkEligibilityReason,
@@ -34,7 +35,6 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
   draftInputCache,
-  selectedImageCache,
   inlineEditCleanup,
   setInlineEditCleanup,
   setInlineEditTarget,
@@ -109,9 +109,12 @@ import {
   resolveDisplayConversationKind,
   resolveShortcutMode,
 } from "../../portalScope";
-import { normalizeAttachmentContentHash } from "../../normalizers";
 import { replaceOwnerAttachmentRefs } from "../../../../utils/attachmentRefStore";
-import { extractManagedBlobHash } from "../../attachmentStorage";
+import {
+  collectAttachmentHashesFromMessages,
+  filterMessagesInPendingTurns,
+  findTurnPairByTimestamps,
+} from "../../turnMessageUtils";
 import {
   getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
@@ -122,14 +125,25 @@ import {
   buildPaperStateKey,
 } from "../../prefHelpers";
 import type { AgentRuntime } from "../../../../agent/runtime";
+import { clearActiveConversationForPendingDeletion } from "../../conversationDeletionActivation";
 import {
-  finalizeConversationDeletion,
-  getConversationDeletionFailureMessage,
-} from "../../conversationDeletion";
+  createSerializedConversationDeletionEventQueue,
+  resolveConversationDeletionSurfaceAction,
+  type ConversationDeletionSurfaceSnapshot,
+} from "../../conversationDeletionSurfaceSync";
 import {
-  clearActiveConversationForPendingDeletion,
-  shouldRestoreActiveConversationOnDeletionUndo,
-} from "../../conversationDeletionActivation";
+  forgetRecentlyDeletedConversation,
+  hasConversationDeletionTombstoneForKey,
+  isConversationInstanceRecentlyDeleted,
+  markConversationInstanceRecentlyDeleted,
+} from "../../../../core/conversations/recentlyDeletedConversations";
+import {
+  pendingDeletionStore,
+  type PendingConversationDeletionEntry,
+  type PendingDeletionEvent,
+} from "../../../../core/conversations/pendingDeletionStore";
+import { getConversationWriteGeneration } from "../../../../shared/conversationWriteFence";
+import { getRegisteredConversationScope } from "../../../../shared/conversationRegistry";
 import {
   formatGlobalHistoryTimestamp,
   formatHistoryRowDisplayTitle,
@@ -145,11 +159,9 @@ import {
   resolveHistoryEntryPaperDisplayMetadata,
   resolveHistoryEntrySourceState,
   resolvePaperHistoryNavigationDecision,
-  GLOBAL_HISTORY_UNDO_WINDOW_MS,
   type ConversationHistoryEntry,
   type HistoryPaperPaneSelector,
   type HistorySwitchTarget,
-  type PendingHistoryDeletion,
 } from "./conversationHistoryController";
 import {
   appendHistorySearchHighlightedText,
@@ -190,17 +202,25 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 }
 
 type StatusLevel = "ready" | "warning" | "error";
-type PendingTurnDeletion = {
-  conversationSystem: ConversationSystem;
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-  userIndex: number;
-  userMessage: Message;
-  assistantMessage: Message;
-  timeoutId: number | null;
-  expiresAt: number;
-};
+
+const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
+
+// Conversations a surface gave up because a deletion was queued, keyed by
+// pending-deletion entry id. Kept on the body (not the controller) so a panel
+// rebuild inside the same window still knows where to put the user back.
+const surrenderedDeletionTargetsByBody = new WeakMap<
+  Element,
+  Map<string, HistorySwitchTarget>
+>();
+
+export function disposePendingDeletionSubscriptionForBody(body: Element): void {
+  const unsubscribe = pendingDeletionSubscriptionsByBody.get(body);
+  if (unsubscribe) {
+    unsubscribe();
+    pendingDeletionSubscriptionsByBody.delete(body);
+  }
+}
+
 type CachedHistorySearchDocument = {
   fingerprint: string;
   document: HistorySearchDocument;
@@ -218,6 +238,8 @@ type ForkTurnTarget = {
   conversationKey: number;
   userTimestamp: number;
   assistantTimestamp: number;
+  userMessageID?: number;
+  assistantMessageID?: number;
 };
 
 export { clearDeletedAgentConversationState } from "../../agentConversationCleanup";
@@ -491,6 +513,43 @@ export function createHistoryLifecycleController(
       title: params.title || "",
     });
   };
+  // Ambient "keep the mounted conversation listed" seeding. A conversation
+  // queued for deletion — or one whose deletion just committed — must never be
+  // seeded back: for a global portal item item.id IS the conversation key, so
+  // any second panel still mounted on the doomed key would INSERT OR IGNORE a
+  // bare row and the chat would reappear as an empty "New chat". Deliberate
+  // navigation uses ensureConversationCatalogEntry and lifts the tombstone.
+  const ensureActiveConversationCatalogEntry = async (params: {
+    system: ConversationSystem;
+    conversationKey: number;
+    libraryID: number;
+    kind: "global" | "paper";
+    paperItemID?: number;
+  }) => {
+    if (
+      pendingDeletionStore.isConversationPendingDeletion(params.conversationKey)
+    ) {
+      return null;
+    }
+    const identityWitness =
+      await conversationRepository.getCatalogIdentityWitness(params);
+    if (
+      identityWitness?.instanceID &&
+      isConversationInstanceRecentlyDeleted(
+        params.conversationKey,
+        identityWitness.instanceID,
+      )
+    ) {
+      return null;
+    }
+    if (
+      !identityWitness &&
+      (await hasConversationDeletionTombstoneForKey(params.conversationKey))
+    ) {
+      return null;
+    }
+    return ensureConversationCatalogEntry(params);
+  };
   const touchEmptyDraftActivity = async (
     conversationKey: number,
     kind: "global" | "paper",
@@ -527,21 +586,6 @@ export function createHistoryLifecycleController(
   >();
   const historySearchDocumentCacheLimit = Math.max(GLOBAL_HISTORY_LIMIT, 200);
   let globalHistoryLoadSeq = 0;
-  let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
-  const pendingHistoryDeletionKeys = new Set<number>();
-  const MESSAGE_TURN_UNDO_WINDOW_MS = 8000;
-  type PendingTurnDeletion = {
-    conversationSystem: ConversationSystem;
-    conversationKey: number;
-    userTimestamp: number;
-    assistantTimestamp: number;
-    userIndex: number;
-    userMessage: Message;
-    assistantMessage: Message;
-    timeoutId: number | null;
-    expiresAt: number;
-  };
-  let pendingTurnDeletion: PendingTurnDeletion | null = null;
   const TOP_TOAST_TIMEOUT_MS = 2600;
   let topToastTimer: number | null = null;
 
@@ -566,11 +610,9 @@ export function createHistoryLifecycleController(
     if (historyUndoText) historyUndoText.textContent = "";
   };
 
-  const showHistoryUndoToast = (title: string) => {
+  const showHistoryUndoToast = () => {
     if (!historyUndo || !historyUndoText) return;
-    const displayTitle =
-      normalizeHistoryTitle(title) || normalizeHistoryTitle("Untitled chat");
-    historyUndoText.textContent = `Deleted "${displayTitle}"`;
+    historyUndoText.textContent = `Conversation deleted — Undo`;
     historyUndo.style.display = "flex";
   };
 
@@ -602,100 +644,12 @@ export function createHistoryLifecycleController(
     }, TOP_TOAST_TIMEOUT_MS);
   };
 
-  const cloneTurnMessageForUndo = (message: Message): Message => ({
-    ...message,
-    selectedTexts: Array.isArray(message.selectedTexts)
-      ? [...message.selectedTexts]
-      : undefined,
-    selectedTextSources: Array.isArray(message.selectedTextSources)
-      ? [...message.selectedTextSources]
-      : undefined,
-    selectedTextPaperContexts: Array.isArray(message.selectedTextPaperContexts)
-      ? [...message.selectedTextPaperContexts]
-      : undefined,
-    selectedTextNoteContexts: Array.isArray(message.selectedTextNoteContexts)
-      ? [...message.selectedTextNoteContexts]
-      : undefined,
-    screenshotImages: Array.isArray(message.screenshotImages)
-      ? [...message.screenshotImages]
-      : undefined,
-    paperContexts: Array.isArray(message.paperContexts)
-      ? [...message.paperContexts]
-      : undefined,
-    fullTextPaperContexts: Array.isArray(message.fullTextPaperContexts)
-      ? [...message.fullTextPaperContexts]
-      : undefined,
-    citationPaperContexts: Array.isArray(message.citationPaperContexts)
-      ? [...message.citationPaperContexts]
-      : undefined,
-    attachments: Array.isArray(message.attachments)
-      ? message.attachments.map((attachment) => ({ ...attachment }))
-      : undefined,
-    generatedImages: Array.isArray(message.generatedImages)
-      ? message.generatedImages.map((image) => ({ ...image }))
-      : undefined,
-  });
-
-  const findTurnPairByTimestamps = (
-    history: Message[],
-    userTimestamp: number,
-    assistantTimestamp: number,
-  ): {
-    userIndex: number;
-    userMessage: Message;
-    assistantMessage: Message;
-  } | null => {
-    const normalizedUserTimestamp = Number.isFinite(userTimestamp)
-      ? Math.floor(userTimestamp)
-      : 0;
-    const normalizedAssistantTimestamp = Number.isFinite(assistantTimestamp)
-      ? Math.floor(assistantTimestamp)
-      : 0;
-    if (normalizedUserTimestamp <= 0 || normalizedAssistantTimestamp <= 0) {
-      return null;
-    }
-    for (let index = 0; index < history.length - 1; index++) {
-      const userMessage = history[index];
-      const assistantMessage = history[index + 1];
-      if (!userMessage || !assistantMessage) continue;
-      if (
-        userMessage.role !== "user" ||
-        assistantMessage.role !== "assistant"
-      ) {
-        continue;
-      }
-      if (
-        Math.floor(userMessage.timestamp) === normalizedUserTimestamp &&
-        Math.floor(assistantMessage.timestamp) === normalizedAssistantTimestamp
-      ) {
-        return { userIndex: index, userMessage, assistantMessage };
-      }
-    }
-    return null;
-  };
-
-  const collectAttachmentHashesFromMessages = (
-    messages: Message[],
-  ): string[] => {
-    const hashes = new Set<string>();
-    for (const message of messages) {
-      const attachments = Array.isArray(message.attachments)
-        ? message.attachments
-        : [];
-      for (const attachment of attachments) {
-        if (!attachment || attachment.category === "image") continue;
-        const contentHash =
-          normalizeAttachmentContentHash(attachment.contentHash) ||
-          extractManagedBlobHash(attachment.storedPath);
-        if (!contentHash) continue;
-        hashes.add(contentHash);
-      }
-    }
-    return Array.from(hashes);
-  };
-
-  const isHistoryEntryActive = (entry: ConversationHistoryEntry): boolean => {
+  const isHistoryEntryActive = (
+    entry: ConversationHistoryEntry,
+    conversationSystem: ConversationSystem = getConversationSystem(),
+  ): boolean => {
     if (!item) return false;
+    if (getConversationSystem() !== conversationSystem) return false;
     const activeConversationKey = getConversationKey(item);
     if (entry.kind === "paper" && !isGlobalMode()) {
       return !isGlobalMode() && activeConversationKey === entry.conversationKey;
@@ -793,7 +747,9 @@ export function createHistoryLifecycleController(
             : "Library chat"),
       deletable: true,
       isDraft,
-      isPendingDelete: false,
+      isPendingDelete: pendingDeletionStore.isConversationPendingDeletion(
+        Math.floor(conversationKey),
+      ),
       lastActivityAt: normalizedLastActivity,
       userTurnCount:
         Number.isFinite(Number(params.userTurnCount)) &&
@@ -973,12 +929,30 @@ export function createHistoryLifecycleController(
     }
     const entryByKey = new Map<number, ConversationHistoryEntry>();
     const documents = new Map<number, HistorySearchDocument>();
+    const entriesNeedingVisibleRebuild: ConversationHistoryEntry[] = [];
     const addIndexedMatch = (match: ConversationSearchIndexMatch): void => {
       const entry = createHistorySearchEntryFromIndexMatch(match);
-      if (!entry || pendingHistoryDeletionKeys.has(entry.conversationKey)) {
+      if (
+        !entry ||
+        pendingDeletionStore.isConversationPendingDeletion(
+          entry.conversationKey,
+        )
+      ) {
         return;
       }
       entryByKey.set(entry.conversationKey, entry);
+      if (
+        pendingDeletionStore.getPendingTurnsForConversation(
+          entry.conversationKey,
+        ).length > 0
+      ) {
+        // The shared index row still contains text from turns queued for
+        // deletion. Rebuild this conversation's document from visible rows
+        // and re-score; a conversation whose only hits were hidden text then
+        // drops out via the matchCount gate.
+        entriesNeedingVisibleRebuild.push(entry);
+        return;
+      }
       const document = createHistorySearchDocument(entry, [
         { text: match.bodyText },
       ]);
@@ -988,6 +962,12 @@ export function createHistoryLifecycleController(
     for (const match of indexed.matches) {
       addIndexedMatch(match);
     }
+    if (entriesNeedingVisibleRebuild.length) {
+      await runHistorySearchDocumentLoads(
+        entriesNeedingVisibleRebuild,
+        documents,
+      );
+    }
     if (indexed.status === "truncated") {
       const truncatedMatches = await loadTruncatedConversationIndexMatches({
         system,
@@ -996,7 +976,12 @@ export function createHistoryLifecycleController(
       const truncatedEntries: ConversationHistoryEntry[] = [];
       for (const match of truncatedMatches) {
         const entry = createHistorySearchEntryFromIndexMatch(match);
-        if (!entry || pendingHistoryDeletionKeys.has(entry.conversationKey)) {
+        if (
+          !entry ||
+          pendingDeletionStore.isConversationPendingDeletion(
+            entry.conversationKey,
+          )
+        ) {
           continue;
         }
         entryByKey.set(entry.conversationKey, entry);
@@ -1029,7 +1014,12 @@ export function createHistoryLifecycleController(
   }> => {
     const entries = (
       await loadSearchableConversationHistory(libraryID, { limit: null })
-    ).filter((entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey));
+    ).filter(
+      (entry) =>
+        !pendingDeletionStore.isConversationPendingDeletion(
+          entry.conversationKey,
+        ),
+    );
     const documents = new Map<number, HistorySearchDocument>();
     await runHistorySearchDocumentLoads(entries, documents);
     const rawResults = buildHistorySearchResults(
@@ -1055,7 +1045,18 @@ export function createHistoryLifecycleController(
       conversationKey: entry.conversationKey,
       limit: PERSISTED_HISTORY_LIMIT,
     });
-    return createHistorySearchDocument(entry, messages);
+    // Rows from turns queued for deletion are still in the DB during the
+    // undo window; keep them out of the searchable document so search can
+    // never surface text the chat hides.
+    const visibleMessages = filterMessagesInPendingTurns(
+      entry.conversationKey,
+      messages as Array<{
+        role?: unknown;
+        timestamp?: unknown;
+        text?: unknown;
+      }>,
+    );
+    return createHistorySearchDocument(entry, visibleMessages);
   };
 
   const getHistorySearchDocumentFingerprint = (
@@ -1629,7 +1630,9 @@ export function createHistoryLifecycleController(
       if (historyBar) historyBar.style.display = "none";
       closeHistoryNewMenu();
       closeHistoryMenu();
-      hideHistoryUndoToast();
+      // A live pending deletion keeps its undo toast even while the header
+      // is unavailable — hiding it here silently withdrew undo mid-window.
+      if (!pendingDeletionStore.getLatestPending()) hideHistoryUndoToast();
       notifyConversationHistoryChanged();
       return;
     }
@@ -1651,7 +1654,7 @@ export function createHistoryLifecycleController(
                 ? Math.floor(getConversationKey(item))
                 : 0;
             if (activePaperKey > 0) {
-              await ensureConversationCatalogEntry({
+              await ensureActiveConversationCatalogEntry({
                 system: "claude_code",
                 conversationKey: activePaperKey,
                 libraryID,
@@ -1679,7 +1682,12 @@ export function createHistoryLifecycleController(
                 continue;
               }
               const normalizedKey = Math.floor(conversationKey);
-              if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+              if (
+                pendingDeletionStore.isConversationPendingDeletion(
+                  normalizedKey,
+                )
+              )
+                continue;
               if (seenPaperKeys.has(normalizedKey)) continue;
               seenPaperKeys.add(normalizedKey);
               const lastActivity = Number(
@@ -1718,7 +1726,7 @@ export function createHistoryLifecycleController(
                 ? Math.floor(getConversationKey(item))
                 : 0;
             if (activePaperKey > 0) {
-              await ensureConversationCatalogEntry({
+              await ensureActiveConversationCatalogEntry({
                 system: "codex",
                 conversationKey: activePaperKey,
                 libraryID,
@@ -1746,7 +1754,12 @@ export function createHistoryLifecycleController(
                 continue;
               }
               const normalizedKey = Math.floor(conversationKey);
-              if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+              if (
+                pendingDeletionStore.isConversationPendingDeletion(
+                  normalizedKey,
+                )
+              )
+                continue;
               if (seenPaperKeys.has(normalizedKey)) continue;
               seenPaperKeys.add(normalizedKey);
               const lastActivity = Number(
@@ -1801,7 +1814,12 @@ export function createHistoryLifecycleController(
                 continue;
               }
               const normalizedKey = Math.floor(conversationKey);
-              if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+              if (
+                pendingDeletionStore.isConversationPendingDeletion(
+                  normalizedKey,
+                )
+              )
+                continue;
               if (seenPaperKeys.has(normalizedKey)) continue;
               seenPaperKeys.add(normalizedKey);
               const lastActivity = Number(
@@ -1871,7 +1889,7 @@ export function createHistoryLifecycleController(
         }
         if (activeGlobalKey > 0) {
           try {
-            await ensureConversationCatalogEntry({
+            await ensureActiveConversationCatalogEntry({
               system: "claude_code",
               conversationKey: activeGlobalKey,
               libraryID,
@@ -1909,7 +1927,8 @@ export function createHistoryLifecycleController(
           if (!Number.isFinite(conversationKey) || conversationKey <= 0)
             continue;
           const normalizedKey = Math.floor(conversationKey);
-          if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+          if (pendingDeletionStore.isConversationPendingDeletion(normalizedKey))
+            continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
           seenGlobalKeys.add(normalizedKey);
           const lastActivity = Number(
@@ -1957,7 +1976,7 @@ export function createHistoryLifecycleController(
         }
         if (activeGlobalKey > 0) {
           try {
-            await ensureConversationCatalogEntry({
+            await ensureActiveConversationCatalogEntry({
               system: "codex",
               conversationKey: activeGlobalKey,
               libraryID,
@@ -1989,7 +2008,8 @@ export function createHistoryLifecycleController(
           if (!Number.isFinite(conversationKey) || conversationKey <= 0)
             continue;
           const normalizedKey = Math.floor(conversationKey);
-          if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+          if (pendingDeletionStore.isConversationPendingDeletion(normalizedKey))
+            continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
           seenGlobalKeys.add(normalizedKey);
           const lastActivity = Number(
@@ -2036,7 +2056,7 @@ export function createHistoryLifecycleController(
         }
         if (activeGlobalKey > 0) {
           try {
-            await ensureConversationCatalogEntry({
+            await ensureActiveConversationCatalogEntry({
               system: "upstream",
               conversationKey: activeGlobalKey,
               libraryID,
@@ -2071,7 +2091,8 @@ export function createHistoryLifecycleController(
           if (!Number.isFinite(conversationKey) || conversationKey <= 0)
             continue;
           const normalizedKey = Math.floor(conversationKey);
-          if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+          if (pendingDeletionStore.isConversationPendingDeletion(normalizedKey))
+            continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
           seenGlobalKeys.add(normalizedKey);
           const lastActivity = Number(
@@ -2130,7 +2151,10 @@ export function createHistoryLifecycleController(
     const allEntries =
       activeHistorySection === "paper" ? paperEntries : globalEntries;
     const visibleEntries = allEntries.filter(
-      (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
+      (entry) =>
+        !pendingDeletionStore.isConversationPendingDeletion(
+          entry.conversationKey,
+        ),
     );
     latestConversationHistory = [...visibleEntries].sort((a, b) => {
       if (b.lastActivityAt !== a.lastActivityAt) {
@@ -2161,7 +2185,24 @@ export function createHistoryLifecycleController(
       ? Math.floor(nextConversationKey)
       : 0;
     if (normalizedConversationKey <= 0) return false;
+    if (
+      pendingDeletionStore.isConversationPendingDeletion(
+        normalizedConversationKey,
+      )
+    ) {
+      if (status) {
+        setStatus(status, t("Deletion pending; retrying safely"), "warning");
+      }
+      return false;
+    }
     const system = getConversationSystem();
+    // Deliberate navigation: the user wants this key alive again, so a stale
+    // just-deleted tombstone must not keep its catalog row suppressed. It also
+    // means this surface has chosen where it sits, so any remembered surrender
+    // is void — an abandoned deletion must not yank it off the chat the user
+    // just opened.
+    forgetRecentlyDeletedConversation(normalizedConversationKey);
+    getSurrenderedDeletionTargets().clear();
     const ensured = await ensureConversationCatalogEntry({
       system,
       conversationKey: normalizedConversationKey,
@@ -2276,6 +2317,13 @@ export function createHistoryLifecycleController(
         return null;
       }
       const normalizedConversationKey = Math.floor(conversationKey);
+      if (
+        pendingDeletionStore.isConversationPendingDeletion(
+          normalizedConversationKey,
+        )
+      ) {
+        return null;
+      }
       const entry =
         system === "upstream"
           ? await conversationRepository.ensureCatalogEntry({
@@ -2347,6 +2395,20 @@ export function createHistoryLifecycleController(
     if (!targetSummary) return false;
 
     const resolvedConversationKey = Math.floor(targetSummary.conversationKey);
+    if (
+      pendingDeletionStore.isConversationPendingDeletion(
+        resolvedConversationKey,
+      )
+    ) {
+      if (status) {
+        setStatus(status, t("Deletion pending; retrying safely"), "warning");
+      }
+      return false;
+    }
+    // Deliberate navigation to a different instance may clear only the
+    // legacy key-only compatibility tombstone; it never cancels a pending
+    // deletion intent.
+    forgetRecentlyDeletedConversation(resolvedConversationKey);
     if (!noteFocusItem) {
       if (system === "claude_code") {
         setCurrentItem(
@@ -2396,11 +2458,22 @@ export function createHistoryLifecycleController(
         buildPaperStateKey(libraryID, paperItemID),
         resolvedConversationKey,
       );
-      setLastUsedPaperConversationKey(
-        libraryID,
-        paperItemID,
-        resolvedConversationKey,
-      );
+      // Ephemeral webchat session rows (flagged in the catalog) are swept at
+      // the next startup, so they must never become the paper's persisted
+      // last-used conversation. Registering the key in the isolation set
+      // BEFORE syncConversationIdentity() runs makes the guard inside
+      // setLastUsedPaperConversationKey hold for every later writer too —
+      // identity sync and history-navigation priming both re-persist the
+      // active key on their own.
+      if (targetSummary.webchatSession === true) {
+        webChatIsolatedConversationKeys.add(resolvedConversationKey);
+      } else {
+        setLastUsedPaperConversationKey(
+          libraryID,
+          paperItemID,
+          resolvedConversationKey,
+        );
+      }
     }
     syncConversationIdentity();
     refreshAutoLoadedPaperContextForCurrentItem();
@@ -2700,13 +2773,14 @@ export function createHistoryLifecycleController(
       return;
     }
 
-    const pendingDeletionAffectsFork = Boolean(
-      pendingTurnDeletion &&
-      pendingTurnDeletion.conversationKey === sourceConversationKey &&
-      pendingTurnDeletion.assistantTimestamp <= assistantTimestamp,
-    );
-    if (pendingDeletionAffectsFork) {
-      const finalized = await finalizePendingTurnDeletion("superseded");
+    const overlappingPendingTurns = pendingDeletionStore
+      .getPendingTurnsForConversation(sourceConversationKey)
+      .filter((pending) => pending.assistantTimestamp <= assistantTimestamp);
+    for (const pending of overlappingPendingTurns) {
+      const finalized = await pendingDeletionStore.finalize(
+        pending.id,
+        "fork-overlap",
+      );
       if (!finalized) return;
     }
 
@@ -2815,6 +2889,7 @@ export function createHistoryLifecycleController(
         "conversation",
         nextConversationKey,
         collectAttachmentHashesFromMessages(forkedHistory),
+        getConversationWriteGeneration(nextConversationKey),
       );
     } catch (err) {
       ztoolkit.log("LLM: Failed to refresh fork attachment refs", err);
@@ -2832,7 +2907,10 @@ export function createHistoryLifecycleController(
         ? await loadSearchableConversationHistory(libraryID)
         : [];
       return entries.filter(
-        (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
+        (entry) =>
+          !pendingDeletionStore.isConversationPendingDeletion(
+            entry.conversationKey,
+          ),
       );
     },
     loadDocument: (entry) => ensureHistorySearchDocument(entry),
@@ -2870,134 +2948,12 @@ export function createHistoryLifecycleController(
     invalidateHistorySearchDocument(conversationKey);
   };
 
-  const finalizeConversationDeletionForPending = async (
-    pending: PendingHistoryDeletion,
-  ): Promise<boolean> => {
-    const conversationKey = pending.conversationKey;
-    let paperItemID = Number(pending.paperItemID || 0) || undefined;
-    if (pending.kind === "paper" && !paperItemID) {
-      const summary = await conversationRepository.getCatalogEntry({
-        system: pending.conversationSystem,
-        kind: "paper",
-        conversationKey,
-      });
-      paperItemID = Number(summary?.paperItemID || 0) || undefined;
-    }
-    clearPendingDeletionCaches(conversationKey);
-    const result = await finalizeConversationDeletion(
-      {
-        conversationID: pending.conversationID,
-        conversationKey,
-        kind: pending.kind,
-        conversationSystem: pending.conversationSystem,
-        libraryID: pending.libraryID,
-        paperItemID,
-        providerSessionId: pending.providerSessionId,
-      },
-      {
-        clearTransientComposeStateForItem,
-        scheduleAttachmentGc,
-        getCoreAgentRuntime: deps.getCoreAgentRuntime,
-        clearAgentToolCaches: deps.clearAgentToolCaches,
-        clearAgentConversationState: deps.clearAgentConversationState,
-        log: deps.log,
-      },
-    );
-    if (!result.ok && status) {
-      setStatus(
-        status,
-        t(getConversationDeletionFailureMessage(result)),
-        "error",
-      );
-    }
-    return result.ok;
-  };
-
-  const clearPendingTurnDeletion = (): PendingTurnDeletion | null => {
-    if (!pendingTurnDeletion) return null;
-    const pending = pendingTurnDeletion;
-    clearWindowTimeout(pending.timeoutId);
-    pending.timeoutId = null;
-    pendingTurnDeletion = null;
-    hideHistoryUndoToast();
-    return pending;
-  };
-
-  const finalizePendingTurnDeletion = async (
-    reason: "timeout" | "superseded",
-  ): Promise<boolean> => {
-    const pending = clearPendingTurnDeletion();
-    if (!pending) return true;
-    let hasDeleteError = false;
-    let hasCleanupError = false;
-    try {
-      await conversationRepository.deleteTurnMessages({
-        system: pending.conversationSystem,
-        conversationKey: pending.conversationKey,
-        userTimestamp: pending.userTimestamp,
-        assistantTimestamp: pending.assistantTimestamp,
-      });
-    } catch (err) {
-      hasDeleteError = true;
-      ztoolkit.log("LLM: Failed to delete turn messages", err);
-    }
-    try {
-      const remainingHistory = chatHistory.get(pending.conversationKey) || [];
-      await replaceOwnerAttachmentRefs(
-        "conversation",
-        pending.conversationKey,
-        collectAttachmentHashesFromMessages(remainingHistory),
-      );
-    } catch (err) {
-      hasCleanupError = true;
-      ztoolkit.log("LLM: Failed to refresh turn attachment refs", err);
-    }
-    scheduleAttachmentGc();
-    invalidateHistorySearchDocument(pending.conversationKey);
-    if (hasDeleteError && status) {
-      setStatus(status, t("Failed to fully delete turn. Check logs."), "error");
-    } else if (reason === "timeout" && status) {
-      setStatus(status, t("Turn deleted"), "ready");
-    }
-    if (hasCleanupError) {
-      ztoolkit.log("LLM: Turn deletion completed with stale attachment refs");
-    }
-    void refreshGlobalHistoryHeader();
-    return !hasDeleteError;
-  };
-
-  const undoPendingTurnDeletion = () => {
-    const pending = clearPendingTurnDeletion();
-    if (!pending) return;
-    const history = chatHistory.get(pending.conversationKey) || [];
-    const existingPair = findTurnPairByTimestamps(
-      history,
-      pending.userTimestamp,
-      pending.assistantTimestamp,
-    );
-    if (!existingPair) {
-      const insertAt = Math.max(0, Math.min(pending.userIndex, history.length));
-      history.splice(
-        insertAt,
-        0,
-        cloneTurnMessageForUndo(pending.userMessage),
-        cloneTurnMessageForUndo(pending.assistantMessage),
-      );
-      chatHistory.set(pending.conversationKey, history);
-    }
-    invalidateHistorySearchDocument(pending.conversationKey);
-    if (item && getConversationKey(item) === pending.conversationKey) {
-      setActiveEditSession(null);
-      refreshChatPreservingScroll();
-    }
-    if (status) setStatus(status, t("Turn restored"), "ready");
-    void refreshGlobalHistoryHeader();
-  };
-
   const queueTurnDeletion = async (target: {
     conversationKey: number;
     userTimestamp: number;
     assistantTimestamp: number;
+    userMessageID?: number;
+    assistantMessageID?: number;
   }) => {
     if (!item) return;
     if (isRequestPending(target.conversationKey)) {
@@ -3016,17 +2972,6 @@ export function createHistoryLifecycleController(
       if (status) setStatus(status, t("Delete target changed"), "error");
       return;
     }
-    if (pendingHistoryDeletion) {
-      await finalizePendingHistoryDeletion("superseded");
-    }
-    if (pendingTurnDeletion) {
-      const sameTurn =
-        pendingTurnDeletion.conversationKey === target.conversationKey &&
-        pendingTurnDeletion.userTimestamp === target.userTimestamp &&
-        pendingTurnDeletion.assistantTimestamp === target.assistantTimestamp;
-      if (sameTurn) return;
-      await finalizePendingTurnDeletion("superseded");
-    }
     const history = chatHistory.get(target.conversationKey) || [];
     const pair = findTurnPairByTimestamps(
       history,
@@ -3038,103 +2983,41 @@ export function createHistoryLifecycleController(
       return;
     }
 
-    history.splice(pair.userIndex, 2);
-    chatHistory.set(target.conversationKey, history);
+    const catalog = await conversationRepository.getCatalogEntry({
+      system: getConversationSystem(),
+      kind:
+        resolveDisplayConversationKind(item) === "paper" ? "paper" : "global",
+      conversationKey: target.conversationKey,
+    });
+    const turnDeletionInput = {
+      conversationKey: target.conversationKey,
+      system: getConversationSystem(),
+      ...(catalog?.instanceID ? { instanceID: catalog.instanceID } : {}),
+      ...(catalog?.kind ? { conversationKind: catalog.kind } : {}),
+      ...(catalog?.libraryID ? { libraryID: catalog.libraryID } : {}),
+      ...(catalog?.paperItemID ? { paperItemID: catalog.paperItemID } : {}),
+      userTimestamp: Math.floor(target.userTimestamp),
+      assistantTimestamp: Math.floor(target.assistantTimestamp),
+      ...(pair.userMessage.id ? { userMessageID: pair.userMessage.id } : {}),
+      ...(pair.assistantMessage.id
+        ? { assistantMessageID: pair.assistantMessage.id }
+        : {}),
+      ...(catalog?.providerSessionId
+        ? { providerSessionId: catalog.providerSessionId }
+        : {}),
+    };
+    const queued =
+      await pendingDeletionStore.queueTurnDeletion(turnDeletionInput);
+    if (!queued) {
+      if (status) {
+        setStatus(status, t("Failed to queue deletion. Check logs."), "error");
+      }
+      return;
+    }
     invalidateHistorySearchDocument(target.conversationKey);
     setActiveEditSession(null);
     refreshChatPreservingScroll();
-
-    const pending: PendingTurnDeletion = {
-      conversationSystem: getConversationSystem(),
-      conversationKey: target.conversationKey,
-      userTimestamp: Math.floor(target.userTimestamp),
-      assistantTimestamp: Math.floor(target.assistantTimestamp),
-      userIndex: pair.userIndex,
-      userMessage: cloneTurnMessageForUndo(pair.userMessage),
-      assistantMessage: cloneTurnMessageForUndo(pair.assistantMessage),
-      timeoutId: null,
-      expiresAt: Date.now() + MESSAGE_TURN_UNDO_WINDOW_MS,
-    };
-    pending.timeoutId = getWindowTimeout(() => {
-      void finalizePendingTurnDeletion("timeout");
-    }, MESSAGE_TURN_UNDO_WINDOW_MS);
-    pendingTurnDeletion = pending;
-    showTurnUndoToast();
     if (status) setStatus(status, t("Turn deleted. Undo available."), "ready");
-  };
-
-  const clearPendingHistoryDeletion = (
-    restoreRowVisibility: boolean,
-  ): PendingHistoryDeletion | null => {
-    if (!pendingHistoryDeletion) return null;
-    const pending = pendingHistoryDeletion;
-    clearWindowTimeout(pending.timeoutId);
-    pending.timeoutId = null;
-    if (restoreRowVisibility) {
-      pendingHistoryDeletionKeys.delete(pending.conversationKey);
-    }
-    pendingHistoryDeletion = null;
-    hideHistoryUndoToast();
-    return pending;
-  };
-
-  const finalizePendingHistoryDeletion = async (
-    reason: "timeout" | "superseded",
-  ) => {
-    const pending = clearPendingHistoryDeletion(false);
-    if (!pending) return;
-    ztoolkit.log("LLM: Finalizing pending history deletion", {
-      reason,
-      kind: pending.kind,
-      conversationID: pending.conversationID,
-      conversationKey: pending.conversationKey,
-      libraryID: pending.libraryID,
-      title: pending.title,
-    });
-    const originalSystem = getConversationSystemPref();
-    const targetSystem = pending.conversationSystem;
-    if (originalSystem !== targetSystem) {
-      setConversationSystemPref(targetSystem);
-    }
-    let deleted = false;
-    try {
-      deleted = await finalizeConversationDeletionForPending(pending);
-    } finally {
-      if (originalSystem !== targetSystem) {
-        setConversationSystemPref(originalSystem);
-      }
-    }
-    pendingHistoryDeletionKeys.delete(pending.conversationKey);
-    if (!deleted && pending.wasActive) {
-      await switchToHistoryTarget({
-        kind: pending.kind,
-        conversationKey: pending.conversationKey,
-      });
-    }
-    await refreshGlobalHistoryHeader();
-  };
-
-  const undoPendingHistoryDeletion = async () => {
-    const pending = clearPendingHistoryDeletion(true);
-    if (!pending) return;
-    ztoolkit.log("LLM: Restoring pending history deletion", {
-      kind: pending.kind,
-      conversationID: pending.conversationID,
-      conversationKey: pending.conversationKey,
-      libraryID: pending.libraryID,
-      title: pending.title,
-    });
-    invalidateHistorySearchDocument(pending.conversationKey);
-    if (pending.wasActive && shouldRestoreActiveConversationOnDeletionUndo()) {
-      await switchToHistoryTarget({
-        kind: pending.kind,
-        conversationKey: pending.conversationKey,
-      });
-      if (status) setStatus(status, t("Conversation restored"), "ready");
-      return;
-    }
-    await refreshGlobalHistoryHeader();
-    if (status) setStatus(status, t("Conversation restored"), "ready");
   };
 
   const findHistoryEntryByKey = (
@@ -3170,7 +3053,9 @@ export function createHistoryLifecycleController(
       identity: getHistoryEntryRenameIdentity(entry),
       pendingDelete:
         entry.isPendingDelete ||
-        pendingHistoryDeletionKeys.has(entry.conversationKey),
+        pendingDeletionStore.isConversationPendingDeletion(
+          entry.conversationKey,
+        ),
       orphan: isOrphanHistoryEntry(entry),
       requestPending: isRequestPending(entry.conversationKey),
     });
@@ -3213,7 +3098,7 @@ export function createHistoryLifecycleController(
     }
     if (
       entry.isPendingDelete ||
-      pendingHistoryDeletionKeys.has(entry.conversationKey)
+      pendingDeletionStore.isConversationPendingDeletion(entry.conversationKey)
     ) {
       return;
     }
@@ -3228,6 +3113,9 @@ export function createHistoryLifecycleController(
       return;
     }
     const target = getHistoryEntryRenameIdentity(entry);
+    const renameGeneration = getConversationWriteGeneration(
+      target.conversationKey,
+    );
     const nextTitle = await promptConversationRename(entry);
     if (!nextTitle) return;
     try {
@@ -3243,7 +3131,9 @@ export function createHistoryLifecycleController(
             : null,
           pendingDelete:
             Boolean(currentEntry?.isPendingDelete) ||
-            pendingHistoryDeletionKeys.has(target.conversationKey),
+            pendingDeletionStore.isConversationPendingDeletion(
+              target.conversationKey,
+            ),
           orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
           requestPending: isRequestPending(target.conversationKey),
         })
@@ -3262,7 +3152,9 @@ export function createHistoryLifecycleController(
             : null,
           pendingDelete:
             Boolean(currentEntry?.isPendingDelete) ||
-            pendingHistoryDeletionKeys.has(target.conversationKey),
+            pendingDeletionStore.isConversationPendingDeletion(
+              target.conversationKey,
+            ),
           orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
           requestPending: isRequestPending(target.conversationKey),
         })
@@ -3271,6 +3163,7 @@ export function createHistoryLifecycleController(
       }
       await conversationRepository.setCatalogTitle({
         ...target,
+        expectedGeneration: renameGeneration,
         title: nextTitle,
       });
       invalidateHistorySearchDocument(target.conversationKey);
@@ -3285,10 +3178,11 @@ export function createHistoryLifecycleController(
 
   const hydrateHistoryEntryForDeletion = async (
     entry: ConversationHistoryEntry,
+    conversationSystem: ConversationSystem,
   ): Promise<ConversationHistoryEntry> => {
     try {
       const summary = await conversationRepository.getCatalogEntry({
-        system: getConversationSystem(),
+        system: conversationSystem,
         kind: entry.kind,
         conversationKey: entry.conversationKey,
       });
@@ -3315,96 +3209,190 @@ export function createHistoryLifecycleController(
     }
   };
 
-  const queueHistoryDeletion = async (entry: ConversationHistoryEntry) => {
-    if (!item) return;
-    if (!entry.deletable) return;
-    const targetEntry = await hydrateHistoryEntryForDeletion(entry);
+  const rejectConversationDeletionWhileGenerating = (
+    conversationKey: number,
+  ): boolean => {
+    if (!isRequestPending(conversationKey)) return false;
+    if (status) {
+      setStatus(status, t("Cannot delete while generating"), "ready");
+    }
+    return true;
+  };
+
+  const queueHistoryDeletion = async (
+    entry: ConversationHistoryEntry,
+    conversationSystem: ConversationSystem = getConversationSystem(),
+  ): Promise<boolean> => {
+    if (!item) return false;
+    if (!entry.deletable) return false;
+    if (rejectConversationDeletionWhileGenerating(entry.conversationKey)) {
+      return false;
+    }
+    const targetEntry = await hydrateHistoryEntryForDeletion(
+      entry,
+      conversationSystem,
+    );
+    if (
+      rejectConversationDeletionWhileGenerating(targetEntry.conversationKey)
+    ) {
+      return false;
+    }
     const libraryID =
       normalizeHistoryPaperItemID(targetEntry.libraryID) ||
       getCurrentLibraryID();
     if (!libraryID) {
       if (status)
         setStatus(status, t("No active library for deletion"), "error");
-      return;
+      return false;
     }
 
-    if (pendingHistoryDeletion) {
-      if (
-        pendingHistoryDeletion.conversationKey === targetEntry.conversationKey
-      ) {
-        return;
-      }
-      await finalizePendingHistoryDeletion("superseded");
-    }
-    if (pendingTurnDeletion) {
-      await finalizePendingTurnDeletion("superseded");
+    if (
+      pendingDeletionStore.isConversationPendingDeletion(
+        targetEntry.conversationKey,
+      )
+    ) {
+      return false;
     }
 
-    const wasActive = isHistoryEntryActive(targetEntry);
-    if (wasActive) {
-      const didClearActiveConversation =
-        await clearActiveConversationForPendingDeletion(targetEntry.kind, {
-          createFreshGlobalConversation: () =>
-            createAndSwitchGlobalConversation({
-              forceFresh: true,
-              excludeConversationKey: targetEntry.conversationKey,
-            }),
-          createFreshPaperConversation: () =>
-            createAndSwitchPaperConversation({
-              forceFresh: true,
-              excludeConversationKey: targetEntry.conversationKey,
-            }),
-          log: (message, ...args) => ztoolkit.log(message, ...args),
-        });
-      if (!didClearActiveConversation) {
-        if (status) {
-          setStatus(
-            status,
-            t("Cannot delete active conversation right now"),
-            "error",
-          );
-        }
-        return;
-      }
+    const wasActive = isHistoryEntryActive(targetEntry, conversationSystem);
+    // Capture the catalog row's identity witness BEFORE queueing: keys are
+    // recycled, so this is the only value that lets the finalizer prove it is
+    // still deleting this conversation. A missing witness is persisted as a
+    // durable intent and moves to identity quarantine after the Undo window.
+    const identityWitness =
+      await conversationRepository.getCatalogIdentityWitness({
+        system: conversationSystem,
+        kind: targetEntry.kind,
+        conversationKey: targetEntry.conversationKey,
+      });
+    // No await may separate this final check from queueConversationDeletion:
+    // that call freezes writes synchronously at the durable intent boundary.
+    if (
+      rejectConversationDeletionWhileGenerating(targetEntry.conversationKey)
+    ) {
+      return false;
     }
-
-    pendingHistoryDeletionKeys.add(targetEntry.conversationKey);
-    invalidateHistorySearchDocument(targetEntry.conversationKey);
-    const pending: PendingHistoryDeletion = {
-      kind: targetEntry.kind,
-      conversationID: targetEntry.conversationID,
+    const queued = await pendingDeletionStore.queueConversationDeletion({
+      conversationKind: targetEntry.kind,
+      instanceID: identityWitness?.instanceID || "",
+      conversationID:
+        identityWitness?.conversationID || targetEntry.conversationID,
+      catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
       conversationKey: targetEntry.conversationKey,
       libraryID,
-      conversationSystem: getConversationSystem(),
+      system: conversationSystem,
       paperItemID: targetEntry.paperItemID,
-      providerSessionId: targetEntry.providerSessionId,
+      providerSessionId: targetEntry.providerSessionId || undefined,
       title: targetEntry.title,
       wasActive,
-      expiresAt: Date.now() + GLOBAL_HISTORY_UNDO_WINDOW_MS,
-      timeoutId: null,
-    };
-    pending.timeoutId = getWindowTimeout(() => {
-      void finalizePendingHistoryDeletion("timeout");
-    }, GLOBAL_HISTORY_UNDO_WINDOW_MS);
-    pendingHistoryDeletion = pending;
+    });
+    if (!queued) {
+      if (status) {
+        setStatus(status, t("Failed to queue deletion. Check logs."), "error");
+      }
+      await refreshGlobalHistoryHeader();
+      return false;
+    }
+
+    // The intent is durable now.  Only after the write-ahead row exists may
+    // the local search surface hide the conversation; a crash before this
+    // point must not lose the user's deletion decision or leave a silently
+    // filtered but otherwise live conversation.
+    invalidateHistorySearchDocument(targetEntry.conversationKey);
 
     ztoolkit.log("LLM: Queued history deletion", {
       kind: targetEntry.kind,
       conversationKey: targetEntry.conversationKey,
       libraryID,
       wasActive,
-      expiresAt: pending.expiresAt,
+      expiresAt: queued.expiresAt,
     });
-    showHistoryUndoToast(targetEntry.title);
+    if (wasActive) {
+      // We already stepped off this chat above; remember where we came from so
+      // an undo or an abandoned deletion can put the user back instead of
+      // leaving them stranded on the fresh blank chat.
+      getSurrenderedDeletionTargets().set(queued.id, {
+        kind: targetEntry.kind,
+        conversationKey: targetEntry.conversationKey,
+      });
+    }
     await refreshGlobalHistoryHeader();
     if (status)
       setStatus(status, t("Conversation deleted. Undo available."), "ready");
+    return true;
+  };
+
+  /**
+   * Delete the conversation currently mounted in this surface through the
+   * exact same durable/undoable lifecycle as a history-row Delete action.
+   *
+   * The system, kind, key, and catalog data are captured before the first
+   * await. This prevents a runtime-mode or item switch during hydration from
+   * retargeting the destructive action to a different conversation.
+   */
+  const queueCurrentConversationDeletion = async (): Promise<boolean> => {
+    syncStateFromDeps();
+    const targetItem = item;
+    if (!targetItem) return false;
+
+    const conversationSystem = getConversationSystem();
+    const conversationKey = Math.floor(Number(getConversationKey(targetItem)));
+    const kind = resolveDisplayConversationKind(targetItem);
+    if (kind !== "global" && kind !== "paper") return false;
+    if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+      return false;
+    }
+    if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
+      if (status) {
+        setStatus(status, t("Deletion pending; retrying safely"), "warning");
+      }
+      return false;
+    }
+    if (rejectConversationDeletionWhileGenerating(conversationKey)) {
+      return false;
+    }
+
+    const summary = await conversationRepository.getCatalogEntry({
+      system: conversationSystem,
+      kind,
+      conversationKey,
+    });
+    if (!summary || summary.kind !== kind) {
+      if (status) {
+        setStatus(status, t("No saved conversation to delete"), "warning");
+      }
+      return false;
+    }
+
+    const entry = createHistorySearchEntry({
+      kind,
+      conversationID: summary.conversationID,
+      conversationKey,
+      title: summary.title,
+      createdAt: summary.createdAt,
+      lastActivityAt: summary.lastActivityAt,
+      isDraft: summary.userTurnCount === 0,
+      userTurnCount: summary.userTurnCount,
+      paperItemID: summary.paperItemID,
+      sessionVersion: summary.sessionVersion,
+    });
+    if (!entry) return false;
+
+    return queueHistoryDeletion(
+      {
+        ...entry,
+        libraryID: summary.libraryID,
+        providerSessionId: summary.providerSessionId,
+        scopedConversationKey: summary.scopedConversationKey,
+      },
+      conversationSystem,
+    );
   };
 
   const createAndSwitchGlobalConversation = async (
     options: boolean | CreateConversationOptions = false,
   ): Promise<boolean> => {
-    const { excludeConversationKey } =
+    const { excludeConversationKey, forceFresh } =
       normalizeCreateConversationOptions(options);
     if (!item) return false;
     closeHistoryNewMenu();
@@ -3506,6 +3494,9 @@ export function createHistoryLifecycleController(
     if (reuseReason) {
       await touchEmptyDraftActivity(targetConversationKey, "global");
     }
+    if (forceFresh) {
+      clearTransientComposeStateForItem(targetConversationKey);
+    }
     await switchGlobalConversation(targetConversationKey);
     if (status) {
       setStatus(
@@ -3523,7 +3514,7 @@ export function createHistoryLifecycleController(
   const createAndSwitchPaperConversation = async (
     options: boolean | CreateConversationOptions = false,
   ): Promise<boolean> => {
-    const { excludeConversationKey } =
+    const { excludeConversationKey, forceFresh } =
       normalizeCreateConversationOptions(options);
     if (!item) return false;
     closeHistoryNewMenu();
@@ -3585,6 +3576,9 @@ export function createHistoryLifecycleController(
     if (reuseReason) {
       await touchEmptyDraftActivity(targetConversationKey, "paper");
     }
+    if (forceFresh) {
+      clearTransientComposeStateForItem(targetConversationKey);
+    }
     await switchPaperConversation(targetConversationKey);
     if (status) {
       setStatus(
@@ -3596,6 +3590,51 @@ export function createHistoryLifecycleController(
       );
     }
     inputBox.focus({ preventScroll: true });
+    return true;
+  };
+
+  // [webchat] Entering webchat mode anchors the panel on a dedicated,
+  // catalog-hidden session row instead of a normal draft: webchat transcripts
+  // live on the provider site, so nothing from the session may surface in the
+  // local history list or claim a draft the user created.
+  const ensureWebChatSessionPaperConversation = async (): Promise<boolean> => {
+    if (!item) return false;
+    closeHistoryNewMenu();
+    const paperItem = resolveCurrentPaperBaseItem();
+    if (!paperItem) {
+      if (status) {
+        setStatus(status, t("Open a paper to start a paper chat"), "error");
+      }
+      return false;
+    }
+    setBasePaperItem(paperItem);
+    const libraryID = getCurrentLibraryID();
+    const paperItemID = Number(paperItem.id || 0);
+    if (!libraryID || !Number.isFinite(paperItemID) || paperItemID <= 0) {
+      if (status) {
+        setStatus(status, t("No active paper for paper chat"), "error");
+      }
+      return false;
+    }
+    const session = await resolveWebChatSessionConversation({
+      libraryID,
+      paperItemID,
+    });
+    if (!session?.conversationKey) {
+      if (status) setStatus(status, t("Failed to create paper chat"), "error");
+      return false;
+    }
+    // The resolve is async: if the user already picked a non-webchat model
+    // again, switching now would snap the panel onto the hidden session row
+    // and override the conversation they just navigated back to.
+    if (!isWebChatMode()) return false;
+    ztoolkit.log("LLM: webchat session conversation", {
+      libraryID,
+      paperItemID,
+      conversationKey: session.conversationKey,
+      action: session.reused ? "reuse" : "create",
+    });
+    await switchPaperConversation(session.conversationKey);
     return true;
   };
 
@@ -3654,12 +3693,11 @@ export function createHistoryLifecycleController(
         // The next send carries an explicit force_new_chat intent to the relay,
         // and we also trigger a remote new-chat command immediately.
         markNextWebChatSendAsNewChat();
-        primeFreshWebChatPaperChipState();
-        // Clear cached images so stale screenshots don't auto-attach to ChatGPT
         if (item) {
-          selectedImageCache.delete(item.id);
+          clearTransientComposeStateForItem(item.id);
           updateImagePreviewPreservingScroll();
         }
+        primeFreshWebChatPaperChipState();
         void (async () => {
           try {
             const [{ getRelayBaseUrl }, { sendNewChat }] = await Promise.all([
@@ -3723,13 +3761,210 @@ export function createHistoryLifecycleController(
     historyUndoBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (pendingTurnDeletion) {
-        undoPendingTurnDeletion();
-        return;
-      }
-      void undoPendingHistoryDeletion();
+      const latest = pendingDeletionStore.getLatestPending();
+      if (!latest) return;
+      void pendingDeletionStore.undo(latest.id).then((undone) => {
+        if (!status) return;
+        if (undone) {
+          setStatus(
+            status,
+            t(
+              undone.kind === "turn"
+                ? "Turn restored"
+                : "Conversation restored",
+            ),
+            "ready",
+          );
+          return;
+        }
+        setStatus(status, t("Failed to restore. Check logs."), "error");
+      });
     });
   }
+
+  const renderPendingDeletionToast = () => {
+    const latest = pendingDeletionStore.getLatestPending();
+    if (!latest || latest.expiresAt <= Date.now()) {
+      hideHistoryUndoToast();
+      return;
+    }
+    if (latest.kind === "turn") {
+      showTurnUndoToast();
+      return;
+    }
+    showHistoryUndoToast();
+  };
+
+  const getSurrenderedDeletionTargets = (): Map<
+    string,
+    HistorySwitchTarget
+  > => {
+    let targets = surrenderedDeletionTargetsByBody.get(body);
+    if (!targets) {
+      targets = new Map<string, HistorySwitchTarget>();
+      surrenderedDeletionTargetsByBody.set(body, targets);
+    }
+    return targets;
+  };
+
+  const getConversationDeletionSurfaceSnapshot =
+    async (): Promise<ConversationDeletionSurfaceSnapshot | null> => {
+      if (!item) return null;
+      const activeConversationKey = Number(getConversationKey(item) || 0);
+      if (
+        !Number.isFinite(activeConversationKey) ||
+        activeConversationKey <= 0
+      ) {
+        return null;
+      }
+      const registered = await getRegisteredConversationScope(
+        Math.floor(activeConversationKey),
+      );
+      return {
+        conversationKey: Math.floor(activeConversationKey),
+        instanceID: registered?.instanceID || undefined,
+        kind: isGlobalMode() ? "global" : "paper",
+        system: getConversationSystem(),
+      };
+    };
+
+  const leaveConversationForPendingDeletion = async (
+    entry: PendingConversationDeletionEntry,
+  ): Promise<boolean> => {
+    return clearActiveConversationForPendingDeletion(entry.conversationKind, {
+      createFreshGlobalConversation: () =>
+        createAndSwitchGlobalConversation({
+          forceFresh: true,
+          excludeConversationKey: entry.conversationKey,
+        }),
+      createFreshPaperConversation: () =>
+        createAndSwitchPaperConversation({
+          forceFresh: true,
+          excludeConversationKey: entry.conversationKey,
+        }),
+      log: (message, ...args) => ztoolkit.log(message, ...args),
+    });
+  };
+
+  const enqueueConversationDeletionEvent =
+    createSerializedConversationDeletionEventQueue();
+
+  // Every panel subscribes to the same store, so each one has to decide for
+  // itself whether it is the surface showing the doomed chat.
+  const handleConversationPendingDeletionEvent = async (
+    eventType: PendingDeletionEvent["type"],
+    entry: PendingConversationDeletionEntry,
+    dropped = false,
+  ): Promise<void> => {
+    // The mounted item can have changed since this closure was created; the
+    // surface snapshot below is only meaningful against the current one.
+    syncStateFromDeps();
+    const surrendered = getSurrenderedDeletionTargets();
+    const action = resolveConversationDeletionSurfaceAction({
+      eventType,
+      entry,
+      surface: await getConversationDeletionSurfaceSnapshot(),
+      surrendered: surrendered.has(entry.id),
+      dropped,
+    });
+    if (action.type === "leave") {
+      const left = await leaveConversationForPendingDeletion(entry);
+      if (left && action.remember) {
+        surrendered.set(entry.id, {
+          kind: entry.conversationKind,
+          conversationKey: entry.conversationKey,
+        });
+      } else if (!action.remember) {
+        // Nothing to come back to; drop the memory rather than leaking it.
+        surrendered.delete(entry.id);
+      }
+      if (!left && status) {
+        setStatus(
+          status,
+          t("Cannot delete active conversation right now"),
+          "error",
+        );
+      }
+    } else if (action.type === "restore") {
+      surrendered.delete(entry.id);
+      const restored = await switchToHistoryTarget({
+        kind: entry.conversationKind,
+        conversationKey: entry.conversationKey,
+      });
+      if (!restored && status) {
+        setStatus(status, t("Could not load this conversation"), "error");
+      }
+    } else if (action.type === "forget") {
+      surrendered.delete(entry.id);
+    }
+    await refreshGlobalHistoryHeader();
+  };
+
+  const onPendingDeletionEvent = (event: PendingDeletionEvent) => {
+    // Self-heal: a body whose window is gone can never render again, and its
+    // MutationObserver-based cleanup never fires when the whole window closed.
+    try {
+      if (body.isConnected === false) {
+        disposePendingDeletionSubscriptionForBody(body);
+        return;
+      }
+    } catch {
+      disposePendingDeletionSubscriptionForBody(body);
+      return;
+    }
+    renderPendingDeletionToast();
+    if (event.entry.kind === "conversation") {
+      const entry = event.entry;
+      clearPendingDeletionCaches(entry.conversationKey);
+      // The store drops the entry before it notifies, so this tombstone is the
+      // only thing standing between the deleted key and the seeding paths.
+      // Record it before any refresh runs.
+      // Only a REAL deletion tombstones the key; a dropped intent leaves the
+      // conversation alive and it must stay seedable.
+      if (
+        (event.type === "completed" || event.type === "finalized") &&
+        !event.dropped
+      ) {
+        if (entry.instanceID) {
+          markConversationInstanceRecentlyDeleted(
+            entry.conversationKey,
+            entry.instanceID,
+            Date.now(),
+            entry.identityDigest,
+          );
+        }
+      }
+      void enqueueConversationDeletionEvent(() =>
+        handleConversationPendingDeletionEvent(
+          event.type,
+          entry,
+          Boolean(event.dropped),
+        ),
+      );
+      return;
+    }
+    invalidateHistorySearchDocument(event.entry.conversationKey);
+    if (
+      (event.type === "undone" ||
+        event.type === "finalized" ||
+        event.type === "completed" ||
+        event.type === "local-deleted") &&
+      item &&
+      getConversationKey(item) === event.entry.conversationKey
+    ) {
+      setActiveEditSession(null);
+      refreshChatPreservingScroll();
+    }
+    void refreshGlobalHistoryHeader();
+  };
+
+  disposePendingDeletionSubscriptionForBody(body);
+  pendingDeletionSubscriptionsByBody.set(
+    body,
+    pendingDeletionStore.subscribe(onPendingDeletionEvent),
+  );
+  renderPendingDeletionToast();
+  void pendingDeletionStore.sweepExpired("panel-init");
 
   // --- Mode chip handler ---
   if (modeChipBtn) {
@@ -4051,12 +4286,47 @@ export function createHistoryLifecycleController(
       syncStateFromDeps();
       return createAndSwitchPaperConversation(forceFresh);
     },
+    ensureWebChatSessionPaperConversation: async () => {
+      syncStateFromDeps();
+      return ensureWebChatSessionPaperConversation();
+    },
     runExplicitNewChatAction,
+    queueCurrentConversationDeletion,
     queueTurnDeletion,
     forkConversationFromTurn,
-    clearPendingTurnDeletion,
+    isConversationPendingDeletion: (conversationKey: number) =>
+      pendingDeletionStore.isConversationPendingDeletion(conversationKey),
     resetHistorySearchState,
     hasPendingTurnDeletionForConversation: (conversationKey: number) =>
-      pendingTurnDeletion?.conversationKey === conversationKey,
+      pendingDeletionStore.getPendingTurnsForConversation(conversationKey)
+        .length > 0,
+    searchConversationHistoryForWorkflowTest: async (query: string) => {
+      syncStateFromDeps();
+      const libraryID = getCurrentLibraryID();
+      if (!libraryID) {
+        return {
+          entries: [] as Array<{ conversationKey: number; title: string }>,
+          previews: [] as string[],
+        };
+      }
+      let result: {
+        entries: ConversationHistoryEntry[];
+        resultsByKey: Map<number, HistorySearchResult>;
+      };
+      try {
+        result = await searchIndexedConversationHistory(libraryID, query);
+      } catch {
+        result = await searchLoadedConversationHistory(libraryID, query);
+      }
+      return {
+        entries: result.entries.map((entry) => ({
+          conversationKey: entry.conversationKey,
+          title: entry.title || "",
+        })),
+        previews: Array.from(result.resultsByKey.values()).map(
+          (searchResult) => searchResult.previewText,
+        ),
+      };
+    },
   };
 }

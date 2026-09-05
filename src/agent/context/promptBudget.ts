@@ -10,8 +10,11 @@ import {
 import {
   estimateContextMessagesTokens,
   estimateTextTokens,
-  resolveContextWindowTokens,
+  resolveModelInputTokenLimit,
+  sliceTextToTokenBudget,
+  type ModelInputTokenLimitSource,
 } from "../../utils/modelInputCap";
+import type { ModelProfileOverride } from "../../modelCapabilities";
 
 const AGENT_PROMPT_SOFT_LIMIT_RATIO = 0.9;
 const HISTORY_CHECKPOINT_MAX_TOKENS = 1_200;
@@ -36,6 +39,7 @@ export class AgentPromptBudgetError extends Error {
 
 export type AgentPromptBudgetLimits = {
   contextWindow: number;
+  inputLimitSource: ModelInputTokenLimitSource;
   softLimitTokens: number;
 };
 
@@ -55,6 +59,7 @@ export type AgentPromptBudgetResult = {
   messages: AgentModelMessage[];
   changed: boolean;
   contextWindow: number;
+  inputLimitSource: ModelInputTokenLimitSource;
   softLimitTokens: number;
   estimatedBeforeTokens: number;
   estimatedAfterTokens: number;
@@ -65,16 +70,27 @@ export type AgentPromptBudgetResult = {
 export function resolveAgentPromptBudgetLimits(params: {
   model?: string;
   inputTokenCap?: number;
+  apiBase?: string;
+  providerProtocol?: string;
+  authMode?: string;
+  profileOverride?: ModelProfileOverride;
 }): AgentPromptBudgetLimits {
-  const contextWindow = resolveContextWindowTokens(
+  const resolvedLimit = resolveModelInputTokenLimit(
     params.model || "",
     params.inputTokenCap,
+    {
+      apiBase: params.apiBase,
+      protocol: params.providerProtocol,
+      authMode: params.authMode,
+      profileOverride: params.profileOverride,
+    },
   );
   return {
-    contextWindow,
+    contextWindow: resolvedLimit.limitTokens,
+    inputLimitSource: resolvedLimit.source,
     softLimitTokens: Math.max(
       1,
-      Math.floor(contextWindow * AGENT_PROMPT_SOFT_LIMIT_RATIO),
+      Math.floor(resolvedLimit.limitTokens * AGENT_PROMPT_SOFT_LIMIT_RATIO),
     ),
   };
 }
@@ -141,11 +157,13 @@ function estimateMessageTokens(message: AgentModelMessage): number {
 }
 
 function truncateStringToTokenBudget(value: string, maxTokens: number): string {
-  const maxChars = Math.max(64, Math.floor(maxTokens * 4));
   if (estimateTextTokens(value) <= maxTokens) return value;
   const notice = "\n\n[Content truncated to fit the model context budget.]";
-  const bodyChars = Math.max(0, maxChars - notice.length);
-  return `${value.slice(0, bodyChars).trimEnd()}${notice}`;
+  // Slice by real token weight (CJK counts double) so the truncated result
+  // actually fits the budget it claims — a chars = tokens * 4 inverse never
+  // converges for CJK-heavy content.
+  const bodyTokens = Math.max(16, maxTokens - estimateTextTokens(notice));
+  return `${sliceTextToTokenBudget(value, bodyTokens).trimEnd()}${notice}`;
 }
 
 function compactScalar(value: unknown, maxChars = 240): unknown {
@@ -1019,12 +1037,20 @@ export function enforceAgentPromptBudget(params: {
   messages: AgentModelMessage[];
   model?: string;
   inputTokenCap?: number;
+  apiBase?: string;
+  providerProtocol?: string;
+  authMode?: string;
+  profileOverride?: ModelProfileOverride;
   conversationKey?: number;
   resourceSignature?: string;
 }): AgentPromptBudgetResult {
   const limits = resolveAgentPromptBudgetLimits({
     model: params.model,
     inputTokenCap: params.inputTokenCap,
+    apiBase: params.apiBase,
+    providerProtocol: params.providerProtocol,
+    authMode: params.authMode,
+    profileOverride: params.profileOverride,
   });
   let messages = params.messages.map((message) => cloneMessage(message));
   const reductions: AgentPromptReduction[] = [];
@@ -1036,6 +1062,7 @@ export function enforceAgentPromptBudget(params: {
       messages,
       changed,
       contextWindow: limits.contextWindow,
+      inputLimitSource: limits.inputLimitSource,
       softLimitTokens: limits.softLimitTokens,
       estimatedBeforeTokens,
       estimatedAfterTokens: estimatedBeforeTokens,
@@ -1139,6 +1166,7 @@ export function enforceAgentPromptBudget(params: {
     messages,
     changed,
     contextWindow: limits.contextWindow,
+    inputLimitSource: limits.inputLimitSource,
     softLimitTokens: limits.softLimitTokens,
     estimatedBeforeTokens,
     estimatedAfterTokens,

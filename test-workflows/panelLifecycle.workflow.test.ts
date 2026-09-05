@@ -5,6 +5,24 @@ import type {
 } from "../src/modules/contextPanel/workflowTestTypes";
 
 const PREF_PREFIX = "extensions.zotero.llmforzotero";
+const WEBCHAT_MODEL_ENTRY_ID = "workflow-webchat-model";
+const WEBCHAT_MODEL_GROUPS = JSON.stringify([
+  {
+    id: "workflow-webchat-provider",
+    apiBase: "",
+    apiKey: "",
+    authMode: "webchat",
+    providerProtocol: "web_sync",
+    models: [
+      {
+        id: WEBCHAT_MODEL_ENTRY_ID,
+        model: "chatgpt.com",
+        temperature: 0.7,
+        maxTokens: 4096,
+      },
+    ],
+  },
+]);
 
 async function withPrefs<T>(
   prefs: Record<string, unknown>,
@@ -92,6 +110,35 @@ describe("workflow: panel lifecycle", function () {
             (toggle) => toggle.system === "codex" && toggle.visible,
           ),
         );
+      },
+    );
+  });
+
+  it("preserves an unsent WebChat draft through a panel state refresh", async function () {
+    await withPrefs(
+      {
+        enableCodexAppServerMode: false,
+        enableClaudeCodeMode: false,
+        conversationSystem: "upstream",
+        modelProviderGroups: WEBCHAT_MODEL_GROUPS,
+        modelProviderGroupsMigrationVersion: 3,
+        lastUsedModelEntryId: WEBCHAT_MODEL_ENTRY_ID,
+      },
+      async () => {
+        fixture = await api.createPaperWithPdfFixture({
+          title: "WebChat Draft Refresh Parent",
+          pdfTitle: "WebChat Draft Refresh PDF",
+        });
+        const panel = await api.renderPanelForItem(fixture.parentItemId);
+        const draft = "This unsent WebChat prompt must survive.";
+        const result = await api.exercisePanelDraftStateRefresh(
+          panel.panelId,
+          draft,
+        );
+
+        assert.isTrue(result.webChatMode);
+        assert.equal(result.inputBeforeRefresh, draft);
+        assert.equal(result.inputAfterRefresh, draft);
       },
     );
   });

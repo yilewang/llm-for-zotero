@@ -15,7 +15,18 @@ export const SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY =
 let queuedFollowUpInputSeq = 0;
 const queuedFollowUpsByThread = new Map<string, QueuedFollowUpInput[]>();
 const queuedFollowUpBodiesByThread = new Map<string, Set<Element>>();
+const transferredQueuedFollowUpThreads = new Map<string, string>();
 let syncRegisteredBody: QueuedFollowUpBodySync = () => undefined;
+
+function resolveTransferredQueuedFollowUpThread(threadKey: string): string {
+  let resolved = threadKey;
+  let next = transferredQueuedFollowUpThreads.get(resolved);
+  while (next) {
+    resolved = next;
+    next = transferredQueuedFollowUpThreads.get(resolved);
+  }
+  return resolved;
+}
 
 export function setQueuedFollowUpBodySyncCallback(
   callback: QueuedFollowUpBodySync,
@@ -93,6 +104,62 @@ export function shiftQueuedFollowUp(
   return next;
 }
 
+export function restoreQueuedFollowUp(
+  threadKey: string | null,
+  entry: QueuedFollowUpInput,
+): void {
+  if (!threadKey) return;
+  const resolvedThreadKey = resolveTransferredQueuedFollowUpThread(threadKey);
+  setQueuedFollowUps(
+    resolvedThreadKey,
+    [
+      entry,
+      ...getQueuedFollowUps(resolvedThreadKey).filter(
+        (candidate) => candidate.id !== entry.id,
+      ),
+    ].sort((left, right) => left.id - right.id),
+  );
+}
+
+export function transferQueuedFollowUpThreadState(
+  fromThreadKey: string | null,
+  toThreadKey: string | null,
+): void {
+  if (!fromThreadKey || !toThreadKey || fromThreadKey === toThreadKey) return;
+  const resolvedFromThreadKey =
+    resolveTransferredQueuedFollowUpThread(fromThreadKey);
+  const resolvedToThreadKey =
+    resolveTransferredQueuedFollowUpThread(toThreadKey);
+  if (resolvedFromThreadKey === resolvedToThreadKey) return;
+  transferredQueuedFollowUpThreads.set(fromThreadKey, resolvedToThreadKey);
+  transferredQueuedFollowUpThreads.set(
+    resolvedFromThreadKey,
+    resolvedToThreadKey,
+  );
+
+  const fromQueue = queuedFollowUpsByThread.get(resolvedFromThreadKey) || [];
+  if (fromQueue.length) {
+    const merged = [
+      ...(queuedFollowUpsByThread.get(resolvedToThreadKey) || []),
+      ...fromQueue,
+    ].sort((left, right) => left.id - right.id);
+    queuedFollowUpsByThread.set(resolvedToThreadKey, merged);
+    queuedFollowUpsByThread.delete(resolvedFromThreadKey);
+  }
+
+  const fromBodies = queuedFollowUpBodiesByThread.get(resolvedFromThreadKey);
+  if (fromBodies?.size) {
+    const toBodies =
+      queuedFollowUpBodiesByThread.get(resolvedToThreadKey) ||
+      new Set<Element>();
+    fromBodies.forEach((body) => toBodies.add(body));
+    queuedFollowUpBodiesByThread.set(resolvedToThreadKey, toBodies);
+    queuedFollowUpBodiesByThread.delete(resolvedFromThreadKey);
+  }
+
+  syncQueuedFollowUpBodies(resolvedToThreadKey);
+}
+
 export function registerQueuedFollowUpBody(
   threadKey: string | null,
   body: Element,
@@ -166,6 +233,7 @@ export function clearQueuedFollowUpState(): void {
   queuedFollowUpInputSeq = 0;
   queuedFollowUpsByThread.clear();
   queuedFollowUpBodiesByThread.clear();
+  transferredQueuedFollowUpThreads.clear();
 }
 
 function isDisconnected(body: Element): boolean {

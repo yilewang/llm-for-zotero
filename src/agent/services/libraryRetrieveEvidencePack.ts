@@ -8,6 +8,7 @@ import type {
 } from "../../modules/contextPanel/types";
 import type { PaperContextRef } from "../../shared/types";
 import { chunkKindFromSectionLabel } from "../../shared/libraryChatEvidencePolicy";
+import { estimateTextTokens } from "../../utils/modelInputCap";
 
 type LibraryRetrieveEvidenceSnippet = {
   itemId: string;
@@ -59,7 +60,7 @@ export function buildLibraryRetrieveEvidencePack(params: {
       sectionLabel: snippet.sectionLabel,
       chunkKind:
         snippet.chunkKind || chunkKindFromSectionLabel(snippet.sectionLabel),
-      estimatedTokens: Math.max(1, Math.ceil(snippet.snippet.length / 4)),
+      estimatedTokens: Math.max(1, estimateTextTokens(snippet.snippet)),
       bm25Score: snippet.matchMethod === "bm25" ? snippet.score : 0,
       embeddingScore: snippet.matchMethod === "semantic" ? snippet.score : 0,
       hybridScore: snippet.score,

@@ -2,7 +2,7 @@ import type { AgentRuntime } from "../agent/runtime";
 import type {
   AgentEvent,
   AgentRuntimeOutcome,
-  AgentRuntimeRequest,
+  AgentRuntimeRequestInput as AgentRuntimeRequest,
 } from "../agent/types";
 import type {
   ClaudeConversationKind,
@@ -53,13 +53,23 @@ import {
 } from "./prefs";
 import type { RuntimeModelEntry } from "../utils/modelProviders";
 import {
-  CLAUDE_MODEL_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   type ClaudeReasoningMode,
   type ClaudeRuntimeModel,
 } from "./constants";
 import { dbg } from "../utils/debugLogger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../shared/conversationWriteFence";
 import { getClaudeProfileSignature } from "./projectSkills";
+import {
+  buildClaudeRuntimeModelEntries,
+  type ClaudeModelCatalog,
+  type ClaudeModelCatalogRequestContext,
+} from "./modelCatalog";
 
 export type ClaudeBridgeActionDescriptor = {
   name: string;
@@ -94,6 +104,7 @@ export type ClaudeBridgeScope = {
 };
 
 const conversationScopeCache = new Map<number, ClaudeBridgeScope>();
+const conversationScopeIdentityCache = new Map<number, string>();
 let bridgeRuntimeCache: AgentRuntimeLike | null = null;
 let bridgeRuntimeCoreRef: AgentRuntime | null = null;
 
@@ -114,22 +125,10 @@ export function getClaudeConversationSystem(): ConversationSystem {
 }
 
 export function getClaudeRuntimeModelEntries(): RuntimeModelEntry[] {
-  return CLAUDE_MODEL_OPTIONS.map((model, index) => ({
-    entryId: `claude_runtime::${model}`,
-    groupId: "claude-runtime",
-    model,
-    apiBase: "",
-    apiKey: "",
-    authMode: "api_key",
-    providerProtocol: "anthropic_messages",
-    providerLabel: "Claude Code",
-    providerOrder: index,
-    displayModelLabel: model,
-    advanced: {
-      temperature: 0.7,
-      maxTokens: 8192,
-    },
-  }));
+  return buildClaudeRuntimeModelEntries({
+    models: [],
+    selectedModel: getClaudeRuntimeModelPref(),
+  });
 }
 
 export function getSelectedClaudeRuntimeEntry(): RuntimeModelEntry {
@@ -184,9 +183,13 @@ export function buildClaudeScope(params: {
 export function rememberClaudeConversationScope(
   conversationKey: number,
   scope: ClaudeBridgeScope,
+  instanceID?: string,
 ): void {
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  conversationScopeCache.set(Math.floor(conversationKey), scope);
+  const key = Math.floor(conversationKey);
+  conversationScopeCache.set(key, scope);
+  if (instanceID?.trim())
+    conversationScopeIdentityCache.set(key, instanceID.trim());
 }
 
 export function getRememberedClaudeConversationScope(
@@ -196,14 +199,28 @@ export function getRememberedClaudeConversationScope(
   return conversationScopeCache.get(Math.floor(conversationKey)) || null;
 }
 
-export function forgetClaudeConversationScope(conversationKey: number): void {
+export function forgetClaudeConversationScope(
+  conversationKey: number,
+  expectedInstanceID?: string,
+): void {
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  conversationScopeCache.delete(Math.floor(conversationKey));
+  const key = Math.floor(conversationKey);
+  const expected = expectedInstanceID?.trim();
+  if (expected) {
+    // If a cleanup job carries an identity, absence is not permission to
+    // delete an unlabelled/new runtime entry.  This closes the old-key race.
+    const remembered = conversationScopeIdentityCache.get(key);
+    if (!remembered || remembered !== expected) return;
+  }
+  conversationScopeCache.delete(key);
+  conversationScopeIdentityCache.delete(key);
 }
 
 export function resetClaudeBridgeRuntime(): void {
   bridgeRuntimeCache = null;
   bridgeRuntimeCoreRef = null;
+  conversationScopeCache.clear();
+  conversationScopeIdentityCache.clear();
 }
 
 export function getClaudeBridgeRuntime(
@@ -235,8 +252,17 @@ export function listClaudeSlashCommands(
 export async function listClaudeEfforts(
   coreRuntime: AgentRuntime,
   model?: string,
+  context?: ClaudeModelCatalogRequestContext,
 ): Promise<string[]> {
-  return getClaudeBridgeRuntime(coreRuntime).listEfforts(model);
+  return getClaudeBridgeRuntime(coreRuntime).listEfforts(model, context);
+}
+
+export async function listClaudeModels(
+  coreRuntime: AgentRuntime,
+  force = false,
+  context?: ClaudeModelCatalogRequestContext,
+): Promise<ClaudeModelCatalog> {
+  return getClaudeBridgeRuntime(coreRuntime).listModels(force, context);
 }
 
 export async function runClaudeTurn(
@@ -280,19 +306,59 @@ export async function invalidateAllClaudeHotRuntimes(
   await getClaudeBridgeRuntime(coreRuntime).invalidateAllHotRuntimes();
 }
 
+type ClaudeConversationInvalidationParams = {
+  conversationKey: number;
+  scope?: ClaudeBridgeScope | null;
+  metadata?: Record<string, unknown>;
+};
+
 export async function invalidateClaudeConversationSession(
   coreRuntime: AgentRuntime,
-  params: {
-    conversationKey: number;
-    scope?: ClaudeBridgeScope | null;
-    metadata?: Record<string, unknown>;
-  },
+  params: ClaudeConversationInvalidationParams,
+): Promise<void> {
+  await withConversationWriteLock(params.conversationKey, () =>
+    invalidateClaudeConversationSessionWithinWriteLock(coreRuntime, params),
+  );
+}
+
+/** Caller must already hold the conversation write lock. */
+export async function invalidateClaudeConversationSessionWithinWriteLock(
+  coreRuntime: AgentRuntime,
+  params: ClaudeConversationInvalidationParams,
 ): Promise<void> {
   const bridgeUrl = getBridgeUrl();
-  forgetClaudeConversationScope(params.conversationKey);
-  await clearClaudeConversationSessionMetadata(params.conversationKey);
+  const expectedInstanceID =
+    params.metadata && typeof params.metadata.instanceID === "string"
+      ? params.metadata.instanceID.trim()
+      : "";
+  const expectedProviderSessionId =
+    params.metadata && typeof params.metadata.providerSessionId === "string"
+      ? params.metadata.providerSessionId.trim()
+      : "";
+  // An empty-session cleanup job is a scope/instance witness for the session
+  // that existed before deletion.  Serialize the witness check with runtime
+  // metadata persistence so a replacement turn cannot win between the read
+  // and adapter invalidation.
+  if (!expectedProviderSessionId && expectedInstanceID) {
+    const current = await getClaudeConversationSummary(params.conversationKey);
+    if (String(current?.providerSessionId || "").trim()) return;
+    // A delayed empty-session cleanup witness must never
+    // wildcard-invalidate a catalog instance that still has live turns.
+    // The turn's own start path will force a fresh provider session when a
+    // durable cleanup job is still pending.
+    if (Number(current?.userTurnCount || 0) > 0) return;
+  }
+  forgetClaudeConversationScope(
+    params.conversationKey,
+    expectedInstanceID || undefined,
+  );
+  await clearClaudeConversationSessionMetadata(
+    params.conversationKey,
+    expectedProviderSessionId || undefined,
+    expectedInstanceID || undefined,
+  );
   if (!bridgeUrl.trim()) return;
-  await getClaudeBridgeRuntime(coreRuntime).invalidateSession({
+  await getClaudeBridgeRuntime(coreRuntime).invalidateSessionWithinWriteLock({
     conversationKey: params.conversationKey,
     scope: params.scope || undefined,
     metadata: params.metadata,
@@ -374,12 +440,29 @@ export async function loadClaudeConversationMessages(
 export async function appendClaudeConversationMessage(
   conversationKey: number,
   message: StoredChatMessage,
+  instanceID?: string,
 ): Promise<void> {
-  await appendClaudeMessage(conversationKey, message);
+  await withConversationWriteLock(conversationKey, () =>
+    appendClaudeConversationMessageWithinWriteLock(
+      conversationKey,
+      message,
+      instanceID,
+    ),
+  );
+}
+
+/** Caller must already hold the conversation write lock. */
+export async function appendClaudeConversationMessageWithinWriteLock(
+  conversationKey: number,
+  message: StoredChatMessage,
+  instanceID?: string,
+): Promise<void> {
+  await appendClaudeMessage(conversationKey, message, instanceID);
   await pruneClaudeConversation(conversationKey);
-  await touchClaudeConversation(conversationKey, {
+  await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
     model: message.modelName,
+    instanceID,
   });
 }
 
@@ -387,8 +470,21 @@ export async function updateLatestClaudeConversationUserMessage(
   conversationKey: number,
   message: Parameters<typeof updateLatestClaudeUserMessage>[1],
 ): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    updateLatestClaudeConversationUserMessageWithinWriteLock(
+      conversationKey,
+      message,
+    ),
+  );
+}
+
+/** Caller must already hold the conversation write lock. */
+export async function updateLatestClaudeConversationUserMessageWithinWriteLock(
+  conversationKey: number,
+  message: Parameters<typeof updateLatestClaudeUserMessage>[1],
+): Promise<void> {
   await updateLatestClaudeUserMessage(conversationKey, message);
-  await touchClaudeConversation(conversationKey, {
+  await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
   });
 }
@@ -397,8 +493,21 @@ export async function updateLatestClaudeConversationAssistantMessage(
   conversationKey: number,
   message: Parameters<typeof updateLatestClaudeAssistantMessage>[1],
 ): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+      conversationKey,
+      message,
+    ),
+  );
+}
+
+/** Caller must already hold the conversation write lock. */
+export async function updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+  conversationKey: number,
+  message: Parameters<typeof updateLatestClaudeAssistantMessage>[1],
+): Promise<void> {
   await updateLatestClaudeAssistantMessage(conversationKey, message);
-  await touchClaudeConversation(conversationKey, {
+  await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
     model: message.modelName,
   });
@@ -409,37 +518,61 @@ export async function deleteClaudeConversationTurnMessages(
   userTimestamp: number,
   assistantTimestamp: number,
 ): Promise<void> {
-  await deleteClaudeConversationTurnMessagesStore(
-    conversationKey,
-    userTimestamp,
-    assistantTimestamp,
-  );
-  await touchClaudeConversation(conversationKey, {
-    updatedAt: Date.now(),
+  await withConversationWriteLock(conversationKey, async () => {
+    await deleteClaudeConversationTurnMessagesStore(
+      conversationKey,
+      userTimestamp,
+      assistantTimestamp,
+    );
+    await touchClaudeConversationWithinWriteLock(conversationKey, {
+      updatedAt: Date.now(),
+    });
   });
 }
 
-export async function touchClaudeConversation(
+type ClaudeConversationTouchUpdates = {
+  title?: string | null;
+  updatedAt?: number;
+  providerSessionId?: string | null;
+  scopedConversationKey?: string | null;
+  scopeType?: string | null;
+  scopeId?: string | null;
+  scopeLabel?: string | null;
+  cwd?: string | null;
+  model?: string | null;
+  effort?: string | null;
+  instanceID?: string;
+  expectedGeneration?: number;
+};
+
+/** Caller must already hold the conversation write lock. */
+export async function touchClaudeConversationWithinWriteLock(
   conversationKey: number,
-  updates: {
-    title?: string | null;
-    updatedAt?: number;
-    providerSessionId?: string | null;
-    scopedConversationKey?: string | null;
-    scopeType?: string | null;
-    scopeId?: string | null;
-    scopeLabel?: string | null;
-    cwd?: string | null;
-    model?: string | null;
-    effort?: string | null;
-  },
+  updates: ClaudeConversationTouchUpdates,
 ): Promise<void> {
+  const expectedGeneration =
+    updates.expectedGeneration ??
+    getConversationWriteGeneration(conversationKey);
+  if (
+    areConversationWritesFrozen(conversationKey) ||
+    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+  ) {
+    return;
+  }
   const summary = await getClaudeConversationSummary(conversationKey);
   if (!summary) return;
   const hasOwn = (key: string) =>
     Object.prototype.hasOwnProperty.call(updates, key);
+  if (
+    updates.instanceID &&
+    summary.instanceID &&
+    updates.instanceID !== summary.instanceID
+  ) {
+    return;
+  }
   await upsertClaudeConversationSummary({
     conversationKey: summary.conversationKey,
+    instanceID: summary.instanceID,
     libraryID: summary.libraryID,
     kind: summary.kind,
     paperItemID: summary.paperItemID,
@@ -465,12 +598,38 @@ export async function touchClaudeConversation(
   });
 }
 
+export async function touchClaudeConversation(
+  conversationKey: number,
+  updates: ClaudeConversationTouchUpdates,
+): Promise<void> {
+  await withConversationWriteLock(conversationKey, () =>
+    touchClaudeConversationWithinWriteLock(conversationKey, updates),
+  );
+}
+
 export async function captureClaudeSessionInfo(
   conversationKey: number,
   scope?: ClaudeBridgeScope | null,
+  expectedGeneration = getConversationWriteGeneration(conversationKey),
 ): Promise<ClaudeBridgeSessionInfo | null> {
+  const before = await getClaudeConversationSummary(conversationKey);
+  if (!before) return null;
   const session = await fetchClaudeSessionInfo(conversationKey, scope);
   if (!session) return null;
+  if (
+    areConversationWritesFrozen(conversationKey) ||
+    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+  ) {
+    return session;
+  }
+  const current = await getClaudeConversationSummary(conversationKey);
+  if (
+    !current ||
+    current.instanceID !== before.instanceID ||
+    current.providerSessionId !== before.providerSessionId
+  ) {
+    return session;
+  }
   await touchClaudeConversation(conversationKey, {
     providerSessionId: session.providerSessionId,
     scopedConversationKey: session.scopedConversationKey,
@@ -479,6 +638,8 @@ export async function captureClaudeSessionInfo(
     scopeLabel: session.scopeLabel,
     cwd: session.cwd,
     updatedAt: Date.now(),
+    instanceID: before.instanceID,
+    expectedGeneration,
   });
   return session;
 }
@@ -547,6 +708,7 @@ export function syncClaudeConversationMetadata(params: {
   paperItemID?: number;
   title?: string;
   scope?: ClaudeBridgeScope | null;
+  instanceID?: string;
 }): void {
   rememberClaudeConversationSelection({
     conversationKey: params.conversationKey,
@@ -555,10 +717,15 @@ export function syncClaudeConversationMetadata(params: {
     paperItemID: params.paperItemID,
   });
   if (params.scope) {
-    rememberClaudeConversationScope(params.conversationKey, params.scope);
+    rememberClaudeConversationScope(
+      params.conversationKey,
+      params.scope,
+      params.instanceID,
+    );
   }
   void upsertClaudeConversationSummary({
     conversationKey: params.conversationKey,
+    instanceID: params.instanceID,
     libraryID: params.libraryID,
     kind: params.kind,
     paperItemID: params.paperItemID,
@@ -582,7 +749,7 @@ export function resolveClaudeSystemLabel(): string {
 export function isClaudeRuntimeModel(
   model: string,
 ): model is ClaudeRuntimeModel {
-  return CLAUDE_MODEL_OPTIONS.includes(model as ClaudeRuntimeModel);
+  return Boolean(model.trim());
 }
 
 export function isClaudeReasoningMode(

@@ -2,7 +2,6 @@ import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
 } from "./contextAttachmentSupport";
-import { BALANCED_EVIDENCE_GUIDANCE } from "../../shared/quoteGuidance";
 import { formatContextAttachmentSourceType } from "./contextSourceModes";
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import type { PaperContentSourceMode, PaperContextRef } from "./types";
@@ -290,89 +289,27 @@ export function buildPaperQuoteCitationGuidance(
   paperContext?: PaperContextRef | null,
 ): string[] {
   if (paperContext) {
-    if (isTextLikeAttachmentSourceMode(paperContext.contentSourceMode)) {
-      return [
-        "Answer format when quoting this selected attachment:",
-        BALANCED_EVIDENCE_GUIDANCE,
-        "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
-        "- Use `>` only for text copied from the selected attachment.",
-        "> quoted text copied from the selected attachment",
-        "",
-        formatPaperSourceLabel(paperContext),
-        "",
-        "- If exact passages are available, include short direct-source blockquotes when useful for grounding the answer.",
-        "- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.",
-        "- Put any translation outside the blockquote as explanation, not as the source quote.",
-        "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
-        "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
-        "- Copy the Source label string exactly as provided for this attachment.",
-        "- Do not invent author/year/page/section labels.",
-        "- Use the EXACT source label above. Do NOT translate or romanize author names.",
-        "- Do not write [[source=...]], section=..., or chunk=... metadata in the final answer.",
-      ];
-    }
+    const sourceKind = isTextLikeAttachmentSourceMode(
+      paperContext.contentSourceMode,
+    )
+      ? "selected attachment"
+      : "paper";
     return [
-      "Answer format when quoting this paper:",
-      BALANCED_EVIDENCE_GUIDANCE,
-      "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
-      "- Use `>` only for text copied from the paper.",
-      "> quoted text copied from the paper",
-      "",
-      formatPaperSourceLabel(paperContext),
-      "",
-      "- If exact passages are available, include short direct-source blockquotes when useful for grounding the answer.",
-      "- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.",
-      "- Put any translation outside the blockquote as explanation, not as the source quote.",
-      "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
-      "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
-      "- Copy the Source label string exactly as provided for this paper.",
-      "- Do not invent author/year/page/section labels.",
-      "- Use the EXACT source label above. Do NOT translate or romanize author names.",
-      "- Do not write [[source=...]], section=..., or chunk=... metadata in the final answer.",
+      `Citation data for this ${sourceKind}:`,
+      `- sourceLabel: ${formatPaperSourceLabel(paperContext)}`,
+      "- Use this exact sourceLabel only for a direct quote that has no verified quote anchor.",
     ];
   }
   return [
-    "Paper-grounded citation format for the final answer:",
-    BALANCED_EVIDENCE_GUIDANCE,
-    "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
-    "- Use `>` only for text copied from the paper.",
-    "> quoted text copied from the paper",
-    "",
-    "the exact sourceLabel shown for the relevant paper, for example (Author, Year)",
-    "",
-    "- If exact passages are available, include short direct-source blockquotes when useful for grounding the answer.",
-    "- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.",
-    "- Put any translation outside the blockquote as explanation, not as the source quote.",
-    "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
-    "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
-    "- Copy the Source label string exactly as provided for the relevant paper.",
-    "- Do not invent author/year/page/section labels.",
-    "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
-    "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
-    "- Do not write [[source=...]], section=..., or chunk=... metadata in the final answer.",
+    "Paper citation data:",
+    "- Each evidence record supplies its own sourceLabel and may supply a verified quote anchor.",
   ];
 }
 
 export function buildGenericSourceQuoteCitationGuidance(): string[] {
   return [
-    "Source-grounded citation format for the final answer:",
-    BALANCED_EVIDENCE_GUIDANCE,
-    "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
-    "- Use `>` only for text copied from the selected source.",
-    "> quoted text copied from the selected source",
-    "",
-    "the exact sourceLabel shown for the selected source",
-    "",
-    "- If exact passages are available, include short direct-source blockquotes when useful for grounding the answer.",
-    "- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.",
-    "- Put any translation outside the blockquote as explanation, not as the source quote.",
-    "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
-    "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
-    "- Copy the Source label string exactly as provided for the selected source.",
-    "- Do not invent author/year/page/section labels.",
-    "- Use the EXACT source label provided for each source. Do NOT translate or romanize author names.",
-    "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
-    "- Do not write [[source=...]], section=..., or chunk=... metadata in the final answer.",
+    "Selected-source citation data:",
+    "- Each evidence record supplies its exact sourceLabel and may supply a verified quote anchor.",
   ];
 }
 
@@ -409,6 +346,7 @@ export function resolvePaperContextRefFromNote(
   }
   if (!title) title = `Note ${noteItemId}`;
   return {
+    libraryID: Math.floor(Number(noteItem.libraryID)) || undefined,
     itemId: noteItemId,
     contextItemId: noteItemId,
     title,
@@ -471,6 +409,9 @@ export function resolvePaperContextRefFromAttachment(
   );
 
   return {
+    libraryID:
+      Math.floor(Number(paperItem.libraryID || contextItem.libraryID)) ||
+      undefined,
     itemId: normalizedPaperItemId,
     contextItemId: normalizedContextItemId,
     title: title || `Paper ${normalizedPaperItemId}`,
@@ -526,6 +467,7 @@ export function resolvePaperContextRefFromItem(
     ),
   );
   return {
+    libraryID: Math.floor(Number(item.libraryID)) || undefined,
     itemId: normalizedItemId,
     contextItemId,
     title: title || `Paper ${normalizedItemId}`,

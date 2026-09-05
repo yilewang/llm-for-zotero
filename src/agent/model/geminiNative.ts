@@ -1,8 +1,16 @@
-import { getGeminiReasoningProfile } from "../../utils/llmClient";
 import {
-  normalizeMaxTokens,
-  normalizeTemperature,
-} from "../../utils/normalization";
+  getGeminiReasoningProfile,
+  resolveUserExtraBody,
+} from "../../utils/llmClient";
+import {
+  compileReasoningControls,
+  isRecord,
+  normalizeProfileOverride,
+  getModelCapabilities,
+} from "../../modelCapabilities";
+import { resolveGeminiTemperature } from "../../utils/normalization";
+import { normalizeMaxTokensForRequest } from "../../utils/llmClient";
+import { withGeminiThoughtSummaries } from "../../utils/reasoningProfiles";
 import {
   buildProviderTransportHeaders,
   resolveProviderTransportEndpoint,
@@ -24,7 +32,6 @@ import {
 import {
   createFallbackToolCallId,
   getFetch,
-  getToolContinuationMessages,
   groupToolContinuationMessages,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
@@ -227,6 +234,21 @@ function resolveGeminiReasoningConfig(request: AgentRuntimeRequest) {
   if (!request.reasoning || request.reasoning.provider !== "gemini") {
     return undefined;
   }
+  const declarative = compileReasoningControls(
+    getModelCapabilities({
+      provider: "gemini",
+      model: request.model || "",
+      apiBase: request.apiBase,
+      protocol: "gemini_native",
+      profileOverride: request.advanced?.profileOverride,
+    }),
+    request.reasoning,
+  );
+  const declarativeConfig =
+    declarative?.extra.thinkingConfig || declarative?.extra.thinking_config;
+  if (isRecord(declarativeConfig)) {
+    return withGeminiThoughtSummaries(declarativeConfig);
+  }
   const profile = getGeminiReasoningProfile(request.model);
   const value =
     profile.levelToValue[request.reasoning.level] ??
@@ -241,7 +263,10 @@ function resolveGeminiReasoningConfig(request: AgentRuntimeRequest) {
   return {
     includeThoughts: true,
     thinkingLevel:
-      value === "low" || value === "medium" || value === "high"
+      value === "minimal" ||
+      value === "low" ||
+      value === "medium" ||
+      value === "high"
         ? value
         : "medium",
   };
@@ -282,26 +307,11 @@ function isGeminiFunctionCallPart(part: GeminiPart): boolean {
   return Boolean(part.functionCall && typeof part.functionCall === "object");
 }
 
-function isGeminiFunctionResponsePart(part: GeminiPart): boolean {
-  return Boolean(
-    part.functionResponse && typeof part.functionResponse === "object",
-  );
-}
-
 function getGeminiFunctionCallName(part: GeminiPart): string {
   if (!isGeminiFunctionCallPart(part)) return "";
   const functionCall = part.functionCall as { name?: unknown };
   return typeof functionCall.name === "string" && functionCall.name.trim()
     ? functionCall.name.trim()
-    : "";
-}
-
-function getGeminiFunctionResponseName(part: GeminiPart): string {
-  if (!isGeminiFunctionResponsePart(part)) return "";
-  const functionResponse = part.functionResponse as { name?: unknown };
-  return typeof functionResponse.name === "string" &&
-    functionResponse.name.trim()
-    ? functionResponse.name.trim()
     : "";
 }
 
@@ -313,6 +323,9 @@ function buildGeminiFunctionCallParts(
       name: call.name,
       args: call.arguments ?? {},
     },
+    ...(call.thoughtSignature
+      ? { thoughtSignature: call.thoughtSignature }
+      : {}),
   }));
 }
 
@@ -369,26 +382,11 @@ function buildLooseToolResultSummaryMessage(
   };
 }
 
-function cloneGeminiMessage(message: GeminiMessage): GeminiMessage {
-  return {
-    role: message.role,
-    parts: message.parts.map((part) => ({ ...part })),
-  };
-}
-
 function getFunctionCallNamesFromMessage(
   message: GeminiMessage | undefined,
 ): string[] {
   if (!message || message.role !== "model") return [];
   return message.parts.map(getGeminiFunctionCallName).filter(Boolean);
-}
-
-function getFunctionResponseNames(
-  messages: readonly GeminiMessage[],
-): string[] {
-  return messages.flatMap((message) =>
-    message.parts.map(getGeminiFunctionResponseName).filter(Boolean),
-  );
 }
 
 function splitToolMessagesByPreviousFunctionCalls(
@@ -414,59 +412,6 @@ function splitToolMessagesByPreviousFunctionCalls(
     unmatched.push(message);
   }
   return { matched, unmatched };
-}
-
-function filterGeminiFunctionCallsByExpectedNames(
-  parts: readonly GeminiPart[],
-  expectedNames: readonly string[],
-): { parts: GeminiPart[]; matchedCount: number } {
-  let expectedIndex = 0;
-  const filtered = parts.filter((part) => {
-    if (!isGeminiFunctionCallPart(part)) return true;
-    const name = getGeminiFunctionCallName(part);
-    if (
-      expectedIndex < expectedNames.length &&
-      name === expectedNames[expectedIndex]
-    ) {
-      expectedIndex += 1;
-      return true;
-    }
-    return false;
-  });
-  return {
-    parts: filtered.map((part) => ({ ...part })),
-    matchedCount: expectedIndex,
-  };
-}
-
-function reconcileCachedGeminiConversationForContinuation(
-  cachedMessages: readonly GeminiMessage[],
-  fallbackBaseMessages: readonly GeminiMessage[],
-  continuationMessages: readonly GeminiMessage[],
-): GeminiMessage[] {
-  const expectedNames = getFunctionResponseNames(continuationMessages);
-  if (!expectedNames.length) {
-    return cachedMessages.map((message) => cloneGeminiMessage(message));
-  }
-
-  for (let index = cachedMessages.length - 1; index >= 0; index -= 1) {
-    const message = cachedMessages[index];
-    if (message.role !== "model") continue;
-    if (!message.parts.some(isGeminiFunctionCallPart)) continue;
-
-    const filtered = filterGeminiFunctionCallsByExpectedNames(
-      message.parts,
-      expectedNames,
-    );
-    if (filtered.matchedCount !== expectedNames.length) break;
-    return cachedMessages.map((entry, entryIndex) =>
-      entryIndex === index
-        ? { role: "model", parts: filtered.parts }
-        : cloneGeminiMessage(entry),
-    );
-  }
-
-  return fallbackBaseMessages.map((message) => cloneGeminiMessage(message));
 }
 
 async function buildInitialGeminiMessages(
@@ -567,21 +512,13 @@ async function buildGeminiContinuationMessages(
   return contents;
 }
 
+/**
+ * Only `thought: true` marks a thought-summary part.  A `thoughtSignature`
+ * must NOT be treated as a thought marker: Gemini 3 attaches signatures to
+ * regular answer text and functionCall parts that stay in the answer channel.
+ */
 function isGeminiThoughtPart(part: GeminiPart): boolean {
-  if (part.thought === true) {
-    return true;
-  }
-  if (Object.prototype.hasOwnProperty.call(part, "thoughtSignature")) {
-    return true;
-  }
-  if (!part.functionCall || typeof part.functionCall !== "object") {
-    return false;
-  }
-  const functionCall = part.functionCall as Record<string, unknown>;
-  return (
-    functionCall.thought === true ||
-    Object.prototype.hasOwnProperty.call(functionCall, "thoughtSignature")
-  );
+  return part.thought === true;
 }
 
 function normalizeGeminiResponse(data: GeminiResponse): {
@@ -608,10 +545,18 @@ function normalizeGeminiResponse(data: GeminiResponse): {
       const functionCall = part.functionCall as {
         name?: unknown;
         args?: unknown;
+        thoughtSignature?: unknown;
       };
       const name =
         typeof functionCall.name === "string" ? functionCall.name.trim() : "";
       if (!name) continue;
+      const thoughtSignature =
+        typeof part.thoughtSignature === "string" && part.thoughtSignature
+          ? part.thoughtSignature
+          : typeof functionCall.thoughtSignature === "string" &&
+              functionCall.thoughtSignature
+            ? functionCall.thoughtSignature
+            : undefined;
       toolCalls.push({
         id: createFallbackToolCallId("gemini-call", index),
         name,
@@ -619,6 +564,7 @@ function normalizeGeminiResponse(data: GeminiResponse): {
           functionCall.args && typeof functionCall.args === "object"
             ? functionCall.args
             : {},
+        ...(thoughtSignature ? { thoughtSignature } : {}),
       });
     }
   }
@@ -647,27 +593,18 @@ async function parseGeminiStepStream(
   let buffer = "";
   let text = "";
   let reasoningText = "";
-  let toolCalls: AgentToolCall[] = [];
-  let responseParts: GeminiPart[] = [];
+  // Streaming chunks each carry only the new parts; accumulate them all so
+  // the cached model turn keeps every functionCall and thoughtSignature
+  // (parallel calls and trailing signature-only parts can arrive in separate
+  // chunks, and Gemini 3 rejects continuations that drop a required
+  // signature).
+  const allParts: GeminiPart[] = [];
 
   const handlePayload = async (payload: string) => {
     if (!payload || payload === "[DONE]") return;
     const parsed = JSON.parse(payload) as GeminiResponse;
     const normalized = normalizeGeminiResponse(parsed);
-    if (normalized.toolCalls.length) {
-      toolCalls = normalized.toolCalls;
-    }
-    if (
-      normalized.responseParts.some(
-        (part) =>
-          Object.prototype.hasOwnProperty.call(part, "functionCall") ||
-          Object.prototype.hasOwnProperty.call(part, "thoughtSignature"),
-      )
-    ) {
-      responseParts = normalized.responseParts;
-    } else if (!responseParts.length && normalized.responseParts.length) {
-      responseParts = normalized.responseParts;
-    }
+    allParts.push(...normalized.responseParts);
     if (normalized.reasoningText) {
       let reasoningDelta = normalized.reasoningText;
       if (normalized.reasoningText.startsWith(reasoningText)) {
@@ -715,7 +652,10 @@ async function parseGeminiStepStream(
   } finally {
     reader.releaseLock();
   }
-  return { text, toolCalls, responseParts };
+  const aggregate = normalizeGeminiResponse({
+    candidates: [{ content: { parts: allParts } }],
+  });
+  return { text, toolCalls: aggregate.toolCalls, responseParts: allParts };
 }
 
 function buildAssistantConversationMessage(step: {
@@ -770,29 +710,29 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
       this.systemInstruction = initial.systemInstruction;
     }
     const continuationSource = cachedConversationMessages
-      ? getToolContinuationMessages(params.messages)
+      ? params.continuationMessages || []
       : [];
     const continuation =
       await buildGeminiContinuationMessages(continuationSource);
-    const fallbackBaseMessages = continuation.length
-      ? initial.contents.slice(
-          0,
-          Math.max(0, initial.contents.length - continuation.length),
-        )
-      : initial.contents;
-    const conversationBase =
-      continuation.length && cachedConversationMessages
-        ? reconcileCachedGeminiConversationForContinuation(
-            cachedConversationMessages,
-            fallbackBaseMessages,
-            continuation,
-          )
-        : cachedConversationMessages || initial.contents;
+    const conversationBase = cachedConversationMessages || initial.contents;
     const contents = continuation.length
       ? [...conversationBase, ...continuation]
       : conversationBase;
 
+    // User extra parameters ride along like on every other protocol; a user
+    // generationConfig merges under the envelope so the dedicated
+    // temperature/max-token fields keep the last word on a collision.
+    const extraBody = resolveUserExtraBody(
+      normalizeProfileOverride(request.advanced?.profileOverride),
+      request.model,
+    );
+    const { generationConfig: extraGenerationConfig, ...extraTop } =
+      (extraBody || {}) as { generationConfig?: unknown } & Record<
+        string,
+        unknown
+      >;
     const payload = {
+      ...extraTop,
       ...(this.systemInstruction
         ? { systemInstruction: this.systemInstruction }
         : {}),
@@ -804,8 +744,23 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
         },
       },
       generationConfig: {
-        temperature: normalizeTemperature(request.advanced?.temperature),
-        maxOutputTokens: normalizeMaxTokens(request.advanced?.maxTokens),
+        ...(isRecord(extraGenerationConfig) ? extraGenerationConfig : {}),
+        ...(() => {
+          const temperature = resolveGeminiTemperature(
+            request.model,
+            request.advanced?.temperature,
+          );
+          return temperature !== undefined ? { temperature } : {};
+        })(),
+        maxOutputTokens: normalizeMaxTokensForRequest({
+          value: request.advanced?.maxTokens,
+          maxTokensExplicit: request.advanced?.maxTokensExplicit,
+          model: request.model || "",
+          apiBase: request.apiBase,
+          protocol: "gemini_native",
+          authMode: request.authMode,
+          profileOverride: request.advanced?.profileOverride,
+        }),
         ...(resolveGeminiReasoningConfig(request)
           ? { thinkingConfig: resolveGeminiReasoningConfig(request) }
           : {}),

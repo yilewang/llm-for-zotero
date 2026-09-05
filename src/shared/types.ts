@@ -47,11 +47,21 @@ export type ModelInputMode = "text_only" | "vision_allowed";
 export type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
+  /** True when the user deliberately set maxTokens, even to the default value. */
+  maxTokensExplicit?: boolean;
   inputTokenCap?: number;
   inputMode?: ModelInputMode;
+  /**
+   * User-authored capability overrides for this model. Typed loosely here to
+   * keep `shared/` free of a dependency on the capability layer; it is
+   * validated by `normalizeProfileOverride` wherever it is consumed.
+   */
+  profileOverride?: Record<string, unknown>;
 };
 
 export type PaperContextRef = {
+  /** Stable Zotero library identity when resolved from live Zotero state. */
+  libraryID?: number;
   itemId: number;
   contextItemId: number;
   contentSourceMode?: PaperContentSourceMode;
@@ -206,6 +216,8 @@ export type GlobalConversationSummary = {
   title?: string;
   lastActivityAt: number;
   userTurnCount: number;
+  /** Ephemeral webchat session row: hidden from history, swept at startup. */
+  webchatSession?: boolean;
 };
 
 export type PaperConversationSummary = {
@@ -218,11 +230,14 @@ export type PaperConversationSummary = {
   title?: string;
   lastActivityAt: number;
   userTurnCount: number;
+  /** Ephemeral webchat session row: hidden from history, swept at startup. */
+  webchatSession?: boolean;
 };
 
 export type ClaudeConversationKind = "global" | "paper";
 
 export type ClaudeConversationSummary = {
+  instanceID?: string;
   conversationID: string;
   conversationKey: number;
   libraryID: number;
@@ -245,6 +260,7 @@ export type ClaudeConversationSummary = {
 export type CodexConversationKind = "global" | "paper";
 
 export type CodexConversationSummary = {
+  instanceID?: string;
   conversationID: string;
   conversationKey: number;
   libraryID: number;

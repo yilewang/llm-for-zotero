@@ -21,8 +21,8 @@ export type {
   ActionExecutionContext,
   ActionConfirmationMode,
   ActionProgressEvent,
+  ActionCheckpoint,
   ActionResult,
-  ActionServices,
   ActionLLMConfig,
   ActionRequestContext,
 } from "./types";

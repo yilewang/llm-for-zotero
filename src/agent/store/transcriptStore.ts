@@ -4,9 +4,19 @@ import type {
   AgentRuntimeRequest,
   ToolSpec,
 } from "../types";
+import {
+  installConversationKeyLedgerAgentTriggers,
+  isConversationKeyRetiredInMemory,
+} from "../../shared/conversationKeyLedger";
+import {
+  areConversationWritesFrozen,
+  getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+} from "../../shared/conversationWriteFence";
 
 type ZoteroDb = {
   queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
+  executeTransaction: <T>(task: () => Promise<T>) => Promise<T>;
 };
 
 export type AgentTranscriptSegment = {
@@ -15,6 +25,12 @@ export type AgentTranscriptSegment = {
   messages: AgentModelMessage[];
   compactedAt?: number;
 };
+
+export type AgentTranscriptWriteResult =
+  | "persisted"
+  | "memory_only"
+  | "failed"
+  | "skipped";
 
 export type AgentTranscriptCompatibilityInput = {
   request: AgentRuntimeRequest;
@@ -152,12 +168,70 @@ function sanitizeMessageForTranscript(
   };
 }
 
+/**
+ * Drops assistant `tool_calls` that no `role:"tool"` reply ever answered.
+ *
+ * An assistant message carrying a round's whole `tool_calls` list is recorded
+ * before the per-call loop runs, and that loop can bail mid-list — a denial
+ * that ends the run, an error breaker, a review card the user declines. The
+ * unanswered calls then sit in the persisted transcript forever, and
+ * OpenAI-compatible providers reject the next request outright with a 400,
+ * breaking the conversation until the compatibility key changes.
+ *
+ * The Anthropic and Gemini adapters already filter orphans at render time,
+ * which is the tell that this invariant is known and that the OpenAI path was
+ * relying on the producer never emitting one. Enforcing it in the store fixes
+ * every producer at once, including the pre-existing declined-review-card
+ * path that could already do this on a *completed* run.
+ */
+function dropOrphanToolCalls(
+  messages: readonly AgentModelMessage[],
+): AgentModelMessage[] {
+  const answered = new Set<string>();
+  for (const message of messages) {
+    if (message?.role !== "tool") continue;
+    const id = (message as { tool_call_id?: unknown }).tool_call_id;
+    if (typeof id === "string" && id) answered.add(id);
+  }
+
+  const result: AgentModelMessage[] = [];
+  for (const message of messages) {
+    const calls = (message as { tool_calls?: unknown }).tool_calls;
+    if (
+      message?.role !== "assistant" ||
+      !Array.isArray(calls) ||
+      !calls.length
+    ) {
+      result.push(message);
+      continue;
+    }
+    const kept = calls.filter((call) => {
+      const id = (call as { id?: unknown })?.id;
+      return typeof id === "string" && answered.has(id);
+    });
+    if (kept.length === calls.length) {
+      result.push(message);
+      continue;
+    }
+    const content = (message as { content?: unknown }).content;
+    if (!kept.length && !String(content ?? "").trim()) {
+      // Nothing left worth keeping: an assistant turn that only announced
+      // calls, none of which were answered.
+      continue;
+    }
+    result.push({ ...message, tool_calls: kept } as AgentModelMessage);
+  }
+  return result;
+}
+
 function normalizeMessages(
   messages: readonly AgentModelMessage[],
 ): AgentModelMessage[] {
-  return messages
-    .map((message) => normalizeMessage(message))
-    .filter((message): message is AgentModelMessage => Boolean(message));
+  return dropOrphanToolCalls(
+    messages
+      .map((message) => normalizeMessage(message))
+      .filter((message): message is AgentModelMessage => Boolean(message)),
+  );
 }
 
 async function ensureAgentTranscriptStore(): Promise<boolean> {
@@ -181,6 +255,7 @@ async function ensureAgentTranscriptStore(): Promise<boolean> {
         `CREATE INDEX IF NOT EXISTS ${TRANSCRIPT_INDEX}
          ON ${TRANSCRIPT_TABLE} (conversation_key, compatibility_key, sequence)`,
       );
+      await installConversationKeyLedgerAgentTriggers();
       return true;
     } catch (error) {
       initPromise = null;
@@ -228,6 +303,7 @@ async function hydrateTranscriptSegment(params: {
 }): Promise<void> {
   const conversationKey = normalizePositiveInt(params.conversationKey);
   if (!conversationKey) return;
+  const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const key = segmentKey(conversationKey, params.compatibilityKey);
   if (hydratedKeys.has(key)) return;
   const dbReady = await ensureAgentTranscriptStore();
@@ -248,6 +324,13 @@ async function hydrateTranscriptSegment(params: {
           compactedAt?: unknown;
         }>
       | undefined;
+    if (
+      isConversationKeyRetiredInMemory(conversationKey) ||
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      return;
+    }
     if (!rows?.length) {
       hydratedKeys.add(key);
       return;
@@ -298,55 +381,92 @@ export async function loadAgentTranscriptSegment(params: {
   );
 }
 
-async function persistTranscriptSegment(
-  segment: AgentTranscriptSegment,
-): Promise<void> {
+export async function loadLatestAgentTranscriptSegment(
+  conversationKeyValue: number,
+): Promise<AgentTranscriptSegment | null> {
+  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  if (!conversationKey) return null;
   const dbReady = await ensureAgentTranscriptStore();
   const db = getDb();
-  if (!dbReady || !db) return;
+  if (!dbReady || !db) return null;
   try {
-    await db.queryAsync(
-      `DELETE FROM ${TRANSCRIPT_TABLE}
+    const rows = (await db.queryAsync(
+      `SELECT compatibility_key AS compatibilityKey
+       FROM ${TRANSCRIPT_TABLE}
        WHERE conversation_key = ?
-         AND compatibility_key = ?`,
-      [segment.conversationKey, segment.compatibilityKey],
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      [conversationKey],
+    )) as Array<{ compatibilityKey?: unknown }> | undefined;
+    const compatibilityKey = rows?.[0]?.compatibilityKey;
+    if (typeof compatibilityKey !== "string" || !compatibilityKey) return null;
+    return loadAgentTranscriptSegment({ conversationKey, compatibilityKey });
+  } catch (error) {
+    logTranscriptStoreError(
+      "LLM Agent: Failed to load latest transcript segment",
+      error,
     );
-    const createdAt = Date.now();
-    for (let index = 0; index < segment.messages.length; index += 1) {
+    return null;
+  }
+}
+
+async function persistTranscriptSegment(
+  segment: AgentTranscriptSegment,
+): Promise<"persisted" | "unavailable" | "failed"> {
+  const dbReady = await ensureAgentTranscriptStore();
+  const db = getDb();
+  if (!dbReady || !db) return "unavailable";
+  try {
+    await db.executeTransaction(async () => {
       await db.queryAsync(
-        `INSERT INTO ${TRANSCRIPT_TABLE}
-          (conversation_key, compatibility_key, sequence, message_json, compacted_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          segment.conversationKey,
-          segment.compatibilityKey,
-          index,
-          stableJson(segment.messages[index]),
-          segment.compactedAt || null,
-          createdAt,
-        ],
+        `DELETE FROM ${TRANSCRIPT_TABLE}
+         WHERE conversation_key = ?
+           AND compatibility_key = ?`,
+        [segment.conversationKey, segment.compatibilityKey],
       );
-    }
+      const createdAt = Date.now();
+      for (let index = 0; index < segment.messages.length; index += 1) {
+        await db.queryAsync(
+          `INSERT INTO ${TRANSCRIPT_TABLE}
+            (conversation_key, compatibility_key, sequence, message_json, compacted_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            segment.conversationKey,
+            segment.compatibilityKey,
+            index,
+            stableJson(segment.messages[index]),
+            segment.compactedAt || null,
+            createdAt,
+          ],
+        );
+      }
+    });
+    return "persisted";
   } catch (error) {
     logTranscriptStoreError("LLM Agent: Failed to persist transcript", error);
+    return "failed";
   }
 }
 
 export async function replaceAgentTranscriptSegment(
   segment: AgentTranscriptSegment,
-): Promise<void> {
+): Promise<AgentTranscriptWriteResult> {
+  if (isConversationKeyRetiredInMemory(segment.conversationKey)) {
+    return "skipped";
+  }
   const normalized: AgentTranscriptSegment = {
     ...segment,
     messages: normalizeMessages(segment.messages),
   };
-  transcriptByKey.set(
-    segmentKey(normalized.conversationKey, normalized.compatibilityKey),
-    normalized,
+  const persistence = await persistTranscriptSegment(normalized);
+  if (persistence === "failed") return "failed";
+  const key = segmentKey(
+    normalized.conversationKey,
+    normalized.compatibilityKey,
   );
-  hydratedKeys.add(
-    segmentKey(normalized.conversationKey, normalized.compatibilityKey),
-  );
-  await persistTranscriptSegment(normalized);
+  transcriptByKey.set(key, normalized);
+  hydratedKeys.add(key);
+  return persistence === "persisted" ? "persisted" : "memory_only";
 }
 
 export async function appendAgentTranscriptMessages(params: {

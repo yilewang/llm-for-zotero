@@ -1,5 +1,5 @@
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
-import type { QuoteCitation } from "../../shared/types";
+import type { ConversationSystem, QuoteCitation } from "../../shared/types";
 import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
 import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 
@@ -49,6 +49,69 @@ export type WorkflowTestDuplicatePanelSetupDiagnostics = {
   panelStateSyncAfter: boolean;
 };
 
+export type WorkflowTestDraftRefreshDiagnostics = {
+  webChatMode: boolean;
+  inputBeforeRefresh: string;
+  inputAfterRefresh: string;
+};
+
+export type WorkflowTestWebChatPdfChipState = {
+  fullText: boolean;
+  inactive: boolean;
+  contentSource: string;
+  paperItemId: number;
+  contextItemId: number;
+  modeOverride: string;
+};
+
+export type WorkflowTestWebChatPdfTurn = {
+  question: string;
+  outcome: "success" | "failed";
+  webchatSendPdf: boolean;
+  pdfContextItemIds: number[];
+  modeBeforeOutcome: string;
+  modeAfterOutcome: string;
+  chipAfterTurn: WorkflowTestWebChatPdfChipState;
+};
+
+export type WorkflowTestLiveWebChatTurn = {
+  question: string;
+  outcome: "success" | "failed" | "cancelled" | null;
+  webchatSendPdf: boolean;
+  pdfContextItemIds: number[];
+  chipAfterTurn: WorkflowTestWebChatPdfChipState;
+  statusText: string;
+  relayStatus: string;
+  runState: string | null;
+  completionReason: string | null;
+  responseText: string;
+  diagnostic: Record<string, unknown> | null;
+};
+
+export type WorkflowTestWebChatPdfToggleDiagnostics = {
+  webChatMode: boolean;
+  initialChip: WorkflowTestWebChatPdfChipState;
+  initialPdfTurn: WorkflowTestWebChatPdfTurn;
+  automaticPromptOnlyTurn: WorkflowTestWebChatPdfTurn;
+  chipAfterToggleOn: WorkflowTestWebChatPdfChipState;
+  toggleOnDefaultPrevented: boolean;
+  toggleOnStatusText: string;
+  failedPdfTurn: WorkflowTestWebChatPdfTurn;
+  chipAfterToggleOff: WorkflowTestWebChatPdfChipState;
+  toggleOffDefaultPrevented: boolean;
+  toggleOffStatusText: string;
+  explicitPromptOnlyTurn: WorkflowTestWebChatPdfTurn;
+  mirrorPanel: {
+    initialChip: WorkflowTestWebChatPdfChipState;
+    afterInitialPdfTurn: WorkflowTestWebChatPdfChipState;
+    afterAutomaticPromptOnlyTurn: WorkflowTestWebChatPdfChipState;
+    afterToggleOn: WorkflowTestWebChatPdfChipState;
+    afterFailedPdfTurn: WorkflowTestWebChatPdfChipState;
+    afterToggleOff: WorkflowTestWebChatPdfChipState;
+    afterExplicitPromptOnlyTurn: WorkflowTestWebChatPdfChipState;
+  } | null;
+};
+
 export type WorkflowTestRuntimeGeometry = {
   containerWidth: number;
   fontScale: number;
@@ -59,7 +122,7 @@ export type WorkflowTestRuntimeGeometry = {
   runtimeTrailingOverlapPx: number;
   runtimeWithinContainer: boolean;
   trailingContentWithinContainer: boolean;
-  clearButtonCompact: boolean;
+  deleteButtonIconOnly: boolean;
   centeredContentOffset: number;
 };
 
@@ -76,18 +139,25 @@ export type WorkflowTestDiagnostics = {
   conversationKey?: number;
   panelConversationKey?: number;
   conversationKind?: string;
+  runtimeMode?: string;
   conversationSystem?: string;
   noteId?: number;
   noteKind?: string;
   noteParentItemId?: number;
   contextSnapshot?: ResolvedContextSource | null;
   chipText: string[];
+  composerPaperContextKeys: string[];
   selectedContextLabels: string[];
+  composerCollectionLabels: string[];
+  composerTagLabels: string[];
+  sentContextBadgeLabels: string[];
+  sentContextItemLabels: string[];
   historyNewVisible?: boolean;
   historyToggleVisible?: boolean;
   runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
   inputValue?: string;
   statusText?: string;
+  tokenUsageText?: string;
   messageText?: string;
   lastSend: SendQuestionOptions | null;
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
@@ -122,10 +192,14 @@ export type WorkflowTestStandaloneDiagnostics = {
   basePaperItemId?: number;
   contextItemId?: number;
   conversationKind?: string;
+  runtimeMode?: string;
   conversationSystem?: string;
   titleText?: string;
   chipText: string[];
+  composerPaperContextKeys: string[];
   selectedContextLabels: string[];
+  composerCollectionLabels: string[];
+  composerTagLabels: string[];
   messageText?: string;
   paperTabText?: string;
   openTabText?: string;
@@ -176,6 +250,63 @@ export type WorkflowTestHighlightAwareRetrievalDiagnostics = {
   lastFinalRequest: WorkflowTestFinalRequestSnapshot;
 };
 
+export type WorkflowTestPendingDeletionState = {
+  pendingCount: number;
+  pendingConversationKeys: number[];
+  persistedRowCount: number;
+};
+
+export type WorkflowTestPendingSendDeleteResult = {
+  conversationKeyBefore: number;
+  conversationKeyAfter?: number;
+  requestPendingBeforeClick: boolean;
+  requestPendingAfterClick: boolean;
+  pendingDeletionQueued: boolean;
+  statusText: string;
+};
+
+export type WorkflowTestHistoryRow = {
+  conversationKey: number;
+  title: string;
+};
+
+export type WorkflowTestSeededTurn = {
+  conversationKey: number;
+  userTimestamp: number;
+  assistantTimestamp: number;
+};
+
+export type WorkflowTestHistorySearchResult = {
+  entries: WorkflowTestHistoryRow[];
+  previews: string[];
+};
+
+export type WorkflowTestConversationPersistenceSnapshot = {
+  system: ConversationSystem;
+  conversationKey: number;
+  catalogRows: number;
+  messageRows: number;
+  searchIndexRows: number;
+  registryRows: number;
+  forkSourceRows: number;
+  forkTargetRows: number;
+  cleanupJobRows: number;
+  pendingDeletionRows: number;
+};
+
+export type WorkflowTestStaleAgentTraceIsolationResult = {
+  paperAConversationKey: number;
+  paperBConversationKey: number;
+  beforeTraceResolution: WorkflowTestDiagnostics;
+  afterTraceResolution: WorkflowTestDiagnostics;
+  afterPaperBAppend: WorkflowTestDiagnostics;
+  traceCached: boolean;
+  paperAMessageRowsBeforePaperBAppend: number;
+  paperAMessageRowsAfterPaperBAppend: number;
+  paperBMessageRowsBeforePaperBAppend: number;
+  paperBMessageRowsAfterPaperBAppend: number;
+};
+
 export type WorkflowTestApi = {
   reset: () => Promise<void>;
   createPaperWithPdfFixture: (input: {
@@ -183,6 +314,24 @@ export type WorkflowTestApi = {
     pdfTitle: string;
     pages?: string[];
   }) => Promise<WorkflowTestFixture>;
+  trashWorkflowItem: (itemId: number) => Promise<void>;
+  setWorkflowProviderSession: (
+    system: ConversationSystem,
+    conversationKey: number,
+    providerSessionId: string,
+  ) => Promise<void>;
+  getWorkflowConversationPersistenceSnapshot: (
+    system: ConversationSystem,
+    conversationKey: number,
+  ) => Promise<WorkflowTestConversationPersistenceSnapshot>;
+  exerciseStaleAgentTracePanelIsolation: (input: {
+    panelId: string;
+    paperBItemId: number;
+    paperAMarker: string;
+    paperBMarker: string;
+    paperBAppendMarker: string;
+    runId: string;
+  }) => Promise<WorkflowTestStaleAgentTraceIsolationResult>;
   createStandaloneAttachmentFixture: (input: {
     title: string;
     filename: string;
@@ -201,6 +350,7 @@ export type WorkflowTestApi = {
   renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   startNewPanelConversation: (
     panelId: string,
+    options?: { allowReusedDraft?: boolean },
   ) => Promise<WorkflowTestDiagnostics>;
   togglePanelConversationMode: (
     panelId: string,
@@ -208,13 +358,40 @@ export type WorkflowTestApi = {
   exerciseDuplicatePanelSetup: (
     panelId: string,
   ) => Promise<WorkflowTestDuplicatePanelSetupDiagnostics>;
+  exercisePanelDraftStateRefresh: (
+    panelId: string,
+    text: string,
+  ) => Promise<WorkflowTestDraftRefreshDiagnostics>;
+  exerciseWebChatPdfToggleWorkflow: (
+    panelId: string,
+    mirrorPanelId?: string,
+  ) => Promise<WorkflowTestWebChatPdfToggleDiagnostics>;
+  toggleWebChatPdfChip: (
+    panelId: string,
+  ) => Promise<WorkflowTestWebChatPdfChipState>;
+  sendLiveWebChatTurn: (
+    panelId: string,
+    question: string,
+    timeoutMs?: number,
+  ) => Promise<WorkflowTestLiveWebChatTurn>;
   seedPanelStoredUserMessage: (
     panelId: string,
     text: string,
+    contexts?: Pick<
+      import("./types").Message,
+      | "paperContexts"
+      | "pdfPaperContexts"
+      | "fullTextPaperContexts"
+      | "selectedCollectionContexts"
+      | "selectedTagContexts"
+    >,
   ) => Promise<WorkflowTestDiagnostics>;
   clickPanelSystemToggle: (
     panelId: string,
     system: RuntimeConversationSystem,
+  ) => Promise<WorkflowTestDiagnostics>;
+  clickPanelRuntimeModeToggle: (
+    panelId: string,
   ) => Promise<WorkflowTestDiagnostics>;
   clickPanelSystemTogglesRapidly: (
     panelId: string,
@@ -259,6 +436,18 @@ export type WorkflowTestApi = {
   seedStandaloneUserMessage: (
     text: string,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  seedStandaloneConversation: (
+    turns: Array<
+      { role: "user" | "assistant"; text: string } & Partial<
+        import("./types").Message
+      >
+    >,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  resizeStandaloneWindow: (
+    width: number,
+    height: number,
+  ) => Promise<{ innerWidth: number; innerHeight: number }>;
+  captureStandaloneScreenshot: (filePath: string) => Promise<string>;
   notifyStandaloneItemChanged: (
     itemId: number | null,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
@@ -301,4 +490,52 @@ export type WorkflowTestApi = {
       | WorkflowTestNoteFixture
       | WorkflowTestStandaloneNoteFixture,
   ) => Promise<void>;
+  listPanelHistory: (panelId: string) => Promise<WorkflowTestHistoryRow[]>;
+  deletePanelHistoryConversation: (
+    panelId: string,
+    conversationKey: number,
+  ) => Promise<void>;
+  clickPanelDelete: (panelId: string) => Promise<void>;
+  exercisePanelDeleteDuringPendingSend: (
+    panelId: string,
+    text: string,
+  ) => Promise<WorkflowTestPendingSendDeleteResult>;
+  seedPanelStoredTurn: (
+    panelId: string,
+    userText: string,
+    assistantText: string,
+  ) => Promise<WorkflowTestSeededTurn>;
+  deletePanelTurn: (
+    panelId: string,
+    userTimestamp: number,
+    assistantTimestamp: number,
+  ) => Promise<void>;
+  clickPanelUndo: (panelId: string) => Promise<void>;
+  isPanelUndoToastVisible: (panelId: string) => Promise<boolean>;
+  getPanelVisibleMessageCount: (panelId: string) => Promise<number>;
+  remountPanel: (panelId: string) => Promise<WorkflowTestPanel>;
+  getPendingDeletionState: () => Promise<WorkflowTestPendingDeletionState>;
+  sweepPendingDeletionsAsRestart: () => Promise<void>;
+  searchPanelHistory: (
+    panelId: string,
+    query: string,
+  ) => Promise<WorkflowTestHistorySearchResult>;
+  failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  askCapturingFinalRequest: (
+    panelId: string,
+    text: string,
+  ) => Promise<WorkflowTestFinalRequestSnapshot>;
+  simulateProviderContextUsage: (
+    panelId: string,
+    usage: {
+      contextTokens: number;
+      contextWindow?: number;
+      contextWindowIsAuthoritative?: boolean;
+    },
+  ) => Promise<WorkflowTestDiagnostics>;
+  setWorkflowModelInputCap: (
+    panelId: string,
+    entryId: string,
+    inputTokenCap: number,
+  ) => Promise<WorkflowTestDiagnostics>;
 };

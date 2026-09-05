@@ -24,7 +24,12 @@ export default zotero({
       },
     },
     {
-      files: ["test/**/*.test.ts", "test-workflows/**/*.test.ts"],
+      files: [
+        "test/**/*.test.ts",
+        "test-workflows/**/*.test.ts",
+        "test-live-workflows/**/*.test.ts",
+        "test-live-agent/**/*.test.ts",
+      ],
       rules: {
         // Static fixture construction at module scope is deliberate in these tests.
         "mocha/consistent-spacing-between-blocks": "off",

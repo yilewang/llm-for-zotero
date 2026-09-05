@@ -1,4 +1,4 @@
-const REASONING_PROFILE_TABLE_VERSION = 6;
+const REASONING_PROFILE_TABLE_VERSION = 7;
 
 export type ReasoningProvider =
   | "openai"
@@ -8,14 +8,17 @@ export type ReasoningProvider =
   | "mimo"
   | "qwen"
   | "grok"
-  | "anthropic";
+  | "anthropic"
+  | "local";
 export type ReasoningLevel =
   | "default"
   | "minimal"
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  /** Future provider-defined values (for example `ultra`). */
+  | (string & {});
 export type OpenAIReasoningEffort =
   | "default"
   | "none"
@@ -23,9 +26,15 @@ export type OpenAIReasoningEffort =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | (string & {});
 export type GeminiThinkingParam = "thinking_level" | "thinking_budget";
-export type GeminiThinkingValue = "low" | "medium" | "high" | number;
+export type GeminiThinkingValue =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | number;
 export type GeminiReasoningOption = {
   level: ReasoningLevel;
   value: GeminiThinkingValue;
@@ -297,6 +306,92 @@ const GEMINI_3_PRO_PROFILE: ProviderProfile = {
     levelToValue: {
       high: "high",
       low: "low",
+    },
+  },
+};
+
+// gemini-3.1-pro and later pro releases add "medium" but still reject
+// "minimal" (see ai.google.dev/gemini-api/docs/thinking).
+const GEMINI_3X_PRO_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: [
+    option("high", "high"),
+    option("medium", "medium"),
+    option("low", "low"),
+  ],
+  gemini: {
+    param: "thinking_level",
+    defaultValue: "high",
+    levelToValue: {
+      high: "high",
+      medium: "medium",
+      low: "low",
+    },
+  },
+};
+
+// Flash releases support the full minimal..high ladder; defaults differ per
+// model (3.6-flash: medium, flash-lite: minimal, other flash: high).
+const GEMINI_36_FLASH_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "medium",
+  options: [
+    option("medium", "medium"),
+    option("high", "high"),
+    option("low", "low"),
+    option("minimal", "minimal"),
+  ],
+  gemini: {
+    param: "thinking_level",
+    defaultValue: "medium",
+    levelToValue: {
+      medium: "medium",
+      high: "high",
+      low: "low",
+      minimal: "minimal",
+    },
+  },
+};
+
+const GEMINI_3_FLASH_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: [
+    option("high", "high"),
+    option("medium", "medium"),
+    option("low", "low"),
+    option("minimal", "minimal"),
+  ],
+  gemini: {
+    param: "thinking_level",
+    defaultValue: "high",
+    levelToValue: {
+      high: "high",
+      medium: "medium",
+      low: "low",
+      minimal: "minimal",
+    },
+  },
+};
+
+const GEMINI_3_FLASH_LITE_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "minimal",
+  options: [
+    option("minimal", "minimal"),
+    option("low", "low"),
+    option("medium", "medium"),
+    option("high", "high"),
+  ],
+  gemini: {
+    param: "thinking_level",
+    defaultValue: "minimal",
+    levelToValue: {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
     },
   },
 };
@@ -635,6 +730,17 @@ const PROFILE_RULES: Record<
         match: /^(gpt-5(?:\b|[.-])|o\d+(?:\b|[.-]))/,
         profile: OPENAI_GPT5_PROFILE,
       },
+      // The GPT-3 and GPT-4 families predate reasoning and reject
+      // `reasoning_effort` outright. They have to be named here rather than
+      // left to the fallback, which is deliberately optimistic so an
+      // unreleased OpenAI reasoning model still gets a usable level set
+      // before this table learns its name. `(?:chat)?` catches
+      // `chatgpt-4o-latest`; no trailing boundary, so `gpt-35-turbo` (Azure's
+      // spelling) and every dated `gpt-4o-*` snapshot fall out for free.
+      {
+        match: /^(?:chat)?gpt-[34]/,
+        profile: UNSUPPORTED_PROFILE,
+      },
     ],
     fallback: OPENAI_GPT5_PROFILE,
   },
@@ -655,6 +761,22 @@ const PROFILE_RULES: Record<
       {
         match: /(^|[/:])gemini-2\.5(?:\b|[.-])/,
         profile: GEMINI_25_FLASH_PROFILE,
+      },
+      {
+        match: /(^|[/:])gemini-3(?:\.\d+)?-flash-lite(?:\b|[.-])/,
+        profile: GEMINI_3_FLASH_LITE_PROFILE,
+      },
+      {
+        match: /(^|[/:])gemini-3\.6-flash(?:\b|[.-])/,
+        profile: GEMINI_36_FLASH_PROFILE,
+      },
+      {
+        match: /(^|[/:])gemini-3(?:\.\d+)?-flash(?:\b|[.-])/,
+        profile: GEMINI_3_FLASH_PROFILE,
+      },
+      {
+        match: /(^|[/:])gemini-3\.\d+-pro(?:\b|[.-])/,
+        profile: GEMINI_3X_PRO_PROFILE,
       },
       {
         match: /(^|[/:])gemini-3-pro(?:\b|[.-])/,
@@ -772,6 +894,14 @@ const PROFILE_RULES: Record<
         profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
       },
     ],
+    fallback: UNSUPPORTED_PROFILE,
+  },
+  // Locally-served models carry no hand-maintained profile: their options come
+  // from what the server reports plus whatever the user configures, resolved
+  // entirely through declarative ModelControlPatches. This entry exists so
+  // ReasoningConfig.provider stays type-safe and every lookup here is inert.
+  local: {
+    rules: [],
     fallback: UNSUPPORTED_PROFILE,
   },
 };
@@ -954,6 +1084,25 @@ export function getQwenReasoningProfileForModel(
   };
 }
 
+/**
+ * Thought summaries are the plugin's ask, not the profile's: every branch that
+ * builds a `thinkingConfig` from a known profile requests them, so a config
+ * that arrives declared — from the registry, or from a reasoning level the
+ * user typed — must not cost the reasoning stream merely by saying nothing
+ * about it. An explicit `includeThoughts: false` still wins.
+ */
+export function withGeminiThoughtSummaries(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  // Both call sites accept `thinking_config` as well as `thinkingConfig`, and
+  // this repo's own legacy encoder writes snake_case, so both spellings of the
+  // field have to count as "already stated" — adding the camelCase one beside
+  // an existing `include_thoughts` would send Gemini the same field twice.
+  return "includeThoughts" in config || "include_thoughts" in config
+    ? config
+    : { includeThoughts: true, ...config };
+}
+
 export function getGeminiReasoningProfileForModel(
   modelName?: string,
 ): GeminiReasoningProfile {
@@ -965,14 +1114,15 @@ export function getGeminiReasoningProfileForModel(
     .filter((optionState) => optionState.enabled)
     .map((optionState) => {
       const mappedValue = levelToValue[optionState.level];
-      const value =
+      const value = (
         mappedValue !== undefined
           ? mappedValue
           : optionState.level === "low" ||
               optionState.level === "medium" ||
               optionState.level === "high"
             ? optionState.level
-            : (geminiProfile?.defaultValue ?? "medium");
+            : (geminiProfile?.defaultValue ?? "medium")
+      ) as GeminiThinkingValue;
       return {
         level: optionState.level,
         value,

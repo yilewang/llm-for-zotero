@@ -1,5 +1,3 @@
-const CLAUDE_RUNTIME_DISPLAY_MODELS = new Set(["haiku", "sonnet", "opus"]);
-
 export function formatDisplayModelName(
   modelName: string | undefined,
   modelProviderLabel: string | undefined,
@@ -7,14 +5,13 @@ export function formatDisplayModelName(
 ): string {
   const normalizedModel = (modelName || "").trim();
   if (!normalizedModel) return "";
-  const normalizedModelLower = normalizedModel.toLowerCase();
+  const provider = (modelProviderLabel || "").trim().toLowerCase();
   if (
     options?.suppressProviderPrefix === true &&
-    CLAUDE_RUNTIME_DISPLAY_MODELS.has(normalizedModelLower)
+    provider.includes("claude code")
   ) {
-    return normalizedModelLower;
+    return normalizedModel;
   }
-  const provider = (modelProviderLabel || "").trim().toLowerCase();
   if (provider.includes("(codex auth")) {
     return `codex/${normalizedModel}`;
   }

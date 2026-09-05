@@ -7,7 +7,17 @@
  */
 
 import { DEFAULT_INPUT_TOKEN_CAP } from "./llmDefaults";
-import { normalizeInputTokenCap } from "./normalization";
+import {
+  normalizeInputTokenCap,
+  normalizeOptionalInputTokenCap,
+} from "./normalization";
+import {
+  getModelCapabilities,
+  normalizeProfileOverride,
+  profileOverrideAppliesTo,
+  type CapabilitySource,
+  type ModelCapabilityIdentity,
+} from "../modelCapabilities";
 
 type TextPart = {
   type: "text";
@@ -55,11 +65,6 @@ export type ContextEstimateMessage = {
   }>;
 };
 
-type ModelInputLimitRule = {
-  pattern: RegExp;
-  limit: number;
-};
-
 export const DEFAULT_MODEL_INPUT_TOKEN_LIMIT = DEFAULT_INPUT_TOKEN_CAP;
 export const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
 
@@ -74,50 +79,6 @@ const CONTEXT_PREFIX = "Document Context:\n";
 const CONTEXT_TRUNCATION_NOTICE =
   "[Context truncated to fit model input limit]";
 const PROMPT_TRUNCATION_NOTICE = "[Prompt truncated to fit model input limit]";
-
-const MODEL_INPUT_LIMIT_RULES: ModelInputLimitRule[] = [
-  // Qwen (Alibaba Model Studio)
-  { pattern: /^qwen-long(?:[.-]|$)/, limit: 10_000_000 },
-  { pattern: /^qwen-turbo(?:[.-]|$)/, limit: 1_000_000 },
-  { pattern: /^qwen-max(?:-latest)?(?:[.-]|$)/, limit: 129_024 },
-
-  // Gemini
-  { pattern: /^gemini-2[.-]?5(?:[.-]|$)/, limit: 1_048_576 },
-  { pattern: /^gemini-3(?:[.-]|$)/, limit: 1_000_000 },
-  { pattern: /^gemini-1[.-]?5(?:[.-]|$)/, limit: 1_000_000 },
-
-  // OpenAI
-  { pattern: /^gpt-4[.-]?1(?:[.-]|$)/, limit: 1_047_576 },
-  { pattern: /^gpt-5\.4(?:[.-]|$)/, limit: 1_050_000 },
-  { pattern: /^gpt-5(?:[.-]|$)/, limit: 400_000 },
-  { pattern: /^o(?:3|1(?:-pro)?)(?:[.-]|$)/, limit: 200_000 },
-  { pattern: /^gpt-4o(?:[.-]|$)/, limit: 128_000 },
-
-  // Anthropic
-  { pattern: /^claude(?:[.-]|$)/, limit: 200_000 },
-
-  // xAI
-  { pattern: /^grok-(?:4[.-]?1-fast|4-fast)(?:[.-]|$)/, limit: 2_000_000 },
-  { pattern: /^grok-code-fast-1(?:[.-]|$)/, limit: 256_000 },
-  { pattern: /^grok-4(?:[.-]|$)/, limit: 256_000 },
-  { pattern: /^grok-3(?:[.-]|$)/, limit: 131_072 },
-
-  // Cohere
-  { pattern: /^command-a(?:-reasoning)?(?:[.-]|$)/, limit: 256_000 },
-  { pattern: /^command-r(?:\+|-plus)?(?:[.-]|$)/, limit: 128_000 },
-
-  // Mistral
-  { pattern: /^mistral-large-3(?:[.-]|$)/, limit: 256_000 },
-  { pattern: /^ministral-3(?:-14b)?(?:[.-]|$)/, limit: 256_000 },
-  { pattern: /^mistral-medium-3(?:[.-]|$)/, limit: 128_000 },
-  { pattern: /^mistral-small-3(?:[.-]|$)/, limit: 128_000 },
-  { pattern: /^codestral(?:[.-]|$)/, limit: 128_000 },
-
-  // DeepSeek
-  { pattern: /^deepseek-v4-(?:flash|pro)(?:[.-]|$)/, limit: 1_000_000 },
-  { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 1_000_000 },
-  { pattern: /^deepseek(?:[.-]|$)/, limit: 128_000 },
-];
 
 function stripTrailingNotice(text: string, notice: string): string {
   if (!text) return "";
@@ -339,9 +300,57 @@ function buildFallbackMessages(
   return messages.length ? [messages[messages.length - 1]] : [];
 }
 
+const CJK_CHARS_PER_TOKEN = 2;
+
+function isCjkLikeCharCode(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x11ff) || // Hangul Jamo
+    (code >= 0x3000 && code <= 0x30ff) || // CJK punctuation + kana
+    (code >= 0x3130 && code <= 0x318f) || // Hangul compatibility Jamo
+    (code >= 0x3400 && code <= 0x4dbf) || // CJK extension A
+    (code >= 0x4e00 && code <= 0x9fff) || // CJK unified ideographs
+    (code >= 0xac00 && code <= 0xd7af) || // Hangul syllables
+    (code >= 0xf900 && code <= 0xfaff) || // CJK compatibility ideographs
+    (code >= 0xff00 && code <= 0xffef) // full/half-width forms
+  );
+}
+
+/**
+ * Largest prefix of `text` whose estimateTextTokens result stays within
+ * `maxTokens`. Exact against the per-script estimator (CJK-like chars weigh
+ * 1/2 token, everything else 1/4), single O(n) pass. Char-count inverses of
+ * the estimator (tokens * 4) are wrong for CJK — use this instead.
+ */
+export function sliceTextToTokenBudget(
+  text: string,
+  maxTokens: number,
+): string {
+  if (!text) return "";
+  const budget = Math.max(0, maxTokens);
+  if (!budget) return "";
+  let weight = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    weight += isCjkLikeCharCode(text.charCodeAt(index)) ? 0.5 : 0.25;
+    if (weight > budget) return text.slice(0, index);
+  }
+  return text;
+}
+
 export function estimateTextTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(text.length / TOKEN_ESTIMATE_CHARS_PER_TOKEN);
+  // CJK scripts tokenize at roughly 2 chars/token versus ~4 for ASCII; the
+  // flat /4 estimate undercounted CJK 2-4x, so budgets and compaction
+  // triggers fired far too late for Chinese/Japanese/Korean transcripts.
+  // Surrogate-pair CJK extensions and emoji fall into the /4 bucket, which
+  // stays an undercount but a rare one. Single O(n) pass, no allocation.
+  let cjkLikeChars = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (isCjkLikeCharCode(text.charCodeAt(index))) cjkLikeChars += 1;
+  }
+  return Math.ceil(
+    cjkLikeChars / CJK_CHARS_PER_TOKEN +
+      (text.length - cjkLikeChars) / TOKEN_ESTIMATE_CHARS_PER_TOKEN,
+  );
 }
 
 export function estimateConversationTokens(
@@ -374,38 +383,91 @@ export function estimateContextMessagesTokens(
   return total;
 }
 
-export function getModelInputTokenLimit(modelName: string): number {
-  const normalized = (modelName || "").trim().toLowerCase();
-  if (!normalized) return DEFAULT_MODEL_INPUT_TOKEN_LIMIT;
-  const normalizedTail = normalized.split("/").pop() || "";
-  const candidates =
-    normalizedTail && normalizedTail !== normalized
-      ? [normalized, normalizedTail]
-      : [normalized];
-  for (const rule of MODEL_INPUT_LIMIT_RULES) {
-    for (const candidate of candidates) {
-      if (rule.pattern.test(candidate)) {
-        return rule.limit;
-      }
-    }
+export function getModelInputTokenLimit(
+  modelName: string,
+  identity?: Omit<ModelCapabilityIdentity, "model">,
+): number {
+  return resolveModelInputTokenLimit(modelName, undefined, identity)
+    .limitTokens;
+}
+
+export type ModelInputTokenLimitSource =
+  | "advanced"
+  | CapabilitySource
+  | "default";
+
+export type ResolvedModelInputTokenLimit = {
+  limitTokens: number;
+  source: ModelInputTokenLimitSource;
+  detectedLimitTokens?: number;
+};
+
+/**
+ * Resolve the effective input budget without allowing discovered model
+ * metadata to constrain an explicit advanced setting.
+ */
+export function resolveModelInputTokenLimit(
+  modelName: string,
+  inputTokenCapOverride?: number,
+  identity?: Omit<ModelCapabilityIdentity, "model">,
+): ResolvedModelInputTokenLimit {
+  const capabilities = getModelCapabilities({
+    model: modelName,
+    ...identity,
+    profileOverride: undefined,
+  });
+  const detectedLimitTokens =
+    capabilities.limits.inputTokens || capabilities.limits.contextWindowTokens;
+  const explicitLimitTokens = normalizeOptionalInputTokenCap(
+    inputTokenCapOverride,
+  );
+  if (explicitLimitTokens !== undefined) {
+    return {
+      limitTokens: explicitLimitTokens,
+      source: "advanced",
+      ...(detectedLimitTokens ? { detectedLimitTokens } : {}),
+    };
   }
-  return DEFAULT_MODEL_INPUT_TOKEN_LIMIT;
+  const profileOverride = normalizeProfileOverride(identity?.profileOverride);
+  const profileLimitTokens =
+    profileOverride && profileOverrideAppliesTo(profileOverride, modelName)
+      ? profileOverride.limits?.inputTokens ||
+        profileOverride.limits?.contextWindowTokens
+      : undefined;
+  if (profileLimitTokens) {
+    return {
+      limitTokens: normalizeInputTokenCap(profileLimitTokens),
+      source: "user",
+      ...(detectedLimitTokens ? { detectedLimitTokens } : {}),
+    };
+  }
+  if (detectedLimitTokens) {
+    return {
+      limitTokens: normalizeInputTokenCap(detectedLimitTokens),
+      source: capabilities.provenance.limits || capabilities.source,
+      detectedLimitTokens,
+    };
+  }
+  return {
+    limitTokens: DEFAULT_MODEL_INPUT_TOKEN_LIMIT,
+    source: "default",
+  };
 }
 
 export function resolveContextWindowTokens(
   modelName: string,
   inputTokenCapOverride?: number,
+  identity?: Omit<ModelCapabilityIdentity, "model">,
 ): number {
-  return normalizeInputTokenCap(
-    inputTokenCapOverride,
-    getModelInputTokenLimit(modelName),
-  );
+  return resolveModelInputTokenLimit(modelName, inputTokenCapOverride, identity)
+    .limitTokens;
 }
 
 export type InputCapResult = {
   messages: InputCapMessage[];
   capped: boolean;
   limitTokens: number;
+  limitSource: ModelInputTokenLimitSource;
   softLimitTokens: number;
   estimatedBeforeTokens: number;
   estimatedAfterTokens: number;
@@ -423,12 +485,14 @@ export function applyModelInputTokenCap(
   messages: InputCapMessage[],
   modelName: string,
   inputTokenCapOverride?: number,
+  identity?: Omit<ModelCapabilityIdentity, "model">,
 ): InputCapResult {
-  const modelLimitTokens = getModelInputTokenLimit(modelName);
-  const limitTokens = normalizeInputTokenCap(
+  const resolvedLimit = resolveModelInputTokenLimit(
+    modelName,
     inputTokenCapOverride,
-    modelLimitTokens,
+    identity,
   );
+  const limitTokens = resolvedLimit.limitTokens;
   const softLimitTokens = Math.max(
     1,
     Math.floor(limitTokens * TOKEN_SAFETY_RATIO),
@@ -448,6 +512,7 @@ export function applyModelInputTokenCap(
       messages: working,
       capped: false,
       limitTokens,
+      limitSource: resolvedLimit.source,
       softLimitTokens,
       estimatedBeforeTokens,
       estimatedAfterTokens,
@@ -533,6 +598,7 @@ export function applyModelInputTokenCap(
     messages: working,
     capped: true,
     limitTokens,
+    limitSource: resolvedLimit.source,
     softLimitTokens,
     estimatedBeforeTokens,
     estimatedAfterTokens,
