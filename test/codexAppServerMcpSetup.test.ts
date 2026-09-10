@@ -327,8 +327,9 @@ describe("Codex app-server MCP setup", function () {
 
   it("reports setup status without requiring config write", async function () {
     const proc = {
-      sendRequest: async (method: string) => {
+      sendRequest: async (method: string, params?: unknown) => {
         if (method === "config/read") {
+          assert.deepEqual(params, {});
           return {
             mcp_servers: {
               llm_for_zotero: {
