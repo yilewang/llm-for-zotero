@@ -1428,6 +1428,7 @@ export function buildZoteroEnvironmentManifest(params: {
   scope: CodexNativeConversationScope;
   mcpEnabled: boolean;
   mcpReady: boolean;
+  mcpServerName?: string;
   mcpWarning?: string;
   skillInstructionBlock?: string;
   priorReadContextBlock?: string;
@@ -1535,6 +1536,11 @@ export function buildZoteroEnvironmentManifest(params: {
 
   lines.push(
     "- Zotero MCP is ready for facts or actions absent from context.",
+    ...(params.mcpServerName
+      ? [
+          `- Inside exec, call every enabled Zotero MCP tool with its exact profile-scoped key: tools.mcp__${params.mcpServerName}__<tool_name>.`,
+        ]
+      : []),
     ...(params.rawPdfMode
       ? [
           "- Raw PDF content: read only the exact current-turn local paths with native shell or file capabilities. Never use paper_read, MinerU, extracted-text context, sibling attachments, or paths from earlier turns as a substitute.",
@@ -3462,6 +3468,7 @@ export async function runCodexAppServerNativeTurn(input: {
           scope: scopeWithProfile,
           mcpEnabled,
           mcpReady: optimisticMcpReady,
+          mcpServerName: mcpThreadConfig?.serverName,
           mcpWarning,
           skillInstructionBlock,
           priorReadContextBlock,
@@ -3609,6 +3616,7 @@ export async function runCodexAppServerNativeTurn(input: {
             scope: scopeWithProfile,
             mcpEnabled,
             mcpReady,
+            mcpServerName: mcpThreadConfig?.serverName,
             mcpWarning,
             skillInstructionBlock,
             priorReadContextBlock,
@@ -3627,6 +3635,7 @@ export async function runCodexAppServerNativeTurn(input: {
             scope: scopeWithProfile,
             mcpEnabled,
             mcpReady,
+            mcpServerName: mcpThreadConfig?.serverName,
             mcpWarning,
             skillInstructionBlock: "",
             priorReadContextBlock: "",

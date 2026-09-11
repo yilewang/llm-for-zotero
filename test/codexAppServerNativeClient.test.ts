@@ -2236,8 +2236,13 @@ describe("Codex app-server native client", function () {
       },
       mcpEnabled: true,
       mcpReady: true,
+      mcpServerName: "llm_for_zotero_profile_test",
     });
     assert.include(manifest, "Zotero MCP is ready");
+    assert.include(
+      manifest,
+      "tools.mcp__llm_for_zotero_profile_test__<tool_name>",
+    );
     assert.include(manifest, "facts or actions absent from context");
     assert.include(manifest, PAPER_CITATION_CONTRACT);
     assert.equal(manifest.split(PAPER_CITATION_CONTRACT).length - 1, 1);
