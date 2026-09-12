@@ -487,7 +487,7 @@ export async function readCodexNativeMcpSetupStatus(
 
   const [configResult, statusResult, skillsResult, pluginsResult] =
     await Promise.all([
-      sendOptional(proc, "config/read"),
+      sendOptional(proc, "config/read", {}),
       sendOptional(proc, "mcpServerStatus/list", {
         detail: "toolsAndAuthOnly",
         limit: 100,
