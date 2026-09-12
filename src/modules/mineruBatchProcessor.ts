@@ -15,6 +15,7 @@ import {
   setItemFailed,
   clearAllCachedStatuses,
   clearItemCachedStatus,
+  runMineruTaskOnce,
 } from "./mineruProcessingStatus";
 import {
   cleanSyncedMineruPackages,
@@ -322,8 +323,6 @@ async function processNext(): Promise<void> {
   state.error = null;
   notify();
 
-  setItemProcessing(entry.attachmentId);
-
   // Create an AbortController for this item so pause/stop can cancel it
   const AbortCtor = getAbortControllerCtor();
   const abort = AbortCtor ? new AbortCtor() : null;
@@ -353,36 +352,53 @@ async function processNext(): Promise<void> {
       return;
     }
 
-    const result = await parsePdfWithMineru(
-      pdfPath as string,
+    let lastProgressStage = "";
+    const { value: result } = await runMineruTaskOnce(
+      entry.attachmentId,
+      async (report, sharedSignal) => {
+        setItemProcessing(entry.attachmentId);
+        const parsed = await parsePdfWithMineru(
+          pdfPath as string,
+          report,
+          sharedSignal,
+        );
+        if (sharedSignal?.aborted) throw new MineruCancelledError();
+        if (!parsed?.mdContent) return parsed;
+
+        await writeMineruCacheFiles(
+          entry.attachmentId,
+          parsed.mdContent,
+          parsed.files,
+        );
+        await writeMineruSourceProvenanceForAttachment(pdfItem);
+        setItemCached(entry.attachmentId);
+        void publishMineruCachePackageForAttachment(entry.attachmentId).then(
+          (published) => {
+            if (published.status === "error") {
+              ztoolkit.log(
+                "LLM: MinerU sync package publish failed",
+                published,
+              );
+            }
+          },
+        );
+        // Flush stale in-memory text cache and disk embedding cache so the
+        // next query picks up MinerU-quality chunks and re-generates embeddings.
+        invalidateCachedContextText(entry.attachmentId);
+        return parsed;
+      },
       (stage) => {
+        lastProgressStage = stage;
         state.statusMessage = stage;
         notify();
       },
       abort?.signal,
     );
     if (result?.mdContent) {
-      await writeMineruCacheFiles(
-        entry.attachmentId,
-        result.mdContent,
-        result.files,
-      );
-      await writeMineruSourceProvenanceForAttachment(pdfItem);
-      setItemCached(entry.attachmentId);
-      void publishMineruCachePackageForAttachment(entry.attachmentId).then(
-        (published) => {
-          if (published.status === "error") {
-            ztoolkit.log("LLM: MinerU sync package publish failed", published);
-          }
-        },
-      );
-      // Flush stale in-memory text cache and disk embedding cache so the
-      // next query picks up MinerU-quality chunks and re-generates embeddings.
-      invalidateCachedContextText(entry.attachmentId);
       state.processedCount++;
       state.lastFailedItemId = null;
     } else {
-      const failReason = state.statusMessage || "No content returned";
+      const failReason = lastProgressStage || "No content returned";
       ztoolkit.log(
         `MinerU batch: no content returned for "${entry.title}", skipping`,
       );

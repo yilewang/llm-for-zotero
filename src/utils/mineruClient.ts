@@ -5,6 +5,18 @@ import {
   type MinerUZipFile,
   type MinerUZipInspectionResult,
 } from "./mineruZip";
+import { extractPdfPageCountFromBytes } from "../modules/mineruParseEligibility";
+import {
+  buildMineruDumpDataArguments,
+  buildMineruExecutablePathCandidates,
+  buildMineruPageRanges,
+  extractMineruPageCountFromDumpData,
+  mergeMineruChunkResults,
+  MINERU_PAGE_CHUNK_SIZE,
+  selectMineruPageCount,
+  validateMineruSplitPageCount,
+  type MineruChunk,
+} from "./mineruChunking";
 import {
   DEFAULT_MINERU_CLOUD_MODEL,
   DEFAULT_MINERU_FORCE_OCR,
@@ -100,6 +112,18 @@ export class MineruRateLimitError extends Error {
   }
 }
 
+export class MineruPageLimitError extends Error {
+  constructor(
+    public readonly pageCount: number,
+    public readonly maxPages: number,
+  ) {
+    super(
+      `PDF has ${pageCount} pages, exceeding the automatic MinerU limit of ${maxPages}`,
+    );
+    this.name = "MineruPageLimitError";
+  }
+}
+
 export class MineruCancelledError extends Error {
   constructor() {
     super("Cancelled");
@@ -148,6 +172,14 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 type IOUtilsLike = {
   read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
   write?: (path: string, data: Uint8Array) => Promise<unknown>;
+  makeDirectory?: (
+    path: string,
+    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
+  ) => Promise<unknown>;
+  remove?: (
+    path: string,
+    options?: { recursive?: boolean; ignoreAbsent?: boolean },
+  ) => Promise<unknown>;
 };
 
 type OSFileLike = {
@@ -774,8 +806,24 @@ function getMineruCloudPollDecision(
 function buildMineruCloudProgressMessage(
   state: string,
   elapsedSeconds: number,
+  progress?: { extracted_pages?: unknown; total_pages?: unknown },
 ): string {
   const elapsed = `${elapsedSeconds}`;
+  const extractedPages = progress?.extracted_pages;
+  const totalPages = progress?.total_pages;
+  if (
+    (state === "running" || state === "converting") &&
+    Number.isInteger(extractedPages) &&
+    Number.isInteger(totalPages) &&
+    (extractedPages as number) >= 0 &&
+    (totalPages as number) > 0 &&
+    (extractedPages as number) <= (totalPages as number)
+  ) {
+    return t("Processing on server… %s/%s pages (%ss)")
+      .replace("%s", `${extractedPages}`)
+      .replace("%s", `${totalPages}`)
+      .replace("%s", elapsed);
+  }
   if (state === "running") {
     return t("Processing on server… (%ss)").replace("%s", elapsed);
   }
@@ -798,6 +846,14 @@ export function getMineruCloudPollDecisionForTests(
   params: MineruCloudPollDecisionInput,
 ): MineruCloudPollDecision {
   return getMineruCloudPollDecision(params);
+}
+
+export function buildMineruCloudProgressMessageForTests(
+  state: string,
+  elapsedSeconds: number,
+  progress?: { extracted_pages?: unknown; total_pages?: unknown },
+): string {
+  return buildMineruCloudProgressMessage(state, elapsedSeconds, progress);
 }
 
 async function fetchWithTimeout(
@@ -1157,6 +1213,268 @@ function getSubprocess(): any | null {
     /* ignore */
   }
   return null;
+}
+
+type ExternalCommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+async function runExternalCommand(
+  command: string,
+  args: string[],
+  timeoutMs = 300000,
+  signal?: AbortSignal,
+): Promise<ExternalCommandResult> {
+  throwIfAborted(signal);
+  const Subprocess = getSubprocess();
+  if (!Subprocess?.call) {
+    return { exitCode: -1, stdout: "", stderr: "Subprocess unavailable" };
+  }
+
+  try {
+    const proc = await Subprocess.call({
+      command,
+      arguments: args,
+    });
+    if (signal?.aborted) {
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+      throw new MineruCancelledError();
+    }
+    const readPipe = async (pipe: any): Promise<string> => {
+      if (!pipe?.readString) return "";
+      const chunks: string[] = [];
+      try {
+        for (;;) {
+          const chunk = await pipe.readString();
+          if (!chunk) break;
+          chunks.push(chunk);
+        }
+      } catch {
+        // A closed pipe is equivalent to having read all available output.
+      }
+      return chunks.join("");
+    };
+    const resultPromise = (async () => {
+      const [stdout, stderr] = await Promise.all([
+        readPipe(proc.stdout),
+        readPipe(proc.stderr),
+      ]);
+      const { exitCode } = await proc.wait();
+      return { exitCode: exitCode as number, stdout, stderr };
+    })();
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<ExternalCommandResult>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        resolve({ exitCode: -1, stdout: "", stderr: "Timed out" });
+      }, timeoutMs);
+    });
+    let abortHandler: (() => void) | null = null;
+    const abortPromise = new Promise<ExternalCommandResult>(
+      (_resolve, reject) => {
+        if (!signal) return;
+        abortHandler = () => {
+          try {
+            proc.kill();
+          } catch {
+            /* ignore */
+          }
+          reject(new MineruCancelledError());
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      },
+    );
+    let result: ExternalCommandResult;
+    try {
+      result = await Promise.race([
+        resultPromise,
+        timeoutPromise,
+        abortPromise,
+      ]);
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (abortHandler) signal?.removeEventListener("abort", abortHandler);
+    }
+    if (timedOut) {
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof MineruCancelledError) throw error;
+    return {
+      exitCode: -1,
+      stdout: "",
+      stderr: (error as Error).message || "Command failed",
+    };
+  }
+}
+
+function getPathJoiner(): (...parts: string[]) => string {
+  const pathUtils = (
+    globalThis as {
+      PathUtils?: { join?: (...parts: string[]) => string };
+    }
+  ).PathUtils;
+  if (pathUtils?.join) return pathUtils.join;
+  return (...parts: string[]) => parts.join("/").replace(/\/+/g, "/");
+}
+
+function fileExists(filePath: string): boolean {
+  try {
+    const Cc = (globalThis as any).Components?.classes;
+    const Ci = (globalThis as any).Components?.interfaces;
+    const file = Cc?.["@mozilla.org/file/local;1"]?.createInstance?.(
+      Ci?.nsIFile,
+    );
+    file?.initWithPath?.(filePath);
+    return file?.exists?.() === true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePdfSplitterPath(
+  signal?: AbortSignal,
+): Promise<string | null> {
+  throwIfAborted(signal);
+  const isWindows = Boolean((Zotero as any).isWin);
+  const pathValue = (() => {
+    try {
+      const value = (globalThis as any).Services?.env?.get?.("PATH");
+      return typeof value === "string" ? value : "";
+    } catch {
+      return "";
+    }
+  })();
+  const pathCandidate = buildMineruExecutablePathCandidates(
+    pathValue,
+    "pdftk",
+    isWindows,
+  ).find(fileExists);
+  if (pathCandidate) return pathCandidate;
+
+  if (!isWindows) {
+    const probe = await runExternalCommand("which", ["pdftk"], 5000, signal);
+    const resolved = probe.stdout
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (resolved) return resolved;
+  }
+
+  const candidates = isWindows
+    ? [
+        "C:\\Program Files\\PDFtk Server\\bin\\pdftk.exe",
+        "C:\\Program Files (x86)\\PDFtk Server\\bin\\pdftk.exe",
+      ]
+    : ["/usr/bin/pdftk", "/usr/local/bin/pdftk", "/opt/homebrew/bin/pdftk"];
+  return candidates.find(fileExists) || null;
+}
+
+async function readPdfPageCountWithPdftk(
+  splitterPath: string,
+  pdfPath: string,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  const io = getIOUtils();
+  const tempDirectory = getMineruTempDirectoryPath();
+  if (!io?.read || !tempDirectory) return null;
+  const outputPath = getPathJoiner()(
+    tempDirectory,
+    `mineru-pdftk-pages-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`,
+  );
+  try {
+    const result = await runExternalCommand(
+      splitterPath,
+      buildMineruDumpDataArguments(pdfPath, outputPath),
+      120000,
+      signal,
+    );
+    if (result.exitCode !== 0) return null;
+    const data = await io.read(outputPath);
+    const bytes =
+      data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+    return extractMineruPageCountFromDumpData(new TextDecoder().decode(bytes));
+  } catch (error) {
+    if (error instanceof MineruCancelledError) throw error;
+    return null;
+  } finally {
+    try {
+      await io.remove?.(outputPath, { ignoreAbsent: true });
+    } catch {
+      /* ignore temporary page-count cleanup failures */
+    }
+  }
+}
+
+function getMineruTempDirectoryPath(): string | null {
+  const tempDirectory = (Zotero as any).getTempDirectory?.()?.path;
+  return typeof tempDirectory === "string" && tempDirectory.trim()
+    ? tempDirectory.trim()
+    : null;
+}
+
+async function createMineruChunkDirectory(): Promise<string> {
+  const io = getIOUtils();
+  if (!io?.makeDirectory) {
+    throw new Error("Zotero IOUtils.makeDirectory is unavailable");
+  }
+  const tempDirectory = getMineruTempDirectoryPath();
+  if (!tempDirectory) throw new Error("Zotero temp directory is unavailable");
+  const join = getPathJoiner();
+  const chunkDirectory = join(
+    tempDirectory,
+    `mineru-chunks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  await io.makeDirectory(chunkDirectory, {
+    createAncestors: true,
+    ignoreExisting: false,
+  });
+  return chunkDirectory;
+}
+
+async function cleanupMineruChunkDirectory(path: string): Promise<void> {
+  try {
+    await getIOUtils()?.remove?.(path, {
+      recursive: true,
+      ignoreAbsent: true,
+    });
+  } catch (error) {
+    ztoolkit.log("MinerU: failed to clean temporary chunk directory", error);
+  }
+}
+
+async function splitPdfByPageRange(
+  splitterPath: string,
+  pdfPath: string,
+  outputPath: string,
+  startPage: number,
+  endPage: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await runExternalCommand(
+    splitterPath,
+    [pdfPath, "cat", `${startPage}-${endPage}`, "output", outputPath],
+    300000,
+    signal,
+  );
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    throw new Error(
+      `pdftk failed for pages ${startPage}-${endPage}${detail ? `: ${detail}` : ""}`,
+    );
+  }
 }
 
 /**
@@ -1610,7 +1928,14 @@ async function parsePdfViaUpload(
 
     const pollData = pollResult.data as {
       data?: {
-        extract_result?: Array<{ state?: string; full_zip_url?: string }>;
+        extract_result?: Array<{
+          state?: string;
+          full_zip_url?: string;
+          extract_progress?: {
+            extracted_pages?: number;
+            total_pages?: number;
+          };
+        }>;
       };
     } | null;
     const extractResult = pollData?.data?.extract_result?.[0];
@@ -1682,7 +2007,13 @@ async function parsePdfViaUpload(
       return null;
     }
 
-    report(buildMineruCloudProgressMessage(state, elapsed));
+    report(
+      buildMineruCloudProgressMessage(
+        state,
+        elapsed,
+        extractResult.extract_progress,
+      ),
+    );
   }
 }
 
@@ -1749,7 +2080,7 @@ export async function parsePdfWithMineruLocal(
   }
 }
 
-export async function parsePdfWithMineru(
+async function parsePdfWithMineruSingle(
   pdfPath: string,
   onProgress?: MinerUProgressCallback,
   signal?: AbortSignal,
@@ -1773,6 +2104,106 @@ export async function parsePdfWithMineru(
     signal,
     forceOcr,
   );
+}
+
+export async function parsePdfWithMineru(
+  pdfPath: string,
+  onProgress?: MinerUProgressCallback,
+  signal?: AbortSignal,
+  options: { maxPages?: number } = {},
+): Promise<MinerUResult> {
+  const report = (stage: string) => {
+    ztoolkit.log(`MinerU: ${stage}`);
+    onProgress?.(stage);
+  };
+
+  try {
+    throwIfAborted(signal);
+    const pdfBytes = await readPdfBytes(pdfPath);
+    const detectedPageCount = pdfBytes
+      ? extractPdfPageCountFromBytes(pdfBytes)
+      : null;
+    let splitterPath = await resolvePdfSplitterPath(signal);
+    const pdftkPageCount = splitterPath
+      ? await readPdfPageCountWithPdftk(splitterPath, pdfPath, signal)
+      : null;
+    const pageCount = selectMineruPageCount(detectedPageCount, pdftkPageCount);
+    if (
+      options.maxPages &&
+      options.maxPages > 0 &&
+      pageCount !== null &&
+      pageCount > options.maxPages
+    ) {
+      throw new MineruPageLimitError(pageCount, options.maxPages);
+    }
+    if (!pageCount || pageCount <= MINERU_PAGE_CHUNK_SIZE) {
+      return parsePdfWithMineruSingle(pdfPath, onProgress, signal);
+    }
+
+    const ranges = buildMineruPageRanges(pageCount);
+    splitterPath ||= await resolvePdfSplitterPath(signal);
+    if (!splitterPath) {
+      report(
+        `PDF has ${pageCount} pages, but pdftk was not found; unable to split for MinerU`,
+      );
+      return null;
+    }
+
+    const chunkDirectory = await createMineruChunkDirectory();
+    const chunks: MineruChunk[] = [];
+    const join = getPathJoiner();
+    try {
+      for (const range of ranges) {
+        throwIfAborted(signal);
+        const partName = `part-${String(range.index + 1).padStart(3, "0")}.pdf`;
+        const partPath = join(chunkDirectory, partName);
+        report(
+          `Splitting PDF for MinerU: pages ${range.startPage}-${range.endPage} of ${pageCount}`,
+        );
+        await splitPdfByPageRange(
+          splitterPath,
+          pdfPath,
+          partPath,
+          range.startPage,
+          range.endPage,
+          signal,
+        );
+        validateMineruSplitPageCount(
+          await readPdfPageCountWithPdftk(splitterPath, partPath, signal),
+          range,
+        );
+
+        report(
+          `Uploading MinerU chunk ${range.index + 1}/${ranges.length}: pages ${range.startPage}-${range.endPage}`,
+        );
+        const chunkLabel = `MinerU chunk ${range.index + 1}/${ranges.length} (pages ${range.startPage}-${range.endPage})`;
+        const result = await parsePdfWithMineruSingle(
+          partPath,
+          (stage) => {
+            report(`${chunkLabel}: ${stage}`);
+          },
+          signal,
+        );
+        if (!result) return null;
+        chunks.push({ range, result });
+      }
+
+      report(`Merging ${chunks.length} MinerU chunks in page order…`);
+      return mergeMineruChunkResults(chunks);
+    } finally {
+      await cleanupMineruChunkDirectory(chunkDirectory);
+    }
+  } catch (error) {
+    if (
+      error instanceof MineruCancelledError ||
+      error instanceof MineruRateLimitError ||
+      error instanceof MineruPageLimitError
+    ) {
+      throw error;
+    }
+    report(`Error: ${(error as Error).message}`);
+    return null;
+  }
 }
 
 /**

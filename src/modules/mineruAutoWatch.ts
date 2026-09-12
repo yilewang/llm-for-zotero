@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import {
   buildMineruFilenameMatcher,
+  getMineruMaxAutoPages,
   isGlobalAutoParseEnabled,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
@@ -8,6 +9,7 @@ import {
   parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
+  MineruPageLimitError,
 } from "../utils/mineruClient";
 import {
   writeMineruCacheFiles,
@@ -19,7 +21,9 @@ import {
   setItemCached,
   setItemFailed,
   clearItemStatus,
+  cancelMineruTask,
   getItemStatus,
+  runMineruTaskOnce,
 } from "./mineruProcessingStatus";
 import {
   cleanupMineruArtifactsForRemovedAttachment,
@@ -38,6 +42,8 @@ type QueueEntry = {
 type QueueValidationResult =
   | { item: Zotero.Item }
   | { item: null; reason: string; retryable: boolean };
+
+class StaleAutoWatchAttachmentError extends Error {}
 
 type ProgressListener = (status: AutoWatchStatus) => void;
 
@@ -64,6 +70,7 @@ let currentItemTitle = "";
 let currentStatusMessage = "";
 let currentAttachmentId: number | null = null;
 const staleAbortAttachmentIds = new Set<number>();
+const stoppedAbortAttachmentIds = new Set<number>();
 const progressListeners = new Set<ProgressListener>();
 const readinessRetryTimers = new Map<
   number,
@@ -276,6 +283,9 @@ function removeDeletedAttachmentsFromQueue(ids: number[]): void {
   for (const id of deletedIds) {
     clearReadinessRetryTimer(id);
     clearItemStatus(id);
+    if (cancelMineruTask(id)) {
+      ztoolkit.log(`MinerU auto-parse: cancelled deleted PDF ${id}`);
+    }
   }
 
   if (previousLength !== processingQueue.length) {
@@ -292,9 +302,6 @@ function removeDeletedAttachmentsFromQueue(ids: number[]): void {
       currentAbort.abort();
       currentAbort = null;
     }
-    ztoolkit.log(
-      `MinerU auto-parse: cancelled deleted PDF ${currentAttachmentId}`,
-    );
   }
 
   if (
@@ -383,8 +390,6 @@ async function processQueue(): Promise<void> {
       continue;
     }
 
-    setItemProcessing(entry.attachmentId);
-
     const AbortCtor = getAbortControllerCtor();
     const abort = AbortCtor ? new AbortCtor() : null;
     currentAbort = abort;
@@ -417,8 +422,47 @@ async function processQueue(): Promise<void> {
 
       ztoolkit.log(`MinerU auto-parse: processing ${entry.title}`);
       let lastProgressStage = "";
-      const result = await parsePdfWithMineru(
-        pdfPath as string,
+      const { value: result } = await runMineruTaskOnce(
+        entry.attachmentId,
+        async (report, sharedSignal) => {
+          setItemProcessing(entry.attachmentId);
+          const parsed = await parsePdfWithMineru(
+            pdfPath as string,
+            report,
+            sharedSignal,
+            { maxPages: getMineruMaxAutoPages() },
+          );
+          if (sharedSignal?.aborted) throw new MineruCancelledError();
+          if (!parsed?.mdContent) return parsed;
+
+          if (!getValidatedQueueItem(entry)) {
+            throw new StaleAutoWatchAttachmentError(
+              "attachment changed before cache write",
+            );
+          }
+
+          await writeMineruCacheFiles(
+            entry.attachmentId,
+            parsed.mdContent,
+            parsed.files,
+          );
+          await writeMineruSourceProvenanceForAttachment(pdfItem);
+          setItemCached(entry.attachmentId);
+          void publishMineruCachePackageForAttachment(entry.attachmentId).then(
+            (published) => {
+              if (published.status === "error") {
+                ztoolkit.log(
+                  "LLM: MinerU sync package publish failed",
+                  published,
+                );
+              }
+            },
+          );
+          // Flush stale in-memory text cache and disk embedding cache so the
+          // next query picks up MinerU-quality chunks and re-generates embeddings.
+          invalidateCachedContextText(entry.attachmentId);
+          return parsed;
+        },
         (stage) => {
           lastProgressStage = stage;
           currentStatusMessage = `${stage} — ${entry.title}`;
@@ -428,31 +472,6 @@ async function processQueue(): Promise<void> {
       );
 
       if (result?.mdContent) {
-        if (!getValidatedQueueItem(entry)) {
-          discardStaleEntry(entry, "attachment changed before cache write");
-          continue;
-        }
-
-        await writeMineruCacheFiles(
-          entry.attachmentId,
-          result.mdContent,
-          result.files,
-        );
-        await writeMineruSourceProvenanceForAttachment(pdfItem);
-        setItemCached(entry.attachmentId);
-        void publishMineruCachePackageForAttachment(entry.attachmentId).then(
-          (published) => {
-            if (published.status === "error") {
-              ztoolkit.log(
-                "LLM: MinerU sync package publish failed",
-                published,
-              );
-            }
-          },
-        );
-        // Flush stale in-memory text cache and disk embedding cache so the
-        // next query picks up MinerU-quality chunks and re-generates embeddings.
-        invalidateCachedContextText(entry.attachmentId);
         processedCount++;
         currentStatusMessage = `Cached: ${entry.title}`;
         notifyProgress();
@@ -469,11 +488,21 @@ async function processQueue(): Promise<void> {
         );
       }
     } catch (e) {
+      if (e instanceof StaleAutoWatchAttachmentError) {
+        discardStaleEntry(entry, e.message);
+        continue;
+      }
       if (e instanceof MineruCancelledError) {
         if (staleAbortAttachmentIds.has(entry.attachmentId)) {
           staleAbortAttachmentIds.delete(entry.attachmentId);
           discardStaleEntry(entry, "attachment deleted while parsing");
           continue;
+        }
+        if (stoppedAbortAttachmentIds.has(entry.attachmentId)) {
+          stoppedAbortAttachmentIds.delete(entry.attachmentId);
+          clearItemStatus(entry.attachmentId);
+          ztoolkit.log(`MinerU auto-parse: stopped ${entry.title}`);
+          break;
         }
         errorCount++;
         ztoolkit.log(`MinerU auto-parse: cancelled ${entry.title}`);
@@ -497,6 +526,15 @@ async function processQueue(): Promise<void> {
         currentStatusMessage = "MinerU auto-parse paused: daily quota reached.";
         break;
       }
+      if (e instanceof MineruPageLimitError) {
+        clearItemStatus(entry.attachmentId);
+        ztoolkit.log(
+          `MinerU auto-parse: skipped ${entry.title} - ${e.message}`,
+        );
+        currentStatusMessage = `Skipped: ${entry.title} (${e.pageCount} pages)`;
+        notifyProgress();
+        continue;
+      }
       errorCount++;
       const errorMsg = (e as Error).message || String(e);
       setItemFailed(entry.attachmentId, errorMsg);
@@ -507,6 +545,7 @@ async function processQueue(): Promise<void> {
         currentAbort = null;
       }
       staleAbortAttachmentIds.delete(entry.attachmentId);
+      stoppedAbortAttachmentIds.delete(entry.attachmentId);
     }
   }
 
@@ -569,7 +608,7 @@ function shouldConsiderModifiedPdf(attachmentId: number): boolean {
   }
   if (readinessRetryTimers.has(attachmentId)) return true;
   const status = getItemStatus(attachmentId)?.status;
-  return status === "failed" || status === "processing";
+  return status === "failed";
 }
 
 async function enqueuePdfIfEligible(
@@ -672,6 +711,8 @@ async function handleItemNotification(
 export function startAutoWatch(): void {
   if (notifierId) return;
 
+  stoppedAbortAttachmentIds.clear();
+
   try {
     const notifier = (
       Zotero as unknown as {
@@ -745,6 +786,9 @@ export function resumeAutoWatch(): void {
 }
 
 export function stopAutoWatch(): void {
+  if (currentAttachmentId !== null) {
+    stoppedAbortAttachmentIds.add(currentAttachmentId);
+  }
   if (currentAbort) {
     currentAbort.abort();
     currentAbort = null;
@@ -838,6 +882,9 @@ export function isAutoWatchQueueEntryCurrentForTests(
 }
 
 export function resetAutoWatchForTests(): void {
+  if (currentAttachmentId !== null) {
+    stoppedAbortAttachmentIds.add(currentAttachmentId);
+  }
   if (currentAbort) {
     currentAbort.abort();
     currentAbort = null;

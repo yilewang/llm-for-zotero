@@ -508,6 +508,8 @@ const zhCN: Record<string, string> = {
   "Waiting for MinerU status… (%ss)": "正在等待 MinerU 状态…（%s 秒）",
   "Processing on server…": "服务器正在处理…",
   "Processing on server… (%ss)": "服务器正在处理…（%s 秒）",
+  "Processing on server… %s/%s pages (%ss)":
+    "服务器正在处理… %s/%s 页（%s 秒）",
   "Converting on server… (%ss)": "服务器正在转换…（%s 秒）",
   "Waiting for parser… (%ss)": "等待解析器处理…（%s 秒）",
   "Waiting for another local MinerU parse to finish…":

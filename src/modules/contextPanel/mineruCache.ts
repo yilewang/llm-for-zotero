@@ -918,6 +918,15 @@ export function normalizeMineruCacheFiles(
   const usedTargets = new Map<string, string>();
   const normalizedFiles: NormalizedMineruCacheFile[] = [];
 
+  const canonicalContentList = files.find(
+    (file) =>
+      normalizePathKey(file.relativePath).toLowerCase() ===
+      CONTENT_LIST_FILE_NAME,
+  );
+  if (canonicalContentList) {
+    usedTargets.set(CONTENT_LIST_FILE_NAME, canonicalContentList.relativePath);
+  }
+
   if (mdFile) {
     addPathMapVariant(pathMap, mdFile.file.relativePath, "full.md");
     addPathMapVariant(pathMap, mdFile.parts.join("/"), "full.md");

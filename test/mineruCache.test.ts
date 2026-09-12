@@ -246,6 +246,36 @@ describe("mineruCache", function () {
     assert.equal(parsed[1].img_path, "images/fig1.png");
   });
 
+  it("keeps an explicit merged content list canonical when chunk archives contain aliases", function () {
+    const mergedContentList = [
+      { type: "text", text: "first", page_idx: 0 },
+      { type: "text", text: "second", page_idx: 200 },
+    ];
+    const normalized = normalizeMineruCacheFiles("# Merged", [
+      {
+        relativePath: "images/chunk-001/first_content_list.json",
+        data: bytes('[{"type":"text","text":"first","page_idx":0}]'),
+      },
+      {
+        relativePath: "images/chunk-002/second_content_list.json",
+        data: bytes('[{"type":"text","text":"second","page_idx":0}]'),
+      },
+      {
+        relativePath: "content_list.json",
+        data: bytes(JSON.stringify(mergedContentList)),
+      },
+    ]);
+
+    const canonicalFiles = normalized.files.filter(
+      (file) => file.relativePath === "content_list.json",
+    );
+    assert.lengthOf(canonicalFiles, 1);
+    assert.deepEqual(
+      JSON.parse(decoder.decode(canonicalFiles[0].data)),
+      mergedContentList,
+    );
+  });
+
   it("writes stripped full.md while preserving logical figure paths in manifest", async function () {
     const io = setupMemoryIO();
     const originalImagePath = "Long Paper Title/auto/images/fig1.png";

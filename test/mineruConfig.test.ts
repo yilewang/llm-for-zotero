@@ -16,7 +16,7 @@ import {
 } from "../src/utils/mineruConfig";
 
 describe("mineruConfig", function () {
-  it("uses 100 as the default automatic page limit", function () {
+  it("preserves 100 as the default automatic page limit", function () {
     assert.equal(DEFAULT_MINERU_MAX_AUTO_PAGES, 100);
   });
 

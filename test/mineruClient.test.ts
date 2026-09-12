@@ -3,8 +3,10 @@ import { readFileSync } from "fs";
 import { zipSync } from "fflate";
 import {
   buildCloudBatchRequestBody,
+  buildMineruCloudProgressMessageForTests,
   getMineruCloudPollDecisionForTests,
   MineruCancelledError,
+  parsePdfWithMineru,
   parsePdfWithMineruCloud,
   parsePdfWithMineruLocal,
   resetMineruLocalFileParseGateForTests,
@@ -63,6 +65,76 @@ function setupLocalMineruClientTest(files: Record<string, string>): void {
       return data;
     },
   };
+}
+
+function completedSubprocess(stdout = "") {
+  let stdoutRead = false;
+  return {
+    stdout: {
+      readString: async () => {
+        if (stdoutRead) return "";
+        stdoutRead = true;
+        return stdout;
+      },
+    },
+    stderr: { readString: async () => "" },
+    wait: async () => ({ exitCode: 0 }),
+    kill: () => {},
+  };
+}
+
+function deferredSubprocess(onKill: () => void) {
+  return {
+    stdout: { readString: async () => "" },
+    stderr: { readString: async () => "" },
+    wait: () => new Promise<{ exitCode: number }>(() => {}),
+    kill: onKill,
+  };
+}
+
+function setupChunkingSubprocessTest(
+  pdfContent: string,
+  call: (
+    command: string,
+    args: string[],
+    files: Map<string, Uint8Array>,
+  ) => any,
+): Map<string, Uint8Array> {
+  const files = new Map<string, Uint8Array>([
+    ["/tmp/long.pdf", bytes(pdfContent)],
+  ]);
+  (globalThis as unknown as { Zotero: unknown }).Zotero = {
+    isWin: false,
+    version: "test",
+    getTempDirectory: () => ({ path: "/tmp" }),
+    Prefs: { get: () => "" },
+  };
+  (globalThis as unknown as { ztoolkit: unknown }).ztoolkit = {
+    getGlobal: (name: string) => {
+      if (name === "fetch") return globalThis.fetch;
+      if (name === "AbortController") return AbortController;
+      return undefined;
+    },
+    log: () => {},
+  };
+  (globalThis as unknown as { IOUtils: unknown }).IOUtils = {
+    read: async (path: string) => {
+      const data = files.get(path.replace(/\\/g, "/"));
+      if (!data) throw new Error("missing");
+      return data;
+    },
+    makeDirectory: async () => {},
+    remove: async () => {},
+  };
+  (globalThis as unknown as { ChromeUtils: unknown }).ChromeUtils = {
+    importESModule: () => ({
+      Subprocess: {
+        call: async ({ command, arguments: args }: any) =>
+          call(command, args, files),
+      },
+    }),
+  };
+  return files;
 }
 
 async function readMultipartTextField(
@@ -131,7 +203,143 @@ function buildMineruWindowsOutputPath(
 }
 
 describe("mineruClient", function () {
+  describe("chunking subprocesses", function () {
+    afterEach(function () {
+      delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
+      delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
+      delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
+      delete (globalThis as unknown as { ChromeUtils?: unknown }).ChromeUtils;
+      delete (globalThis as unknown as { Components?: unknown }).Components;
+      delete (globalThis as unknown as { Services?: unknown }).Services;
+    });
+
+    it("kills page counting and preserves cancellation", async function () {
+      let signalStarted: (() => void) | null = null;
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
+      let killed = false;
+      setupChunkingSubprocessTest("%PDF-1.7", (command, args) => {
+        if (command === "which") return completedSubprocess("/mock/pdftk\n");
+        if (args[1] === "dump_data") {
+          signalStarted?.();
+          return deferredSubprocess(() => {
+            killed = true;
+          });
+        }
+        throw new Error(`Unexpected subprocess command: ${command}`);
+      });
+      const controller = new AbortController();
+
+      const parsing = parsePdfWithMineru(
+        "/tmp/long.pdf",
+        undefined,
+        controller.signal,
+      );
+      await started;
+      controller.abort();
+
+      let thrown: unknown = null;
+      try {
+        await parsing;
+      } catch (error) {
+        thrown = error;
+      }
+      assert.isTrue(killed);
+      assert.instanceOf(thrown, MineruCancelledError);
+    });
+
+    it("kills PDF splitting and preserves cancellation", async function () {
+      let signalStarted: (() => void) | null = null;
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
+      let killed = false;
+      setupChunkingSubprocessTest(
+        "%PDF-1.7\n/Type /Pages /Count 401",
+        (command, args, files) => {
+          if (command === "which") {
+            return completedSubprocess("/mock/pdftk\n");
+          }
+          if (args[1] === "dump_data") {
+            files.set(args[3], bytes("NumberOfPages: 401\n"));
+            return completedSubprocess();
+          }
+          if (args[1] === "cat") {
+            signalStarted?.();
+            return deferredSubprocess(() => {
+              killed = true;
+            });
+          }
+          throw new Error(`Unexpected subprocess command: ${command}`);
+        },
+      );
+      const controller = new AbortController();
+
+      const parsing = parsePdfWithMineru(
+        "/tmp/long.pdf",
+        undefined,
+        controller.signal,
+      );
+      await started;
+      controller.abort();
+
+      let thrown: unknown = null;
+      try {
+        await parsing;
+      } catch (error) {
+        thrown = error;
+      }
+      assert.isTrue(killed);
+      assert.instanceOf(thrown, MineruCancelledError);
+    });
+
+    it("finds pdftk in the Apple Silicon Homebrew fallback", async function () {
+      const commands: string[] = [];
+      setupChunkingSubprocessTest("%PDF-1.7", (command, args, files) => {
+        commands.push(command);
+        if (command === "which") return completedSubprocess();
+        if (command === "/opt/homebrew/bin/pdftk") {
+          files.set(args[3], bytes("NumberOfPages: 1\n"));
+          return completedSubprocess();
+        }
+        throw new Error(`Unexpected subprocess command: ${command}`);
+      });
+      (globalThis as unknown as { Services: unknown }).Services = {
+        env: { get: () => "/usr/bin:/usr/local/bin" },
+      };
+      let currentPath = "";
+      (globalThis as unknown as { Components: unknown }).Components = {
+        classes: {
+          "@mozilla.org/file/local;1": {
+            createInstance: () => ({
+              initWithPath: (path: string) => {
+                currentPath = path;
+              },
+              exists: () => currentPath === "/opt/homebrew/bin/pdftk",
+            }),
+          },
+        },
+        interfaces: { nsIFile: {} },
+      };
+
+      await parsePdfWithMineru("/tmp/long.pdf");
+
+      assert.include(commands, "/opt/homebrew/bin/pdftk");
+    });
+  });
+
   describe("cloud poll policy", function () {
+    it("includes server-reported page progress for active jobs", function () {
+      const message = buildMineruCloudProgressMessageForTests("running", 94, {
+        extracted_pages: 37,
+        total_pages: 200,
+      });
+
+      assert.include(message, "37/200");
+      assert.include(message, "94");
+    });
+
     it("times out pending jobs after the pre-processing window", function () {
       const decision = getMineruCloudPollDecisionForTests({
         state: "pending",

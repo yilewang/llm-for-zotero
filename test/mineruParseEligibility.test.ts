@@ -116,9 +116,9 @@ describe("mineruParseEligibility", function () {
     assert.equal(result.pageCount, 30);
   });
 
-  it("skips PDFs over the configured automatic page limit", async function () {
+  it("still skips short PDFs over the configured automatic page limit", async function () {
     setupZoteroPrefs({ maxAutoPages: 100 });
-    setupIO({ "/tmp/103.pdf": pdfText(412) });
+    setupIO({ "/tmp/103.pdf": pdfText(150) });
 
     const result = await getMineruParseEligibility(
       createParent() as Zotero.Item,
@@ -127,7 +127,21 @@ describe("mineruParseEligibility", function () {
 
     assert.isFalse(result.eligible);
     assert.deepEqual(result.reasons, ["page_count"]);
-    assert.equal(result.reasonLabel, "412 pages");
+    assert.equal(result.reasonLabel, "150 pages");
+  });
+
+  it("still skips long PDFs over the configured automatic page limit", async function () {
+    setupZoteroPrefs({ maxAutoPages: 100 });
+    setupIO({ "/tmp/106.pdf": pdfText(412) });
+
+    const result = await getMineruParseEligibility(
+      createParent() as Zotero.Item,
+      createPdf(106) as Zotero.Item,
+    );
+
+    assert.isFalse(result.eligible);
+    assert.deepEqual(result.reasons, ["page_count"]);
+    assert.equal(result.pageCount, 412);
   });
 
   it("can skip page-count inspection for cheap manager row classification", async function () {
@@ -188,17 +202,17 @@ describe("mineruParseEligibility", function () {
     assert.isNull(result.pageCount);
   });
 
-  it("falls back to the default page limit when the saved value is zero", async function () {
+  it("uses the preserved 100-page default when the saved value is zero", async function () {
     setupZoteroPrefs({ maxAutoPages: 0 });
-    setupIO({ "/tmp/106.pdf": pdfText(999) });
+    setupIO({ "/tmp/109.pdf": pdfText(150) });
 
     const result = await getMineruParseEligibility(
       createParent() as Zotero.Item,
-      createPdf(106) as Zotero.Item,
+      createPdf(109) as Zotero.Item,
     );
 
     assert.isFalse(result.eligible);
     assert.deepEqual(result.reasons, ["page_count"]);
-    assert.equal(result.reasonLabel, "999 pages");
+    assert.equal(result.pageCount, 150);
   });
 });

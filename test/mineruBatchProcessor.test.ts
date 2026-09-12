@@ -3,6 +3,7 @@ import {
   deleteMineruCacheForItem,
   getMineruBatchState,
   getMineruItemList,
+  pauseBatchProcessing,
   processSelectedItems,
   startBatchProcessing,
 } from "../src/modules/mineruBatchProcessor";
@@ -13,6 +14,7 @@ import {
 import {
   clearAllStatuses,
   getMineruStatus,
+  runMineruTaskOnce,
   setItemCached,
 } from "../src/modules/mineruProcessingStatus";
 import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/modules/contextPanel/mineruSync";
@@ -85,6 +87,8 @@ function setupZotero(
   };
   (globalThis as unknown as { ztoolkit: unknown }).ztoolkit = {
     log: () => {},
+    getGlobal: (name: string) =>
+      name === "AbortController" ? globalThis.AbortController : undefined,
   };
   (globalThis as unknown as { IOUtils: unknown }).IOUtils = {
     exists: async (path: string) => files.has(path),
@@ -131,6 +135,16 @@ function createRawPdf(): MockItem {
           ? "2026-05-01 10:00:00"
           : "",
   };
+}
+
+async function waitForBatchState(
+  predicate: (state: ReturnType<typeof getMineruBatchState>) => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (predicate(getMineruBatchState())) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail("Timed out waiting for MinerU batch state");
 }
 
 describe("mineruBatchProcessor", function () {
@@ -519,7 +533,7 @@ describe("mineruBatchProcessor", function () {
       ]),
       {
         files: {
-          "/tmp/long-start-all.pdf": pdfText(412),
+          "/tmp/long-start-all.pdf": pdfText(150),
           "/tmp/short-translated.pdf": pdfText(12),
         },
         pref: (key) =>
@@ -536,6 +550,78 @@ describe("mineruBatchProcessor", function () {
     assert.equal(state.totalCount, 0);
     assert.equal(state.processedCount, 0);
     assert.isNull(state.currentItemId);
+  });
+
+  it("pauses immediately when batch processing joins an auto-owned task", async function () {
+    const parent: MockItem = {
+      id: 651,
+      key: "JOINEDBATCHPARENT",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [652],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Joined batch parent" : ""),
+    };
+    const pdf: MockItem = {
+      id: 652,
+      key: "JOINEDBATCHPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "joined-batch.pdf",
+      attachmentSyncedHash: "joined-batch-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Joined batch PDF" : ""),
+      getFilePathAsync: async () => "/tmp/joined-batch.pdf",
+    };
+    setupZotero(
+      new Map([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]),
+      {
+        files: { "/tmp/joined-batch.pdf": pdfText(12) },
+      },
+    );
+
+    let releaseOwner!: () => void;
+    let sharedSignal: AbortSignal | undefined;
+    const owner = runMineruTaskOnce(pdf.id, async (report, signal) => {
+      sharedSignal = signal;
+      report("Auto owner running");
+      await new Promise<void>((resolve) => {
+        releaseOwner = resolve;
+      });
+      return { mdContent: "# auto owner", files: [] };
+    });
+    await Promise.resolve();
+
+    await processSelectedItems([pdf.id], { overrideEligibility: true });
+    await waitForBatchState((state) =>
+      state.statusMessage.includes("Auto owner running"),
+    );
+
+    pauseBatchProcessing();
+    await waitForBatchState((state) => !state.running);
+
+    const paused = getMineruBatchState();
+    assert.isTrue(paused.paused);
+    assert.equal(paused.processedCount, 0);
+    assert.equal(paused.statusMessage, "Paused");
+    assert.isFalse(sharedSignal?.aborted ?? false);
+
+    releaseOwner();
+    assert.deepEqual(await owner, {
+      joined: false,
+      value: { mdContent: "# auto owner", files: [] },
+    });
   });
 
   it("skips over-limit and filename-excluded PDFs in selected processing by default", async function () {
@@ -589,7 +675,7 @@ describe("mineruBatchProcessor", function () {
       ]),
       {
         files: {
-          "/tmp/long-selected.pdf": pdfText(412),
+          "/tmp/long-selected.pdf": pdfText(150),
           "/tmp/selected-translated.pdf": pdfText(12),
         },
         pref: (key) =>

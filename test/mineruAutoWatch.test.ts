@@ -9,12 +9,15 @@ import {
   isAutoWatchQueueEntryCurrentForTests,
   processAutoWatchQueueForTests,
   resetAutoWatchForTests,
+  stopAutoWatch,
 } from "../src/modules/mineruAutoWatch";
 import {
   clearAllStatuses,
   getAllFailedIds,
   getAllProcessingIds,
   getItemStatus,
+  runMineruTaskOnce,
+  setItemProcessing,
 } from "../src/modules/mineruProcessingStatus";
 import {
   hasCachedMineruMd,
@@ -23,6 +26,7 @@ import {
 } from "../src/modules/contextPanel/mineruCache";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import { clearMineruEligibilityCacheForTests } from "../src/modules/mineruParseEligibility";
+import { MineruCancelledError } from "../src/utils/mineruClient";
 
 const encoder = new TextEncoder();
 
@@ -88,7 +92,9 @@ function setupZotero(
   addDir(dirs, "/tmp/zotero");
 
   (globalThis as unknown as { Zotero: unknown }).Zotero = {
+    isWin: false,
     DataDirectory: { dir: "/tmp/zotero" },
+    getTempDirectory: () => ({ path: "/tmp" }),
     Prefs: {
       get: (key: string) => {
         const override = options.pref?.(key);
@@ -150,6 +156,61 @@ function setupZotero(
   return { files };
 }
 
+function completedProcess(stdout = "") {
+  let stdoutRead = false;
+  return {
+    stdout: {
+      readString: async () => {
+        if (stdoutRead) return "";
+        stdoutRead = true;
+        return stdout;
+      },
+    },
+    stderr: { readString: async () => "" },
+    wait: async () => ({ exitCode: 0 }),
+    kill: () => {},
+  };
+}
+
+function installPdftkMock(
+  files: Map<string, Uint8Array>,
+  originalPageCount: number,
+): void {
+  const splitPageCounts = new Map<string, number>();
+  (globalThis as unknown as { ChromeUtils: unknown }).ChromeUtils = {
+    importESModule: () => ({
+      Subprocess: {
+        call: async ({ command, arguments: args }: any) => {
+          if (command === "which") {
+            return completedProcess("/mock/pdftk\n");
+          }
+          if (args[1] === "dump_data") {
+            const pageCount =
+              splitPageCounts.get(normalizePath(args[0])) ?? originalPageCount;
+            files.set(
+              normalizePath(args[3]),
+              bytes(`NumberOfPages: ${pageCount}\n`),
+            );
+            return completedProcess();
+          }
+          if (args[1] === "cat") {
+            const range = /^(\d+)-(\d+)$/.exec(args[2]);
+            if (!range) throw new Error(`Unexpected page range: ${args[2]}`);
+            const outputPath = normalizePath(args[4]);
+            splitPageCounts.set(
+              outputPath,
+              Number(range[2]) - Number(range[1]) + 1,
+            );
+            files.set(outputPath, bytes("%PDF-1.7"));
+            return completedProcess();
+          }
+          throw new Error(`Unexpected subprocess command: ${command}`);
+        },
+      },
+    }),
+  };
+}
+
 function createParent(id = 201, attachmentIDs: number[] = [202]): MockItem {
   return {
     id,
@@ -190,6 +251,14 @@ function createMineruZip(markdown: string): Uint8Array {
   });
 }
 
+async function waitForAutoWatchStatus(message: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (getAutoWatchStatus().statusMessage.includes(message)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(`Timed out waiting for auto-watch status: ${message}`);
+}
+
 describe("mineruAutoWatch", function () {
   afterEach(function () {
     resetAutoWatchForTests();
@@ -198,6 +267,7 @@ describe("mineruAutoWatch", function () {
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
     delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
     delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
+    delete (globalThis as unknown as { ChromeUtils?: unknown }).ChromeUtils;
     pdfTextCache.clear();
   });
 
@@ -362,11 +432,95 @@ describe("mineruAutoWatch", function () {
       [pdf.id, pdf],
     ]);
     const io = setupZotero(items);
-    io.files.set("/tmp/paper.pdf", bytes(pdfText(412)));
+    io.files.set("/tmp/paper.pdf", bytes(pdfText(150)));
 
     await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
 
     assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+  });
+
+  it("applies the authoritative page count before automatic submission", async function () {
+    const firstParent = createParent(201, [202]);
+    const firstPdf = createPdf(202, 201);
+    firstPdf.getFilePathAsync = async () => "/tmp/missing-count.pdf";
+    const secondParent = createParent(301, [302]);
+    const secondPdf = createPdf(302, 301);
+    secondPdf.getFilePathAsync = async () => "/tmp/under-count.pdf";
+    const items = new Map<number, MockItem>([
+      [firstParent.id, firstParent],
+      [firstPdf.id, firstPdf],
+      [secondParent.id, secondParent],
+      [secondPdf.id, secondPdf],
+    ]);
+    const io = setupZotero(items);
+    io.files.set("/tmp/missing-count.pdf", bytes("%PDF-1.7"));
+    io.files.set("/tmp/under-count.pdf", bytes(pdfText(50)));
+    installPdftkMock(io.files, 412);
+    let requestCount = 0;
+    (globalThis as any).Zotero.HTTP = {
+      request: async () => {
+        requestCount++;
+        return { status: 500, responseText: "" };
+      },
+    };
+
+    await handleAutoWatchNotificationForTests("add", "item", [
+      firstPdf.id,
+      secondPdf.id,
+    ]);
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 2);
+
+    await processAutoWatchQueueForTests();
+
+    assert.equal(requestCount, 0);
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+    assert.deepEqual(getAllFailedIds(), []);
+  });
+
+  it("pauses and preserves the queue when a chunk hits the daily quota", async function () {
+    const firstParent = createParent(201, [202]);
+    const firstPdf = createPdf(202, 201);
+    firstPdf.getFilePathAsync = async () => "/tmp/first-long.pdf";
+    const secondParent = createParent(301, [302]);
+    const secondPdf = createPdf(302, 301);
+    secondPdf.getFilePathAsync = async () => "/tmp/second-long.pdf";
+    const items = new Map<number, MockItem>([
+      [firstParent.id, firstParent],
+      [firstPdf.id, firstPdf],
+      [secondParent.id, secondParent],
+      [secondPdf.id, secondPdf],
+    ]);
+    const io = setupZotero(items, {
+      pref: (key) => {
+        if (key.endsWith(".mineruMaxAutoPages")) return 500;
+        if (key.endsWith(".mineruApiKey")) return "test-key";
+        return undefined;
+      },
+    });
+    io.files.set("/tmp/first-long.pdf", bytes(pdfText(401)));
+    io.files.set("/tmp/second-long.pdf", bytes(pdfText(401)));
+    installPdftkMock(io.files, 401);
+    let requestCount = 0;
+    (globalThis as any).Zotero.HTTP = {
+      request: async () => {
+        requestCount++;
+        return { status: 429, responseText: "" };
+      },
+    };
+
+    await handleAutoWatchNotificationForTests("add", "item", [
+      firstPdf.id,
+      secondPdf.id,
+    ]);
+    await processAutoWatchQueueForTests();
+
+    assert.equal(requestCount, 1);
+    assert.isTrue(getAutoWatchStatus().isPaused);
+    assert.sameMembers(
+      getAutoWatchQueueSnapshotForTests().map((entry) => entry.attachmentId),
+      [firstPdf.id, secondPdf.id],
+    );
+    assert.equal(getAutoWatchReadinessRetryCountForTests(), 0);
   });
 
   it("does not enqueue a duplicate PDF while that PDF is actively parsing", async function () {
@@ -415,6 +569,122 @@ describe("mineruAutoWatch", function () {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("stops waiting immediately when auto-watch joins a batch-owned task", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    setupZotero(items);
+
+    let releaseOwner: (() => void) | null = null;
+    let sharedSignal: AbortSignal | undefined;
+    const owner = runMineruTaskOnce(pdf.id, async (report, signal) => {
+      sharedSignal = signal;
+      report("Batch owner running");
+      await new Promise<void>((resolve) => {
+        releaseOwner = resolve;
+      });
+      return { mdContent: "# batch owner", files: [] };
+    });
+
+    await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+    const auto = processAutoWatchQueueForTests();
+    await waitForAutoWatchStatus("Batch owner running");
+
+    stopAutoWatch();
+    await auto;
+
+    assert.isFalse(sharedSignal?.aborted ?? false);
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+    assert.isFalse(getAutoWatchStatus().isProcessing);
+
+    assert.exists(releaseOwner);
+    releaseOwner?.();
+    await owner;
+  });
+
+  it("deletion cancels a batch-owned task even when auto-watch only joined it", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    setupZotero(items);
+
+    let sharedSignal: AbortSignal | undefined;
+    const owner = runMineruTaskOnce(pdf.id, async (report, signal) => {
+      sharedSignal = signal;
+      report("Batch owner running");
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(new MineruCancelledError()),
+          { once: true },
+        );
+      });
+      return { mdContent: "# unreachable", files: [] };
+    });
+    const ownerOutcome = owner.then(
+      () => null,
+      (error) => error,
+    );
+
+    await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+    const auto = processAutoWatchQueueForTests();
+    await waitForAutoWatchStatus("Batch owner running");
+
+    items.delete(pdf.id);
+    await handleAutoWatchNotificationForTests("delete", "item", [pdf.id]);
+    await auto;
+
+    const ownerError = await ownerOutcome;
+    assert.isTrue(sharedSignal?.aborted ?? false);
+    assert.instanceOf(ownerError, MineruCancelledError);
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+    assert.isUndefined(getItemStatus(pdf.id));
+  });
+
+  it("deletion cancels a batch-owned task even when auto-watch never joined it", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    setupZotero(items);
+
+    let sharedSignal: AbortSignal | undefined;
+    const owner = runMineruTaskOnce(pdf.id, async (_report, signal) => {
+      sharedSignal = signal;
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(new MineruCancelledError()),
+          { once: true },
+        );
+      });
+      return { mdContent: "# unreachable", files: [] };
+    });
+    const ownerOutcome = owner.then(
+      () => null,
+      (error) => error,
+    );
+    await Promise.resolve();
+    assert.exists(sharedSignal);
+
+    items.delete(pdf.id);
+    await handleAutoWatchNotificationForTests("delete", "item", [pdf.id]);
+
+    const ownerError = await ownerOutcome;
+    assert.isTrue(sharedSignal?.aborted ?? false);
+    assert.instanceOf(ownerError, MineruCancelledError);
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+    assert.isUndefined(getItemStatus(pdf.id));
   });
 
   it("retries a newly added PDF when Zotero has not resolved its file path yet", async function () {
@@ -531,6 +801,21 @@ describe("mineruAutoWatch", function () {
     await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);
 
     assert.isTrue(await hasCachedMineruMd(pdf.id));
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+  });
+
+  it("ignores modified PDFs that are already being processed", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    setupZotero(items);
+    setItemProcessing(pdf.id);
+
+    await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);
+
     assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
   });
 
