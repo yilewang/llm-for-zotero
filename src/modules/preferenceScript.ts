@@ -284,7 +284,14 @@ import {
 } from "../claudeCode/projectSkills";
 import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
 import { getTavilyApiKey, setTavilyApiKey } from "../webAccess/prefs";
+import {
+  getWebAccessProvider,
+  getYoucomApiKey,
+  setWebAccessProvider,
+  setYoucomApiKey,
+} from "../webAccess/prefs";
 import { TavilyClient } from "../webAccess/tavilyClient";
+import { YoucomClient } from "../webAccess/youcomClient";
 import {
   getDefaultClaudeManagedInstructionBlock,
   readClaudeProjectManagedInstructionBlock,
@@ -1124,6 +1131,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const tavilyTestButton = doc.querySelector(
     `#${config.addonRef}-tavily-test`,
   ) as HTMLButtonElement | null;
+  const webAccessProviderSelect = doc.querySelector(
+    `#${config.addonRef}-web-access-provider`,
+  ) as HTMLSelectElement | null;
+  const youcomApiKeyInput = doc.querySelector(
+    `#${config.addonRef}-youcom-api-key`,
+  ) as HTMLInputElement | null;
+  const youcomTestButton = doc.querySelector(
+    `#${config.addonRef}-youcom-test`,
+  ) as HTMLButtonElement | null;
+  const youcomStatus = doc.querySelector(
+    `#${config.addonRef}-youcom-status`,
+  ) as HTMLSpanElement | null;
+  const youcomKeyLink = doc.querySelector(
+    `#${config.addonRef}-youcom-key-link`,
+  ) as HTMLAnchorElement | null;
   const tavilyStatus = doc.querySelector(
     `#${config.addonRef}-tavily-status`,
   ) as HTMLSpanElement | null;
@@ -3074,6 +3096,65 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  if (webAccessProviderSelect) {
+    webAccessProviderSelect.value = getWebAccessProvider();
+    webAccessProviderSelect.addEventListener("change", () => {
+      const value = webAccessProviderSelect.value;
+      setWebAccessProvider(value === "youcom" ? "youcom" : "tavily");
+    });
+  }
+
+  if (youcomApiKeyInput) {
+    youcomApiKeyInput.value = getYoucomApiKey();
+    const commitYoucomKey = () => {
+      setYoucomApiKey(youcomApiKeyInput.value);
+      youcomApiKeyInput.value = getYoucomApiKey();
+      if (youcomStatus) {
+        youcomStatus.style.display = "none";
+        youcomStatus.textContent = "";
+      }
+    };
+    youcomApiKeyInput.addEventListener("change", commitYoucomKey);
+    youcomApiKeyInput.addEventListener("blur", commitYoucomKey);
+  }
+
+  if (youcomKeyLink) {
+    youcomKeyLink.addEventListener("click", (event) => {
+      event.preventDefault();
+      Zotero.launchURL("https://you.com/platform/api-keys");
+    });
+  }
+
+  if (youcomTestButton && youcomStatus) {
+    youcomTestButton.addEventListener("click", () => {
+      void (async () => {
+        const key = youcomApiKeyInput?.value.trim() || getYoucomApiKey();
+        youcomStatus.style.display = "inline";
+        if (!key) {
+          youcomStatus.style.color = "red";
+          youcomStatus.textContent = t("Enter a You.com API key first.");
+          return;
+        }
+        setYoucomApiKey(key);
+        if (youcomApiKeyInput) youcomApiKeyInput.value = key;
+        youcomTestButton.disabled = true;
+        youcomStatus.style.color = "var(--fill-secondary, #888)";
+        youcomStatus.textContent = t("Testing…");
+        try {
+          const usage = await new YoucomClient(key).getUsage();
+          youcomStatus.style.color = "green";
+          youcomStatus.textContent = `${t("Connected")} · ${t(usage.plan)}`;
+        } catch (error) {
+          youcomStatus.style.color = "red";
+          youcomStatus.textContent = t(
+            error instanceof Error ? error.message : String(error),
+          );
+        } finally {
+          youcomTestButton.disabled = false;
+        }
+      })();
+    });
+  }
   const renderPermissionPreferenceOptions = (params: {
     select: HTMLSelectElement;
     options: PermissionOption[];
