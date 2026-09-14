@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../../../utils/attachmentFilename";
 import type { ConversationSystem } from "../../../../shared/types";
 import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
 import { sanitizeText } from "../../textUtils";
@@ -231,7 +232,7 @@ function isSupportedStandaloneHistoryAttachment(
   return Boolean(
     resolveContextAttachmentSupportFromMetadata({
       contentType: item.attachmentContentType,
-      filename: item.attachmentFilename,
+      filename: readAttachmentFilename(item),
     }),
   );
 }

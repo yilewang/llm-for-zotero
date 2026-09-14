@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../../../utils/attachmentFilename";
 import { normalizePaperContextRefs } from "../../normalizers";
 import {
   isTextLikeAttachmentSourceMode,
@@ -145,10 +146,7 @@ function resolveLiveAttachmentTitle(paperContext: PaperContextRef): string {
 function resolveAttachmentFilename(paperContext: PaperContextRef): string {
   const contextAttachment = resolvePaperContextAttachmentItem(paperContext);
   if (!contextAttachment) return "";
-  return normalizeAttachmentText(
-    (contextAttachment as unknown as { attachmentFilename?: unknown })
-      .attachmentFilename,
-  );
+  return normalizeAttachmentText(readAttachmentFilename(contextAttachment));
 }
 
 export function resolvePaperContextAttachmentLabel(

@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import { formatPaperDisplayLabel } from "../../shared/paperDisplayLabels";
 import {
   isPdfContextAttachment,
@@ -28,12 +29,7 @@ function getAttachmentFilename(
   contextItem: Zotero.Item | null | undefined,
 ): string {
   if (!contextItem?.isAttachment?.()) return "";
-  return normalizeText(
-    String(
-      (contextItem as unknown as { attachmentFilename?: string })
-        .attachmentFilename || "",
-    ),
-  );
+  return normalizeText(String(readAttachmentFilename(contextItem) || ""));
 }
 
 function getZoteroItemsApi(): {

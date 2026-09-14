@@ -206,6 +206,87 @@ describe("sendFlowController", function () {
     }
   });
 
+  it("builds a chat request with an active PDF and a legacy linked sibling", async function () {
+    const previousZotero = globalThis.Zotero;
+    const paper = {
+      id: 42,
+      libraryID: 1,
+      isRegularItem: () => true,
+      isAttachment: () => false,
+      isNote: () => false,
+      getAttachments: () => [100, 101],
+      getField: () => "Parent paper",
+    } as unknown as Zotero.Item;
+    const localPdf = {
+      id: 100,
+      parentID: 42,
+      libraryID: 1,
+      isAttachment: () => true,
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "paper.pdf",
+      getField: () => "Local PDF",
+    } as unknown as Zotero.Item;
+    const legacyPdf = {
+      id: 101,
+      parentID: 42,
+      libraryID: 1,
+      isAttachment: () => true,
+      attachmentContentType: "application/octet-stream",
+      attachmentPath: "F:\\legacy\\paper.PDF",
+      get attachmentFilename() {
+        throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+      },
+      getField: () => "",
+    } as unknown as Zotero.Item;
+    const items = new Map(
+      [paper, localPdf, legacyPdf].map((item) => [item.id, item]),
+    );
+    globalThis.Zotero = {
+      Items: { get: (id: number) => items.get(id) || null },
+      Prefs: { get: () => undefined },
+    } as unknown as typeof Zotero;
+    try {
+      const activePaper: PaperContextRef = {
+        itemId: 42,
+        contextItemId: 100,
+        libraryID: 1,
+        title: "Parent paper",
+        contentSourceMode: "text",
+      };
+      const request = await buildAgentRuntimeRequestForTests({
+        conversationKey: 42,
+        item: paper,
+        userText: "Explain this paper.",
+        selectedTexts: [],
+        activePaperContext: activePaper,
+        paperContexts: [activePaper],
+        fullTextPaperContexts: [],
+        effectiveRequestConfig: {
+          model: "test-model",
+          apiBase: "https://example.invalid",
+          apiKey: "test",
+        },
+        history: [],
+      });
+      assert.equal(request.activePaperContext?.contextItemId, 100);
+      assert.lengthOf(request.availableAttachmentResources, 2);
+      assert.deepInclude(
+        request.availableAttachmentResources?.find(
+          (entry) => entry.contextItemId === 101,
+        ),
+        {
+          title: "paper.PDF",
+          attachmentType: "pdf",
+          readableVia: "paper_read",
+          isPrimary: false,
+        },
+      );
+      assert.equal(legacyPdf.attachmentPath, "F:\\legacy\\paper.PDF");
+    } finally {
+      globalThis.Zotero = previousZotero;
+    }
+  });
+
   it("keeps the exact active PDF identity through request enrichment", async function () {
     const firstPdf: PaperContextRef = {
       libraryID: 1,

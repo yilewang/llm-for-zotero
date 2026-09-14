@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../utils/attachmentFilename";
 import {
   parsePdfWithMineru,
   MineruRateLimitError,
@@ -232,7 +233,7 @@ function collectMineruPdfCandidates(
 function getPdfAttachmentDisplayTitle(pdfAtt: Zotero.Item): string {
   return (
     pdfAtt.getField?.("title") ||
-    (pdfAtt as unknown as { attachmentFilename?: string }).attachmentFilename ||
+    readAttachmentFilename(pdfAtt) ||
     `PDF ${pdfAtt.id}`
   );
 }

@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../../../utils/attachmentFilename";
 export function getZoteroAttachmentFilename(item: unknown): string {
   const attachment = item as {
     attachmentFilename?: unknown;
@@ -5,17 +6,26 @@ export function getZoteroAttachmentFilename(item: unknown): string {
     getField?: (field: string) => unknown;
   };
   const candidates = [
-    attachment?.attachmentFilename,
-    typeof attachment?.getFilename === "function"
-      ? attachment.getFilename()
-      : undefined,
-    typeof attachment?.getField === "function"
-      ? attachment.getField("filename")
-      : undefined,
+    () => readAttachmentFilename(attachment),
+    () =>
+      typeof attachment?.getFilename === "function"
+        ? attachment.getFilename()
+        : undefined,
+    () =>
+      typeof attachment?.getField === "function"
+        ? attachment.getField("filename")
+        : undefined,
   ];
-  return String(
-    candidates.find((value) => typeof value === "string") || "",
-  ).trim();
+  for (const read of candidates) {
+    try {
+      const filename = read();
+      if (typeof filename === "string" && filename.trim())
+        return filename.trim();
+    } catch {
+      // A legacy accessor can fail even when another metadata source is usable.
+    }
+  }
+  return "";
 }
 
 /** Metadata prefilter only; every transport still verifies the %PDF signature. */

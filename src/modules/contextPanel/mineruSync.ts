@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import { unzipSync, zipSync } from "fflate";
 import { config, version as addonVersion } from "../../../package.json";
 import { joinLocalPath, getLocalParentPath } from "../../utils/localPath";
@@ -477,10 +478,7 @@ function getItemKey(item: Zotero.Item | null | undefined): string {
 }
 
 function getAttachmentFilename(item: Zotero.Item): string {
-  return String(
-    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
-      "",
-  ).trim();
+  return String(readAttachmentFilename(item) || "").trim();
 }
 
 function getAttachmentTitle(item: Zotero.Item): string {

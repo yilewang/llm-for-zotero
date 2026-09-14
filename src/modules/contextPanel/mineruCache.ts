@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
@@ -1034,10 +1035,7 @@ function getItemKey(item: Zotero.Item | null | undefined): string {
 }
 
 function getAttachmentFilename(item: Zotero.Item): string {
-  return String(
-    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
-      "",
-  ).trim();
+  return String(readAttachmentFilename(item) || "").trim();
 }
 
 function getParentItem(item: Zotero.Item): Zotero.Item | null {

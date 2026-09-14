@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import type { SemanticDecisions } from "../model/semanticDecisions";
 import {
   ensureAttachmentBlobFromPath,
@@ -1907,10 +1908,7 @@ export class PdfPageService {
         contextItemId: contextItem.id,
         itemId: params.paperContext.itemId,
         attachmentName:
-          sanitizeText(
-            (contextItem as unknown as { attachmentFilename?: string })
-              .attachmentFilename,
-          ) || undefined,
+          sanitizeText(readAttachmentFilename(contextItem)) || undefined,
       };
     }
 
@@ -1939,10 +1937,7 @@ export class PdfPageService {
         contextItemId: contextItemById.id,
         itemId: paperContext?.itemId,
         attachmentName:
-          sanitizeText(
-            (contextItemById as unknown as { attachmentFilename?: string })
-              .attachmentFilename,
-          ) || undefined,
+          sanitizeText(readAttachmentFilename(contextItemById)) || undefined,
       };
     }
 
@@ -1973,13 +1968,8 @@ export class PdfPageService {
         contextItemId: bibliographicAttachment.id,
         itemId: paperContext?.itemId || bibliographicItem?.id,
         attachmentName:
-          sanitizeText(
-            (
-              bibliographicAttachment as unknown as {
-                attachmentFilename?: string;
-              }
-            ).attachmentFilename,
-          ) || undefined,
+          sanitizeText(readAttachmentFilename(bibliographicAttachment)) ||
+          undefined,
       };
     }
 
@@ -2026,10 +2016,7 @@ export class PdfPageService {
         contextItemId: activePdfItem.id,
         itemId: paperContext?.itemId,
         attachmentName:
-          sanitizeText(
-            (activePdfItem as unknown as { attachmentFilename?: string })
-              .attachmentFilename,
-          ) || undefined,
+          sanitizeText(readAttachmentFilename(activePdfItem)) || undefined,
       };
     }
 

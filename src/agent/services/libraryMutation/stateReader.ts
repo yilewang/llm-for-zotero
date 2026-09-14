@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../../utils/attachmentFilename";
 import type { AgentToolContext } from "../../types";
 import { sha256Text } from "../../store/journalRecoveryBlobStore";
 import type { ZoteroGateway } from "../zoteroGateway";
@@ -334,10 +335,7 @@ export class MutationStateReader {
       ) {
         state.attachmentTitle =
           String(
-            (item as Zotero.Item & { attachmentFilename?: unknown })
-              .attachmentFilename ||
-              item.getField?.("title") ||
-              "",
+            readAttachmentFilename(item) || item.getField?.("title") || "",
           ).trim() || undefined;
         state.attachmentPath = (await readAttachmentPath(item)) || undefined;
       }
@@ -363,10 +361,7 @@ export class MutationStateReader {
         state.tags = readItemTags(item);
         state.collectionIds = readItemCollections(item);
         const attachmentTitle = String(
-          (item as Zotero.Item & { attachmentFilename?: unknown })
-            .attachmentFilename ||
-            item.getField?.("title") ||
-            "",
+          readAttachmentFilename(item) || item.getField?.("title") || "",
         ).trim();
         if (attachmentTitle) state.attachmentTitle = attachmentTitle;
         const attachmentPath = await readAttachmentPath(item);

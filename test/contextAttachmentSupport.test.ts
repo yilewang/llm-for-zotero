@@ -20,6 +20,41 @@ function attachment(input: {
 }
 
 describe("contextAttachmentSupport", function () {
+  it("classifies legacy linked attachments even when Zotero rejects their path", function () {
+    for (const [filename, kind] of [
+      ["paper.PDF", "pdf"],
+      ["notes.MD", "text"],
+    ]) {
+      const item = attachment({ contentType: "application/octet-stream" });
+      Object.defineProperties(item, {
+        attachmentFilename: {
+          get() {
+            throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+          },
+        },
+        attachmentPath: { value: `F:\\legacy\\${filename}` },
+      });
+      assert.equal(resolveContextAttachmentSupport(item)?.kind, kind);
+    }
+  });
+
+  it("still recognizes a PDF by MIME when both filename and path are unavailable", function () {
+    const item = attachment({ contentType: "application/pdf" });
+    Object.defineProperties(item, {
+      attachmentFilename: {
+        get() {
+          throw new Error("unavailable");
+        },
+      },
+      attachmentPath: {
+        get() {
+          throw new Error("unavailable");
+        },
+      },
+    });
+    assert.isTrue(isPdfContextAttachment(item));
+  });
+
   it("recognizes PDFs by MIME type and extension", function () {
     assert.deepEqual(
       resolveContextAttachmentSupportFromMetadata({

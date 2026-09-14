@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../utils/attachmentFilename";
 import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
 import { hasCurrentSemanticIntent } from "./model/semanticTransport";
@@ -1692,10 +1693,7 @@ async function buildBridgeRuntimeRequest(
       )
         .trim()
         .toLowerCase();
-      const pathHint = String(
-        (attachment as unknown as { attachmentFilename?: string })
-          .attachmentFilename || "",
-      )
+      const pathHint = String(readAttachmentFilename(attachment) || "")
         .trim()
         .toLowerCase();
       if (contentType === "text/markdown" || pathHint.endsWith(".md"))

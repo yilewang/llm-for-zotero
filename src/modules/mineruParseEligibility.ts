@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../utils/attachmentFilename";
 import {
   buildMineruFilenameMatcher,
   getMineruMaxAutoPages,
@@ -147,11 +148,7 @@ function getReasonLabel(
 }
 
 function getAttachmentFilename(pdfAtt: Zotero.Item): string {
-  return (
-    (pdfAtt as PdfAttachmentLike).attachmentFilename ||
-    pdfAtt.getField?.("title") ||
-    ""
-  );
+  return readAttachmentFilename(pdfAtt) || pdfAtt.getField?.("title") || "";
 }
 
 export async function getMineruParseEligibility(

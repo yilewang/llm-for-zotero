@@ -80,6 +80,45 @@ function buildOptionsForItems(params: {
 }
 
 describe("paper source MinerU option state", function () {
+  it("builds source options with a valid PDF and a legacy linked sibling", function () {
+    const parent = makeParentItem({ id: 1, attachmentIds: [11, 12] });
+    const localPdf = makeAttachment({
+      id: 11,
+      parentID: 1,
+      filename: "paper.pdf",
+      contentType: "application/pdf",
+    });
+    const legacyPdf = makeAttachment({
+      id: 12,
+      parentID: 1,
+      filename: "",
+      contentType: "application/octet-stream",
+    });
+    Object.defineProperties(legacyPdf, {
+      attachmentFilename: {
+        get() {
+          throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+        },
+      },
+      attachmentPath: { value: "F:\\legacy\\paper.PDF" },
+    });
+    const options = buildOptionsForItems({
+      paperContext: { itemId: 1, contextItemId: 11, title: "Parent paper" },
+      items: [parent, localPdf, legacyPdf],
+    });
+    assert.includeMembers(
+      options.map((option) => option.paperContext.contextItemId),
+      [11, 12],
+    );
+    assert.isTrue(
+      options.some(
+        (option) =>
+          option.paperContext.contextItemId === 12 &&
+          option.paperContext.attachmentTitle === "paper.PDF",
+      ),
+    );
+  });
+
   it("uses local-path PDF support only for Claude Code and Codex conversations", function () {
     assert.equal(
       resolvePaperPdfSupportForConversation({
