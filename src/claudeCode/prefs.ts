@@ -3,9 +3,9 @@ declare const Zotero: any;
 import { config } from "../../package.json";
 import type { ConversationSystem } from "../shared/types";
 import {
-  normalizeAgentPermissionMode,
-  type AgentPermissionMode,
-} from "../shared/agentPermissionMode";
+  normalizeClaudePermissionMode,
+  type ClaudePermissionMode,
+} from "../shared/claudePermissionMode";
 import {
   DEFAULT_CLAUDE_RUNTIME_MODEL,
   CLAUDE_REASONING_OPTIONS,
@@ -197,14 +197,14 @@ export function getClaudeSettingSourcesCsvByPref(): string {
   return getClaudeSettingSourcesByPref().join(",");
 }
 
-export function getClaudePermissionModePref(): AgentPermissionMode {
-  return normalizeAgentPermissionMode(
-    getStringPref("agentPermissionMode").trim().toLowerCase(),
+export function getClaudePermissionModePref(): ClaudePermissionMode {
+  return normalizeClaudePermissionMode(
+    getStringPref("claudeCodePermissionMode"),
   );
 }
 
-export function setClaudePermissionModePref(mode: AgentPermissionMode): void {
-  setPref("agentPermissionMode", mode === "yolo" ? "yolo" : "safe");
+export function setClaudePermissionModePref(mode: ClaudePermissionMode): void {
+  setPref("claudeCodePermissionMode", normalizeClaudePermissionMode(mode));
 }
 
 export function getClaudeRuntimeModelPref(): ClaudeRuntimeModel {

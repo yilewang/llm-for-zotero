@@ -3,18 +3,18 @@
  * Keeps one master item and merges children (attachments, notes, tags,
  * collections, related links) from duplicates into it, then trashes the rest.
  */
-import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type MergeItemsOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
-  ok,
   fail,
-  validateObject,
   normalizePositiveInt,
   normalizePositiveIntArray,
+  ok,
+  validateObject,
 } from "../shared";
 import {
   executeAndRecordUndo,
@@ -55,14 +55,16 @@ export function createMergeItemsTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(merge|dedupe|dedup|duplicat|combine)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.actionIntents.some(
+            (action) => action.operation === "merge_items",
+          ),
         ),
       instruction:
         "To merge duplicates: first use library_search({ entity:'items', mode:'duplicates' }) to find duplicate groups, then use library_read to compare metadata and decide which item is the best master, then call library_delete({ mode:'merge', ... }) with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items.",
@@ -164,7 +166,7 @@ export function createMergeItemsTool(
         resolutionData,
         DUPLICATES_CHECKLIST_FIELD_ID,
       );
-      // No resolution — auto_approve / non-HITL path.
+      // No resolution — automatic / non-HITL path.
       if (selected === undefined) {
         return ok(input);
       }
@@ -189,7 +191,7 @@ export function createMergeItemsTool(
       });
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

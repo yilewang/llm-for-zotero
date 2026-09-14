@@ -8,27 +8,12 @@
  */
 import type { AgentRuntimeRequest } from "../types";
 
-const EN_EVIDENCE_CUE_PATTERN =
-  /\b(?:which|what|how many|list|summari[sz]e|overview|compare|contrast|themes?|evidence|find|discuss|mention)\b/i;
-// No \b for CJK — word boundaries do not exist between CJK codepoints.
-const CJK_EVIDENCE_CUE_PATTERN =
-  /(?:哪些|什么|多少|总结|概述|比较|综述|列出|讨论|要約|まとめ|比較|どの|なに|요약|비교|어떤|무엇)/u;
-
-/**
- * Is this turn asking a question that needs library evidence? The classifier
- * verdict wins when present; otherwise a permissive multilingual heuristic
- * (question mark or interrogative/synthesis cue words) decides.
- */
 export function isEvidenceSeekingTurn(
-  request: Pick<AgentRuntimeRequest, "userText" | "classifiedIntent">,
+  request: Pick<AgentRuntimeRequest, "classifiedIntent">,
 ): boolean {
-  const classified = request.classifiedIntent;
-  if (classified) return classified.retrievalIntent !== "none";
-  const text = (request.userText || "").trim();
-  if (!text) return false;
-  if (/[?？]\s*$/.test(text)) return true;
-  return (
-    EN_EVIDENCE_CUE_PATTERN.test(text) || CJK_EVIDENCE_CUE_PATTERN.test(text)
+  return Boolean(
+    request.classifiedIntent &&
+    request.classifiedIntent.retrievalIntent !== "none",
   );
 }
 

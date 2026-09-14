@@ -87,6 +87,15 @@ export class AgentRunContinuationSession {
     return appended;
   }
 
+  appendHostMessage(message: AgentUserMessage): void {
+    if (this.toolStepOpen)
+      throw new Error(
+        "Host progress cannot interrupt a model tool-result batch.",
+      );
+    this.messages.push(message);
+    this.continuationMessages.push(message);
+  }
+
   restartWithMessages(messages: readonly AgentModelMessage[]): void {
     this.messages.splice(0, this.messages.length, ...messages);
     this.continuationMessages = [];

@@ -1,55 +1,120 @@
-import { getAgentRuntime } from "../../../agent";
 import type {
+  AgentNoteChangeResultCard,
+  AgentSavedNoteResultCard,
+} from "../../../agent/types";
+import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
+import { getAgentRuntime } from "../../../agent";
+import {
+  exportPlanDocumentMarkdown,
+  savePlanDocumentAsNote,
+} from "../../../agent/documents/actions";
+import {
+  loadPlanDocument,
+  loadPlanDocumentOutbox,
+} from "../../../agent/documents/store";
+import type { PlanDocument } from "../../../agent/documents/types";
+import { planExecutionCoordinator } from "../../../agent/plans/coordinator";
+import {
+  loadPlanArtifact,
+  loadPlanExecutionLedger,
+} from "../../../agent/plans/store";
+import {
+  isContentLikeToolArgumentKey,
+  isMalformedToolArgumentsDiagnostic,
+} from "../../../agent/toolArgumentDiagnostics";
+import { summarizeFileIOCall } from "../../../agent/tools/write/fileIO";
+import type {
+  AgentActionContract,
+  AgentConfirmationResolution,
   AgentPendingAction,
+  AgentPendingChoiceValue,
   AgentPendingField,
   AgentRunEventRecord,
-  AgentTraceDetail,
   AgentToolArtifact,
   AgentToolEffect,
+  AgentToolPresentationSummary,
   AgentToolResultCard,
   AgentTraceChip,
+  AgentTraceDetail,
   AgentTraceRequestSummary,
-  AgentToolPresentationSummary,
+  PlanArtifact,
+  PlanExecutionLedger,
 } from "../../../agent/types";
-import type { Message, PaperContextRef } from "../types";
-import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
-import { sanitizeText } from "../textUtils";
-import { renderRenderedMarkdownInto } from "../renderedMarkdown";
-import { buildQuoteDisplayMarkdown } from "../quoteRenderPlan";
-import { toFileUrl } from "../../../utils/pathFileUrl";
-import {
-  normalizePaperContextRefs,
-  normalizeSelectedTextSources,
-} from "../normalizers";
+import { getConversationWriteGeneration } from "../../../shared/conversationWriteFence";
 import type { GeneratedChatImage } from "../../../shared/types";
-import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
+import { toFileUrl } from "../../../utils/pathFileUrl";
+import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
 import { agentReasoningExpandedCache } from "../agentState";
-import { buildTextDiffPreview } from "./diffPreview";
+import { copyTextToClipboard } from "../clipboard";
 import {
   createContextIcon,
   getSelectedTextSourceIconName,
   isContextIconName,
   NOTE_EDIT_PENCIL_ICON,
 } from "../contextIcons";
-import { summarizeFileIOCall } from "../../../agent/tools/write/fileIO";
+import { createDocumentCardLayout } from "../documentCard";
+import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
 import {
-  isContentLikeToolArgumentKey,
-  isMalformedToolArgumentsDiagnostic,
-} from "../../../agent/toolArgumentDiagnostics";
+  normalizePaperContextRefs,
+  normalizeSelectedTextSources,
+} from "../normalizers";
+import {
+  planDocumentCitationSourceHref as citationSourceHref,
+  getPlanDocumentItemTitle as itemTitle,
+  navigatePlanDocumentCitationSource,
+  renderPlanDocumentContent,
+  renderPlanDocumentFigures,
+} from "../planDocumentPresentation";
+import {
+  PLAN_APPROVED_EVENT,
+  PLAN_CANCEL_EVENT,
+  PLAN_REVISE_EVENT,
+  stageApprovedPlanExecution,
+} from "../planModeState";
+import { buildAssistantDisplayMarkdownForRender } from "../assistantRichText";
+import { renderRenderedMarkdownInto } from "../renderedMarkdown";
+import { applyStableAnimationPhase } from "../stableAnimationPhase";
+import { showStandaloneConfirmationDialog } from "../standaloneConfirmationDialog";
+import { openStandalonePlanDocumentWindow } from "../standalonePlanDocumentWindow";
+import {
+  disposeStreamingMarkdown,
+  renderStreamingMarkdownInto,
+} from "../streamingMarkdown";
+import { sanitizeText } from "../textUtils";
+import type { Message, PaperContextRef } from "../types";
+import { createWebFaviconImage } from "../webFavicon";
+import { renderDiffPreviewField } from "./diffPreviewField";
+import { getDiscoveryCardProjection } from "./discoveryCardProjection";
+import { renderNoteChangeCard } from "./noteChangeCard";
+import { getNoteReviewContent, renderNoteReviewCard } from "./noteReviewCard";
+import {
+  renderSavedNoteCard,
+  savedNoteIsPrimaryOutcome,
+} from "./savedNoteCard";
+import {
+  buildToolResultTraceInfo,
+  type ToolResultTraceInfo,
+} from "./toolResultTraceInfo";
 import {
   appendAgentTraceText,
   compactAgentTraceEvents,
   getReasoningTraceKey,
   normalizeInlineTextForDedupe,
 } from "./traceReducer";
-import {
-  buildToolResultTraceInfo,
-  type ToolResultTraceInfo,
-} from "./toolResultTraceInfo";
-import { stripWebSourceMarkersForDisplay } from "../../../webAccess/attribution";
-import { createWebFaviconImage } from "../webFavicon";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
+
+const INTERNAL_PLAN_TOOL_NAMES = new Set([
+  "update_plan",
+  "amend_plan",
+  "task_update",
+  "request_user_input",
+  "submit_plan_document",
+  "submit_document",
+  "research_update",
+  "approve_research_expansion",
+  "approve_research_mutation",
+]);
 
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
@@ -91,6 +156,7 @@ type AgentTraceDisplayItem =
   | {
       type: "reasoning";
       key: string;
+      logicalKey: string;
       label: string;
       summary?: string;
       details?: string;
@@ -99,9 +165,12 @@ type AgentTraceDisplayItem =
 
 type RenderAgentTraceParams = {
   doc: Document;
+  panelItem?: Zotero.Item;
   message: Message;
   userMessage?: Message | null;
   events: AgentRunEventRecord[];
+  previous?: HTMLElement;
+  allowPlanRecovery?: boolean;
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
 };
@@ -166,6 +235,7 @@ function appendAgentActivityDisclosure(params: {
 }): void {
   const { doc, wrap, list, message, userMessage, events } = params;
   const working = message.streaming === true;
+  const planPhase = resolveTracePlanPhase(events);
   const previous = agentActivityExpandedCache.get(message);
   const state = working
     ? !previous || !previous.wasWorking
@@ -176,32 +246,65 @@ function appendAgentActivityDisclosure(params: {
       : previous || { open: false, wasWorking: false };
   agentActivityExpandedCache.set(message, state);
 
-  const details = doc.createElement("details") as HTMLDetailsElement;
+  const mounted = wrap.querySelector?.<HTMLDetailsElement>(
+    ".llm-agent-activity-details",
+  );
+  const details =
+    mounted || (doc.createElement("details") as HTMLDetailsElement);
   details.className = "llm-agent-activity-details";
   details.open = params.forceOpen === true || state.open;
 
-  const summary = doc.createElement("summary") as HTMLElement;
+  const summary =
+    details.querySelector?.("summary") || doc.createElement("summary");
   summary.className = "llm-agent-activity-summary";
+  const duration = formatAgentActivityDuration(
+    resolveAgentActivityDurationMs(message, userMessage, events),
+  );
   summary.textContent = working
-    ? "Working…"
-    : `Worked for ${formatAgentActivityDuration(
-        resolveAgentActivityDurationMs(message, userMessage, events),
-      )}`;
+    ? planPhase === "planning"
+      ? "Planning…"
+      : planPhase === "executing"
+        ? "Executing plan…"
+        : "Working…"
+    : planPhase === "planning"
+      ? `Planned in ${duration}`
+      : planPhase === "executing"
+        ? `Plan ran for ${duration}`
+        : `Worked for ${duration}`;
+  if (mounted) return;
   details.append(summary, list);
   details.addEventListener("toggle", () => {
     agentActivityExpandedCache.set(message, {
       open: details.open,
-      wasWorking: working,
+      wasWorking: message.streaming === true,
     });
   });
   wrap.appendChild(details);
+}
+
+function resolveTracePlanPhase(
+  events: readonly AgentRunEventRecord[],
+): "planning" | "executing" | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const payload = events[index]?.payload;
+    if (payload?.type === "plan_execution_updated") return "executing";
+    if (payload?.type === "plan_ready" || payload?.type === "plan_updated") {
+      return "planning";
+    }
+    if (payload?.type === "status") {
+      const text = payload.text.trim().toLowerCase();
+      if (text.startsWith("executing the approved plan")) return "executing";
+      if (text.startsWith("planning the request")) return "planning";
+    }
+  }
+  return null;
 }
 
 export function buildAgentTraceMarkdownForRender(
   text: string,
   message?: Pick<
     Message,
-    "text" | "quoteCitations" | "quoteDisplayOverride"
+    "text" | "quoteCitations" | "quoteDisplayOverride" | "streaming"
   > | null,
 ): string {
   const useDisplayOverride =
@@ -215,11 +318,10 @@ export function buildAgentTraceMarkdownForRender(
           message?.quoteDisplayOverride?.quoteCitations ||
           message?.quoteCitations,
       };
-  return buildQuoteDisplayMarkdown({
-    markdown: stripWebSourceMarkersForDisplay(
-      sanitizeText(display.markdown || text || ""),
-    ),
+  return buildAssistantDisplayMarkdownForRender({
+    text: display.markdown || text || "",
     quoteCitations: display.quoteCitations,
+    streaming: message?.streaming,
   });
 }
 
@@ -464,90 +566,6 @@ function renderReviewTableField(
   }
 
   return root;
-}
-
-function renderDiffPreviewField(
-  doc: Document,
-  field: Extract<AgentPendingField, { type: "diff_preview" }>,
-): {
-  element: HTMLDivElement;
-  update: (nextAfter: string) => void;
-} {
-  const wrap = doc.createElement("div");
-  wrap.className = "llm-agent-hitl-diff";
-
-  const body = doc.createElement("div");
-  body.className = "llm-agent-hitl-diff-body";
-  wrap.appendChild(body);
-
-  const update = (nextAfter: string) => {
-    body.replaceChildren();
-    const lines = buildTextDiffPreview(field.before || "", nextAfter, {
-      contextLines: field.contextLines,
-    });
-    if (!lines.length) {
-      const empty = doc.createElement("div");
-      empty.className = "llm-agent-hitl-diff-empty";
-      empty.textContent = field.emptyMessage || "No changes.";
-      body.appendChild(empty);
-      return;
-    }
-
-    for (const line of lines) {
-      if (line.kind === "gap") {
-        const gap = doc.createElement("div");
-        gap.className = "llm-agent-hitl-diff-gap";
-        gap.textContent = `... ${line.omittedCount} unchanged line${
-          line.omittedCount === 1 ? "" : "s"
-        } ...`;
-        body.appendChild(gap);
-        continue;
-      }
-
-      const row = doc.createElement("div");
-      row.className = `llm-agent-hitl-diff-line llm-agent-hitl-diff-line-${line.kind}`;
-
-      const gutter = doc.createElement("div");
-      gutter.className = "llm-agent-hitl-diff-gutter";
-
-      const lineNumber = doc.createElement("span");
-      lineNumber.className = "llm-agent-hitl-diff-line-number";
-      lineNumber.textContent =
-        typeof line.oldLineNumber === "number"
-          ? String(line.oldLineNumber)
-          : typeof line.newLineNumber === "number"
-            ? String(line.newLineNumber)
-            : "";
-
-      const marker = doc.createElement("span");
-      marker.className = "llm-agent-hitl-diff-marker";
-      marker.textContent =
-        line.kind === "add" ? "+" : line.kind === "remove" ? "\u2212" : " ";
-
-      gutter.append(lineNumber, marker);
-
-      const content = doc.createElement("pre");
-      content.className = "llm-agent-hitl-diff-content";
-      for (const segment of line.segments) {
-        const segmentEl = doc.createElement("span");
-        segmentEl.className =
-          segment.kind === "context"
-            ? "llm-agent-hitl-diff-segment"
-            : `llm-agent-hitl-diff-segment llm-agent-hitl-diff-segment-${segment.kind}`;
-        segmentEl.textContent = segment.text;
-        content.appendChild(segmentEl);
-      }
-      if (!content.textContent) {
-        content.textContent = " ";
-      }
-
-      row.append(gutter, content);
-      body.appendChild(row);
-    }
-  };
-
-  update(field.after || "");
-  return { element: wrap, update };
 }
 
 function renderImageGalleryField(
@@ -817,7 +835,8 @@ function renderTagAssignmentTableField(
   };
 } {
   const wrap = doc.createElement("div");
-  wrap.className = "llm-agent-hitl-assignment-table";
+  wrap.className =
+    "llm-agent-hitl-assignment-table llm-agent-hitl-tag-assignment-table";
 
   const rows: Array<{
     buttons: HTMLButtonElement[];
@@ -869,11 +888,6 @@ function renderTagAssignmentTableField(
 
     const control = doc.createElement("div");
     control.className = "llm-agent-hitl-assignment-control";
-
-    const inputLabel = doc.createElement("div");
-    inputLabel.className = "llm-agent-hitl-assignment-select-label";
-    inputLabel.textContent = "Suggested tags";
-    control.appendChild(inputLabel);
 
     const editor = doc.createElement("div");
     editor.className = "llm-agent-hitl-tag-editor";
@@ -936,6 +950,7 @@ function renderTagAssignmentTableField(
         "llm-paper-context-chip-label llm-agent-hitl-tag-chip-input";
       input.value = initialValue;
       input.placeholder = item.placeholder || "tag";
+      input.setAttribute("aria-label", `Tag for ${item.label}`);
       updateChipInputSize(input);
       input.addEventListener("input", () => {
         updateChipInputSize(input);
@@ -973,6 +988,7 @@ function renderTagAssignmentTableField(
       removeButton.className =
         "llm-remove-img-btn llm-paper-context-clear llm-agent-hitl-tag-chip-remove";
       removeButton.textContent = "×";
+      removeButton.setAttribute("aria-label", "Remove tag");
       removeButton.addEventListener("click", () => {
         removeChip(chip, input);
       });
@@ -1041,15 +1057,17 @@ function renderTagAssignmentTableField(
  */
 function renderResultCardList(
   doc: Document,
-  cards: AgentToolResultCard[],
+  cards: Exclude<AgentToolResultCard, { kind: "saved_note" | "note_change" }>[],
 ): HTMLDivElement {
   const container = doc.createElement("div");
   container.className =
-    "llm-agent-hitl-card llm-search-results llm-search-results-readonly";
+    "llm-agent-hitl-card llm-plan-container llm-search-results llm-search-results-readonly";
 
-  const header = doc.createElement("div");
-  header.className = "llm-agent-hitl-header";
-  header.textContent = `${cards.length} paper${cards.length === 1 ? "" : "s"} found online`;
+  const { header } = createDocumentCardLayout(doc, {
+    title: `${cards.length} paper${cards.length === 1 ? "" : "s"} found online`,
+    status: "Results",
+    statusKind: "completed",
+  });
   container.appendChild(header);
 
   const list = doc.createElement("div");
@@ -1471,11 +1489,14 @@ function renderPaperResultListField(
       if (!loadMoreButton) return;
       loadMoreButton.disabled = true;
       loadMoreButton.textContent = "Loading…";
-      // Resolve the current confirmation with the load_more actionId.
-      // The action will re-fetch with a larger limit and re-invoke
-      // requestConfirmation — producing a fresh card with the expanded
-      // result set and the prior selections preserved (via the data
-      // payload below).
+      // Submit the current selection once; expansion is a read-only
+      // continuation, independent of the import button.
+      const card = container.closest(".llm-agent-hitl-card");
+      if (card)
+        for (const control of Array.from(
+          card.querySelectorAll("input,button,select,textarea"),
+        ) as HTMLInputElement[])
+          control.disabled = true;
       getAgentRuntime().resolveConfirmation(requestId, {
         approved: true,
         actionId: field.loadMoreActionId as string,
@@ -1563,6 +1584,7 @@ function isDeferredActionField(field: AgentPendingField): boolean {
     field.type === "textarea" ||
     field.type === "text" ||
     field.type === "select" ||
+    field.type === "choice" ||
     field.type === "assignment_table" ||
     field.type === "tag_assignment_table"
   );
@@ -1631,11 +1653,10 @@ export function getPendingActionButtonLayout(action: AgentPendingAction): {
   const hasActionChooser = normalizedActions.primaryActions.length > 1;
   return {
     hasActionChooser,
-    showsFooterExecuteButton:
-      !hasActionChooser ||
-      normalizedActions.primaryActions.some(
-        (entry) => getPendingActionExecutionMode(action, entry.id) === "edit",
-      ),
+    // Every non-navigation confirmation now resolves through one explicit
+    // footer CTA. Selecting an alternative promotes it to that CTA instead
+    // of executing it from the chooser.
+    showsFooterExecuteButton: normalizedActions.primaryActions.length > 0,
   };
 }
 
@@ -1669,12 +1690,435 @@ function getPaperResultMinSelection(
   );
 }
 
+function isPlanningQuestionAction(action: AgentPendingAction): boolean {
+  return (
+    action.toolName === "request_user_input" &&
+    action.mode === "review" &&
+    action.fields.length > 0 &&
+    action.fields.every((field) => field.type === "choice")
+  );
+}
+
+const PLANNING_QUESTION_AUTO_ADVANCE_MS = 480;
+const PLANNING_QUESTION_TRANSITION_MS = 360;
+
+function renderPlanningQuestionCard(
+  doc: Document,
+  pending: { requestId: string; action: AgentPendingAction },
+  resolveConfirmation: (
+    requestId: string,
+    resolution: AgentConfirmationResolution,
+  ) => void,
+): HTMLDivElement {
+  const fields = pending.action.fields.filter(
+    (field): field is Extract<AgentPendingField, { type: "choice" }> =>
+      field.type === "choice",
+  );
+  const normalizedActions = normalizePendingActions(pending.action);
+  const card = doc.createElement("div");
+  card.className =
+    "llm-agent-hitl-card llm-plan-container llm-planning-question-card";
+  card.dataset.requestId = pending.requestId;
+  card.dataset.planningQuestionCard = "true";
+
+  const content = doc.createElement("div");
+  content.className = "llm-agent-hitl-content llm-planning-question-content";
+  card.appendChild(content);
+
+  const { header } = createDocumentCardLayout(doc, {
+    title: pending.action.title,
+    status: "Your input",
+    statusKind: "awaiting_approval",
+  });
+  content.appendChild(header);
+
+  const viewport = doc.createElement("div");
+  viewport.className = "llm-planning-question-viewport";
+  viewport.setAttribute("aria-live", "polite");
+  const track = doc.createElement("div");
+  track.className = "llm-planning-question-track";
+  viewport.appendChild(track);
+  content.appendChild(viewport);
+
+  const answers = new Map<string, AgentPendingChoiceValue>();
+  const customTexts = new Map<string, string>();
+  for (const field of fields) {
+    if (field.value?.kind === "option") {
+      answers.set(field.id, { ...field.value });
+    } else if (field.value?.kind === "custom" && field.value.text.trim()) {
+      const text = field.value.text.trim();
+      answers.set(field.id, { kind: "custom", text });
+      customTexts.set(field.id, text);
+    }
+  }
+
+  type QuestionPanel = {
+    element: HTMLDivElement;
+    prompt: HTMLDivElement;
+    optionButtons: HTMLButtonElement[];
+    customInput: HTMLInputElement | null;
+  };
+  const panels: QuestionPanel[] = [];
+  const allButtons: HTMLButtonElement[] = [];
+  let activeIndex = 0;
+  let mountedAllPanels = false;
+  let advanceTimer: ReturnType<typeof setTimeout> | null = null;
+  let counterTimer: ReturnType<typeof setTimeout> | null = null;
+  let resizeObserver: ResizeObserver | null = null;
+
+  const hasAnswer = (index: number) => answers.has(fields[index].id);
+  const clearAdvanceTimer = () => {
+    if (advanceTimer) clearTimeout(advanceTimer);
+    advanceTimer = null;
+  };
+
+  const createQuestionPanel = (
+    field: (typeof fields)[number],
+    questionIndex: number,
+  ): QuestionPanel => {
+    const panel = doc.createElement("div");
+    panel.className = "llm-planning-question-panel";
+    panel.dataset.questionIndex = `${questionIndex}`;
+
+    const prompt = doc.createElement("div");
+    prompt.className = "llm-planning-question-prompt";
+    prompt.textContent = field.label;
+    prompt.tabIndex = -1;
+    panel.appendChild(prompt);
+
+    const options = doc.createElement("div");
+    options.className = "llm-planning-question-options";
+    options.setAttribute("role", "radiogroup");
+    options.setAttribute("aria-label", field.label);
+    const optionButtons: HTMLButtonElement[] = [];
+    let customInput: HTMLInputElement | null = null;
+    let customRow: HTMLLabelElement | null = null;
+
+    const syncSelection = () => {
+      const answer = answers.get(field.id);
+      for (const button of optionButtons) {
+        const selected =
+          answer?.kind === "option" &&
+          answer.optionId === button.dataset.optionId;
+        button.classList.toggle(
+          "llm-planning-question-option-selected",
+          selected,
+        );
+        button.setAttribute("aria-checked", selected ? "true" : "false");
+      }
+      if (customInput && answer?.kind !== "custom") {
+        customInput.value = customTexts.get(field.id) || "";
+      }
+      customRow?.classList.toggle(
+        "llm-planning-question-custom-selected",
+        answer?.kind === "custom",
+      );
+    };
+
+    for (const option of field.options) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.className = "llm-planning-question-option";
+      button.dataset.optionId = option.id;
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", "false");
+
+      const marker = doc.createElement("span");
+      marker.className = "llm-planning-question-option-marker";
+      marker.setAttribute("aria-hidden", "true");
+      const markerDot = doc.createElement("span");
+      markerDot.className = "llm-planning-question-option-marker-dot";
+      marker.appendChild(markerDot);
+
+      const copy = doc.createElement("span");
+      copy.className = "llm-planning-question-option-copy";
+      const label = doc.createElement("span");
+      label.className = "llm-planning-question-option-label";
+      label.textContent = option.label;
+      copy.appendChild(label);
+      if (option.description) {
+        const description = doc.createElement("span");
+        description.className = "llm-planning-question-option-description";
+        description.textContent = option.description;
+        copy.appendChild(description);
+      }
+      button.append(marker, copy);
+      button.addEventListener("click", () => {
+        answers.set(field.id, { kind: "option", optionId: option.id });
+        customTexts.delete(field.id);
+        if (customInput) customInput.value = "";
+        syncSelection();
+        syncControls();
+        clearAdvanceTimer();
+        if (questionIndex < fields.length - 1) {
+          advanceTimer = setTimeout(() => {
+            if (activeIndex === questionIndex) showQuestion(questionIndex + 1);
+          }, PLANNING_QUESTION_AUTO_ADVANCE_MS);
+        }
+      });
+      optionButtons.push(button);
+      allButtons.push(button);
+      options.appendChild(button);
+    }
+
+    if (field.allowCustom) {
+      customRow = doc.createElement("label");
+      customRow.className = "llm-planning-question-custom";
+      const customMarker = doc.createElement("span");
+      customMarker.className = "llm-planning-question-custom-marker";
+      customMarker.setAttribute("aria-hidden", "true");
+      customInput = doc.createElement("input");
+      customInput.type = "text";
+      customInput.className = "llm-planning-question-custom-input";
+      customInput.placeholder = field.customPlaceholder || "Something else…";
+      customInput.setAttribute("aria-label", `${field.label}: custom answer`);
+      customInput.value = customTexts.get(field.id) || "";
+      customInput.addEventListener("input", () => {
+        clearAdvanceTimer();
+        const text = customInput?.value || "";
+        if (text.trim()) {
+          customTexts.set(field.id, text);
+          answers.set(field.id, { kind: "custom", text: text.trim() });
+        } else {
+          customTexts.delete(field.id);
+          answers.delete(field.id);
+        }
+        syncSelection();
+        syncControls();
+      });
+      customInput.addEventListener("keydown", (event: KeyboardEvent) => {
+        if (event.key !== "Enter" || !hasAnswer(questionIndex)) return;
+        event.preventDefault();
+        if (questionIndex < fields.length - 1) {
+          showQuestion(questionIndex + 1);
+        } else {
+          submitAnswers();
+        }
+      });
+      customRow.append(customMarker, customInput);
+      options.appendChild(customRow);
+    }
+    panel.appendChild(options);
+    panels.push({ element: panel, prompt, optionButtons, customInput });
+    syncSelection();
+    return panels[panels.length - 1];
+  };
+
+  for (const [index, field] of fields.entries()) {
+    createQuestionPanel(field, index);
+  }
+  track.appendChild(panels[0].element);
+
+  const footer = doc.createElement("div");
+  footer.className = "llm-planning-question-footer";
+  const navigation = doc.createElement("div");
+  navigation.className = "llm-planning-question-navigation";
+  const previousButton = doc.createElement("button");
+  previousButton.type = "button";
+  previousButton.className = "llm-planning-question-nav-btn";
+  previousButton.title = "Previous question";
+  previousButton.setAttribute("aria-label", previousButton.title);
+  previousButton.textContent = "‹";
+  const counter = doc.createElement("span");
+  counter.className = "llm-planning-question-counter";
+  counter.textContent = `1 / ${fields.length}`;
+  const nextButton = doc.createElement("button");
+  nextButton.type = "button";
+  nextButton.className = "llm-planning-question-nav-btn";
+  nextButton.title = "Next question";
+  nextButton.setAttribute("aria-label", nextButton.title);
+  nextButton.textContent = "›";
+  navigation.append(previousButton, counter, nextButton);
+
+  const actions = doc.createElement("div");
+  actions.className = "llm-planning-question-actions";
+  const cancelButton = doc.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className =
+    "llm-agent-hitl-btn llm-agent-hitl-btn-secondary llm-planning-question-cancel";
+  cancelButton.textContent =
+    normalizedActions.cancelAction?.label ||
+    pending.action.cancelLabel ||
+    "Cancel plan";
+  const continueButton = doc.createElement("button");
+  continueButton.type = "button";
+  continueButton.className =
+    "llm-agent-hitl-btn llm-planning-question-continue";
+  continueButton.textContent =
+    getPendingActionButton(pending.action, normalizedActions.defaultActionId)
+      ?.label ||
+    pending.action.confirmLabel ||
+    "Continue planning";
+  actions.append(cancelButton, continueButton);
+  footer.append(navigation, actions);
+  card.appendChild(footer);
+  allButtons.push(previousButton, nextButton, cancelButton, continueButton);
+
+  const syncPanelState = () => {
+    panels.forEach((panel, index) => {
+      const active = index === activeIndex;
+      panel.element.classList.toggle(
+        "llm-planning-question-panel-active",
+        active,
+      );
+      panel.element.setAttribute("aria-hidden", active ? "false" : "true");
+      for (const button of panel.optionButtons) {
+        button.tabIndex = active ? 0 : -1;
+      }
+      if (panel.customInput) panel.customInput.tabIndex = active ? 0 : -1;
+    });
+  };
+
+  const layoutTrack = (animate: boolean) => {
+    const activePanel = panels[activeIndex].element;
+    const height = activePanel.offsetHeight || activePanel.scrollHeight;
+    viewport.style.transition = animate
+      ? `height ${PLANNING_QUESTION_TRANSITION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`
+      : "none";
+    track.style.transition = animate
+      ? `transform ${PLANNING_QUESTION_TRANSITION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`
+      : "none";
+    if (height > 0) viewport.style.height = `${height}px`;
+    track.style.transform = `translate3d(0, ${-activePanel.offsetTop}px, 0)`;
+  };
+
+  function syncControls(): void {
+    previousButton.disabled = activeIndex === 0;
+    nextButton.disabled =
+      activeIndex >= fields.length - 1 || !hasAnswer(activeIndex);
+    continueButton.disabled = !hasAnswer(activeIndex);
+  }
+
+  const rollCounter = (previousIndex: number) => {
+    if (counterTimer) clearTimeout(counterTimer);
+    counter.textContent = `${activeIndex + 1} / ${fields.length}`;
+    counter.dataset.direction = activeIndex < previousIndex ? "back" : "next";
+    counter.classList.remove("llm-planning-question-counter-rolling");
+    void counter.offsetWidth;
+    counter.classList.add("llm-planning-question-counter-rolling");
+    counterTimer = setTimeout(() => {
+      counter.classList.remove("llm-planning-question-counter-rolling");
+    }, 320);
+  };
+
+  function showQuestion(nextIndex: number): void {
+    const bounded = Math.min(Math.max(nextIndex, 0), fields.length - 1);
+    if (bounded === activeIndex) return;
+    if (bounded > activeIndex && !hasAnswer(activeIndex)) return;
+    clearAdvanceTimer();
+    const previousIndex = activeIndex;
+    activeIndex = bounded;
+    syncPanelState();
+    syncControls();
+    rollCounter(previousIndex);
+    if (mountedAllPanels) {
+      layoutTrack(true);
+    } else {
+      track.replaceChildren(panels[activeIndex].element);
+      viewport.style.height = "auto";
+    }
+    const focus = () =>
+      panels[activeIndex].prompt.focus({ preventScroll: true });
+    const win = doc.defaultView;
+    if (win?.requestAnimationFrame) win.requestAnimationFrame(focus);
+    else focus();
+  }
+
+  function submitAnswers(): void {
+    clearAdvanceTimer();
+    if (!fields.every((_, index) => hasAnswer(index))) return;
+    resizeObserver?.disconnect();
+    for (const button of allButtons) button.disabled = true;
+    for (const panel of panels) {
+      if (panel.customInput) panel.customInput.disabled = true;
+    }
+    resolveConfirmation(pending.requestId, {
+      approved: true,
+      actionId: normalizedActions.defaultActionId,
+      data: Object.fromEntries(
+        fields.map((field) => [field.id, answers.get(field.id)]),
+      ),
+    });
+  }
+
+  previousButton.addEventListener("click", () => showQuestion(activeIndex - 1));
+  nextButton.addEventListener("click", () => showQuestion(activeIndex + 1));
+  continueButton.addEventListener("click", () => {
+    if (activeIndex < fields.length - 1) showQuestion(activeIndex + 1);
+    else submitAnswers();
+  });
+  cancelButton.addEventListener("click", () => {
+    clearAdvanceTimer();
+    resizeObserver?.disconnect();
+    for (const button of allButtons) button.disabled = true;
+    resolveConfirmation(pending.requestId, {
+      approved: false,
+      actionId: normalizedActions.cancelActionId,
+    });
+  });
+
+  syncPanelState();
+  syncControls();
+  const win = doc.defaultView;
+  if (win?.requestAnimationFrame) {
+    win.requestAnimationFrame(() => {
+      const initialHeight =
+        panels[activeIndex].element.offsetHeight ||
+        panels[activeIndex].element.scrollHeight;
+      if (initialHeight > 0) viewport.style.height = `${initialHeight}px`;
+      track.replaceChildren(...panels.map((panel) => panel.element));
+      mountedAllPanels = true;
+      syncPanelState();
+      layoutTrack(false);
+      // The viewport follows the active question when panel width or text size
+      // changes. Observe content, not the viewport height that layoutTrack sets.
+      if (win.ResizeObserver) {
+        resizeObserver = new win.ResizeObserver(() => {
+          if (!card.isConnected) {
+            resizeObserver?.disconnect();
+            return;
+          }
+          layoutTrack(false);
+        });
+        resizeObserver.observe(track);
+      }
+      card.dataset.questionStackReady = "true";
+    });
+  }
+
+  return card;
+}
+
 export function renderPendingActionCard(
   doc: Document,
   pending: { requestId: string; action: AgentPendingAction },
+  resolveConfirmation: (
+    requestId: string,
+    resolution: AgentConfirmationResolution,
+  ) => void = (requestId, resolution) => {
+    getAgentRuntime().resolveConfirmation(requestId, resolution);
+  },
 ): HTMLDivElement {
+  if (isPlanningQuestionAction(pending.action)) {
+    return renderPlanningQuestionCard(doc, pending, resolveConfirmation);
+  }
+  const noteContent = getNoteReviewContent(pending.action);
+  if (noteContent) {
+    const actions = normalizePendingActions(pending.action);
+    return renderNoteReviewCard({
+      doc,
+      pending,
+      field: noteContent,
+      confirmActionId: actions.defaultActionId,
+      cancelActionId: actions.cancelActionId,
+      resolve: (resolution) => {
+        resolveConfirmation(pending.requestId, resolution);
+      },
+      renderChanges: (field) => renderDiffPreviewField(doc, field),
+    });
+  }
   const card = doc.createElement("div");
-  card.className = "llm-agent-hitl-card";
+  card.className = "llm-agent-hitl-card llm-plan-container";
   card.dataset.requestId = pending.requestId;
   const normalizedActions = normalizePendingActions(pending.action);
   const isPagedReviewCard = isPagedReviewAction(pending.action);
@@ -1682,30 +2126,30 @@ export function renderPendingActionCard(
     card.dataset.pagedReview = "true";
   }
 
-  const header = doc.createElement("div");
-  header.className = "llm-agent-hitl-header";
-  header.textContent =
-    pending.action.mode === "review" && !isPagedReviewCard
-      ? "Review required"
-      : "Action required";
-  card.appendChild(header);
+  const content = doc.createElement("div");
+  content.className = "llm-agent-hitl-content";
+  card.appendChild(content);
 
-  const title = doc.createElement("div");
-  title.className = "llm-agent-hitl-title";
-  title.textContent = pending.action.title;
-  card.appendChild(title);
+  const { header } = createDocumentCardLayout(doc, {
+    title: pending.action.title,
+    status: pending.action.selectionAction
+      ? "Choose papers"
+      : "Awaiting approval",
+    statusKind: "awaiting_approval",
+  });
+  content.appendChild(header);
 
   if (pending.action.description) {
     const description = doc.createElement("div");
     description.className = "llm-agent-hitl-description";
     description.textContent = pending.action.description;
-    card.appendChild(description);
+    content.appendChild(description);
   }
 
   const pagedTopControls = isPagedReviewCard ? doc.createElement("div") : null;
   if (pagedTopControls) {
     pagedTopControls.className = "llm-agent-hitl-paged-top-controls";
-    card.appendChild(pagedTopControls);
+    content.appendChild(pagedTopControls);
   }
   const pagedFooterCenterControls = isPagedReviewCard
     ? doc.createElement("div")
@@ -1788,7 +2232,7 @@ export function renderPendingActionCard(
           textarea.addEventListener("input", callback);
         },
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -1823,7 +2267,7 @@ export function renderPendingActionCard(
           input.addEventListener("input", callback);
         },
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -1851,7 +2295,7 @@ export function renderPendingActionCard(
         setDisabled: () => undefined,
         isValid: () => true,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -1860,12 +2304,11 @@ export function renderPendingActionCard(
       label.className = "llm-agent-hitl-label";
       const isPagedPageSizeField = isPagedReviewCard && field.id === "pageSize";
       const isPagedTagsField = isPagedReviewCard && field.id === "tagsPerPaper";
-      const isPagedInlineSelect = isPagedPageSizeField || isPagedTagsField;
       if (isPagedPageSizeField) {
         label.textContent = "items on this page";
         label.title = field.label;
       } else if (isPagedTagsField) {
-        label.textContent = "of tags per paper";
+        label.textContent = field.label;
         label.title = field.label;
       } else {
         label.textContent = field.label;
@@ -1880,11 +2323,8 @@ export function renderPendingActionCard(
         select.appendChild(optionEl);
       }
       select.value = field.value || field.options[0]?.id || "";
-      if (isPagedInlineSelect) {
-        fieldContainer.append(select, label);
-      } else {
-        fieldContainer.append(label, select);
-      }
+      select.setAttribute("aria-label", field.label);
+      fieldContainer.append(label, select);
       fieldAccessors.push({
         field,
         container: fieldContainer,
@@ -1911,6 +2351,11 @@ export function renderPendingActionCard(
       ) {
         fieldContainer.className += " llm-agent-hitl-paged-top-field";
         pagedTopControls.appendChild(fieldContainer);
+        const help = doc.createElement("div");
+        help.className = "llm-agent-hitl-control-help";
+        help.textContent =
+          "Changing this regenerates suggestions and replaces your edits.";
+        pagedTopControls.appendChild(help);
       } else if (
         isPagedReviewCard &&
         field.id === "pageSize" &&
@@ -1919,7 +2364,7 @@ export function renderPendingActionCard(
         fieldContainer.className += " llm-agent-hitl-paged-footer-field";
         pagedFooterCenterControls.appendChild(fieldContainer);
       } else {
-        card.appendChild(fieldContainer);
+        content.appendChild(fieldContainer);
       }
       continue;
     }
@@ -1941,7 +2386,7 @@ export function renderPendingActionCard(
         setDisabled: () => undefined,
         isValid: () => true,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -1966,7 +2411,7 @@ export function renderPendingActionCard(
         setDisabled: () => undefined,
         isValid: () => true,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -1986,7 +2431,7 @@ export function renderPendingActionCard(
         setDisabled: () => undefined,
         isValid: () => true,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -2002,7 +2447,7 @@ export function renderPendingActionCard(
         container: fieldContainer,
         ...rendered.accessor,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -2018,7 +2463,7 @@ export function renderPendingActionCard(
         container: fieldContainer,
         ...rendered.accessor,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -2034,7 +2479,7 @@ export function renderPendingActionCard(
         container: fieldContainer,
         ...rendered.accessor,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
       continue;
     }
 
@@ -2056,7 +2501,7 @@ export function renderPendingActionCard(
         container: fieldContainer,
         ...rendered.accessor,
       });
-      card.appendChild(fieldContainer);
+      content.appendChild(fieldContainer);
     }
   }
 
@@ -2075,6 +2520,7 @@ export function renderPendingActionCard(
   }
 
   const buttons: HTMLButtonElement[] = [];
+  const alternativeButtons = new Map<string, HTMLButtonElement>();
   const isActionValid = (actionId: string) =>
     fieldAccessors.every((accessor) =>
       isAccessorValidForAction(accessor, actionId),
@@ -2095,91 +2541,22 @@ export function renderPendingActionCard(
   const getBackLabel = (actionId: string) => {
     return getActionById(actionId)?.backLabel || "Get back";
   };
-  const actionNeedsExplicitReview = (actionId: string) =>
-    fieldAccessors.some(({ field }) => {
-      const hasScopedVisibility =
-        Array.isArray(field.visibleForActionIds) &&
-        field.visibleForActionIds.length > 0 &&
-        field.visibleForActionIds.includes(actionId);
-      const hasScopedRequirement =
-        Array.isArray(field.requiredForActionIds) &&
-        field.requiredForActionIds.length > 0 &&
-        field.requiredForActionIds.includes(actionId);
-      return hasScopedVisibility || hasScopedRequirement;
-    });
-  const executeAction = (actionId = activeActionId) => {
-    activeActionId = actionId;
-    setButtonsDisabled(true);
-    const payload = Object.fromEntries(
-      fieldAccessors.map((accessor) => [accessor.id, accessor.getValue()]),
-    );
-    const activeAction = getActionById(actionId);
-    getAgentRuntime().resolveConfirmation(pending.requestId, {
-      approved:
-        activeAction?.approved ?? actionId !== normalizedActions.cancelActionId,
-      actionId,
-      data: payload,
-    });
-  };
-  const handleExecute = () => {
-    executeAction(activeActionId);
-  };
   let lastChooserActionId =
     normalizedActions.primaryActions.find(
       (action) => !actionNeedsSeparateSubmit(action.id),
     )?.id || normalizedActions.defaultActionId;
   let actionChooser: HTMLDivElement | null = null;
-  if (buttonLayout.hasActionChooser && !isPagedReviewCard) {
-    actionChooser = doc.createElement("div");
-    actionChooser.className = "llm-agent-hitl-action-choices";
-    for (const action of normalizedActions.primaryActions) {
-      const actionButton = doc.createElement("button");
-      actionButton.type = "button";
-      actionButton.dataset.actionChoice = action.id;
-      actionButton.dataset.primary =
-        action.style === "primary" ? "true" : "false";
-      actionButton.className =
-        action.id === activeActionId
-          ? "llm-agent-hitl-btn llm-agent-hitl-btn-active"
-          : action.style === "primary"
-            ? "llm-agent-hitl-btn"
-            : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
-      actionButton.textContent = action.label;
-      actionButton.addEventListener("click", () => {
-        const nextActionNeedsSeparateSubmit = actionNeedsSeparateSubmit(
-          action.id,
-        );
-        if (activeActionId === action.id) {
-          if (!nextActionNeedsSeparateSubmit && isActionValid(action.id)) {
-            handleExecute();
-          }
-          return;
-        }
-        if (!nextActionNeedsSeparateSubmit) {
-          lastChooserActionId = action.id;
-        } else if (!actionNeedsSeparateSubmit(activeActionId)) {
-          lastChooserActionId = activeActionId;
-        }
-        activeActionId = action.id;
-        syncActionUi();
-        if (
-          !actionNeedsExplicitReview(action.id) &&
-          !nextActionNeedsSeparateSubmit &&
-          isActionValid(action.id)
-        ) {
-          handleExecute();
-        }
-      });
-      buttons.push(actionButton);
-      actionChooser.appendChild(actionButton);
-    }
-    card.appendChild(actionChooser);
-  }
-
   const actionRow = doc.createElement("div");
-  actionRow.className = "llm-agent-hitl-actions";
+  actionRow.className =
+    "llm-plan-actions llm-agent-hitl-actions llm-agent-hitl-footer";
+  const safeActionGroup = doc.createElement("div");
+  safeActionGroup.className = "llm-agent-hitl-footer-safe";
+  const primaryActionGroup = doc.createElement("div");
+  primaryActionGroup.className = "llm-agent-hitl-footer-primary";
   let executeButton: HTMLButtonElement | null = null;
   let backButton: HTMLButtonElement | null = null;
+  let alternativesToggleButton: HTMLButtonElement | null = null;
+  let alternativesOpen = false;
   const setButtonsDisabled = (disabled: boolean) => {
     for (const accessor of fieldAccessors) {
       accessor.setDisabled(disabled);
@@ -2207,6 +2584,44 @@ export function renderPendingActionCard(
     }
     return accessor.isValid();
   };
+  const syncConfirmButton = () => {
+    const isValid = isActionValid(activeActionId);
+    if (executeButton) {
+      executeButton.disabled = !isValid;
+      const selectionAction = pending.action.selectionAction;
+      if (selectionAction) {
+        const value = fieldAccessors
+          .find((accessor) => accessor.id === selectionAction.fieldId)
+          ?.getValue();
+        const count = Array.isArray(value) ? value.length : 0;
+        executeButton.textContent = `${selectionAction.verb} ${count} paper${count === 1 ? "" : "s"}`;
+      }
+    }
+  };
+  const syncAlternativeButtons = () => {
+    for (const [actionId, button] of alternativeButtons) {
+      const isActive = actionId === activeActionId;
+      button.hidden = isActive;
+      button.tabIndex = alternativesOpen && !isActive ? 0 : -1;
+    }
+  };
+  const setAlternativesOpen = (open: boolean, focusFirst = false) => {
+    if (!actionChooser || !alternativesToggleButton) return;
+    alternativesOpen = open;
+    actionChooser.dataset.open = open ? "true" : "false";
+    actionChooser.setAttribute("aria-hidden", open ? "false" : "true");
+    alternativesToggleButton.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
+    syncAlternativeButtons();
+    if (open && focusFirst) {
+      const firstAlternative = Array.from(alternativeButtons.values()).find(
+        (button) => !button.hidden && !button.disabled,
+      );
+      firstAlternative?.focus({ preventScroll: true });
+    }
+  };
   const syncActionUi = () => {
     const isSeparateSubmitMode =
       buttonLayout.hasActionChooser &&
@@ -2218,39 +2633,161 @@ export function renderPendingActionCard(
       );
     }
     const activeAction = getActionById(activeActionId);
-    if (actionChooser) {
-      actionChooser.hidden = isSeparateSubmitMode;
-    }
     if (executeButton) {
-      executeButton.hidden =
-        !buttonLayout.showsFooterExecuteButton ||
-        (buttonLayout.hasActionChooser && !isSeparateSubmitMode);
+      executeButton.hidden = !buttonLayout.showsFooterExecuteButton;
       executeButton.textContent = isSeparateSubmitMode
         ? getSeparateSubmitLabel(activeActionId)
         : activeAction?.label || pending.action.confirmLabel || "Apply";
+      executeButton.dataset.actionId = activeActionId;
+      executeButton.className =
+        activeAction?.style === "danger"
+          ? "llm-plan-action llm-agent-hitl-btn llm-agent-hitl-btn-danger"
+          : "llm-plan-action llm-plan-approve llm-agent-hitl-btn";
     }
     if (backButton) {
       backButton.hidden = !isSeparateSubmitMode;
       backButton.textContent = getBackLabel(activeActionId);
     }
-    for (const button of buttons) {
-      if (button.dataset.actionChoice) {
-        const isActive = button.dataset.actionChoice === activeActionId;
-        button.className = isActive
-          ? "llm-agent-hitl-btn llm-agent-hitl-btn-active"
-          : button.dataset.primary === "true"
-            ? "llm-agent-hitl-btn"
-            : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
-      }
+    if (alternativesToggleButton) {
+      alternativesToggleButton.hidden = isSeparateSubmitMode;
     }
+    card.dataset.activeActionId = activeActionId;
+    syncAlternativeButtons();
     syncConfirmButton();
   };
-  const syncConfirmButton = () => {
-    const isValid = isActionValid(activeActionId);
-    if (executeButton) {
-      executeButton.disabled = !isValid;
-    }
+  const executeAction = (actionId = activeActionId) => {
+    activeActionId = actionId;
+    setAlternativesOpen(false);
+    setButtonsDisabled(true);
+    const payload = Object.fromEntries(
+      fieldAccessors.map((accessor) => [accessor.id, accessor.getValue()]),
+    );
+    const activeAction = getActionById(actionId);
+    resolveConfirmation(pending.requestId, {
+      approved:
+        activeAction?.approved ?? actionId !== normalizedActions.cancelActionId,
+      actionId,
+      data: payload,
+    });
   };
+  const handleExecute = () => {
+    executeAction(activeActionId);
+  };
+
+  if (buttonLayout.hasActionChooser && !isPagedReviewCard) {
+    actionChooser = doc.createElement("div");
+    actionChooser.className = "llm-agent-hitl-action-choices";
+    actionChooser.dataset.open = "false";
+    actionChooser.setAttribute("aria-hidden", "true");
+    actionChooser.setAttribute("role", "region");
+    const safeRequestId = pending.requestId.replace(/[^a-zA-Z0-9_-]/g, "-");
+    actionChooser.id = `llm-agent-hitl-alternatives-${safeRequestId}`;
+
+    const drawerInner = doc.createElement("div");
+    drawerInner.className = "llm-agent-hitl-alternatives-inner";
+    const drawerLabel = doc.createElement("div");
+    drawerLabel.className = "llm-agent-hitl-alternatives-label";
+    drawerLabel.textContent = "Other options";
+    drawerLabel.id = `${actionChooser.id}-label`;
+    actionChooser.setAttribute("aria-labelledby", drawerLabel.id);
+    const drawerList = doc.createElement("div");
+    drawerList.className = "llm-agent-hitl-alternatives-list";
+    drawerInner.append(drawerLabel, drawerList);
+    actionChooser.appendChild(drawerInner);
+
+    for (const action of normalizedActions.primaryActions) {
+      const actionButton = doc.createElement("button");
+      actionButton.type = "button";
+      actionButton.dataset.actionChoice = action.id;
+      actionButton.dataset.actionStyle = action.style || "secondary";
+      actionButton.className = "llm-agent-hitl-alternative";
+      const actionLabel = doc.createElement("span");
+      actionLabel.className = "llm-agent-hitl-alternative-label";
+      actionLabel.textContent = action.label;
+      actionButton.appendChild(actionLabel);
+      if (actionNeedsSeparateSubmit(action.id)) {
+        const actionMeta = doc.createElement("span");
+        actionMeta.className = "llm-agent-hitl-alternative-meta";
+        actionMeta.textContent = "Requires input";
+        actionButton.appendChild(actionMeta);
+      }
+      actionButton.addEventListener("click", () => {
+        if (action.id === activeActionId) return;
+        if (actionNeedsSeparateSubmit(action.id)) {
+          lastChooserActionId = activeActionId;
+        }
+        activeActionId = action.id;
+        setAlternativesOpen(false);
+        syncActionUi();
+        executeButton?.focus({ preventScroll: true });
+      });
+      alternativeButtons.set(action.id, actionButton);
+      buttons.push(actionButton);
+      drawerList.appendChild(actionButton);
+    }
+    actionChooser.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setAlternativesOpen(false);
+      alternativesToggleButton?.focus({ preventScroll: true });
+    });
+    card.appendChild(actionChooser);
+  }
+
+  if (!isPagedReviewCard && normalizedActions.cancelAction) {
+    const cancelButton = doc.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.dataset.kind = "cancel";
+    cancelButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
+    cancelButton.textContent =
+      normalizedActions.cancelAction.label ||
+      pending.action.cancelLabel ||
+      "Cancel";
+    cancelButton.addEventListener("click", () => {
+      setAlternativesOpen(false);
+      setButtonsDisabled(true);
+      resolveConfirmation(pending.requestId, {
+        approved: false,
+        actionId: normalizedActions.cancelActionId,
+      });
+    });
+    buttons.push(cancelButton);
+    safeActionGroup.appendChild(cancelButton);
+  }
+
+  if (!isPagedReviewCard && buttonLayout.hasActionChooser) {
+    alternativesToggleButton = doc.createElement("button");
+    alternativesToggleButton.type = "button";
+    alternativesToggleButton.dataset.kind = "alternatives";
+    alternativesToggleButton.className =
+      "llm-agent-hitl-btn llm-agent-hitl-btn-secondary llm-agent-hitl-alternatives-toggle";
+    alternativesToggleButton.textContent = "Alternatives";
+    alternativesToggleButton.setAttribute("aria-expanded", "false");
+    if (actionChooser) {
+      alternativesToggleButton.setAttribute("aria-controls", actionChooser.id);
+    }
+    alternativesToggleButton.addEventListener("click", () => {
+      setAlternativesOpen(!alternativesOpen, !alternativesOpen);
+    });
+    buttons.push(alternativesToggleButton);
+    primaryActionGroup.appendChild(alternativesToggleButton);
+
+    backButton = doc.createElement("button");
+    backButton.type = "button";
+    backButton.dataset.kind = "back";
+    backButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
+    backButton.textContent = getBackLabel(activeActionId);
+    backButton.hidden = true;
+    backButton.addEventListener("click", () => {
+      activeActionId = lastChooserActionId;
+      setAlternativesOpen(false);
+      syncActionUi();
+      executeButton?.focus({ preventScroll: true });
+    });
+    buttons.push(backButton);
+    primaryActionGroup.appendChild(backButton);
+  }
+
   if (!isPagedReviewCard && buttonLayout.showsFooterExecuteButton) {
     executeButton = doc.createElement("button");
     executeButton.type = "button";
@@ -2261,22 +2798,12 @@ export function renderPendingActionCard(
       handleExecute();
     });
     buttons.push(executeButton);
-    actionRow.appendChild(executeButton);
+    primaryActionGroup.appendChild(executeButton);
   }
 
-  if (!isPagedReviewCard && buttonLayout.hasActionChooser) {
-    backButton = doc.createElement("button");
-    backButton.type = "button";
-    backButton.dataset.kind = "back";
-    backButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
-    backButton.textContent = getBackLabel(activeActionId);
-    backButton.hidden = true;
-    backButton.addEventListener("click", () => {
-      activeActionId = lastChooserActionId;
-      syncActionUi();
-    });
-    buttons.push(backButton);
-    actionRow.appendChild(backButton);
+  if (!isPagedReviewCard) {
+    actionRow.append(safeActionGroup, primaryActionGroup);
+    card.appendChild(actionRow);
   }
 
   const createPendingActionButton = (
@@ -2310,7 +2837,8 @@ export function renderPendingActionCard(
     }
 
     const pagedActions = doc.createElement("div");
-    pagedActions.className = "llm-agent-hitl-paged-actions";
+    pagedActions.className =
+      "llm-agent-hitl-paged-actions llm-agent-hitl-footer";
 
     const left = doc.createElement("div");
     left.className =
@@ -2358,31 +2886,14 @@ export function renderPendingActionCard(
     card.appendChild(pagedActions);
   }
 
-  if (!isPagedReviewCard && normalizedActions.cancelAction) {
-    const cancelButton = doc.createElement("button");
-    cancelButton.type = "button";
-    cancelButton.dataset.kind = "cancel";
-    cancelButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
-    cancelButton.textContent =
-      normalizedActions.cancelAction.label ||
-      pending.action.cancelLabel ||
-      "Cancel";
-    cancelButton.addEventListener("click", () => {
-      setButtonsDisabled(true);
-      getAgentRuntime().resolveConfirmation(pending.requestId, {
-        approved: false,
-        actionId: normalizedActions.cancelActionId,
-      });
-    });
-    buttons.push(cancelButton);
-    actionRow.appendChild(cancelButton);
-  }
-  if (!isPagedReviewCard && actionRow.children.length > 0) {
-    card.appendChild(actionRow);
-  }
   syncActionUi();
   for (const accessor of fieldAccessors) {
     accessor.bindValidity?.(syncActionUi);
+  }
+  if (isPagedReviewCard && getActionById("refresh")?.approved === false) {
+    liveFieldBindings
+      .get("tagsPerPaper")
+      ?.bindChange(() => executeAction("refresh"));
   }
 
   return card;
@@ -3254,34 +3765,6 @@ function buildInitialAgentMessage(requestChips: AgentTraceChip[]): string {
     : "Checking the current request and Zotero context.";
 }
 
-function hasInterleavedTextAndTools(
-  events: AgentRunEventRecord[],
-  options: { preserveRolledBackText?: boolean } = {},
-): boolean {
-  let visibleDraftLength = 0;
-  for (const entry of events) {
-    if (entry.payload.type === "message_delta") {
-      visibleDraftLength += (entry.payload.text || "").length;
-      continue;
-    }
-    if (
-      entry.payload.type === "message_rollback" &&
-      !options.preserveRolledBackText
-    ) {
-      const rollbackLength =
-        typeof entry.payload.length === "number" && entry.payload.length > 0
-          ? entry.payload.length
-          : (entry.payload.text || "").length;
-      visibleDraftLength = Math.max(0, visibleDraftLength - rollbackLength);
-      continue;
-    }
-    if (entry.payload.type === "tool_call" && visibleDraftLength > 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function replaceInlineTextDedupeKey(
   visibleInlineText: Set<string>,
   previousText: string,
@@ -3369,7 +3852,7 @@ function shouldSuppressInlineFinalAnswer(
 type AgentTraceAdapterContext = {
   items: AgentTraceDisplayItem[];
   isCodexTrace: boolean;
-  isInterleaved: boolean;
+  preserveRolledBackText: boolean;
   requestSummary: AgentTraceRequestSummary;
   userMessage: Message | null | undefined;
   pendingActions: Map<string, AgentPendingAction>;
@@ -3377,13 +3860,85 @@ type AgentTraceAdapterContext = {
     string,
     Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>
   >;
-  announcedWriting: boolean;
   lastMeaningfulStatus: string | null;
   reasoningLabels: Map<string, string>;
+  reasoningSegmentCounts: Map<string, number>;
   reasoningStepCounter: number;
   fallbackReasoningStep: number;
   visibleInlineText: Set<string>;
+  intermediateInlineTextItems: Set<
+    Extract<AgentTraceDisplayItem, { type: "inline_text" }>
+  >;
 };
+
+function markLatestInlineTextAsIntermediate(
+  ctx: AgentTraceAdapterContext,
+  beforeIndex: number,
+): void {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const item = ctx.items[index];
+    if (item.type !== "inline_text") continue;
+    ctx.intermediateInlineTextItems.add(item);
+    return;
+  }
+}
+
+function rollbackInlineTraceText(
+  ctx: AgentTraceAdapterContext,
+  payload: Extract<
+    AgentRunEventRecord["payload"],
+    { type: "message_rollback" }
+  >,
+): void {
+  if (ctx.preserveRolledBackText) return;
+  let remaining =
+    typeof payload.length === "number" && payload.length > 0
+      ? payload.length
+      : (payload.text || "").length;
+  if (remaining <= 0) return;
+
+  for (let index = ctx.items.length - 1; index >= 0 && remaining > 0; index--) {
+    const item = ctx.items[index];
+    if (item.type !== "inline_text") continue;
+    const previousText = item.text;
+    const previousKey = normalizeInlineTextForDedupe(previousText);
+    if (previousKey) ctx.visibleInlineText.delete(previousKey);
+    if (remaining >= previousText.length) {
+      remaining -= previousText.length;
+      ctx.intermediateInlineTextItems.delete(item);
+      ctx.items.splice(index, 1);
+      continue;
+    }
+    item.text = previousText.slice(0, previousText.length - remaining);
+    remaining = 0;
+    const nextKey = normalizeInlineTextForDedupe(item.text);
+    if (nextKey) ctx.visibleInlineText.add(nextKey);
+  }
+}
+
+function replaceInlineTextWithDraftingAction(
+  items: AgentTraceDisplayItem[],
+): AgentTraceDisplayItem[] {
+  let insertedDraftingAction = false;
+  const result: AgentTraceDisplayItem[] = [];
+  for (const item of items) {
+    if (item.type !== "inline_text") {
+      result.push(item);
+      continue;
+    }
+    if (insertedDraftingAction) continue;
+    insertedDraftingAction = true;
+    result.push({
+      type: "action",
+      row: {
+        kind: "plan",
+        icon: NOTE_EDIT_PENCIL_ICON,
+        text: "Drafting answer",
+      },
+    });
+  }
+  return result;
+}
 
 function appendReasoningTraceItem(
   ctx: AgentTraceAdapterContext,
@@ -3397,29 +3952,24 @@ function appendReasoningTraceItem(
   const hasExplicitStepId = Boolean(
     typeof payload.stepId === "string" && payload.stepId.trim(),
   );
-  const reasoningKey = hasExplicitStepId
+  const logicalKey = hasExplicitStepId
     ? getReasoningTraceKey(payload)
     : `step:${ctx.fallbackReasoningStep}`;
-  let existing: Extract<AgentTraceDisplayItem, { type: "reasoning" }> | null =
-    null;
-  for (let itemIndex = ctx.items.length - 1; itemIndex >= 0; itemIndex -= 1) {
-    const candidate = ctx.items[itemIndex];
-    if (candidate.type === "reasoning" && candidate.key === reasoningKey) {
-      existing = candidate;
-      break;
-    }
-  }
-  if (existing && existing.type === "reasoning") {
-    const prev = existing.summary || "";
+  const previousItem = ctx.items[ctx.items.length - 1];
+  if (
+    previousItem?.type === "reasoning" &&
+    previousItem.logicalKey === logicalKey
+  ) {
+    const prev = previousItem.summary || "";
     if (!prev.includes(text)) {
-      existing.summary = appendAgentTraceText(existing.summary, text);
+      previousItem.summary = appendAgentTraceText(previousItem.summary, text);
     }
     return;
   }
 
   let label = readAgentTraceText(payload.stepLabel) || "";
   if (!label) {
-    label = ctx.reasoningLabels.get(reasoningKey) || "";
+    label = ctx.reasoningLabels.get(logicalKey) || "";
   }
   if (!label) {
     if (hasExplicitStepId) {
@@ -3430,11 +3980,14 @@ function appendReasoningTraceItem(
     } else {
       label = ctx.isCodexTrace ? "Codex reasoning" : "Thinking";
     }
-    ctx.reasoningLabels.set(reasoningKey, label);
+    ctx.reasoningLabels.set(logicalKey, label);
   }
+  const segmentNumber = (ctx.reasoningSegmentCounts.get(logicalKey) || 0) + 1;
+  ctx.reasoningSegmentCounts.set(logicalKey, segmentNumber);
   ctx.items.push({
     type: "reasoning",
-    key: reasoningKey,
+    key: `${logicalKey}:segment:${segmentNumber}`,
+    logicalKey,
     label,
     summary: text,
     details: undefined,
@@ -3479,6 +4032,7 @@ function appendLegacyAgentTraceEvent(
       return true;
     }
     case "tool_call": {
+      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
       const resultEvent = ctx.toolResultsByCallId.get(entry.payload.callId);
       const resultInfo = buildToolResultTraceInfo(
         entry.payload.name,
@@ -3543,26 +4097,41 @@ function appendLegacyAgentTraceEvent(
       appendReasoningTraceItem(ctx, entry.payload);
       return true;
     case "tool_result": {
+      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
+      // A write the agent chose on its own must always be visible, ahead of
+      // every presentation shortcut: neither a missing summary nor a tool that
+      // folds its result into the call row may hide it.
+      const judgment = entry.payload.authority === "yolo_judgment";
       if (
+        !judgment &&
         entry.payload.ok &&
         getToolDefinition(entry.payload.name)?.presentation
           ?.mergeResultIntoCallTrace
       ) {
         return true;
       }
-      const row = summarizeAgentTraceToolResult(
+      let row = summarizeAgentTraceToolResult(
         entry.payload.name,
         entry.payload.ok,
         entry.payload.content,
         entry.payload.effect,
         ctx.requestSummary,
       );
+      if (judgment) {
+        row = row
+          ? { ...row, text: `${row.text} (agent's own call)` }
+          : {
+              kind: "ok",
+              icon: "✓",
+              text: `${toolLabelFromName(entry.payload.name)} completed (agent's own call)`,
+            };
+      }
       if (row) {
         ctx.items.push({
           type: "action",
           row,
         });
-        if (entry.payload.ok) {
+        if (entry.payload.ok || entry.payload.name === "note_write") {
           try {
             const cards =
               getToolDefinition(
@@ -3570,7 +4139,18 @@ function appendLegacyAgentTraceEvent(
               )?.presentation?.buildResultCards?.(entry.payload.content) ??
               null;
             if (cards && cards.length > 0) {
-              ctx.items.push({ type: "card_list", cards });
+              ctx.items.push({
+                type: "card_list",
+                cards: entry.payload.ok
+                  ? cards
+                  : cards.filter(
+                      (card) =>
+                        card.kind === "note_change" &&
+                        ["failed", "mismatch", "unverified"].includes(
+                          card.state,
+                        ),
+                    ),
+              });
             }
           } catch {
             // card generation errors must not crash the trace
@@ -3599,26 +4179,14 @@ function appendLegacyAgentTraceEvent(
       return true;
     }
     case "message_delta":
-      if (ctx.isInterleaved) {
-        appendInterleavedInlineText(
-          ctx.items,
-          entry.payload.text || "",
-          ctx.visibleInlineText,
-        );
-      } else if (!ctx.announcedWriting) {
-        ctx.announcedWriting = true;
-        ctx.items.push({
-          type: "action",
-          row: {
-            kind: "plan",
-            icon: NOTE_EDIT_PENCIL_ICON,
-            text: "Drafting answer",
-          },
-        });
-      }
+      appendInterleavedInlineText(
+        ctx.items,
+        entry.payload.text || "",
+        ctx.visibleInlineText,
+      );
       return true;
     case "message_rollback":
-      ctx.announcedWriting = false;
+      rollbackInlineTraceText(ctx, entry.payload);
       return true;
     default:
       return false;
@@ -3700,6 +4268,32 @@ function appendSharedAgentTraceEvent(
   entry: AgentRunEventRecord,
 ): boolean {
   switch (entry.payload.type) {
+    case "plan_scope_amended":
+      ctx.items.push({
+        type: "action",
+        row: {
+          kind: "plan",
+          icon: "↳",
+          text:
+            `Scope amended${entry.payload.authority === "user" ? "" : " automatically"} (${entry.payload.previousItemCount} to ` +
+            `${entry.payload.newItemCount}; ${entry.payload.authority}): ` +
+            entry.payload.rationale,
+        },
+        details: [
+          {
+            label: "Mode",
+            value: entry.payload.mode,
+            kind: "text",
+          },
+          {
+            label: "Amendment",
+            value: entry.payload.amendmentId,
+            kind: "text",
+          },
+        ],
+        detailKey: `plan-amendment:${entry.payload.amendmentId}`,
+      });
+      return true;
     case "confirmation_required":
       ctx.pendingActions.set(entry.payload.requestId, entry.payload.action);
       ctx.items.push({
@@ -3758,7 +4352,131 @@ function appendSharedAgentTraceEvent(
   }
 }
 
+function researchDisplayLabels(
+  events: readonly AgentRunEventRecord[],
+): Map<string, string> | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index].payload;
+    const values =
+      event.type === "provider_event" &&
+      event.providerType === "paper_display_labels" &&
+      event.payload?.version === 1
+        ? event.payload.displayLabels
+        : event.type === "tool_result" &&
+            event.ok &&
+            ["research_update", "update_plan"].includes(event.name) &&
+            isAgentTraceRecord(event.content)
+          ? event.content.displayLabels
+          : undefined;
+    if (values && typeof values === "object")
+      return new Map(
+        Object.entries(values).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
+  }
+  return undefined;
+}
+
+type TraceProjection = ReturnType<typeof buildAgentTraceDisplayItemsCanonical>;
+const streamingProjections = new WeakMap<
+  Message,
+  {
+    events: AgentRunEventRecord[];
+    count: number;
+    last: AgentRunEventRecord | undefined;
+    text: string;
+    user: Message | null | undefined;
+    projection: TraceProjection;
+    labels?: Map<string, string>;
+    tail?: Extract<AgentRunEventRecord["payload"], { type: "reasoning" }>;
+  }
+>();
+
+/** Reuse the canonical projection; append the active compacted reasoning group. */
 export function buildAgentTraceDisplayItems(
+  events: AgentRunEventRecord[],
+  userMessage?: Message | null,
+  assistantMessage?: Message | null,
+): TraceProjection {
+  const cached = assistantMessage && streamingProjections.get(assistantMessage);
+  if (
+    assistantMessage?.streaming &&
+    cached &&
+    cached.events === events &&
+    cached.count <= events.length &&
+    events[cached.count - 1] === cached.last &&
+    cached.text === assistantMessage.text &&
+    cached.user === userMessage
+  ) {
+    const added = events.slice(cached.count);
+    if (!added.length) return cached.projection;
+    const tail = cached.tail;
+    const lastItem =
+      cached.projection.items[cached.projection.items.length - 1];
+    if (
+      tail &&
+      lastItem?.type === "reasoning" &&
+      added.every(
+        (entry) =>
+          entry.payload.type === "reasoning" &&
+          getReasoningTraceKey(entry.payload) === getReasoningTraceKey(tail),
+      )
+    ) {
+      for (const entry of added) {
+        const next = entry.payload as typeof tail;
+        tail.summary = appendAgentTraceText(tail.summary, next.summary);
+        tail.details = appendAgentTraceText(tail.details, next.details);
+        tail.stepLabel = next.stepLabel || tail.stepLabel;
+      }
+      if (readAgentTraceText(tail.stepLabel))
+        lastItem.label = readAgentTraceText(tail.stepLabel)!;
+      lastItem.summary =
+        readAgentTraceText(tail.details) ||
+        readAgentTraceText(tail.summary) ||
+        undefined;
+      if (cached.labels && lastItem.summary)
+        lastItem.summary = projectPaperReferences(
+          lastItem.summary,
+          cached.labels,
+        );
+      cached.count = events.length;
+      cached.last = events[events.length - 1];
+      return cached.projection;
+    }
+  }
+  const projection = buildAgentTraceDisplayItemsCanonical(
+    events,
+    userMessage,
+    assistantMessage,
+  );
+  if (assistantMessage?.streaming) {
+    const compacted = compactAgentTraceEvents(events);
+    const tail = compacted[compacted.length - 1]?.payload;
+    const lastItem = projection.items[projection.items.length - 1];
+    const labels = researchDisplayLabels(events);
+    const canAppend =
+      tail?.type === "reasoning" &&
+      lastItem?.type === "reasoning" &&
+      (Boolean(labels) ||
+        lastItem.summary ===
+          (readAgentTraceText(tail.details) ||
+            readAgentTraceText(tail.summary)));
+    streamingProjections.set(assistantMessage, {
+      events,
+      count: events.length,
+      last: events[events.length - 1],
+      text: assistantMessage.text,
+      user: userMessage,
+      projection,
+      tail: canAppend ? { ...tail } : undefined,
+      labels,
+    });
+  } else if (assistantMessage) streamingProjections.delete(assistantMessage);
+  return projection;
+}
+
+function buildAgentTraceDisplayItemsCanonical(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
   assistantMessage?: Message | null,
@@ -3770,6 +4488,7 @@ export function buildAgentTraceDisplayItems(
   const items: AgentTraceDisplayItem[] = [];
   const isCodexTrace = assistantMessage?.modelProviderLabel === "Codex";
   const isAgentTrace = assistantMessage?.runMode === "agent";
+  const preserveRolledBackText = isCodexTrace || isAgentTrace;
   const compactedEvents = compactAgentTraceEvents(events);
   const toolResultsByCallId = new Map<
     string,
@@ -3780,44 +4499,55 @@ export function buildAgentTraceDisplayItems(
       toolResultsByCallId.set(entry.payload.callId, entry.payload);
     }
   }
-  const isInterleaved = hasInterleavedTextAndTools(events, {
-    preserveRolledBackText: isCodexTrace || isAgentTrace,
-  });
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
+  const planPhase = resolveTracePlanPhase(compactedEvents);
   const adapterContext: AgentTraceAdapterContext = {
     items,
     isCodexTrace,
-    isInterleaved,
+    preserveRolledBackText,
     requestSummary,
     userMessage,
     pendingActions: new Map<string, AgentPendingAction>(),
     toolResultsByCallId,
-    announcedWriting: false,
     lastMeaningfulStatus: null,
     reasoningLabels: new Map<string, string>(),
+    reasoningSegmentCounts: new Map<string, number>(),
     reasoningStepCounter: 0,
     fallbackReasoningStep: 1,
     visibleInlineText: new Set<string>(),
+    intermediateInlineTextItems: new Set(),
   };
 
   items.push({
     type: "message",
     tone: "neutral",
-    text: isCodexTrace
-      ? "Request sent to Codex."
-      : buildInitialAgentMessage(requestChips),
+    text:
+      planPhase === "planning"
+        ? "Planning the request against the available context."
+        : planPhase === "executing"
+          ? "Executing the approved plan in order."
+          : isCodexTrace
+            ? "Request sent to Codex."
+            : buildInitialAgentMessage(requestChips),
   });
   items.push({
     type: "action",
     row: {
       kind: "plan",
       icon: "↳",
-      text: isCodexTrace
-        ? "Codex received the request"
-        : requestChips.length
-          ? "Request and attached context received"
-          : "Request received",
+      text:
+        planPhase === "planning"
+          ? requestChips.length
+            ? "Plan request and attached context received"
+            : "Plan request received"
+          : planPhase === "executing"
+            ? "Approved tasks and context received"
+            : isCodexTrace
+              ? "Codex received the request"
+              : requestChips.length
+                ? "Request and attached context received"
+                : "Request received",
     },
     chips: requestChips,
     detailKey: "request",
@@ -3825,19 +4555,82 @@ export function buildAgentTraceDisplayItems(
 
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
-    if (appendCodexAgentTraceEvent(adapterContext, entry)) continue;
-    if (appendLegacyAgentTraceEvent(adapterContext, entry)) continue;
-    appendSharedAgentTraceEvent(adapterContext, entry);
+    const itemCountBeforeEvent = items.length;
+    const handled =
+      appendCodexAgentTraceEvent(adapterContext, entry) ||
+      appendLegacyAgentTraceEvent(adapterContext, entry) ||
+      appendSharedAgentTraceEvent(adapterContext, entry);
+    if (
+      handled &&
+      entry.payload.type !== "message_delta" &&
+      entry.payload.type !== "message_rollback" &&
+      entry.payload.type !== "final" &&
+      items.length > itemCountBeforeEvent
+    ) {
+      markLatestInlineTextAsIntermediate(adapterContext, itemCountBeforeEvent);
+    }
   }
 
   const finalText = getFinalTraceText(compactedEvents);
-  const displayItems = finalText
-    ? items.filter((item) => !shouldSuppressInlineFinalAnswer(item, finalText))
-    : items;
-  const inlineTextReplacesAssistantText = isInterleaved && !finalText;
+  const isInterleaved = items.some(
+    (item) =>
+      item.type === "inline_text" &&
+      adapterContext.intermediateInlineTextItems.has(item),
+  );
+  const hasTerminalInlineText = items.some(
+    (item) =>
+      item.type === "inline_text" &&
+      !adapterContext.intermediateInlineTextItems.has(item),
+  );
+  const hasCanonicalAssistantText = Boolean(assistantMessage?.text?.trim());
+  const displayItems = isInterleaved
+    ? finalText
+      ? items.filter(
+          (item) => !shouldSuppressInlineFinalAnswer(item, finalText),
+        )
+      : hasCanonicalAssistantText
+        ? items.filter(
+            (item) =>
+              item.type !== "inline_text" ||
+              adapterContext.intermediateInlineTextItems.has(item),
+          )
+        : items
+    : replaceInlineTextWithDraftingAction(items);
+  const inlineTextReplacesAssistantText =
+    isInterleaved &&
+    !finalText &&
+    (!hasTerminalInlineText || !hasCanonicalAssistantText);
 
+  const labels = researchDisplayLabels(events);
+  const presentedItems = labels
+    ? displayItems.map((item): AgentTraceDisplayItem => {
+        if (item.type === "inline_text")
+          return { ...item, text: projectPaperReferences(item.text, labels) };
+        if (item.type === "reasoning")
+          return {
+            ...item,
+            summary: item.summary
+              ? projectPaperReferences(item.summary, labels)
+              : undefined,
+            details: item.details
+              ? projectPaperReferences(item.details, labels)
+              : undefined,
+          };
+        if (item.type === "message")
+          return { ...item, text: projectPaperReferences(item.text, labels) };
+        if (item.type === "action")
+          return {
+            ...item,
+            row: {
+              ...item.row,
+              text: projectPaperReferences(item.row.text, labels),
+            },
+          };
+        return item;
+      })
+    : displayItems;
   return {
-    items: displayItems,
+    items: presentedItems,
     isInterleaved,
     inlineTextReplacesAssistantText,
   };
@@ -3974,15 +4767,775 @@ function renderAgentTraceDetailsBody(
 
 export const renderAgentTraceDetailsBodyForTests = renderAgentTraceDetailsBody;
 
+function createPlanningDriveIcon(doc: Document): HTMLSpanElement {
+  const loader = doc.createElement("span") as HTMLSpanElement;
+  loader.className = "llm-at-planning-drive";
+  loader.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < 9; index += 1) {
+    const pixel = doc.createElement("span") as HTMLSpanElement;
+    pixel.className = "llm-at-planning-drive-pixel";
+    loader.appendChild(pixel);
+  }
+  return loader;
+}
+
+const cardDisposers = new WeakMap<HTMLElement, () => void>();
+function disposePlanCard(node: HTMLElement): void {
+  cardDisposers.get(node)?.();
+  cardDisposers.delete(node);
+  node.remove();
+}
+
+function dispatchPlanEvent(
+  root: HTMLElement,
+  name: string,
+  detail: Record<string, unknown>,
+): void {
+  const EventCtor = root.ownerDocument.defaultView?.CustomEvent;
+  if (!EventCtor) return;
+  root.dispatchEvent(new EventCtor(name, { bubbles: true, detail }));
+}
+
+function getPlanProjection(
+  events: AgentRunEventRecord[],
+):
+  | { artifact: PlanArtifact; ledger?: undefined }
+  | { artifact?: undefined; ledger: PlanExecutionLedger }
+  | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index].payload;
+    if (event.type === "plan_execution_updated") {
+      return { ledger: event.ledger };
+    }
+    if (event.type === "plan_ready" || event.type === "plan_updated") {
+      return { artifact: event.artifact };
+    }
+  }
+  return null;
+}
+
+function getPlanActionContract(
+  events: AgentRunEventRecord[],
+): AgentActionContract | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index].payload;
+    if (
+      event.type === "provider_event" &&
+      event.providerType === "agent_action_contract" &&
+      event.payload?.contract
+    ) {
+      return event.payload.contract as AgentActionContract;
+    }
+  }
+  return undefined;
+}
+
+function renderPlanContainer(params: {
+  doc: Document;
+  events: AgentRunEventRecord[];
+  projection:
+    | { artifact: PlanArtifact; ledger?: undefined }
+    | { artifact?: undefined; ledger: PlanExecutionLedger };
+}): HTMLElement {
+  if (params.projection.ledger) {
+    const ledger = params.projection.ledger;
+    const root = params.doc.createElement("section");
+    root.className = "llm-plan-recovery-card";
+    const text = params.doc.createElement("p");
+    text.textContent = "Plan execution was interrupted.";
+    const resume = params.doc.createElement("button");
+    resume.className = "llm-plan-action llm-plan-approve";
+    resume.textContent = "Resume execution";
+    let disposed = false;
+    const onResume = async () => {
+      resume.disabled = true;
+      try {
+        const current = await loadPlanExecutionLedger(ledger.executionId);
+        if (disposed || !root.isConnected) return;
+        if (!current || current.status !== "interrupted") {
+          text.textContent = "This execution is no longer available to resume.";
+          resume.remove();
+          return;
+        }
+        stageApprovedPlanExecution(current);
+        dispatchPlanEvent(root, PLAN_APPROVED_EVENT, {
+          planId: current.planId,
+          revision: current.revision,
+          executionId: current.executionId,
+          recovery: true,
+        });
+      } catch (error) {
+        if (!disposed)
+          text.textContent =
+            error instanceof Error ? error.message : String(error);
+      } finally {
+        if (!disposed) resume.disabled = false;
+      }
+    };
+    resume.addEventListener("click", onResume);
+    cardDisposers.set(root, () => {
+      disposed = true;
+      resume.removeEventListener("click", onResume);
+    });
+    root.append(text, resume);
+    return root;
+  }
+  const root = params.doc.createElement("section");
+  root.className = "llm-plan-container";
+  const actionContract = getPlanActionContract(params.events);
+
+  const artifactStatusLabel = (status: PlanArtifact["status"]): string => {
+    switch (status) {
+      case "drafting":
+        return "Planning";
+      case "awaiting_approval":
+        return "Ready to review";
+      case "approved":
+        return "Approved";
+      case "superseded":
+        return "Superseded";
+      case "cancelled":
+        return "Cancelled";
+    }
+  };
+
+  const renderArtifactMarkdown = (artifact: PlanArtifact): HTMLElement => {
+    const markdown = params.doc.createElement("div");
+    markdown.className = "llm-plan-markdown";
+    const rawSource =
+      artifact.nativePlanning?.proposal?.markdown ||
+      [
+        artifact.explanation?.trim() || "",
+        ...artifact.steps.map((step, index) => `${index + 1}. ${step.content}`),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    const labels = researchDisplayLabels(params.events);
+    const source = labels
+      ? projectPaperReferences(rawSource, labels)
+      : rawSource;
+    try {
+      renderRenderedMarkdownInto(markdown, source, params.doc);
+    } catch {
+      markdown.textContent = source;
+    }
+    if (artifact.nativePlanning?.proposal && artifact.contract) {
+      const summary = params.doc.createElement("p");
+      summary.className = "llm-plan-contract-summary";
+      const investigation = artifact.contract.investigation;
+      summary.textContent = [
+        investigation?.scopeSnapshot
+          ? `Research scope: ${investigation.scopeSnapshot.itemCount} papers`
+          : "Scope: the approved request",
+        `Deliverable: ${artifact.contract.deliverable.kind}`,
+        artifact.contract.effects?.libraryMutation
+          ? `Library changes: ${artifact.contract.effects.libraryMutation.approval === "after_research" ? "review exact targets after research" : "within the approved scope"}`
+          : "Library changes: none",
+      ].join(" · ");
+      markdown.appendChild(summary);
+    }
+    return markdown;
+  };
+
+  let disposed = false;
+  let lastArtifact = params.projection.artifact;
+  let paintedSignature = "";
+  cardDisposers.set(root, () => {
+    disposed = true;
+  });
+  const paint = (projection: { artifact: PlanArtifact }) => {
+    if (disposed || projection.artifact.updatedAt < lastArtifact.updatedAt)
+      return;
+    const signature = JSON.stringify([
+      projection.artifact.planId,
+      projection.artifact.revision,
+      projection.artifact.digest,
+      projection.artifact.status,
+      projection.artifact.updatedAt,
+    ]);
+    if (signature === paintedSignature) return;
+    paintedSignature = signature;
+    lastArtifact = projection.artifact;
+    root.replaceChildren();
+    const artifact = projection.artifact;
+    const planId = artifact.planId;
+    const revision = artifact.revision;
+    root.dataset.llmPlanId = planId;
+    root.dataset.llmPlanRevision = `${revision}`;
+    root.setAttribute("aria-label", "Plan");
+
+    const header = params.doc.createElement("div");
+    header.className = "llm-plan-header";
+    const heading = params.doc.createElement("div");
+    heading.className = "llm-plan-heading";
+    const title = params.doc.createElement("strong");
+    title.className = "llm-plan-title";
+    title.textContent = "Plan";
+    heading.appendChild(title);
+    if (revision > 1) {
+      const version = params.doc.createElement("span");
+      version.className = "llm-plan-version";
+      version.textContent = `Revision ${revision}`;
+      heading.appendChild(version);
+    }
+    const status = params.doc.createElement("span");
+    status.className = "llm-plan-status";
+    status.textContent = artifactStatusLabel(artifact.status);
+    status.dataset.status = artifact.status;
+    header.append(heading, status);
+    root.appendChild(header);
+
+    if (artifact) {
+      root.appendChild(renderArtifactMarkdown(artifact));
+      const snapshot = artifact.contract?.investigation?.scopeSnapshot;
+      if (snapshot) {
+        const scope = params.doc.createElement("div");
+        scope.className = "llm-plan-scope-snapshot";
+        const createdAt = new Date(snapshot.createdAt).toLocaleString();
+        const shortDigest =
+          snapshot.digest.length > 24
+            ? `${snapshot.digest.slice(0, 16)}…${snapshot.digest.slice(-8)}`
+            : snapshot.digest;
+        scope.textContent = `Frozen scope · ${snapshot.itemCount.toLocaleString()} items · ${createdAt} · policy v${snapshot.policyVersion} · ${shortDigest}`;
+        scope.title = `Scope snapshot ${snapshot.snapshotId}\nDigest: ${snapshot.digest}`;
+        root.appendChild(scope);
+      }
+    }
+
+    const live = params.doc.createElement("div");
+    live.className = "llm-plan-live-region";
+    live.setAttribute("aria-live", "polite");
+    live.textContent = status.textContent || "";
+    root.appendChild(live);
+
+    if (projection.artifact?.status === "awaiting_approval") {
+      const approvalHint = params.doc.createElement("p");
+      approvalHint.className = "llm-plan-approval-hint";
+      approvalHint.textContent =
+        "Approve to start these steps. During execution, Safe reviews eligible scope amendments, Auto handles in-goal amendments, and YOLO may also approve successor revisions. Hard safety boundaries remain enforced.";
+      root.appendChild(approvalHint);
+      const actions = params.doc.createElement("div");
+      actions.className = "llm-plan-actions llm-plan-review-actions";
+      const setReviewActionLabel = (
+        button: HTMLButtonElement,
+        fullLabel: string,
+        compactLabel: string,
+      ) => {
+        button.setAttribute("aria-label", fullLabel);
+        const full = params.doc.createElement("span");
+        full.className = "llm-plan-action-label-full";
+        full.textContent = fullLabel;
+        const compact = params.doc.createElement("span");
+        compact.className = "llm-plan-action-label-compact";
+        compact.textContent = compactLabel;
+        button.replaceChildren(full, compact);
+      };
+      const approve = params.doc.createElement("button");
+      approve.type = "button";
+      approve.className = "llm-plan-action llm-plan-approve";
+      setReviewActionLabel(approve, "Approve plan", "Approve");
+      const revise = params.doc.createElement("button");
+      revise.type = "button";
+      revise.className = "llm-plan-action llm-plan-revise";
+      setReviewActionLabel(revise, "Request changes", "Revise");
+      const cancel = params.doc.createElement("button");
+      cancel.type = "button";
+      cancel.className = "llm-plan-action llm-plan-cancel";
+      setReviewActionLabel(cancel, "Cancel", "Cancel");
+      actions.append(approve, revise, cancel);
+      root.appendChild(actions);
+
+      const revisionBox = params.doc.createElement("div");
+      revisionBox.className = "llm-plan-revision-box";
+      revisionBox.style.display = "none";
+      const revisionInput = params.doc.createElement("textarea");
+      revisionInput.className = "llm-plan-revision-input";
+      revisionInput.placeholder = "What should change in this plan?";
+      const sendRevision = params.doc.createElement("button");
+      sendRevision.type = "button";
+      sendRevision.className = "llm-plan-action llm-plan-approve";
+      sendRevision.textContent = "Send revision";
+      revisionBox.append(revisionInput, sendRevision);
+      root.appendChild(revisionBox);
+
+      const reviewArtifact = projection.artifact;
+      approve.addEventListener("click", () => {
+        approve.disabled = true;
+        revise.disabled = true;
+        cancel.disabled = true;
+        approve.textContent = "Starting…";
+        approve.setAttribute("aria-label", "Starting plan");
+        void planExecutionCoordinator
+          .approve({
+            planId: reviewArtifact.planId,
+            revision: reviewArtifact.revision,
+            expectedDigest: reviewArtifact.digest,
+            conversationGeneration: getConversationWriteGeneration(
+              reviewArtifact.conversationKey,
+            ),
+            actionContract,
+          })
+          .then(async (ledger) => {
+            stageApprovedPlanExecution(ledger);
+            const approvedArtifact = await loadPlanArtifact(
+              reviewArtifact.planId,
+              reviewArtifact.revision,
+            );
+            paint({
+              artifact:
+                approvedArtifact ||
+                ({
+                  ...reviewArtifact,
+                  status: "approved",
+                  approvedAt: Date.now(),
+                  updatedAt: Date.now(),
+                } as PlanArtifact),
+            });
+            dispatchPlanEvent(root, PLAN_APPROVED_EVENT, {
+              planId: ledger.planId,
+              revision: ledger.revision,
+              executionId: ledger.executionId,
+            });
+          })
+          .catch((error) => {
+            approve.disabled = false;
+            revise.disabled = false;
+            cancel.disabled = false;
+            setReviewActionLabel(approve, "Approve plan", "Approve");
+            const errorMessage = params.doc.createElement("p");
+            errorMessage.className = "llm-plan-error";
+            errorMessage.textContent =
+              error instanceof Error ? error.message : String(error);
+            root.appendChild(errorMessage);
+          });
+      });
+      revise.addEventListener("click", () => {
+        revisionBox.style.display =
+          revisionBox.style.display === "none" ? "flex" : "none";
+        if (revisionBox.style.display !== "none") revisionInput.focus();
+      });
+      sendRevision.addEventListener("click", () => {
+        const comment = revisionInput.value.trim();
+        if (!comment) return;
+        dispatchPlanEvent(root, PLAN_REVISE_EVENT, {
+          planId: reviewArtifact.planId,
+          revision: reviewArtifact.revision,
+          provider: reviewArtifact.provider,
+          comment,
+        });
+      });
+      cancel.addEventListener("click", () => {
+        void (async () => {
+          const confirmed = await showStandaloneConfirmationDialog(params.doc, {
+            title: "Cancel this plan?",
+            message: "The cancelled plan will remain in conversation history.",
+            confirmLabel: "Cancel plan",
+            cancelLabel: "Keep plan",
+            destructive: true,
+          });
+          if (!confirmed) return;
+          const artifact = await planExecutionCoordinator.cancelArtifact({
+            planId: reviewArtifact.planId,
+            revision: reviewArtifact.revision,
+          });
+          if (artifact) paint({ artifact });
+          dispatchPlanEvent(root, PLAN_CANCEL_EVENT, {
+            planId: reviewArtifact.planId,
+            revision: reviewArtifact.revision,
+          });
+        })();
+      });
+    }
+  };
+
+  paint(params.projection);
+  const artifact = params.projection.artifact;
+  if (artifact) {
+    void loadPlanArtifact(artifact.planId, artifact.revision)
+      .then((stored) => {
+        if (disposed || !root.isConnected) return;
+        if (stored) paint({ artifact: stored });
+      })
+      .catch((error) => ztoolkit.log("LLM: Failed to hydrate plan:", error));
+  }
+  return root;
+}
+
+function getPlanDocumentId(events: AgentRunEventRecord[]): string | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index].payload;
+    if (
+      event.type === "document_ready" ||
+      event.type === "plan_document_ready"
+    ) {
+      return event.documentId;
+    }
+  }
+  return null;
+}
+
+function createDocumentActionButton(params: {
+  doc: Document;
+  className: string;
+  title: string;
+}): HTMLButtonElement {
+  const button = params.doc.createElement("button") as HTMLButtonElement;
+  button.type = "button";
+  button.className = `llm-plan-document-action ${params.className}`;
+  button.title = params.title;
+  button.setAttribute("aria-label", params.title);
+  return button;
+}
+
+function renderCoverageInspector(
+  doc: Document,
+  document: PlanDocument,
+): HTMLElement | null {
+  if (!document.coverageItems.length) return null;
+  const details = doc.createElement("details");
+  details.className = "llm-plan-document-coverage";
+  const summary = doc.createElement("summary");
+  summary.textContent = "View coverage";
+  const controls = doc.createElement("div");
+  controls.className = "llm-plan-document-coverage-controls";
+  const search = doc.createElement("input") as HTMLInputElement;
+  search.type = "search";
+  search.placeholder = "Search papers";
+  search.setAttribute("aria-label", "Search covered papers");
+  const filter = doc.createElement("select") as HTMLSelectElement;
+  filter.setAttribute("aria-label", "Filter coverage status");
+  for (const value of [
+    "all",
+    "included",
+    "excluded",
+    "unresolved",
+    "unreadable",
+    "missing",
+  ]) {
+    const option = doc.createElement("option");
+    option.value = value;
+    option.textContent = value[0].toUpperCase() + value.slice(1);
+    filter.appendChild(option);
+  }
+  controls.append(search, filter);
+  const list = doc.createElement("div");
+  list.className = "llm-plan-document-coverage-list";
+  const paint = () => {
+    list.replaceChildren();
+    const term = search.value.trim().toLowerCase();
+    const status = filter.value;
+    for (const entry of document.coverageItems) {
+      const title = entry.title || itemTitle(entry.libraryID, entry.itemKey);
+      if (status !== "all" && entry.status !== status) continue;
+      if (
+        term &&
+        !`${title} ${entry.reason || ""} ${entry.itemKey}`
+          .toLowerCase()
+          .includes(term)
+      ) {
+        continue;
+      }
+      const row = doc.createElement("div");
+      row.className = "llm-plan-document-coverage-row";
+      const link = doc.createElement("a");
+      const source = {
+        libraryID: entry.libraryID,
+        itemKey: entry.itemKey,
+        evidenceRefs: [],
+      };
+      link.href = citationSourceHref(source);
+      link.textContent = title;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        void navigatePlanDocumentCitationSource(source);
+      });
+      const metadata = doc.createElement("span");
+      metadata.textContent = `${entry.status} · ${entry.evidenceDepth}${
+        entry.reason ? ` · ${entry.reason}` : ""
+      }`;
+      row.append(link, metadata);
+      list.appendChild(row);
+    }
+    if (!list.childElementCount) {
+      const empty = doc.createElement("div");
+      empty.className = "llm-plan-document-coverage-empty";
+      empty.textContent = "No matching papers";
+      list.appendChild(empty);
+    }
+  };
+  search.addEventListener("input", paint);
+  filter.addEventListener("change", paint);
+  paint();
+  details.append(summary, controls, list);
+  return details;
+}
+
+type DocumentFilePicker = {
+  init?: (parent: unknown, title: string, mode: number) => void;
+  appendFilter?: (title: string, pattern: string) => void;
+  open?: (callback: (result: number) => void) => void;
+  show?: () => number | Promise<number>;
+  defaultString?: string;
+  defaultExtension?: string;
+  file?: string | { path?: string };
+  modeSave?: number;
+  returnOK?: number;
+  returnReplace?: number;
+};
+
+async function pickMarkdownExportPath(
+  doc: Document,
+  defaultName: string,
+): Promise<string | null> {
+  let Constructor = (
+    Zotero as unknown as { FilePicker?: new () => DocumentFilePicker }
+  ).FilePicker;
+  if (!Constructor) {
+    try {
+      Constructor = (globalThis as any).ChromeUtils?.importESModule?.(
+        "chrome://zotero/content/modules/filePicker.mjs",
+      )?.FilePicker;
+    } catch {
+      Constructor = undefined;
+    }
+  }
+  if (!Constructor) throw new Error("Zotero file picker is unavailable");
+  const picker = new Constructor();
+  const parent = Zotero.getMainWindow?.() || doc.defaultView;
+  picker.init?.(parent, "Export document", picker.modeSave ?? 0);
+  picker.defaultString = defaultName.endsWith(".md")
+    ? defaultName
+    : `${defaultName}.md`;
+  picker.defaultExtension = "md";
+  picker.appendFilter?.("Markdown", "*.md");
+  const result = await new Promise<number>((resolve, reject) => {
+    try {
+      if (picker.open) picker.open(resolve);
+      else if (picker.show)
+        void Promise.resolve(picker.show()).then(resolve, reject);
+      else resolve(-1);
+    } catch (error) {
+      reject(error);
+    }
+  });
+  const accepted =
+    result === picker.returnOK ||
+    result === picker.returnReplace ||
+    (picker.returnOK === undefined &&
+      picker.returnReplace === undefined &&
+      result === 0);
+  if (!accepted) return null;
+  return typeof picker.file === "string"
+    ? picker.file
+    : picker.file?.path || null;
+}
+
+function renderPlanDocumentCard(params: {
+  doc: Document;
+  documentId: string;
+  citationContext?: import("../assistantRichText").AssistantCitationContext;
+  onReady?: () => void;
+}): HTMLElement {
+  const root = params.doc.createElement("section");
+  root.className = "llm-plan-container llm-plan-document-card";
+  root.dataset.llmPlanDocumentId = params.documentId;
+  root.textContent = "Loading document…";
+  let disposed = false;
+  cardDisposers.set(root, () => {
+    disposed = true;
+  });
+
+  const paint = (document: PlanDocument) => {
+    root.replaceChildren();
+    const { header, actions, content } = createDocumentCardLayout(params.doc, {
+      title: document.title,
+      status: document.coverageStatus
+        ? document.coverageStatus.replace(/_/g, " ")
+        : "Ready",
+      statusKind: document.validation.integrityValidated
+        ? "completed"
+        : "failed",
+    });
+    const actionStatus = params.doc.createElement("span");
+    actionStatus.className = "llm-plan-document-action-status";
+    const setActionStatus = (text: string, error = false) => {
+      if (disposed || !root.isConnected) return;
+      actionStatus.textContent = text;
+      actionStatus.dataset.error = error ? "true" : "false";
+    };
+    const copy = createDocumentActionButton({
+      doc: params.doc,
+      className: "llm-plan-document-action-copy",
+      title: "Copy Markdown",
+    });
+    copy.addEventListener("click", async () => {
+      await copyTextToClipboard(root, document.visibleMarkdown);
+      setActionStatus("Copied");
+    });
+    const note = createDocumentActionButton({
+      doc: params.doc,
+      className: "llm-plan-document-action-note",
+      title: "Save into Zotero note",
+    });
+    note.addEventListener("click", async () => {
+      note.disabled = true;
+      try {
+        const saved = await savePlanDocumentAsNote(document.documentId);
+        const label = saved.created ? "Saved as note" : "Note already saved";
+        setActionStatus(
+          saved.warnings.length
+            ? `${label}; ${saved.warnings.join("; ")}`
+            : label,
+          saved.warnings.length > 0,
+        );
+      } catch (error) {
+        setActionStatus(
+          error instanceof Error ? error.message : String(error),
+          true,
+        );
+      } finally {
+        note.disabled = false;
+      }
+    });
+    const exportButton = createDocumentActionButton({
+      doc: params.doc,
+      className: "llm-plan-document-action-export",
+      title: "Export Markdown",
+    });
+    exportButton.addEventListener("click", async () => {
+      try {
+        const path = await pickMarkdownExportPath(params.doc, document.title);
+        if (!path) return;
+        await exportPlanDocumentMarkdown(document.documentId, path);
+        setActionStatus("Exported");
+      } catch (error) {
+        setActionStatus(
+          error instanceof Error ? error.message : String(error),
+          true,
+        );
+      }
+    });
+    const expand = createDocumentActionButton({
+      doc: params.doc,
+      className: "llm-plan-document-action-expand",
+      title: "Open larger view",
+    });
+    expand.addEventListener("click", () => {
+      if (
+        openStandalonePlanDocumentWindow(
+          params.doc,
+          document,
+          params.citationContext,
+        )
+      ) {
+        setActionStatus("Opened in a separate window");
+      } else {
+        setActionStatus("The document window could not be opened", true);
+      }
+    });
+    actions.append(copy, note, exportButton, expand);
+    renderPlanDocumentContent({
+      doc: params.doc,
+      root: content,
+      document,
+      citationContext: params.citationContext,
+    });
+    const coverage = renderCoverageInspector(params.doc, document);
+    root.append(header, actionStatus, content);
+    const figures = renderPlanDocumentFigures(params.doc, document);
+    if (figures) root.appendChild(figures);
+    if (coverage) root.appendChild(coverage);
+    params.onReady?.();
+  };
+
+  void Promise.all([
+    loadPlanDocument(params.documentId),
+    loadPlanDocumentOutbox(params.documentId),
+  ])
+    .then(([document, outbox]) => {
+      if (disposed || !root.isConnected) return;
+      if (!document) {
+        root.textContent = "Document is unavailable";
+      } else if (outbox?.status !== "delivered") {
+        // submit_document persists before the assistant message. Do not expose
+        // that durable draft as a finished outcome until message publication
+        // and (for Plans) the terminal ledger transition commit together.
+        root.textContent = "Publishing document…";
+      } else {
+        paint(document);
+      }
+    })
+    .catch((error) => {
+      if (!disposed && root.isConnected)
+        root.textContent =
+          error instanceof Error ? error.message : String(error);
+    });
+  return root;
+}
+
+type TraceItemView = { signature: string; node: HTMLElement };
+type TraceView = {
+  discovery?: { key: string; node: HTMLElement };
+  list: HTMLElement;
+  items: Map<string, TraceItemView>;
+  plan?: { signature: string; node: HTMLElement };
+  document?: {
+    id: string;
+    formattingVersion: number;
+    panelItem?: Zotero.Item;
+    user?: Message | null;
+    message: Message;
+    node: HTMLElement;
+    caption: HTMLElement;
+  };
+  allowPlanRecovery?: boolean;
+  eventCount?: number;
+  lastEvent?: AgentRunEventRecord;
+  quoteCitations?: Message["quoteCitations"];
+  quoteOverride?: Message["quoteDisplayOverride"];
+  formattingVersion?: number;
+};
+const traceViews = new WeakMap<HTMLElement, TraceView>();
+
+export function disposeAgentTrace(root: HTMLElement): void {
+  const view = traceViews.get(root);
+  if (!view) return;
+  for (const item of view.items.values()) disposeStreamingMarkdown(item.node);
+  if (view.plan) disposePlanCard(view.plan.node);
+  if (view.document) disposePlanCard(view.document.node);
+  traceViews.delete(root);
+}
+
+function updateReasoningText(target: HTMLElement, next: string): void {
+  const text = target.firstChild;
+  const previous = target.textContent || "";
+  if (previous === next) return;
+  if (
+    text?.nodeType === 3 &&
+    target.childNodes.length === 1 &&
+    next.startsWith(previous)
+  ) {
+    (text as Text).appendData(next.slice(previous.length));
+  } else target.textContent = next;
+}
+
 export function renderAgentTrace({
   doc,
+  panelItem,
   message,
   userMessage,
   events,
   onTraceMissing,
   onInterleavedText,
+  previous,
+  allowPlanRecovery = false,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim() || "pending";
+  // Temporary native events remain visible until the durable run is loaded.
+  // The caller supplies this callback only while that run is absent from cache.
+  onTraceMissing?.();
+  if (!events.length && message.pendingAgentTraceEvents?.length)
+    events = message.pendingAgentTraceEvents;
   if (
     !events.length &&
     !message.pendingAgentTraceEvents?.length &&
@@ -3990,13 +5543,48 @@ export function renderAgentTrace({
   ) {
     return null;
   }
-  const wrap = doc.createElement("div");
-  wrap.className = "llm-agent-activity";
-  const list = doc.createElement("div");
+  const retained = previous ? traceViews.get(previous) : undefined;
+  const wrap = retained ? previous! : doc.createElement("div");
+  if (!retained) wrap.className = "llm-agent-activity";
+  if (!retained)
+    applyStableAnimationPhase(
+      wrap,
+      message.waitingAnimationStartedAt ||
+        events.find((entry) => entry.createdAt > 0)?.createdAt ||
+        message.timestamp,
+    );
+  const list = retained?.list || doc.createElement("div");
   list.className = "llm-agent-activity-list";
+  const view: TraceView = retained || { list, items: new Map() };
+  traceViews.set(wrap, view);
+  const added =
+    retained &&
+    view.eventCount !== undefined &&
+    events[view.eventCount - 1] === view.lastEvent
+      ? events.slice(view.eventCount)
+      : null;
+  const formattingChanged =
+    view.quoteCitations !== message.quoteCitations ||
+    view.quoteOverride !== message.quoteDisplayOverride;
+  if (formattingChanged)
+    view.formattingVersion = (view.formattingVersion || 0) + 1;
+  view.quoteCitations = message.quoteCitations;
+  view.quoteOverride = message.quoteDisplayOverride;
+  const textOnly =
+    view.allowPlanRecovery === allowPlanRecovery &&
+    message.streaming !== false &&
+    !formattingChanged &&
+    added &&
+    added.every(
+      (entry) =>
+        entry.payload.type === "reasoning" ||
+        entry.payload.type === "message_delta",
+    );
+  view.allowPlanRecovery = allowPlanRecovery;
+  view.eventCount = events.length;
+  view.lastEvent = events[events.length - 1];
 
   if (!events.length) {
-    onTraceMissing?.();
     const loadingRow = doc.createElement("div");
     loadingRow.className = "llm-at-row llm-at-row-plan";
     const loadingIcon = doc.createElement("span");
@@ -4020,17 +5608,90 @@ export function renderAgentTrace({
   }
   const { items: processItems, inlineTextReplacesAssistantText } =
     buildAgentTraceDisplayItems(events, userMessage, message);
+  const tracePlanPhase = resolveTracePlanPhase(events);
   if (inlineTextReplacesAssistantText) {
     onInterleavedText?.();
   }
   const pending = getPendingConfirmation(events);
+  if (!textOnly) {
+    wrap.className = "llm-agent-activity";
+    delete wrap.dataset.llmAssistantTurnReplacement;
+  }
   if (pending) {
     wrap.classList.add("llm-agent-activity-with-pending-action");
+  }
+  if (pending && isPlanningQuestionAction(pending.action)) {
+    wrap.classList.add("llm-agent-activity-question-card");
+    wrap.dataset.llmAssistantTurnReplacement = "true";
+    onInterleavedText?.();
+    if (view.plan) {
+      disposePlanCard(view.plan.node);
+      view.plan = undefined;
+    }
+    if (view.document) {
+      disposePlanCard(view.document.node);
+      view.document = undefined;
+    }
+    wrap.replaceChildren(renderPendingActionCard(doc, pending));
+    view.items.clear();
+    return wrap;
   }
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
+  let cursor = list.firstChild;
+  const nextViews = new Map<string, TraceItemView>();
+  let currentKey = "";
+  let currentSignature = "";
+  const place = (node: HTMLElement) => {
+    if (node !== cursor) list.insertBefore(node, cursor);
+    cursor = node.nextSibling;
+    nextViews.set(currentKey, { signature: currentSignature, node });
+  };
   for (const [itemIndex, itemEntry] of processItems.entries()) {
+    currentKey =
+      itemEntry.type === "reasoning"
+        ? `reasoning:${itemEntry.key}`
+        : itemEntry.type === "action" && itemEntry.detailKey
+          ? `action:${itemEntry.detailKey}`
+          : `${itemEntry.type}:${itemIndex}`;
+    currentSignature = JSON.stringify(itemEntry);
+    if (
+      itemEntry.type === "inline_text" ||
+      (itemEntry.type === "message" && itemEntry.markdown)
+    )
+      currentSignature += `:${view.formattingVersion || 0}`;
+    const old = view.items.get(currentKey);
+    if (old?.signature === currentSignature) {
+      place(old.node);
+      continue;
+    }
+    if (old && itemEntry.type === "inline_text" && message.streaming) {
+      renderStreamingMarkdownInto(
+        old.node,
+        buildAgentTraceMarkdownForRender(itemEntry.text, message),
+        doc,
+        () => {},
+      );
+      place(old.node);
+      continue;
+    }
+    if (old && itemEntry.type === "reasoning") {
+      const target = old.node.querySelector<HTMLElement>(
+        ".llm-agent-reasoning-text",
+      );
+      if (target) {
+        updateReasoningText(
+          target,
+          itemEntry.summary || itemEntry.details || "",
+        );
+        const label = old.node.querySelector("summary");
+        if (label && label.textContent !== itemEntry.label)
+          label.textContent = itemEntry.label;
+        place(old.node);
+        continue;
+      }
+    }
     if (itemEntry.type === "inline_text") {
       const inlineEl = doc.createElement("div");
       inlineEl.className = "llm-agent-inline-text";
@@ -4043,7 +5704,7 @@ export function renderAgentTrace({
       } catch {
         inlineEl.textContent = inlineText;
       }
-      list.appendChild(inlineEl);
+      place(inlineEl);
       continue;
     }
 
@@ -4064,12 +5725,15 @@ export function renderAgentTrace({
       } else {
         messageEl.textContent = itemEntry.text;
       }
-      list.appendChild(messageEl);
+      place(messageEl);
       continue;
     }
 
     if (itemEntry.type === "card_list") {
-      list.appendChild(renderResultCardList(doc, itemEntry.cards));
+      const papers = itemEntry.cards.filter(
+        (card) => card.kind !== "saved_note" && card.kind !== "note_change",
+      );
+      if (papers.length) place(renderResultCardList(doc, papers));
       continue;
     }
 
@@ -4085,7 +5749,7 @@ export function renderAgentTrace({
           frameClassName: "llm-agent-image-artifact-frame",
         },
       );
-      if (rendered) list.appendChild(container);
+      if (rendered) place(container);
       continue;
     }
 
@@ -4142,7 +5806,7 @@ export function renderAgentTrace({
       // Details section removed — most models duplicate summary in details
 
       details.appendChild(bodyWrap);
-      list.appendChild(details);
+      place(details);
       continue;
     }
 
@@ -4162,12 +5826,24 @@ export function renderAgentTrace({
     }
     const row = doc.createElement("div");
     row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
-    const icon = doc.createElement("span");
-    icon.className = `llm-at-icon${
-      itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
-    }`;
-    icon.setAttribute("aria-hidden", "true");
-    if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
+    const isActivePlanningRow =
+      message.streaming === true &&
+      tracePlanPhase === "planning" &&
+      itemEntry.row.kind === "plan" &&
+      /^planning\b/i.test(itemEntry.row.text.trim());
+    if (isActivePlanningRow) {
+      row.classList.add("llm-at-row-planning-active");
+    }
+    const icon = isActivePlanningRow
+      ? createPlanningDriveIcon(doc)
+      : doc.createElement("span");
+    if (!isActivePlanningRow) {
+      icon.className = `llm-at-icon${
+        itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+      }`;
+      icon.setAttribute("aria-hidden", "true");
+      if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
+    }
     const text = doc.createElement("span");
     text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
     text.textContent = itemEntry.row.text;
@@ -4194,7 +5870,35 @@ export function renderAgentTrace({
       }
     }
 
-    list.appendChild(actionWrap);
+    place(actionWrap);
+  }
+  while (cursor) {
+    const next = cursor.nextSibling;
+    list.removeChild(cursor);
+    cursor = next;
+  }
+  for (const [key, old] of view.items) {
+    if (nextViews.get(key)?.node !== old.node)
+      disposeStreamingMarkdown(old.node);
+  }
+  view.items = nextViews;
+  if (textOnly) {
+    if (view.document || (view.plan && getPlanProjection(events)?.artifact))
+      onInterleavedText?.();
+    return wrap;
+  }
+
+  if (retained) {
+    for (const child of Array.from(wrap.children)) {
+      if (
+        child !== list.parentElement &&
+        child !== view.plan?.node &&
+        child !== view.document?.node &&
+        child !== view.document?.caption &&
+        child !== view.discovery?.node
+      )
+        child?.remove();
+    }
   }
   appendAgentActivityDisclosure({
     doc,
@@ -4206,18 +5910,206 @@ export function renderAgentTrace({
     forceOpen: Boolean(pending),
   });
 
+  let hasSavedNote = false;
+  const shownNoteActions = new Map<
+    string,
+    AgentNoteChangeResultCard | AgentSavedNoteResultCard
+  >();
+  for (const item of processItems) {
+    if (item.type !== "card_list") continue;
+    for (const card of item.cards) {
+      if (card.kind === "note_change") {
+        shownNoteActions.set(card.actionId, card);
+      }
+      if (card.kind === "saved_note") {
+        hasSavedNote = true;
+        if (card.actionId) shownNoteActions.set(card.actionId, card);
+        else wrap.appendChild(renderSavedNoteCard(doc, card));
+      }
+    }
+  }
+
+  for (const card of shownNoteActions.values())
+    wrap.appendChild(
+      card.kind === "note_change"
+        ? renderNoteChangeCard(doc, card)
+        : renderSavedNoteCard(doc, card),
+    );
+
+  const planProjection = getPlanProjection(events);
+  const visiblePlanProjection =
+    planProjection?.artifact ||
+    (allowPlanRecovery && planProjection?.ledger?.status === "interrupted")
+      ? planProjection
+      : null;
+  if (!visiblePlanProjection && view.plan) {
+    disposePlanCard(view.plan.node);
+    view.plan = undefined;
+  }
+  if (visiblePlanProjection) {
+    // The structured plan is the planning turn's visible answer. Keep the
+    // provider's often-duplicated prose in durable history without rendering a
+    // second copy below the card. Execution turns still render their final
+    // answer normally; the live request owns execution progress separately.
+    if (visiblePlanProjection.artifact) onInterleavedText?.();
+    const planSignature = JSON.stringify([
+      visiblePlanProjection,
+      [...(researchDisplayLabels(events) || [])],
+    ]);
+    if (view.plan?.signature !== planSignature) {
+      if (view.plan) disposePlanCard(view.plan.node);
+      view.plan = {
+        signature: planSignature,
+        node: renderPlanContainer({
+          doc,
+          events,
+          projection: visiblePlanProjection,
+        }),
+      };
+    }
+    const planContainer = view.plan.node;
+    const planId =
+      visiblePlanProjection.artifact?.planId ||
+      visiblePlanProjection.ledger!.planId;
+    for (const node of Array.from(
+      doc.querySelectorAll<HTMLElement>(".llm-plan-container"),
+    )) {
+      const prior = node as HTMLElement;
+      if (
+        prior.dataset.llmPlanId !== planId ||
+        prior.dataset.llmPlanRevision === planContainer.dataset.llmPlanRevision
+      ) {
+        continue;
+      }
+      prior.classList.add("llm-plan-history-collapsed");
+      if (prior.dataset.llmPlanCollapseBound !== "true") {
+        prior.dataset.llmPlanCollapseBound = "true";
+        prior
+          .querySelector(".llm-plan-header")
+          ?.addEventListener("click", () => {
+            prior.classList.toggle("llm-plan-history-collapsed");
+          });
+      }
+    }
+    if (!planContainer.parentElement) wrap.appendChild(planContainer);
+  }
+
+  const planDocumentId =
+    message.documentId || message.planDocumentId || getPlanDocumentId(events);
+  const savedNotePrimary =
+    hasSavedNote &&
+    savedNoteIsPrimaryOutcome(
+      events.map((record) => record.payload),
+      Boolean(planProjection),
+    );
+  if (savedNotePrimary) onInterleavedText?.();
+  if (planDocumentId && !savedNotePrimary) {
+    // The immutable card is the visible deliverable. The message text remains
+    // byte-identical durable history and future-model context, but rendering it
+    // again below the card would create two apparent answers.
+    onInterleavedText?.();
+    const existing = view.document;
+    if (
+      !existing ||
+      existing.id !== planDocumentId ||
+      existing.formattingVersion !== (view.formattingVersion || 0) ||
+      existing.panelItem !== panelItem ||
+      existing.user !== userMessage ||
+      existing.message !== message
+    ) {
+      if (existing) {
+        disposePlanCard(existing.node);
+        existing.caption.remove();
+      }
+      const caption = doc.createElement("p");
+      caption.className = "llm-plan-document-completion-caption";
+      caption.textContent = "Document completed and verified.";
+      caption.hidden = true;
+      const card = renderPlanDocumentCard({
+        doc,
+        documentId: planDocumentId,
+        citationContext: panelItem
+          ? {
+              panelItem,
+              assistantMessage: message,
+              pairedUserMessage: userMessage,
+            }
+          : undefined,
+        onReady: () => {
+          caption.hidden = false;
+        },
+      });
+      view.document = {
+        id: planDocumentId,
+        formattingVersion: view.formattingVersion || 0,
+        panelItem,
+        user: userMessage,
+        message,
+        node: card,
+        caption,
+      };
+      wrap.append(card, caption);
+    }
+  } else if (view.document) {
+    disposePlanCard(view.document.node);
+    view.document.caption.remove();
+    view.document = undefined;
+  }
+
   // The rule separates the activity trace from the answer, so visible answer
   // text is authoritative even when a restored row retained a stale streaming
   // flag or no longer has its original `final` event.
   const hasAnswerText = Boolean(message.text?.trim());
-  if (hasFinalResponse || (hasAnswerText && !inlineTextReplacesAssistantText)) {
+  if (
+    !planDocumentId &&
+    (hasFinalResponse || (hasAnswerText && !inlineTextReplacesAssistantText))
+  ) {
     const divider = doc.createElement("div");
     divider.className = "llm-agent-output-divider";
     divider.setAttribute("aria-hidden", "true");
     wrap.appendChild(divider);
   }
 
-  if (pending) {
+  const discovery = getDiscoveryCardProjection(events);
+  if (discovery && message.streaming === false) discovery.phase = "closed";
+  if (discovery) {
+    const identity = discovery.pending.action.discovery!;
+    const key = `${identity.sessionId}:${identity.revision}:${discovery.phase}`;
+    if (view.discovery?.key !== key) {
+      const previousScroll =
+        view.discovery?.node.querySelector(".llm-search-results-list")
+          ?.scrollTop || 0;
+      view.discovery?.node.remove();
+      const shell = doc.createElement("div");
+      shell.className = "llm-agent-pending-action-shell";
+      shell.dataset.discoverySession = identity.sessionId;
+      const card = renderPendingActionCard(doc, discovery.pending);
+      if (discovery.phase !== "pending") {
+        for (const control of Array.from(
+          card.querySelectorAll("input,button,select,textarea"),
+        ) as (HTMLInputElement | HTMLButtonElement | HTMLSelectElement)[])
+          control.disabled = true;
+        const status = doc.createElement("div");
+        status.className = "llm-agent-hitl-description";
+        status.setAttribute("role", "status");
+        status.textContent =
+          discovery.phase === "loading"
+            ? "Finding more relevant papers…"
+            : "Paper review closed.";
+        card.prepend(status);
+      }
+      shell.appendChild(card);
+      view.discovery = { key, node: shell };
+      wrap.appendChild(shell);
+      const resultList = card.querySelector(".llm-search-results-list");
+      if (resultList) resultList.scrollTop = previousScroll;
+    } else if (view.discovery.node.parentElement !== wrap)
+      wrap.appendChild(view.discovery.node);
+  } else if (view.discovery) {
+    view.discovery.node.remove();
+    view.discovery = undefined;
+  }
+  if (pending && !pending.action.discovery) {
     const pendingShell = doc.createElement("div");
     pendingShell.className = "llm-agent-pending-action-shell";
     pendingShell.appendChild(renderPendingActionCard(doc, pending));

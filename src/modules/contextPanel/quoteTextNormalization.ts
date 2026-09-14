@@ -4,7 +4,7 @@ const INVALID_TEXT_CONTROL_CODE_RANGES = [
 ] as const;
 const INVALID_TEXT_CONTROL_CODES = new Set([0x0b, 0x0c, 0x7f]);
 const STYLE_COMMAND_PATTERN =
-  /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol|left|right|quad|qquad|cdot|times)\b|\\[,;!]/g;
+  /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|text|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol|hat|bar|vec|tilde|overline|underline|left|right|quad|qquad|cdot|times|div|le|leq|ge|geq|ne|neq|pm|mp|approx|sim)\b|\\[,;!]/g;
 const PRESENTATIONAL_HTML_TAG_PATTERN =
   /<\/?(?:b|em|i|span|strong|sub|sup)\b[^>]*>/gi;
 const GREEK_TOKEN_TRANSLITERATIONS: Record<string, string> = {
@@ -46,8 +46,6 @@ const GREEK_TOKEN_TRANSLITERATIONS: Record<string, string> = {
 const QUOTE_WORD_PATTERN =
   /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|\p{N}+|\p{L}[\p{L}\p{M}\p{N}]*/gu;
 const LETTER_TOKEN_PATTERN = /^\p{L}+$/u;
-const SINGLE_LETTER_TOKEN_PATTERN = /^\p{L}$/u;
-const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
 const ATTACHED_CITATION_TOKEN_PATTERN = /^(\p{L}{2,})(\p{N}{1,3})$/u;
 const ATTACHED_CITATION_TAIL_GAP_PATTERN = /^[\s\u0003]*[,;–—−-][\s\u0003]*$/u;
 const ATTACHED_CITATION_BOUNDARY_PATTERN =
@@ -93,6 +91,8 @@ const SOFT_HYPHEN_GAP_PATTERN = /^[\u00ad\s]+$/u;
 const SOURCE_SPAN_LEADING_BOUNDARY_CHARS = "\"'“‘([";
 const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN = /[.,;:!?"'”’)\]}。！？、，；：]/;
 const TERMINAL_SENTENCE_PUNCTUATION_PATTERN = /[.!?。！？]/u;
+const PDF_ITEM_SEPARATED_TERMINAL_PUNCTUATION_PATTERN =
+  /^(?=[\s\u0003]*\u0003)[\s\u0003]*[.!?。！？]+["'”’]?(?=$|[\s\u0003]|["'“‘([\p{Lu}])/u;
 const OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN =
   /^[\s\u0003]*(\((?:(?:supplementary|supp\.?)\s+)?(?:fig(?:ure)?|table|eq(?:uation)?|appendix)\b[^()\n]{0,120}\))[.!?。！？]+["'”’]?/iu;
 const OMITTED_TRAILING_CITATION_SUFFIX_PATTERN =
@@ -120,6 +120,30 @@ export type QuoteTextIndex = {
   sourceText: string;
   canonicalText: string;
   tokens: QuoteTextToken[];
+};
+
+export type AcademicQuoteTokenKind =
+  | "prose"
+  | "number"
+  | "operator"
+  | "math-identifier"
+  | "formatting-syntax"
+  | "extraction-artifact";
+
+export type AcademicQuoteAlignmentToken = {
+  text: string;
+  kind: AcademicQuoteTokenKind;
+  supported: boolean;
+  sourceStart: number;
+  sourceEnd: number;
+};
+
+export type AcademicQuoteAlignmentAssessment = {
+  displayedTokens: AcademicQuoteAlignmentToken[];
+  transformations: string[];
+  allMeaningfulTokensSupported: boolean;
+  hasUnexplainedSemanticHardDifference: boolean;
+  extractionSensitive: boolean;
 };
 
 function isInvalidTextControlCode(code: number): boolean {
@@ -207,19 +231,19 @@ function shouldMergeLineBreakHyphenation(
   );
 }
 
-function shouldMergeLatexExponent(
+function shouldMergeLatexScript(
   left: QuoteTextToken,
   right: QuoteTextToken,
   sourceText: string,
 ): boolean {
   if (
-    !SINGLE_LETTER_TOKEN_PATTERN.test(left.text) ||
-    !NUMERIC_TOKEN_PATTERN.test(right.text)
+    !/^[\p{L}\p{N}]+$/u.test(left.text) ||
+    !/^[\p{L}\p{N}]+$/u.test(right.text)
   ) {
     return false;
   }
   const gap = sourceText.slice(left.sourceEnd, right.sourceStart);
-  return gap.includes("^") && /^[\s{}^]*$/.test(gap);
+  return /[_^]/.test(gap) && /^[\s{}_^]*$/.test(gap);
 }
 
 function mergeSourceTokens(
@@ -232,7 +256,7 @@ function mergeSourceTokens(
     if (
       previous &&
       (shouldMergeLineBreakHyphenation(previous, token, sourceText) ||
-        shouldMergeLatexExponent(previous, token, sourceText))
+        shouldMergeLatexScript(previous, token, sourceText))
     ) {
       merged[merged.length - 1] = {
         text: previous.text + token.text,
@@ -384,6 +408,17 @@ function resolveAlignedSourceEnd(params: {
     )
   ) {
     return adjacentEnd;
+  }
+
+  // PDF.js can split a sentence-final period into the following text item,
+  // whose next prose then appears as ".We" in the flattened item stream.
+  // Accept only the bounded item-boundary form; ordinary fused prose such as
+  // "afterward.during" remains an incomplete source match.
+  const itemSeparatedTerminal = params.sourceText
+    .slice(params.lastTokenEnd)
+    .match(PDF_ITEM_SEPARATED_TERMINAL_PUNCTUATION_PATTERN);
+  if (itemSeparatedTerminal) {
+    return params.lastTokenEnd + (itemSeparatedTerminal[0]?.length || 0);
   }
 
   // PDF.js commonly emits a superscript reference range as separate text
@@ -1080,4 +1115,433 @@ export function findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
     });
   }
   return spans;
+}
+
+type InlineMathRange = {
+  start: number;
+  end: number;
+  content: string;
+};
+
+const ACADEMIC_MATH_FORMAT_COMMAND_PATTERN =
+  /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|text|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol|hat|bar|vec|tilde|overline|underline|left|right|quad|qquad)\b/g;
+const ACADEMIC_MATH_OPERATOR_COMMANDS: Record<string, string> = {
+  cdot: "*",
+  times: "*",
+  div: "/",
+  le: "<=",
+  leq: "<=",
+  ge: ">=",
+  geq: ">=",
+  ne: "!=",
+  neq: "!=",
+  pm: "+-",
+  mp: "-+",
+  approx: "~",
+  sim: "~",
+};
+const UNICODE_SUPERSCRIPT_TO_ASCII: Record<string, string> = {
+  "⁰": "0",
+  "¹": "1",
+  "²": "2",
+  "³": "3",
+  "⁴": "4",
+  "⁵": "5",
+  "⁶": "6",
+  "⁷": "7",
+  "⁸": "8",
+  "⁹": "9",
+  "⁺": "+",
+  "⁻": "-",
+};
+
+function collectPairedInlineMathRanges(value: string): InlineMathRange[] {
+  const ranges: InlineMathRange[] = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    if (value.startsWith("\\(", cursor)) {
+      const close = value.indexOf("\\)", cursor + 2);
+      if (close < 0) return [];
+      ranges.push({
+        start: cursor,
+        end: close + 2,
+        content: value.slice(cursor + 2, close),
+      });
+      cursor = close + 2;
+      continue;
+    }
+    if (value[cursor] === "$" && value[cursor - 1] !== "\\") {
+      if (value[cursor + 1] === "$") return [];
+      let close = cursor + 1;
+      while (close < value.length) {
+        if (
+          value[close] === "$" &&
+          value[close - 1] !== "\\" &&
+          value[close + 1] !== "$"
+        ) {
+          break;
+        }
+        if (value[close] === "\n") return [];
+        close += 1;
+      }
+      if (close >= value.length) return [];
+      ranges.push({
+        start: cursor,
+        end: close + 1,
+        content: value.slice(cursor + 1, close),
+      });
+      cursor = close + 1;
+      continue;
+    }
+    cursor += 1;
+  }
+  return ranges;
+}
+
+function isInsideInlineMathRange(
+  sourceStart: number,
+  ranges: readonly InlineMathRange[],
+): boolean {
+  return ranges.some(
+    (range) => sourceStart >= range.start && sourceStart < range.end,
+  );
+}
+
+function normalizeAcademicMathContent(value: string): string {
+  let normalized = Array.from(value)
+    .map((character) => UNICODE_SUPERSCRIPT_TO_ASCII[character] || character)
+    .join("")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(ACADEMIC_MATH_FORMAT_COMMAND_PATTERN, "")
+    .replace(/\\([A-Za-z]+)/g, (_match, command: string) => {
+      const operator = ACADEMIC_MATH_OPERATOR_COMMANDS[command];
+      return operator ?? command;
+    })
+    .replace(/[≤⩽]/g, "<=")
+    .replace(/[≥⩾]/g, ">=")
+    .replace(/[≠]/g, "!=")
+    .replace(/[×·⋅]/g, "*")
+    .replace(/[−–—]/g, "-")
+    .replace(/[≈∼]/g, "~");
+  normalized = Array.from(normalized)
+    .map((character) => GREEK_TOKEN_TRANSLITERATIONS[character] || character)
+    .join("");
+  return normalized.replace(/[\s{}_^]/g, "");
+}
+
+function extractAcademicMathOperators(value: string): string[] {
+  const normalized = normalizeAcademicMathContent(
+    value.replace(
+      /(?<=\p{L})[-‐‑‒–—]\s*\n\s*(?:\p{N}{1,4}\s*)?(?=\p{L})/gu,
+      "",
+    ),
+  );
+  return Array.from(
+    normalized.matchAll(/<=|>=|!=|\+-|-\+|[=+*/<>~()-]/g),
+    (match) => match[0],
+  );
+}
+
+function academicMathAtomSignature(value: string): string[] {
+  const normalized = normalizeAcademicMathContent(value).replace(
+    /[^\p{L}\p{N}=+*/<>~().!-]/gu,
+    "",
+  );
+  return Array.from(
+    normalized.matchAll(/<=|>=|!=|\+-|-\+|[=+*/<>~()-]|[\p{L}\p{N}.]+/gu),
+    (match) => match[0],
+  );
+}
+
+function compareBoundedInlineMathAgainstSource(
+  sourceText: string,
+  displayedText: string,
+  displayedRanges: readonly InlineMathRange[],
+): { supported: boolean; hardMismatch: boolean } | null {
+  const proseSegments: string[] = [];
+  let cursor = 0;
+  for (const range of displayedRanges) {
+    proseSegments.push(displayedText.slice(cursor, range.start));
+    cursor = range.end;
+  }
+  proseSegments.push(displayedText.slice(cursor));
+
+  const sourceIndex = buildQuoteTextIndex(sourceText);
+  const proseSpans = proseSegments.map((segment) => {
+    if (!buildQuoteTextIndex(segment).tokens.length) return null;
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      sourceIndex,
+      segment,
+    );
+    return spans.length === 1 ? spans[0] : null;
+  });
+  let compared = 0;
+  let allMatched = true;
+  let hardMismatch = false;
+  for (let mathIndex = 0; mathIndex < displayedRanges.length; mathIndex += 1) {
+    const left = proseSpans[mathIndex];
+    const right = proseSpans[mathIndex + 1];
+    if (!left || !right || right.sourceStart < left.sourceEnd) continue;
+    const sourceGap = sourceText.slice(left.sourceEnd, right.sourceStart);
+    const sourceAtoms = academicMathAtomSignature(sourceGap);
+    const displayedAtoms = academicMathAtomSignature(
+      displayedRanges[mathIndex].content,
+    );
+    if (!sourceAtoms.length || !displayedAtoms.length) continue;
+    compared += 1;
+    if (
+      sourceAtoms.length === displayedAtoms.length &&
+      sourceAtoms.every((atom, index) => atom === displayedAtoms[index])
+    ) {
+      continue;
+    }
+    allMatched = false;
+    const sourceHasUnrecoverableMathExtraction =
+      /[ðÞ�]/u.test(sourceGap) ||
+      /\|\s*\\(?:text|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol)\b/u.test(
+        sourceGap,
+      );
+    if (sourceHasUnrecoverableMathExtraction) continue;
+    const sourceOperators = extractAcademicMathOperators(sourceGap);
+    const displayedOperators = extractAcademicMathOperators(
+      displayedRanges[mathIndex].content,
+    );
+    if (
+      sourceOperators.length &&
+      displayedOperators.length &&
+      (sourceOperators.length !== displayedOperators.length ||
+        sourceOperators.some(
+          (operator, index) => operator !== displayedOperators[index],
+        ))
+    ) {
+      hardMismatch = true;
+      continue;
+    }
+    const sourceNumbers =
+      normalizeAcademicMathContent(sourceGap).match(/\p{N}+(?:\.\p{N}+)?/gu);
+    const displayedNumbers = normalizeAcademicMathContent(
+      displayedRanges[mathIndex].content,
+    ).match(/\p{N}+(?:\.\p{N}+)?/gu);
+    if (
+      sourceNumbers?.length &&
+      displayedNumbers?.length &&
+      (sourceNumbers.length !== displayedNumbers.length ||
+        sourceNumbers.some(
+          (number, index) => number !== displayedNumbers[index],
+        ))
+    ) {
+      hardMismatch = true;
+      continue;
+    }
+    const sourceCompact = sourceAtoms.join("");
+    const displayedCompact = displayedAtoms.join("");
+    const sourceWithoutOperators = sourceAtoms
+      .filter((atom) => !sourceOperators.includes(atom))
+      .join("");
+    const displayedWithoutOperators = displayedAtoms
+      .filter((atom) => !displayedOperators.includes(atom))
+      .join("");
+    const couldBeDroppedGlyphs =
+      sourceCompact.includes(displayedCompact) ||
+      displayedCompact.includes(sourceCompact) ||
+      (sourceWithoutOperators === displayedWithoutOperators &&
+        sourceOperators.length !== displayedOperators.length);
+    if (!couldBeDroppedGlyphs) hardMismatch = true;
+  }
+  if (!compared) return null;
+  return {
+    supported: compared === displayedRanges.length && allMatched,
+    hardMismatch,
+  };
+}
+
+function academicMathSegmentsAgree(
+  sourceText: string,
+  displayedText: string,
+): { supported: boolean; hardMismatch: boolean } {
+  const displayedRanges = collectPairedInlineMathRanges(displayedText);
+  if (!displayedRanges.length) {
+    return { supported: true, hardMismatch: false };
+  }
+  const sourceRanges = collectPairedInlineMathRanges(sourceText);
+  if (sourceRanges.length === displayedRanges.length && sourceRanges.length) {
+    const sourceMath = sourceRanges.map((range) =>
+      normalizeAcademicMathContent(range.content),
+    );
+    const displayedMath = displayedRanges.map((range) =>
+      normalizeAcademicMathContent(range.content),
+    );
+    const supported = sourceMath.every(
+      (segment, index) => segment === displayedMath[index],
+    );
+    return { supported, hardMismatch: !supported };
+  }
+
+  const boundedComparison = compareBoundedInlineMathAgainstSource(
+    sourceText,
+    displayedText,
+    displayedRanges,
+  );
+  if (boundedComparison) return boundedComparison;
+
+  const displayedOperators = displayedRanges.flatMap((range) =>
+    extractAcademicMathOperators(range.content),
+  );
+  if (!displayedOperators.length) {
+    return { supported: true, hardMismatch: false };
+  }
+  const sourceOperators = extractAcademicMathOperators(sourceText);
+  if (!sourceOperators.length) {
+    return { supported: false, hardMismatch: false };
+  }
+  const supported =
+    sourceOperators.length === displayedOperators.length &&
+    sourceOperators.every(
+      (operator, index) => operator === displayedOperators[index],
+    );
+  return {
+    supported,
+    hardMismatch:
+      sourceOperators.length === displayedOperators.length && !supported,
+  };
+}
+
+function collectAcademicQuoteTransformations(
+  sourceText: string,
+  displayedText: string,
+): string[] {
+  const transformations = new Set<string>();
+  if (ACADEMIC_MATH_FORMAT_COMMAND_PATTERN.test(displayedText)) {
+    transformations.add("latex-presentation");
+  }
+  ACADEMIC_MATH_FORMAT_COMMAND_PATTERN.lastIndex = 0;
+  if (/[_^]\s*\{|[⁰¹²³⁴⁵⁶⁷⁸⁹]/u.test(displayedText)) {
+    transformations.add("script-form");
+  }
+  if (
+    /\\(?:alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|phi|psi|omega)\b/u.test(
+      displayedText,
+    )
+  ) {
+    transformations.add("greek-name");
+  }
+  if (/\\(?:cdot|times|leq?|geq?|neq?)\b|[≤≥≠×·⋅−]/u.test(displayedText)) {
+    transformations.add("operator-glyph");
+  }
+  if (/[ﬀ-ﬆ]/u.test(sourceText) || /[ﬀ-ﬆ]/u.test(displayedText)) {
+    transformations.add("ligature");
+  }
+  if (/\p{L}[‐‑‒–—-]\s*\n\s*(?:\p{N}{1,4}\s*)?\p{L}/u.test(sourceText)) {
+    transformations.add("line-wrap-hyphenation");
+  }
+  if (/\s/u.test(sourceText) || /\s/u.test(displayedText)) {
+    transformations.add("whitespace");
+  }
+  return Array.from(transformations);
+}
+
+/**
+ * Describe why displayed academic wording does or does not align with one
+ * candidate source span. This assessment never authenticates a paraphrase:
+ * only bounded extraction and presentation changes can satisfy a token.
+ */
+export function assessAcademicQuoteAlignment(
+  sourceText: string,
+  displayedText: string,
+): AcademicQuoteAlignmentAssessment {
+  const sourceIndex = buildQuoteTextIndex(sourceText);
+  const displayedIndex = buildQuoteTextIndex(displayedText);
+  const displayedMathRanges = collectPairedInlineMathRanges(displayedText);
+  const supportedTokenIndexes = new Set<number>();
+  for (const run of collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+    sourceIndex,
+    displayedIndex,
+  )) {
+    for (
+      let tokenIndex = run.queryTokenStart;
+      tokenIndex < run.queryTokenEnd;
+      tokenIndex += 1
+    ) {
+      supportedTokenIndexes.add(tokenIndex);
+    }
+  }
+
+  const displayedTokens: AcademicQuoteAlignmentToken[] =
+    displayedIndex.tokens.map((token, index) => ({
+      text: token.text,
+      kind: /^\p{N}+$/u.test(token.text)
+        ? "number"
+        : isInsideInlineMathRange(token.sourceStart, displayedMathRanges)
+          ? "math-identifier"
+          : "prose",
+      supported: supportedTokenIndexes.has(index),
+      sourceStart: token.sourceStart,
+      sourceEnd: token.sourceEnd,
+    }));
+
+  for (const match of displayedText.matchAll(
+    /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|text|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol|hat|bar|vec|tilde|overline|underline|left|right|quad|qquad)\b|[{}$]/g,
+  )) {
+    const sourceStart = match.index || 0;
+    displayedTokens.push({
+      text: match[0],
+      kind: "formatting-syntax",
+      supported: true,
+      sourceStart,
+      sourceEnd: sourceStart + match[0].length,
+    });
+  }
+  for (const match of displayedText.matchAll(/[\u00ad\u0003]/g)) {
+    const sourceStart = match.index || 0;
+    displayedTokens.push({
+      text: match[0],
+      kind: "extraction-artifact",
+      supported: true,
+      sourceStart,
+      sourceEnd: sourceStart + match[0].length,
+    });
+  }
+
+  const mathAgreement = academicMathSegmentsAgree(sourceText, displayedText);
+  for (const range of displayedMathRanges) {
+    for (const operator of extractAcademicMathOperators(range.content)) {
+      displayedTokens.push({
+        text: operator,
+        kind: "operator",
+        supported: mathAgreement.supported,
+        sourceStart: range.start,
+        sourceEnd: range.end,
+      });
+    }
+  }
+
+  const unsupportedMeaningful = displayedTokens.filter(
+    (token) =>
+      !token.supported &&
+      token.kind !== "formatting-syntax" &&
+      token.kind !== "extraction-artifact",
+  );
+  const sourceHasLikelyOcrFragmentation =
+    /[ðÞ]|(?:\b\p{L}\b[ \t]+){2,}\b\p{L}\b/u.test(sourceText);
+  const hasHardUnsupportedToken = unsupportedMeaningful.some(
+    (token) =>
+      !sourceHasLikelyOcrFragmentation &&
+      (token.kind === "prose" ||
+        (token.kind === "number" &&
+          !isInsideInlineMathRange(token.sourceStart, displayedMathRanges))),
+  );
+  const transformations = collectAcademicQuoteTransformations(
+    sourceText,
+    displayedText,
+  );
+  return {
+    displayedTokens,
+    transformations,
+    allMeaningfulTokensSupported: unsupportedMeaningful.length === 0,
+    hasUnexplainedSemanticHardDifference:
+      hasHardUnsupportedToken || mathAgreement.hardMismatch,
+    extractionSensitive:
+      displayedMathRanges.length > 0 || transformations.length > 1,
+  };
 }

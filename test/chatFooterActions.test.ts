@@ -1,10 +1,13 @@
 import { assert } from "chai";
 
 import {
+  appendAssistantResponseExpandAction,
   appendUserMessageCopyAction,
+  buildAssistantResponseActionTarget,
   shouldShowAssistantFooterActions,
   shouldShowUserFooterCopyAction,
 } from "../src/modules/contextPanel/chat";
+import { setResponseActionRunner } from "../src/modules/contextPanel/state";
 
 class FakeElement {
   public readonly children: FakeElement[] = [];
@@ -122,6 +125,115 @@ describe("chat footer actions", function () {
           compactMarker: true,
         }),
       );
+    });
+
+    it("builds larger-view targets for text and image-only responses, but not empty responses", function () {
+      const item = { id: 42, libraryID: 1 } as unknown as Zotero.Item;
+      const base = {
+        item,
+        pairedUserMessage: null,
+        conversationKey: 9,
+      };
+
+      const textTarget = buildAssistantResponseActionTarget({
+        ...base,
+        message: {
+          role: "assistant",
+          text: "A complete answer",
+          timestamp: 200,
+          modelName: "Codex",
+        },
+        webSourceAnchors: [
+          {
+            offset: 17,
+            sources: [
+              {
+                sourceId: "source-1",
+                url: "https://example.com",
+                hostname: "example.com",
+                organization: "Example",
+                title: "Example source",
+              },
+            ],
+          },
+        ],
+      });
+      assert.equal(textTarget?.contentText, "A complete answer");
+      assert.equal(textTarget?.assistantTimestamp, 200);
+      assert.equal(
+        textTarget?.webSourceAnchors?.[0]?.sources[0]?.title,
+        "Example source",
+      );
+
+      const imageTarget = buildAssistantResponseActionTarget({
+        ...base,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 201,
+          generatedImages: [
+            {
+              id: "generated-1",
+              src: "data:image/png;base64,AA==",
+            },
+          ],
+        },
+      });
+      assert.lengthOf(imageTarget?.generatedImages || [], 1);
+
+      const emptyTarget = buildAssistantResponseActionTarget({
+        ...base,
+        message: { role: "assistant", text: "   ", timestamp: 202 },
+      });
+      assert.isNull(emptyTarget);
+    });
+
+    it("appends an accessible larger-view action and routes its exact response target", async function () {
+      const doc = new FakeDocument(async () => {});
+      const body = new FakeElement(doc, "div");
+      const actions = new FakeElement(doc, "div");
+      const target = {
+        item: { id: 42, libraryID: 1 } as unknown as Zotero.Item,
+        contentText: "Expanded answer",
+        modelName: "Codex",
+        conversationKey: 9,
+        userTimestamp: 100,
+        assistantTimestamp: 200,
+      };
+      let invokedAction = "";
+      let invokedTarget: unknown = null;
+      setResponseActionRunner(
+        body as unknown as Element,
+        async (action, value) => {
+          invokedAction = action;
+          invokedTarget = value;
+        },
+      );
+
+      const button = appendAssistantResponseExpandAction({
+        body: body as unknown as Element,
+        doc: doc as unknown as Document,
+        actions: actions as unknown as HTMLElement,
+        target,
+      });
+
+      assert.equal(actions.children[0], button);
+      assert.include(button!.className, "llm-message-action-expand");
+      assert.equal(button!.title, "Open response in larger view");
+      assert.equal(
+        (button as unknown as FakeElement).attributes["aria-label"],
+        "Open response in larger view",
+      );
+      assert.equal(
+        (button as unknown as FakeElement).dataset.responseAction,
+        "expand",
+      );
+
+      const event = await (button as unknown as FakeElement).dispatch("click");
+      assert.isTrue(event.defaultPrevented);
+      assert.isTrue(event.propagationStopped);
+      assert.equal(invokedAction, "expand");
+      assert.equal(invokedTarget, target);
     });
   });
 

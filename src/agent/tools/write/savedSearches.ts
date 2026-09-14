@@ -15,6 +15,10 @@ import {
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import {
+  SEARCH_CONDITION_SCHEMA,
+  parseSearchCondition,
+} from "../searchConditions";
+import {
   executeAndRecordUndo,
   planLibraryMutations,
 } from "./mutateLibraryShared";
@@ -52,18 +56,7 @@ export function createSavedSearchTool(
             type: "array",
             description:
               "The conditions to save, in the same shape library_search takes.",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["condition", "operator"],
-              properties: {
-                condition: { type: "string" },
-                operator: { type: "string" },
-                value: { anyOf: [{ type: "string" }, { type: "number" }] },
-                mode: { type: "string" },
-                required: { type: "boolean" },
-              },
-            },
+            items: SEARCH_CONDITION_SCHEMA,
           },
           joinMode: { type: "string", enum: ["all", "any"] },
           savedSearchId: {
@@ -78,7 +71,7 @@ export function createSavedSearchTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -126,22 +119,8 @@ export function createSavedSearchTool(
       }
       const conditions: SaveSavedSearchOperation["conditions"] = [];
       for (const raw of args.conditions) {
-        if (!validateObject<Record<string, unknown>>(raw)) continue;
-        const condition =
-          typeof raw.condition === "string" ? raw.condition.trim() : "";
-        const operator =
-          typeof raw.operator === "string" ? raw.operator.trim() : "";
-        if (!condition || !operator) continue;
-        conditions.push({
-          condition,
-          operator,
-          value:
-            typeof raw.value === "string" || typeof raw.value === "number"
-              ? raw.value
-              : undefined,
-          mode: typeof raw.mode === "string" ? raw.mode.trim() : undefined,
-          required: raw.required === true ? true : undefined,
-        });
+        const condition = parseSearchCondition(raw);
+        if (condition?.operator) conditions.push(condition);
       }
       if (!conditions.length) {
         return fail("Every condition needs a condition name and an operator.");
@@ -210,7 +189,7 @@ export function createSavedSearchTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

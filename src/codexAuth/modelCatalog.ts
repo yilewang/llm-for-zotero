@@ -298,14 +298,12 @@ export function getCodexDirectReasoningChoices(
   if (!catalogModel) {
     return buildCodexReasoningChoices({
       efforts: [],
-      excludedEfforts: ["ultra"],
       showDefaultInAutoLabel: true,
     });
   }
   return buildCodexReasoningChoices({
     efforts: catalogModel.supportedReasoningEfforts,
     defaultEffort: catalogModel.defaultReasoningEffort,
-    excludedEfforts: ["ultra"],
     showDefaultInAutoLabel: true,
   });
 }

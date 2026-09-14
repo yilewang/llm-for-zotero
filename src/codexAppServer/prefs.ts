@@ -1,4 +1,9 @@
 declare const Zotero: any;
+declare const Services:
+  | {
+      prefs?: { prefHasUserValue?: (key: string) => boolean };
+    }
+  | undefined;
 
 import { config } from "../../package.json";
 import {
@@ -16,6 +21,13 @@ import {
   getPaperRestoreTarget,
   rememberPaperRestoreTarget,
 } from "../shared/paperConversationRestore";
+import {
+  CODEX_ASK_PERMISSION_STATE,
+  cloneCodexPermissionState,
+  deserializeCodexPermissionState,
+  serializeCodexPermissionState,
+  type CodexPermissionState,
+} from "./permissionState";
 
 export type CodexNativeSkillRoutingMode =
   | "hybrid"
@@ -27,6 +39,7 @@ export type CodexAppServerApprovalsReviewer = "user" | "auto_review";
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
   set?: (key: string, value: unknown, global?: boolean) => void;
+  prefHasUserValue?: (key: string) => boolean;
 };
 
 function getZoteroPrefs(): ZoteroPrefsAPI | null {
@@ -54,6 +67,20 @@ function getNumberPref(key: string): number | null {
 
 function setPref(key: string, value: unknown): void {
   getZoteroPrefs()?.set?.(prefKey(key), value, true);
+}
+
+export function codexPrefHasUserValue(key: string): boolean {
+  try {
+    if (getZoteroPrefs()?.prefHasUserValue) {
+      return Boolean(getZoteroPrefs()?.prefHasUserValue?.(prefKey(key)));
+    }
+    if (typeof Services !== "undefined" && Services?.prefs?.prefHasUserValue) {
+      return Boolean(Services.prefs.prefHasUserValue(prefKey(key)));
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function getJsonPref(key: string): Record<string, number> {
@@ -147,6 +174,66 @@ export function getCodexBinaryPathPref(): string {
 
 export function setCodexBinaryPathPref(path: string): void {
   setPref("codexAppServerPath", String(path || "").trim());
+}
+
+export function getCodexPermissionProfilePref(): string {
+  return (
+    getStringPref("codexAppServerPermissionProfile").trim() || ":read-only"
+  );
+}
+
+export function setCodexPermissionProfilePref(profileId: string): void {
+  const normalized = String(profileId || "").trim();
+  if (!normalized) return;
+  setPref("codexAppServerPermissionProfile", normalized);
+}
+
+export type CodexPermissionStatePreference = {
+  state: CodexPermissionState;
+  hasUserValue: boolean;
+  error?: string;
+  raw?: string;
+};
+
+export function readCodexPermissionStatePref(): CodexPermissionStatePreference {
+  const hasUserValue = codexPrefHasUserValue("codexAppServerPermissionState");
+  const raw = getStringPref("codexAppServerPermissionState").trim();
+  if (!raw) {
+    return {
+      state: cloneCodexPermissionState(CODEX_ASK_PERMISSION_STATE),
+      hasUserValue,
+      ...(hasUserValue
+        ? {
+            error:
+              "The saved Codex permission state is empty. Choose a Codex permission mode.",
+          }
+        : {}),
+    };
+  }
+  const state = deserializeCodexPermissionState(raw);
+  if (!state) {
+    return {
+      state: cloneCodexPermissionState(CODEX_ASK_PERMISSION_STATE),
+      hasUserValue,
+      raw,
+      error:
+        "The saved Codex permission state is invalid. Choose a Codex permission mode.",
+    };
+  }
+  return { state, hasUserValue, raw };
+}
+
+export function getCodexPermissionStatePref(): CodexPermissionState {
+  const preference = readCodexPermissionStatePref();
+  if (preference.error) throw new Error(preference.error);
+  return preference.state;
+}
+
+export function setCodexPermissionStatePref(state: CodexPermissionState): void {
+  setPref(
+    "codexAppServerPermissionState",
+    serializeCodexPermissionState(state),
+  );
 }
 
 export function isCodexZoteroMcpToolsEnabled(): boolean {

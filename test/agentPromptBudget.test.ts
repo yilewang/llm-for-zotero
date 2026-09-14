@@ -96,7 +96,8 @@ describe("agent prompt budget", function () {
     });
     assert.equal(limits.contextWindow, 12_000);
     assert.equal(limits.inputLimitSource, "advanced");
-    assert.equal(limits.softLimitTokens, 10_800);
+    // 90% usable window minus the answer reserve (capped at a quarter of it).
+    assert.equal(limits.softLimitTokens, 10_800 - 2_700);
     assert.notProperty(limits, "toolResultMaxTokens");
   });
 
@@ -111,7 +112,7 @@ describe("agent prompt budget", function () {
 
     assert.equal(limits.contextWindow, 18_000);
     assert.equal(limits.inputLimitSource, "user");
-    assert.equal(limits.softLimitTokens, 16_200);
+    assert.equal(limits.softLimitTokens, 16_200 - 4_050);
   });
 
   it("leaves small prompts unchanged", function () {
@@ -326,6 +327,66 @@ describe("agent prompt budget", function () {
     assert.equal(modelFacing.snippets[0].matchMethod, "bm25");
     assert.equal(modelFacing.snippets[0].paperContext.itemId, "20000");
     assert.equal(modelFacing.snippets[0].paperContext.contextItemId, "30000");
+  });
+
+  it("preserves the original paper-evidence handle and progress when reducing its payload", function () {
+    const evidence = buildEvidenceToolMessage(80);
+    evidence.name = "paper_read";
+    const content = JSON.parse(String(evidence.content));
+    content.toolResultHandle = "trh_original_paper_evidence";
+    content.paperEvidenceProgress = {
+      frontier: "advanced",
+      coverage: "targeted",
+      newOccurrenceIds: ["paper-occurrence:one"],
+      repeatedOccurrenceIds: [],
+      cumulativeOccurrenceCount: 1,
+      recommendation: "answer_or_self_check",
+      reason: "New source occurrences were delivered.",
+    };
+    content.paperEvidenceReferences = [
+      {
+        sourceToolCallId: "call-1",
+        occurrenceId: "paper-occurrence:one",
+        quoteCitationIds: ["quote-one"],
+        toolResultHandle: "trh_original_paper_evidence",
+      },
+    ];
+    evidence.content = JSON.stringify(content);
+    const result = enforceAgentPromptBudget({
+      messages: [
+        { role: "system", content: "Use paper evidence." },
+        { role: "user", content: "Answer from the paper." },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-1",
+              name: "paper_read",
+              arguments: { mode: "targeted", query: "method" },
+            },
+          ],
+        },
+        evidence,
+      ],
+      model: "claude-haiku-4-5",
+      inputTokenCap: 6_000,
+      conversationKey: 1,
+      resourceSignature: "scope-a",
+    });
+
+    assert.isTrue(result.changed);
+    const toolMessage = result.messages.find(
+      (message) => message.role === "tool",
+    );
+    assert.equal(toolMessage?.role, "tool");
+    const modelFacing = JSON.parse(String(toolMessage?.content));
+    assert.equal(modelFacing.toolResultHandle, "trh_original_paper_evidence");
+    assert.equal(modelFacing.paperEvidenceProgress.frontier, "advanced");
+    assert.equal(
+      modelFacing.paperEvidenceReferences[0].occurrenceId,
+      "paper-occurrence:one",
+    );
   });
 
   it("strips orphan quote citation ids when evidence must be reduced", function () {
@@ -573,5 +634,53 @@ describe("CJK convergence", function () {
     });
 
     assert.isAtMost(result.estimatedAfterTokens, result.softLimitTokens);
+  });
+});
+
+describe("agent prompt budget and transmitted output cap", function () {
+  it("keeps input plus the Anthropic cap inside the context window on a long transcript", async function () {
+    const { resolveAgentPromptBudgetLimits } =
+      await import("../src/agent/context/promptBudget");
+    const { resolveOutputRequestPolicy, resolveTransmittedOutputPolicy } =
+      await import("../src/utils/outputTokenPolicy");
+    const identity = {
+      model: "claude-opus-4-6",
+      apiBase: "https://api.anthropic.com",
+      protocol: "anthropic_messages" as const,
+      authMode: "api_key" as const,
+    };
+    const limits = resolveAgentPromptBudgetLimits({
+      model: identity.model,
+      apiBase: identity.apiBase,
+      providerProtocol: identity.protocol,
+      authMode: identity.authMode,
+      outputTokenLimit: { mode: "auto" },
+    });
+    const policy = resolveOutputRequestPolicy({
+      setting: { mode: "auto" },
+      ...identity,
+    });
+    assert.equal(policy.mode, "numeric");
+    // Any prompt the budget lets through must still fit next to the cap we send.
+    for (const estimatedInputTokens of [
+      1_000,
+      72_000,
+      136_000,
+      limits.softLimitTokens,
+    ]) {
+      const transmitted = resolveTransmittedOutputPolicy({
+        policy,
+        contextWindow: limits.contextWindow,
+        estimatedInputTokens,
+      });
+      assert.equal(transmitted.mode, "numeric");
+      if (transmitted.mode !== "numeric") continue;
+      assert.isAtLeast(transmitted.tokens, 8_192);
+      assert.isAtMost(
+        estimatedInputTokens + transmitted.tokens,
+        limits.contextWindow,
+        `input ${estimatedInputTokens} + cap ${transmitted.tokens} exceeds the window`,
+      );
+    }
   });
 });

@@ -17,6 +17,29 @@ export type SupportedProviderPresetId =
 
 export type ProviderPresetId = SupportedProviderPresetId | "customized";
 
+/** Preserve only explicit selections recognized by the provider registry. */
+export function normalizeProviderPresetId(
+  value: unknown,
+): ProviderPresetId | undefined {
+  return value === "customized" ||
+    PROVIDER_PRESETS.some((preset) => preset.id === value)
+    ? (value as ProviderPresetId)
+    : undefined;
+}
+
+/** Explicit provider choices take precedence over legacy URL inference. */
+export function resolveProviderPresetId(group: {
+  authMode: string;
+  apiBase?: string;
+  presetIdOverride?: ProviderPresetId;
+}): ProviderPresetId {
+  if (group.authMode !== "api_key") return "customized";
+  return (
+    normalizeProviderPresetId(group.presetIdOverride) ??
+    detectProviderPreset(group.apiBase || "")
+  );
+}
+
 export type ProviderPreset = {
   id: SupportedProviderPresetId;
   label: string;

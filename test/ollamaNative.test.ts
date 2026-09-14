@@ -183,7 +183,7 @@ describe("ollama native protocol", function () {
         (event) => reasoning.push(event.details || ""),
       );
 
-      assert.equal(text, "The capital is Canberra.");
+      assert.equal(text.text, "The capital is Canberra.");
       assert.deepEqual(deltas, ["The capital ", "is Canberra."]);
       assert.equal(reasoning.join(""), "Let me think. Canberra it is.");
     });
@@ -221,6 +221,36 @@ describe("ollama native protocol", function () {
       assert.equal(usage!.completionTokens, 3);
     });
 
+    it("preserves partial text when done_reason reports a length cutoff", async function () {
+      mockFetch(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        body: makeNdjsonStream([
+          '{"message":{"content":"Partial answer"},"done":true,"done_reason":"length"}\n',
+        ]),
+        json: async () => ({}),
+        text: async () => "",
+      }));
+
+      const outcome = await callLLMStream(
+        {
+          prompt: "hi",
+          model: "qwen3:8b",
+          apiBase: "http://localhost:11434",
+          providerProtocol: "ollama_native",
+        },
+        () => undefined,
+      );
+
+      assert.equal(outcome.text, "Partial answer");
+      assert.deepEqual(outcome.completion, {
+        status: "incomplete",
+        reason: "output_limit",
+        providerReason: "length",
+      });
+    });
+
     it("handles a JSON object split across chunk boundaries", async function () {
       const deltas: string[] = [];
       mockFetch(async () => ({
@@ -245,7 +275,7 @@ describe("ollama native protocol", function () {
         (delta) => deltas.push(delta),
       );
 
-      assert.equal(text, "split across chunks");
+      assert.equal(text.text, "split across chunks");
     });
 
     it("flushes a final object that arrives without a trailing newline", async function () {
@@ -270,7 +300,7 @@ describe("ollama native protocol", function () {
         () => undefined,
       );
 
-      assert.equal(text, "no trailing newline");
+      assert.equal(text.text, "no trailing newline");
     });
 
     it("keeps multibyte characters intact across chunk boundaries", async function () {
@@ -306,7 +336,7 @@ describe("ollama native protocol", function () {
         () => undefined,
       );
 
-      assert.equal(text, "思考中");
+      assert.equal(text.text, "思考中");
     });
   });
 
@@ -352,7 +382,7 @@ describe("ollama native protocol", function () {
         serializedMessages.split(PAPER_CITATION_CONTRACT).length - 1,
         1,
       );
-      // The plugin's 4096 default would let a thinking model spend the whole
+      // The plugin's 8192 default would let a thinking model spend the whole
       // budget reasoning and return empty content.
       assert.equal(
         (body.options as Record<string, unknown>)?.num_predict,
@@ -444,7 +474,7 @@ describe("ollama native protocol", function () {
       );
     });
 
-    it("preserves explicit output above detected limits", async function () {
+    it("clamps a custom output limit to the detected model maximum", async function () {
       let body: Record<string, unknown> = {};
       mockFetch(async (_url, init) => {
         body = JSON.parse(String(init?.body || "{}")) as Record<
@@ -469,8 +499,7 @@ describe("ollama native protocol", function () {
           model: "qwen3.8-max",
           apiBase: "http://localhost:11434",
           providerProtocol: "ollama_native",
-          maxTokens: 200_000,
-          maxTokensExplicit: true,
+          outputTokenLimit: { mode: "custom", tokens: 200_000 },
           profileOverride: {
             forModel: "qwen3.8-max",
             limits: { outputTokens: 64_000 },
@@ -481,7 +510,7 @@ describe("ollama native protocol", function () {
 
       assert.equal(
         (body.options as Record<string, unknown>)?.num_predict,
-        200_000,
+        64_000,
       );
     });
 
@@ -510,8 +539,7 @@ describe("ollama native protocol", function () {
           model: "gemma3",
           apiBase: "http://localhost:11434",
           providerProtocol: "ollama_native",
-          maxTokens: 4096,
-          maxTokensExplicit: true,
+          outputTokenLimit: { mode: "custom", tokens: 4096 },
         },
         () => undefined,
       );
@@ -543,7 +571,7 @@ describe("ollama native protocol", function () {
         providerProtocol: "ollama_native",
       });
 
-      assert.equal(text, "Canberra");
+      assert.equal(text.text, "Canberra");
     });
 
     it("does not promote reasoning into the answer when content is empty", async function () {
@@ -572,7 +600,7 @@ describe("ollama native protocol", function () {
         providerProtocol: "ollama_native",
       });
 
-      assert.equal(text, "");
+      assert.equal(text.text, "");
     });
   });
 });

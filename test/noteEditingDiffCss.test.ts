@@ -52,9 +52,31 @@ describe("note editing diff review CSS", function () {
       css,
       ".window-is-dark .llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-segment-add",
     );
+    const diffLineRule = extractCssRuleContainingSelector(
+      css,
+      ".llm-agent-hitl-diff-line",
+    );
+    const diffGutterRule = extractCssRuleContainingSelector(
+      css,
+      ".llm-agent-hitl-diff-gutter",
+    );
+    const addLineRule = extractCssRuleContainingSelector(
+      css,
+      ".llm-agent-hitl-diff-line-add",
+    );
+    const removeLineRule = extractCssRuleContainingSelector(
+      css,
+      ".llm-agent-hitl-diff-line-remove",
+    );
 
     assert.match(diffRule, /--llm-agent-hitl-diff-add-text:\s*inherit\s*;/);
     assert.match(diffRule, /--llm-agent-hitl-diff-remove-text:\s*inherit\s*;/);
+    assert.include(diffRule, "border-radius: 10px;");
+    assert.include(diffRule, "overflow: hidden;");
+    assert.include(diffLineRule, "grid-template-columns: 46px minmax(0, 1fr);");
+    assert.include(diffGutterRule, "ui-monospace");
+    assert.include(addLineRule, "background: rgba(34, 197, 94, 0.14);");
+    assert.include(removeLineRule, "background: rgba(239, 68, 68, 0.14);");
     assert.include(darkDiffRule, "--llm-agent-hitl-diff-add-text: #7ce4a1;");
     assert.include(darkDiffRule, "--llm-agent-hitl-diff-remove-text: #ff9f9f;");
     assert.include(

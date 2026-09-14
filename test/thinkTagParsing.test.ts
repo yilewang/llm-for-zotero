@@ -69,7 +69,7 @@ describe("inline reasoning tag parsing", function () {
       () => undefined,
       (event) => reasoning.push(event.details || ""),
     );
-    return { answer, reasoning: reasoning.join("") };
+    return { answer: answer.text, reasoning: reasoning.join("") };
   }
 
   beforeEach(function () {

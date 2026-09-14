@@ -43,6 +43,36 @@ describe("multi-operation durable mutation recovery", function () {
     };
   }
 
+  it("reloads native post-state before reconciling a failed save", async function () {
+    let pendingTags: { tag: string; type: number }[] | undefined = [
+      { tag: "unsaved", type: 0 },
+    ];
+    let storedTags: { tag: string; type: number }[] = [];
+    let reloads = 0;
+    const item = {
+      id: 42,
+      getTags: () => pendingTags ?? storedTags,
+      _clearChanged: () => {
+        pendingTags = undefined;
+      },
+      reload: async (_types: unknown, force: boolean) => {
+        assert.isTrue(force);
+        reloads++;
+        storedTags = [];
+      },
+    };
+    const service = new LibraryMutationService({
+      getItem: () => item,
+    } as never);
+    const state = await service.captureOperationState(
+      { type: "apply_tags", itemIds: [42], tags: ["unsaved"] },
+      context,
+      { reconciliation: true },
+    );
+    assert.equal(reloads, 1);
+    assert.deepEqual(state.items?.[0].tags, []);
+  });
+
   it("keeps an uncertain irreversible step in the parent recovery barrier", function () {
     const summary = summarizeMutationOutcomes([
       {

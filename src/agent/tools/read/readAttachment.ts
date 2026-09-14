@@ -11,6 +11,7 @@ import {
 } from "../shared";
 import { normalizeTarget, firstNonImageAttachment } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 
 type ReadAttachmentInput = {
   target?: PdfTarget;
@@ -72,8 +73,8 @@ export function createReadAttachmentTool(
           },
         },
       },
-      mutability: "read",
-      requiresConfirmation: true,
+      executionClass: "read",
+      requiresConfirmation: false,
     },
     presentation: {
       label: "Read Attachment",
@@ -84,8 +85,6 @@ export function createReadAttachmentTool(
             ? "Preparing file for model"
             : "Reading attachment content";
         },
-        onPending: "Waiting for your approval before sending document content",
-        onApproved: "Approval received - sending document content",
         onDenied: "Attachment reading cancelled",
         onSuccess: ({ content }) => {
           const c = content as Record<string, unknown> | null;
@@ -93,10 +92,6 @@ export function createReadAttachmentTool(
           return "Read attachment content";
         },
       },
-    },
-    shouldRequireConfirmation: async (input) => {
-      // Only require confirmation for attachFile mode (sending whole file)
-      return Boolean(input.attachFile);
     },
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
@@ -157,6 +152,14 @@ export function createReadAttachmentTool(
         ],
       };
     },
+    planInvocation: (input) =>
+      readOnlyInvocationPlan({
+        domains: input.attachFile ? ["filesystem", "network"] : ["filesystem"],
+        effects: input.attachFile ? ["read", "egress"] : ["read"],
+        reason: input.attachFile
+          ? "The host reads the attachment and sends the reviewed artifact to the model."
+          : "The host-owned attachment reader returns extracted text without changing the file.",
+      }),
     execute: async (input, context) => {
       if (input.attachFile) {
         // Attach file mode — prepare file for model

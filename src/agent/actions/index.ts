@@ -34,7 +34,7 @@ export type {
   PaperScopedActionTarget,
 } from "./paperScope";
 export {
-  resolvePaperScopedCommandInput,
+  resolvePaperScopedDefaultInput,
   resolvePaperScopedActionTargets,
   normalizePaperScopedActionInput,
   normalizePositiveIntArray,

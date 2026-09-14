@@ -1,27 +1,40 @@
+import { canonicalNoteHtml } from "../src/utils/noteHtml";
 import { assert } from "chai";
-import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
-import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
-import {
-  createAssistantResponseNote,
-  createNoteFromChatHistory,
-} from "../src/modules/contextPanel/notes";
-import {
-  getTrackedAssistantNoteForParent,
-  rememberAssistantNoteForParent,
-} from "../src/modules/contextPanel/prefHelpers";
-import {
-  containsVisualFigureFences,
-  resolveSvgFigureRasterSize,
-} from "../src/modules/contextPanel/figureExport";
-import type { AgentToolContext } from "../src/agent/types";
-import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { readFileSync } from "node:fs";
+import { ActionContractService } from "../src/agent/contracts/actionContract";
+import { setOriginalAgentPermissionMode } from "../src/agent/originalAgentPermissionMode";
 import { revertActions } from "../src/agent/services/changeReverter";
+import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import {
   initAgentChangeJournal,
   listJournalActions,
 } from "../src/agent/store/changeJournal";
 import { sha256Text } from "../src/agent/store/journalRecoveryBlobStore";
+import { createRenamedTool } from "../src/agent/tools/facade";
+import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
+import type { AgentToolContext } from "../src/agent/types";
+import {
+  containsVisualFigureFences,
+  resolveSvgFigureRasterSize,
+} from "../src/modules/contextPanel/figureExport";
+import {
+  createAssistantResponseNote,
+  createNoteFromChatHistory,
+  normalizeNoteSourceText,
+  stripNoteHtml,
+} from "../src/modules/contextPanel/notes";
+import {
+  getTrackedAssistantNoteForParent,
+  rememberAssistantNoteForParent,
+} from "../src/modules/contextPanel/prefHelpers";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import {
+  actionFixture,
+  classifiedFixture,
+  semanticFixture,
+} from "./helpers/semanticIntent";
 
 describe("editCurrentNote create tracking", function () {
   it("only defers notes that contain supported visual figure fences", function () {
@@ -39,6 +52,7 @@ describe("editCurrentNote create tracking", function () {
 
   const baseContext: AgentToolContext = {
     request: {
+      classifiedIntent: classifiedFixture(),
       conversationKey: 91,
       mode: "agent",
       userText: "save this note",
@@ -143,6 +157,8 @@ describe("editCurrentNote create tracking", function () {
       return "";
     }
 
+    async loadPrimaryData() {}
+
     async saveTx(options: { notifierQueue?: unknown } = {}) {
       this.saveOptionsHistory.push(options);
       if (!this.id) {
@@ -219,7 +235,12 @@ describe("editCurrentNote create tracking", function () {
           prefStore.set(key, value);
         },
       },
+      Utilities: { generateObjectKey: () => `KEY${nextNoteId}` },
       Items: {
+        getByLibraryAndKey: (libraryID: number, key: string) =>
+          [...savedItems.values()].find(
+            (item) => item.libraryID === libraryID && item.key === key,
+          ) || null,
         get: (id: number) =>
           savedItems.get(id) || (id === 9 ? parentItem : null),
       },
@@ -270,6 +291,74 @@ describe("editCurrentNote create tracking", function () {
     }
   });
 
+  it("copies an existing note without adding provenance or rewriting its native formatting", async function () {
+    const html = readFileSync("test/fixtures/live-synthetic-note.html", "utf8");
+    const original = saveExistingNote(80, 9, html);
+    const tool = createEditCurrentNoteTool({
+      getItem: (id: number) => savedItems.get(id),
+    } as never);
+    const validated = tool.validate({
+      mode: "create",
+      target: "standalone",
+      sourceNoteId: 80,
+    });
+    assert.isTrue(validated.ok, JSON.stringify(validated));
+    if (!validated.ok) return;
+    await tool.planInvocation!(validated.value, baseContext);
+    assert.equal(
+      tool.describeAction!(validated.value, baseContext)[0].parameters
+        ?.expectedText,
+      stripNoteHtml(html),
+    );
+    const result = (await tool.execute(validated.value, baseContext))
+      .content as any;
+    const copy = savedItems.get(result.noteId)!;
+    assert.notEqual(copy.id, original.id);
+    assert.isUndefined(copy.parentID);
+    assert.equal(copy.getNote(), html);
+    assert.equal(original.getNote(), html);
+    assert.equal((copy.getNote().match(/Model response:/g) || []).length, 1);
+  });
+
+  it("rejects ambiguous or non-create source-note copying before writing", function () {
+    const tool = createEditCurrentNoteTool({} as never);
+    for (const args of [
+      { mode: "create", sourceNoteId: 80, content: "Conflicting rewrite" },
+      {
+        mode: "edit",
+        sourceNoteId: 80,
+        patches: [{ find: "a", replace: "b" }],
+      },
+      { mode: "append", sourceNoteId: 80, content: "Append" },
+    ])
+      assert.isFalse(tool.validate(args).ok, JSON.stringify(args));
+  });
+
+  it("rejects copying a missing source or a note from another library", async function () {
+    const note = saveExistingNote(80, undefined, "<p>Private source</p>");
+    note.libraryID = 2;
+    const tool = createEditCurrentNoteTool({
+      getItem: (id: number) => savedItems.get(id),
+    } as never);
+    for (const sourceNoteId of [80, 404]) {
+      const input = tool.validate({
+        mode: "create",
+        target: "standalone",
+        sourceNoteId,
+      });
+      assert.isTrue(input.ok);
+      if (!input.ok) continue;
+      let error = "";
+      try {
+        await tool.planInvocation!(input.value, baseContext);
+      } catch (e) {
+        error = String(e);
+      }
+      assert.match(error, /source note.*(?:library|available)/i);
+      assert.equal(savedItems.size, 1);
+    }
+  });
+
   it("does not remember agent-created HTML notes for response-menu appends", async function () {
     const tool = createEditCurrentNoteTool({
       getItem: (id: number) =>
@@ -280,7 +369,7 @@ describe("editCurrentNote create tracking", function () {
               isRegularItem: () => true,
               isAttachment: () => false,
             } as unknown as Zotero.Item)
-          : null,
+          : savedItems.get(id) || null,
     } as never);
 
     const result = (
@@ -294,7 +383,7 @@ describe("editCurrentNote create tracking", function () {
         baseContext,
       )
     ).content;
-    assert.deepEqual(result, {
+    assert.deepInclude(result, {
       status: "created",
       noteId: 100,
       title: "",
@@ -308,7 +397,7 @@ describe("editCurrentNote create tracking", function () {
         note: {
           itemId: 100,
           libraryID: 1,
-          key: "NOTEKEY",
+          key: "KEY100",
           noteKind: "item",
           parentItemId: 9,
           dateAdded: "2026-08-28 10:00:00",
@@ -320,6 +409,534 @@ describe("editCurrentNote create tracking", function () {
 
     const tracked = getTrackedAssistantNoteForParent(9);
     assert.isNull(tracked);
+    const cards = tool.presentation?.buildResultCards?.(result);
+    assert.lengthOf(
+      cards || [],
+      1,
+      "a verified creation displays its saved note",
+    );
+    assert.equal((cards![0] as any).kind, "saved_note");
+    assert.equal((cards![0] as any).note.itemId, 100);
+    assert.include((cards![0] as any).bodyHtml, "Styled note");
+    assert.isNull(
+      tool.presentation!.buildResultCards!({ status: "created", noteId: 100 }),
+      "a narrative without a native creation receipt is not a saved card",
+    );
+    savedItems.get(100)!.deleted = true;
+    assert.isNull(
+      tool.presentation!.buildResultCards!(result),
+      "a deleted note is not advertised as available",
+    );
+  });
+
+  for (const mode of ["create", "edit", "append"] as const) {
+    it(`saves the editable review payload for note ${mode} without duplicating append content`, async function () {
+      const existing = saveExistingNote(50, 9, "<p>Existing body</p>");
+      const tool = createEditCurrentNoteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode,
+        content: "Proposed body",
+        target: "item",
+        targetNoteId: 50,
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      const action = await tool.createPendingAction!(
+        validated.value,
+        baseContext,
+      );
+      const field = action.fields.find(
+        (entry) => entry.type === "textarea" && entry.id === "content",
+      );
+      assert.exists(field, "every note review offers an editable payload");
+      assert.equal((field as { value: string }).value, "Proposed body");
+      assert.equal(
+        existing.getNote(),
+        "<p>Existing body</p>",
+        "preview never writes",
+      );
+      const edited = await tool.applyConfirmation!(
+        validated.value,
+        { content: "Human edited body" },
+        baseContext,
+      );
+      assert.isTrue(edited.ok);
+      if (!edited.ok) return;
+      await tool.execute(edited.value, baseContext);
+      const saved =
+        mode === "create"
+          ? childNotes(9).find((note) => note.id !== 50)!
+          : existing;
+      assert.include(saved.getNote(), "Human edited body");
+      assert.notInclude(saved.getNote(), "Proposed body");
+      assert.equal(
+        (saved.getNote().match(/Existing body/g) || []).length,
+        mode === "append" ? 1 : 0,
+      );
+    });
+  }
+
+  for (const mode of ["auto", "yolo", "safe"] as const) {
+    it(`replaces exact HTML in ${mode} when the user prohibits creating a new note`, async function () {
+      (globalScope.Zotero as unknown as { DB: ChangeJournalTestDb }).DB =
+        new ChangeJournalTestDb();
+      await initAgentChangeJournal();
+      setOriginalAgentPermissionMode(mode);
+      const before = "<p>Existing note, not a new note.</p>";
+      const existing = saveExistingNote(60, 9, before);
+      const html =
+        "<h1>HTML review probe</h1><p>A <strong>formatted</strong> result.</p><blockquote><p>Quoted test text.</p></blockquote><ul><li>First point</li><li>Second point</li></ul>";
+      const gateway = new ZoteroGateway();
+      const contracts = new ActionContractService(gateway);
+      const registry = new AgentToolRegistry(contracts);
+      registry.register(
+        createRenamedTool({
+          tool: createEditCurrentNoteTool(gateway),
+          name: "note_write",
+          description: "Write a note",
+        }),
+      );
+      const request = resolvedAgentRequest({
+        classifiedIntent: classifiedFixture(),
+        ...baseContext.request,
+        userText: `Replace the content of existing note 60 with this exact HTML: ${html}. Do not create a new note.`,
+      });
+      request.classifiedIntent = actionFixture(
+        "note_edit",
+        { targetNoteId: 60 },
+        {
+          constraints: [
+            {
+              kind: "deny_effects",
+              effects: ["create"],
+              domains: ["zotero_library"],
+              operations: ["note_create", "save_note", "save_notes_batch"],
+              description: "No new notes",
+            },
+          ],
+        },
+      );
+      request.actionContract = await contracts.createContract(request);
+      request.actionProgress = contracts.createProgress(request.actionContract);
+      let execution = await registry.prepareExecution(
+        {
+          id: `html-${mode}`,
+          name: "note_write",
+          arguments: { mode: "edit", targetNoteId: 60, content: html },
+        },
+        { ...baseContext, request },
+      );
+      assert.equal(execution.kind, mode === "safe" ? "confirmation" : "result");
+      if (execution.kind === "confirmation") {
+        assert.equal(existing.getNote(), before);
+        const field = execution.action.fields.find(
+          (field) => field.type === "textarea",
+        );
+        assert.equal(field?.value, html);
+        execution = await execution.execute({
+          approved: true,
+          data: { content: html },
+        });
+      }
+      assert.equal(execution.kind, "result");
+      if (execution.kind !== "result") return;
+      assert.isTrue(
+        execution.execution.result.ok,
+        JSON.stringify(execution.execution.result.content),
+      );
+      assert.equal(existing.getNote(), html);
+      assert.lengthOf(childNotes(), 1, "no new note is created");
+      assert.equal(
+        execution.execution.result.actionReceipts?.[0].status,
+        "applied",
+      );
+    });
+
+    it(`prepares a first-occurrence patch before ${mode} authorization and preserves the native HTML`, async function () {
+      (globalScope.Zotero as unknown as { DB: ChangeJournalTestDb }).DB =
+        new ChangeJournalTestDb();
+      await initAgentChangeJournal();
+      setOriginalAgentPermissionMode(mode);
+      const before =
+        readFileSync(
+          new URL("./fixtures/live-synthetic-note.html", import.meta.url),
+          "utf8",
+        ).trim() +
+        "<p>The paper&#039;s text also contains &#x2014;, &amp;lt;literal&amp;gt;, &lt;tag&gt; and variable_name.</p>" +
+        '<ol start="3"><li>copper-limitation</li></ol>' +
+        '<p><img data-attachment-key="FIGURE1" /></p>';
+      const existing = saveExistingNote(60, 9, before);
+      const gateway = new ZoteroGateway();
+      const contracts = new ActionContractService(gateway);
+      const registry = new AgentToolRegistry(contracts);
+      registry.register(
+        createRenamedTool({
+          tool: createEditCurrentNoteTool(gateway),
+          name: "note_write",
+          description: "Write a note",
+        }),
+      );
+      const request = resolvedAgentRequest({
+        ...baseContext.request,
+        userText:
+          'In note 60, replace only the first occurrence of "copper-limitation" with "copper-limitation (reviewed)". Preserve every other character and section.',
+        classifiedIntent: {
+          semantic: semanticFixture(),
+          type: "note",
+          actionIntents: [
+            {
+              operation: "note_edit",
+              capability: "zotero.notes",
+              proofDomain: "zotero_state",
+              coverage: "one",
+              targetKind: "items",
+              parameters: { targetNoteId: 60 },
+            },
+          ],
+        },
+      });
+      request.actionContract = await contracts.createContract(request);
+      request.actionProgress = contracts.createProgress(request.actionContract);
+      let result = await registry.prepareExecution(
+        {
+          id: `patch-${mode}`,
+          name: "note_write",
+          arguments: {
+            mode: "edit",
+            targetNoteId: 60,
+            patches: [
+              {
+                find: "copper-limitation",
+                replace: "copper-limitation (reviewed)",
+              },
+            ],
+          },
+        },
+        { ...baseContext, request },
+      );
+      assert.equal(result.kind, mode === "safe" ? "confirmation" : "result");
+      if (result.kind === "confirmation") {
+        assert.equal(existing.getNote(), before, "review must not write");
+        const diff = result.action.fields.find(
+          (field) => field.type === "diff_preview",
+        );
+        assert.isOk(diff);
+        if (diff?.type === "diff_preview") {
+          assert.equal(
+            diff.before,
+            normalizeNoteSourceText(before),
+            "both sides use the same readable Markdown representation",
+          );
+          assert.equal(
+            diff.after,
+            diff.before.replace(
+              "copper-limitation",
+              "copper-limitation (reviewed)",
+            ),
+            "a one-word edit does not appear as a whole-note rewrite",
+          );
+        }
+        result = await result.execute({ approved: true });
+      }
+      assert.equal(result.kind, "result");
+      if (result.kind !== "result") return;
+      assert.isTrue(
+        result.execution.result.ok,
+        JSON.stringify(result.execution.result.content),
+      );
+      assert.equal(
+        result.execution.result.actionReceipts?.[0].verification,
+        "verified",
+        "a native HTML edit is not complete merely because the tool returned ok",
+      );
+      assert.equal(
+        existing.getNote(),
+        before.replace("copper-limitation", "copper-limitation (reviewed)"),
+      );
+      assert.include(
+        result.execution.result.actionReceipts?.[0].normalizedParameters
+          ?.expectedText || "",
+        "copper-limitation (reviewed)",
+        "verification must bind the prepared content, not an empty placeholder",
+      );
+      assert.equal(
+        result.execution.result.actionReceipts?.[0].normalizedParameters
+          ?.expectedText,
+        stripNoteHtml(
+          before.replace("copper-limitation", "copper-limitation (reviewed)"),
+        ),
+        "the receipt must describe the exact native HTML payload without a second Markdown rendering",
+      );
+    });
+  }
+
+  it("prepares a patch for direct execution without a review-card callback", async function () {
+    const before = "<p>copper-limitation first. copper-limitation second.</p>";
+    const existing = saveExistingNote(60, 9, before);
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [
+        { find: "copper-limitation", replace: "copper-limitation (reviewed)" },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    await tool.execute(validated.value, baseContext);
+    assert.equal(
+      existing.getNote(),
+      before.replace("copper-limitation", "copper-limitation (reviewed)"),
+    );
+  });
+
+  for (const example of [
+    ...["\n", "\n\n", "\r\n", "\r\n\r\n"].map((separator) => ({
+      name: `paragraph selection with ${JSON.stringify(separator)}`,
+      before: "<p>First paragraph</p><p>Second paragraph</p><p>Keep me.</p>",
+      find: `First paragraph${separator}Second paragraph`,
+      replacement: "Replacement",
+      after: "<p>Replacement</p><p>Keep me.</p>",
+    })),
+    {
+      name: "line breaks and nested blocks",
+      before: "<div><h2>Heading</h2><p>First<br/>Second</p></div><p>After</p>",
+      find: "Heading\nFirst\nSecond\nAfter",
+      replacement: "Combined",
+      after: "<div><h2>Combined</h2></div>",
+    },
+    {
+      name: "list items and inline formatting around a multiline match",
+      before:
+        "<ol><li>Before <em>alpha</em></li><li><strong>beta</strong> after</li></ol>",
+      find: "alpha\nbeta",
+      replacement: "delta",
+      after:
+        "<ol><li>Before <em>delta</em></li><li><strong></strong> after</li></ol>",
+    },
+    {
+      name: "images inside and outside a multiline selection",
+      before:
+        '<p>Start<img data-attachment-key="IMAGE001"/></p><p>End</p><p><img data-attachment-key="IMAGE002"/>Keep</p>',
+      find: "Start\nEnd",
+      replacement: "Changed",
+      after:
+        '<p>Changed<img data-attachment-key="IMAGE001"/></p><p><img data-attachment-key="IMAGE002"/>Keep</p>',
+    },
+    {
+      name: "multiline Unicode entities and first-occurrence selection",
+      before: "<p>&#x1F9E0; A &amp; B</p><p>C</p><p>🧠 A &amp; B</p><p>C</p>",
+      find: "🧠 A & B\nC",
+      replacement: "Result",
+      after: "<p>Result</p><p>🧠 A &amp; B</p><p>C</p>",
+    },
+    {
+      name: "serialized newlines alongside paragraph boundaries",
+      before: "<p>First</p>\r\n<p>Second</p>",
+      find: "First\n\nSecond",
+      replacement: "Result",
+      after: "<p>Result</p>",
+    },
+    {
+      name: "visible text rather than an attribute",
+      before: '<p title="copper-limitation">copper-limitation</p>',
+      find: "copper-limitation",
+      replacement: "reviewed limitation",
+      after: '<p title="copper-limitation">reviewed limitation</p>',
+    },
+    {
+      name: "UTF-16 offsets after an astral entity",
+      before: "<p>&#x1F9E0; A &amp; B</p>",
+      find: "A & B",
+      replacement: "C & D",
+      after: "<p>&#x1F9E0; C &amp; D</p>",
+    },
+    {
+      name: "balanced inline markup across a match",
+      before: "<p>alpha <em>beta</em> gamma.</p>",
+      find: "alpha beta",
+      replacement: "delta",
+      after: "<p>delta<em></em> gamma.</p>",
+    },
+  ]) {
+    it(`patches ${example.name} without damaging the native note`, async function () {
+      const existing = saveExistingNote(60, 9, example.before);
+      const tool = createEditCurrentNoteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 60,
+        patches: [{ find: example.find, replace: example.replacement }],
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.execute(validated.value, baseContext);
+      assert.equal(existing.getNote(), example.after);
+    });
+  }
+
+  it("prepares a patch copied from the Markdown note reader with explicit format", async function () {
+    const before =
+      "<p>Items marked <strong>Discussion-only (ours)</strong> are our proposals.</p>";
+    const existing = saveExistingNote(60, 9, before);
+    const gateway = new ZoteroGateway();
+    const reading = gateway.getStandaloneNoteContent({ noteId: 60 })!;
+    const tool = createEditCurrentNoteTool(gateway);
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [
+        {
+          find: reading.noteText,
+          findFormat: "markdown",
+          replace: "These proposals are ours.",
+        },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    const action = await tool.createPendingAction!(
+      validated.value,
+      baseContext,
+    );
+    assert.equal(action.mode, "review");
+    assert.equal(existing.getNote(), before);
+    assert.isTrue(
+      action.fields.some(
+        (field) =>
+          field.type === "diff_preview" &&
+          field.after.includes("These proposals are ours."),
+      ),
+    );
+  });
+
+  it("reviews and applies multiline Markdown from the note reader without rewriting surrounding HTML", async function () {
+    const before =
+      "<h2>Topic</h2><p><strong>First</strong> paragraph.</p><p>Second paragraph.</p>";
+    const existing = saveExistingNote(60, 9, before);
+    const gateway = new ZoteroGateway();
+    const reading = gateway.getStandaloneNoteContent({ noteId: 60 })!;
+    const tool = createEditCurrentNoteTool(gateway);
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [
+        {
+          find: reading.noteText,
+          findFormat: "markdown",
+          replace: "Revised summary.",
+        },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    await tool.planInvocation!(validated.value, baseContext);
+    const review = await tool.createPendingAction!(
+      validated.value,
+      baseContext,
+    );
+    assert.equal(
+      existing.getNote(),
+      before,
+      "Preparing review must not mutate the note",
+    );
+    assert.equal(review.mode, "review");
+    const approved = await tool.applyConfirmation!(
+      validated.value,
+      {},
+      baseContext,
+    );
+    assert.isTrue(approved.ok);
+    if (!approved.ok) return;
+    await tool.execute(approved.value, baseContext);
+    assert.equal(existing.getNote(), "<h2>Revised summary.</h2>");
+  });
+
+  it("does not match across a paragraph boundary that is missing from the selection", async function () {
+    const before = "<p>alpha</p><p>beta</p>";
+    const existing = saveExistingNote(60, 9, before);
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const input = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [{ find: "alphabeta", replace: "changed" }],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    let error: unknown;
+    try {
+      await tool.execute(input.value, baseContext);
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(String(error), /patch.*not found/i);
+    assert.equal(existing.getNote(), before);
+  });
+
+  it("rejects a missing patch match without flattening or changing the note", async function () {
+    const before =
+      "<h2>Research</h2><p>copper-limitation</p><blockquote>Keep this quote.</blockquote>";
+    const existing = saveExistingNote(60, 9, before);
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [
+        { find: "copper-limitation (reviewed)", replace: "copper-limitation" },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    let error: unknown;
+    try {
+      await tool.execute(validated.value, baseContext);
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(String(error), /patch.*not found/i);
+    assert.equal(existing.getNote(), before);
+    assert.isEmpty(existing.saveOptionsHistory);
+  });
+
+  it("does not rebase a prepared edit when the native note changes before execution", async function () {
+    const existing = saveExistingNote(60, 9, "<p>Original text</p>");
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      patches: [{ find: "Original", replace: "Edited" }],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    await tool.planInvocation!(validated.value, baseContext);
+    existing.setNote("<p>Concurrent user revision</p>");
+    await tool.planInvocation!(validated.value, baseContext);
+    let error: unknown;
+    try {
+      await tool.execute(validated.value, baseContext);
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(String(error), /changed after preparation/);
+    assert.equal(existing.getNote(), "<p>Concurrent user revision</p>");
+  });
+
+  it("preserves a styled note rewrite when execution skips the review card", async function () {
+    const existing = saveExistingNote(
+      60,
+      9,
+      '<p style="color:red">Original text</p>',
+    );
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const html = '<p style="color:blue"><strong>Revised text</strong></p>';
+    const validated = tool.validate({
+      mode: "edit",
+      targetNoteId: 60,
+      content: html,
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    await tool.execute(validated.value, baseContext);
+    assert.equal(existing.getNote(), html);
   });
 
   it("preserves styled HTML when note creation skips the review card", async function () {
@@ -343,6 +960,23 @@ describe("editCurrentNote create tracking", function () {
     assert.include(childNotes(9)[0].getNote(), "<strong>Styled note</strong>");
   });
 
+  it("still renders a Markdown note containing inline HTML emphasis", async function () {
+    const tool = createEditCurrentNoteTool(new ZoteroGateway());
+    const validated = tool.validate({
+      mode: "create",
+      target: "item",
+      targetItemId: 9,
+      content: "# Research\n\nA <em>formatted</em> note.",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    await tool.execute(validated.value, baseContext);
+    const html = childNotes()[0].getNote();
+    assert.include(html, "<h1>Research</h1>");
+    assert.include(html, "<em>formatted</em>");
+    assert.notInclude(html, "# Research");
+  });
+
   it("agent create makes a new item note even when a response-save note is tracked", async function () {
     const trackedNote = saveExistingNote(50, 9, "<p>Tracked response save</p>");
     rememberAssistantNoteForParent(9, 50);
@@ -359,7 +993,7 @@ describe("editCurrentNote create tracking", function () {
       )
     ).content;
 
-    assert.equal((result as any).result.status, "created");
+    assert.equal((result as any).status, "created");
     assert.equal(trackedNote.getNote(), "<p>Tracked response save</p>");
     assert.equal(getTrackedAssistantNoteForParent(9)?.id, 50);
     assert.lengthOf(childNotes(9), 2);
@@ -393,7 +1027,7 @@ describe("editCurrentNote create tracking", function () {
       )
     ).content;
 
-    assert.equal((result as any).result.status, "created");
+    assert.equal((result as any).status, "created");
     assert.lengthOf(childNotes(9), 1);
     assert.include(childNotes(9)[0].getNote(), "Selected-paper note");
   });
@@ -446,7 +1080,10 @@ describe("editCurrentNote create tracking", function () {
       action.steps[0].expectedPostconditionJson || "{}",
     ) as { checksum?: string };
 
-    assert.equal(postcondition.checksum, await sha256Text(persistedHtml));
+    assert.equal(
+      postcondition.canonicalChecksum,
+      await sha256Text(canonicalNoteHtml(persistedHtml)),
+    );
     const reverted = await revertActions({
       actions: [action],
       zoteroGateway: gateway,

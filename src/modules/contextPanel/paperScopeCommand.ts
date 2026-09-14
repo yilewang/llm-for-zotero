@@ -1,5 +1,5 @@
 export {
-  resolvePaperScopedCommandInput,
+  resolvePaperScopedDefaultInput,
   type PaperScopedActionCollectionCandidate,
   type PaperScopedActionProfile,
   type PaperScopedActionTagCandidate,

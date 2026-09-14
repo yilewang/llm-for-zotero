@@ -134,6 +134,10 @@ export type StoredChatMessage = {
   timestamp: number;
   runMode?: "chat" | "agent";
   agentRunId?: string;
+  /** Durable document artifact identity for rendering after restart. */
+  documentId?: string;
+  /** @deprecated Legacy session-only Plan document hint. */
+  planDocumentId?: string;
   selectedText?: string;
   selectedTextContexts?: SelectedTextContext[];
   selectedTexts?: string[];
@@ -157,6 +161,15 @@ export type StoredChatMessage = {
   modelProviderLabel?: string;
   /** Streamed reply was cut off before completion; partial text kept. */
   interrupted?: boolean;
+  completionStatus?: "complete" | "incomplete" | "blocked";
+  completionReason?:
+    | "output_limit"
+    | "context_limit"
+    | "provider_pause"
+    | "safety"
+    | "refusal"
+    | "malformed_tool_call"
+    | "other";
   webchatRunState?: "done" | "incomplete" | "error";
   webchatCompletionReason?:
     | "settled"
@@ -212,6 +225,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             timestamp,
             run_mode AS runMode,
             agent_run_id AS agentRunId,
+            document_id AS documentId,
             selected_text AS selectedText,
             selected_text_contexts_json AS selectedTextContextsJson,
             selected_texts_json AS selectedTextsJson,
@@ -234,6 +248,8 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             model_entry_id AS modelEntryId,
             model_provider_label AS modelProviderLabel,
             interrupted,
+            completion_status AS completionStatus,
+            completion_reason AS completionReason,
             webchat_run_state AS webchatRunState,
             webchat_completion_reason AS webchatCompletionReason,
             reasoning_summary AS reasoningSummary,
@@ -464,6 +480,7 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "timestamp",
   "run_mode",
   "agent_run_id",
+  "document_id",
   "selected_text",
   "selected_text_contexts_json",
   "selected_texts_json",
@@ -486,6 +503,8 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "model_entry_id",
   "model_provider_label",
   "interrupted",
+  "completion_status",
+  "completion_reason",
   "webchat_run_state",
   "webchat_completion_reason",
   "reasoning_summary",
@@ -1355,6 +1374,7 @@ export async function initChatStore(): Promise<void> {
         timestamp INTEGER NOT NULL,
         run_mode TEXT CHECK(run_mode IN ('chat', 'agent')),
         agent_run_id TEXT,
+        document_id TEXT,
         selected_text TEXT,
         selected_text_contexts_json TEXT,
         selected_texts_json TEXT,
@@ -1377,6 +1397,8 @@ export async function initChatStore(): Promise<void> {
         model_entry_id TEXT,
         model_provider_label TEXT,
         interrupted INTEGER,
+        completion_status TEXT,
+        completion_reason TEXT,
         webchat_run_state TEXT,
         webchat_completion_reason TEXT,
         reasoning_summary TEXT,
@@ -1463,6 +1485,18 @@ export async function initChatStore(): Promise<void> {
       "interrupted",
       "interrupted INTEGER",
     );
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "completion_status",
+      "completion_status TEXT",
+    );
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "completion_reason",
+      "completion_reason TEXT",
+    );
     const hasContextTokensColumn = Boolean(
       columns?.some((column) => column?.name === "context_tokens"),
     );
@@ -1499,6 +1533,12 @@ export async function initChatStore(): Promise<void> {
          ADD COLUMN agent_run_id TEXT`,
       );
     }
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "document_id",
+      "document_id TEXT",
+    );
     const hasSelectedTextColumn = Boolean(
       columns?.some((column) => column?.name === "selected_text"),
     );
@@ -2148,6 +2188,7 @@ export async function loadConversation(
         selectedText?: unknown;
         runMode?: unknown;
         agentRunId?: unknown;
+        documentId?: unknown;
         selectedTextContextsJson?: unknown;
         selectedTextsJson?: unknown;
         selectedTextSourcesJson?: unknown;
@@ -2169,6 +2210,8 @@ export async function loadConversation(
         modelEntryId?: unknown;
         modelProviderLabel?: unknown;
         interrupted?: unknown;
+        completionStatus?: unknown;
+        completionReason?: unknown;
         webchatRunState?: unknown;
         webchatCompletionReason?: unknown;
         reasoningSummary?: unknown;
@@ -2447,6 +2490,10 @@ export async function loadConversation(
         typeof row.agentRunId === "string" && row.agentRunId.trim()
           ? row.agentRunId.trim()
           : undefined,
+      documentId:
+        typeof row.documentId === "string" && row.documentId.trim()
+          ? row.documentId.trim()
+          : undefined,
       selectedText:
         selectedTextContexts[0]?.text ||
         (typeof row.selectedText === "string" ? row.selectedText : undefined),
@@ -2486,6 +2533,22 @@ export async function loadConversation(
           ? row.modelProviderLabel
           : undefined,
       interrupted: Number(row.interrupted) === 1 ? true : undefined,
+      completionStatus:
+        row.completionStatus === "complete" ||
+        row.completionStatus === "incomplete" ||
+        row.completionStatus === "blocked"
+          ? row.completionStatus
+          : undefined,
+      completionReason:
+        row.completionReason === "output_limit" ||
+        row.completionReason === "context_limit" ||
+        row.completionReason === "provider_pause" ||
+        row.completionReason === "safety" ||
+        row.completionReason === "refusal" ||
+        row.completionReason === "malformed_tool_call" ||
+        row.completionReason === "other"
+          ? row.completionReason
+          : undefined,
       webchatRunState:
         row.webchatRunState === "done" ||
         row.webchatRunState === "incomplete" ||
@@ -2641,8 +2704,8 @@ export async function appendMessage(
         const identityPlaceholder = identityAvailable ? ", ?" : "";
         await Zotero.DB.queryAsync(
           `INSERT INTO ${CHAT_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id${identityColumn})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
           [
             conversationID,
             normalizedKey,
@@ -2693,6 +2756,8 @@ export async function appendMessage(
             message.modelEntryId || null,
             message.modelProviderLabel || null,
             message.interrupted ? 1 : null,
+            message.completionStatus || null,
+            message.completionReason || null,
             message.webchatRunState || null,
             message.webchatCompletionReason || null,
             message.reasoningSummary || null,
@@ -2703,6 +2768,7 @@ export async function appendMessage(
             Number.isFinite(Number(message.contextWindow))
               ? Math.floor(Number(message.contextWindow))
               : null,
+            message.documentId || message.planDocumentId || null,
             ...(identityAvailable ? [appendIdentity.instanceID] : []),
           ],
         );
@@ -2894,10 +2960,14 @@ export async function updateLatestAssistantMessage(
     | "timestamp"
     | "runMode"
     | "agentRunId"
+    | "documentId"
+    | "planDocumentId"
     | "modelName"
     | "modelEntryId"
     | "modelProviderLabel"
     | "interrupted"
+    | "completionStatus"
+    | "completionReason"
     | "webchatRunState"
     | "webchatCompletionReason"
     | "reasoningSummary"
@@ -2924,10 +2994,13 @@ export async function updateLatestAssistantMessage(
            timestamp = ?,
            run_mode = ?,
            agent_run_id = ?,
+           document_id = ?,
            model_name = ?,
            model_entry_id = ?,
            model_provider_label = ?,
            interrupted = ?,
+           completion_status = ?,
+           completion_reason = ?,
            webchat_run_state = ?,
            webchat_completion_reason = ?,
            reasoning_summary = ?,
@@ -2948,10 +3021,13 @@ export async function updateLatestAssistantMessage(
         Number.isFinite(timestamp) ? Math.floor(timestamp) : Date.now(),
         message.runMode || null,
         message.agentRunId || null,
+        message.documentId || message.planDocumentId || null,
         message.modelName || null,
         message.modelEntryId || null,
         message.modelProviderLabel || null,
         message.interrupted ? 1 : null,
+        message.completionStatus || null,
+        message.completionReason || null,
         message.webchatRunState || null,
         message.webchatCompletionReason || null,
         message.reasoningSummary || null,

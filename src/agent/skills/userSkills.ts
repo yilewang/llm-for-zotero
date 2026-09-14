@@ -15,7 +15,7 @@
  *      or auto-delete files whose raw content matches a known shipped
  *      fingerprint from an older version.
  */
-import { parseSkill } from "./skillLoader";
+import { getSkillRoutingDiagnostics, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
 import {
   BUILTIN_SKILL_FILES,
@@ -173,7 +173,7 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     "qdqcm0",
   ],
   "write-note.md": ["172xn8t", "nvca0f"],
-  "literature-review.md": ["kbrknh", "nxpr5d"],
+  "literature-review.md": ["kbrknh", "nxpr5d", "1cnjf9i", "3tk61l"],
   "import-cited-reference.md": ["19bomz1"],
 };
 
@@ -210,6 +210,9 @@ const BUILTIN_FRONTMATTER_PATCH_OPTIONS: Partial<
   },
   "evidence-based-qa.md": {
     historicalContexts: ["single-paper,paper-set"],
+  },
+  "analyze-figures.md": {
+    historicalContexts: ["single-paper"],
   },
 };
 
@@ -759,11 +762,16 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
         continue;
       }
 
-      if (skill.id === "unknown" || skill.patterns.length === 0) {
+      if (skill.id === "unknown" || !skill.instruction.trim()) {
         Zotero.debug?.(
-          `[llm-for-zotero] Skipping invalid skill file (missing id or match patterns): ${filePath}`,
+          `[llm-for-zotero] Skipping invalid skill file (missing id or instruction): ${filePath}`,
         );
         continue;
+      }
+      for (const diagnostic of getSkillRoutingDiagnostics(skill)) {
+        Zotero.debug?.(
+          `[llm-for-zotero] Skill routing diagnostic for ${skill.id}: ${diagnostic}`,
+        );
       }
 
       if (BUILTIN_SKILL_FILENAMES.has(filename)) {
@@ -844,23 +852,23 @@ description: Describe what this skill does
 version: 1
 contexts: any
 activation: auto
-match: /your regex pattern here/i
 ---
 
 <!--
   Custom skill template.
 
   - name/id/description: shown in the "/" slash menu and native skill pickers
-  - match: regex patterns that trigger this skill (OR semantics)
-  - contexts: any, single-paper, paper-set, library-corpus, or note
+  - description: the multilingual semantic router uses this to decide relevance
+  - contexts: any, single-paper, paper-set, library-corpus, note, or visual-input
   - activation: auto, manual, or both
+  - supersedes: optional comma-separated skill IDs this workflow replaces
   - version: increment when you make significant changes
 
   The text below is injected into the agent's current-turn guidance when
   the skill activates. Edit it to define how the agent should behave.
 -->
 
-Describe when and how the agent should behave when this skill matches.
+Describe precisely when and how the agent should apply this workflow.
 `;
 
   let index = 1;

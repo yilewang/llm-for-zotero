@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { createQueryLibraryTool } from "../src/agent/tools/read/queryLibrary";
+import { createSavedSearchTool } from "../src/agent/tools/write/savedSearches";
 
 /**
  * The agent had nine hand-written filters against Zotero's own ~130 search
@@ -276,6 +277,46 @@ describe("library_search advanced conditions", function () {
   describe("tool-level gating", function () {
     function tool() {
       return createQueryLibraryTool(gateway());
+    }
+
+    for (const isRequired of [true, false, undefined]) {
+      it(`preserves isRequired=${String(isRequired)} in both search tools`, function () {
+        const conditions = [
+          {
+            condition: "title",
+            operator: "contains",
+            value: "paper",
+            isRequired,
+          },
+        ];
+        const query = tool().validate({
+          entity: "items",
+          mode: "search",
+          conditions,
+          joinMode: "any",
+        });
+        const saved = createSavedSearchTool(gateway()).validate({
+          action: "save",
+          name: "Required clause",
+          conditions,
+          joinMode: "any",
+        });
+        assert.isTrue(query.ok);
+        assert.isTrue(saved.ok);
+        if (!query.ok || !saved.ok) return;
+        assert.equal(
+          query.value.conditions?.[0].required,
+          isRequired || undefined,
+        );
+        assert.equal(query.value.joinMode, "any");
+        assert.equal(saved.value.operation.type, "save_saved_search");
+        if (saved.value.operation.type !== "save_saved_search") return;
+        assert.equal(
+          saved.value.operation.conditions[0].required,
+          isRequired || undefined,
+        );
+        assert.equal(saved.value.operation.joinMode, "any");
+      });
     }
 
     it("refuses conditions on entities that are not searched that way", function () {

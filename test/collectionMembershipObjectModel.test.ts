@@ -66,9 +66,9 @@ describe("collection membership follows the object model", function () {
       assignments: [{ itemId: 11, targetCollectionId: 88 }],
     });
 
-    assert.equal(result.movedCount, 1, "a standalone note is a legal member");
+    assert.equal(result.addedCount, 1, "a standalone note is a legal member");
     assert.isTrue(note.collectionsSet.has(88));
-    assert.equal(result.items[0]?.status, "moved");
+    assert.equal(result.items[0]?.status, "added");
   });
 
   it("files a standalone attachment", async function () {
@@ -79,7 +79,7 @@ describe("collection membership follows the object model", function () {
       assignments: [{ itemId: 12, targetCollectionId: 88 }],
     });
 
-    assert.equal(result.movedCount, 1);
+    assert.equal(result.addedCount, 1);
     assert.isTrue(attachment.collectionsSet.has(88));
   });
 
@@ -96,7 +96,7 @@ describe("collection membership follows the object model", function () {
       assignments: [{ itemId: 21, targetCollectionId: 88 }],
     });
 
-    assert.equal(result.movedCount, 0);
+    assert.equal(result.addedCount, 0);
     assert.isFalse(
       parent.collectionsSet.has(88),
       "the parent must not be filed in the child's place",
@@ -118,7 +118,7 @@ describe("collection membership follows the object model", function () {
       assignments: [{ itemId: 30, targetCollectionId: 88 }],
     });
 
-    assert.equal(result.movedCount, 1);
+    assert.equal(result.addedCount, 1);
     assert.isTrue(paper.collectionsSet.has(88));
   });
 
@@ -129,7 +129,7 @@ describe("collection membership follows the object model", function () {
       assignments: [{ itemId: 99, targetCollectionId: 88 }],
     });
 
-    assert.equal(result.movedCount, 0);
+    assert.equal(result.addedCount, 0);
     assert.include(result.items[0]?.reason || "", "No item with ID 99");
   });
 });

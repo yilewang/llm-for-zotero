@@ -1,3 +1,4 @@
+import { createNoteConversationItem } from "../modules/contextPanel/noteEditing/conversationItem";
 declare const Zotero: any;
 
 import type {
@@ -39,6 +40,13 @@ export function createClaudePaperPortalItem(
   basePaperItem: any,
   conversationKey: number,
 ): any {
+  if (basePaperItem?.isNote?.()) {
+    return createNoteConversationItem(
+      basePaperItem,
+      "claude_code",
+      conversationKey,
+    );
+  }
   const basePaperItemID =
     Number.isFinite(basePaperItem?.id) && basePaperItem.id > 0
       ? Math.floor(basePaperItem.id)

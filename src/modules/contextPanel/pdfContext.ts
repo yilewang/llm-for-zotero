@@ -2124,42 +2124,6 @@ type QueryIntent =
   | "visual"
   | "general";
 
-function detectQueryIntent(question: string): QueryIntent {
-  if (
-    /\b(?:method|protocol|procedure|algorithm|implementation|pipeline|training|hyperparameter|setup|dataset)\b/i.test(
-      question,
-    )
-  )
-    return "methodological";
-  if (
-    /\b(?:figure|fig\.?|table|chart|plot|diagram|caption|image)\b/i.test(
-      question,
-    )
-  )
-    return "visual";
-  if (
-    /\b(?:compar|differ|versus|vs\.?|contrast|similar|distinguish)\b/i.test(
-      question,
-    )
-  )
-    return "comparative";
-  if (/\b(?:cit(?:e|ation|ed)|refer(?:ence|red)|bibliograph)\b/i.test(question))
-    return "citation";
-  if (
-    /\b(?:how many|sample size|number of|percentage|ratio|count|statistic)\b/i.test(
-      question,
-    )
-  )
-    return "factual";
-  if (
-    /\b(?:mechanism|pathway|relationship|role of|function of|why does|how does)\b/i.test(
-      question,
-    )
-  )
-    return "conceptual";
-  return "general";
-}
-
 /** Section boost profiles keyed by query intent. */
 const SECTION_BOOST_PROFILES: Record<
   QueryIntent,
@@ -2238,13 +2202,13 @@ const SECTION_BOOST_PROFILES: Record<
 
 function scoreEvidenceHeuristics(params: {
   candidate: PaperContextCandidate;
-  question: string;
+  intent?: QueryIntent;
 }): number {
-  const { candidate, question } = params;
+  const { candidate } = params;
   const chunkText = normalizeEvidenceText(candidate.chunkText);
   const wordCount = chunkText ? chunkText.split(/\s+/).length : 0;
 
-  const intent = detectQueryIntent(question);
+  const intent = params.intent || "general";
   const profile = SECTION_BOOST_PROFILES[intent];
   let score = profile[candidate.chunkKind as PdfChunkKind] ?? -0.1;
 
@@ -2445,7 +2409,10 @@ export async function buildPaperRetrievalCandidates(
     const evidenceScore =
       retrievalMode === "evidence"
         ? hybridScore +
-          scoreEvidenceHeuristics({ candidate, question }) +
+          scoreEvidenceHeuristics({
+            candidate,
+            intent: queryPlan?.retrievalPurpose,
+          }) +
           referenceBoost
         : hybridScore + referenceBoost;
     candidate.evidenceScore = evidenceScore;
@@ -2597,18 +2564,6 @@ function isEvidenceQuoteAnchorEligible(params: {
     return { eligible: false, reason: "not-quote-worthy" };
   }
   return { eligible: true };
-}
-
-export function resolveEvidenceQuoteAnchorPolicy(
-  question: string | undefined,
-): EvidenceQuoteAnchorPolicy {
-  const normalized = sanitizePdfText(question || "").toLowerCase();
-  if (!normalized) return "none";
-  return /\b(?:direct\s+quotes?|exact\s+(?:quotes?|wording|passages?)|verbatim|quote\s+the|quotations?|blockquotes?|source\s+wording|original\s+wording)\b/.test(
-    normalized,
-  )
-    ? "verified"
-    : "none";
 }
 
 function formatMarkdownBlockquote(text: string): string {

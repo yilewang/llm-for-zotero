@@ -1,7 +1,7 @@
 import {
   buildReasoningPayload,
   getAnthropicMessagesReasoningRecoverySelection,
-  normalizeMaxTokensForRequest,
+  normalizeProviderCompletion,
   postWithReasoningFallback,
   type ReasoningSelection,
 } from "../../utils/llmClient";
@@ -22,6 +22,13 @@ import type {
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import { buildAgentModelCapabilities } from "./contentCapabilities";
+import { resolveAgentTransmittedOutputPolicy } from "./limits";
+import { estimateWirePayloadTokens } from "../../utils/modelInputCap";
+import {
+  buildAgentRecoveryInstruction,
+  resolveAgentRecoverableCompletion,
+} from "./completion";
+import type { ModelTurnCompletion } from "../../shared/llm";
 import {
   resolveRequestContentInputs,
   stringifyMessageContent,
@@ -52,12 +59,14 @@ type AnthropicSystemBlock = {
 type AnthropicResponse = {
   id?: unknown;
   content?: unknown[];
+  stop_reason?: unknown;
 };
 
 type AnthropicNormalizedResponse = {
   text: string;
   toolCalls: AgentToolCall[];
   responseBlocks: AnthropicContentBlock[];
+  completion: ModelTurnCompletion;
 };
 
 type AnthropicStreamBlockState = {
@@ -409,6 +418,7 @@ async function buildAnthropicContinuationMessages(
 
 function normalizeAnthropicResponseBlocks(
   blocks: AnthropicContentBlock[],
+  completion: ModelTurnCompletion = { status: "complete" },
 ): AnthropicNormalizedResponse {
   const textParts: string[] = [];
   const toolCalls: AgentToolCall[] = [];
@@ -442,6 +452,7 @@ function normalizeAnthropicResponseBlocks(
     text: textParts.join(""),
     toolCalls,
     responseBlocks,
+    completion,
   };
 }
 
@@ -451,7 +462,10 @@ function normalizeAnthropicResponse(
   const responseBlocks = (Array.isArray(data.content) ? data.content : [])
     .map((block) => normalizeAnthropicContentBlock(block))
     .filter((block): block is AnthropicContentBlock => Boolean(block));
-  return normalizeAnthropicResponseBlocks(responseBlocks);
+  return normalizeAnthropicResponseBlocks(
+    responseBlocks,
+    normalizeProviderCompletion(data.stop_reason),
+  );
 }
 
 async function parseAnthropicStepStream(
@@ -466,6 +480,7 @@ async function parseAnthropicStepStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
+  let completion: ModelTurnCompletion = { status: "complete" };
   const contentBlocks = new Map<number, AnthropicStreamBlockState>();
 
   const handleFrame = async (payload: string) => {
@@ -483,7 +498,9 @@ async function parseAnthropicStepStream(
         type?: unknown;
         text?: unknown;
         partial_json?: unknown;
+        stop_reason?: unknown;
       };
+      message?: { stop_reason?: unknown };
     };
     const eventType =
       typeof parsed.type === "string" ? parsed.type.toLowerCase() : "";
@@ -491,6 +508,10 @@ async function parseAnthropicStepStream(
       typeof parsed.index === "number" && Number.isFinite(parsed.index)
         ? parsed.index
         : -1;
+    const stopReason = parsed.delta?.stop_reason ?? parsed.message?.stop_reason;
+    if (typeof stopReason === "string") {
+      completion = normalizeProviderCompletion(stopReason);
+    }
     if (eventType === "content_block_start" && index >= 0) {
       const contentBlock = normalizeAnthropicContentBlock(parsed.content_block);
       if (contentBlock) {
@@ -624,7 +645,10 @@ async function parseAnthropicStepStream(
       }
       return block;
     });
-  const normalized = normalizeAnthropicResponseBlocks(responseBlocks);
+  const normalized = normalizeAnthropicResponseBlocks(
+    responseBlocks,
+    completion,
+  );
   return {
     ...normalized,
     text: normalized.text || text,
@@ -702,15 +726,19 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     const messages = continuation.length
       ? [...conversationBase, ...continuation]
       : conversationBase;
-    const maxTokens = normalizeMaxTokensForRequest({
-      value: request.advanced?.maxTokens,
-      maxTokensExplicit: request.advanced?.maxTokensExplicit,
-      model: request.model || "",
-      apiBase: request.apiBase,
-      protocol: "anthropic_messages",
-      authMode: request.authMode,
-      profileOverride: request.advanced?.profileOverride,
-    });
+    const outputPolicy = resolveAgentTransmittedOutputPolicy(
+      request,
+      "anthropic_messages",
+      estimateWirePayloadTokens({
+        system: this.systemBlocks,
+        messages,
+        tools: params.tools,
+      }),
+    );
+    if (outputPolicy.mode !== "numeric") {
+      throw new Error("Anthropic Messages requires a numeric output policy.");
+    }
+    const maxTokens = outputPolicy.tokens;
     const buildPayload = (
       reasoningOverride: ReasoningSelection | undefined,
     ) => {
@@ -794,6 +822,34 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       : normalizeAnthropicResponse(
           (await response.json()) as AnthropicResponse,
         );
+    const recoveryReason = resolveAgentRecoverableCompletion(
+      normalized.completion,
+    );
+    if (recoveryReason) {
+      this.conversationMessages = normalized.text
+        ? [
+            ...messages,
+            {
+              role: "assistant",
+              content: [{ type: "text", text: normalized.text }],
+            },
+          ]
+        : messages;
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: normalized.completion.providerReason,
+        text: normalized.text,
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: {
+          role: "assistant",
+          content: normalized.text,
+        },
+      };
+    }
     this.conversationMessages = [
       ...messages,
       buildAssistantConversationMessage(normalized),

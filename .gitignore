@@ -25,7 +25,10 @@ tmp/
 # Ignore all contents inside a folder
 .claude/
 .codex/
+.agents/
 AGENTS.md
+CLAUDE.md
+skills-lock.json
 # Local design notes
 /docs/
 /docs/claude-session-isolation-design.md

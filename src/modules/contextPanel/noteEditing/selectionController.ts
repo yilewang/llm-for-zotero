@@ -41,11 +41,11 @@ export function syncNoteEditingSelectedText(params: {
   noteItem: Zotero.Item | null | undefined;
   text: string;
   system?: ConversationSystem | null;
+  conversationKey?: number;
 }): { conversationKey: number; changed: boolean } | null {
-  const conversationKey = getNoteFocusConversationKey(
-    params.noteItem,
-    params.system,
-  );
+  const conversationKey =
+    params.conversationKey ||
+    getNoteFocusConversationKey(params.noteItem, params.system);
   const noteContext = buildNoteEditingSelectedTextContext(params.noteItem);
   if (!conversationKey || !noteContext) return null;
   return {

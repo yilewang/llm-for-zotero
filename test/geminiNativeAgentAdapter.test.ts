@@ -30,7 +30,7 @@ describe("GeminiNativeAgentAdapter", function () {
       name: "query_library",
       description: "search",
       inputSchema: { type: "object" },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
   ];
@@ -144,6 +144,55 @@ describe("GeminiNativeAgentAdapter", function () {
     assert.deepEqual(step.calls[0].arguments, { query: "graph attention" });
   });
 
+  it("treats MAX_TOKENS as incomplete before accepting function calls", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: undefined,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    { text: "Partial analysis" },
+                    {
+                      functionCall: {
+                        name: "query_library",
+                        args: { query: "unfinished" },
+                      },
+                    },
+                  ],
+                },
+                finishReason: "MAX_TOKENS",
+              },
+            ],
+          }),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await new GeminiNativeAgentAdapter().runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Inspect this" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "incomplete");
+    if (step.kind !== "incomplete") return;
+    assert.equal(step.reason, "output_limit");
+    assert.equal(step.text, "Partial analysis");
+    assert.notProperty(step, "calls");
+  });
+
   it("sanitizes unsupported JSON Schema constructs in tool declarations", async function () {
     const adapter = new GeminiNativeAgentAdapter();
     let capturedBody: Record<string, unknown> | null = null;
@@ -200,7 +249,7 @@ describe("GeminiNativeAgentAdapter", function () {
               },
             },
           },
-          mutability: "read",
+          executionClass: "read",
           requiresConfirmation: false,
         },
       ],
@@ -448,7 +497,7 @@ describe("GeminiNativeAgentAdapter", function () {
           name: "read_paper",
           description: "read",
           inputSchema: { type: "object" },
-          mutability: "read",
+          executionClass: "read",
           requiresConfirmation: false,
         },
       ],
@@ -474,7 +523,7 @@ describe("GeminiNativeAgentAdapter", function () {
           name: "read_paper",
           description: "read",
           inputSchema: { type: "object" },
-          mutability: "read",
+          executionClass: "read",
           requiresConfirmation: false,
         },
       ],
@@ -946,14 +995,14 @@ describe("GeminiNativeAgentAdapter", function () {
         name: "read_paper",
         description: "read",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
       {
         name: "query_library",
         description: "search",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
     ];
@@ -1071,7 +1120,7 @@ describe("GeminiNativeAgentAdapter", function () {
         name: "read_paper",
         description: "read",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
     ];
@@ -1186,7 +1235,7 @@ describe("GeminiNativeAgentAdapter", function () {
     );
   });
 
-  it("preserves explicit output above detected limits", async function () {
+  it("clamps Custom output to the authoritative model maximum", async function () {
     const adapter = new GeminiNativeAgentAdapter();
     let capturedBody: Record<string, unknown> | null = null;
     (
@@ -1218,8 +1267,7 @@ describe("GeminiNativeAgentAdapter", function () {
     await adapter.runStep({
       request: makeRequest({
         advanced: {
-          maxTokens: 200_000,
-          maxTokensExplicit: true,
+          outputTokenLimit: { mode: "custom", tokens: 200_000 },
           profileOverride: {
             forModel: "gemini-2.5-pro",
             limits: { outputTokens: 64_000 },
@@ -1234,6 +1282,6 @@ describe("GeminiNativeAgentAdapter", function () {
       string,
       unknown
     >;
-    assert.equal(generationConfig.maxOutputTokens, 200_000);
+    assert.equal(generationConfig.maxOutputTokens, 64_000);
   });
 });

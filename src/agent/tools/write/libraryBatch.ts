@@ -1,16 +1,13 @@
-import type {
-  AgentActionParameters,
-  AgentJournalActionScope,
-  AgentJournalStepOutcome,
-  AgentWriteToolDefinition,
-} from "../../types";
-import type { AgentToolRegistry } from "../registry";
-import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { ActionRegistry } from "../../actions";
-import type { ActionCheckpoint } from "../../actions/types";
+import {
+  captureBatchInteraction,
+  restoreBatchInteraction,
+} from "../../actions/batchInteraction";
 import { buildActionExecutionContext } from "../../actions/toolContextBridge";
+import type { ActionCheckpoint } from "../../actions/types";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { summarizeMutationOutcomes } from "../../services/mutationCoordinator";
-import { getAgentLibraryWriteMode } from "../../libraryWriteMode";
+import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   advanceBatchJob,
   createBatchJob,
@@ -26,8 +23,14 @@ import {
   prepareJournalAction,
   updateJournalAction,
 } from "../../store/changeJournal";
-import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
-import { capabilityForLibraryMutation } from "../../services/libraryMutation/handlerOperations";
+import type {
+  AgentActionParameters,
+  AgentJournalActionScope,
+  AgentJournalStepOutcome,
+  AgentToolDefinition,
+} from "../../types";
+import type { AgentToolRegistry } from "../registry";
+import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 
 type RunBatchInput = {
   kind: "run";
@@ -62,12 +65,6 @@ const defaultBatchJobStore: LibraryBatchJobStore = {
   getBatchJob,
   listInterruptedBatchJobs,
   markBatchJobRunning,
-};
-
-/** Jobs that ask an inline question and therefore cannot run headlessly. */
-const INTERACTIVE_ONLY_JOBS: Record<string, string> = {
-  discover_related:
-    "discover_related is an interactive review workflow — it presents candidate papers for you to pick from — so it cannot run unattended.",
 };
 
 const DURABLE_BATCH_JOBS = new Set([
@@ -165,7 +162,7 @@ function bindFrozenTargets(
  * Paged actions checkpoint an exact remaining-item plan after each applied
  * page. The checkpoint is awaited, so the next page never starts while the
  * durable row still describes the previous one. An interrupted run is listed
- * explicitly and resumed only through a new confirmation card.
+ * explicitly; resumes retain their interaction requirement and exact remaining scope.
  */
 export function createLibraryBatchTool(deps: {
   actionRegistry: ActionRegistry;
@@ -173,99 +170,15 @@ export function createLibraryBatchTool(deps: {
   zoteroGateway: ZoteroGateway;
   now?: () => number;
   batchJobStore?: LibraryBatchJobStore;
-}): AgentWriteToolDefinition<LibraryBatchInput, unknown> {
+}): AgentToolDefinition<LibraryBatchInput, unknown> {
   const now = deps.now ?? (() => Date.now());
   const store = deps.batchJobStore ?? defaultBatchJobStore;
 
-  const describeBatchOperation = (
-    job: string,
-    jobArgs: Record<string, unknown>,
-    identity: string,
-    context?: import("../../types").AgentToolContext,
-    durableRemainingItemIds?: number[],
-  ) => {
-    const operation = operationForBatchJob(job);
-    if (!operation) return [];
-    const requestedItemIds = Array.isArray(jobArgs.itemIds)
-      ? jobArgs.itemIds
-          .map(Number)
-          .filter((itemId) => Number.isInteger(itemId) && itemId > 0)
-      : [];
-    const targetCollectionId = normalizePositiveInt(jobArgs.targetCollectionId);
-    const proposalParameters = targetCollectionId
-      ? { destinationCollectionId: targetCollectionId }
-      : undefined;
-    const contractTargets = context
-      ? unresolvedCollectionContractTargets(
-          job,
-          context,
-          durableRemainingItemIds,
-          proposalParameters,
-        )
-      : null;
-    const itemIds =
-      contractTargets ?? durableRemainingItemIds ?? requestedItemIds;
-    return [
-      {
-        id: `${operation}:library_batch:${identity}`,
-        proofDomain: "zotero_state" as const,
-        capability: capabilityForLibraryMutation(operation),
-        operation,
-        source: "library_mutation" as const,
-        parameters: proposalParameters,
-        requestedTargets: itemIds.map((itemId) => `item:${itemId}`),
-        destinationCollectionIds: targetCollectionId
-          ? [targetCollectionId]
-          : [],
-      },
-    ];
-  };
-
   return {
-    describeAction: async (input, context) => {
-      if (input.kind === "list") return [];
-      if (input.kind === "run") {
-        return describeBatchOperation(
-          input.job,
-          input.jobArgs,
-          input.job,
-          context,
-        );
-      }
-      const job = await store.getBatchJob(input.resumeJobId);
-      let args: Record<string, unknown> = {};
-      let durableRemainingItemIds: number[] | undefined;
-      if (job) {
-        try {
-          const parsed = JSON.parse(job.inputJson);
-          if (validateObject<Record<string, unknown>>(parsed)) args = parsed;
-        } catch {
-          args = {};
-        }
-        try {
-          const plan = JSON.parse(job.planJson || "{}");
-          if (validateObject<Record<string, unknown>>(plan)) {
-            durableRemainingItemIds =
-              normalizeItemIds(plan.remainingItemIds) || undefined;
-          }
-        } catch {
-          durableRemainingItemIds = undefined;
-        }
-      }
-      return job
-        ? describeBatchOperation(
-            job.action,
-            args,
-            job.jobId,
-            context,
-            durableRemainingItemIds,
-          )
-        : [];
-    },
     spec: {
       name: "library_batch",
       description:
-        "Run, inspect, or explicitly resume a durable library-wide batch job such as auto-tagging, organising unfiled items, or auditing metadata. New and resumed runs require the agent library write mode to be 'yolo'; interrupted jobs can be listed without changing the library.",
+        "Run, inspect, or explicitly resume a durable library-wide batch job such as auto-tagging, organising unfiled items, or auditing metadata. Every prepared page uses central mode policy: Auto executes clear delegated changes directly; Safe or requested review displays the actual proposed changes before applying. Resume retains frozen scope and verified progress.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -292,10 +205,22 @@ export function createLibraryBatchTool(deps: {
           },
         },
       },
-      mutability: "write",
-      requiresConfirmation: true,
+      executionClass: "control",
+      requiresConfirmation: false,
     },
 
+    guidance: {
+      matches: (request) =>
+        Boolean(
+          request.classifiedIntent?.actionIntents.some((intent) =>
+            ["apply_tags", "update_metadata", "move_to_collection"].includes(
+              intent.operation,
+            ),
+          ),
+        ),
+      instruction:
+        "For delegated auto-tagging, metadata enrichment/audit, organizing unfiled papers, or related-paper discovery, call library_batch with the matching built-in job (auto_tag, complete_metadata, audit_library, organize_unfiled, discover_related). This reuses the slash action preparation algorithms and actual editable proposal cards. Do not invent another proposal workflow. The host decides whether each prepared page needs review. Clear Auto work runs directly; Safe and requested review show the actual per-paper changes. For literal requested values use library_update directly.",
+    },
     presentation: {
       label: "Library Batch Job",
       summaries: {
@@ -357,17 +282,11 @@ export function createLibraryBatchTool(deps: {
           `Unknown job "${job}". Available: ${availableJobDetails(deps)}`,
         );
       }
-      const interactiveReason = INTERACTIVE_ONLY_JOBS[job];
-      if (interactiveReason) {
-        return fail(
-          `${interactiveReason} Run it from the chat surface with /${job} instead.`,
-        );
-      }
-      if (!DURABLE_BATCH_JOBS.has(job)) {
-        return fail(
-          `Action "${job}" does not implement durable remaining-item checkpoints and cannot run unattended. Available batch jobs: ${availableJobNames(deps)}`,
-        );
-      }
+      if (
+        !DURABLE_BATCH_JOBS.has(job) &&
+        !["complete_metadata", "discover_related"].includes(job)
+      )
+        return fail(`Unsupported built-in action: ${job}`);
       const jobArgs = validateObject<Record<string, unknown>>(args.jobArgs)
         ? args.jobArgs
         : {};
@@ -379,100 +298,12 @@ export function createLibraryBatchTool(deps: {
       return ok({ kind: "run", job, jobArgs });
     },
 
-    shouldRequireConfirmation(input) {
-      return input.kind !== "list";
-    },
-
-    planMutation(input) {
-      if (input.kind === "list") {
-        return { effect: "none", reversibility: "full" };
-      }
-      return {
-        effect: "write",
-        reversibility: "partial",
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: [],
         reason:
-          "Each applied page is journalled, while external model work and an interrupted remainder are checkpointed separately.",
-        requiresConfirmation: input.kind === "resume",
-      };
-    },
-
-    createPendingAction(input, context) {
-      if (input.kind === "list") {
-        throw new Error(
-          "Listing interrupted jobs does not require confirmation",
-        );
-      }
-      if (input.kind === "resume") {
-        return store.getBatchJob(input.resumeJobId).then((record) => {
-          const job =
-            record?.conversationKey === context.request.conversationKey
-              ? record
-              : null;
-          return {
-            toolName: "library_batch",
-            title: `Resume interrupted batch job "${input.resumeJobId}"`,
-            description: job
-              ? `Resume ${job.action} after ${job.cursor} processed item${job.cursor === 1 ? "" : "s"}. ${job.appliedCount} library object${job.appliedCount === 1 ? " has" : "s have"} already been changed and will not be repeated.`
-              : "The job will be rechecked before execution. No work runs until you approve.",
-            confirmLabel: "Resume job",
-            cancelLabel: "Cancel",
-            fields: job
-              ? [
-                  {
-                    type: "text" as const,
-                    id: "action",
-                    label: "Job",
-                    value: job.action,
-                  },
-                  {
-                    type: "text" as const,
-                    id: "progress",
-                    label: "Durable progress",
-                    value: `${job.cursor}${job.totalCount ? ` / ${job.totalCount}` : ""} processed; ${job.appliedCount} changed`,
-                  },
-                ]
-              : [],
-          };
-        });
-      }
-
-      const action = deps.actionRegistry.getAction(input.job);
-      const scope =
-        typeof input.jobArgs.scope === "string"
-          ? input.jobArgs.scope
-          : "the current selection";
-      const limit = normalizePositiveInt(input.jobArgs.limit);
-      void context;
-      return {
-        toolName: "library_batch",
-        title: `Run "${input.job}" across your library`,
-        description:
-          `${action?.description || input.job}\n\n` +
-          `Scope: ${scope}${limit ? `, up to ${limit} items` : ""}. ` +
-          "This runs unattended and can change many items at once. Each applied page and its inverse are recorded durably, so it can be reverted and an interruption can be resumed without restarting from zero.",
-        confirmLabel: "Run job",
-        cancelLabel: "Cancel",
-        fields: [
-          {
-            type: "text" as const,
-            id: "job",
-            label: "Job",
-            value: input.job,
-          },
-          {
-            type: "code_preview" as const,
-            id: "jobArgs",
-            label: "Arguments",
-            value: JSON.stringify(input.jobArgs, null, 2),
-            language: "json",
-          },
-        ],
-      };
-    },
-
-    applyConfirmation(input) {
-      return ok(input);
-    },
+          "Prepare and coordinate a durable action; every native effect is separately assessed and journalled by the tool registry.",
+      }),
 
     async execute(input, context) {
       if (input.kind === "list") {
@@ -487,20 +318,43 @@ export function createLibraryBatchTool(deps: {
         };
       }
 
-      const mode = getAgentLibraryWriteMode();
-      if (mode !== "yolo") {
-        const actionName = input.kind === "run" ? input.job : "the batch job";
-        throw new Error(
-          `Library batch jobs run unattended, so they require the agent library write mode to be "yolo" (currently "${mode}"). Either change it in the plugin preferences, or run this from the chat surface with /${actionName}, which reviews each page before applying it.`,
+      if (input.kind === "run" && !DURABLE_BATCH_JOBS.has(input.job)) {
+        const actionContext = buildActionExecutionContext({
+          context,
+          registry: deps.toolRegistry,
+          zoteroGateway: deps.zoteroGateway,
+          confirmationMode: "automatic",
+        });
+        const result = await deps.actionRegistry.run(
+          input.job,
+          input.jobArgs,
+          actionContext,
         );
+        if (!result.ok) throw new Error(result.error);
+        return { content: result.output, effect: "none" };
       }
-
       const prepared = await prepareBatchRun({
         requested: input,
         conversationKey: context.request.conversationKey,
         now,
         store,
       });
+      const storedJob = prepared.resumed
+        ? await store.getBatchJob(prepared.jobId)
+        : null;
+      let storedInteraction: unknown;
+      if (storedJob?.planJson) {
+        try {
+          storedInteraction = JSON.parse(storedJob.planJson).interaction;
+        } catch {
+          storedInteraction = undefined;
+        }
+      }
+      const interaction =
+        prepared.resumed &&
+        context.request.classifiedIntent?.semantic?.continuation !== "revise"
+          ? storedInteraction
+          : captureBatchInteraction(context.request);
       const durableRemainingItemIds = prepared.resumed
         ? normalizeItemIds(prepared.jobArgs._batchItemIds) || []
         : undefined;
@@ -626,7 +480,7 @@ export function createLibraryBatchTool(deps: {
           jobId: prepared.jobId,
           cursor,
           appliedCount,
-          plan: value.plan,
+          plan: { ...value.plan, interaction },
           totalCount,
           now: now(),
         });
@@ -641,7 +495,7 @@ export function createLibraryBatchTool(deps: {
         context,
         registry: deps.toolRegistry,
         zoteroGateway: deps.zoteroGateway,
-        confirmationMode: "auto_approve",
+        confirmationMode: "automatic",
         runId: prepared.jobId,
         journalActionScope,
         journalToolName: context.journalToolName || "library_batch",
@@ -655,6 +509,11 @@ export function createLibraryBatchTool(deps: {
         },
       });
 
+      if (prepared.resumed && actionContext.requestContext)
+        actionContext.requestContext = restoreBatchInteraction(
+          actionContext.requestContext,
+          storedInteraction,
+        );
       try {
         const result = await action.execute(prepared.jobArgs, actionContext);
         const output =
@@ -805,7 +664,11 @@ async function prepareBatchRun(params: {
 function availableJobNames(deps: { actionRegistry: ActionRegistry }): string {
   return deps.actionRegistry
     .listActions()
-    .filter((entry) => DURABLE_BATCH_JOBS.has(entry.name))
+    .filter(
+      (entry) =>
+        DURABLE_BATCH_JOBS.has(entry.name) ||
+        ["complete_metadata", "discover_related"].includes(entry.name),
+    )
     .map((entry) => entry.name)
     .join(", ");
 }
@@ -813,7 +676,11 @@ function availableJobNames(deps: { actionRegistry: ActionRegistry }): string {
 function availableJobDetails(deps: { actionRegistry: ActionRegistry }): string {
   return deps.actionRegistry
     .listActions()
-    .filter((entry) => DURABLE_BATCH_JOBS.has(entry.name))
+    .filter(
+      (entry) =>
+        DURABLE_BATCH_JOBS.has(entry.name) ||
+        ["complete_metadata", "discover_related"].includes(entry.name),
+    )
     .map((entry) => `${entry.name} — ${entry.description}`)
     .join("; ");
 }

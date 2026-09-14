@@ -1,3 +1,4 @@
+import { semanticContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -31,7 +32,7 @@ function createRegistry(executed: { value: boolean }): AgentToolRegistry {
       name: "library_update",
       description: "update library",
       inputSchema: { type: "object" },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: false,
     },
     validate: (input) => ({ ok: true, value: input as never }),
@@ -70,29 +71,31 @@ describe("Agent action adapter conformance", function () {
         mode: "agent",
         userText: 'Add the tag "reviewed" to this paper.',
         providerProtocol,
-        actionContract: {
-          version: 2,
-          id: `contract:${providerProtocol}`,
-          writeDisposition: "required",
-          interpretationSource: "classifier",
-          obligations: [
-            {
-              id: `obligation:${providerProtocol}`,
-              proofDomain: "zotero_state",
-              capability: "zotero.tags",
-              operation: "apply_tags",
-              coverage: "one",
-              targetKind: "papers",
-              parameters: { tags: ["reviewed"] },
-              targetBoundary: {
-                kind: "selection",
-                libraryID: 1,
-                frozenTargetIds: [1],
-                scopeDigest: "item:1",
+        actionContract: semanticContractFixture(
+          semanticContractFixture({
+            version: 2,
+            id: `contract:${providerProtocol}`,
+            writeDisposition: "required",
+            interpretationSource: "classifier",
+            obligations: [
+              {
+                id: `obligation:${providerProtocol}`,
+                proofDomain: "zotero_state",
+                capability: "zotero.tags",
+                operation: "apply_tags",
+                coverage: "one",
+                targetKind: "papers",
+                parameters: { tags: ["reviewed"] },
+                targetBoundary: {
+                  kind: "selection",
+                  libraryID: 1,
+                  frozenTargetIds: [1],
+                  scopeDigest: "item:1",
+                },
               },
-            },
-          ],
-        },
+            ],
+          }),
+        ),
       };
       const context: AgentToolContext = {
         request,
@@ -137,7 +140,7 @@ describe("Agent action adapter conformance", function () {
     for (let index = 0; index < operationTypes.length; index += 1) {
       const operation = operationTypes[index];
       const adjacent = operationTypes[(index + 1) % operationTypes.length];
-      const contract = {
+      const contract = semanticContractFixture({
         version: 2 as const,
         id: `contract:${operation}`,
         writeDisposition: "required" as const,
@@ -152,9 +155,9 @@ describe("Agent action adapter conformance", function () {
             targetKind: "items" as const,
           },
         ],
-      };
+      });
       const prepared = {
-        mutability: "write" as const,
+        executionClass: "external_effect" as const,
         hasExplicitAdapter: true,
         proposals: [
           {

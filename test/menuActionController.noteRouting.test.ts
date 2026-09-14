@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   attachMenuActionController,
   buildResponseActionTargetFromHistory,
+  runResponseMenuAction,
 } from "../src/modules/contextPanel/setupHandlers/controllers/menuActionController";
 import { invokeResponseMenuActionButton } from "../src/modules/contextPanel/chat";
 import {
@@ -146,6 +147,10 @@ describe("menu action controller note routing", function () {
 
     getDisplayTitle() {
       return "";
+    }
+
+    async reload() {
+      this.noteHtml = this.persistedNoteHtml.at(-1) || "";
     }
 
     async saveTx() {
@@ -835,6 +840,101 @@ describe("menu action controller note routing", function () {
         assistantTimestamp: 200,
       },
     ]);
+  });
+
+  it("opens a larger response view and reports success", async function () {
+    const body = new FakeElement();
+    const openedWindow = {
+      closed: false,
+      addEventListener: () => {},
+      setTimeout: () => 0,
+      close: () => {},
+      focus: () => {},
+      document: {},
+    };
+    body.ownerDocument = {
+      documentElement: {},
+      defaultView: {
+        openDialog: () => openedWindow,
+      },
+    };
+    const statuses: Array<{ message: string; level: string }> = [];
+    const target: ResponseActionTarget = {
+      item: { id: 42, libraryID: 1 } as unknown as Zotero.Item,
+      contentText: "Expanded answer",
+      modelName: "Codex",
+      conversationKey: 9,
+      assistantTimestamp: 203,
+    };
+
+    await runResponseMenuAction(
+      { body, logError: () => {} } as any,
+      "expand",
+      target,
+      (message, level) => statuses.push({ message, level }),
+    );
+
+    assert.deepEqual(statuses, [
+      { message: "Opened response in larger view", level: "ready" },
+    ]);
+  });
+
+  it("reports when a larger response view cannot be opened", async function () {
+    const body = new FakeElement();
+    body.ownerDocument = { documentElement: {}, defaultView: {} };
+    const statuses: Array<{ message: string; level: string }> = [];
+    const target: ResponseActionTarget = {
+      item: { id: 42, libraryID: 1 } as unknown as Zotero.Item,
+      contentText: "Expanded answer",
+      modelName: "Codex",
+      conversationKey: 9,
+      assistantTimestamp: 204,
+    };
+
+    await runResponseMenuAction(
+      { body, logError: () => {} } as any,
+      "expand",
+      target,
+      (message, level) => statuses.push({ message, level }),
+    );
+
+    assert.deepEqual(statuses, [
+      { message: "The response window could not be opened", level: "error" },
+    ]);
+  });
+
+  it("blocks programmatic response actions when panel ownership is poisoned", async function () {
+    const body = new FakeElement();
+    const item = { id: 42, libraryID: 1 } as unknown as Zotero.Item;
+    const deletions: unknown[] = [];
+    const statuses: Array<{ message: string; level: string }> = [];
+    const target: ResponseActionTarget = {
+      item,
+      contentText: "Foreign response",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
+
+    await runResponseMenuAction(
+      {
+        body,
+        getItem: () => item,
+        getConversationKey: () => 9,
+        captureOwnership: () => null,
+        queueTurnDeletion: async (queuedTarget: unknown) => {
+          deletions.push(queuedTarget);
+        },
+        logError: () => {},
+      } as any,
+      "delete",
+      target,
+      (message, level) => statuses.push({ message, level }),
+    );
+
+    assert.deepEqual(deletions, []);
+    assert.deepEqual(statuses, []);
   });
 
   it("keeps footer response actions scoped to their owning panel body", async function () {

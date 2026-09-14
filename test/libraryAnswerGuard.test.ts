@@ -1,3 +1,4 @@
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   findLibraryRetrieveShallowSignal,
@@ -7,16 +8,13 @@ import {
 
 describe("libraryAnswerGuard", function () {
   describe("isEvidenceSeekingTurn", function () {
-    it("detects English and CJK evidence questions heuristically", function () {
-      assert.isTrue(
-        isEvidenceSeekingTurn({
-          userText: "Which papers use calcium imaging?",
-        }),
-      );
-      assert.isTrue(
-        isEvidenceSeekingTurn({ userText: "这些论文用了什么方法" }),
-      );
-      assert.isTrue(isEvidenceSeekingTurn({ userText: "총 요약해줘" }));
+    it("does not derive evidence intent from request wording", function () {
+      for (const userText of [
+        "Which papers use calcium imaging?",
+        "这些论文用了什么方法",
+        "총 요약해줘",
+      ])
+        assert.isFalse(isEvidenceSeekingTurn({ userText }));
     });
 
     it("treats pure operations as non-evidence turns", function () {
@@ -26,17 +24,22 @@ describe("libraryAnswerGuard", function () {
       assert.isFalse(isEvidenceSeekingTurn({ userText: "" }));
     });
 
-    it("prefers the classified intent over heuristics", function () {
+    it("uses the shared semantic retrieval intent", function () {
       assert.isFalse(
         isEvidenceSeekingTurn({
           userText: "Which papers use calcium imaging?",
-          classifiedIntent: { retrievalIntent: "none", wantedSections: [] },
+          classifiedIntent: {
+            semantic: semanticFixture(),
+            retrievalIntent: "none",
+            wantedSections: [],
+          },
         }),
       );
       assert.isTrue(
         isEvidenceSeekingTurn({
           userText: "move these",
           classifiedIntent: {
+            semantic: semanticFixture(),
             retrievalIntent: "enumerate",
             wantedSections: [],
           },

@@ -1,24 +1,9 @@
 ---
 id: write-note
 description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 9
+version: 10
 contexts: any
 activation: auto
-match: /\b(create|make|write|draft|generate)\b.*\b(note|summary note|reading note|notes?)\b.*\b(for|from|about|on)\b.*\b(paper|article|this)\b/i
-match: /\b(note|notes?)\b.*\b(for|from|about|on)\b.*\b(paper|article|this|these)\b/i
-match: /\b(reading notes?|study notes?|literature notes?|research notes?)\b/i
-match: /\b(summarize|summarise)\b.*\b(into|as|to)\b.*\b(note|notes?)\b/i
-match: /\b(save|write|append|add|put)\b.*\b(to\s+)?(note|notes?)\b/i
-match: /\b(note|notes?)\b.*\b(save|write|append|add)\b/i
-match: /\b(edit|update|modify|rewrite|revise|polish)\b.*\b(note|notes?)\b/i
-match: /\b(create|make|new)\b.*\bnote\b/i
-match: /\b(write|save|export|send)\b.*\bobsidian\b/i
-match: /\bobsidian\b.*\b(note|write|save|export)\b/i
-match: /\bto\s+obsidian\b/i
-match: /\bobsidian\b.*\bvault\b/i
-match: /\b(save|write|export)\b.*\bnote\b.*\b(to\s+)?(file|disk|local|directory)\b/i
-match: /\b(note|notes?)\b.*\b(to\s+)?(file|disk|local|directory)\b/i
-match: /\b(use|apply|with)\b.*\btemplate\b/i
 ---
 
 <!--
@@ -43,26 +28,20 @@ match: /\b(use|apply|with)\b.*\btemplate\b/i
 
 ## Write Note
 
-### Where to write
+### Use the prepared intent and action contract
 
-Decide the destination based on what the user says:
+The shared semantic service determines the destination, reading depth, note operation, filenames, preservation constraints, and requested deliverables.
+Use those typed decisions and resolved obligations throughout this playbook.
+Do not classify the request again from words such as folder, note, save, append, or Obsidian.
+Skill activation alone does not authorize any persistence.
+Missing destinations or targets require resolution through the host preparation flow.
 
-- **File-based** (`file_io`): user mentions Obsidian, the notes directory nickname, a path, a `.md` filename, or "save to file/disk/directory".
-- **Zotero note** (`note_write`): user says "create a note", "save to note", "edit my note", names a **folder** or collection, or says anything without an explicit file destination.
+### Step 1 — Read the authorized evidence
 
-> A bare "folder" means a Zotero **collection**, not a filesystem directory. Zotero's own UI calls collections folders and this plugin's tool descriptions say "collections (folders)", so routing "save this note into folder X" to disk sent notes nowhere at all (issue #374). File it with `note_write({ mode:'create', target:'standalone', collections:[<id>] })`, resolving the name with `library_search({ entity:'collections', mode:'list' })`.
-
-If unclear, default to Zotero note.
-
-### Step 1 — Read content
-
-- If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`.
-- Otherwise: use `paper_read({ mode:'overview' })` for the overview, then optionally one `paper_read({ mode:'targeted', query:'...' })` call for key results/methods if the user wants detail beyond the abstract.
-- For multi-paper notes (reviews, comparisons): use `library_retrieve` with the right intent (`enumerate` for comprehensive evidence search, `summarize` for taxonomies/themes/commonality/comparison, or `verify` for exact presence/absence) to search the scoped library/collection resource pool and gather snippets, then use `paper_read` only for papers that the ledger marks as needing close reading.
-- For bounded selected multi-paper notes, prefer body-evidence coverage and the paper synthesis digest before writing.
-- For free-form notes: use whatever the user provides or requests.
-- For one-paper notes, keep the read phase compact: 1 call (overview) or 1–2 calls (overview/targeted).
-  For bounded multi-paper notes, answer quality takes priority over a fixed call count.
+Use the shared reading source and coverage decision, retrieval purpose, and source boundary.
+Use `paper_read` for paper evidence and `library_retrieve` for the resolved corpus.
+Use cached section offsets only as an implementation detail of that evidence request.
+Keep claims tied to the actual evidence returned.
 
 ### Step 2 — Compose the note using the template below
 
@@ -159,8 +138,8 @@ Written by LLM-for-Zotero.
 
 ### Step 3 — Include figures
 
-**If the user asked about a specific figure, include that figure in the note when an extracted PDF crop is available.**
-For other notes, include figures when they genuinely aid understanding (result plots, diagrams, key tables).
+The semantic figure selection determines the required figures and tables.
+Include the selected assets when verified crops are available.
 For Zotero library PDFs, first call `paper_read({ mode:'figures', query:'<figure request>' })`.
 Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
 Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before writing.
@@ -182,163 +161,41 @@ This failure path does not restrict images the user manually attached or pasted;
 
 #### For file-based notes (`file_io`)
 
-**Hard rules — these embeds do NOT render inline in Obsidian or most markdown viewers. NEVER produce them:**
+Finalize the complete document with `submit_document`, including its host-issued figure assets and evidence references.
+Then call `file_io` with the resolved destination path and the exact finalized `visibleMarkdown` returned by the host.
+The host exports verified assets into a sibling asset directory, writes relative Markdown image links, and reads every file back against its expected hash.
+Do not copy image files with shell commands or manufacture relative image paths.
+A failed export leaves the finalized document available for retry.
 
-- NEVER use `file:///...` URLs. They are blocked inline for security.
-- NEVER use absolute filesystem paths like `/Users/...`, `~/...`, or `C:\...`.
-- NEVER use `|width` syntax inside `![alt](url)`.
-  Width suffixes only work inside `![[wikilink]]` embeds, which we do NOT use here.
-  The `|` ends up as literal text and the image is not resized.
+### Step 4a — Save the resolved Zotero note operation
 
-**Algorithm — follow exactly:**
+Use the operation, target note or parent paper, and destination collections in the concrete action contract.
+`note_write` supports create, append, and edit as distinct operations.
+Use the contract's mode; the active editor or this playbook cannot override it.
+Creation and existing-note review follow the host's central policy.
+Use Markdown content unless the semantic deliverable specifies a different supported format.
 
-1. Create the destination directory: `run_command` with `mkdir -p "{attachmentsPath}/{sanitized-paper-title}"`.
-   The folder is named after the **paper title only** (no subtopic, no date) so multiple notes about the same paper share the same images folder.
-2. Copy extracted PDF crop files returned by `paper_read({ mode:'figures' })` to `{attachmentsPath}/{sanitized-paper-title}/` using `run_command`.
-   Copy images BEFORE writing the note file.
-3. Compute the **relative path from the note's directory to the image file**.
-   Use `..` to climb to the common ancestor, then descend to the image.
-   Count path segments deterministically — don't guess.
-4. Embed with `![<caption>](<relative-path>)`. Nothing else.
+### Step 4b — Export the finalized file
 
-**Worked example:**
+Use the exact path resolved during semantic preparation.
+Configured directories, naming templates, and skill customizations inform that preparation; they do not independently authorize new paths.
+Missing parent directories are created by the host file writer.
+Use the current runtime date and native paper metadata for any resolved naming template.
+Report persistence failure separately from the preserved generated content.
 
-```
-Note path:    {vault}/Logs/paper-notes/Nili2014.md
-Image path:   {vault}/Logs/imgs/Nili2014/figure-2.jpg
-Note folder:  {vault}/Logs/paper-notes/
-Relative:     ../imgs/Nili2014/figure-2.jpg
-Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
-```
+### User customizations
 
-**Negative examples — never produce any of these:**
-
-- `![Figure 2](file:///Users/.../figure-2.jpg)` — `file://` renders as a broken-image icon in Obsidian.
-- `![Figure 2](/Users/.../figure-2.jpg)` — absolute path is outside the vault; viewers refuse.
-- `![Figure 2|400](../imgs/foo.jpg)` — `|400` becomes literal alt text.
-  The image is not resized.
-- `![[imgs/foo/figure-2.jpg]]` — wiki-link embed.
-  We use standard markdown only.
-
-**If the extracted PDF crop cannot be found**, write a text-only note when the user asked for a note.
-Switch to text-only mode and do not include any figure image artifact.
-Clearly state that figure extraction failed or no extracted crops are available.
-Do NOT fall back to MinerU source images, `file:///`, absolute paths, or any of the negative examples above.
-
-### Step 4a — Write to Zotero (`note_write`)
-
-**Creating notes** (mode: `create`):
-
-- Notes are created directly without a confirmation card.
-- In **paper chat** (active item exists): default to `target: 'item'` — attaches the note to the active paper.
-- In **library chat** (no active item): default to `target: 'standalone'` — creates a standalone note.
-- `create` always means a brand-new note. Do not use `create` when the user asks to append to an existing note.
-
-**Appending to existing notes** (mode: `append`):
-
-- Use mode `append` when the user says append, add to an existing note, continue a note, or save into a specific existing note.
-- Pass `targetNoteId` when you know the note ID.
-- If no `targetNoteId` is supplied, the tool appends to the active note; otherwise it can append to the single child note on the target item.
-- If the target paper has multiple child notes, ask which note to append to before proceeding.
-
-**Editing existing notes** (mode: `edit`):
-
-- Edits always show a diff review card for the user to approve.
-- PREFER `patches` (find-and-replace pairs) over `content` (full rewrite) — patches are faster.
-- Use mode `edit` for: append to a specific position, insert, delete, rewrite sections.
-
-**Format:**
-
-- Pass Markdown by default. When the user explicitly requests HTML output or provides an HTML template (e.g., Better Notes templates with inline styles), write HTML with inline styles directly.
-
-### Step 4b — Write to file (`file_io`)
-
-**USER CUSTOMIZATIONS COME FIRST.**
-Before applying anything below, check the end of this skill file — after the managed section — for a `## Your customizations` section (it may use a similar title such as `## User customizations`).
-If present, its rules are authoritative: filename pattern, folder layout, destination, or anything else it defines OVERRIDES the corresponding default in this section absolutely.
-Custom path patterns may include subfolders (e.g. one folder per paper); `file_io` creates missing directories automatically, so no `mkdir` step is needed for the note path.
-
-**Prerequisites:**
-
-- The user's notes directory path, default folder, and resolved default target path are provided in the system prompt under "Notes directory configuration". If missing, tell the user to configure the notes directory in the plugin preferences (Settings > Agent tab).
-- The `Default target path` is the already-resolved directory for default file notes. When the user doesn't specify another folder, use `Default target path/<filename>.md` directly. Do not append the default folder to the default target path again.
-- The default folder is used when neither the user's message nor their `## Your customizations` section specifies a folder or path pattern.
-  If either does, write there instead.
-
-**Filename pattern (default):** `{papertitle}-{notetitle}-{date}.md`
-
-Three components, joined by single hyphens:
-
-- **`{papertitle}`** — sanitized paper title from Zotero metadata (paper notes only). For general/non-paper notes, **omit this component entirely** along with the hyphen that would follow it.
-- **`{notetitle}`** — the specific aspect or subtopic the note covers. Derive it from the user's request:
-  - "notes on figure 1" / "summarize figure 3" → `figure-1` / `figure-3`
-  - "methodology summary" / "methods notes" → `methodology`
-  - "discussion notes" / "notes on the discussion" → `discussion`
-  - "key findings" / "summarize the findings" → `key-findings`
-  - "summarize this paper" / "reading notes for this paper" (no specific aspect) → **omit `{notetitle}` entirely**, along with the hyphen that would precede it.
-- **`{date}`** — today's date in `YYYY-MM-DD`. This is the same value you write into frontmatter `created:` — reuse it, don't look up a different date.
-
-**Sanitizer for each component** — lowercase, replace any run of non-alphanumeric characters with a single hyphen, strip leading/trailing hyphens, collapse consecutive hyphens to one, trim each component to ~80 characters.
-
-**Never double up hyphens** when a component is omitted. `{papertitle}--{date}.md` is wrong; the correct form is `{papertitle}-{date}.md`.
-
-**Worked examples:**
-
-| User request                                           | Filename                                                                 |
-| ------------------------------------------------------ | ------------------------------------------------------------------------ |
-| "summary notes about figure 1 to my obsidian note"     | `stable-and-dynamic-coding-for-working-memory-figure-1-2026-04-16.md`    |
-| "create a reading note for this paper"                 | `stable-and-dynamic-coding-for-working-memory-2026-04-16.md`             |
-| "methodology summary"                                  | `stable-and-dynamic-coding-for-working-memory-methodology-2026-04-16.md` |
-| "literature review on working memory" (non-paper note) | `literature-review-on-working-memory-2026-04-16.md`                      |
-
-**Writing steps:**
-
-1. Construct the file path: `{defaultTargetPath}/<filename>.md` unless the user's message or their `## Your customizations` section specifies another folder or path pattern, using the native path separator from the runtime platform section.
-2. Call `file_io({ action:'write', filePath, content:noteContent })`.
-   Missing parent directories are created automatically.
-3. If writing fails, report the error clearly with the attempted path.
-
-**Filename is independent of frontmatter.** The frontmatter `title:` stays the paper's full title (paper notes) or the user's note title (general notes) per the template. Do NOT put the subtopic or the date into `title:`.
-
-#### Customize the filename and folder layout
-
-Users can override the default filename pattern AND the folder layout by adding a `## Your customizations` section **AFTER** the `LLM-FOR-ZOTERO:MANAGED-END` marker at the bottom of this skill file.
-The agent follows the customization instead of the defaults above, absolutely (see Key rules).
-
-Example customizations:
-
-```
-## Your customizations
-
-Filename pattern: `{citekey}-{notetitle}.md`
-Example: Buschman2020-figure-1.md
-```
-
-```
-## Your customizations
-
-Path pattern: `{papertitle}/{papertitle}.md`
-Example: attention-is-all-you-need/attention-is-all-you-need.md
-```
-
-The second example creates one folder per paper under the target directory — useful for growing a paper's notes over time.
-Path patterns may nest folders freely (`{year}/{firstauthor}/{notetitle}.md`, …); missing directories are created automatically by `file_io`.
-A customization may also name a different base directory entirely — honor it.
-
-Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`, etc.) should be resolved from the same Zotero metadata the frontmatter fields use.
+USER CUSTOMIZATIONS COME FIRST among formatting defaults.
+The semantic service receives configured skill content and resolves applicable user preferences before constructing the action contract.
+Customizations cannot override the user's current restrictions, expand resolved execution authority, or reinterpret the destination during execution.
+Add a `## Your customizations` section after the managed block to keep formatting preferences across updates.
 
 ### Key rules
 
-- **Never** output the full note text in chat. Always use `note_write` or `file_io`.
-- Use the note template above — frontmatter is locked to the 7 fields shown; do not add or remove fields.
-- Use `[@citekey]` Pandoc syntax inline **only when `citekey` is non-empty**. When `citekey` is missing/empty, reference in prose (`First-Author et al. (Year)`) and rely on the full citation in `## References`. **Never emit `[@]`.** Adapt citation syntax to the target format (e.g., `[cite:@citekey]` for Org-mode) when citekey exists.
-- **Every note ends with the footer** `---\n\nWritten by LLM-for-Zotero.` — no exceptions, no omissions, regardless of destination or format.
-- Use the native path separator provided in the runtime platform section. Never mix separators.
-- If the user has customized this skill in any way — editing the managed block, replacing it, or **adding sections after the MANAGED-END marker** (e.g. `## Your customizations`) — their customization is authoritative.
-  Follow it absolutely and let it override any conflicting default above: filename pattern, folder layout, destination, template structure, citation style, anything.
-
-### Budget
-
-Total tool calls: 2–5 (read content, optionally look up citekeys, optionally copy images, write note).
+- Preserve the finalized material independently of any saving action.
+- Use the selected template and valid citation labels from native metadata.
+- Use the native path separator supplied by the runtime.
+- Execute only the resolved obligations and verify their receipts.
+- Keep generated prose and figures readable in the document view even after persistence fails.
 
 <!-- LLM-FOR-ZOTERO:MANAGED-END -->

@@ -1,3 +1,5 @@
+import { executeNoteCreation } from "../noteCreation";
+import { renderRawNoteHtml } from "../../../modules/contextPanel/notes";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 
@@ -34,14 +36,16 @@ export const noteLifecycleExecutors = {
         continue;
       }
       try {
-        const saved = await zoteroGateway.saveAnswerToNote({
-          item: target,
-          libraryID: context.request.libraryID,
-          content: entry.content,
-          modelName: operation.modelName || context.modelName,
-          target: operation.target || "item",
-          collections: entry.collections,
+        const execution = await executeNoteCreation({
+          context,
+          libraryID: target.libraryID,
+          parentItemId:
+            operation.target === "standalone" ? undefined : target.id,
+          collections:
+            operation.target === "standalone" ? entry.collections : undefined,
+          html: renderRawNoteHtml(entry.content),
         });
+        const saved = execution.content;
         if (saved.noteId) createdNoteIds.push(saved.noteId);
         rows.push({
           targetItemId: entry.targetItemId,

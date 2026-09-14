@@ -201,7 +201,10 @@ describe("action LLM batch helpers", function () {
               // The user hits stop while this request is outstanding.
               controller.abort();
               abortReachedTheCall = Boolean(signal?.aborted);
-              return "[]";
+              return {
+                text: "[]",
+                completion: { status: "complete" as const },
+              };
             },
           },
         }),

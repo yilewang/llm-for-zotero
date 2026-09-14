@@ -15,6 +15,19 @@ export default zotero({
       },
     },
     {
+      // Chrome scripts loaded directly by the standalone XHTML documents. They
+      // run in a privileged window, not through the bundler.
+      files: ["addon/content/**/*.js"],
+      languageOptions: {
+        globals: {
+          ChromeUtils: "readonly",
+          console: "readonly",
+          document: "readonly",
+          window: "readonly",
+        },
+      },
+    },
+    {
       files: ["scripts/**/*.cjs", "scripts/**/*.mjs"],
       languageOptions: {
         globals: {

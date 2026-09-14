@@ -8,7 +8,6 @@ import {
 describe("library chat read strategy", function () {
   it("uses deep synthesis for bounded selected broad synthesis", function () {
     const strategy = resolveLibraryChatReadStrategy({
-      query: "What is the commonality of those papers?",
       intent: "summarize",
       depth: "evidence",
       paperCount: 23,
@@ -22,7 +21,6 @@ describe("library chat read strategy", function () {
 
   it("stages medium-sized synthesis as evidence overview", function () {
     const strategy = resolveLibraryChatReadStrategy({
-      query: "Synthesize the common themes in this collection",
       intent: "summarize",
       depth: "evidence",
       paperCount: 50,
@@ -34,7 +32,6 @@ describe("library chat read strategy", function () {
 
   it("keeps large or unbounded synthesis at abstract-map depth first", function () {
     const strategy = resolveLibraryChatReadStrategy({
-      query: "Give me an overview of my whole library",
       intent: "summarize",
       depth: "evidence",
       paperCount: 250,
@@ -46,9 +43,8 @@ describe("library chat read strategy", function () {
 
   it("routes exact quote requests to quote verification", function () {
     const strategy = resolveLibraryChatReadStrategy({
-      query: "Find exact quotes about representational drift",
-      intent: "summarize",
-      depth: "evidence",
+      intent: "verify",
+      depth: "verify",
       paperCount: 12,
       scopeType: "items",
       explicitPaperScope: true,
@@ -61,7 +57,6 @@ describe("library chat read strategy", function () {
   it("keeps diagnostic and receipt metadata-only paper counts consistent", function () {
     const diagnostics = completeLibraryChatReadStrategyDiagnostics({
       base: resolveLibraryChatReadStrategy({
-        query: "What do these papers have in common?",
         intent: "summarize",
         depth: "evidence",
         paperCount: 4,

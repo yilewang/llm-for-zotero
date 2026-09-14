@@ -1,9 +1,9 @@
 import { assert } from "chai";
-import { createTrashItemsTool } from "../src/agent/tools/write/trashItems";
-import { createMergeItemsTool } from "../src/agent/tools/write/mergeItems";
 import { createImportIdentifiersTool } from "../src/agent/tools/write/importIdentifiers";
 import { createImportLocalFilesTool } from "../src/agent/tools/write/importLocalFiles";
 import { createManageAttachmentsTool } from "../src/agent/tools/write/manageAttachments";
+import { createMergeItemsTool } from "../src/agent/tools/write/mergeItems";
+import { createTrashItemsTool } from "../src/agent/tools/write/trashItems";
 import type { AgentToolContext } from "../src/agent/types";
 
 /**
@@ -14,7 +14,7 @@ import type { AgentToolContext } from "../src/agent/types";
  *
  * These tests pin the consent contract: what the user leaves checked is what
  * happens, an empty selection is an error rather than a silent no-op, and the
- * non-HITL (`auto_approve`) path is unaffected.
+ * non-HITL (`automatic`) path is unaffected.
  */
 describe("destructive checklist consent", function () {
   const baseContext: AgentToolContext = {
@@ -93,7 +93,7 @@ describe("destructive checklist consent", function () {
       );
     });
 
-    it("passes through unchanged when there is no resolution data (auto_approve)", function () {
+    it("passes through unchanged when there is no resolution data (automatic)", function () {
       const { tool, input } = validated();
       const applied = tool.applyConfirmation?.(input, undefined);
       assert.isTrue(applied?.ok);

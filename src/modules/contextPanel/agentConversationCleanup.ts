@@ -20,6 +20,9 @@ import {
   JOURNAL_STEPS_TABLE,
 } from "../../agent/store/changeJournal";
 import { clearAgentRuntimeTraceState } from "./agentState";
+import { clearPlanConversationRowsInTransaction } from "../../agent/plans/store";
+import { clearResearchConversationRowsInTransaction } from "../../agent/research/store";
+import { clearPlanDocumentConversationRowsInTransaction } from "../../agent/documents/store";
 
 export type AgentConversationCleanupDeps = {
   clearAgentToolCaches?: (conversationKey: number) => void;
@@ -154,6 +157,18 @@ export async function clearPersistedAgentConversationRowsInTransaction(
      WHERE scope_key = ? OR origin_conversation_key = ?`,
     [`conversation:${key}`, key],
   );
+  await clearPlanConversationRowsInTransaction(key).catch((error) => {
+    if (/no such table|no table/i.test(String(error))) return;
+    throw error;
+  });
+  await clearResearchConversationRowsInTransaction(key).catch((error) => {
+    if (/no such table|no table/i.test(String(error))) return;
+    throw error;
+  });
+  await clearPlanDocumentConversationRowsInTransaction(key).catch((error) => {
+    if (/no such table|no table/i.test(String(error))) return;
+    throw error;
+  });
   await queueJournalRecoveryBlobCleanupInTransaction(key).catch((error) => {
     if (/no such table|no table/i.test(String(error))) return;
     throw error;

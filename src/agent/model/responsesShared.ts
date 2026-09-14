@@ -5,7 +5,12 @@ import {
   stringifyUnknown,
 } from "./shared";
 import { stringifyMessageContent } from "./messageBuilder";
-import type { ReasoningEvent, UsageStats } from "../../utils/llmClient";
+import {
+  normalizeProviderCompletion,
+  type ReasoningEvent,
+  type UsageStats,
+} from "../../utils/llmClient";
+import type { ModelTurnCompletion } from "../../shared/llm";
 import { extractContextCacheUsage } from "../../contextCache/manager";
 import type {
   AgentModelContentPart,
@@ -47,6 +52,8 @@ type ResponsesOutputItem = {
 
 export type ResponsesPayload = {
   id?: unknown;
+  status?: unknown;
+  incomplete_details?: { reason?: unknown } | null;
   output_text?: unknown;
   output?: unknown;
 };
@@ -140,6 +147,7 @@ export type NormalizedResponsesStep = {
   text: string;
   toolCalls: AgentToolCall[];
   outputItems: unknown[];
+  completion: ModelTurnCompletion;
 };
 
 export type ResponsesFilePartResolver = (
@@ -427,6 +435,9 @@ export function normalizeResponsesStepFromPayload(
     text,
     toolCalls,
     outputItems: outputs,
+    completion: normalizeProviderCompletion(data.incomplete_details?.reason, {
+      responseStatus: data.status,
+    }),
   };
 }
 
@@ -734,7 +745,11 @@ export async function parseResponsesStepStream(
             }
             continue;
           }
-          if (eventType === "response.completed" && parsed.response) {
+          if (
+            (eventType === "response.completed" ||
+              eventType === "response.incomplete") &&
+            parsed.response
+          ) {
             latestPayload = parsed.response;
             if (
               typeof parsed.response.id === "string" &&
@@ -844,6 +859,7 @@ export async function parseResponsesStepStream(
       text: finalText,
       toolCalls: extractToolCallsFromOutputs(outputItems),
       outputItems,
+      completion: normalized.completion,
     };
   }
 
@@ -867,5 +883,6 @@ export async function parseResponsesStepStream(
     text: finalText,
     toolCalls,
     outputItems: streamedOutputs,
+    completion: { status: "complete" },
   };
 }

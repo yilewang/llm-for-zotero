@@ -38,7 +38,7 @@
  *            query: { type: "string", description: "The user's query" },
  *          },
  *        },
- *        mutability: "read",           // "read" | "write"
+ *        executionClass: "read",       // "read" | "control" | "external_effect"
  *        requiresConfirmation: false,  // set true to show a HITL confirm card
  *      },
  *      validate: (args) => {
@@ -62,13 +62,26 @@
  *    addon.api.agent.unregisterTool("my_tool");
  *    ```
  *
- * ## Tool mutability
+ * ## Input schema portability
+ *
+ * `registerTool` is synchronous, returns no value, and throws before
+ * registration when a model-visible tool does not provide a portable
+ * object-root input schema.
+ * The root must declare `type: "object"` and must not contain `oneOf`, `allOf`,
+ * or `anyOf`; those composition keywords may be used inside properties.
+ * Enforce cross-field constraints, such as mutually exclusive properties, in
+ * the tool's `validate()` function.
+ * Internal-only tools are exempt because their schemas are never advertised.
+ *
+ * ## Tool execution class
  *
  * - `"read"` — the tool only reads data. Read tools may still open a HITL card
  *   when the user needs to review or approve a sensitive step.
- * - `"write"` — the tool modifies Zotero data. Set `requiresConfirmation: true`
+ * - `"control"` — the tool changes only internal Plan/approval state or pauses
+ *   for user input. Controls are never deduplicated and need no action contract.
+ * - `"external_effect"` — the tool modifies external state. Set `requiresConfirmation: true`
  *   and implement `createPendingAction` to show a HITL confirmation card before
- *   executing.
+ *   executing. External-effect tools must also provide a typed action adapter.
  *
  * Read tools can also pause after execution by implementing
  * `createResultReviewAction` and `resolveResultReview`. This lets the tool
@@ -80,8 +93,8 @@
  *
  * ```ts
  * guidance: {
- *   matches: (request) => /\bmy keyword\b/i.test(request.userText),
- *   instruction: "Use my_tool when the user mentions 'my keyword'.",
+ *   matches: (request) => request.classifiedIntent?.semantic?.supportTools?.includes("my_tool") === true,
+ *   instruction: "Use my_tool for the supporting operation selected by semantic intent.",
  * },
  * ```
  *

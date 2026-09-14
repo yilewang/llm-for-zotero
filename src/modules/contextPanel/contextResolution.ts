@@ -1116,7 +1116,7 @@ export function syncSelectedTextContextForSource(
   const retainedContexts = existingContexts.filter(
     (entry) => entry.source !== normalizedSource,
   );
-  const normalizedText = normalizeSelectedText(text || "");
+  const normalizedText = normalizeSelectedText(text || "", normalizedSource);
   if (!normalizedText) {
     if (retainedContexts.length === existingContexts.length) {
       return false;
@@ -1161,7 +1161,7 @@ export function appendSelectedTextContextForItem(
   location?: SelectedTextPageLocation | null,
   noteContext?: NoteContextRef | null,
 ): boolean {
-  const normalizedText = normalizeSelectedText(text || "");
+  const normalizedText = normalizeSelectedText(text || "", source);
   if (!normalizedText) return false;
   const existingContexts = getSelectedTextContextEntries(itemId);
   const dedupeKey = (entry: SelectedTextContext): string => {
@@ -1211,7 +1211,7 @@ export function updateSelectedTextContextLocationForItem(
   paperContext: PaperContextRef | null | undefined,
   location: SelectedTextPageLocation | null | undefined,
 ): boolean {
-  const normalizedText = normalizeSelectedText(text || "");
+  const normalizedText = normalizeSelectedText(text || "", source);
   const normalizedSource = normalizeSelectedTextSource(source);
   const normalizedPaperContext = normalizePaperContextRefs([paperContext])[0];
   const contextItemId = normalizePositiveInt(location?.contextItemId);
@@ -1318,7 +1318,7 @@ export function addSelectedTextContext(
   text: string,
   options: AddSelectedTextContextOptions = {},
 ): boolean {
-  const normalizedText = normalizeSelectedText(text || "");
+  const normalizedText = normalizeSelectedText(text || "", options.source);
   const status = body.querySelector("#llm-status") as HTMLElement | null;
   if (!normalizedText) {
     if (status && options.noSelectionStatusText) {

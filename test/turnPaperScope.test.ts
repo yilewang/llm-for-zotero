@@ -1,3 +1,5 @@
+import { classifiedFixture } from "./helpers/semanticIntent";
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   buildTurnPaperKey,
@@ -377,8 +379,13 @@ describe("TurnPaperScope", function () {
             paper.contextItemId === selector.contextItemId,
         ) || null,
     } as never;
-    const targets = (userText: string) => {
-      const request = resolveAgentRuntimeRequest(input({ userText }));
+    const targets = (paperTargetIntent: "active" | "added" | "all_visible") => {
+      const request = resolveAgentRuntimeRequest(
+        input({
+          userText: "same wording",
+          classifiedIntent: classifiedFixture({ paperTargetIntent }),
+        }),
+      );
       return resolveDefaultTargets(
         undefined,
         undefined,
@@ -388,13 +395,13 @@ describe("TurnPaperScope", function () {
       ).map((paper) => paper.itemId);
     };
 
-    assert.deepEqual(targets("Explain this paper"), [10]);
-    assert.deepEqual(targets("Compare the added papers"), [20]);
-    assert.deepEqual(targets("Compare these papers"), [10, 20]);
-    assert.deepEqual(targets("Compare both papers"), [10, 20]);
+    assert.deepEqual(targets("active"), [10]);
+    assert.deepEqual(targets("added"), [20]);
+    assert.deepEqual(targets("all_visible"), [10, 20]);
+    assert.deepEqual(targets("all_visible"), [10, 20]);
   });
 
-  it("uses classified paper-set intent before English heuristics with a legacy summarize fallback", function () {
+  it("uses only the shared paper-set intent, including when the wording conflicts", function () {
     const gateway = {
       listPaperContexts: () => {
         throw new Error("resolved requests must not reconstruct tool scope");
@@ -424,6 +431,7 @@ describe("TurnPaperScope", function () {
         input({
           userText,
           classifiedIntent: {
+            semantic: semanticFixture(),
             retrievalIntent,
             ...(paperTargetIntent ? { paperTargetIntent } : {}),
             wantedSections: [],
@@ -445,7 +453,7 @@ describe("TurnPaperScope", function () {
     assert.deepEqual(targets("active"), [10]);
     assert.deepEqual(targets("added"), [20]);
     assert.deepEqual(targets("unspecified"), [10]);
-    assert.deepEqual(targets(undefined, "summarize"), [10, 20]);
+    assert.deepEqual(targets(undefined, "summarize"), []);
     assert.deepEqual(
       targets("all_visible", "none", "比较这些论文", {
         selectedPaperContexts: [activePaper, activePaper, addedPaper],
@@ -474,6 +482,7 @@ describe("TurnPaperScope", function () {
     const explicitRequest = resolveAgentRuntimeRequest(
       input({
         classifiedIntent: {
+          semantic: semanticFixture(),
           retrievalIntent: "summarize",
           paperTargetIntent: "all_visible",
           wantedSections: [],

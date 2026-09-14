@@ -1,8 +1,11 @@
 import { assert } from "chai";
+import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
+import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import type { AgentToolContext } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { actionContractFixture, actionFixture } from "./helpers/semanticIntent";
 
 /**
  * The mode is enforced at `prepareExecution` — the one point the in-plugin
@@ -11,7 +14,7 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * checked when listing and deliberately not when executing, because
  * seventeen internal tools are called by name through this same method.
  */
-describe("library write mode gate", function () {
+describe("Original Agent permission gate", function () {
   const originalZotero = (
     globalThis as typeof globalThis & { Zotero?: unknown }
   ).Zotero;
@@ -34,8 +37,10 @@ describe("library write mode gate", function () {
   const context: AgentToolContext = {
     request: {
       conversationKey: 1,
+      actionContract: actionContractFixture("settings_update"),
+      classifiedIntent: actionFixture("settings_update"),
       mode: "agent",
-      userText: "go",
+      userText: "run the library batch",
       libraryID: 1,
     },
     item: null,
@@ -44,21 +49,37 @@ describe("library write mode gate", function () {
   };
 
   function makeRegistry() {
-    const registry = new AgentToolRegistry();
+    const registry = new AgentToolRegistry(
+      new ActionContractService({} as never),
+    );
     let ran = false;
     registry.register({
       spec: {
         name: "library_batch",
         description: "batch",
         inputSchema: { type: "object" },
-        mutability: "write",
+        executionClass: "external_effect",
         requiresConfirmation: false,
       },
       validate: (args) => ({ ok: true, value: args as never }),
-      planMutation: async () => ({
-        effect: "write",
-        reversibility: "full",
-      }),
+      planInvocation: async () =>
+        stateChangeInvocationPlan({
+          domains: ["zotero_library"],
+          effects: ["modify"],
+          reversibility: "full",
+          reason: "The library batch mutates Zotero state.",
+        }),
+      describeAction: () => [
+        {
+          id: "settings:test",
+          proofDomain: "zotero_state",
+          capability: "zotero.settings",
+          operation: "settings_update",
+          source: "zotero_native",
+          requestedTargets: [],
+          destinationCollectionIds: [],
+        },
+      ],
       createPendingAction: () => ({
         toolName: "library_batch",
         title: "Review batch",
@@ -77,18 +98,12 @@ describe("library write mode gate", function () {
 
   const call = { id: "c1", name: "library_batch", arguments: {} };
 
-  it("refuses a yolo-only tool in safe mode, at execution", async function () {
+  it("reviews a batch in safe mode", async function () {
     await installMode("safe");
     const { registry, didRun } = makeRegistry();
     const prepared = await registry.prepareExecution(call, context);
-    assert.equal(prepared.kind, "result");
-    if (prepared.kind !== "result") return;
-    assert.isFalse(prepared.execution.result.ok);
+    assert.equal(prepared.kind, "confirmation");
     assert.isFalse(didRun(), "the tool must not have run");
-    assert.include(
-      String((prepared.execution.result.content as { error?: string })?.error),
-      "yolo",
-    );
   });
 
   it("allows it in yolo", async function () {
@@ -99,18 +114,14 @@ describe("library write mode gate", function () {
     assert.isTrue(didRun());
   });
 
-  it("bypasses the yolo-only gate for a slash command but still reviews the plan", async function () {
+  it("treats a slash command as an explicit user gesture", async function () {
     await installMode("safe");
     const { registry, didRun } = makeRegistry();
     const prepared = await registry.prepareExecution(call, context, {
       callerKind: "action",
     });
     assert.equal(prepared.kind, "confirmation");
-    assert.isFalse(didRun());
-    if (prepared.kind !== "confirmation") return;
-    const execution = await prepared.execute();
-    assert.isTrue(execution.result.ok);
-    assert.isTrue(didRun());
+    assert.isFalse(didRun(), "slash review must precede any write");
   });
 
   it("defaults an undeclared caller to the stricter treatment", async function () {
@@ -122,21 +133,37 @@ describe("library write mode gate", function () {
 
   it("reviews ordinary writes in safe mode from the same mutation plan", async function () {
     await installMode("safe");
-    const registry = new AgentToolRegistry();
+    const registry = new AgentToolRegistry(
+      new ActionContractService({} as never),
+    );
     let ran = false;
     registry.register({
       spec: {
         name: "library_update",
         description: "update",
         inputSchema: { type: "object" },
-        mutability: "write",
+        executionClass: "external_effect",
         requiresConfirmation: false,
       },
       validate: (args) => ({ ok: true, value: args as never }),
-      planMutation: async () => ({
-        effect: "write",
-        reversibility: "full",
-      }),
+      planInvocation: async () =>
+        stateChangeInvocationPlan({
+          domains: ["zotero_library"],
+          effects: ["modify"],
+          reversibility: "full",
+          reason: "The library update mutates Zotero state.",
+        }),
+      describeAction: () => [
+        {
+          id: "settings:test",
+          proofDomain: "zotero_state",
+          capability: "zotero.settings",
+          operation: "settings_update",
+          source: "zotero_native",
+          requestedTargets: [],
+          destinationCollectionIds: [],
+        },
+      ],
       createPendingAction: () => ({
         toolName: "library_update",
         title: "Review update",

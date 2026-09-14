@@ -1,19 +1,33 @@
-import type { ModelProviderAuthMode } from "../utils/modelProviders";
-import type { ProviderProtocol } from "../utils/providerProtocol";
+import type { ContextCachePlan } from "../contextCache/manager";
+import type { ZoteroTurnMetadataContext } from "../services/zoteroMetadata/types";
 import type {
-  AdvancedModelParams,
+  ChatMessage,
+  ReasoningConfig as LLMReasoningConfig,
+  UsageStats,
+} from "../shared/llm";
+import type {
   ActiveNoteContext,
+  AdvancedModelParams,
   ChatAttachment,
   CollectionContextRef,
+  LocalDocumentResource,
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
-  LocalDocumentResource,
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "../shared/types";
+import type { ModelProviderAuthMode } from "../utils/modelProviders";
+import type { ProviderProtocol } from "../utils/providerProtocol";
+import type { WebSourceAnchor } from "../webAccess/types";
+import type {
+  ActionDomain,
+  ActionEffect,
+  ActionMechanism,
+  ActionRiskSignal,
+} from "./authorization/types";
 import type {
   ResolvedTurnSelectedTextAnchor,
   ResolvedTurnSelectedTextContext,
@@ -21,14 +35,6 @@ import type {
   TurnPaperScope,
   TurnPaperScopeWarning,
 } from "./context/turnPaperScope";
-import type { WebSourceAnchor } from "../webAccess/types";
-import type {
-  ChatMessage,
-  ReasoningConfig as LLMReasoningConfig,
-  UsageStats,
-} from "../shared/llm";
-import type { ContextCachePlan } from "../contextCache/manager";
-import type { ZoteroTurnMetadataContext } from "../services/zoteroMetadata/types";
 import type {
   AgentActionContract,
   AgentActionEvidence,
@@ -37,6 +43,31 @@ import type {
   AgentActionReceipt,
   AgentToolActionDescriptor,
 } from "./contracts/types";
+import type {
+  PlanEvent,
+  PlanRuntimeContext,
+  TrustedReadObservation,
+} from "./plans/types";
+import type { SkillRoutingReceipt } from "./skills/routingTypes";
+
+export type {
+  ApprovedPlanGrant,
+  ExecutionTask,
+  ExecutionTaskKind,
+  ExecutionTaskStatus,
+  PlanArtifact,
+  PlanArtifactStatus,
+  PlanEvent,
+  PlanExecutionLedger,
+  PlanExecutionStatus,
+  PlanProvider,
+  PlanRuntimeContext,
+  PlanStep,
+  PlanStepEffect,
+  TaskEvidence,
+  TaskEvidenceKind,
+  TaskTransitionRequest,
+} from "./plans/types";
 
 export type {
   AgentActionCapability,
@@ -46,8 +77,8 @@ export type {
   AgentActionObligation,
   AgentActionOperation,
   AgentActionParameters,
-  AgentActionProofDomain,
   AgentActionProgressLedger,
+  AgentActionProofDomain,
   AgentActionProposal,
   AgentActionReceipt,
   AgentToolActionDescriptor,
@@ -82,7 +113,7 @@ export type AgentRequest = {
   attachmentResourceSummaries?: AgentAttachmentResourceSummary[];
   attachments?: ChatAttachment[];
   screenshots?: string[];
-  /** Skill IDs to force-activate regardless of regex matching (from slash menu selection). */
+  /** Skill IDs explicitly selected by the user, independent of automatic routing. */
   forcedSkillIds?: string[];
   model?: string;
   apiBase?: string;
@@ -102,6 +133,10 @@ export type AgentPendingActionButton = {
   backLabel?: string;
 };
 
+export type AgentPendingChoiceValue =
+  | { kind: "option"; optionId: string }
+  | { kind: "custom"; text: string };
+
 type AgentPendingFieldBase = {
   id: string;
   visibleForActionIds?: string[];
@@ -115,6 +150,8 @@ export type AgentPendingField =
       value?: string;
       placeholder?: string;
       editorMode?: "plain" | "json";
+      /** The approved payload format; previewing never changes this format. */
+      contentFormat?: "markdown" | "html";
       spellcheck?: boolean;
     })
   | (AgentPendingFieldBase & {
@@ -137,6 +174,18 @@ export type AgentPendingField =
         id: string;
         label: string;
       }>;
+    })
+  | (AgentPendingFieldBase & {
+      type: "choice";
+      label: string;
+      value?: AgentPendingChoiceValue;
+      options: Array<{
+        id: string;
+        label: string;
+        description?: string;
+      }>;
+      allowCustom?: boolean;
+      customPlaceholder?: string;
     })
   | (AgentPendingFieldBase & {
       type: "review_table";
@@ -262,10 +311,14 @@ export type AgentPendingField =
     });
 
 export type AgentPendingAction = {
+  /** Stable identity for an expandable discovery card. */
+  discovery?: { sessionId: string; revision: number };
   toolName: string;
   title: string;
   mode?: "approval" | "review";
   confirmLabel: string;
+  /** Keep a selection action's label bound to the currently checked rows. */
+  selectionAction?: { fieldId: string; verb: string };
   cancelLabel: string;
   description?: string;
   fields: AgentPendingField[];
@@ -284,13 +337,32 @@ export type AgentInheritedApproval = {
   sourceToolName: string;
   sourceActionId: string;
   sourceMode?: "approval" | "review";
+  /** Minted by the host for the exact downstream tool name and raw input. */
+  approvedCallDigest?: string;
 };
 
 export type ToolSpec = {
   name: string;
   description: string;
+  /**
+   * Provider-portable JSON Schema for model-generated arguments.
+   *
+   * A model-visible tool must use a non-array root with `type: "object"` and
+   * must not use root-level `oneOf`, `allOf`, or `anyOf`. Nested composition is
+   * allowed. Enforce cross-field constraints in the tool's `validate()`
+   * function. Internal-only tools are exempt because their schemas are not
+   * advertised to models or MCP clients.
+   */
   inputSchema: object;
-  mutability: "read" | "write";
+  /**
+   * Safety class for the validated operation.
+   *
+   * Reads may be cached/deduplicated. Controls only change the internal
+   * plan/approval lifecycle (or pause for user input), so they are never
+   * deduplicated and never consume an external action contract. External
+   * effects require a typed action adapter and the full authorization path.
+   */
+  executionClass: "read" | "control" | "external_effect";
   requiresConfirmation: boolean;
   /**
    * Model-visible tools are advertised to agent/model runtimes and MCP
@@ -309,9 +381,12 @@ export type ToolSpec = {
    * MCP, and public tool catalogs must not expose it.
    */
   localAgentOnly?: boolean;
+  /** Host-owned interaction tools pause for input even though they are reads. */
+  interaction?: "user_input";
 };
 
 export type AgentEvent =
+  | PlanEvent
   | {
       type: "provider_event";
       providerType?: string;
@@ -329,16 +404,26 @@ export type AgentEvent =
       details?: string;
     }
   | ({ type: "usage"; round: number } & UsageStats)
-  | { type: "tool_call"; callId: string; name: string; args: unknown }
+  | {
+      type: "tool_call";
+      callId: string;
+      name: string;
+      args: unknown;
+      executionId?: string;
+      taskId?: string;
+    }
   | {
       type: "tool_result";
       callId: string;
       name: string;
       ok: boolean;
       effect?: AgentToolEffect;
+      authority?: "yolo_judgment";
       actionReceipts: AgentActionReceipt[];
       content: unknown;
       artifacts?: AgentToolArtifact[];
+      executionId?: string;
+      taskId?: string;
     }
   | {
       type: "tool_error";
@@ -380,6 +465,7 @@ export type AgentEvent =
       text?: string;
       codeBlock?: string;
       artifacts?: AgentToolArtifact[];
+      actionReceipts?: AgentActionReceipt[];
     }
   | {
       type: "usage";
@@ -399,6 +485,10 @@ export type AgentEvent =
   | {
       type: "final";
       text: string;
+      /** Immutable host-finalized document rendered for this visible answer. */
+      documentId?: string;
+      /** @deprecated Legacy Plan-only field. */
+      planDocumentId?: string;
       answerStartedAt?: number;
       webSourceAnchors?: WebSourceAnchor[];
     };
@@ -541,6 +631,14 @@ export type AgentModelStep =
       assistantMessage?: AgentAssistantMessage;
     }
   | {
+      kind: "incomplete";
+      reason: "output_limit" | "provider_pause" | "stream_interrupted";
+      providerReason?: string;
+      text: string;
+      recoveryInstruction: string;
+      assistantMessage?: AgentAssistantMessage;
+    }
+  | {
       kind: "tool_calls";
       calls: AgentToolCall[];
       assistantMessage: AgentAssistantMessage;
@@ -557,16 +655,24 @@ export type ExhaustiveReadBackend =
  */
 export type ClassifiedTurnIntent = {
   retrievalIntent: "enumerate" | "verify" | "summarize" | "none";
+  deliverableIntent?: "chat" | "document" | "unspecified";
+  documentKind?: import("./documents/types").DocumentSpec["kind"];
   paperTargetIntent?: "active" | "added" | "all_visible" | "unspecified";
   externalSearchIntent?: "none" | "web" | "literature" | "both";
   wantedSections: Array<"methods" | "results" | "limitations">;
   queryLanguage?: string;
   writeDisposition?: "none" | "required" | "uncertain";
-  actionInterpretationSource?: "classifier" | "deterministic_fallback";
+  actionInterpretationSource?:
+    | "semantic"
+    | "classifier"
+    | "deterministic_fallback";
+  semantic?: import("./model/semanticDecisions").SemanticIntent;
   actionIntents: AgentActionIntent[];
 };
 
 export type AgentRuntimeRequestInput = AgentRequest & {
+  /** Set by the host entry point, never by model tool arguments. */
+  actionEntryPoint?: "action_ui" | "conversation";
   /** Generation captured when this turn started; Clear advances it. */
   conversationGeneration?: number;
   /** Set by the runtime after per-turn classification; absent on fallback. */
@@ -575,6 +681,27 @@ export type AgentRuntimeRequestInput = AgentRequest & {
   actionContract?: AgentActionContract;
   /** Mutable completion state kept separate from the immutable contract. */
   actionProgress?: AgentActionProgressLedger;
+  actionPreparation?: import("./contracts/actionPreparation").ActionPreparation;
+  semanticProvider?: { kind: "claude"; baseUrl: string };
+  clarificationHistory?: Array<{ question: string; answer: string }>;
+
+  /** One-shot Plan collaboration state owned by the durable plan store. */
+  /** Host-loaded prior workflow evidence; never inferred from conversation prose. */
+  workflowCheckpoint?: import("./contracts/workflowCheckpoint").ActionContractCheckpoint;
+  planContext?: PlanRuntimeContext;
+  /** Validated per-turn skill routing identity; never provider-authored authority. */
+  skillRoutingReceipt?: SkillRoutingReceipt;
+  /** Host-resolved visible outcome contract for this Agent turn. */
+  documentOutcomePolicy?: import("./documents/types").DocumentOutcomePolicy;
+  /** Host-issued read attestations available to a direct document finalizer. */
+  documentReadObservations?: readonly TrustedReadObservation[];
+  /** Host-observed tool artifacts eligible for direct document embedding. */
+  documentArtifactObservations?: readonly AgentToolArtifact[];
+  /** Live model-context state supplied by the runtime to capacity-aware tools. */
+  runtimeContextBudget?: Readonly<{
+    contextWindowTokens: number;
+    usedContextTokens: number;
+  }>;
   item?: Zotero.Item | null;
   history?: ChatMessage[];
   authMode?: ModelProviderAuthMode;
@@ -663,6 +790,9 @@ export type AgentRuntimeOutcome =
       kind: "completed";
       runId: string;
       text: string;
+      documentId?: string;
+      /** @deprecated Legacy Plan-only field. */
+      planDocumentId?: string;
       usedFallback: false;
     }
   | {
@@ -712,14 +842,30 @@ export type AgentToolArtifact =
  */
 export type AgentToolEffect = "applied" | "partial" | "none";
 
+/**
+ * A tool can request a clean provider continuation after it has durably
+ * reduced large transient inputs into compact application-owned state.
+ * The instruction must contain everything needed to continue without replaying
+ * the discarded raw payload.
+ */
+export type AgentToolContinuationCheckpoint = Readonly<{
+  reason: string;
+  instruction: string;
+}>;
+
 export type AgentToolResult = {
   callId: string;
   name: string;
   ok: boolean;
   effect?: AgentToolEffect;
+  /** Set when the host granted this effect on the agent's own judgment (yolo). */
+  authority?: "yolo_judgment";
+  /** The host rejected the model's input before execution; nothing ran. */
+  inputRejected?: true;
   actionReceipts: AgentActionReceipt[];
   content: unknown;
   artifacts?: AgentToolArtifact[];
+  continuationCheckpoint?: AgentToolContinuationCheckpoint;
 };
 
 export type AgentToolReviewResolution =
@@ -755,6 +901,7 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       artifacts?: AgentToolArtifact[];
       effect?: AgentToolEffect;
       actionEvidence?: AgentActionEvidence[];
+      continuationCheckpoint?: AgentToolContinuationCheckpoint;
     };
 
 /** Explicit execution contract for tools whose validated operation can write. */
@@ -786,6 +933,23 @@ export type AgentJournalActionScope = {
 };
 
 export type AgentToolContext = {
+  /** Host-owned authority; never decoded from model or MCP tool arguments. */
+  authorization?: { kind: "external_runtime"; standalone: boolean };
+  /** Retain native-verified child results when a prepared workflow coordinates tools. */
+  recordChildExecution?: (result: AgentToolResult) => void;
+  /** Host-only execution lifetime carried into child action invocations. */
+  nestedExecutionOptions?: Pick<
+    PreparedToolExecutionOptions,
+    "isExecutionAllowed" | "executeWithLock"
+  >;
+  /** Existing pending-action surface, for bounded host-prepared selection cards. */
+  requestActionReview?: (
+    action: AgentPendingAction,
+  ) => Promise<AgentConfirmationResolution>;
+  /** Resolve a host-prepared action through the existing pending-action channel. */
+  resolvePreparedAction?: (
+    prepared: PreparedToolExecution,
+  ) => Promise<PreparedToolExecutionResult>;
   request: AgentRuntimeRequest;
   /** Durable identity of the execution that owns any journalled writes. */
   runId?: string;
@@ -794,6 +958,18 @@ export type AgentToolContext = {
   modelName: string;
   modelProviderLabel?: string;
   resourceSignature?: string;
+  /** Exact authoritative plan prepared by the registry for this execution. */
+  invocationPlan?: AgentInvocationPlan;
+  /** Exact authority set by the execution controller after review or policy assessment. */
+  executionAuthority?:
+    | "user"
+    | "safe_read"
+    | "requested_note"
+    | "external_runtime"
+    | "auto_policy"
+    | "yolo"
+    | "yolo_judgment"
+    | "plan_approval";
   signal?: AbortSignal;
   /**
    * Internal consent witness used only when journal initialization failed.
@@ -809,8 +985,15 @@ export type AgentToolContext = {
   journalToolName?: string;
   /** Internal parent action used by composite tools such as library_batch. */
   journalActionScope?: AgentJournalActionScope;
+  /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */
+  invokeRegisteredOperation?: (
+    name: string,
+    args: unknown,
+  ) => Promise<AgentToolResult>;
   /** Persist the current contract ledger at a durable composite checkpoint. */
   checkpointActionProgress?: () => Promise<void>;
+  /** Publish a normalized, durable plan/task projection event. */
+  publishPlanEvent?: (event: PlanEvent) => Promise<void>;
 };
 
 export type AgentToolInputValidation<T> =
@@ -819,7 +1002,10 @@ export type AgentToolInputValidation<T> =
 
 export type AgentToolGuidance = {
   matches: (
-    request: AgentRuntimeRequest,
+    request: Omit<
+      AgentRuntimeRequest,
+      "userText" | "history" | "clarificationHistory"
+    >,
     context?: { matchedSkillIds: ReadonlyArray<string> },
   ) => boolean;
   instruction: string;
@@ -842,18 +1028,51 @@ export type AgentToolPresentationSummary =
  * This path is display-only. Interactive review/approval flows should use
  * `createPendingAction` or `createResultReviewAction` instead.
  */
-export type AgentToolResultCard = {
+export type AgentSavedNoteResultCard = {
+  kind: "saved_note";
+  actionId?: string;
   title: string;
-  subtitle?: string;
-  body?: string;
-  badges?: string[];
-  href?: string;
-  /**
-   * Optional identifier shown for context. Result-card rendering is read-only;
-   * use review cards for any import workflow.
-   */
-  importIdentifier?: string;
+  destination: string;
+  bodyHtml: string;
+  note: { itemId: number; libraryID: number; key: string };
 };
+
+export type AgentNoteChangeResultCard = {
+  kind: "note_change";
+  title: string;
+  description: string;
+  note: { itemId: number; libraryID: number; key: string };
+  conversationKey: number;
+  actionId: string;
+  state:
+    | "proposed"
+    | "applied"
+    | "failed"
+    | "undone"
+    | "no_op"
+    | "mismatch"
+    | "unverified";
+  afterVerified?: boolean;
+  before: import("./store/journalRecoveryBlobStore").RecoveryPayload;
+  after: import("./store/journalRecoveryBlobStore").RecoveryPayload;
+};
+
+export type AgentToolResultCard =
+  | AgentNoteChangeResultCard
+  | AgentSavedNoteResultCard
+  | {
+      kind?: "paper";
+      title: string;
+      subtitle?: string;
+      body?: string;
+      badges?: string[];
+      href?: string;
+      /**
+       * Optional identifier shown for context. Result-card rendering is read-only;
+       * use review cards for any import workflow.
+       */
+      importIdentifier?: string;
+    };
 
 export type AgentToolPresentation = {
   label?: string;
@@ -889,20 +1108,17 @@ export type AgentToolPresentation = {
   buildResultCards?: (content: unknown) => AgentToolResultCard[] | null;
 };
 
-/**
- * The safety-relevant part of a tool's mutation plan.
- *
- * This is produced from the validated call, so confirmation policy consumes
- * the same operation-specific answer that the durable coordinator will use
- * instead of maintaining a second allowlist of supposedly reversible tools.
- */
-export type AgentMutationPlan = {
-  effect: "none" | "write";
+/** The single safety decision produced from one validated invocation. */
+export type AgentInvocationPlan = {
+  mechanism: ActionMechanism;
+  impact: "read_only" | "state_change" | "ambiguous" | "prohibited";
+  assurance: "runtime_enforced" | "statically_recognized" | "unknown";
+  domains: ActionDomain[];
+  effects: ActionEffect[];
+  targets: string[];
+  riskSignals: ActionRiskSignal[];
   reversibility: "full" | "partial" | "none";
-  reason?: string;
-  /** Recovery resumes and privileged source review may require consent even
-   * when the selected write mode would otherwise auto-approve the call. */
-  requiresConfirmation?: boolean;
+  reason: string;
 };
 
 export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
@@ -919,10 +1135,10 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     input: TInput,
     context: AgentToolContext,
   ) => Promise<AgentToolExecutionOutput<TResult>>;
-  planMutation?: (
+  planInvocation?: (
     input: TInput,
     context: AgentToolContext,
-  ) => AgentMutationPlan | Promise<AgentMutationPlan>;
+  ) => AgentInvocationPlan | Promise<AgentInvocationPlan>;
   shouldRequireConfirmation?: (
     input: TInput,
     context: AgentToolContext,
@@ -945,6 +1161,31 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     result: AgentToolResult,
     context: AgentToolContext,
   ) => Promise<AgentModelMessage | null>;
+  /**
+   * Allows a host-owned terminal artifact to become the application-visible
+   * answer without fabricating a provider assistant message. The exact
+   * provider tool call/result remains the transcript authority.
+   */
+  resolveTerminalResult?: (
+    input: TInput,
+    result: AgentToolResult,
+    context: AgentToolContext,
+  ) =>
+    | {
+        finalText: string;
+        documentId?: string;
+        /** @deprecated Legacy Plan-only field. */
+        planDocumentId?: string;
+        providerTranscript: "tool_only";
+      }
+    | null
+    | Promise<{
+        finalText: string;
+        documentId?: string;
+        /** @deprecated Legacy Plan-only field. */
+        planDocumentId?: string;
+        providerTranscript: "tool_only";
+      } | null>;
   createResultReviewAction?: (
     input: TInput,
     result: AgentToolResult,
@@ -965,8 +1206,15 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
 export type AgentWriteToolDefinition<
   TInput = unknown,
   TResult = unknown,
-> = Omit<AgentToolDefinition<TInput, TResult>, "spec" | "execute"> & {
-  spec: ToolSpec & { mutability: "write" };
+> = Omit<
+  AgentToolDefinition<TInput, TResult>,
+  "spec" | "execute" | "planInvocation"
+> & {
+  spec: ToolSpec & { executionClass: "external_effect" };
+  planInvocation: (
+    input: TInput,
+    context: AgentToolContext,
+  ) => AgentInvocationPlan | Promise<AgentInvocationPlan>;
   execute: (
     input: TInput,
     context: AgentToolContext,
@@ -980,6 +1228,8 @@ export type PreparedToolExecutionResult = {
 };
 
 export type PreparedToolExecutionOptions = {
+  /** The host checkpoints each subset; the frozen contract still requires full final coverage. */
+  checkpointedWorkflow?: boolean;
   inheritedApproval?: AgentInheritedApproval;
   forceConfirmation?: boolean;
   /**
@@ -993,7 +1243,7 @@ export type PreparedToolExecutionOptions = {
    * absent, so a caller that forgets to declare itself gets the stricter
    * treatment rather than the looser one.
    */
-  callerKind?: "model" | "action" | "api";
+  callerKind?: "model" | "action" | "api" | "mcp";
   /**
    * Lifecycle fence checked immediately before any tool implementation runs.
    * A tool may be prepared while a conversation is still live and execute only
@@ -1014,7 +1264,7 @@ export type PreparedToolExecution =
       requestId: string;
       action: AgentPendingAction;
       execute: (
-        resolutionData?: unknown,
-      ) => Promise<PreparedToolExecutionResult>;
+        resolution: AgentConfirmationResolution,
+      ) => Promise<PreparedToolExecution>;
       deny: (resolutionData?: unknown) => PreparedToolExecutionResult;
     };

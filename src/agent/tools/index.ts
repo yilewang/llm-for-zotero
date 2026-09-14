@@ -1,62 +1,83 @@
-import { AgentToolRegistry } from "./registry";
+import { ModelSemanticReferenceResolver } from "../model/semanticReferenceResolver";
+import { LibraryRetrieveService } from "../services/libraryRetrieveService";
 import { PdfService } from "../services/pdfService";
 import { RetrievalService } from "../services/retrievalService";
-import { LibraryRetrieveService } from "../services/libraryRetrieveService";
 import { ZoteroGateway } from "../services/zoteroGateway";
-import { createQueryLibraryTool } from "./read/queryLibrary";
-import { createReadLibraryTool } from "./read/readLibrary";
+import { createWorkflowScriptTool } from "./control/workflowScript";
+import { createDelegatingTool, createRenamedTool } from "./facade";
+import { registerPreparedLibraryActions } from "./preparedLibraryActions";
+import { createCiteExportTool } from "./read/citeExport";
 import { createLibraryRetrieveTool } from "./read/libraryRetrieve";
 import { createPaperReadTool } from "./read/paperRead";
-import { createReadPaperTool } from "./read/readPaper";
-import { createSearchPaperTool } from "./read/searchPaper";
-import { createViewPdfPagesTool } from "./read/viewPdfPages";
-import { createReadAttachmentTool } from "./read/readAttachment";
 import { clearPdfToolCaches } from "./read/pdfToolUtils";
+import { createQueryLibraryTool } from "./read/queryLibrary";
+import { createReadAttachmentTool } from "./read/readAttachment";
+import { createReadLibraryTool } from "./read/readLibrary";
+import { createReadPaperTool } from "./read/readPaper";
+import { createLiteratureReviewTool } from "./read/reviewLiterature";
 import {
   createSearchLiteratureOnlineTool,
+  LITERATURE_WORKFLOW_GUIDANCE,
   matchesLiteratureSearchGuidance,
 } from "./read/searchLiteratureOnline";
+import { createSearchPaperTool } from "./read/searchPaper";
 import { createToolResultReadTool } from "./read/toolResultRead";
-import { createWebSearchTool } from "./read/webSearch";
+import { createViewPdfPagesTool } from "./read/viewPdfPages";
 import { createWebReadTool } from "./read/webRead";
-import { createCiteExportTool } from "./read/citeExport";
-import { createDelegatingTool, createRenamedTool } from "./facade";
+import { createWebSearchTool } from "./read/webSearch";
+import { AgentToolRegistry } from "./registry";
 
-import { createEditCurrentNoteTool } from "./write/editCurrentNote";
-import { createRevertChangesTool } from "./write/revertChanges";
-import { createAnnotatePdfTool } from "./write/annotatePdf";
-import { createUndoLastActionTool } from "./write/undoLastAction";
-import { createApplyTagsTool } from "./write/applyTags";
-import { createMoveToCollectionTool } from "./write/moveToCollection";
-import { createUpdateMetadataTool } from "./write/updateMetadata";
-import { createManageCollectionsTool } from "./write/manageCollections";
-import { createImportIdentifiersTool } from "./write/importIdentifiers";
-import { createTrashItemsTool } from "./write/trashItems";
-import { createRestoreFromTrashTool } from "./write/restoreFromTrash";
-import { createWriteNotesBatchTool } from "./write/writeNotesBatch";
-import { createSavedSearchTool } from "./write/savedSearches";
-import { createLibrarySettingsTool } from "./write/librarySettings";
+import { ActionContractService } from "../contracts/actionContract";
+import { PlanAmendmentService } from "../plans/amendments";
+import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
+import { PdfPageService } from "../services/pdfPageService";
+import { requestsNoteAction, WRITE_NOTE_SKILL_ID } from "../skills/noteIntent";
+import type { AgentToolDefinition } from "../types";
+import { createAmendPlanTool } from "./plan/amendPlan";
+import { createApproveResearchExpansionTool } from "./plan/approveResearchExpansion";
+import { createApproveResearchMutationTool } from "./plan/approveResearchMutation";
+import { createPreparePlanExecutionTool } from "./plan/preparePlanExecution";
+import { createRequestUserInputTool } from "./plan/requestUserInput";
+import { createResearchUpdateTool } from "./plan/researchUpdate";
 import {
-  createSetItemTagsTool,
-  createUpdateLibraryTagTool,
-} from "./write/tagObjects";
+  createSubmitDocumentTool,
+  createSubmitPlanDocumentTool,
+} from "./plan/submitPlanDocument";
+import { createTaskUpdateTool } from "./plan/taskUpdate";
+import { createUpdatePlanTool } from "./plan/updatePlan";
+import { fail, ok, PAPER_CONTEXT_REF_SCHEMA, validateObject } from "./shared";
+import { createAnnotatePdfTool } from "./write/annotatePdf";
+import { createApplyTagsTool } from "./write/applyTags";
+import {
+  createEditCurrentNoteTool,
+  SOURCE_NOTE_COPY_GUIDANCE,
+} from "./write/editCurrentNote";
+import { createFileIOTool } from "./write/fileIO";
+import { createImportIdentifiersTool } from "./write/importIdentifiers";
+import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import {
   createCreateItemsTool,
   createRelateItemsTool,
   createReparentItemsTool,
 } from "./write/itemStructure";
-import { createMergeItemsTool } from "./write/mergeItems";
+import { createLibrarySettingsTool } from "./write/librarySettings";
 import { createManageAttachmentsTool } from "./write/manageAttachments";
+import { createManageCollectionsTool } from "./write/manageCollections";
+import { createMergeItemsTool } from "./write/mergeItems";
+import { createMoveToCollectionTool } from "./write/moveToCollection";
+import { createRestoreFromTrashTool } from "./write/restoreFromTrash";
+import { createRevertChangesTool } from "./write/revertChanges";
 import { createRunCommandTool } from "./write/runCommand";
-import { createImportLocalFilesTool } from "./write/importLocalFiles";
-import { createFileIOTool } from "./write/fileIO";
+import { createSavedSearchTool } from "./write/savedSearches";
+import {
+  createSetItemTagsTool,
+  createUpdateLibraryTagTool,
+} from "./write/tagObjects";
+import { createTrashItemsTool } from "./write/trashItems";
+import { createUndoLastActionTool } from "./write/undoLastAction";
+import { createUpdateMetadataTool } from "./write/updateMetadata";
+import { createWriteNotesBatchTool } from "./write/writeNotesBatch";
 import { createZoteroScriptTool } from "./write/zoteroScript";
-import { PdfPageService } from "../services/pdfPageService";
-import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
-import type { AgentToolDefinition } from "../types";
-import { inferNoteIntent, WRITE_NOTE_SKILL_ID } from "../skills/noteIntent";
-import { fail, ok, PAPER_CONTEXT_REF_SCHEMA, validateObject } from "./shared";
-import { ActionContractService } from "../contracts/actionContract";
 
 type BuiltInAgentToolDeps = {
   zoteroGateway: ZoteroGateway;
@@ -97,11 +118,13 @@ const LIBRARY_UPDATE_OPERATION_SCHEMA = {
 
 const LIBRARY_SEARCH_GUIDANCE: ToolGuidance = {
   matches: (request) =>
-    /\b(unfiled|folder|folders|collection|collections|move|file|organize|organise|categorize|categorise|full[- ]?text|abstract|doi|publisher|isbn|issn|added|modified|since|before|after|retracted|annotation|highlight|citation key|advanced search|trash|deleted)\b/i.test(
-      request.userText || "",
+    Boolean(
+      request.classifiedIntent &&
+      (request.classifiedIntent.retrievalIntent !== "none" ||
+        request.classifiedIntent.actionIntents.length),
     ),
   instruction:
-    "For library-organization requests, gather the item IDs first with library_search({ entity:'items', mode:'list', filters:{ unfiled:true } }) when needed. If the user wants you to file or move papers and the exact destination collection IDs are not known yet, call library_update with {kind:'collections', action:'add', itemIds:[...]} and let the confirmation card collect the target folders. Use library_search({ entity:'collections', mode:'list', view:'tree' }) when you need the collection hierarchy to prefill or explain choices. When the user asks to MOVE or reorganize rather than merely file, pass mode:'move' with from:<collectionId> or from:'all'; the default adds, which would leave each item in both its old and new collection." +
+    "Use the host-resolved action contract for library operations. For a move_to_collection obligation, use its exact frozen item IDs and destinationCollectionId (or destination scope.collectionId). Set mode:'move' only when constraints.collectionMode is 'move', and set from only to the authorized sourceCollectionId. Otherwise use mode:'add' to preserve every existing membership. Never infer removal from the original wording or use from:'all' without that exact contract parameter. Missing or ambiguous references require semantic preparation or request_user_input before a mutation proposal. library_search({ entity:'collections', mode:'list', view:'tree' }) supplies collection metadata for permitted reference discovery." +
     "\n\nFor anything the simple filters cannot express, pass conditions[] — Zotero's own advanced-search vocabulary. Each clause is {condition, operator, value}. Useful conditions: fulltextContent (the PDF text), abstractNote, DOI, ISBN, publisher, publicationTitle, dateAdded, dateModified, note, annotationText, citationKey, retracted, itemType, tag, collection. If a condition and operator do not pair up, the error lists the operators that condition accepts — read it and retry rather than falling back to a plain text search." +
     "\n\nTwo rules that decide whether an advanced search works at all:" +
     "\n- fulltextContent, annotationText and childNote match a child item (an attachment or a note), so pass resolveToParents:true or those matches are dropped and the search looks empty." +
@@ -112,24 +135,27 @@ const LIBRARY_SEARCH_GUIDANCE: ToolGuidance = {
 const LITERATURE_SEARCH_GUIDANCE: ToolGuidance = {
   matches: matchesLiteratureSearchGuidance,
   instruction:
-    "When the request needs external scholarly evidence, call literature_search with workflow:'answer' by default, analyze the results, and answer with explicit source attribution. A mixed request may also use web_search for distinct general-web evidence. Use workflow:'review' only when the user wants to import/add papers to Zotero, save selected search results to a note, refine results inside the card, or review metadata changes. Do not use this tool for questions about the content of papers already in context (e.g. counting references, summarizing, explaining). Preserve the user's language by default." +
+    LITERATURE_WORKFLOW_GUIDANCE +
     "\n\nSource selection:" +
     "\n- recommendations, references, citations modes -> always use source:'openalex' (only OpenAlex supports these)." +
     "\n- search mode -> source:'openalex' (default, broadest coverage), source:'arxiv' (preprints, CS/ML/physics), or source:'europepmc' (biomedical/life sciences)." +
     "\n\nAuthor search:" +
-    "\n- When the user wants papers by a specific author, use the 'author' parameter (e.g. author:'Adrien Peyrache')." +
+    "\n- Encode an author filter from the prepared research scope in the 'author' parameter (e.g. author:'Adrien Peyrache')." +
     "\n- You can combine 'author' with 'query' to find an author's papers on a specific topic." +
     "\n- Do NOT put author names in the 'query' parameter; use 'author' instead.",
 };
 
 const LIBRARY_UPDATE_GUIDANCE: ToolGuidance = {
   matches: (request) =>
-    /\b(?:tag|untag)\b/i.test(request.userText || "") ||
-    /\b(fix|correct|update|enrich|complete|sync|add|apply|assign|remove|set|replace|rename|merge|move|file|organize|organise)\b.*\b(metadata|fields?|title|authors?|doi|year|date|abstract|tags?|folders?|collections?)\b/i.test(
-      request.userText || "",
+    Boolean(
+      request.classifiedIntent?.actionIntents.some((action) =>
+        ["zotero.tags", "zotero.metadata", "zotero.collections"].includes(
+          action.capability,
+        ),
+      ),
     ),
   instruction:
-    "For library write operations, the confirmation card is the deliverable; call library_update directly instead of stopping with a prose summary. Use kind:'tags' for tag changes, kind:'collections' for collection membership, and kind:'metadata' for item metadata fields. Batch one uniform change across all applicable item IDs in a single call. For different per-item changes, use assignments when the schema supports them; use zotero_script only when the semantic tool cannot express the requested computation. When the user asks to fix, correct, or enrich metadata from external sources, use literature_search with workflow:'review' and mode:'metadata' first to fetch canonical data, then continue through the review/update flow. Only call library_update with kind:'metadata' directly when the user provides specific field values to set.",
+    "Execute resolved library write obligations with library_update and report verified receipts. Central policy decides whether a review card is required. Use kind:'tags' for tag changes, kind:'collections' for collection membership, and kind:'metadata' for item metadata fields. Batch one uniform change across all applicable item IDs in a single call. For different per-item changes, use assignments when the schema supports them; A computation using zotero_script uses the same exact-effect authority; the mechanism alone adds no confirmation. Explicit script prohibitions remain binding. For metadata obligations with permitted external evidence discovery, use literature_search with workflow:'review' and mode:'metadata' to fetch canonical data, then continue through the exact review/update flow. Bind direct metadata updates to the field values in the resolved obligation or approved review.",
 };
 
 const NOTE_WRITE_GUIDANCE: ToolGuidance = {
@@ -137,29 +163,36 @@ const NOTE_WRITE_GUIDANCE: ToolGuidance = {
     Boolean(
       context?.matchedSkillIds.includes(WRITE_NOTE_SKILL_ID) ||
       request.forcedSkillIds?.includes(WRITE_NOTE_SKILL_ID) ||
-      inferNoteIntent(request) ||
+      requestsNoteAction(request) ||
       request.actionContract?.obligations.some(
         (obligation) => obligation.capability === "zotero.notes",
       ),
     ),
   instruction:
-    "For an open/current Zotero note, use mode:'edit' for revision and prefer patches over a full content replacement. Use mode:'append' for an existing destination note and mode:'create' only for a new child or standalone note. A named Zotero folder means a collection: resolve its ID, create a standalone note, and pass collections:[...]. Pass Markdown unless the user explicitly requests HTML. The requested note must be written with note_write rather than returned as note-ready prose in chat.",
+    "Execute a resolved note_edit obligation with note_write mode:'edit' against its exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure in the replacement unless the user requests changing them. Do not copy find text, reconstruct native HTML, or call a separate readback tool after verified success. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Do not substitute chat alternatives for the requested edit. Auto applies clear edits directly and displays the actual verified diff afterward. Requested review and Safe use the existing diff card before applying. Map the resolved note_append obligation to mode:'append' and note_create to mode:'create'. Use only the contract's resolved parent or collection destination; unresolved names return to semantic preparation. Pass the finalized asset in its declared format. The requested note must be written with note_write rather than returned as note-ready prose in chat. Requested new notes ordinarily need no draft confirmation, except for action UI or an explicit review preference; after verification the UI displays the saved content and a direct link to the native note. Do not repeat the full saved content in the completion message. After an edit or append tool returns verified success, the change is saved; do not claim a diff is still awaiting review. " +
+    SOURCE_NOTE_COPY_GUIDANCE,
 };
 
 const LIBRARY_IMPORT_GUIDANCE: ToolGuidance = {
   matches: (request) =>
-    /\b(import.*file|import.*pdf|import.*from.*(desktop|download|folder|directory|disk)|local.*file|add.*file.*library)\b/i.test(
-      request.userText || "",
+    Boolean(
+      request.classifiedIntent?.actionIntents.some((action) =>
+        ["import_local_files"].includes(action.operation),
+      ),
     ),
   instruction:
-    "Use library_import with kind:'files' to import local files from the user's filesystem into Zotero. First use run_command to list files when paths are unknown, then call library_import with kind:'files' and the selected paths. A bibliography file (.ris, .bib, .enw, .nbib, RDF) has its references imported as real items; other files are attached, and PDFs go through Zotero's metadata lookup so they arrive with a title and authors. Optionally specify a targetCollectionId to file the results into a collection." +
+    "Use library_import with kind:'files' to import local files from the user's filesystem into Zotero. Use only resolved paths within the contract's source boundary. Missing paths require preparation; this import obligation does not independently authorize command execution. A bibliography file (.ris, .bib, .enw, .nbib, RDF) has its references imported as real items; other files are attached, and PDFs go through Zotero's metadata lookup so they arrive with a title and authors. Optionally specify a targetCollectionId to file the results into a collection." +
     "\n\nkind:'identifiers' resolves DOIs, ISBNs, PMIDs, arXiv IDs and ADS bibcodes. It cannot import from a page URL — Zotero has no translator path for that — so take the DOI or arXiv ID off the page instead.",
 };
 
 const LIBRARY_DELETE_GUIDANCE: ToolGuidance = {
   matches: (request) =>
-    /\b(merge|dedupe|dedup|duplicat|combine|restore|recover|undelete|trash|deleted)\b/i.test(
-      request.userText || "",
+    Boolean(
+      request.classifiedIntent?.actionIntents.some((action) =>
+        ["merge_items", "trash_items", "restore_from_trash"].includes(
+          action.operation,
+        ),
+      ),
     ),
   instruction:
     "To merge duplicates: first use library_search({ entity:'items', mode:'duplicates' }) to find duplicate groups, then use library_read to compare metadata and decide which item is the best master, then call library_delete({ mode:'merge', ... }) with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items." +
@@ -168,11 +201,17 @@ const LIBRARY_DELETE_GUIDANCE: ToolGuidance = {
 
 const ATTACHMENT_UPDATE_GUIDANCE: ToolGuidance = {
   matches: (request) =>
-    /\b(attachment|rename.*file|relink|broken.*link|missing.*file|delete.*attachment|remove.*attachment)\b/i.test(
-      request.userText || "",
+    Boolean(
+      request.classifiedIntent?.actionIntents.some((action) =>
+        [
+          "delete_attachment",
+          "rename_attachment",
+          "relink_attachment",
+        ].includes(action.operation),
+      ),
     ),
   instruction:
-    "Use attachment_update to delete, rename, or re-link a single attachment. To find attachments, use library_read with sections:['attachments'] first. Renaming renames the file on disk, not just the title. Re-linking repairs an attachment whose file has moved or gone missing, and works for stored attachments as well as linked files; only linked URLs cannot be re-linked. For batch renaming with computed filenames, use zotero_script instead.",
+    "Use attachment_update to delete, rename, or re-link a single attachment. To find attachments, use library_read with sections:['attachments'] first. Renaming renames the file on disk, not just the title. Re-linking repairs an attachment whose file has moved or gone missing, and works for stored attachments as well as linked files; only linked URLs cannot be re-linked. Batch renaming with computed filenames requires separately authorized computation and exact attachment targets.",
 };
 
 function markInternalTool<TInput, TResult>(
@@ -206,7 +245,7 @@ function createLibraryUpdateTool(tools: {
     label: "Update Library",
     description:
       "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links.",
-    mutability: "write",
+    executionClass: "external_effect",
     requiresConfirmation: true,
     inputSchema: {
       type: "object",
@@ -229,7 +268,7 @@ function createLibraryUpdateTool(tools: {
             "setColor",
           ],
           description:
-            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given — use it when the user wants a definite set, since adding is cumulative and drifts across batches. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'.",
+            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given and corresponds only to a set_item_tags obligation; add/remove correspond to apply_tags/remove_tags. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'.",
         },
         itemIds: {
           ...NUMBER_ARRAY_SCHEMA,
@@ -237,7 +276,8 @@ function createLibraryUpdateTool(tools: {
         },
         tags: {
           ...STRING_ARRAY_SCHEMA,
-          description: "Tags to add or remove when kind:'tags'.",
+          description:
+            "Uniform tags to add, remove, or set on itemIds when kind:'tags'. For action:'set', this is the complete replacement list (an empty array clears tags). Use assignments instead only when different items need different lists.",
         },
         assignments: {
           type: "array",
@@ -282,7 +322,7 @@ function createLibraryUpdateTool(tools: {
           type: "string",
           enum: ["add", "move"],
           description:
-            "For kind:'collections' with action:'add'. 'add' (default) files the item and leaves its other collections alone. 'move' also takes it out of the collection named by 'from', so the item ends up filed only where the user asked. Use 'move' whenever the user says move, reorganize, or re-file — 'add' leaves the item in both places.",
+            "For kind:'collections' with action:'add', follow the resolved obligation: constraints.collectionMode:'move' requires mode:'move' and from equal to its exact sourceCollectionId. Otherwise mode:'add' preserves all existing memberships. The original request wording cannot override this contract.",
         },
         from: {
           description:
@@ -328,6 +368,26 @@ function createLibraryUpdateTool(tools: {
         if (args.action === "set") {
           const setArgs = { ...delegateArgs };
           delete setArgs.action;
+          if (
+            args.assignments !== undefined &&
+            (args.itemIds !== undefined || args.tags !== undefined)
+          ) {
+            return fail(
+              "Use either itemIds with tags for one uniform replacement, or per-item assignments, not both.",
+            );
+          }
+          if (
+            args.assignments === undefined &&
+            Array.isArray(args.itemIds) &&
+            Array.isArray(args.tags)
+          ) {
+            setArgs.assignments = args.itemIds.map((itemId) => ({
+              itemId,
+              tags: args.tags,
+            }));
+          }
+          delete setArgs.itemIds;
+          delete setArgs.tags;
           return ok({ tool: tools.setItemTags, args: setArgs });
         }
         return ok({ tool: tools.applyTags, args: delegateArgs });
@@ -364,7 +424,7 @@ function createLibraryImportTool(tools: {
     label: "Import to Library",
     description:
       "Add items to Zotero. kind:'identifiers' for DOI/ISBN/arXiv lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
-    mutability: "write",
+    executionClass: "external_effect",
     requiresConfirmation: true,
     inputSchema: {
       type: "object",
@@ -442,7 +502,7 @@ function createLibraryDeleteTool(tools: {
     label: "Delete / Restore / Merge Library Items",
     description:
       "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
-    mutability: "write",
+    executionClass: "external_effect",
     requiresConfirmation: true,
     inputSchema: {
       type: "object",
@@ -509,8 +569,18 @@ function createLibraryDeleteTool(tools: {
 export function createBuiltInToolRegistry(
   deps: BuiltInAgentToolDeps,
 ): AgentToolRegistry {
+  const planAmendments = new PlanAmendmentService(deps.zoteroGateway);
   const registry = new AgentToolRegistry(
-    new ActionContractService(deps.zoteroGateway),
+    new ActionContractService(
+      deps.zoteroGateway,
+      new ModelSemanticReferenceResolver(),
+    ),
+    planAmendments,
+  );
+  registry.register(
+    createWorkflowScriptTool((request) =>
+      registry.listToolsForRequest(request),
+    ),
   );
   const queryLibrary = createQueryLibraryTool(deps.zoteroGateway);
   const readLibrary = createReadLibraryTool(deps.zoteroGateway);
@@ -595,10 +665,11 @@ export function createBuiltInToolRegistry(
       name: "literature_search",
       label: "Search Literature",
       description:
-        "Search scholarly sources and fetch external scholarly metadata. Use workflow:'answer' for source-cited chat answers, or workflow:'review' for Zotero import/review-card workflows.",
+        "Search scholarly sources and return saved candidates for ranking. Discovery then uses literature_review; explicit imports use library_import directly. Use workflow:'review', mode:'metadata' for external metadata review.",
       guidance: LITERATURE_SEARCH_GUIDANCE,
     }),
   );
+  registry.register(createLiteratureReviewTool(deps.zoteroGateway));
   registry.register(
     createLibraryUpdateTool({
       applyTags,
@@ -624,7 +695,7 @@ export function createBuiltInToolRegistry(
       name: "note_write",
       label: "Write Note",
       description:
-        "Create, append to, or edit a single Zotero note. Use this for note writing instead of returning note-ready text in chat. To write a note onto many items, use note_write_batch instead — one card for the whole set, rather than one approval per paper.",
+        "Create, append to, or edit a single Zotero note. Requested new notes are created directly and shown as saved-note cards. Use this for note writing instead of returning note-ready text in chat. To write a note onto many items, use note_write_batch instead.",
       guidance: NOTE_WRITE_GUIDANCE,
     }),
   );
@@ -634,7 +705,7 @@ export function createBuiltInToolRegistry(
       name: "note_write_batch",
       label: "Write Notes",
       description:
-        "Write a note onto each of many items in one approved operation. Use this whenever the user asks for a note on several papers — calling note_write once per paper means one confirmation dialog per paper.",
+        "Write a note onto each of many items in one batch operation. Use this for resolved per-item note_create obligations covering those exact papers.",
     }),
   );
   registry.register(savedSearchUpdate);
@@ -666,6 +737,20 @@ export function createBuiltInToolRegistry(
   registry.register(markToolTier(runCommand, "advanced"));
   registry.register(markToolTier(zoteroScript, "advanced"));
   registry.register(createToolResultReadTool());
+  registry.register(createUpdatePlanTool(deps.zoteroGateway));
+  registry.register(createPreparePlanExecutionTool(deps.zoteroGateway));
+  registry.register(
+    createRequestUserInputTool((request) =>
+      registry.createActionContract(request),
+    ),
+  );
+  registry.register(createTaskUpdateTool());
+  registry.register(createSubmitDocumentTool(deps.zoteroGateway));
+  registry.register(createSubmitPlanDocumentTool(deps.zoteroGateway));
+  registry.register(createResearchUpdateTool(deps.zoteroGateway));
+  registry.register(createApproveResearchExpansionTool(planAmendments));
+  registry.register(createAmendPlanTool(deps.zoteroGateway, planAmendments));
+  registry.register(createApproveResearchMutationTool());
 
   const legacyTools: AgentToolDefinition<any, any>[] = [
     queryLibrary,
@@ -696,6 +781,7 @@ export function createBuiltInToolRegistry(
   for (const tool of legacyTools) {
     registry.register(markInternalTool(tool));
   }
+  registerPreparedLibraryActions(registry, deps.zoteroGateway);
   return registry;
 }
 

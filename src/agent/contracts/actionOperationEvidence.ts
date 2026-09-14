@@ -1,3 +1,4 @@
+import { noteHtmlMatches } from "../../utils/noteHtml";
 import type {
   AgentActionProposal,
   AgentToolActionDescriptor,
@@ -10,6 +11,8 @@ import {
   isRegisteredLibraryMutationOperation,
 } from "../services/libraryMutation/handlerOperations";
 import { innermostToolResult } from "./toolResultEnvelope";
+import { operationAuthorityIsConsistent } from "./operationCatalog";
+import { normalizeNotePlainText, stripNoteHtml } from "../../utils/noteText";
 
 export type CollectionSummary = {
   collectionId: number;
@@ -56,13 +59,14 @@ export type ActionContractGateway = {
     libraryID: number;
   }): Promise<{ items: Array<{ itemId: number }> }>;
   getItem(itemId: number): Zotero.Item | null;
+  getItemByLibraryAndKey?(libraryID: number, key: string): Zotero.Item | null;
   getEditableArticleMetadata(
     item: Zotero.Item | null | undefined,
   ): { fields: Record<string, string>; creators: unknown[] } | null;
 };
 
 export type PreparedActionExecution = {
-  mutability: "read" | "write";
+  executionClass: "read" | "control" | "external_effect";
   hasExplicitAdapter: boolean;
   proposals: AgentActionProposal[];
   operations: LibraryMutationOperation[];
@@ -179,27 +183,6 @@ function itemCollections(item: Zotero.Item | null): number[] {
   );
 }
 
-function normalizeNoteText(value: string): string {
-  return value
-    .replace(/<br\s*\/?\s*>/gi, "\n")
-    .replace(/<\/(?:p|div|h[1-6]|li|tr|blockquote)\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/(^|\s)#{1,6}\s+/g, "$1")
-    .replace(/(^|\s)>\s?/g, "$1")
-    .replace(/(^|\s)[+-]\s+/g, "$1")
-    .replace(/[*_~`]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export type NoteWriteVerification =
   | { targets: string[]; reason?: never }
   | { targets: null; reason: string };
@@ -275,9 +258,36 @@ export function verifyNoteWriteTarget(
       reason: `Created note ${noteId} is missing one or more requested collection memberships.`,
     };
   }
+  const verification = result?.noteVerification as
+    | {
+        noteId?: number;
+        matches?: boolean;
+        html?: string;
+        expectedHtml?: string;
+      }
+    | undefined;
+  if (verification) {
+    if (
+      verification.noteId !== note.id ||
+      verification.matches !== true ||
+      typeof verification.html !== "string" ||
+      typeof verification.expectedHtml !== "string" ||
+      !noteHtmlMatches(String(note.getNote() || ""), verification.html) ||
+      !noteHtmlMatches(verification.html, verification.expectedHtml)
+    ) {
+      return {
+        targets: null,
+        reason:
+          "The native note evidence does not prove the prepared change on the bound note.",
+      };
+    }
+    return { targets: [itemTarget(noteId)] };
+  }
   if (proposal.parameters?.expectedText?.trim()) {
-    const actual = normalizeNoteText(String(note.getNote?.() || ""));
-    const expected = normalizeNoteText(proposal.parameters.expectedText);
+    const actual = normalizeNotePlainText(
+      stripNoteHtml(String(note.getNote?.() || "")),
+    );
+    const expected = normalizeNotePlainText(proposal.parameters.expectedText);
     const textMatches =
       mode === "edit" ? actual === expected : actual.includes(expected);
     if (!textMatches) {
@@ -293,7 +303,6 @@ export function verifyNoteWriteTarget(
 export async function prepareActionExecution(
   tool: AgentToolDefinition<any, any>,
   input: unknown,
-  _gateway: ActionContractGateway,
   context?: import("../types").AgentToolContext,
 ): Promise<PreparedActionExecution> {
   const operations = extractLibraryMutationOperations(input);
@@ -305,6 +314,13 @@ export async function prepareActionExecution(
     (operations.length
       ? describeLibraryMutationActions(input)
       : explicitReadActions(input));
+  for (const proposal of proposals) {
+    if (!operationAuthorityIsConsistent(proposal)) {
+      throw new Error(
+        `Typed action adapter rejected an inconsistent authority triple for ${proposal.operation}.`,
+      );
+    }
+  }
   const requestedTargets = uniqueStrings(
     proposals.flatMap((proposal) => proposal.requestedTargets),
   );
@@ -313,7 +329,7 @@ export async function prepareActionExecution(
   ]);
   const verifiedFacts = verifiedFactsForInput(input);
   return {
-    mutability: tool.spec.mutability,
+    executionClass: tool.spec.executionClass,
     hasExplicitAdapter: Boolean(tool.describeAction) || operations.length > 0,
     proposals,
     operations,

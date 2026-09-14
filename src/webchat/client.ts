@@ -102,8 +102,7 @@ export function hasMeaningfulWebChatAnswerText(
 function normalizeHistoryHostname(hostname: string | null | undefined): string {
   return String(hostname || "")
     .trim()
-    .toLowerCase()
-    .replace(/^www\./, "");
+    .toLowerCase();
 }
 
 /** Convert a Uint8Array to base64, safe for large buffers. */
@@ -144,6 +143,8 @@ export async function submitQuery(
   chatgptMode?: string,
   forceNewChat?: boolean,
   target?: string,
+  expectedChatUrl?: string | null,
+  expectedChatId?: string | null,
 ): Promise<SubmitQueryResult> {
   if (signal?.aborted) throw createAbortError();
 
@@ -154,6 +155,12 @@ export async function submitQuery(
     images: images || null,
     chatgpt_mode: chatgptMode || null,
     target: target || null,
+    ...(expectedChatUrl !== undefined
+      ? { expected_chat_url: expectedChatUrl }
+      : {}),
+    ...(expectedChatId !== undefined
+      ? { expected_chat_id: expectedChatId }
+      : {}),
     force_new_chat: forceNewChat === true,
     delivery_contract_version: ATTACHMENT_DELIVERY_CONTRACT_VERSION,
   });
@@ -887,7 +894,7 @@ type RefreshResult = Array<{
 }>;
 
 /**
- * Navigate to a ChatGPT conversation and re-scrape messages.
+ * Navigate to a provider conversation and re-scrape messages.
  *
  * Priority for finding the target conversation:
  * 1. Explicit `chatUrl` / `chatId` (from the persisted message metadata)

@@ -1,3 +1,10 @@
+import { createNoteConversationItem } from "../src/modules/contextPanel/noteEditing/conversationItem";
+import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
+import {
+  selectedPaperContextCache,
+  selectedCollectionContextCache,
+  selectedTagContextCache,
+} from "../src/modules/contextPanel/state";
 import { assert } from "chai";
 import type {
   ChatAttachment,
@@ -21,6 +28,8 @@ import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSup
 import { setUserSkills, type AgentSkill } from "../src/agent/skills";
 import type { LocalDocumentResource } from "../src/shared/types";
 import { resolvePromptText as resolveProductionPromptText } from "../src/modules/contextPanel/textUtils";
+import { createPaperPortalItem } from "../src/modules/contextPanel/portalScope";
+import { buildTurnPaperScope } from "../src/agent/context/turnPaperScope";
 
 describe("sendFlowController", function () {
   const item = { id: 101 } as unknown as Zotero.Item;
@@ -62,7 +71,7 @@ describe("sendFlowController", function () {
       id,
       description: `${id} description`,
       version: 1,
-      patterns: [],
+
       contexts: ["any"],
       activation: "auto",
       instruction: `${id} instructions`,
@@ -257,6 +266,68 @@ describe("sendFlowController", function () {
     }
   });
 
+  for (const newConversation of [false, true]) {
+    it(`binds a metadata-only paper through the runtime send boundary (${newConversation ? "new conversation" : "initial conversation"})`, async function () {
+      const previousZotero = globalThis.Zotero;
+      const paper = {
+        id: 3919,
+        libraryID: 1,
+        isRegularItem: () => true,
+        isAttachment: () => false,
+        isNote: () => false,
+        getAttachments: () => [],
+        getField: (field: string) =>
+          field === "title" ? "Metadata-only population code" : "",
+      } as unknown as Zotero.Item;
+      globalThis.Zotero = {
+        Items: { get: (id: number) => (id === paper.id ? paper : null) },
+        Prefs: { get: () => undefined },
+      } as unknown as typeof Zotero;
+      try {
+        const conversationItem = newConversation
+          ? createPaperPortalItem(paper, 1500000126, 1)
+          : paper;
+        const request = await buildAgentRuntimeRequestForTests({
+          conversationKey: conversationItem.id,
+          item: conversationItem,
+          userText: "Set only this paper's journal to Behavior Journal.",
+          selectedTexts: [],
+          paperContexts: [],
+          fullTextPaperContexts: [],
+          effectiveRequestConfig: {
+            model: "deepseek-v4-flash",
+            apiBase: "https://api.deepseek.com",
+            apiKey: "test",
+          },
+          history: [],
+        });
+        assert.equal(request.activeItemId, paper.id);
+        assert.equal(request.conversationKey, conversationItem.id);
+        assert.deepInclude(request.activePaperContext, {
+          libraryID: 1,
+          itemId: paper.id,
+          contextItemId: paper.id,
+        });
+        assert.isEmpty(
+          request.fullTextPaperContexts || [],
+          "metadata identity does not invent body text",
+        );
+        const scope = buildTurnPaperScope(request);
+        assert.isTrue(scope.ok);
+        if (scope.ok) {
+          assert.deepEqual(scope.scope.papers[0].roles, ["active"]);
+          assert.deepInclude(scope.scope.papers[0].paper, {
+            libraryID: 1,
+            itemId: paper.id,
+            contextItemId: paper.id,
+          });
+        }
+      } finally {
+        globalThis.Zotero = previousZotero;
+      }
+    });
+  }
+
   it("repairs legacy stored rows that duplicated a raw PDF into text routes", function () {
     const pdfContext: PaperContextRef = {
       itemId: 707,
@@ -307,6 +378,8 @@ describe("sendFlowController", function () {
           isAttachment: () => false,
           isRegularItem: () => true,
           isNote: () => false,
+          getField: () => "Native provider paper",
+          getAttachments: () => [],
         } as unknown as Zotero.Item,
         userText: "Analyze the selected PDF.",
         selectedTexts: [],
@@ -757,6 +830,140 @@ describe("sendFlowController", function () {
       getRestoredPaperModes: () => restoredPaperModes.slice(),
     };
   }
+
+  it("sends only the selected note conversation's context across new and return transitions", async function () {
+    const originalZotero = (globalThis as any).Zotero;
+    const note = {
+      id: 4070,
+      libraryID: 1,
+      isNote: () => true,
+      isAttachment: () => false,
+      getNoteTitle: () => "Note",
+      getNote: () => "<p>Native note</p>",
+    } as unknown as Zotero.Item;
+    const oldKey = 1500000400;
+    const newKey = 1500000401;
+    let current = createNoteConversationItem(note, "upstream", oldKey);
+    const requests: any[] = [];
+    (globalThis as any).Zotero = {
+      Prefs: { get: () => undefined },
+      DB: { queryAsync: async () => [] },
+      Items: { get: () => note },
+    };
+    selectedPaperContextCache.set(oldKey, [selectedPaper]);
+    selectedCollectionContextCache.set(oldKey, [selectedCollection]);
+    selectedTagContextCache.set(oldKey, [selectedTag]);
+    try {
+      const { controller, inputBox } = createBaseDeps({
+        getItem: () => current,
+        getConversationKey,
+        beginRequest: () => ({
+          conversationKey: getConversationKey(current),
+          requestId: 1,
+          signal: new AbortController().signal,
+        }),
+        isRequestOwner: () => true,
+        getSelectedTextContextEntries: () => [],
+        getSelectedPaperContexts: (key: number) =>
+          selectedPaperContextCache.get(key) || [],
+        getSelectedCollectionContexts: (key: number) =>
+          selectedCollectionContextCache.get(key) || [],
+        getSelectedTagContexts: (key: number) =>
+          selectedTagContextCache.get(key) || [],
+        getFullTextPaperContexts: (
+          _item: Zotero.Item,
+          contexts: PaperContextRef[],
+        ) => contexts,
+        getSelectedFiles: () => [],
+        getSelectedImages: () => [],
+        sendQuestion: async (request: any) => {
+          requests.push(request);
+          request.onProviderDispatch?.();
+        },
+      });
+      for (const key of [oldKey, newKey, oldKey]) {
+        current = createNoteConversationItem(note, "upstream", key);
+        inputBox.value = "Explain the note";
+        await controller.doSend();
+      }
+      assert.lengthOf(requests, 3);
+      assert.deepEqual(
+        requests.map((request) => request.conversationKey),
+        [oldKey, newKey, oldKey],
+      );
+      assert.deepEqual(
+        requests.map((request) => request.paperContexts.length),
+        [1, 0, 1],
+      );
+      assert.deepEqual(
+        requests.map((request) => request.selectedCollectionContexts.length),
+        [1, 0, 1],
+      );
+      assert.deepEqual(
+        requests.map((request) => request.selectedTagContexts.length),
+        [1, 0, 1],
+      );
+      assert.deepEqual(
+        requests.map((request) => request.activeNoteContext.noteId),
+        [4070, 4070, 4070],
+      );
+    } finally {
+      for (const key of [oldKey, newKey]) {
+        selectedPaperContextCache.delete(key);
+        selectedCollectionContextCache.delete(key);
+        selectedTagContextCache.delete(key);
+      }
+      (globalThis as any).Zotero = originalZotero;
+    }
+  });
+
+  it("preserves the draft and produces no effects when panel ownership is poisoned", async function () {
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      requireCurrentOwnership: () => false,
+    });
+
+    await controller.doSend();
+
+    assert.equal(inputBox.value, "ask question");
+    assert.equal(getDraftValue(), "ask question");
+    assert.deepInclude(getCounts(), {
+      sendCalled: 0,
+      editCalled: 0,
+      retainImageCalled: 0,
+      retainPaperStateCalled: 0,
+      consumePaperModeStateCalled: 0,
+      retainFileCalled: 0,
+      retainTextCalled: 0,
+      persistDraftInputCalls: 0,
+      composerDraftClearedCalls: 0,
+    });
+  });
+
+  it("restores the draft when ownership changes during asynchronous preparation", async function () {
+    let resolveContext: ((value: ResolvedContextSource | null) => void) | null =
+      null;
+    const contextReady = new Promise<ResolvedContextSource | null>(
+      (resolve) => {
+        resolveContext = resolve;
+      },
+    );
+    let owned = true;
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      requireCurrentOwnership: () => owned,
+      resolveContextSource: () => contextReady,
+    });
+
+    const send = controller.doSend();
+    assert.equal(inputBox.value, "");
+    owned = false;
+    resolveContext?.(null);
+    await send;
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.equal(getDraftValue(), "ask question");
+  });
 
   it("uses retain-pinned callbacks for normal send flow", async function () {
     const { controller, inputBox, getCounts } = createBaseDeps();
@@ -1702,61 +1909,18 @@ describe("sendFlowController", function () {
     assert.deepEqual(lastSend.lastSentForcedSkillIds, ["write-note"]);
   });
 
-  it("recognizes fuzzy natural-language Codex skill directives", async function () {
-    const skills = [
-      makeTestSkill("evidence-based-qa", {
-        description:
-          "Locate specific passages in selected papers that support a claim with quoted evidence.",
-      }),
-      makeTestSkill("write-note", {
-        description: "Write a long-form reading or literature note.",
-      }),
-    ];
-
-    const partial = await sendCodexNativeSkillInput(
+  it("preserves natural-language skill requests for semantic interpretation", async function () {
+    for (const text of [
       "use evidence base skill to read the paper",
-      skills,
-    );
-    assert.equal(
-      partial.lastSentQuestion,
-      "$evidence-based-qa\n\nread the paper",
-    );
-    assert.equal(
-      partial.lastSentDisplayQuestion,
-      "use evidence base skill to read the paper",
-    );
-    assert.deepEqual(partial.lastSentForcedSkillIds, ["evidence-based-qa"]);
-
-    const typo = await sendCodexNativeSkillInput(
       "use evidnce based skill to read the paper",
-      skills,
-    );
-    assert.equal(typo.lastSentQuestion, "$evidence-based-qa\n\nread the paper");
-    assert.deepEqual(typo.lastSentForcedSkillIds, ["evidence-based-qa"]);
-
-    const writeNote = await sendCodexNativeSkillInput(
-      "please use write not skill to draft a note",
-      skills,
-    );
-    assert.equal(writeNote.lastSentQuestion, "$write-note\n\ndraft a note");
-    assert.deepEqual(writeNote.lastSentForcedSkillIds, ["write-note"]);
-
-    const description = await sendCodexNativeSkillInput(
-      "use reading note skill to summarize",
-      skills,
-    );
-    assert.equal(description.lastSentQuestion, "$write-note\n\nsummarize");
-    assert.deepEqual(description.lastSentForcedSkillIds, ["write-note"]);
-
-    const quoted = await sendCodexNativeSkillInput(
-      'use "evidence base" skill: quote the method',
-      skills,
-    );
-    assert.equal(
-      quoted.lastSentQuestion,
-      "$evidence-based-qa\n\nquote the method",
-    );
-    assert.deepEqual(quoted.lastSentForcedSkillIds, ["evidence-based-qa"]);
+      "请用文献综述技能",
+    ]) {
+      const sent = await sendCodexNativeSkillInput(text, [
+        makeTestSkill("evidence-based-qa"),
+      ]);
+      assert.equal(sent.lastSentQuestion, text);
+      assert.isUndefined(sent.lastSentForcedSkillIds);
+    }
   });
 
   it("does not force ambiguous or non-leading natural-language skill mentions", async function () {
@@ -1800,7 +1964,7 @@ describe("sendFlowController", function () {
     assert.isUndefined(midSentence.lastSentForcedSkillIds);
   });
 
-  it("allows natural-language directives to force manual Codex skills", async function () {
+  it("leaves natural-language manual skill requests to semantic interpretation", async function () {
     const manual = await sendCodexNativeSkillInput(
       "use manual helper skill to run this",
       [
@@ -1811,8 +1975,11 @@ describe("sendFlowController", function () {
       ],
     );
 
-    assert.equal(manual.lastSentQuestion, "$manual-helper\n\nrun this");
-    assert.deepEqual(manual.lastSentForcedSkillIds, ["manual-helper"]);
+    assert.equal(
+      manual.lastSentQuestion,
+      "use manual helper skill to run this",
+    );
+    assert.isUndefined(manual.lastSentForcedSkillIds);
   });
 
   it("keeps slash skill text unchanged outside Codex app-server mode", async function () {

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnthropicMessagesAgentAdapter } from "../src/agent/model/anthropicMessages";
+import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import type {
   AgentModelMessage,
   AgentRuntimeRequest,
@@ -32,7 +33,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
       name: "read_paper",
       description: "search",
       inputSchema: { type: "object" },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
   ];
@@ -107,6 +108,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
       (capturedBody?.tools as Array<Record<string, unknown>>)[0]?.name,
       "read_paper",
     );
+    assert.equal(capturedBody?.max_tokens, 8192);
     const serializedSystem = Array.isArray(capturedBody?.system)
       ? (capturedBody.system as Array<{ text?: string }>)
           .map((entry) => entry.text || "")
@@ -117,6 +119,173 @@ describe("AnthropicMessagesAgentAdapter", function () {
     if (step.kind !== "tool_calls") return;
     assert.equal(step.calls[0].id, "toolu_123");
     assert.deepEqual(step.calls[0].arguments, { query: "methods" });
+  });
+
+  it("recovers from max_tokens without exposing a truncated tool call", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: undefined,
+          json: async () => ({
+            content: [
+              { type: "text", text: "Partial analysis" },
+              {
+                type: "tool_use",
+                id: "truncated-call",
+                name: "read_paper",
+                input: { query: "unfinished" },
+              },
+            ],
+            stop_reason: "max_tokens",
+          }),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await new AnthropicMessagesAgentAdapter().runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Search methods" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "incomplete");
+    if (step.kind !== "incomplete") return;
+    assert.equal(step.reason, "output_limit");
+    assert.equal(step.text, "Partial analysis");
+    assert.notProperty(step, "calls");
+  });
+
+  it("keeps Anthropic provider pauses distinct from output limits", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: undefined,
+          json: async () => ({ content: [], stop_reason: "pause_turn" }),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await new AnthropicMessagesAgentAdapter().runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Continue" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "incomplete");
+    if (step.kind === "incomplete") {
+      assert.equal(step.reason, "provider_pause");
+    }
+  });
+
+  it("reports Anthropic context exhaustion instead of retrying it as an output cutoff", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: undefined,
+          json: async () => ({
+            content: [],
+            stop_reason: "model_context_window_exceeded",
+          }),
+          text: async () => "",
+        });
+      },
+    };
+
+    try {
+      await new AnthropicMessagesAgentAdapter().runStep({
+        request: makeRequest(),
+        messages: [{ role: "user", content: "Continue" }],
+        tools,
+      });
+      assert.fail("expected context exhaustion to stop the step");
+    } catch (error) {
+      assert.include(String(error), "context window was exhausted");
+    }
+  });
+
+  it("serializes the real paper_read schema with a portable object root", async function () {
+    const paperRead = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "OK" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await new AnthropicMessagesAgentAdapter().runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Explain the paper" }],
+      tools: [paperRead.spec],
+    });
+
+    const bodyTools = capturedBody?.tools as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const inputSchema = bodyTools?.[0]?.input_schema as Record<string, unknown>;
+    assert.equal(inputSchema.type, "object");
+    for (const keyword of ["oneOf", "allOf", "anyOf"]) {
+      assert.notProperty(inputSchema, keyword);
+    }
+    const properties = inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    assert.isArray(properties.target.anyOf);
+    assert.deepEqual(
+      (properties.targets.items as Record<string, unknown>).required,
+      ["itemId"],
+    );
   });
 
   for (const provider of [
@@ -307,7 +476,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
           name: "search_paper",
           description: "search",
           inputSchema: { type: "object" },
-          mutability: "read",
+          executionClass: "read",
           requiresConfirmation: false,
         },
       ],
@@ -949,7 +1118,9 @@ describe("AnthropicMessagesAgentAdapter", function () {
         model: "deepseek-v4-pro",
         apiBase: "https://api.deepseek.com/anthropic",
         reasoning: { provider: "deepseek", level: "xhigh" },
-        advanced: { maxTokens: 384000 },
+        advanced: {
+          outputTokenLimit: { mode: "custom", tokens: 384000 },
+        },
       }),
       messages: [{ role: "user", content: "Think" }],
       tools,
@@ -1015,7 +1186,10 @@ describe("AnthropicMessagesAgentAdapter", function () {
         model: "claude-sonnet-4-6",
         apiBase: "https://third-party.example/v1",
         reasoning: { provider: "anthropic", level: "high" },
-        advanced: { temperature: 0.4, maxTokens: 4096 },
+        advanced: {
+          temperature: 0.4,
+          outputTokenLimit: { mode: "custom", tokens: 4096 },
+        },
       }),
       messages: [{ role: "user", content: "Think" }],
       tools,
@@ -1308,5 +1482,79 @@ describe("AnthropicMessagesAgentAdapter", function () {
       serialized,
       "does not support image input or PDF/document input",
     );
+  });
+});
+
+describe("AnthropicMessagesAgentAdapter output cap versus context window", function () {
+  const originalToolkit = (
+    globalThis as typeof globalThis & { ztoolkit?: unknown }
+  ).ztoolkit;
+
+  afterEach(function () {
+    (
+      globalThis as typeof globalThis & { ztoolkit?: typeof originalToolkit }
+    ).ztoolkit = originalToolkit;
+  });
+
+  async function captureMaxTokens(userText: string): Promise<number> {
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "done" }],
+              stop_reason: "end_turn",
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+    const adapter = new AnthropicMessagesAgentAdapter();
+    await adapter.runStep({
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText,
+        model: "claude-opus-4-6",
+        apiBase: "https://api.anthropic.com",
+        apiKey: "test",
+        providerProtocol: "anthropic_messages",
+        advanced: { outputTokenLimit: { mode: "auto" }, temperature: 0.3 },
+      },
+      messages: [
+        { role: "system", content: "You are helpful." },
+        { role: "user", content: userText },
+      ],
+      tools: [],
+    });
+    return Number(capturedBody?.max_tokens);
+  }
+
+  it("sends the full known cap for a short prompt", async function () {
+    assert.equal(await captureMaxTokens("Summarize this paper."), 128_000);
+  });
+
+  it("shrinks max_tokens so a long prompt plus the cap still fits the 200k window", async function () {
+    // ~100k estimated input tokens of ASCII prose (4 chars per token).
+    const longText = "word ".repeat(80_000);
+    const maxTokens = await captureMaxTokens(longText);
+    assert.isAtLeast(maxTokens, 8_192);
+    assert.isAtMost(maxTokens, 80_000);
+    assert.isAtMost(100_000 + maxTokens, 200_000);
   });
 });

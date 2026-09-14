@@ -1,3 +1,4 @@
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../src/agent/model/agentPersona";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
@@ -32,6 +33,7 @@ function request(
     ...(externalSearchIntent
       ? {
           classifiedIntent: {
+            semantic: semanticFixture(),
             retrievalIntent: "none",
             externalSearchIntent,
             wantedSections: [],
@@ -105,53 +107,15 @@ describe("external search guidance routing", function () {
     }
   });
 
-  it("uses narrow English fallback matching when classification is absent", function () {
+  it("does not route absent semantic intent from English or multilingual words", function () {
     const { web, literature } = guidanceTools();
-    const cases = [
-      {
-        text: "Search the web for the latest Zotero release notes",
-        web: true,
-        literature: false,
-      },
-      {
-        text: "Find recent papers about representational drift",
-        web: false,
-        literature: true,
-      },
-      {
-        text: "Find recent papers and verify the official documentation online",
-        web: true,
-        literature: true,
-      },
-      {
-        text: "Summarize the current paper",
-        web: false,
-        literature: false,
-      },
-      {
-        text: "Improve this product documentation paragraph",
-        web: false,
-        literature: false,
-      },
-      {
-        text: "Explain the difference between correlation and causation",
-        web: false,
-        literature: false,
-      },
-    ];
-
-    for (const entry of cases) {
-      const value = request(entry.text);
-      assert.equal(
-        guidanceMatches(web, value),
-        entry.web,
-        `web fallback for: ${entry.text}`,
-      );
-      assert.equal(
-        guidanceMatches(literature, value),
-        entry.literature,
-        `literature fallback for: ${entry.text}`,
-      );
+    for (const text of [
+      "Search the web for release notes",
+      "查找最新论文",
+      "find papers online",
+    ]) {
+      assert.isFalse(guidanceMatches(web, request(text)));
+      assert.isFalse(guidanceMatches(literature, request(text)));
     }
   });
 

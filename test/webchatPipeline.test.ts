@@ -181,6 +181,75 @@ describe("webchat PDF pipeline", function () {
     }
   });
 
+  it("preserves explicit follow-up conversation context in the relay query", async function () {
+    const abortController = new AbortController();
+    let send: Promise<unknown> | null = null;
+    const seqBeforeSend = relayServer.relayGetStateSnapshot().query.seq;
+
+    try {
+      send = pipeline.sendWebChatQuestion({
+        item: parent(10),
+        question: "Continue the same conversation",
+        host: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+        target: "chatgpt",
+        expectedChatUrl: "https://chatgpt.com/c/thread-1",
+        expectedChatId: "thread-1",
+        signal: abortController.signal,
+        onAnswerSnapshot: () => {},
+      } as Parameters<typeof pipeline.sendWebChatQuestion>[0] & {
+        expectedChatUrl: string;
+        expectedChatId: string;
+      });
+
+      let snapshot = relayServer.relayGetStateSnapshot();
+      for (
+        let attempt = 0;
+        attempt < 20 && snapshot.query.seq === seqBeforeSend;
+        attempt++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        snapshot = relayServer.relayGetStateSnapshot();
+      }
+
+      const query = snapshot.query as unknown as {
+        expected_chat_url: string | null;
+        expected_chat_id: string | null;
+      };
+      assert.equal(query.expected_chat_url, "https://chatgpt.com/c/thread-1");
+      assert.equal(query.expected_chat_id, "thread-1");
+    } finally {
+      relayServer.relayRequestStop();
+      abortController.abort();
+      await send?.catch(() => undefined);
+    }
+  });
+
+  it("selects explicit and historical conversation context as whole pairs", function () {
+    const selectBinding = pipeline.selectWebChatExpectedConversation;
+
+    assert.deepEqual(
+      selectBinding({
+        explicitUrl: "https://chatgpt.com/c/conversation-b",
+        historicalUrl: "https://chatgpt.com/c/conversation-a",
+        historicalId: "conversation-a",
+      }),
+      {
+        expectedChatUrl: "https://chatgpt.com/c/conversation-b",
+        expectedChatId: undefined,
+      },
+    );
+    assert.deepEqual(
+      selectBinding({
+        historicalUrl: "https://chatgpt.com/c/conversation-a",
+        historicalId: "conversation-a",
+      }),
+      {
+        expectedChatUrl: "https://chatgpt.com/c/conversation-a",
+        expectedChatId: "conversation-a",
+      },
+    );
+  });
+
   it("preserves selected PDF order across different papers", async function () {
     items.set(20, parent(20));
     items.set(10, parent(10));

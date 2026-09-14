@@ -1,3 +1,8 @@
+import {
+  classifiedFixture,
+  semanticFixture,
+  actionContractFixture,
+} from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import {
@@ -80,6 +85,7 @@ describe("semantic tool surface", function () {
 
   const baseContext: AgentToolContext = {
     request: {
+      classifiedIntent: classifiedFixture(),
       conversationKey: 77,
       mode: "agent",
       userText: "summarize this paper",
@@ -142,6 +148,7 @@ describe("semantic tool surface", function () {
     fields: Partial<import("../src/agent/types").AgentRuntimeRequestInput>,
   ) {
     return resolveAgentRuntimeRequest({
+      classifiedIntent: classifiedFixture(),
       conversationKey: 1,
       mode: "agent",
       userText: "",
@@ -169,6 +176,45 @@ describe("semantic tool surface", function () {
     return schema.properties || {};
   }
 
+  it("normalizes a uniform exact tag replacement to the canonical per-item assignments", function () {
+    const tool = createTestBuiltInRegistry().getTool("library_update")!;
+    const result = tool.validate({
+      kind: "tags",
+      action: "set",
+      itemIds: [41, 42],
+      tags: ["coding", "drift"],
+    });
+    assert.isTrue(result.ok);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.delegateInput.operation, {
+      type: "set_item_tags",
+      assignments: [
+        { itemId: 41, tags: ["coding", "drift"] },
+        { itemId: 42, tags: ["coding", "drift"] },
+      ],
+    });
+  });
+
+  it("rejects conflicting tag-assignment forms and invalid members rather than silently dropping targets", function () {
+    const tool = createTestBuiltInRegistry().getTool("library_update")!;
+    for (const input of [
+      {
+        itemIds: [41, 42],
+        tags: ["coding"],
+        assignments: [{ itemId: 41, tags: ["different"] }],
+      },
+      {
+        assignments: [
+          { itemId: 41, tags: ["coding"] },
+          { itemId: 0, tags: ["coding"] },
+        ],
+      },
+    ])
+      assert.isFalse(
+        tool.validate({ kind: "tags", action: "set", ...input }).ok,
+      );
+  });
+
   it("keeps internal delegate tools out of model-visible listings", function () {
     const registry = new AgentToolRegistry();
     registry.register({
@@ -176,7 +222,7 @@ describe("semantic tool surface", function () {
         name: "library_search",
         description: "Public search facade",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
         exposure: "model",
       },
@@ -188,7 +234,7 @@ describe("semantic tool surface", function () {
         name: "query_library",
         description: "Internal legacy delegate",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
         exposure: "internal",
       },
@@ -227,14 +273,17 @@ describe("semantic tool surface", function () {
       "library_search",
       "library_settings",
       "library_update",
+      "literature_review",
       "literature_search",
       "note_write",
       "note_write_batch",
       "paper_read",
+      "request_user_input",
       "revert_changes",
       "run_command",
       "saved_search_update",
       "undo_last_action",
+      "workflow_script",
       "zotero_script",
     ]);
     const literatureSearch = tools.find(
@@ -278,15 +327,33 @@ describe("semantic tool surface", function () {
     }
   });
 
-  it("does not expose loose top-level schemas for model-visible built-ins", function () {
+  it("keeps model-visible built-in schemas portable at the root", function () {
     const registry = createTestBuiltInRegistry();
-    const looseTools = registry
-      .listToolsForRequest(baseContext.request)
-      .flatMap((tool) => {
-        const schema = tool.inputSchema as { additionalProperties?: unknown };
-        return schema.additionalProperties === true ? [tool.name] : [];
-      });
+    const visibleTools = registry.listToolsForRequest(baseContext.request);
+    const looseTools = visibleTools.flatMap((tool) => {
+      const schema = tool.inputSchema as { additionalProperties?: unknown };
+      return schema.additionalProperties === true ? [tool.name] : [];
+    });
     assert.deepEqual(looseTools, []);
+    for (const tool of visibleTools) {
+      const schema = tool.inputSchema as Record<string, unknown>;
+      assert.isFalse(
+        Array.isArray(schema),
+        `${tool.name} must have an object root`,
+      );
+      assert.equal(
+        schema.type,
+        "object",
+        `${tool.name} must declare type object`,
+      );
+      for (const keyword of ["oneOf", "allOf", "anyOf"]) {
+        assert.notProperty(
+          schema,
+          keyword,
+          `${tool.name} must not use root-level ${keyword}`,
+        );
+      }
+    }
   });
 
   it("advertises delegate fields on semantic facade schemas", function () {
@@ -502,6 +569,7 @@ describe("semantic tool surface", function () {
     );
 
     const request = resolvedAgentRequest({
+      classifiedIntent: classifiedFixture(),
       ...baseContext.request,
       userText: "Use the actual PDF/full text to explain the method.",
       conversationKind: "paper",
@@ -562,6 +630,9 @@ describe("semantic tool surface", function () {
       assert.include(conflicting.error, "conflicting_target_arguments");
     }
 
+    assert.equal(tool.validate({ mode: "targeted" }).ok, true);
+    assert.equal(tool.validate({ mode: "targeted", target: {} }).ok, true);
+
     const visualOnly = tool.validate({
       mode: "targeted",
       target: { attachmentId: "upload-1" },
@@ -600,7 +671,87 @@ describe("semantic tool surface", function () {
     assert.equal(visualPaperTarget.ok, true);
   });
 
-  it("paper_read advertises non-empty mutually exclusive target shapes", function () {
+  it("paper_read names invalid metadata fields so a failed batch can be corrected", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const parsed = tool.validate({
+      mode: "overview",
+      targets: [{ itemId: 3603, contextItemId: 3604, title: "A known paper" }],
+    });
+    assert.isFalse(parsed.ok);
+    if (parsed.ok) return;
+    assert.include(parsed.error, "title");
+    assert.include(parsed.error, "itemId and optional contextItemId only");
+  });
+
+  it("paper_read applies one target contract regardless of mode", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const modes = [
+      "overview",
+      "targeted",
+      "full",
+      "figures",
+      "visual",
+      "capture",
+    ] as const;
+    for (const mode of modes) {
+      const parsed = tool.validate({
+        mode,
+        target: { paperContext: { itemId: 3603, contextItemId: 3604 } },
+        ...(mode === "visual" ? { pages: [1] } : {}),
+      });
+      assert.isFalse(parsed.ok, `${mode} should reject paperContext`);
+      if (parsed.ok) continue;
+      assert.include(parsed.error, "unsupported_target_selector", mode);
+      assert.include(parsed.error, "target.paperContext is unsupported", mode);
+      assert.include(
+        parsed.error,
+        "itemId and optional contextItemId only",
+        mode,
+      );
+    }
+  });
+
+  it("paper_read visual target validation names the offending field and requires itemId", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const metadata = tool.validate({
+      mode: "visual",
+      target: { itemId: 3603, title: "A known paper" },
+      pages: [1],
+    });
+    assert.isFalse(metadata.ok);
+    if (!metadata.ok) {
+      assert.include(metadata.error, "target.title is unsupported");
+    }
+
+    const contextOnly = tool.validate({
+      mode: "capture",
+      target: { contextItemId: 3604 },
+    });
+    assert.isFalse(contextOnly.ok);
+    if (!contextOnly.ok) {
+      assert.include(
+        contextOnly.error,
+        "target.itemId must be a positive integer",
+      );
+    }
+  });
+
+  it("paper_read advertises non-empty target shapes without root composition", function () {
     const tool = createPaperReadTool(
       {} as never,
       {} as never,
@@ -608,16 +759,27 @@ describe("semantic tool surface", function () {
       {} as never,
     );
     const schema = tool.spec.inputSchema as {
-      allOf?: unknown[];
       properties?: {
-        target?: { anyOf?: unknown[] };
-        targets?: { minItems?: number; items?: { anyOf?: unknown[] } };
+        target?: { anyOf?: unknown[]; description?: string };
+        targets?: {
+          minItems?: number;
+          items?: { anyOf?: unknown[]; required?: string[] };
+          description?: string;
+        };
       };
     };
-    assert.isNotEmpty(schema.allOf);
+    for (const keyword of ["oneOf", "allOf", "anyOf"]) {
+      assert.notProperty(schema, keyword);
+    }
     assert.isNotEmpty(schema.properties?.target?.anyOf);
-    assert.isNotEmpty(schema.properties?.targets?.items?.anyOf);
+    assert.deepEqual(schema.properties?.targets?.items?.required, ["itemId"]);
     assert.equal(schema.properties?.targets?.minItems, 1);
+    assert.match(tool.spec.description, /target or targets, never both/i);
+    assert.match(tool.spec.description, /omit both/i);
+    assert.match(
+      `${schema.properties?.target?.description} ${schema.properties?.targets?.description}`,
+      /never both/i,
+    );
   });
 
   it("paper_read refuses active-reader fallback in collection-scoped library chat", async function () {
@@ -759,6 +921,77 @@ describe("semantic tool surface", function () {
     const first = (output as { results: Array<Record<string, unknown>> })
       .results[0];
     assert.deepEqual(first.paperContext, collectionPaper);
+  });
+
+  it("paper_read adaptively covers every explicit overview target from live model capacity", async function () {
+    const papers = Array.from({ length: 12 }, (_, index) => ({
+      libraryID: 1,
+      itemId: index + 1,
+      contextItemId: index + 101,
+      title: `Paper ${index + 1}`,
+    }));
+    const receivedMaxChars: number[] = [];
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async ({
+          paperContext,
+          maxChars,
+        }: {
+          paperContext: unknown;
+          maxChars: number;
+        }) => {
+          receivedMaxChars.push(maxChars);
+          return { backend: "raw_pdf_text", text: "body", paperContext };
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [],
+        resolvePaperContextTarget: (target: { itemId?: number }) =>
+          papers.find((paper) => paper.itemId === target.itemId) || null,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "overview",
+      targets: papers.map(({ itemId, contextItemId }) => ({
+        itemId,
+        contextItemId,
+      })),
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "global",
+        runtimeContextBudget: {
+          contextWindowTokens: 1_000_000,
+          usedContextTokens: 100_000,
+        },
+        advanced: {
+          outputTokenLimit: { mode: "custom", tokens: 16_000 },
+        },
+      },
+    })) as {
+      results: unknown[];
+      readingReceipt: {
+        requestedPapers: number;
+        returnedPapers: number;
+        maxCharactersPerPaper: number;
+      };
+    };
+
+    assert.lengthOf(output.results, papers.length);
+    assert.equal(output.readingReceipt.requestedPapers, papers.length);
+    assert.equal(output.readingReceipt.returnedPapers, papers.length);
+    assert.isAbove(output.readingReceipt.maxCharactersPerPaper, 9_000);
+    assert.deepEqual(
+      receivedMaxChars,
+      Array(papers.length).fill(output.readingReceipt.maxCharactersPerPaper),
+    );
   });
 
   it("paper_read overview falls back to Zotero metadata when PDF text is unavailable", async function () {
@@ -1388,6 +1621,15 @@ describe("semantic tool surface", function () {
       request: {
         ...baseContext.request,
         userText: "Explain Table 1",
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({
+            figures: {
+              kind: "tables",
+              labels: ["Table 1"],
+              includeSupplementary: false,
+            },
+          }),
+        }),
         selectedPaperContexts: [paperContext],
       },
     })) as Record<string, unknown>;
@@ -1452,7 +1694,7 @@ describe("semantic tool surface", function () {
     );
     const validated = tool.validate({
       mode: "visual",
-      target: { paperContext },
+      target: { itemId: 11, contextItemId: 22 },
       pages: [4],
       query: "Render page 4 from the raw PDF",
     });
@@ -1838,7 +2080,7 @@ describe("semantic tool surface", function () {
       assert.exists(tool);
       const validated = tool!.validate({
         mode: "figures",
-        query: "Explain Figure 1",
+        query: "Explain Figure 2",
       });
       assert.equal(validated.ok, true);
       if (!validated.ok) return;
@@ -1848,6 +2090,17 @@ describe("semantic tool surface", function () {
         request: resolvedAgentRequest({
           ...baseContext.request,
           userText: "Explain Figure 1",
+          classifiedIntent: classifiedFixture({
+            semantic: semanticFixture({
+              figures: {
+                labels: ["Figure 1"],
+                kind: "figures",
+                includeSupplementary: false,
+              },
+            }),
+          }),
+          conversationKind: "paper",
+          activeItemId: paperContext.itemId,
           selectedPaperContexts: [paperContext],
         }),
       })) as {
@@ -1925,7 +2178,10 @@ describe("semantic tool surface", function () {
     );
     const validated = tool.validate({
       mode: "visual",
-      target: { paperContext },
+      target: {
+        itemId: paperContext.itemId,
+        contextItemId: paperContext.contextItemId,
+      },
       pages: [2],
       query: "Explain Figure 1",
     });
@@ -2155,6 +2411,12 @@ describe("semantic tool surface", function () {
       request: {
         ...baseContext.request,
         userText: "Read the complete text.",
+        activeItemId: paperContext.itemId,
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({
+            reading: { source: "document_text", coverage: "exhaustive" },
+          }),
+        }),
       },
     })) as {
       results?: Array<{ quoteAnchors?: string[] }>;
@@ -2300,6 +2562,7 @@ describe("semantic tool surface", function () {
       itemId: 51,
       contextItemId: 52,
       title: "Agent Full Read Paper",
+      libraryID: 1,
     };
     const chunks = Array.from(
       { length: 6 },
@@ -2350,6 +2613,12 @@ describe("semantic tool surface", function () {
       request: {
         ...baseContext.request,
         userText: "Read the complete text.",
+        activeItemId: paperContext.itemId,
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({
+            reading: { source: "document_text", coverage: "exhaustive" },
+          }),
+        }),
       },
     })) as {
       mode: string;
@@ -2382,6 +2651,7 @@ describe("semantic tool surface", function () {
       itemId: 53,
       contextItemId: 54,
       title: "Native Full Read Paper",
+      libraryID: 1,
     };
     const chunks = ["Native evidence zero.", "Native evidence one."];
     let appServerSpawnCount = 0;
@@ -2464,7 +2734,10 @@ describe("semantic tool surface", function () {
       assert.exists(tool);
       const validated = tool!.validate({
         mode: "full",
-        target: { paperContext },
+        target: {
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+        },
         query: "Read the complete text.",
       });
       assert.equal(validated.ok, true);
@@ -2475,6 +2748,13 @@ describe("semantic tool surface", function () {
         request: resolvedAgentRequest({
           ...baseContext.request,
           userText: "Read the complete text.",
+          activeItemId: paperContext.itemId,
+          classifiedIntent: classifiedFixture({
+            semantic: semanticFixture({
+              reading: { source: "document_text", coverage: "exhaustive" },
+            }),
+          }),
+          conversationKind: "paper",
           authMode: "codex_app_server",
           model: "gpt-5.5",
           apiBase: "/tmp/codex",
@@ -2575,7 +2855,10 @@ describe("semantic tool surface", function () {
 
     const conflicting = tool.validate({
       mode: "full",
-      target: { paperContext: activePaper },
+      target: {
+        itemId: activePaper.itemId,
+        contextItemId: activePaper.contextItemId,
+      },
       query: "Read the complete paper.",
     });
     assert.equal(conflicting.ok, true);
@@ -2589,6 +2872,20 @@ describe("semantic tool surface", function () {
           activeItemId: activePaper.itemId,
           selectedPaperContexts: [activePaper, firstPaper],
           userText: "Read the complete first selected paper.",
+          classifiedIntent: classifiedFixture({
+            semantic: semanticFixture({
+              reading: { source: "document_text", coverage: "exhaustive" },
+            }),
+          }),
+          actionContract: {
+            ...actionContractFixture("read_full"),
+            obligations: [
+              {
+                ...actionContractFixture("read_full").obligations[0],
+                targetSelectors: [{ kind: "item_id", value: 61 }],
+              },
+            ],
+          },
         },
       });
       assert.fail("Expected a conflicting model-supplied target to fail");
@@ -2615,12 +2912,12 @@ describe("semantic tool surface", function () {
     } catch (error) {
       assert.match(
         error instanceof Error ? error.message : String(error),
-        /requires an explicit affirmative user request/,
+        /requires a resolved semantic reading intent/,
       );
     }
     assert.deepEqual(prepared, []);
 
-    await tool.execute(validated.value, {
+    const activeOutput = await tool.execute(validated.value, {
       ...baseContext,
       request: {
         ...baseContext.request,
@@ -2628,9 +2925,20 @@ describe("semantic tool surface", function () {
         activeItemId: activePaper.itemId,
         selectedPaperContexts: [firstPaper, activePaper],
         userText: "Read the complete paper before answering.",
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({
+            reading: { source: "document_text", coverage: "exhaustive" },
+          }),
+        }),
       },
     });
     assert.deepEqual(prepared, [activePaper.title]);
+    assert.include(
+      tool.presentation!.summaries!.onSuccess!({
+        content: activeOutput,
+      } as never),
+      "(Active Selected Paper, n.d.)",
+    );
 
     prepared.length = 0;
     await tool.execute(validated.value, {
@@ -2641,6 +2949,20 @@ describe("semantic tool surface", function () {
         activeItemId: activePaper.itemId,
         selectedPaperContexts: [activePaper, firstPaper],
         userText: "Read the complete first selected paper.",
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({
+            reading: { source: "document_text", coverage: "exhaustive" },
+          }),
+        }),
+        actionContract: {
+          ...actionContractFixture("read_full"),
+          obligations: [
+            {
+              ...actionContractFixture("read_full").obligations[0],
+              targetSelectors: [{ kind: "item_id", value: 61 }],
+            },
+          ],
+        },
       },
     });
     assert.deepEqual(prepared, [firstPaper.title]);
@@ -2654,10 +2976,23 @@ describe("semantic tool surface", function () {
         activeItemId: activePaper.itemId,
         selectedPaperContexts: [firstPaper, activePaper],
         userText: "Read all selected papers in full.",
+        classifiedIntent: classifiedFixture({
+          paperTargetIntent: "all_visible",
+          semantic: semanticFixture({
+            reading: { source: "document_text", coverage: "exhaustive" },
+          }),
+        }),
       },
-    })) as { coverageReceipt: { paperCount: number } };
-    assert.deepEqual(prepared, [firstPaper.title]);
-    assert.equal(allSelectedOutput.coverageReceipt.paperCount, 1);
+    })) as {
+      coverageReceipt: { paperCount: number };
+      papers: Array<{ displayLabel: string }>;
+    };
+    assert.deepEqual(prepared, [firstPaper.title, activePaper.title]);
+    assert.equal(allSelectedOutput.coverageReceipt.paperCount, 2);
+    assert.equal(
+      allSelectedOutput.papers[0].displayLabel,
+      "(First Selected Paper, n.d.)",
+    );
   });
 
   it("paper_read targeted honors explicit pages even when a query is present", async function () {
@@ -3028,11 +3363,13 @@ describe("semantic tool surface", function () {
     assert.include(
       getMatchedSkillIds(
         resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
           userText: "can you help me understand this ppaer",
           selectedPaperContexts: [
             { itemId: 1, contextItemId: 2, title: "Paper" },
           ],
         }),
+        ["simple-paper-qa"],
       ),
       "simple-paper-qa",
     );
@@ -3061,11 +3398,13 @@ describe("semantic tool surface", function () {
     assert.include(
       getMatchedSkillIds(
         resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
           userText: "compare the methods of all papers in this folder",
           selectedCollectionContexts: [
             { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
           ],
         }),
+        ["compare-papers"],
       ),
       "compare-papers",
     );
@@ -3075,12 +3414,16 @@ describe("semantic tool surface", function () {
     const skill = parseSkill(BUILTIN_SKILL_FILES["compare-papers.md"]);
 
     assert.deepEqual(
-      getSkillContextEligibility(skill, {
-        userText: "",
-        selectedCollectionContexts: [
-          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
-        ],
-      }),
+      getSkillContextEligibility(
+        skill,
+        resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
+          userText: "",
+          selectedCollectionContexts: [
+            { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+          ],
+        }),
+      ),
       { eligible: true },
     );
   });
@@ -3091,11 +3434,13 @@ describe("semantic tool surface", function () {
     assert.include(
       getMatchedSkillIds(
         resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
           userText: "find evidence in these papers for this claim",
           selectedCollectionContexts: [
             { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
           ],
         }),
+        ["evidence-based-qa"],
       ),
       "evidence-based-qa",
     );
@@ -3105,29 +3450,45 @@ describe("semantic tool surface", function () {
     const skill = parseSkill(BUILTIN_SKILL_FILES["evidence-based-qa.md"]);
 
     assert.deepEqual(
-      getSkillContextEligibility(skill, {
-        userText: "",
-        selectedCollectionContexts: [
-          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
-        ],
-      }),
+      getSkillContextEligibility(
+        skill,
+        resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
+          userText: "",
+          selectedCollectionContexts: [
+            { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+          ],
+        }),
+      ),
       { eligible: true },
     );
   });
 
-  it("keeps multi-context skills selectable without attached context", function () {
+  it("keeps missing-context skills available only through explicit selection", function () {
     const evidenceSkill = parseSkill(
       BUILTIN_SKILL_FILES["evidence-based-qa.md"],
     );
     const compareSkill = parseSkill(BUILTIN_SKILL_FILES["compare-papers.md"]);
 
     assert.deepEqual(
-      getSkillContextEligibility(evidenceSkill, { userText: "" }),
-      { eligible: true },
+      getSkillContextEligibility(
+        evidenceSkill,
+        resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
+          userText: "",
+        }),
+      ).eligible,
+      false,
     );
     assert.deepEqual(
-      getSkillContextEligibility(compareSkill, { userText: "" }),
-      { eligible: true },
+      getSkillContextEligibility(
+        compareSkill,
+        resolvedSkillRequest({
+          classifiedIntent: classifiedFixture(),
+          userText: "",
+        }),
+      ).eligible,
+      false,
     );
   });
 });

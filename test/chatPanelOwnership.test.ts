@@ -203,7 +203,13 @@ describe("chat panel conversation ownership", function () {
       source.indexOf("async function ensureAgentRunTraceLoaded("),
       source.indexOf("function getCachedAgentRunEvents("),
     );
-    assert.include(traceLoader, "refreshConversationPanels(body, item)");
+    assert.include(traceLoader, "await refreshLoadedTraceMessages(");
+    const traceRefresh = source.slice(
+      source.indexOf("function refreshLoadedTraceMessages("),
+      source.indexOf("async function ensureAgentRunTraceLoaded("),
+    );
+    assert.include(traceRefresh, "refreshConversationPanels(body, item,");
+    assert.include(traceRefresh, "rerenderAssistantMessages: messages");
     assert.notInclude(traceLoader, "refreshChat(body, item)");
     assert.notInclude(source, "setTimeout(() => refreshChat(body, item), 0)");
 

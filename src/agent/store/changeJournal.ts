@@ -965,7 +965,8 @@ async function journalActionState(actionId: string): Promise<{
   )) as Array<Record<string, unknown>> | null;
   if (!Array.isArray(rows) || !rows[0]) return null;
   const conversationKey = Math.floor(Number(rows[0].conversation_key));
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+  // Zero identifies standalone MCP history; explicit action IDs scope its recovery.
+  if (!Number.isFinite(conversationKey) || conversationKey < 0) {
     throw new Error(`Journal action ${actionId} has no valid conversation key`);
   }
   return {
@@ -1079,6 +1080,7 @@ export async function compactRevertedJournalAction(
 
 export async function listJournalActions(input: {
   actionId?: string;
+  actionIds?: readonly string[];
   conversationKey?: number;
   runId?: string;
   limit?: number;
@@ -1086,11 +1088,16 @@ export async function listJournalActions(input: {
 }): Promise<JournalActionWithSteps[]> {
   const db = getDb();
   if (!db) return [];
+  if (input.actionIds && !input.actionIds.length) return [];
   const clauses: string[] = [];
   const params: unknown[] = [];
   if (input.actionId) {
     clauses.push("action_id = ?");
     params.push(input.actionId);
+  }
+  if (input.actionIds) {
+    clauses.push(`action_id IN (${input.actionIds.map(() => "?").join(",")})`);
+    params.push(...input.actionIds);
   }
   if (input.conversationKey !== undefined) {
     clauses.push("conversation_key = ?");

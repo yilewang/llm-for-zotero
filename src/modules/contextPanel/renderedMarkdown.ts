@@ -27,6 +27,7 @@ import {
 } from "./figureExport";
 
 export type RenderedMarkdownOptions = {
+  deferEnrichment?: boolean;
   resolveImage?: (src: string) => string | null;
   onAsyncContentRendered?: () => void;
 };
@@ -453,10 +454,12 @@ const SAFE_RENDERED_MARKDOWN_TAGS = new Set([
   "del",
   "div",
   "em",
+  "h1",
   "h2",
   "h3",
   "h4",
   "h5",
+  "h6",
   "hr",
   "img",
   "input",
@@ -698,7 +701,7 @@ export function isSafeRenderedMarkdownAttributeForTests(
   );
 }
 
-function sanitizeRenderedMarkdownFragment(
+export function sanitizeRenderedMarkdownFragment(
   fragment: ParentNode,
   doc: Document,
 ): void {
@@ -734,6 +737,17 @@ function sanitizeRenderedMarkdownFragment(
       }
     }
   }
+}
+
+/** Inert parsing is mandatory for supplied HTML, unlike renderer-owned HTML. */
+export function parseSanitizedRenderedHtml(
+  html: string,
+  doc: Document,
+): DocumentFragment {
+  const template = doc.createElement("template") as HTMLTemplateElement;
+  template.innerHTML = html;
+  sanitizeRenderedMarkdownFragment(template.content, doc);
+  return template.content;
 }
 
 function setRenderedMarkdownHtml(
@@ -2353,6 +2367,7 @@ export function renderRenderedMarkdownInto(
       target.textContent = sanitizeText(text);
     }
   }
+  if (options?.deferEnrichment) return;
   attachRenderedCodeBlockControls(target, doc);
   attachRenderedCopyButtons(target, doc);
   attachRenderedSvgPreviewButtons(target, doc);

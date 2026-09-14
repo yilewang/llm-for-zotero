@@ -71,5 +71,9 @@ export function getReasoningLevelDisplayLabel(
 
 export function isReasoningDisplayLabelActive(label: string): boolean {
   const normalized = label.trim().toLowerCase();
-  return normalized !== "off" && normalized !== "disabled";
+  return (
+    normalized !== "off" &&
+    normalized !== "disabled" &&
+    normalized !== "not supported"
+  );
 }

@@ -1,5 +1,7 @@
 import type { LibraryMutationOperation } from "./contracts";
 import type { MutationStateView } from "./stateView";
+import { renderMarkdownForNote } from "../../../utils/markdown";
+import { normalizeNotePlainText, stripNoteHtml } from "../../../utils/noteText";
 
 export const resultCount = (result: unknown, key: string): number => {
   const value = (result || {}) as Record<string, unknown>;
@@ -50,26 +52,14 @@ export function resultRowIds(params: {
   return [...new Set(ids)];
 }
 
-const normalizedNoteText = (value: string): string =>
-  value
-    .replace(/<br\s*\/?\s*>/gi, "\n")
-    .replace(/<\/(?:p|div|h[1-6]|li|tr|blockquote)\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-
 export const noteContentMatches = (
   actual: string | undefined,
   expected: string,
 ): boolean => {
-  const actualText = normalizedNoteText(actual || "");
-  const expectedText = normalizedNoteText(expected);
+  const actualText = normalizeNotePlainText(stripNoteHtml(actual || ""));
+  const expectedText = normalizeNotePlainText(
+    stripNoteHtml(renderMarkdownForNote(expected)),
+  );
   return Boolean(
     expectedText &&
     (actualText === expectedText || actualText.includes(expectedText)),

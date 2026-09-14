@@ -5,7 +5,8 @@ import {
 } from "../shared/instructionContracts";
 
 export const DEFAULT_TEMPERATURE = 0.3;
-export const DEFAULT_MAX_TOKENS = 4096;
+/** Seed used only after a user explicitly selects Custom and enters no value. */
+export const DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT = 8192;
 // Output limits are model capabilities too; keep only a corruption guard.
 export const MAX_ALLOWED_TOKENS = 100000000;
 export const DEFAULT_INPUT_TOKEN_CAP = 256000;

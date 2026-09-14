@@ -5,7 +5,6 @@ export const STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX = 220;
 export const STANDALONE_SIDEBAR_MIN_WIDTH_PX = 160;
 export const STANDALONE_SIDEBAR_MAX_WIDTH_PX = 420;
 export const STANDALONE_SIDEBAR_MIN_CONTENT_WIDTH_PX = 360;
-export const STANDALONE_SIDEBAR_ICON_STRIP_WIDTH_PX = 48;
 export const STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX = 5;
 
 type StandaloneContextFitMetrics = {
@@ -48,7 +47,6 @@ export type StandaloneSidebarWidthParams = {
   minWidth?: number;
   maxWidth?: number;
   minContentWidth?: number;
-  iconStripWidth?: number;
   separatorWidth?: number;
 };
 
@@ -62,7 +60,6 @@ type StandaloneSidebarResizeOptions = {
   minWidth?: number;
   maxWidth?: number;
   minContentWidth?: number;
-  iconStripWidth?: number;
   separatorWidth?: number;
   keyboardStep?: number;
   onWidthCommit?: (width: number) => void;
@@ -142,16 +139,12 @@ export function computeStandaloneSidebarWidthLayout(
     params.minContentWidth,
     STANDALONE_SIDEBAR_MIN_CONTENT_WIDTH_PX,
   );
-  const iconStripWidth = finiteNonNegative(
-    params.iconStripWidth,
-    STANDALONE_SIDEBAR_ICON_STRIP_WIDTH_PX,
-  );
   const separatorWidth = finiteNonNegative(
     params.separatorWidth,
     STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
   );
   const availableWidth = Math.floor(
-    containerWidth - iconStripWidth - separatorWidth - minContentWidth,
+    containerWidth - separatorWidth - minContentWidth,
   );
   const effectiveMax = Math.max(minWidth, Math.min(maxWidth, availableWidth));
   return {
@@ -210,7 +203,6 @@ export function installStandaloneSidebarResizeBehavior(
       minWidth,
       maxWidth,
       minContentWidth: options.minContentWidth,
-      iconStripWidth: options.iconStripWidth,
       separatorWidth: options.separatorWidth,
     });
   };
@@ -218,7 +210,8 @@ export function installStandaloneSidebarResizeBehavior(
   const applyLayout = (layout: StandaloneSidebarWidthLayout) => {
     renderedWidth = layout.renderedWidth;
     effectiveMaxWidth = layout.effectiveMaxWidth;
-    sidebarPanel.style.setProperty(
+    // The layout sidebar and its floating panel inherit the same saved width.
+    container.style.setProperty(
       "--llm-standalone-sidebar-panel-width",
       `${renderedWidth}px`,
     );

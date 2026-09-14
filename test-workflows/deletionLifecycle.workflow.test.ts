@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
+import { createAgentRun } from "../src/agent/store/traceStore";
 
 const PREF_PREFIX = "extensions.zotero.llmforzotero";
 
@@ -48,6 +49,71 @@ async function surfacing(fn: () => Promise<void>): Promise<void> {
 
 describe("deletion lifecycle", function () {
   this.timeout(45000);
+
+  it("finalizing an unrelated conversation deletion preserves a running agent's trace", async function () {
+    await withPrefs(
+      {
+        enableCodexAppServerMode: false,
+        enableClaudeCodeMode: false,
+        conversationSystem: "upstream",
+      },
+      async () =>
+        surfacing(async () => {
+          const api = getWorkflowTestApi();
+          await api.reset();
+          const fixture = await api.createPaperWithPdfFixture({
+            title: "Concurrent deletion trace isolation",
+            pdfTitle: "deletion-trace-isolation.pdf",
+            pages: [
+              "A running review must survive unrelated conversation deletion.",
+            ],
+          });
+          const runId = `deletion-surviving-run-${Date.now()}`;
+          try {
+            const panel = await api.renderPanelForItem(fixture.parentItemId);
+            await api.seedPanelStoredUserMessage(
+              panel.panelId,
+              "Disposable conversation",
+            );
+            const doomedKey = (await api.getDiagnostics(panel.panelId))
+              .conversationKey!;
+            await api.startNewPanelConversation(panel.panelId);
+            await api.seedPanelStoredUserMessage(
+              panel.panelId,
+              "Long review still running",
+            );
+            const survivorKey = (await api.getDiagnostics(panel.panelId))
+              .conversationKey!;
+            await createAgentRun({
+              runId,
+              conversationKey: survivorKey,
+              mode: "agent",
+              status: "running",
+              createdAt: Date.now(),
+            });
+            await api.deletePanelHistoryConversation(panel.panelId, doomedKey);
+            await api.sweepPendingDeletionsAsRestart();
+            const rows = await Zotero.DB.queryAsync(
+              "SELECT status, final_text FROM llm_for_zotero_agent_runs WHERE run_id = ?",
+              [runId],
+            );
+            assert.equal(
+              rows[0]?.status,
+              "running",
+              "deleting another conversation must not perform startup recovery on a live run",
+            );
+            assert.isNull(rows[0]?.final_text);
+          } finally {
+            await Zotero.DB.queryAsync(
+              "DELETE FROM llm_for_zotero_agent_runs WHERE run_id = ?",
+              [runId],
+            );
+            await api.reset();
+            await api.cleanupFixture(fixture);
+          }
+        }),
+    );
+  });
 
   for (const runtime of [
     {

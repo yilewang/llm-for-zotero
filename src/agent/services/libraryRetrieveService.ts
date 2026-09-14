@@ -21,6 +21,7 @@ import type {
   PdfChunkKind,
 } from "../../modules/contextPanel/types";
 import type { AgentRuntimeRequest } from "../types";
+import { resolveResearchPolicy } from "../research/policy";
 import { getTurnPaperScopeFromRequest } from "../context/requestTurnPaperScope";
 import type {
   PaperContextRef,
@@ -270,22 +271,26 @@ export type LibraryRetrieveResult = {
   warnings: string[];
 };
 
+const CHAT_RESEARCH_POLICY = resolveResearchPolicy("chat");
+
 export const LIBRARY_RETRIEVE_DEFAULT_BUDGETS = {
-  maxMetadataItems: 500,
-  maxCollectionMetadataItems: 2000,
-  maxCandidatePapers: 80,
-  maxEnumerateCandidatePapers: 200,
-  maxFullTextPapers: 30,
-  perPaperTopK: 3,
-  maxTotalSnippets: 80,
+  maxMetadataItems: CHAT_RESEARCH_POLICY.defaultMetadataItems,
+  maxCollectionMetadataItems:
+    CHAT_RESEARCH_POLICY.defaultCollectionMetadataItems,
+  maxCandidatePapers: CHAT_RESEARCH_POLICY.defaultCandidatePapers,
+  maxEnumerateCandidatePapers:
+    CHAT_RESEARCH_POLICY.defaultEnumerateCandidatePapers,
+  maxFullTextPapers: CHAT_RESEARCH_POLICY.defaultFullTextPapers,
+  perPaperTopK: CHAT_RESEARCH_POLICY.defaultSnippetsPerPaper,
+  maxTotalSnippets: CHAT_RESEARCH_POLICY.defaultTotalSnippets,
 } as const;
 
 export const LIBRARY_RETRIEVE_HARD_CAPS = {
-  maxMetadataItems: 5000,
-  maxCandidatePapers: 200,
-  maxFullTextPapers: 100,
-  perPaperTopK: 5,
-  maxTotalSnippets: 200,
+  maxMetadataItems: CHAT_RESEARCH_POLICY.maxMetadataItemsPerCall,
+  maxCandidatePapers: CHAT_RESEARCH_POLICY.maxCandidatePapersPerCall,
+  maxFullTextPapers: CHAT_RESEARCH_POLICY.maxFullTextPapersPerCall,
+  perPaperTopK: CHAT_RESEARCH_POLICY.maxSnippetsPerPaper,
+  maxTotalSnippets: CHAT_RESEARCH_POLICY.maxTotalSnippetsPerCall,
 } as const;
 
 function buildSnippetQuoteCitation(
@@ -543,26 +548,10 @@ function normalizeIntent(
   }
   if (value === "discover") return "enumerate";
   if (depth === "verify") return "verify";
-  // Language-independent classifier default: beats the English regexes below,
-  // loses to explicit tool args and verify depth above.
+  // Tool arguments and the shared semantic result are the only intent inputs.
   const classified = request?.classifiedIntent;
   if (classified && classified.retrievalIntent !== "none") {
     return classified.retrievalIntent;
-  }
-  const normalized = query.toLowerCase();
-  if (
-    /\b(?:all|which|how many|list|enumerate|papers?\s+that|contain|contains|containing|use|uses|using|discuss|discusses|mention|mentions)\b/.test(
-      normalized,
-    )
-  ) {
-    return "enumerate";
-  }
-  if (
-    /\b(?:summari[sz]e|summary|taxonomy|methods?|themes?|comprehensive|overview|commonalit(?:y|ies)|synthesi[sz]e|synthesis|similarit(?:y|ies)|compare|contrast)\b/.test(
-      normalized,
-    )
-  ) {
-    return "summarize";
   }
   return DEFAULT_INTENT;
 }
@@ -1408,6 +1397,11 @@ export class LibraryRetrieveService {
     const queryPlan = await resolveRetrievalQueryPlan({
       query: params.query,
       queryVariants: params.queryVariants,
+      readIntent:
+        params.request?.classifiedIntent?.semantic?.reading.coverage ===
+        "exhaustive"
+          ? "full-once"
+          : "targeted",
       hasRetrievalContext:
         requestedDepth !== "verify" && requestedIntent !== "verify",
       model: params.model || params.request?.model,
@@ -1421,6 +1415,12 @@ export class LibraryRetrieveService {
       signal: params.signal,
       sourceSamples: this.buildScopeSourceSamples(scope),
     });
+    queryPlan.retrievalPurpose =
+      params.request?.classifiedIntent?.semantic?.retrievalPurpose;
+    queryPlan.quoteAnchorPolicy =
+      params.request?.classifiedIntent?.retrievalIntent === "verify"
+        ? "verified"
+        : "none";
     let input = normalizeInput(params, params.request, queryPlan);
     const warnings: string[] = [];
     for (const note of new Set(input.queryPlan.notes)) {
@@ -1428,7 +1428,10 @@ export class LibraryRetrieveService {
     }
     const methodsUsed = new Set<LibraryRetrieveMethod>();
     const readStrategyBase = resolveLibraryChatReadStrategy({
-      query: input.query,
+      answerStyle:
+        params.request?.classifiedIntent?.documentKind === "comparison"
+          ? "comparison"
+          : undefined,
       intent: input.intent,
       depth: input.depth,
       paperCount: scope.totalItems,

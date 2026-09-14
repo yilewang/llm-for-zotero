@@ -155,7 +155,7 @@ describe("CodexResponsesAgentAdapter", function () {
         name: "library_search",
         description: "Search the library",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
     ];
@@ -287,6 +287,67 @@ describe("CodexResponsesAgentAdapter", function () {
     assert.equal(step.responseId, "resp_456");
     assert.equal(step.toolCalls.length, 0);
     assert.equal(step.text, "Final answer.");
+  });
+
+  it("treats Responses incomplete output as recovery before tool execution", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: undefined,
+          json: async () => ({
+            id: "resp_incomplete",
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+            output: [
+              {
+                type: "message",
+                content: [{ type: "output_text", text: "Partial answer" }],
+              },
+              {
+                type: "function_call",
+                call_id: "truncated-call",
+                name: "library_search",
+                arguments: '{"query":"unfinished"}',
+              },
+            ],
+          }),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await new OpenAIResponsesAgentAdapter().runStep({
+      request: makeRequest({
+        apiBase: "https://api.openai.com/v1/responses",
+        apiKey: "test",
+        authMode: "api_key",
+        providerProtocol: "responses_api",
+      }),
+      messages: [{ role: "user", content: "Search" }],
+      tools: [
+        {
+          name: "library_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          requiresConfirmation: false,
+        },
+      ],
+    });
+
+    assert.equal(step.kind, "incomplete");
+    if (step.kind !== "incomplete") return;
+    assert.equal(step.reason, "output_limit");
+    assert.equal(step.text, "Partial answer");
+    assert.notProperty(step, "calls");
   });
 
   it("preserves a complete native responses step for runtime overflow handling", function () {
@@ -480,7 +541,7 @@ describe("CodexResponsesAgentAdapter", function () {
         },
         advanced: {
           temperature: 1.7,
-          maxTokens: 123,
+          outputTokenLimit: { mode: "custom", tokens: 123 },
           profileOverride: {
             forModel: "gpt-codex",
             extraBody: { custom_advanced_value: true },
@@ -501,7 +562,7 @@ describe("CodexResponsesAgentAdapter", function () {
     assert.notProperty(capturedBody, "custom_advanced_value");
     assert.equal(capturedHeaders.get("Authorization"), "Bearer direct-token");
     assert.equal(capturedHeaders.get("ChatGPT-Account-ID"), "account-456");
-    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
       const effortAdapter = new CodexResponsesAgentAdapter();
       await effortAdapter.runStep({
         request: makeRequest({
@@ -518,9 +579,9 @@ describe("CodexResponsesAgentAdapter", function () {
     }
   });
 
-  it("omits Ultra and stale direct efforts", async function () {
+  it("omits stale direct efforts", async function () {
     await loadDirectCatalog();
-    for (const effort of ["ultra", "stale-effort"]) {
+    for (const effort of ["stale-effort"]) {
       const freshAdapter = new CodexResponsesAgentAdapter();
       let capturedBody: Record<string, unknown> = {};
       (

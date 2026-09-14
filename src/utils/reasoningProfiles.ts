@@ -9,6 +9,7 @@ export type ReasoningProvider =
   | "qwen"
   | "grok"
   | "anthropic"
+  | "customized"
   | "local";
 export type ReasoningLevel =
   | "default"
@@ -72,6 +73,7 @@ export type AnthropicReasoningProfile = {
   preferredMode: AnthropicThinkingMode;
   supportsAdaptiveThinking: boolean;
   supportsManualThinking: boolean;
+  supportsDisabledThinking?: boolean;
 };
 export type QwenReasoningProfile = {
   defaultEnableThinking: boolean | null;
@@ -118,6 +120,7 @@ type ProviderProfile = {
     preferredMode: AnthropicThinkingMode;
     supportsAdaptiveThinking: boolean;
     supportsManualThinking: boolean;
+    supportsDisabledThinking?: boolean;
   };
   qwen?: {
     defaultEnableThinking: boolean | null;
@@ -652,6 +655,8 @@ const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
   },
 };
 
+// Disabled thinking is supported by these established profiles, but not
+// Mythos Preview: https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking
 const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
@@ -663,6 +668,7 @@ const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: false,
+    supportsDisabledThinking: true,
   },
 };
 
@@ -677,6 +683,7 @@ const ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE: ProviderProfile = {
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: true,
+    supportsDisabledThinking: true,
   },
 };
 
@@ -691,6 +698,7 @@ const ANTHROPIC_MANUAL_THINKING_PROFILE: ProviderProfile = {
     preferredMode: "manual",
     supportsAdaptiveThinking: false,
     supportsManualThinking: true,
+    supportsDisabledThinking: true,
   },
 };
 
@@ -727,7 +735,8 @@ const PROFILE_RULES: Record<
         profile: OPENAI_GPT5_XHIGH_PROFILE,
       },
       {
-        match: /^(gpt-5(?:\b|[.-])|o\d+(?:\b|[.-]))/,
+        // Historical families only; later releases start on Auto until described.
+        match: /^(gpt-5(?:\.[13])?(?:-|$)|o[134](?:-|$))/,
         profile: OPENAI_GPT5_PROFILE,
       },
       // The GPT-3 and GPT-4 families predate reasoning and reject
@@ -900,6 +909,7 @@ const PROFILE_RULES: Record<
   // from what the server reports plus whatever the user configures, resolved
   // entirely through declarative ModelControlPatches. This entry exists so
   // ReasoningConfig.provider stays type-safe and every lookup here is inert.
+  customized: { rules: [], fallback: UNSUPPORTED_PROFILE },
   local: {
     rules: [],
     fallback: UNSUPPORTED_PROFILE,
@@ -917,6 +927,16 @@ const OPENAI_EFFORT_ORDER: OpenAIReasoningEffort[] = [
 
 function normalizeModelName(modelName?: string): string {
   return (modelName || "").trim().toLowerCase();
+}
+
+/** A family hint alone is not evidence for a future model's level set. */
+export function hasKnownReasoningProfile(
+  provider: ReasoningProvider,
+  modelName: string,
+): boolean {
+  return PROFILE_RULES[provider].rules.some((rule) =>
+    rule.match.test(normalizeModelName(modelName)),
+  );
 }
 
 function resolveProviderProfile(
@@ -1068,6 +1088,9 @@ export function getAnthropicReasoningProfileForModel(
       anthropicProfile?.supportsAdaptiveThinking,
     ),
     supportsManualThinking: Boolean(anthropicProfile?.supportsManualThinking),
+    supportsDisabledThinking: Boolean(
+      anthropicProfile?.supportsDisabledThinking,
+    ),
   };
 }
 

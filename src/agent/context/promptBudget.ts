@@ -15,8 +15,13 @@ import {
   type ModelInputTokenLimitSource,
 } from "../../utils/modelInputCap";
 import type { ModelProfileOverride } from "../../modelCapabilities";
+import type { OutputTokenLimitSetting } from "../../shared/types";
+import {
+  resolveContextAllocation,
+  resolveOutputRequestPolicy,
+} from "../../utils/outputTokenPolicy";
+import { normalizeProviderProtocol } from "../../utils/providerProtocol";
 
-const AGENT_PROMPT_SOFT_LIMIT_RATIO = 0.9;
 const HISTORY_CHECKPOINT_MAX_TOKENS = 1_200;
 const TOOL_HANDLE_MAX_TOKENS = 768;
 const MIN_CATALOG_TOOL_TOKENS = 1_024;
@@ -74,6 +79,7 @@ export function resolveAgentPromptBudgetLimits(params: {
   providerProtocol?: string;
   authMode?: string;
   profileOverride?: ModelProfileOverride;
+  outputTokenLimit?: OutputTokenLimitSetting;
 }): AgentPromptBudgetLimits {
   const resolvedLimit = resolveModelInputTokenLimit(
     params.model || "",
@@ -85,13 +91,25 @@ export function resolveAgentPromptBudgetLimits(params: {
       profileOverride: params.profileOverride,
     },
   );
+  // The soft limit is the shared context allocation's input budget, so a
+  // prompt that passes here always leaves room for the cap we transmit.
+  const allocation = resolveContextAllocation({
+    contextWindow: resolvedLimit.limitTokens,
+    policy: resolveOutputRequestPolicy({
+      setting: params.outputTokenLimit,
+      model: params.model || "",
+      apiBase: params.apiBase,
+      protocol: normalizeProviderProtocol(params.providerProtocol),
+      authMode: params.authMode as Parameters<
+        typeof resolveOutputRequestPolicy
+      >[0]["authMode"],
+      profileOverride: params.profileOverride,
+    }),
+  });
   return {
     contextWindow: resolvedLimit.limitTokens,
     inputLimitSource: resolvedLimit.source,
-    softLimitTokens: Math.max(
-      1,
-      Math.floor(resolvedLimit.limitTokens * AGENT_PROMPT_SOFT_LIMIT_RATIO),
-    ),
+    softLimitTokens: allocation.inputBudgetTokens,
   };
 }
 
@@ -215,6 +233,16 @@ function parseToolContent(message: AgentToolMessage): unknown {
   }
 }
 
+function existingToolResultHandle(content: unknown): string | undefined {
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return undefined;
+  }
+  const handle = (content as Record<string, unknown>).toolResultHandle;
+  return typeof handle === "string" && handle.startsWith("trh_")
+    ? handle
+    : undefined;
+}
+
 function isLibrarySearchTool(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
   return normalized === "query_library" || normalized === "library_search";
@@ -279,8 +307,15 @@ function attachToolResultHandle<T>(params: {
   handleRecord?: AgentToolResultHandleRecord | null;
 }): T {
   if (!params.handleRecord) return params.content;
+  const existingHandle =
+    params.content && typeof params.content === "object"
+      ? (params.content as Record<string, unknown>).toolResultHandle
+      : undefined;
   const handleFields = {
-    toolResultHandle: params.handleRecord.handle,
+    toolResultHandle:
+      typeof existingHandle === "string" && existingHandle.startsWith("trh_")
+        ? existingHandle
+        : params.handleRecord.handle,
     toolResultHandleNotice:
       "Use tool_result_read with this handle to retrieve omitted rows, snippets, or sections from the exact stored tool result if needed.",
   };
@@ -627,6 +662,11 @@ function buildEvidenceCompactToolResult(params: {
     answerContract: compactMetadataValue(source.answerContract),
     warnings: compactMetadataValue(source.warnings),
     quoteCitations: compactedQuoteCitations.quoteCitations,
+    paperEvidenceProgress: compactMetadataValue(source.paperEvidenceProgress),
+    paperEvidenceReferences: compactMetadataValue(
+      source.paperEvidenceReferences,
+    ),
+    toolResultHandle: compactScalar(source.toolResultHandle),
     modelContextCompacted: true,
     compactionReason:
       "The complete provider-bound prompt exceeded the active context budget.",
@@ -766,6 +806,11 @@ function buildToolResultHandle(params: {
           ?.queryCoverage,
       ),
     warnings: compactMetadataValue(content.warnings),
+    paperEvidenceProgress: compactMetadataValue(content.paperEvidenceProgress),
+    paperEvidenceReferences: compactMetadataValue(
+      content.paperEvidenceReferences,
+    ),
+    toolResultHandle: compactScalar(content.toolResultHandle),
     notice:
       "Older tool output was cleared under context pressure. If this message includes toolResultHandle, call tool_result_read to retrieve omitted sections from the exact stored result.",
   };
@@ -805,11 +850,14 @@ function buildHistoryCheckpoint(params: {
         argumentDigest: params.argumentDigestById.get(message.tool_call_id),
       });
       if (handleRecord) params.handleRecords.push(handleRecord);
+      const preservedHandle = existingToolResultHandle(parsed);
       toolLines.push(
         `- ${message.name} (${message.tool_call_id}, ${estimateMessageTokens(
           message,
         )} estimated tokens cleared from raw history${
-          handleRecord ? `, handle=${handleRecord.handle}` : ""
+          preservedHandle || handleRecord
+            ? `, handle=${preservedHandle || handleRecord?.handle}`
+            : ""
         })`,
       );
       continue;
@@ -1041,6 +1089,7 @@ export function enforceAgentPromptBudget(params: {
   providerProtocol?: string;
   authMode?: string;
   profileOverride?: ModelProfileOverride;
+  outputTokenLimit?: OutputTokenLimitSetting;
   conversationKey?: number;
   resourceSignature?: string;
 }): AgentPromptBudgetResult {
@@ -1051,6 +1100,7 @@ export function enforceAgentPromptBudget(params: {
     providerProtocol: params.providerProtocol,
     authMode: params.authMode,
     profileOverride: params.profileOverride,
+    outputTokenLimit: params.outputTokenLimit,
   });
   let messages = params.messages.map((message) => cloneMessage(message));
   const reductions: AgentPromptReduction[] = [];

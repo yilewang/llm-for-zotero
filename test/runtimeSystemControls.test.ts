@@ -10,7 +10,6 @@ function visibleSystems(input: {
   activeSystem: ConversationSystem;
   codexEnabled: boolean;
   claudeEnabled: boolean;
-  hidden?: boolean;
 }): string[] {
   const state = resolveRuntimeSystemControlsState(input);
   return Object.entries(state.buttons)
@@ -22,7 +21,6 @@ function activeSystems(input: {
   activeSystem: ConversationSystem;
   codexEnabled: boolean;
   claudeEnabled: boolean;
-  hidden?: boolean;
 }): string[] {
   const state = resolveRuntimeSystemControlsState(input);
   return Object.entries(state.buttons)
@@ -121,19 +119,6 @@ describe("runtime system controls", function () {
       const state = resolveRuntimeSystemControlsState(testCase.input);
       assert.equal(state.groupVisible, testCase.visible.length > 0);
     }
-  });
-
-  it("hides the complete group in webchat", function () {
-    const input = {
-      activeSystem: "codex" as const,
-      codexEnabled: true,
-      claudeEnabled: true,
-      hidden: true,
-    };
-
-    assert.deepEqual(visibleSystems(input), []);
-    assert.deepEqual(activeSystems(input), []);
-    assert.isFalse(resolveRuntimeSystemControlsState(input).groupVisible);
   });
 
   it("keeps inactive controls selectable and only disables them while busy", function () {

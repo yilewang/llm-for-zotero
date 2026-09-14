@@ -7,6 +7,7 @@ import {
   getQwenReasoningProfileForModel,
   getRuntimeReasoningOptionsForModel,
   supportsReasoningForModel,
+  hasKnownReasoningProfile,
   type ReasoningProvider,
 } from "../utils/reasoningProfiles";
 import { MAX_ALLOWED_TOKENS } from "../utils/llmDefaults";
@@ -36,6 +37,7 @@ import {
   MODEL_CAPABILITY_REGISTRY_URL,
   removeControlRoots,
   validateRegistry,
+  validateReasoning,
 } from "./registry";
 import type {
   CapabilitySource,
@@ -47,6 +49,7 @@ import type {
   ModelCatalogIdentity,
   ModelControlPatch,
   ModelReasoningCapability,
+  ModelReasoningSelection,
   ModelSamplingCapability,
   RegistryModelEntry,
   ResolvedModelCapabilities,
@@ -192,17 +195,31 @@ function legacyReasoning(
   const legacyProviderName = legacyReasoningProvider(provider);
   if (
     !legacyProviderName ||
-    !supportsReasoningForModel(legacyProviderName, model)
+    !hasKnownReasoningProfile(legacyProviderName, model)
   ) {
+    return { kind: "unknown", options: [] };
+  }
+  if (!supportsReasoningForModel(legacyProviderName, model)) {
     return { kind: "none", options: [] };
   }
-  const options = getRuntimeReasoningOptionsForModel(legacyProviderName, model)
-    .filter((option) => option.enabled)
-    .map((option) => ({
-      id: option.level,
-      label: option.label || option.level,
-      enabled: option.enabled,
-    }));
+  const options: ModelReasoningCapability["options"] =
+    getRuntimeReasoningOptionsForModel(legacyProviderName, model)
+      .filter((option) => option.enabled)
+      .map((option) => ({
+        id: option.level,
+        label: option.label || option.level,
+        enabled: option.enabled,
+      }));
+  if (
+    provider === "anthropic" &&
+    getAnthropicReasoningProfileForModel(model).supportsDisabledThinking
+  ) {
+    options.push({
+      id: "none",
+      label: "Off",
+      controls: { body: { thinking: { type: "disabled" } } },
+    });
+  }
   const defaultOptionId = options[0]?.id;
   return options.length
     ? {
@@ -341,6 +358,9 @@ function mergeReasoning(
   if (live?.reasoningSupported === false) {
     return { reasoning: { kind: "none", options: [] }, source: "live" };
   }
+  if (live?.reasoning && protocol !== "ollama_native") {
+    return { reasoning: clone(live.reasoning), source: "live" };
+  }
   // A recognized family may keep its level set, but never its request body,
   // when the model is served over Ollama's native protocol: `qwen3` there
   // needs `think`, never DashScope's `chat_template_kwargs`. This outranks
@@ -364,7 +384,7 @@ function mergeReasoning(
   if (entry?.reasoning) {
     return {
       reasoning: clone(entry.reasoning),
-      source: live?.reasoningSupported ? "live" : activeRegistrySource,
+      source: activeRegistrySource,
     };
   }
   if (live?.reasoningSupported) {
@@ -372,7 +392,7 @@ function mergeReasoning(
       reasoning: legacy.options.length
         ? legacy
         : { kind: "server_default", options: [] },
-      source: "live",
+      source: legacy.options.length ? "legacy" : "live",
     };
   }
   return { reasoning: legacy, source: "legacy" };
@@ -609,27 +629,23 @@ export function compileReasoningControls(
   selection: { level?: string; effort?: string },
 ): { extra: Record<string, unknown>; omitTemperature: boolean } | null {
   const reasoning = capabilities.reasoning;
-  const requested = normalize(selection.effort || selection.level);
-  const explicitOption = reasoning.options.find(
-    (candidate) => Boolean(requested) && normalize(candidate.id) === requested,
-  );
-  if (
-    (reasoning.kind === "none" || reasoning.kind === "server_default") &&
-    !explicitOption?.controls
-  ) {
-    return null;
+  const resolved = resolveModelReasoningSelection(capabilities, selection);
+  if (resolved.kind === "auto") return null;
+  const option = resolved.option;
+  if (option.effort) {
+    const responses =
+      capabilities.identity.protocol === "responses_api" ||
+      capabilities.identity.protocol === "codex_responses";
+    return {
+      extra: responses
+        ? { reasoning: { effort: option.effort } }
+        : { reasoning_effort: option.effort },
+      omitTemperature:
+        capabilities.sampling.temperature !== "configurable" ||
+        capabilities.provider === "openai",
+    };
   }
-  if (!requested || requested === "auto") return null;
-  const option =
-    explicitOption ||
-    (requested === "minimal"
-      ? reasoning.options.find((candidate) => normalize(candidate.id) === "off")
-      : undefined) ||
-    (requested === "default"
-      ? reasoning.options.find(
-          (candidate) => candidate.id === reasoning.defaultOptionId,
-        ) || reasoning.options[0]
-      : undefined);
+  const requested = normalize(option.id);
   const disabledOption =
     requested === "none" || requested === "off" || requested === "disabled";
   // A disabled selection may only emit controls its own option authored.
@@ -637,11 +653,7 @@ export function compileReasoningControls(
   // would turn reasoning on for the level the user picked to turn it off.
   const controls =
     option?.controls || (disabledOption ? undefined : reasoning.controls);
-  if (
-    !option ||
-    (option.enabled === false && !(disabledOption && option.controls)) ||
-    !controls
-  ) {
+  if (!controls) {
     return null;
   }
   const patched = applyControlPatch({}, controls);
@@ -654,6 +666,87 @@ export function compileReasoningControls(
     extra,
     omitTemperature: Boolean(controls.omitTemperature),
   };
+}
+
+/** Validate once for menus, saved preferences, and every request encoder. */
+export function resolveModelReasoningSelection(
+  capabilities: ResolvedModelCapabilities,
+  selection?: { level?: string; effort?: string },
+): ModelReasoningSelection {
+  const requested = normalize(selection?.effort || selection?.level);
+  if (!requested || requested === "auto") return { kind: "auto" };
+  const exact = capabilities.reasoning.options.find(
+    (candidate) =>
+      candidate.enabled !== false && normalize(candidate.id) === requested,
+  );
+  const option =
+    exact ||
+    capabilities.reasoning.options.find(
+      (candidate) =>
+        candidate.enabled !== false &&
+        ((requested === "minimal" &&
+          candidate.id === "off" &&
+          Boolean(candidate.controls)) ||
+          (requested === "default" &&
+            capabilities.provider !== "openai" &&
+            capabilities.provider !== "grok" &&
+            candidate.id === capabilities.reasoning.defaultOptionId)),
+    );
+  if (
+    !option ||
+    !isOptionProtocolSupported(option, capabilities) ||
+    isProviderDefaultOption(option, capabilities)
+  )
+    return { kind: "auto" };
+  return { kind: "option", option };
+}
+
+function isOptionProtocolSupported(
+  option: ModelReasoningCapability["options"][number],
+  capabilities: ResolvedModelCapabilities,
+): boolean {
+  return (
+    !option.effort ||
+    !capabilities.identity.protocol ||
+    ["responses_api", "openai_chat_compat", "codex_responses"].includes(
+      capabilities.identity.protocol,
+    )
+  );
+}
+
+function isProviderDefaultOption(
+  option: ModelReasoningCapability["options"][number],
+  capabilities: ResolvedModelCapabilities,
+): boolean {
+  return (
+    option.id === "default" &&
+    !option.controls &&
+    !option.effort &&
+    !capabilities.reasoning.controls &&
+    capabilities.provenance.reasoning === "legacy" &&
+    (capabilities.provider === "openai" || capabilities.provider === "grok")
+  );
+}
+
+export function getModelReasoningChoices(
+  capabilities: ResolvedModelCapabilities,
+) {
+  if (capabilities.reasoning.kind === "none") return [];
+  return [
+    { level: "auto", label: "Auto — provider default", enabled: true },
+    ...capabilities.reasoning.options
+      .filter(
+        (option) =>
+          option.id !== "auto" &&
+          isOptionProtocolSupported(option, capabilities) &&
+          !isProviderDefaultOption(option, capabilities),
+      )
+      .map((option) => ({
+        level: option.id,
+        label: option.label,
+        enabled: option.enabled !== false,
+      })),
+  ];
 }
 
 export function getRuntimeReasoningOptions(
@@ -908,6 +1001,9 @@ function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
       ...(Object.keys(inputs).length ? { inputs } : {}),
       ...(typeof reasoningSupported === "boolean"
         ? { reasoningSupported }
+        : {}),
+      ...(validateReasoning(row.reasoning)
+        ? { reasoning: clone(row.reasoning) }
         : {}),
       source: "live",
     });

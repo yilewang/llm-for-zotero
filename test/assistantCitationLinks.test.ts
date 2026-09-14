@@ -784,7 +784,7 @@ describe("assistantCitationLinks", function () {
       navigationSource,
       "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
     );
-    assert.include(navigationSource, "hasQuoteText && !quoteJumpSucceeded");
+    assert.include(navigationSource, "if (hasQuoteText) {");
     assert.include(navigationSource, "params.body.dispatchEvent");
     assert.notInclude(navigationSource, "quoteStatus");
     assert.notInclude(navigationSource, "removeChild(citation)");

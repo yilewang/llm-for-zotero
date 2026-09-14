@@ -13,7 +13,7 @@ import {
   type WebChatProviderGroup,
 } from "../../utils/modelProviders";
 import {
-  detectProviderPreset,
+  resolveProviderPresetId,
   getProviderPreset,
 } from "../../utils/providerPresets";
 
@@ -61,8 +61,7 @@ function defaultApiKeyProtocol(group: ModelProviderGroup) {
   if (group.authMode === "codex_auth" || group.authMode === "webchat") {
     return "openai_chat_compat" as const;
   }
-  const presetId =
-    group.presetIdOverride ?? detectProviderPreset(group.apiBase);
+  const presetId = resolveProviderPresetId({ ...group, authMode: "api_key" });
   return presetId === "customized"
     ? "openai_chat_compat"
     : getProviderPreset(presetId).defaultProtocol;

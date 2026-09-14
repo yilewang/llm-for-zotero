@@ -1,7 +1,6 @@
 import { assert } from "chai";
 import {
   estimateAvailableContextBudget,
-  normalizeMaxTokensForRequest,
   prepareChatRequest,
   type ChatMessage,
 } from "../src/utils/llmClient";
@@ -16,7 +15,7 @@ describe("llmClient context budget", function () {
       model: "gemini-2.5-pro",
       prompt: "Summarize three papers and compare them.",
       history,
-      maxTokens: 200,
+      outputTokenLimit: { mode: "custom", tokens: 200 },
     });
     assert.equal(plan.modelLimitTokens, 1_048_576);
     assert.equal(plan.outputReserveTokens, 200);
@@ -31,14 +30,16 @@ describe("llmClient context budget", function () {
       model: "gpt-4o-mini",
       prompt: "Find commonality.",
       inputTokenCap: 32_000,
-      maxTokens: 12_000,
+      outputTokenLimit: { mode: "custom", tokens: 12_000 },
       reasoning: {
         provider: "openai",
         level: "high",
       },
     });
     assert.equal(plan.limitTokens, 32_000);
-    assert.equal(plan.outputReserveTokens, 12_000);
+    // The reserve is the guaranteed answer room; the transmitted cap grows to
+    // whatever fits beside the prompt at send time (up to the Custom value).
+    assert.equal(plan.outputReserveTokens, 7_200);
     assert.equal(plan.reasoningReserveTokens, 4_096);
     assert.isAtLeast(plan.contextBudgetTokens, 0);
   });
@@ -47,7 +48,7 @@ describe("llmClient context budget", function () {
     const plan = estimateAvailableContextBudget({
       model: "claude-haiku-4-5",
       prompt: "Summarize the paper.",
-      maxTokens: 4_000,
+      outputTokenLimit: { mode: "custom", tokens: 4_000 },
       profileOverride: {
         forModel: "claude-haiku-4-5",
         limits: { inputTokens: 20_000, outputTokens: 5_000 },
@@ -89,21 +90,20 @@ describe("llmClient context budget", function () {
     }
   });
 
-  it("keeps explicit output values while bounding untouched defaults", function () {
-    assert.equal(
-      normalizeMaxTokensForRequest({
-        value: 200_000,
-        maxTokensExplicit: true,
-        model: "claude-haiku-4-5",
-      }),
-      200_000,
-    );
-    assert.equal(
-      normalizeMaxTokensForRequest({
-        value: 200_000,
-        model: "claude-haiku-4-5",
-      }),
-      64_000,
-    );
+  it("reserves a bounded Auto answer window without imposing a wire cap", function () {
+    const auto = estimateAvailableContextBudget({
+      model: "claude-haiku-4-5",
+      prompt: "Summarize the paper.",
+      outputTokenLimit: { mode: "auto" },
+    });
+    const custom = estimateAvailableContextBudget({
+      model: "claude-haiku-4-5",
+      prompt: "Summarize the paper.",
+      outputTokenLimit: { mode: "custom", tokens: 200_000 },
+    });
+    assert.equal(auto.outputReserveTokens, 8_192);
+    // A custom cap is reserved in full, up to the answer share of the usable
+    // window (25% of 180k), so the planner leaves room for the cap it sends.
+    assert.equal(custom.outputReserveTokens, 45_000);
   });
 });

@@ -19,6 +19,7 @@ import {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
 } from "./selectedTextAnchorFormatting";
+import { t } from "../../utils/i18n";
 export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
@@ -83,11 +84,17 @@ export function sanitizeText(text: string) {
   return out;
 }
 
-export function normalizeSelectedText(text: string): string {
-  return sanitizeText(text)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, SELECTED_TEXT_MAX_LENGTH);
+export function normalizeSelectedText(
+  text: string,
+  source?: SelectedTextSource,
+): string {
+  const sanitized = sanitizeText(text);
+  // Editing needs the selected characters, including paragraph boundaries.
+  const normalized =
+    source === "note-edit"
+      ? sanitized.replace(/\r\n?/g, "\n")
+      : sanitized.replace(/\s+/g, " ");
+  return normalized.trim().slice(0, SELECTED_TEXT_MAX_LENGTH);
 }
 
 export function isLikelyCorruptedSelectedText(text: string): boolean {
@@ -413,6 +420,60 @@ export function formatTokenCount(tokens: number): string {
   return `${Math.round(tokens / 1_000_000)}M`;
 }
 
+export type ContextUsagePresentation = Readonly<{
+  text: string;
+  title: string;
+  label: string;
+  summary: string;
+  detail: string;
+  warning: boolean;
+}>;
+
+export function buildContextUsagePresentation(params: {
+  sessionTokens: number;
+  contextWindow?: number;
+  estimated?: boolean;
+  cacheLines?: readonly string[];
+}): ContextUsagePresentation {
+  const normalizedTokens = Math.max(0, params.sessionTokens);
+  if (
+    typeof params.contextWindow !== "number" ||
+    !Number.isFinite(params.contextWindow) ||
+    params.contextWindow <= 0 ||
+    normalizedTokens <= 0
+  ) {
+    return {
+      text: "",
+      title: t("Context window usage unavailable"),
+      label: t("Context window:"),
+      summary: t("Usage unavailable"),
+      detail: t("Send a message to measure usage"),
+      warning: false,
+    };
+  }
+  const percentage = Math.max(
+    0,
+    Math.min(100, Math.round((normalizedTokens / params.contextWindow) * 100)),
+  );
+  const prefix = params.estimated
+    ? t("Estimated active context window usage")
+    : t("Active context window usage");
+  const title =
+    percentage > 80
+      ? `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} input tokens — approaching limit, run /compact`
+      : `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} input tokens`;
+  return {
+    text: `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} (${percentage}%)`,
+    title: params.cacheLines?.length
+      ? `${title}\n${params.cacheLines.join("\n")}`
+      : title,
+    label: t("Context window:"),
+    summary: `${percentage}% ${t("used")} (${100 - percentage}% ${t("left")})`,
+    detail: `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} ${t("tokens used")}`,
+    warning: percentage > 80,
+  };
+}
+
 export function setTokenUsage(
   el: HTMLElement,
   sessionTokens: number,
@@ -438,9 +499,6 @@ export function setTokenUsage(
       0,
       Math.min(100, Math.round((normalizedTokens / contextWindow) * 100)),
     );
-    const prefix = options.estimated
-      ? "Estimated active context window usage"
-      : "Active context window usage";
     const cacheLines: string[] = [];
     if (
       typeof options.cacheReadTokens === "number" &&
@@ -475,31 +533,47 @@ export function setTokenUsage(
         `Cache hit ratio: ${Math.round(options.cacheHitRatio * 100)}%`,
       );
     }
-    const title =
-      percentage > 80
-        ? `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens — approaching limit, run /compact`
-        : `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens`;
-    el.textContent = `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} (${percentage}%)`;
-    el.title = cacheLines.length ? `${title}\n${cacheLines.join("\n")}` : title;
-    el.dataset.warning = percentage > 80 ? "true" : "false";
-    el.style.display = "inline";
+    const presentation = buildContextUsagePresentation({
+      sessionTokens: normalizedTokens,
+      contextWindow,
+      estimated: options.estimated,
+      cacheLines,
+    });
+    el.textContent = presentation.text;
+    el.title = presentation.title;
+    el.dataset.label = presentation.label;
+    el.dataset.summary = presentation.summary;
+    el.dataset.detail = presentation.detail;
+    el.dataset.warning = presentation.warning ? "true" : "false";
+    el.style.display = "";
     if (gaugeEl) {
-      gaugeEl.style.display = "none";
-      gaugeEl.style.background = "transparent";
-      delete gaugeEl.dataset.warning;
-      gaugeEl.title = "";
+      gaugeEl.style.display = "inline-block";
+      gaugeEl.style.background = `conic-gradient(${percentage > 80 ? "#f39c12" : "var(--fill-secondary, #7c7c7c)"} ${percentage * 3.6}deg, color-mix(in srgb, var(--fill-secondary, #7c7c7c) 22%, transparent) 0deg)`;
+      gaugeEl.dataset.warning = presentation.warning ? "true" : "false";
+      gaugeEl.title = presentation.title;
+      gaugeEl.setAttribute("aria-label", presentation.title);
     }
     return;
   }
-  el.textContent = "";
-  el.title = "";
+  const presentation = buildContextUsagePresentation({
+    sessionTokens: normalizedTokens,
+    contextWindow,
+    estimated: options.estimated,
+  });
+  el.textContent = presentation.text;
+  el.title = presentation.title;
+  el.dataset.label = presentation.label;
+  el.dataset.summary = presentation.summary;
+  el.dataset.detail = presentation.detail;
   delete el.dataset.warning;
-  el.style.display = "none";
+  el.style.display = "";
   if (gaugeEl) {
-    gaugeEl.style.display = "none";
-    gaugeEl.style.background = "transparent";
+    gaugeEl.style.display = "inline-block";
+    gaugeEl.style.background =
+      "color-mix(in srgb, var(--fill-secondary, #7c7c7c) 45%, transparent)";
     delete gaugeEl.dataset.warning;
-    gaugeEl.title = "";
+    gaugeEl.title = presentation.title;
+    gaugeEl.setAttribute("aria-label", presentation.title);
   }
 }
 

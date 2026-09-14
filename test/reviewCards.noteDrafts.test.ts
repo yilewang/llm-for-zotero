@@ -59,7 +59,7 @@ describe("reviewCards note drafts", function () {
     assert.deepEqual(diffField.visibleForActionIds, ["save_note"]);
   });
 
-  it("adds a diff preview for paper-result note drafts", function () {
+  it("keeps paper import review free of note drafts and search configuration", function () {
     const result: AgentToolResult = {
       callId: "call-1",
       name: "literature_search",
@@ -82,21 +82,12 @@ describe("reviewCards note drafts", function () {
     assert.exists(action);
     assert.deepEqual(
       action?.fields.map((field) => field.type),
-      [
-        "paper_result_list",
-        "diff_preview",
-        "textarea",
-        "text",
-        "select",
-        "text",
-      ],
+      ["paper_result_list"],
     );
-    const diffField = action?.fields[1] as Extract<
-      NonNullable<typeof action>["fields"][number],
-      { type: "diff_preview" }
-    >;
-    assert.equal(diffField.sourceFieldId, "noteContent");
-    assert.deepEqual(diffField.visibleForActionIds, ["save_note"]);
+    assert.deepEqual(
+      action?.actions?.map((entry) => entry.id),
+      ["import", "cancel"],
+    );
   });
 
   it("normalizes reviewed note content before invoking save_note", function () {

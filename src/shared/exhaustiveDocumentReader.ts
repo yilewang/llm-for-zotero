@@ -4,7 +4,11 @@ import {
   estimateTextTokens,
   sliceTextToTokenBudget,
 } from "../utils/modelInputCap";
-import { callLLM, type ChatParams } from "../utils/llmClient";
+import {
+  callLLM,
+  requireCompleteModelText,
+  type ChatParams,
+} from "../utils/llmClient";
 
 export type ExhaustiveReadStatus = "complete" | "partial" | "unreadable";
 
@@ -251,11 +255,15 @@ export function createExhaustiveBatchAnalyzer(
 function createLlmBatchAnalyzer(
   config: LlmBatchConfig,
 ): ExhaustiveBatchAnalyzer {
-  return createExhaustiveBatchAnalyzer((input) =>
-    callLLM({
-      ...config,
-      ...input,
-    }),
+  return createExhaustiveBatchAnalyzer(async ({ maxTokens, ...input }) =>
+    requireCompleteModelText(
+      await callLLM({
+        ...config,
+        ...input,
+        outputTokenLimit: { mode: "custom", tokens: maxTokens },
+      }),
+      "Exhaustive document batch",
+    ),
   );
 }
 

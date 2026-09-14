@@ -156,8 +156,23 @@ export class PdfService {
       throw new Error("No extractable PDF text available for this paper");
     }
     const maxChars = Number.isFinite(params.maxChars)
-      ? Math.max(800, Math.min(9000, Math.floor(params.maxChars as number)))
+      ? Math.max(800, Math.floor(params.maxChars as number))
       : 6000;
+    const completeText = pdfContext.chunks
+      .map((chunk, index) => `[chunk ${index}]\n${chunk.trim()}`)
+      .join("\n\n")
+      .trim();
+    if (completeText.length <= maxChars) {
+      return {
+        text: completeText,
+        chunkIndexes: pdfContext.chunks.map((_, index) => index),
+        totalChunks: pdfContext.chunks.length,
+        citationLabel: formatPaperCitationLabel(params.paperContext),
+        sourceLabel: formatPaperSourceLabel(params.paperContext),
+        paperContext: params.paperContext,
+        backend: "raw_pdf_text",
+      };
+    }
     const selected = new Map<number, string>();
     pdfContext.chunks.slice(0, 3).forEach((chunk, index) => {
       selected.set(index, chunk);

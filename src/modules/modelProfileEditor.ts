@@ -94,6 +94,7 @@ type ReasoningRow = {
 };
 
 type ComparableOption = {
+  effort?: string;
   id: string;
   controls?: { body?: Record<string, unknown> };
 };
@@ -106,7 +107,11 @@ function sameOptionSet(
   if (left.length !== right.length) return false;
   const shape = (options: readonly ComparableOption[]) =>
     JSON.stringify(
-      options.map((option) => [option.id, option.controls?.body || {}]),
+      options.map((option) => [
+        option.id,
+        option.effort,
+        option.controls?.body || {},
+      ]),
     );
   return shape(left) === shape(right);
 }
@@ -208,7 +213,8 @@ export function computeProfileOverrideDraft(input: {
           detectedOptions.find((option) => option.id === id)?.controls?.body ||
             {},
         ).length > 0
-      : SUGGESTED_REASONING_LEVEL_IDS.includes(
+      : detectedOptions.some((option) => option.id === id) &&
+        SUGGESTED_REASONING_LEVEL_IDS.includes(
           id as (typeof SUGGESTED_REASONING_LEVEL_IDS)[number],
         );
 
@@ -253,7 +259,11 @@ export function computeProfileOverrideDraft(input: {
       // thinking was off.
       label: detectedLabelFor(id) || id,
       enabled: true,
-      ...(body && Object.keys(body).length ? { controls: { body } } : {}),
+      ...(detectedOptions.find((option) => option.id === id)?.effort
+        ? { effort: detectedOptions.find((option) => option.id === id)!.effort }
+        : body && Object.keys(body).length
+          ? { controls: { body } }
+          : {}),
     });
   }
 

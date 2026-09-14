@@ -293,6 +293,19 @@ reviewable and undoable.
 
 #### Find related papers
 
+Use `/discover_related` while viewing a paper to run the direct OpenAlex action.
+It opens Recommendations, References, and Citations tabs with up to 20 papers per mode by default.
+Use `/discover_related 30` to change the initial retrieval limit, **Load more** to retrieve 20 more per mode while preserving your selections, and **Import selected** to save the papers you choose.
+This shortcut does not require a model.
+
+Ask “find relevant papers” in chat to start model-assisted discovery.
+The agent assesses retrieved candidates and presents a ranked card with relevance reasons.
+An explicit count, such as “find 15 relevant papers,” sets the batch size; otherwise it starts with five.
+Use **Find more** to add another batch of the same size while preserving your selections, then **Import selected** to save the papers you choose.
+Requests for references, citing papers, or a specific search source constrain discovery to that request.
+If fewer relevant matches are available, the card explains the shortfall instead of padding the list.
+A configured model is required for model-assisted discovery; literature search used to answer a question remains a separate flow that can finish with a cited answer without an import card.
+
 <p align="center">
   <img src="./assets/agent/related_papers.gif" alt="Animation showing agent finding related papers in the library" width="1024" />
 </p>
@@ -674,11 +687,13 @@ local cache when needed.
 
 <a id="webchat-setup-chatgpt-web-sync"></a>
 
-## WebChat Setup (ChatGPT & Deepseek Web Sync)
+## WebChat Setup (ChatGPT, DeepSeek & Gemini Web Sync)
 
-WebChat mode sends questions to [chatgpt.com](https://chatgpt.com) and [deepseek.com](https://chat.deepseek.com) through a
-browser extension, then streams responses back into Zotero. It is useful when
-you want ChatGPT/deepseek web access without a provider API key.
+WebChat mode sends questions to [chatgpt.com](https://chatgpt.com),
+[chat.deepseek.com](https://chat.deepseek.com), and
+[gemini.google.com](https://gemini.google.com) through a browser extension,
+then streams responses back into Zotero. It is useful when you want browser
+chat access without a provider API key.
 
 <p align="center">
   <img src="./assets/webchat.gif" alt="Screenshot of WebChat mode connected to chatgpt.com" width="1024" />
@@ -686,7 +701,9 @@ you want ChatGPT/deepseek web access without a provider API key.
 
 Prerequisites:
 
-- A ChatGPT account for `chatgpt.com` WebChat or a Deepseek account for `deepseek.com` WebChat.
+- Access to the selected provider site. Provider account requirements depend on
+  the site and feature; Gemini permits some anonymous text conversations, while
+  PDF upload and history may require sign-in.
 - A Chromium-based browser such as Chrome.
 
 Setup:
@@ -698,7 +715,17 @@ Setup:
    **Load unpacked**, and select the unzipped extension folder.
 4. In Zotero, open `Preferences` -> `llm-for-zotero` and set
    **Auth Mode** -> `WebChat`.
-5. ⚠️: Keep a ChatGPT tab open in your browser. A green dot in Zotero means the extension and ChatGPT tab are connected. Make sure the tab and Zotero stay in the same monitor. No minimization or backgrounding, or the connection may drop.
+5. ⚠️: Keep the selected provider tab open in your browser. A green dot in
+   Zotero means the extension and that exact site are connected. Make sure the
+   tab and Zotero stay in the same monitor. No minimization or backgrounding,
+   or the connection may drop.
+
+Gemini requires a companion extension version that explicitly advertises the
+`gemini` target and DOM answer capture; Zotero rejects older extension builds
+before dispatch. The canonical `gemini.google.com/app/:id` conversation path,
+anonymous text flow, and signed-in PDF composer DOM have been observed in
+Chrome. A complete automated Gemini PDF, follow-up, history, and restore run
+remains required before a release is declared verified.
 
 For release validation, keep Chrome signed in with the development extension loaded and run:
 
@@ -741,7 +768,7 @@ and cloud MinerU involve their respective services or companion runtimes.
 - [x] Agent mode (beta)
 - [x] MinerU PDF parsing
 - [x] GitHub Copilot auth
-- [x] WebChat mode (ChatGPT web sync)
+- [x] WebChat mode (ChatGPT, DeepSeek, and Gemini web sync)
 - [x] Standalone window mode
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
 - [x] Claude Code integration
@@ -764,7 +791,7 @@ and cloud MinerU involve their respective services or companion runtimes.
 | Use ChatGPT in the browser                                  | [WebChat](#webchat-setup-chatgpt-web-sync) with the Sync for Zotero extension | No                              |
 | Use Codex models with ChatGPT Plus                          | [Codex App Server](#codex-setup-chatgpt-plus-subscribers)                     | No separate API key             |
 | Use Claude Code inside Zotero                               | [Claude Code bridge](#claude-code-setup-experimental)                         | Claude Code auth                |
-| Search and read the current public web                      | [General Web Search](#general-web-search) with Tavily                          | Tavily API key                  |
+| Search and read the current public web                      | [General Web Search](#general-web-search) with Tavily                         | Tavily API key                  |
 | Improve PDF extraction for tables, equations, and figures   | [MinerU PDF parsing](#mineru-pdf-parsing)                                     | Personal MinerU key recommended |
 
 > **Q: Is it free to use?**
@@ -798,17 +825,38 @@ PR.
 
 ### Model capability registry
 
-Model context limits and provider-defined reasoning options are maintained in
-[`registry/model-capabilities.v1.json`](./registry/model-capabilities.v1.json).
+Model context limits and provider-defined reasoning options are maintained in [`registry/model-capabilities.v1.json`](./registry/model-capabilities.v1.json).
+The plugin refreshes this schema-validated registry and configured provider catalogs in the background, with a bounded first-use refresh when needed.
 
-The plugin refreshes this schema-validated registry and each configured
-provider's model catalog in the background, and performs a bounded first-use
-refresh when needed.
+**Auto — provider default** leaves reasoning controls to the endpoint.
+An unfamiliar model offers Auto until capability information is available; missing metadata never means reasoning is off.
+Explicit levels, including Off, come from the applicable profile or endpoint capabilities.
+Saved choices are checked again when the model or endpoint changes, and unavailable choices resolve to Auto.
+Explicit advanced request-body parameters retain their existing precedence.
 
-Adding a model to the registry does not require a plugin release; increment the
-registry revision, run `npm run validate:model-registry`, and publish the JSON
-change.
+User profile overrides take priority over endpoint metadata, followed by the remote/bundled registry and established model profiles.
+A catalog's `supports_reasoning` boolean does not establish an effort list.
+The standard OpenAI `/models` API does not publish supported efforts.
+Custom endpoints may opt into the plugin's structured catalog extension: a model row's `reasoning` object uses the registry's validated `kind`, `options`, and optional `defaultOptionId` contract.
+An option can declare a portable `effort` string for OpenAI-compatible protocols or an existing declarative `controls` patch for its endpoint.
+Capability data is cached per endpoint, protocol, authentication mode, and runtime scope.
 
-When a provider does not expose reasoning controls or context metadata through
-its model catalog, the registry remains the authoritative provider-maintained
-fallback.
+Adding a verified model or effort to the remote registry does not require another plugin release once the client supports its encoding.
+Increment the registry revision, run `npm run validate:model-registry`, and publish the JSON change through the normal reviewed update process.
+This does not infer undocumented future API contracts or automatically publish model settings.
+
+### External MCP write access
+
+Standalone MCP clients can use the existing bearer-authenticated `/llm-for-zotero/mcp` endpoint while Zotero is running.
+In **Settings → llm-for-zotero → Agent → External MCP clients**, enable **Allow writes from external MCP clients** to authorize write access.
+This setting is off by default and trusts any client holding the connection credential to use the exposed write tools, including deletion and Zotero scripts.
+The connected assistant owns approval through its own permission settings; the plugin does not apply Original Agent Safe/Auto/YOLO or display a second permission prompt.
+Integrated Codex and Claude Code use their existing MCP enablement controls and the same delegated approval rule.
+
+Use ordinary `tools/call` requests; no Zotero chat, private turn token, or additional session handshake is required for standalone clients.
+Specify `libraryID` for predictable targeting, or omit it to resolve the currently selected library once for that call.
+Invalid arguments, unavailable targets, native read-only restrictions, and execution or verification failures remain errors.
+Writes retain durable recovery records and native Zotero verification; preserve returned action IDs for recovery.
+Standalone `undo_last_action` requires `actionId`, and `revert_changes` requires `actionIds` (which cannot be combined with `count`).
+Do not blindly repeat a write after a timeout or uncertain outcome: inspect native state and the returned recovery information first.
+This interface does not promise exactly-once execution across repeated HTTP requests.

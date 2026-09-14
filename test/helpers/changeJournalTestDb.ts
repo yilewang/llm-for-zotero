@@ -691,6 +691,13 @@ export class ChangeJournalTestDb {
         const value = params[parameterIndex++];
         rows = rows.filter((row) => row.action_id === value);
       }
+      const idList = statement.match(/action_id IN \(([^)]+)\)/);
+      if (idList) {
+        const count = (idList[1].match(/\?/g) || []).length;
+        const ids = params.slice(parameterIndex, parameterIndex + count);
+        parameterIndex += count;
+        rows = rows.filter((row) => ids.includes(row.action_id));
+      }
       if (statement.includes("conversation_key = ?")) {
         const value = params[parameterIndex++];
         rows = rows.filter((row) => row.conversation_key === value);

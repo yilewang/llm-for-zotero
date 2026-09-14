@@ -1,4 +1,3 @@
-import { detectExplicitFullReadIntent } from "../../modules/contextPanel/retrievalQueryPlan";
 import type { AgentRuntimeRequest } from "../types";
 
 /**
@@ -19,28 +18,17 @@ export type RequestIntent = {
   requiresFullPaperRead: boolean;
 };
 
-export function classifyRequest(request: AgentRuntimeRequest): RequestIntent {
-  const text = (request.userText || "").trim().toLowerCase();
-
-  const hasScreenshots =
-    Array.isArray(request.screenshots) && request.screenshots.some(Boolean);
-
-  const isBulkOperation =
-    (/\ball\b|\beverything\b|\bentire\b|\bevery\b/.test(text) ||
-      /\bmy library\b|\bwhole library\b/.test(text) ||
-      /\bthousands?\b|\bhundreds?\b|\bmany papers?\b/.test(text)) &&
-    /\b(tag|organize|organise|move|file|audit|clean|fix|update|apply|assign|categorize|categorise|review|rename)\b/.test(
-      text,
-    );
-
-  const isDemoToolQuery = /\bself[- ]?contained\b|\bdemo tool\b/i.test(
-    request.userText || "",
-  );
-
+export function classifyRequest(
+  request: Pick<
+    AgentRuntimeRequest,
+    "classifiedIntent" | "metadata" | "screenshots"
+  >,
+): RequestIntent {
   return {
-    isBulkOperation,
-    isDemoToolQuery,
-    hasScreenshots,
-    requiresFullPaperRead: detectExplicitFullReadIntent(request.userText || ""),
+    isBulkOperation: request.classifiedIntent?.semantic?.bulk === true,
+    isDemoToolQuery: request.metadata?.testDemoTool === true,
+    hasScreenshots: Boolean(request.screenshots?.some(Boolean)),
+    requiresFullPaperRead:
+      request.classifiedIntent?.semantic?.reading.coverage === "exhaustive",
   };
 }

@@ -12,6 +12,13 @@ import {
 import { activeContextPanels, activeContextPanelStateSync } from "./state";
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import type { PaperContextRef } from "./types";
+import {
+  capturePanelOperationLease,
+  getPanelHostBinding,
+  isPanelHostCompatibleWithPaper,
+  isPanelOperationLeaseCurrent,
+  requireCurrentPanelOwnership,
+} from "./panelHostOwnership";
 
 export type IncludeReaderSelectedTextOutcome =
   | "added"
@@ -88,6 +95,15 @@ function getReaderContextItemId(reader: any): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
+function getZoteroItem(itemID: number | undefined): Zotero.Item | null {
+  if (!itemID || typeof Zotero === "undefined") return null;
+  try {
+    return (Zotero.Items?.get?.(itemID) as Zotero.Item | null) || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function hasPageLocation(
   location: SelectedTextPageLocation | null | undefined,
 ): boolean {
@@ -112,6 +128,58 @@ export async function includeReaderSelectedText(
     };
   }
 
+  const targetItem = activeContextPanels.get(input.body)?.() || null;
+  const targetBinding = getPanelHostBinding(input.body);
+  const targetRoot = input.body.querySelector(
+    "#llm-main",
+  ) as HTMLElement | null;
+  const hasEstablishedPanelOwner = Boolean(
+    targetBinding || targetRoot?.dataset.handlersInitialized,
+  );
+  const readerTabID = `${input.reader?.tabID ?? input.reader?._tabID ?? ""}`;
+  const readerContextItemId = getReaderContextItemId(input.reader);
+  const readerContextItem = getZoteroItem(readerContextItemId);
+  const readerPaperItem = readerContextItem?.parentID
+    ? getZoteroItem(readerContextItem.parentID)
+    : readerContextItem;
+  const mountedKind = targetRoot?.dataset.conversationKind;
+  const invalidReaderRoute =
+    hasEstablishedPanelOwner &&
+    (!targetItem ||
+      getPanelConversationKey(input.body) !== conversationKey ||
+      !requireCurrentPanelOwnership(
+        input.body,
+        targetItem,
+        "add-reader-text",
+      ) ||
+      (targetBinding?.surface === "reader" &&
+        (!readerTabID || readerTabID !== targetBinding.tabID)) ||
+      (mountedKind === "paper" &&
+        (!readerPaperItem ||
+          !isPanelHostCompatibleWithPaper(input.body, readerPaperItem))) ||
+      (Boolean(readerContextItem) &&
+        Boolean(targetBinding?.libraryID) &&
+        Number(readerContextItem?.libraryID || 0) !==
+          targetBinding?.libraryID));
+  if (invalidReaderRoute) {
+    input.log?.("LLM addText: rejected mismatched reader/panel ownership");
+    return {
+      outcome: "invalid-target",
+      added: false,
+      location: null,
+      locationEnriched: false,
+    };
+  }
+  const operationLease = capturePanelOperationLease(input.body);
+  if (hasEstablishedPanelOwner && !operationLease) {
+    return {
+      outcome: "invalid-target",
+      added: false,
+      location: null,
+      locationEnriched: false,
+    };
+  }
+
   const selectedText = normalizeSelectedText(input.selectedText || "");
   const status = input.body.querySelector("#llm-status") as HTMLElement | null;
   if (!selectedText) {
@@ -127,7 +195,6 @@ export async function includeReaderSelectedText(
     };
   }
 
-  const readerContextItemId = getReaderContextItemId(input.reader);
   const directLocation =
     input.initialLocation ||
     (input.reader
@@ -189,6 +256,22 @@ export async function includeReaderSelectedText(
       input.reader,
       selectedText,
     );
+    if (
+      (operationLease && !isPanelOperationLeaseCurrent(operationLease)) ||
+      (targetItem &&
+        !requireCurrentPanelOwnership(
+          input.body,
+          targetItem,
+          "add-reader-text-location",
+        ))
+    ) {
+      return {
+        outcome: "added",
+        added: true,
+        location: initialLocation,
+        locationEnriched: false,
+      };
+    }
     if (!resolvedLocation) {
       return {
         outcome: "added",

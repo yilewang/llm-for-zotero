@@ -22,12 +22,16 @@ import {
   buildOllamaChatPayload,
   buildReasoningPayload,
   parseOllamaChatStream,
-  normalizeMaxTokensForRequest,
   postWithReasoningFallback,
   resolveOllamaNumCtx,
   resolveOllamaNumPredict,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
+import type { ModelTurnCompletion } from "../../shared/llm";
+import {
+  buildAgentRecoveryInstruction,
+  resolveAgentRecoverableCompletion,
+} from "./completion";
 import { normalizeTemperature } from "../../utils/normalization";
 import { resolveContextWindowTokens } from "../../utils/modelInputCap";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
@@ -48,6 +52,7 @@ import {
   parseToolCallArguments,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
+import { resolveAgentOutputRequestPolicy } from "./limits";
 
 type OllamaRequestMessage = {
   role: string;
@@ -147,10 +152,11 @@ export async function parseOllamaChatCompletionStream(
   text: string;
   toolCalls: AgentToolCall[];
   reasoningText: string;
+  completion: ModelTurnCompletion;
 }> {
   const toolCalls: AgentToolCall[] = [];
   let reasoningText = "";
-  const text = await parseOllamaChatStream(
+  const outcome = await parseOllamaChatStream(
     body,
     async (delta) => {
       if (onTextDelta) await onTextDelta(delta);
@@ -168,7 +174,12 @@ export async function parseOllamaChatCompletionStream(
       });
     },
   );
-  return { text, toolCalls, reasoningText };
+  return {
+    text: outcome.text,
+    toolCalls,
+    reasoningText,
+    completion: outcome.completion,
+  };
 }
 
 /**
@@ -228,20 +239,10 @@ export class OllamaNativeAgentAdapter implements AgentModelAdapter {
         ]
       : await buildMessagesPayload(params.messages);
     const tools = buildOpenAIFunctionTools(params.tools);
-    // Same sizing as chat mode: allocate the context window the prompt was
-    // trimmed against (Ollama's own default is far below the trained maximum
-    // and truncates silently), and honour an explicit output cap while
-    // leaving the untouched plugin default unlimited so a thinking model
-    // cannot burn the whole budget on thought.
-    const effectiveMaxTokens = normalizeMaxTokensForRequest({
-      value: request.advanced?.maxTokens,
-      maxTokensExplicit: request.advanced?.maxTokensExplicit,
-      model: request.model || "",
-      apiBase: request.apiBase,
-      protocol: "ollama_native",
-      authMode: request.authMode,
-      profileOverride: request.advanced?.profileOverride,
-    });
+    const outputPolicy = resolveAgentOutputRequestPolicy(
+      request,
+      "ollama_native",
+    );
     const numCtx = resolveOllamaNumCtx(
       "ollama_native",
       resolveContextWindowTokens(
@@ -281,10 +282,7 @@ export class OllamaNativeAgentAdapter implements AgentModelAdapter {
                   request.advanced?.temperature,
                 ),
               }),
-          numPredict: resolveOllamaNumPredict(
-            effectiveMaxTokens,
-            request.advanced?.maxTokensExplicit === true,
-          ),
+          numPredict: resolveOllamaNumPredict(outputPolicy),
           numCtx,
           tools,
           reasoningExtra: reasoningPayload.extra,
@@ -308,6 +306,27 @@ export class OllamaNativeAgentAdapter implements AgentModelAdapter {
       params.onReasoning,
       params.onUsage,
     );
+
+    const recoveryReason = resolveAgentRecoverableCompletion(result.completion);
+    if (recoveryReason) {
+      this.conversationMessages = result.text
+        ? [...resolvedMessages, { role: "assistant", content: result.text }]
+        : resolvedMessages;
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: result.completion.providerReason,
+        text: result.text,
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: {
+          role: "assistant",
+          content: result.text,
+        },
+      };
+    }
 
     this.conversationMessages = [
       ...resolvedMessages,

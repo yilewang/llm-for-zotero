@@ -90,6 +90,7 @@ export type QuoteTextSearchQueryKind =
 
 export type PairedInlineMathQuote = {
   proseSegments: string[];
+  mathSegments: string[];
   mathSpanCount: number;
 };
 
@@ -114,6 +115,7 @@ export function splitQuoteAtPairedInlineMath(
   value: string,
 ): PairedInlineMathQuote | null {
   const proseSegments: string[] = [];
+  const mathSegments: string[] = [];
   let proseStart = 0;
   let mathSpanCount = 0;
   let cursor = 0;
@@ -132,6 +134,7 @@ export function splitQuoteAtPairedInlineMath(
       const close = value.indexOf("\\)", cursor + 2);
       if (close < 0 || close === cursor + 2) return null;
       proseSegments.push(value.slice(proseStart, cursor));
+      mathSegments.push(value.slice(cursor + 2, close));
       mathSpanCount += 1;
       cursor = close + 2;
       proseStart = cursor;
@@ -153,6 +156,7 @@ export function splitQuoteAtPairedInlineMath(
       }
       if (close >= value.length || close === cursor + 1) return null;
       proseSegments.push(value.slice(proseStart, cursor));
+      mathSegments.push(value.slice(cursor + 1, close));
       mathSpanCount += 1;
       cursor = close + 1;
       proseStart = cursor;
@@ -164,7 +168,7 @@ export function splitQuoteAtPairedInlineMath(
 
   if (!mathSpanCount) return null;
   proseSegments.push(value.slice(proseStart));
-  return { proseSegments, mathSpanCount };
+  return { proseSegments, mathSegments, mathSpanCount };
 }
 
 export type QuoteTextSearchQuery = {

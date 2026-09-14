@@ -31,6 +31,11 @@ import {
   RETRY_MODEL_MENU_OPEN_CLASS,
   setFloatingMenuOpen,
 } from "./menuController";
+import {
+  capturePanelOperationLease,
+  isPanelOperationLeaseCurrent,
+  requireCurrentPanelOwnership,
+} from "../../panelHostOwnership";
 
 type StatusLevel = "ready" | "warning" | "error" | "sending";
 type ActiveAtToken = { slashStart: number; caretEnd: number } | null;
@@ -95,6 +100,23 @@ export function attachComposeCaptureController(
   };
   const isScreenshotUnsupported =
     deps.isScreenshotUnsupportedModel || isScreenshotUnsupportedModel;
+  const captureOwnershipLease = (operation: string) => {
+    const item = deps.getItem();
+    if (!item || !requireCurrentPanelOwnership(body, item, operation)) {
+      return null;
+    }
+    const lease = capturePanelOperationLease(body);
+    return lease ? { item, lease } : null;
+  };
+  const isOwnershipLeaseCurrent = (
+    captured: ReturnType<typeof captureOwnershipLease>,
+    operation: string,
+  ) =>
+    Boolean(
+      captured &&
+      isPanelOperationLeaseCurrent(captured.lease) &&
+      requireCurrentPanelOwnership(body, captured.item, operation),
+    );
 
   const closeModelMenu = () =>
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
@@ -135,6 +157,7 @@ export function attachComposeCaptureController(
 
     const cacheSelectionBeforeFocusShift = (event: Event) => {
       if (!(event.target as Element)?.closest?.("#llm-select-text")) return;
+      if (!captureOwnershipLease("cache-reader-selection")) return;
       const currentItem = activeContextPanels.get(body)?.() ?? deps.getItem();
       if (!currentItem) return;
       const selectedText = getActiveReaderSelectionText(
@@ -156,6 +179,8 @@ export function attachComposeCaptureController(
       if (!(event.target as Element)?.closest?.("#llm-select-text")) return;
       event.preventDefault();
       event.stopPropagation();
+
+      if (!captureOwnershipLease("add-reader-text")) return;
 
       const currentItem = activeContextPanels.get(body)?.() ?? deps.getItem();
       const root = body.querySelector("#llm-main") as HTMLDivElement | null;
@@ -223,8 +248,9 @@ export function attachComposeCaptureController(
     screenshotBtn.addEventListener("click", async (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      const item = deps.getItem();
-      if (!item) return;
+      const ownership = captureOwnershipLease("capture-screenshot");
+      if (!ownership) return;
+      const { item } = ownership;
       const { currentModel } = deps.getSelectedModelInfo();
       if (isScreenshotUnsupported(currentModel)) {
         setStatus(getScreenshotDisabledHint(currentModel), "error");
@@ -272,6 +298,11 @@ export function attachComposeCaptureController(
         );
         if (dataUrl) {
           const optimized = await optimizeImageDataUrl(mainWindow, dataUrl);
+          if (
+            !isOwnershipLeaseCurrent(ownership, "capture-screenshot-commit")
+          ) {
+            return;
+          }
           const existingImages = selectedImageCache.get(item.id) || [];
           const nextImages = [...existingImages, optimized].slice(
             0,
@@ -391,8 +422,9 @@ export function attachComposeCaptureController(
     slashPdfPageOption.addEventListener("click", async (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      const item = deps.getItem();
-      if (!item) return;
+      const ownership = captureOwnershipLease("capture-pdf-page");
+      if (!ownership) return;
+      const { item } = ownership;
       deps.consumeActiveActionToken();
       deps.closeSlashMenu();
       const { currentModel } = deps.getSelectedModelInfo();
@@ -415,6 +447,9 @@ export function attachComposeCaptureController(
           const optimized = win
             ? await optimizeImageDataUrl(win, dataUrl, { mode: "pdf-page" })
             : dataUrl;
+          if (!isOwnershipLeaseCurrent(ownership, "capture-pdf-page-commit")) {
+            return;
+          }
           const existingImages = selectedImageCache.get(item.id) || [];
           const nextImages = [...existingImages, optimized].slice(
             0,
@@ -453,8 +488,9 @@ export function attachComposeCaptureController(
       async (event: Event) => {
         event.preventDefault();
         event.stopPropagation();
-        const item = deps.getItem();
-        if (!item) return;
+        const ownership = captureOwnershipLease("capture-pdf-pages");
+        if (!ownership) return;
+        const { item } = ownership;
         deps.consumeActiveActionToken();
         deps.closeSlashMenu();
         const { currentModel } = deps.getSelectedModelInfo();
@@ -527,6 +563,9 @@ export function attachComposeCaptureController(
         } finally {
           unregisterPageDialog();
         }
+        if (!isOwnershipLeaseCurrent(ownership, "capture-pdf-pages-dialog")) {
+          return;
+        }
         if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok")
           return;
         const rawInput = String(
@@ -561,6 +600,11 @@ export function attachComposeCaptureController(
                     })
                   : dataUrl,
               );
+            }
+            if (
+              !isOwnershipLeaseCurrent(ownership, "capture-pdf-pages-commit")
+            ) {
+              return;
             }
             const existingImages = selectedImageCache.get(item.id) || [];
             const nextImages = [...existingImages, ...optimized].slice(

@@ -1,9 +1,14 @@
 import { assert } from "chai";
 import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
 import {
+  resolveInitialPanelItemState,
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
 } from "../src/modules/contextPanel/portalScope";
+import {
+  activeGlobalConversationByLibrary,
+  clearAllState,
+} from "../src/modules/contextPanel/state";
 import { buildDefaultConversationKey } from "../src/shared/conversationKeySpace";
 
 describe("note editing conversation identity", function () {
@@ -17,10 +22,11 @@ describe("note editing conversation identity", function () {
   });
 
   afterEach(function () {
+    clearAllState();
     globalScope.Zotero = originalZotero;
   });
 
-  it("routes item notes through parent paper chat identity", function () {
+  it("routes item notes through their own conversation identity", function () {
     const parentItem = {
       id: 3612,
       libraryID: 1,
@@ -53,10 +59,10 @@ describe("note editing conversation identity", function () {
 
     assert.equal(resolveDisplayConversationKind(noteItem), "paper");
     assert.equal(session?.conversationKind, "paper");
-    assert.equal(getConversationKey(noteItem), 3612);
+    assert.equal(getConversationKey(noteItem), 3703);
   });
 
-  it("routes standalone notes through library chat identity", function () {
+  it("routes standalone notes through their own conversation identity", function () {
     const noteItem = {
       id: 3704,
       libraryID: 1,
@@ -79,11 +85,32 @@ describe("note editing conversation identity", function () {
 
     const session = resolveActiveNoteSession(noteItem);
 
-    assert.equal(resolveDisplayConversationKind(noteItem), "global");
-    assert.equal(session?.conversationKind, "global");
+    assert.equal(resolveDisplayConversationKind(noteItem), "paper");
+    assert.equal(session?.conversationKind, "paper");
     assert.equal(
       getConversationKey(noteItem),
-      buildDefaultConversationKey("upstream", "global", 1),
+      buildDefaultConversationKey("upstream", "paper", 3704),
     );
+  });
+  it("keeps each mounted note conversation stable when another surface navigates", function () {
+    const note = {
+      id: 3975,
+      libraryID: 1,
+      isNote: () => true,
+      isAttachment: () => false,
+      getNoteTitle: () => "Note",
+    } as unknown as Zotero.Item;
+    globalScope.Zotero = {
+      Prefs: { get: () => undefined },
+      Items: { get: () => note },
+    };
+    activeGlobalConversationByLibrary.set(1, 2500000111);
+    const first = resolveInitialPanelItemState(note).item!;
+    activeGlobalConversationByLibrary.set(1, 2500000112);
+    const second = resolveInitialPanelItemState(note).item!;
+    assert.equal(getConversationKey(first), 3975);
+    assert.equal(getConversationKey(second), 3975);
+    assert.notStrictEqual(first, second);
+    assert.equal(resolveActiveNoteSession(first)?.noteId, 3975);
   });
 });

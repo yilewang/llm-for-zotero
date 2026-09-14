@@ -16,6 +16,7 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 
 const VALID_DEPTH = new Set<LibraryRetrieveDepth>([
   "pool",
@@ -260,7 +261,7 @@ export function createLibraryRetrieveTool(
           },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
       exposure: "model",
     },
@@ -340,6 +341,12 @@ export function createLibraryRetrieveTool(
       }
       return ok(input);
     },
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: ["zotero_library"],
+        reason:
+          "Library retrieval reads indexed Zotero records without changing them.",
+      }),
     async execute(input, context) {
       return libraryRetrieveService.retrieve({
         ...input,

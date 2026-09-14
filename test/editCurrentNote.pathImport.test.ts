@@ -1,3 +1,6 @@
+import { noteHtmlMatches } from "../src/utils/noteHtml";
+import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { assert } from "chai";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import type { AgentToolContext } from "../src/agent/types";
@@ -28,39 +31,45 @@ describe("editCurrentNote path imports", function () {
 
   it("imports markdown Windows file URLs using native paths", async function () {
     let importedPath = "";
-    const tool = createEditCurrentNoteTool({
-      getActiveNoteSnapshot: () => ({
-        noteId: 55,
-        title: "Draft Note",
-        html: "<p>Original body</p>",
-        text: "Original body",
-        libraryID: 1,
-        noteKind: "standalone",
-      }),
-      importNoteImage: async ({
-        imagePath,
-      }: {
-        imagePath: string;
-        noteItemId: number;
-      }) => {
-        importedPath = imagePath;
-        return { key: "IMGWIN" };
-      },
-      replaceCurrentNote: async ({ content }: { content: string }) => {
-        assert.equal(
-          content,
-          'See <img data-attachment-key="IMGWIN" alt="Figure 1" />',
-        );
-        return {
+    const tool = createEditCurrentNoteTool(
+      nativeNoteGateway({
+        getActiveNoteSnapshot: () => ({
           noteId: 55,
           title: "Draft Note",
-          previousHtml: "<p>Original body</p>",
-          previousText: "Original body",
-          nextText: content,
-        };
-      },
-      restoreNoteHtml: async () => {},
-    } as never);
+          html: "<p>Original body</p>",
+          text: "Original body",
+          libraryID: 1,
+          noteKind: "standalone",
+        }),
+        importNoteImage: async ({
+          imagePath,
+        }: {
+          imagePath: string;
+          noteItemId: number;
+        }) => {
+          importedPath = imagePath;
+          return { key: "IMGWIN" };
+        },
+        onNativeSave: async ({ content }: { content: string }) => {
+          assert.isTrue(
+            noteHtmlMatches(
+              content,
+              renderRawNoteHtml(
+                'See <img data-attachment-key="IMGWIN" alt="Figure 1" />',
+              ),
+            ),
+          );
+          return {
+            noteId: 55,
+            title: "Draft Note",
+            previousHtml: "<p>Original body</p>",
+            previousText: "Original body",
+            nextText: content,
+          };
+        },
+        restoreNoteHtml: async () => {},
+      } as never),
+    );
     const noteRequest = {
       ...baseContext.request,
       activeNoteContext: {
@@ -90,31 +99,39 @@ describe("editCurrentNote path imports", function () {
 
   it("imports HTML UNC file URLs using native paths", async function () {
     let importedPath = "";
-    const tool = createEditCurrentNoteTool({
-      importNoteImage: async ({
-        imagePath,
-      }: {
-        imagePath: string;
-        noteItemId: number;
-      }) => {
-        importedPath = imagePath;
-        return { key: "IMGUNC" };
-      },
-      replaceCurrentNote: async ({ content }: { content: string }) => {
-        assert.equal(
-          content,
-          '<img data-attachment-key="IMGUNC" alt="Shared figure" />',
-        );
-        return {
+    const tool = createEditCurrentNoteTool(
+      nativeNoteGateway({
+        getActiveNoteSnapshot: () => ({
           noteId: 55,
+          libraryID: 1,
           title: "Draft Note",
-          previousHtml: "<p>Original body</p>",
-          previousText: "Original body",
-          nextText: content,
-        };
-      },
-      restoreNoteHtml: async () => {},
-    } as never);
+          html: "<p>Original body</p>",
+        }),
+        importNoteImage: async ({
+          imagePath,
+        }: {
+          imagePath: string;
+          noteItemId: number;
+        }) => {
+          importedPath = imagePath;
+          return { key: "IMGUNC" };
+        },
+        onNativeSave: async ({ content }: { content: string }) => {
+          assert.equal(
+            content,
+            '<img data-attachment-key="IMGUNC" alt="Shared figure" />',
+          );
+          return {
+            noteId: 55,
+            title: "Draft Note",
+            previousHtml: "<p>Original body</p>",
+            previousText: "Original body",
+            nextText: content,
+          };
+        },
+        restoreNoteHtml: async () => {},
+      } as never),
+    );
 
     await tool.execute(
       {
@@ -131,26 +148,38 @@ describe("editCurrentNote path imports", function () {
 
   it("leaves unsupported file URLs unchanged", async function () {
     let importAttempts = 0;
-    const tool = createEditCurrentNoteTool({
-      importNoteImage: async () => {
-        importAttempts += 1;
-        return { key: "UNUSED" };
-      },
-      replaceCurrentNote: async ({ content }: { content: string }) => {
-        assert.equal(
-          content,
-          '<img src="file://server" alt="Broken figure" />',
-        );
-        return {
+    const tool = createEditCurrentNoteTool(
+      nativeNoteGateway({
+        getActiveNoteSnapshot: () => ({
           noteId: 55,
+          libraryID: 1,
           title: "Draft Note",
-          previousHtml: "<p>Original body</p>",
-          previousText: "Original body",
-          nextText: content,
-        };
-      },
-      restoreNoteHtml: async () => {},
-    } as never);
+          html: "<p>Original body</p>",
+        }),
+        importNoteImage: async () => {
+          importAttempts += 1;
+          return { key: "UNUSED" };
+        },
+        onNativeSave: async ({ content }: { content: string }) => {
+          assert.isTrue(
+            noteHtmlMatches(
+              content,
+              renderRawNoteHtml(
+                '<img src="file://server" alt="Broken figure" />',
+              ),
+            ),
+          );
+          return {
+            noteId: 55,
+            title: "Draft Note",
+            previousHtml: "<p>Original body</p>",
+            previousText: "Original body",
+            nextText: content,
+          };
+        },
+        restoreNoteHtml: async () => {},
+      } as never),
+    );
 
     await tool.execute(
       {

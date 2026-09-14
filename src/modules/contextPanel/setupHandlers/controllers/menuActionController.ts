@@ -18,28 +18,16 @@ import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
 import { getMessageQuoteDisplay } from "../../quoteRenderPlan";
 import { setStatus } from "../../textUtils";
-import type {
-  ConversationSystem,
-  GeneratedChatImage,
-  QuoteCitation,
-} from "../../../../shared/types";
-import type { ChatRuntimeMode, Message, PaperContextRef } from "../../types";
-import { setResponseActionRunner } from "../../state";
+import type { ConversationSystem } from "../../../../shared/types";
+import type { ChatRuntimeMode, Message } from "../../types";
+import {
+  setResponseActionRunner,
+  type ResponseActionKind,
+  type ResponseActionTarget,
+} from "../../state";
+import { openStandaloneResponseDocument } from "../../standaloneResponseDocumentWindow";
 
-export type ResponseMenuTarget = {
-  item: Zotero.Item;
-  contentText: string;
-  queryText?: string;
-  modelName: string;
-  conversationKey?: number;
-  userTimestamp?: number;
-  assistantTimestamp?: number;
-  paperContexts?: PaperContextRef[];
-  quoteCitations?: QuoteCitation[];
-  generatedImages?: GeneratedChatImage[];
-} | null;
-
-type ResponseActionKind = "copy" | "note" | "fork" | "delete";
+export type ResponseMenuTarget = ResponseActionTarget | null;
 
 const inFlightResponseNoteSaves = new Map<string, Promise<void>>();
 
@@ -85,6 +73,10 @@ type MenuActionControllerDeps = {
   ensureConversationLoaded: (item: Zotero.Item) => Promise<void>;
   getConversationKey: (item: Zotero.Item) => number;
   getHistory: (conversationKey: number) => Message[];
+  captureOwnership?: (
+    operation: string,
+    targetConversationKey?: number,
+  ) => (() => boolean) | null;
   resolveActiveNoteSession: (item: Zotero.Item) => { noteKind?: string } | null;
   closeResponseMenu: () => void;
   closePromptMenu: () => void;
@@ -108,6 +100,24 @@ type MenuActionControllerDeps = {
   }) => Promise<void>;
   logError: (message: string, error: unknown) => void;
 };
+
+function captureMenuActionOwnership(
+  deps: MenuActionControllerDeps,
+  operation: string,
+  targetConversationKey?: number,
+): (() => boolean) | null {
+  return deps.captureOwnership
+    ? deps.captureOwnership(operation, targetConversationKey)
+    : () => true;
+}
+
+function isMenuActionOwnershipCurrent(
+  _deps: MenuActionControllerDeps,
+  ownership: () => boolean,
+  _operation: string,
+): boolean {
+  return ownership();
+}
 
 function stopFloatingMenuPropagation(menu: HTMLDivElement): void {
   menu.addEventListener("pointerdown", (e: Event) => {
@@ -467,6 +477,15 @@ export async function runResponseMenuAction(
     level: "ready" | "warning" | "error",
   ) => void,
 ): Promise<void> {
+  const targetConversationKey = target?.conversationKey
+    ? parsePositiveFiniteNumber(target.conversationKey)
+    : undefined;
+  const ownership = captureMenuActionOwnership(
+    deps,
+    `response-${action}`,
+    targetConversationKey,
+  );
+  if (!ownership) return;
   try {
     if (action === "copy") {
       await copyResponseTarget(deps, target, setStatusMessage);
@@ -474,6 +493,14 @@ export async function runResponseMenuAction(
     }
     if (action === "note") {
       await saveResponseTargetAsNote(deps, target, setStatusMessage);
+      return;
+    }
+    if (action === "expand") {
+      if (!target || !openStandaloneResponseDocument(deps.body, target)) {
+        setStatusMessage(t("The response window could not be opened"), "error");
+        return;
+      }
+      setStatusMessage(t("Opened response in larger view"), "ready");
       return;
     }
     if (action === "fork") {
@@ -613,7 +640,14 @@ export function attachMenuActionController(
       e.stopPropagation();
       const item = deps.getItem();
       if (!item) return;
+      const ownership = captureMenuActionOwnership(deps, "export-copy");
+      if (!ownership) return;
       await deps.ensureConversationLoaded(item);
+      if (
+        !isMenuActionOwnershipCurrent(deps, ownership, "export-copy-commit")
+      ) {
+        return;
+      }
       const conversationKey = deps.getConversationKey(item);
       const payload = buildChatHistoryNotePayload(
         deps.getHistory(conversationKey),
@@ -634,8 +668,15 @@ export function attachMenuActionController(
       const currentLibraryID = deps.getCurrentLibraryID();
       deps.closeExportMenu();
       if (!currentItem) return;
+      const ownership = captureMenuActionOwnership(deps, "export-note");
+      if (!ownership) return;
       try {
         await deps.ensureConversationLoaded(currentItem);
+        if (
+          !isMenuActionOwnershipCurrent(deps, ownership, "export-note-commit")
+        ) {
+          return;
+        }
         const conversationKey = deps.getConversationKey(currentItem);
         const history = deps.getHistory(conversationKey);
         const payload = buildChatHistoryNotePayload(history);

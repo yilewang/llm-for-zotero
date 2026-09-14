@@ -93,6 +93,54 @@ describe("import translation and identifier parsing", function () {
     return g;
   }
 
+  it("separates identifier lookup from native saving so imports preserve the user's selection", async function () {
+    const lookupOptions: unknown[] = [];
+    const saveOptions: unknown[] = [];
+    const rawItems = [{ itemType: "journalArticle", title: "Imported paper" }];
+    class Search {
+      setIdentifier() {}
+      async getTranslators() {
+        return [{}];
+      }
+      setTranslator() {}
+      async translate(options: unknown) {
+        lookupOptions.push(options);
+        return rawItems;
+      }
+    }
+    class ItemSaver {
+      static ATTACHMENT_MODE_DOWNLOAD = 1;
+      constructor(options: unknown) {
+        saveOptions.push(options);
+      }
+      async saveItems(items: unknown[]) {
+        assert.deepEqual(items, rawItems);
+        return [{ id: 91 }];
+      }
+    }
+    install({ Translate: { Search, ItemSaver } });
+    const g = new ZoteroGateway();
+    (g as any).getItem = () => ({ id: 91, isRegularItem: () => true });
+    (g as any).getCollection = () => ({ id: 42, libraryID: 1 });
+    const result = await g.importPapersByIdentifiers(
+      ["10.1000/example"],
+      1,
+      42,
+    );
+    assert.deepEqual(lookupOptions, [{ libraryID: false }]);
+    assert.deepEqual(saveOptions, [
+      {
+        libraryID: 1,
+        collections: [42],
+        attachmentMode: ItemSaver.ATTACHMENT_MODE_DOWNLOAD,
+        forceTagType: 1,
+        saveOptions: { skipSelect: true },
+      },
+    ]);
+    assert.deepEqual(result.itemIds, [91]);
+    assert.equal(result.succeeded, 1);
+  });
+
   describe("bibliography files", function () {
     it("reads a .ris through the translators instead of attaching it", async function () {
       install();

@@ -3,6 +3,7 @@ import {
   BUILTIN_SKILL_FILES,
   getMatchedSkillIds as getMatchedSkillIdsResolved,
   parseSkill,
+  getAllSkills,
   setUserSkills,
 } from "../src/agent/skills";
 import type {
@@ -13,7 +14,10 @@ import type {
 import type { AgentRuntimeRequestInput } from "../src/agent/types";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
-function getMatchedSkillIds(input: AgentRuntimeRequestInput): string[] {
+function getMatchedSkillIds(
+  input: AgentRuntimeRequestInput,
+  classifiedIds?: string[],
+): string[] {
   return getMatchedSkillIdsResolved(
     resolvedAgentRequest({
       conversationKey: 1,
@@ -21,6 +25,7 @@ function getMatchedSkillIds(input: AgentRuntimeRequestInput): string[] {
       libraryID: 1,
       ...input,
     }),
+    classifiedIds,
   );
 }
 
@@ -60,21 +65,29 @@ describe("skill context eligibility", function () {
     loadBuiltInSkills();
 
     assert.include(
-      getMatchedSkillIds({
-        userText: "summarize this paper",
-        selectedPaperContexts: [paperA],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "summarize this paper",
+          selectedPaperContexts: [paperA],
+        },
+        ["simple-paper-qa"],
+      ),
       "simple-paper-qa",
     );
     assert.notInclude(
-      getMatchedSkillIds({ userText: "summarize my library" }),
+      getMatchedSkillIds({ userText: "summarize my library" }, [
+        "simple-paper-qa",
+      ]),
       "simple-paper-qa",
     );
-    assert.include(
-      getMatchedSkillIds({
-        userText: "summarize these papers",
-        selectedPaperContexts: [paperA, paperB],
-      }),
+    assert.notInclude(
+      getMatchedSkillIds(
+        {
+          userText: "summarize these papers",
+          selectedPaperContexts: [paperA, paperB],
+        },
+        ["simple-paper-qa"],
+      ),
       "simple-paper-qa",
     );
   });
@@ -82,26 +95,35 @@ describe("skill context eligibility", function () {
   it("prefers library skills for collection and tag summary routes", function () {
     loadBuiltInSkills();
 
-    const paperTargeted = getMatchedSkillIds({
-      userText: "summarize this paper",
-      selectedPaperContexts: [paperA],
-      selectedCollectionContexts: [collection],
-    });
+    const paperTargeted = getMatchedSkillIds(
+      {
+        userText: "summarize this paper",
+        selectedPaperContexts: [paperA],
+        selectedCollectionContexts: [collection],
+      },
+      ["simple-paper-qa"],
+    );
     assert.include(paperTargeted, "simple-paper-qa");
 
-    const collectionTargeted = getMatchedSkillIds({
-      userText: "summarize this collection",
-      selectedPaperContexts: [paperA],
-      selectedCollectionContexts: [collection],
-    });
+    const collectionTargeted = getMatchedSkillIds(
+      {
+        userText: "summarize this collection",
+        selectedPaperContexts: [paperA],
+        selectedCollectionContexts: [collection],
+      },
+      ["library-analysis"],
+    );
     assert.include(collectionTargeted, "library-analysis");
     assert.notInclude(collectionTargeted, "simple-paper-qa");
 
-    const tagTargeted = getMatchedSkillIds({
-      userText: "summarize this tag",
-      selectedPaperContexts: [paperA],
-      selectedTagContexts: [tag],
-    });
+    const tagTargeted = getMatchedSkillIds(
+      {
+        userText: "summarize this tag",
+        selectedPaperContexts: [paperA],
+        selectedTagContexts: [tag],
+      },
+      ["library-analysis"],
+    );
     assert.include(tagTargeted, "library-analysis");
     assert.notInclude(tagTargeted, "simple-paper-qa");
   });
@@ -110,43 +132,86 @@ describe("skill context eligibility", function () {
     loadBuiltInSkills();
 
     assert.include(
-      getMatchedSkillIds({
-        userText: "compare these papers",
-        selectedPaperContexts: [paperA, paperB],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "compare these papers",
+          selectedPaperContexts: [paperA, paperB],
+        },
+        ["compare-papers"],
+      ),
       "compare-papers",
     );
     assert.include(
-      getMatchedSkillIds({
-        userText: "write a literature review",
-        selectedPaperContexts: [paperA, paperB],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "write a literature review",
+          selectedPaperContexts: [paperA, paperB],
+        },
+        ["literature-review"],
+      ),
       "literature-review",
     );
     assert.include(
-      getMatchedSkillIds({
-        userText: "conduct a literature review on drift",
-        selectedCollectionContexts: [collection],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "conduct a literature review on drift",
+          selectedCollectionContexts: [collection],
+        },
+        ["literature-review"],
+      ),
       "literature-review",
     );
     assert.include(
-      getMatchedSkillIds({
-        userText: "give me statistics",
-        selectedCollectionContexts: [collection],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "give me statistics",
+          selectedCollectionContexts: [collection],
+        },
+        ["library-analysis"],
+      ),
       "library-analysis",
     );
     assert.include(
-      getMatchedSkillIds({
-        userText: "give me statistics",
-        selectedTagContexts: [tag],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "give me statistics",
+          selectedTagContexts: [tag],
+        },
+        ["library-analysis"],
+      ),
       "library-analysis",
     );
   });
 
-  it("keeps custom skills without contexts backward compatible", function () {
+  it("does not treat comparisons within one paper as paper comparisons", function () {
+    loadBuiltInSkills();
+
+    const onePaper = resolvedAgentRequest({
+      conversationKey: 1,
+      mode: "agent",
+      libraryID: 1,
+      userText: "compare the paper's local and long-range mechanisms",
+      selectedPaperContexts: [paperA],
+    });
+    assert.notInclude(
+      getMatchedSkillIdsResolved(onePaper, ["compare-papers"]),
+      "compare-papers",
+    );
+
+    const paperSet = resolvedAgentRequest({
+      conversationKey: 1,
+      mode: "agent",
+      libraryID: 1,
+      userText: "compare these papers",
+      selectedPaperContexts: [paperA, paperB],
+    });
+    assert.include(
+      getMatchedSkillIdsResolved(paperSet, ["compare-papers"]),
+      "compare-papers",
+    );
+  });
+
+  it("discards legacy keyword rules while preserving readable skill instructions", function () {
     setUserSkills([
       parseSkill(
         [
@@ -161,7 +226,9 @@ describe("skill context eligibility", function () {
       ),
     ]);
 
-    assert.include(
+    assert.notProperty(getAllSkills()[0], "patterns");
+    assert.equal(getAllSkills()[0].instruction, "Custom instructions.");
+    assert.notInclude(
       getMatchedSkillIds({ userText: "summarize anything" }),
       "custom-summary",
     );
@@ -183,10 +250,13 @@ describe("skill context eligibility", function () {
     loadBuiltInSkills();
 
     assert.deepEqual(
-      getMatchedSkillIds({
-        userText: "what method did they use in this paper",
-        selectedPaperContexts: [paperA],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "what method did they use in this paper",
+          selectedPaperContexts: [paperA],
+        },
+        ["simple-paper-qa", "evidence-based-qa"],
+      ),
       ["evidence-based-qa"],
     );
   });
@@ -195,11 +265,14 @@ describe("skill context eligibility", function () {
     loadBuiltInSkills();
 
     assert.deepEqual(
-      getMatchedSkillIds({
-        userText: "what method did they use in this paper",
-        selectedPaperContexts: [paperA],
-        forcedSkillIds: ["simple-paper-qa"],
-      }),
+      getMatchedSkillIds(
+        {
+          userText: "what method did they use in this paper",
+          selectedPaperContexts: [paperA],
+          forcedSkillIds: ["simple-paper-qa"],
+        },
+        ["simple-paper-qa", "evidence-based-qa"],
+      ),
       ["simple-paper-qa", "evidence-based-qa"],
     );
   });
@@ -208,12 +281,15 @@ describe("skill context eligibility", function () {
     loadBuiltInSkills();
 
     assert.deepEqual(
-      getMatchedSkillIds({
-        userText: "summarize this paper",
-        selectedPaperContexts: [paperA],
-        forcedSkillIds: ["evidence-based-qa"],
-      }),
-      ["simple-paper-qa", "evidence-based-qa"],
+      getMatchedSkillIds(
+        {
+          userText: "summarize this paper",
+          selectedPaperContexts: [paperA],
+          forcedSkillIds: ["evidence-based-qa"],
+        },
+        ["simple-paper-qa", "evidence-based-qa"],
+      ),
+      ["evidence-based-qa", "simple-paper-qa"],
     );
   });
 });

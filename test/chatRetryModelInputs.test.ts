@@ -35,8 +35,7 @@ describe("chat retry model inputs", function () {
       reasoning: { provider: "openai", level: "high" },
       advanced: {
         temperature: 1.7,
-        maxTokens: 99_999,
-        maxTokensExplicit: true,
+        outputTokenLimit: { mode: "custom", tokens: 99_999 },
         inputTokenCap: 123,
         inputMode: "text_only",
         profileOverride: { extraBody: { top_k: 10 } },
@@ -69,6 +68,26 @@ describe("chat retry model inputs", function () {
     assert.notInclude(rendered, `[[quote:${quoteCitation!.id}]]`);
     assert.notInclude(rendered, "> Rendered quote anchors");
     assert.notInclude(rendered, "(Lee, 2026)");
+  });
+
+  it("keeps source quotations readable before an assistant answer is complete", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Streaming answers retain their actual source quotation.",
+      citationLabel: "(Lee, 2026)",
+      contextItemId: 42,
+    })!;
+    const message: Message = {
+      role: "assistant",
+      timestamp: 1,
+      streaming: true,
+      text: `Opening explanation.\n\n[[quote:${citation.id}]]\n\nMore explanation is arriving.`,
+      quoteCitations: [citation],
+    };
+    const rendered = buildAssistantDisplayMarkdownForRender(message);
+    assert.include(rendered, citation.quoteText);
+    assert.include(rendered, "More explanation is arriving.");
+    assert.notInclude(rendered, "[[quote:");
+    assert.notInclude(rendered, "[[quote-occurrence:");
   });
 
   it("isolates preserved quote anchors from following assistant prose", function () {

@@ -1,5 +1,10 @@
 {
   "extends": "zotero-types/entries/sandbox/",
-  "include": ["src", "typings"],
+  "include": [
+    "src",
+    "typings",
+    "test-behavior",
+    "test-live-agent/liveAgentCredentials.ts"
+  ],
   "exclude": ["build", "addon"]
 }

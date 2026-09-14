@@ -41,7 +41,7 @@ describe("runtime system control layout", function () {
     assert.notInclude(modeChipRule, "text-overflow: ellipsis");
     assert.include(
       buildUi,
-      "headerRuntimeControls.append(\n    modeSwitchWrap,\n    runtimeSystemControls.group,",
+      "headerRuntimeControls.append(modeSwitchWrap, runtimeSystemControls.group)",
     );
     assert.include(
       buildUi,

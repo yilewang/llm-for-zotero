@@ -1,3 +1,13 @@
+import {
+  readNativeQuestions,
+  buildNativeQuestionAction,
+  nativeQuestionAnswers,
+} from "../../codexAppServer/nativeQuestions";
+import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
+import {
+  disposePlanProgress,
+  renderPlanProgress,
+} from "./agentTrace/planProgressView";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
 import {
@@ -58,7 +68,6 @@ import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
-  isCodexAppServerNativeApprovalsEnabled,
   isCodexAppServerModeEnabled,
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
@@ -81,7 +90,6 @@ import { formatCodexZoteroMcpError } from "../../codexAppServer/mcpErrors";
 import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
-  callLLMStream,
   type ChatParams,
   ChatFileAttachment,
   ChatMessage,
@@ -93,11 +101,19 @@ import {
   ReasoningLevel as LLMReasoningLevel,
   UsageStats,
   checkEmbeddingAvailability,
+  type ModelTurnOutcome,
 } from "../../utils/llmClient";
+import {
+  appendContinuationText,
+  callDirectChatTurnWithRecovery,
+  EMPTY_OUTPUT_LIMIT_MESSAGE,
+  resolveEmptyModelOutcomeMessage,
+} from "./directChatCompletion";
 import {
   getModelCapabilities,
   type ModelProfileOverride,
-  getRuntimeReasoningOptions as getCatalogReasoningOptions,
+  getModelReasoningChoices,
+  resolveModelReasoningSelection,
   inferProviderFromModelName,
 } from "../../modelCapabilities";
 import {
@@ -118,17 +134,28 @@ import {
 } from "./constants";
 import {
   applyChatScrollSnapshot,
+  buildAnchoredChatScrollSnapshot,
   buildChatScrollSnapshot,
   buildFollowBottomScrollSnapshot,
   cancelFollowBottomCatchup,
   consumePendingChatScrollRestore,
+  getActiveChatNavigationSnapshot,
   getChatScrollSnapshot,
   hasActiveFollowBottomCatchupRequest,
   persistChatScrollSnapshotForConversationKey,
   requestFollowBottomCatchup,
   setFollowBottomChatScrollSnapshot,
+  settleFollowBottomIntent,
   withScrollGuard,
 } from "./chatScrollSnapshots";
+import {
+  collectExpandedQuoteCardKeys,
+  restoreExpandedQuoteCards,
+} from "./assistantCitationLinks";
+import {
+  syncConversationTurnNavigator,
+  updateStreamingTurnNavigator,
+} from "./conversationTurnNavigator";
 import { resizeTextareaToContent } from "./textareaSizing";
 import {
   getActiveReaderForSelectedTab,
@@ -138,6 +165,7 @@ export {
   isScrollUpdateSuspended,
   withScrollGuard,
 } from "./chatScrollSnapshots";
+
 import {
   createBlockStreamCoalescer,
   type BlockStreamCoalescer,
@@ -171,6 +199,14 @@ import {
 } from "../../shared/generatedImages";
 import { isEmbeddableGeneratedImage } from "./generatedImageAssets";
 import { copyTextToClipboard } from "./clipboard";
+import {
+  capturePanelOperationLease,
+  evaluatePanelOwnership,
+  isPanelOperationLeaseCurrent,
+  type PanelOperationLease,
+  renderPanelOwnershipBlocked,
+  requireCurrentPanelOwnership,
+} from "./panelHostOwnership";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -219,6 +255,7 @@ import {
   activeContextPanelStateSync,
   getCancelledRequestId,
   getPendingRequestId,
+  getLivePlanExecution,
   getAbortController,
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
@@ -328,30 +365,34 @@ import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
-import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
+import {
+  renderAgentTrace,
+  disposeAgentTrace,
+  renderPendingActionCard,
+} from "./agentTrace/render";
+import { applyStableAnimationPhase } from "./stableAnimationPhase";
+import type { AgentActionContract } from "../../agent/contracts/types";
+import { planExecutionCoordinator } from "../../agent/plans/coordinator";
 import {
   TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS,
   hasSameToolActivityVisibleIdentity,
   mergeToolActivityPayload,
 } from "./agentTrace/toolActivityDedupe";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
-import {
-  getWebSourceAnchorsFromTrace,
-  stripWebSourceMarkersForDisplay,
-} from "../../webAccess/attribution";
+import { disposeStreamingMarkdown } from "./streamingMarkdown";
+import { getWebSourceAnchorsFromTrace } from "../../webAccess/attribution";
 import type { WebSourceAnchor } from "../../webAccess/types";
-import {
-  decorateWebSourceIndicators,
-  injectWebSourceAnchorTokens,
-} from "./webSourceIndicators";
+import { decorateWebSourceIndicators } from "./webSourceIndicators";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { getWebChatTargetByModelName } from "../../webchat/types";
 import {
-  decorateAssistantCitationLinks,
-  renderQuoteCitationPlaceholders,
-} from "./assistantCitationLinks";
+  buildAssistantDisplayMarkdownForRender,
+  decorateCompletedAssistantCitationLinks,
+  renderAssistantRichText,
+} from "./assistantRichText";
+export { buildAssistantDisplayMarkdownForRender } from "./assistantRichText";
 import {
   getCachedPageTextForAttachment,
   hasCompleteSearchablePageTextForAttachment,
@@ -370,11 +411,11 @@ import {
   finalizeAssistantQuoteCitations,
   finalizeAssistantQuoteCitationsCooperatively,
   mergeQuoteCitations,
+  withReusableQuoteTextIndexes,
   type QuoteSecondaryEvidence,
   type QuoteSourceText,
 } from "./quoteCitations";
 import {
-  buildQuoteDisplayMarkdown,
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
@@ -386,7 +427,14 @@ import {
   initAgentSubsystem,
 } from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
-import { getAgentRunTrace } from "../../agent/store/traceStore";
+import {
+  appendAgentRunEventAfterLatest,
+  createAgentRunEventJournal,
+  getAgentRunTrace,
+  saveAgentRunTraceSnapshot,
+} from "../../agent/store/traceStore";
+import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
+import { loadDocumentIdForMessageOwner } from "../../agent/documents/store";
 import {
   applyHistoryCompression,
   scheduleLLMSummary,
@@ -616,10 +664,13 @@ function collectMessagePaperContextIds(
   }
 }
 
-function storedMessagesMatchActivePaper(
+export function storedMessagesMatchActivePaper(
   item: Zotero.Item,
   storedMessages: StoredChatMessage[],
 ): boolean {
+  // Note ownership is checked against the registered note item before loading.
+  // A note's references need not contain its own ID as a paper citation.
+  if (resolveActiveNoteSession(item)) return true;
   if (resolveDisplayConversationKind(item) !== "paper") return true;
   const baseItem = resolveConversationBaseItem(item);
   const activePaperItemID = normalizeConversationScopeInt(baseItem?.id);
@@ -1048,10 +1099,23 @@ export function buildAssistantResponseActionTarget(params: {
   pairedUserMessage: Message | null;
   conversationKey: number;
   selectedText?: string;
+  webSourceAnchors?: readonly WebSourceAnchor[];
 }): ResponseActionTarget | null {
-  const { item, message, pairedUserMessage, conversationKey, selectedText } =
-    params;
-  const quoteDisplay = getMessageQuoteDisplay(message);
+  const {
+    item,
+    message,
+    pairedUserMessage,
+    conversationKey,
+    selectedText,
+    webSourceAnchors = [],
+  } = params;
+  const quoteDisplay =
+    webSourceAnchors.length && !selectedText
+      ? {
+          markdown: message.text || "",
+          quoteCitations: message.quoteCitations,
+        }
+      : getMessageQuoteDisplay(message);
   const menuContent = resolveAssistantResponseMenuContent(
     {
       text: selectedText ? message.text : quoteDisplay.markdown,
@@ -1075,6 +1139,13 @@ export function buildAssistantResponseActionTarget(params: {
       : undefined,
     quoteCitations: quoteDisplay.quoteCitations || undefined,
     generatedImages: menuContent.generatedImages,
+    webSourceAnchors: webSourceAnchors.length
+      ? webSourceAnchors.map((anchor) => ({
+          offset: anchor.offset,
+          sources: anchor.sources.map((source) => ({ ...source })),
+        }))
+      : undefined,
+    agentRunId: message.agentRunId,
   };
 }
 
@@ -1126,58 +1197,6 @@ export function shouldDecorateInterleavedAgentTraceCitations(params: {
   return Boolean(
     params.agentTraceEl && params.agentUsesInterleavedText && !params.streaming,
   );
-}
-
-function decorateCompletedAssistantCitationLinks(params: {
-  body: Element;
-  panelItem: Zotero.Item;
-  bubble: HTMLDivElement;
-  assistantMessage: Message;
-  pairedUserMessage: Message | null;
-  webSourceAnchors?: readonly WebSourceAnchor[];
-}): void {
-  const {
-    body,
-    panelItem,
-    bubble,
-    assistantMessage,
-    pairedUserMessage,
-    webSourceAnchors = [],
-  } = params;
-  if (assistantMessage.streaming || assistantMessage.compactMarker) return;
-  if (!sanitizeText(bubble.textContent || assistantMessage.text || "").trim()) {
-    return;
-  }
-  try {
-    ztoolkit.log(
-      "LLM: calling decorateAssistantCitationLinks",
-      "msgLen =",
-      assistantMessage.text.length,
-      "bubbleHTML =",
-      String(bubble.innerHTML || "").length,
-      "hasPairedUser =",
-      Boolean(pairedUserMessage),
-      "pairedPaperContexts =",
-      pairedUserMessage?.paperContexts?.length ?? "none",
-    );
-    renderQuoteCitationPlaceholders({
-      body,
-      panelItem,
-      bubble,
-      assistantMessage,
-      pairedUserMessage,
-    });
-    if (webSourceAnchors.length) return;
-    decorateAssistantCitationLinks({
-      body,
-      panelItem,
-      bubble,
-      assistantMessage,
-      pairedUserMessage,
-    });
-  } catch (decorateErr) {
-    ztoolkit.log("LLM citation decoration error:", decorateErr);
-  }
 }
 
 function attachAssistantResponseContextMenu(params: {
@@ -1377,6 +1396,17 @@ export function appendUserMessageCopyAction(params: {
     if (typeof event.stopImmediatePropagation === "function") {
       event.stopImmediatePropagation();
     }
+    const currentItem = activeContextPanels.get(params.body)?.() || null;
+    if (
+      currentItem &&
+      !requireCurrentPanelOwnership(
+        params.body,
+        currentItem,
+        "copy-user-message",
+      )
+    ) {
+      return;
+    }
     await copyTextToClipboard(params.body, params.message.text || "");
     const status = params.body.querySelector(
       "#llm-status",
@@ -1384,6 +1414,27 @@ export function appendUserMessageCopyAction(params: {
     if (status) setStatus(status, t("Copied query"), "ready");
   });
   return button;
+}
+
+export function appendAssistantResponseExpandAction(params: {
+  body: Element;
+  doc: Document;
+  actions: HTMLElement;
+  target: ResponseActionTarget | null;
+}): HTMLButtonElement | null {
+  if (!params.target) return null;
+  return appendMessageMetaActionButton({
+    body: params.body,
+    doc: params.doc,
+    actions: params.actions,
+    className: "llm-message-action-expand",
+    title: "Open response in larger view",
+    responseAction: "expand",
+    responseTarget: params.target,
+    conversationKey: params.target.conversationKey,
+    userTimestamp: params.target.userTimestamp,
+    assistantTimestamp: params.target.assistantTimestamp,
+  });
 }
 
 function getMessageSelectedTextExpandedIndex(
@@ -1436,10 +1487,7 @@ export function syncUserContextAlignmentWidths(body: Element): void {
   }
 }
 
-const followBottomStabilizers = new Map<
-  number,
-  { rafId: number | null; timeoutId: number | null }
->();
+const followBottomStabilizers = new WeakMap<HTMLElement, number>();
 
 /** Legacy cumulative API token usage per conversation key for this UI session. */
 const sessionTokenTotals = new Map<number, number>();
@@ -1513,7 +1561,7 @@ function renderContextUsageSnapshot(
     tokenUsageEl,
     snapshot?.contextTokens || 0,
     snapshot?.contextWindow,
-    body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+    body.querySelector("#llm-context-gauge") as HTMLElement | null,
     {
       estimated: snapshot?.estimated !== false,
       cacheReadTokens: snapshot?.cacheReadTokens,
@@ -1600,15 +1648,19 @@ function stickChatBoxToBottomIfFollowing(
   conversationKey: number,
   chatBox: HTMLDivElement,
 ): boolean {
-  const snapshot = getChatScrollSnapshot(conversationKey);
+  const snapshot = settleFollowBottomIntent(conversationKey, chatBox, {
+    streaming: conversationHasStreamingMessage(conversationKey),
+  });
   if (
-    (!snapshot || snapshot.mode !== "followBottom") &&
-    !hasActiveFollowBottomCatchupRequest(conversationKey)
+    snapshot
+      ? snapshot.mode !== "followBottom"
+      : !hasActiveFollowBottomCatchupRequest(conversationKey)
   ) {
     return false;
   }
   if (!chatBox.isConnected) return false;
-  chatBox.scrollTop = chatBox.scrollHeight;
+  const bottom = Math.max(0, chatBox.scrollHeight - chatBox.clientHeight);
+  if (Math.abs(chatBox.scrollTop - bottom) > 1) chatBox.scrollTop = bottom;
   persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
   return true;
 }
@@ -1624,8 +1676,17 @@ export function requestChatScrollFollowBottom(
   stabilizeFollowBottomAfterAsyncChatContent(body, conversationKey, chatBox);
 }
 
-export function cancelChatScrollFollowBottomRequest(item: Zotero.Item): void {
-  cancelFollowBottomCatchup(getConversationKey(item));
+export function cancelChatScrollFollowBottomRequest(
+  item: Zotero.Item,
+  chatBox?: HTMLDivElement,
+): void {
+  cancelFollowBottomCatchup(getConversationKey(item), chatBox);
+  if (chatBox) {
+    const handle = followBottomStabilizers.get(chatBox);
+    if (handle !== undefined)
+      chatBox.ownerDocument.defaultView?.cancelAnimationFrame(handle);
+    followBottomStabilizers.delete(chatBox);
+  }
 }
 
 function scheduleFollowBottomStabilization(
@@ -1634,39 +1695,15 @@ function scheduleFollowBottomStabilization(
   chatBox: HTMLDivElement,
 ): void {
   const win = body.ownerDocument?.defaultView;
-  if (!win) return;
-
-  const clearFollowBottomStabilization = () => {
-    const active = followBottomStabilizers.get(conversationKey);
-    if (!active) return;
-    if (typeof active.rafId === "number") {
-      win.cancelAnimationFrame(active.rafId);
-    }
-    if (typeof active.timeoutId === "number") {
-      win.clearTimeout(active.timeoutId);
-    }
-    followBottomStabilizers.delete(conversationKey);
-  };
-
-  clearFollowBottomStabilization();
-
-  const stickToBottomIfNeeded = () => {
+  if (!win || followBottomStabilizers.has(chatBox)) return;
+  const handle = win.requestAnimationFrame(() => {
+    followBottomStabilizers.delete(chatBox);
+    const activeItem = activeContextPanels.get(body)?.();
+    if (activeItem && getConversationKey(activeItem) !== conversationKey)
+      return;
     stickChatBoxToBottomIfFollowing(conversationKey, chatBox);
-  };
-
-  const handle = {
-    rafId: null as number | null,
-    timeoutId: null as number | null,
-  };
-  handle.rafId = win.requestAnimationFrame(() => {
-    stickToBottomIfNeeded();
-    handle.rafId = null;
   });
-  handle.timeoutId = win.setTimeout(() => {
-    stickToBottomIfNeeded();
-    clearFollowBottomStabilization();
-  }, 80);
-  followBottomStabilizers.set(conversationKey, handle);
+  followBottomStabilizers.set(chatBox, handle);
 }
 
 function stabilizeFollowBottomAfterAsyncChatContent(
@@ -1674,7 +1711,6 @@ function stabilizeFollowBottomAfterAsyncChatContent(
   conversationKey: number,
   chatBox: HTMLDivElement,
 ): void {
-  if (!stickChatBoxToBottomIfFollowing(conversationKey, chatBox)) return;
   scheduleFollowBottomStabilization(body, conversationKey, chatBox);
 }
 
@@ -1768,11 +1804,67 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
   await updateStoredLatestUserMessage(conversationKey, message);
 }
 
+async function publishPersistedPlanDocumentIfPresent(params: {
+  conversationKey: number;
+  text?: string;
+  timestamp?: number;
+  agentRunId?: string;
+  documentId?: string;
+  planDocumentId?: string;
+}): Promise<void> {
+  const visibleMarkdown = params.text || "";
+  if (!visibleMarkdown) return;
+  const document = await deliverPendingPlanDocumentMessage({
+    conversationKey: params.conversationKey,
+    visibleMarkdown,
+    messageTimestamp: Number.isFinite(Number(params.timestamp))
+      ? Math.floor(Number(params.timestamp))
+      : Date.now(),
+    documentId: params.documentId || params.planDocumentId,
+  });
+  if (!document) return;
+  // Delivery may complete the final durable Plan task. Re-render even when
+  // this backend has no local trace-run row so the progress card reloads the
+  // committed ledger instead of remaining at its pre-publication count.
+  refreshAllActiveConversationPanels();
+  const runId = params.agentRunId?.trim();
+  if (!runId) return;
+  const persistedTrace = await getAgentRunTrace(runId);
+  if (
+    persistedTrace.events.some(
+      (entry) =>
+        (entry.payload.type === "document_ready" ||
+          entry.payload.type === "plan_document_ready") &&
+        entry.payload.documentId === document.documentId,
+    )
+  ) {
+    return;
+  }
+  const event = {
+    type: "document_ready" as const,
+    documentId: document.documentId,
+    executionId:
+      document.version === 1
+        ? document.executionId
+        : document.origin.kind === "planned"
+          ? document.origin.executionId
+          : undefined,
+    title: document.title,
+    contentHash: document.contentHash,
+  };
+  const record = await appendAgentRunEventAfterLatest(runId, event);
+  const cached = agentRunTraceCache.get(runId) || [];
+  if (!cached.some((entry) => entry.seq === record.seq)) {
+    agentRunTraceCache.set(runId, [...cached, record]);
+  }
+}
+
 async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationKey: number,
-  message: Parameters<typeof updateStoredLatestAssistantMessage>[1] & {
-    conversationGeneration?: number;
-  },
+  message: Parameters<typeof updateStoredLatestAssistantMessage>[1] &
+    Pick<StoredChatMessage, "documentId" | "planDocumentId"> & {
+      conversationGeneration?: number;
+    },
   conversationSystem?: ConversationSystem | null,
 ): Promise<void> {
   const expectedGeneration = Number(
@@ -1808,6 +1900,14 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
             : latestContextSnapshot?.contextWindow,
       },
     );
+    await publishPersistedPlanDocumentIfPresent({
+      conversationKey,
+      text: message.text,
+      timestamp: message.timestamp,
+      agentRunId: message.agentRunId,
+      documentId: message.documentId,
+      planDocumentId: message.planDocumentId,
+    });
     return;
   }
   if (storageSystem === "codex") {
@@ -1825,9 +1925,25 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
           ? Math.floor(Number(message.contextWindow))
           : latestContextSnapshot?.contextWindow,
     });
+    await publishPersistedPlanDocumentIfPresent({
+      conversationKey,
+      text: message.text,
+      timestamp: message.timestamp,
+      agentRunId: message.agentRunId,
+      documentId: message.documentId,
+      planDocumentId: message.planDocumentId,
+    });
     return;
   }
   await updateStoredLatestAssistantMessage(conversationKey, message);
+  await publishPersistedPlanDocumentIfPresent({
+    conversationKey,
+    text: message.text,
+    timestamp: message.timestamp,
+    agentRunId: message.agentRunId,
+    documentId: message.documentId,
+    planDocumentId: message.planDocumentId,
+  });
 }
 
 async function updateStoredLatestUserMessageByConversation(
@@ -1904,6 +2020,16 @@ async function persistConversationMessage(
       } else {
         await appendStoredMessage(conversationKey, message, undefined);
         await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+      }
+      if (message.role === "assistant") {
+        await publishPersistedPlanDocumentIfPresent({
+          conversationKey,
+          text: message.text,
+          timestamp: message.timestamp,
+          agentRunId: message.agentRunId,
+          documentId: message.documentId,
+          planDocumentId: message.planDocumentId,
+        });
       }
       const storedMessages = await loadStoredConversationByKey(
         conversationKey,
@@ -2202,6 +2328,8 @@ function toPanelMessage(message: StoredChatMessage): Message {
     reasoningOpen: isReasoningExpandedByDefault(),
     compactMarker: Boolean((message as StoredChatMessage).compactMarker),
     interrupted: message.interrupted || undefined,
+    completionStatus: message.completionStatus,
+    completionReason: message.completionReason,
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
     quoteCitations: message.quoteCitations,
@@ -2223,6 +2351,15 @@ export async function ensureConversationLoaded(
   // not target the retired key captured during the first render.
   for (const [body, getItem] of activeContextPanels) {
     if (getItem() !== item) continue;
+    if (
+      !requireCurrentPanelOwnership(
+        body,
+        item,
+        "provision-conversation-identity",
+      )
+    ) {
+      continue;
+    }
     const root = body.querySelector("#llm-main") as HTMLElement | null;
     if (root) root.dataset.itemId = String(conversationKey);
   }
@@ -2316,6 +2453,33 @@ export async function ensureConversationLoaded(
         PERSISTED_HISTORY_LIMIT,
         conversationSystem,
       );
+      for (const storedMessage of storedMessages) {
+        if (
+          storedMessage.role !== "assistant" ||
+          storedMessage.documentId ||
+          !Number.isFinite(storedMessage.timestamp)
+        ) {
+          continue;
+        }
+        storedMessage.documentId =
+          (await loadDocumentIdForMessageOwner({
+            conversationKey,
+            sourceMessageTimestamp: Math.floor(storedMessage.timestamp),
+          })) || undefined;
+      }
+      // Recover the application-level document outbox after a crash between
+      // durable message insertion and publication evidence/event delivery.
+      for (const storedMessage of storedMessages) {
+        if (storedMessage.role !== "assistant" || !storedMessage.text) continue;
+        await publishPersistedPlanDocumentIfPresent({
+          conversationKey,
+          text: storedMessage.text,
+          timestamp: storedMessage.timestamp,
+          agentRunId: storedMessage.agentRunId,
+          documentId: storedMessage.documentId,
+          planDocumentId: storedMessage.planDocumentId,
+        });
+      }
       if (isFrozen()) {
         chatHistory.delete(conversationKey);
         conversationForkLinks.delete(conversationKey);
@@ -2398,6 +2562,54 @@ export async function ensureConversationLoaded(
   restoreConversationComposeContext(item);
 }
 
+const pendingTraceRefreshes = new Map<
+  number,
+  {
+    runIds: Set<string>;
+    done: Promise<void>;
+  }
+>();
+
+function refreshLoadedTraceMessages(
+  runId: string,
+  body: Element,
+  item: Zotero.Item,
+  isFrozen: () => boolean,
+): Promise<void> {
+  const key = getConversationKey(item);
+  const pending = pendingTraceRefreshes.get(key);
+  if (pending) {
+    pending.runIds.add(runId);
+    return pending.done;
+  }
+  const runIds = new Set([runId]);
+  let resolve!: () => void;
+  const done = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  pendingTraceRefreshes.set(key, { runIds, done });
+  createQueuedRefresh(() => {
+    pendingTraceRefreshes.delete(key);
+    try {
+      if (isFrozen()) return;
+      const messages = new Set(
+        (chatHistory.get(key) || []).filter(
+          (message) =>
+            message.role === "assistant" &&
+            runIds.has(message.agentRunId || ""),
+        ),
+      );
+      if (messages.size)
+        refreshConversationPanels(body, item, {
+          chatOptions: { rerenderAssistantMessages: messages },
+        });
+    } finally {
+      resolve();
+    }
+  })();
+  return done;
+}
+
 async function ensureAgentRunTraceLoaded(
   runId: string | undefined,
   body?: Element,
@@ -2444,7 +2656,7 @@ async function ensureAgentRunTraceLoaded(
     } finally {
       agentRunTraceLoadingTasks.delete(normalizedRunId);
       if (body && item && !isFrozen()) {
-        refreshConversationPanels(body, item);
+        await refreshLoadedTraceMessages(normalizedRunId, body, item, isFrozen);
       }
     }
   })();
@@ -2517,38 +2729,19 @@ export function getReasoningOptions(
   }
   // The user's override is part of the identity: the menu must offer exactly
   // the levels the request builder will encode, custom ones included.
-  return getCatalogReasoningOptions({
-    provider: provider === "unsupported" ? undefined : provider,
-    model: modelName,
-    apiBase,
-    protocol: providerProtocol,
-    profileOverride,
-  }).map((option) => ({
+  return getModelReasoningChoices(
+    getModelCapabilities({
+      provider: provider === "unsupported" ? undefined : provider,
+      model: modelName,
+      apiBase,
+      protocol: providerProtocol,
+      profileOverride,
+    }),
+  ).map((option) => ({
     level: option.level as LLMReasoningLevel,
     enabled: option.enabled,
     label: option.label,
   }));
-}
-
-export function buildAssistantDisplayMarkdownForRender(
-  message: Pick<Message, "text" | "quoteCitations" | "quoteDisplayOverride">,
-  webSourceAnchors: readonly WebSourceAnchor[] = [],
-): string {
-  const hasWebSources = webSourceAnchors.length > 0;
-  const display = hasWebSources
-    ? {
-        markdown: message.text || "",
-        quoteCitations: message.quoteCitations,
-      }
-    : getMessageQuoteDisplay(message);
-  return buildQuoteDisplayMarkdown({
-    markdown: injectWebSourceAnchorTokens(
-      stripWebSourceMarkersForDisplay(sanitizeText(display.markdown)),
-      webSourceAnchors,
-    ),
-    quoteCitations: display.quoteCitations,
-    allowLegacyInference: !hasWebSources,
-  });
 }
 
 export { QUOTE_RENDER_OCCURRENCE_PATTERN };
@@ -2599,6 +2792,13 @@ export async function copyRenderedMarkdownToClipboard(
   markdownText: string,
   quoteCitations?: QuoteCitation[],
 ): Promise<void> {
+  const currentItem = activeContextPanels.get(body)?.() || null;
+  if (
+    currentItem &&
+    !requireCurrentPanelOwnership(body, currentItem, "copy-response")
+  ) {
+    return;
+  }
   const payload = buildRenderedMarkdownClipboardPayload(
     markdownText,
     quoteCitations,
@@ -2641,61 +2841,30 @@ export function getSelectedReasoningForItem(
   profileOverride?: ModelProfileOverride,
 ): LLMReasoningConfig | undefined {
   const detectedProvider = detectReasoningProvider(modelName, apiBase);
-  const resolvedCapabilityProvider = getModelCapabilities({
+  const capabilities = getModelCapabilities({
     provider: detectedProvider === "unsupported" ? undefined : detectedProvider,
     model: modelName,
     apiBase,
     protocol: providerProtocol,
     profileOverride,
-  }).provider;
-  const provider: ReasoningProviderKind = [
-    "openai",
-    "gemini",
-    "deepseek",
-    "kimi",
-    "mimo",
-    "qwen",
-    "grok",
-    "anthropic",
-    "local",
-  ].includes(resolvedCapabilityProvider as ReasoningProviderKind)
-    ? (resolvedCapabilityProvider as ReasoningProviderKind)
-    : detectedProvider;
-  const enabledLevels = getReasoningOptions(
-    provider,
-    modelName,
-    apiBase,
-    providerProtocol,
-    profileOverride,
-  )
-    .filter((option) => option.enabled)
-    .map((option) => option.level);
-  if (!enabledLevels.length) return undefined;
-
-  const cachedProvider = selectedReasoningProviderCache.get(itemId);
-  const cachedLevel =
-    cachedProvider === provider ? selectedReasoningCache.get(itemId) : null;
-  let selectedLevel =
-    cachedLevel ||
+  });
+  const provider =
+    detectedProvider === "unsupported" ? "customized" : detectedProvider;
+  const cached =
+    selectedReasoningProviderCache.get(itemId) === provider
+      ? selectedReasoningCache.get(itemId)
+      : undefined;
+  const saved =
+    cached ||
     getLastUsedReasoningLevelForProvider(provider) ||
-    (provider === "anthropic" ? "none" : getLastUsedReasoningLevel() || "none");
-  if (provider === "anthropic") {
-    if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
-      selectedLevel = "none";
-    }
-  } else if (
-    selectedLevel === "none" ||
-    !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
-  ) {
-    selectedLevel = enabledLevels[0];
-  }
-  selectedReasoningCache.set(itemId, selectedLevel);
+    getLastUsedReasoningLevel();
+  const selected = resolveModelReasoningSelection(capabilities, {
+    level: saved || "auto",
+  });
+  const level = selected.kind === "option" ? selected.option.id : "auto";
+  selectedReasoningCache.set(itemId, level);
   selectedReasoningProviderCache.set(itemId, provider);
-  setLastUsedReasoningLevelForProvider(provider, selectedLevel);
-  if (selectedLevel === "none") return undefined;
-
-  if (provider === "unsupported") return undefined;
-  return { provider, level: selectedLevel as LLMReasoningLevel };
+  return { provider, level };
 }
 
 export type PanelRequestUI = {
@@ -2729,6 +2898,56 @@ function syncInlineActionCardAttr(body: Element): void {
   } else {
     delete panelRoot.dataset.hasActionCard;
   }
+}
+
+function latestAssistantMessage(conversationKey: number): Message | undefined {
+  const history = chatHistory.get(conversationKey) || [];
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (history[index].role === "assistant") return history[index];
+  }
+  return undefined;
+}
+
+/** Progress belongs to the live request, never to a historical assistant trace. */
+function syncFloatingPlanProgress(
+  chatBox: HTMLElement,
+  conversationKey: number,
+): void {
+  const binding = getLivePlanExecution(conversationKey);
+  const latestMessage = binding && latestAssistantMessage(conversationKey);
+  const message =
+    latestMessage?.agentRunId === binding?.runId && latestMessage?.streaming
+      ? latestMessage
+      : undefined;
+  const cards = Array.from(
+    chatBox.querySelectorAll(".llm-plan-container-execution"),
+  ).filter(Boolean) as HTMLElement[];
+  const current =
+    binding && message
+      ? cards.find(
+          (card) =>
+            card.dataset.llmPlanExecutionId === binding.ledger.executionId &&
+            card.dataset.llmPlanRequestId === `${binding.requestId}` &&
+            card.dataset.llmPlanRunId === binding.runId,
+        )
+      : undefined;
+  for (const card of cards) {
+    if (card !== current) disposePlanProgress(card);
+  }
+  if (!binding || !message) return;
+  const progress = renderPlanProgress(
+    chatBox.ownerDocument,
+    binding.ledger,
+    getCachedAgentRunEvents(binding.runId),
+    current,
+  );
+  if (progress.dataset.llmPlanRequestId !== `${binding.requestId}`)
+    progress.dataset.llmPlanRequestId = `${binding.requestId}`;
+  if (progress.dataset.llmPlanRunId !== binding.runId)
+    progress.dataset.llmPlanRunId = binding.runId;
+  if (!progress.classList.contains("llm-plan-progress-floating"))
+    progress.classList.add("llm-plan-progress-floating");
+  if (progress.parentElement !== chatBox) chatBox.appendChild(progress);
 }
 
 function findNativeMcpActionCard(
@@ -2788,8 +3007,17 @@ function showNativeMcpActionCard(
   body: Element,
   requestId: string,
   action: AgentPendingAction,
+  signal?: AbortSignal,
+  traceOwnsCard = false,
 ): Promise<AgentConfirmationResolution> {
   return new Promise((resolve) => {
+    const cancel = () => {
+      getAgentApi().resolveConfirmation(requestId, false);
+    };
+    if (signal?.aborted) {
+      resolve({ approved: false });
+      return;
+    }
     ztoolkit.log("Codex app-server native confirmation requested", {
       requestId,
       toolName: action.toolName,
@@ -2815,6 +3043,7 @@ function showNativeMcpActionCard(
           approved: resolution.approved,
           actionId: resolution.actionId,
         });
+        signal?.removeEventListener("abort", cancel);
         closeNativeMcpActionCard(body, requestId);
         resolve(resolution);
       });
@@ -2830,6 +3059,14 @@ function showNativeMcpActionCard(
       );
     }
 
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) {
+      cancel();
+      return;
+    }
+    // The queued assistant trace owns persistent review cards. Register the
+    // response now, but do not race that render with a second inline card.
+    if (traceOwnsCard) return;
     const renderedCard = findNativeMcpActionCard(ui.chatBox, requestId);
     if (renderedCard) {
       scrollNativeMcpActionCardIntoView(ui.chatBox, renderedCard);
@@ -2880,18 +3117,55 @@ export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
     text: string,
     kind: Parameters<typeof setStatus>[2],
   ) => void;
-  isNativeApprovalsEnabled?: () => boolean;
   showActionCard?: (
     body: Element,
     requestId: string,
     action: AgentPendingAction,
+    signal?: AbortSignal,
+    traceOwnsCard?: boolean,
   ) => Promise<AgentConfirmationResolution>;
   nextRequestId?: () => string;
+  isCurrent?: () => boolean;
 }): Promise<unknown> {
+  const questions = readNativeQuestions(params.request);
   const defaultDecision = resolveCodexNativeApprovalRequest(params.request);
+  if (
+    params.request.signal?.aborted ||
+    (params.isCurrent && !params.isCurrent())
+  ) {
+    return questions ? { answers: {} } : defaultDecision.response;
+  }
   if (defaultDecision.approved) {
     params.setStatusSafely("Codex approved Zotero MCP access", "sending");
     return defaultDecision.response;
+  }
+  if (questions) {
+    const requestId = `codex-question-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+    const action = buildNativeQuestionAction(questions);
+    params.setStatusSafely("Codex is waiting for your input", "sending");
+    params.trace?.noteMcpConfirmationRequired?.(requestId, action);
+    let resolution: AgentConfirmationResolution;
+    try {
+      resolution = await (params.showActionCard || showNativeMcpActionCard)(
+        params.body,
+        requestId,
+        action,
+        params.request.signal,
+        Boolean(params.trace?.noteMcpConfirmationRequired),
+      );
+    } catch (error) {
+      params.trace?.noteMcpConfirmationResolved?.(requestId, {
+        approved: false,
+      });
+      throw error;
+    }
+    if (
+      params.request.signal?.aborted ||
+      (params.isCurrent && !params.isCurrent())
+    )
+      resolution = { approved: false };
+    params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
+    return nativeQuestionAnswers(questions, resolution);
   }
   if (defaultDecision.reason === "unsupported_mcp_elicitation") {
     params.setStatusSafely(
@@ -2900,13 +3174,7 @@ export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
     );
     return defaultDecision.response;
   }
-  if (
-    !(
-      params.isNativeApprovalsEnabled?.() ??
-      isCodexAppServerNativeApprovalsEnabled()
-    ) ||
-    !isCodexNativeBuiltInApprovalRequest(params.request)
-  ) {
+  if (!isCodexNativeBuiltInApprovalRequest(params.request)) {
     params.setStatusSafely(
       "Codex denied a built-in or untrusted approval request",
       "error",
@@ -2922,7 +3190,16 @@ export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
   try {
     params.setStatusSafely("Codex is waiting for your approval", "sending");
     params.trace?.noteMcpConfirmationRequired?.(requestId, action);
-    const resolution = await showActionCard(params.body, requestId, action);
+    const resolution = await showActionCard(
+      params.body,
+      requestId,
+      action,
+      params.request.signal,
+      Boolean(params.trace?.noteMcpConfirmationRequired),
+    );
+    if (params.isCurrent && !params.isCurrent()) {
+      return defaultDecision.response;
+    }
     params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
     return buildCodexNativeApprovalResponseFromResolution(
       params.request,
@@ -3043,10 +3320,43 @@ function setRequestUIBusy(
 function notifyProviderDispatch(
   body: Element,
   ui: PanelRequestUI,
+  item: Zotero.Item,
+  ownershipLease?: PanelOperationLease | null,
   callback?: () => void,
-): void {
+): boolean {
+  if (ownershipLease && !isPanelOperationLeaseCurrent(ownershipLease)) {
+    return false;
+  }
+  if (!requireCurrentPanelOwnership(body, item, "provider-dispatch")) {
+    return false;
+  }
   if (ui.inputBox) ui.inputBox.disabled = isPanelWebChatMode(body);
   callback?.();
+  return true;
+}
+
+function createOwnershipFencedProviderDispatch(params: {
+  body: Element;
+  item: Zotero.Item;
+  lease: PanelOperationLease;
+  callback?: () => void;
+}): () => void {
+  return () => {
+    if (
+      !isPanelOperationLeaseCurrent(params.lease) ||
+      !requireCurrentPanelOwnership(
+        params.body,
+        params.item,
+        "agent-provider-dispatch",
+      )
+    ) {
+      getAbortController(getConversationKey(params.item))?.abort();
+      const error = new Error("Panel ownership changed before dispatch");
+      error.name = "AbortError";
+      throw error;
+    }
+    params.callback?.();
+  };
 }
 
 function getPanelBodyConversationKey(
@@ -3073,9 +3383,29 @@ export function isPanelConversationCurrent(
   body: Element,
   item: Zotero.Item,
 ): boolean {
+  const ownershipVerdict = evaluatePanelOwnership(body, item);
+  const ownershipRoot = body.querySelector("#llm-main") as HTMLElement | null;
+  if (ownershipVerdict !== "match") {
+    if (
+      ownershipVerdict === "host-mismatch" ||
+      (ownershipVerdict === "unresolved" &&
+        Boolean(ownershipRoot?.dataset.handlersInitialized))
+    ) {
+      renderPanelOwnershipBlocked(
+        body,
+        "render-conversation",
+        ownershipVerdict,
+      );
+    }
+    if (
+      ownershipVerdict !== "unresolved" ||
+      Boolean(ownershipRoot?.dataset.handlersInitialized)
+    ) {
+      return false;
+    }
+  }
   const conversationKey = getConversationKey(item);
-  const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
-  const displayedKey = Number(panelRoot?.dataset.itemId || 0);
+  const displayedKey = Number(ownershipRoot?.dataset.itemId || 0);
   if (
     Number.isFinite(displayedKey) &&
     displayedKey > 0 &&
@@ -3135,7 +3465,11 @@ function syncRequestUIForConversation(
     conversationKey,
     primaryBody,
     primaryItem,
-    (body) => activeContextPanelStateSync.get(body)?.(),
+    (body) => {
+      const box = body.querySelector<HTMLElement>("#llm-chat-box");
+      if (box) syncFloatingPlanProgress(box, conversationKey);
+      activeContextPanelStateSync.get(body)?.();
+    },
   );
 }
 
@@ -3159,6 +3493,9 @@ export function beginPanelRequest(
   requestId: number;
   signal: AbortSignal;
 } | null {
+  if (!requireCurrentPanelOwnership(body, item, "begin-request")) {
+    return null;
+  }
   const conversationKey = getConversationKey(item);
   const requestId = nextRequestId();
   const AbortControllerCtor = getAbortControllerCtor();
@@ -3186,8 +3523,19 @@ export function finishPanelRequest(
   requestId: number,
 ): boolean {
   if (!finishRequest(conversationKey, requestId)) return false;
-  syncRequestUIForConversation(conversationKey, body, item);
-  restoreRequestUIIdle(body, conversationKey, requestId);
+  const panelIsCurrent = requireCurrentPanelOwnership(
+    body,
+    item,
+    "finish-request",
+  );
+  syncRequestUIForConversation(
+    conversationKey,
+    panelIsCurrent ? body : null,
+    panelIsCurrent ? item : null,
+  );
+  if (panelIsCurrent) {
+    restoreRequestUIIdle(body, conversationKey, requestId);
+  }
   return true;
 }
 
@@ -3405,6 +3753,7 @@ function createStreamUsageHandler(params: {
 
 type CodexNativeTurnCallbacks = Pick<
   Parameters<typeof runCodexAppServerNativeTurn>[0],
+  | "eventJournal"
   | "onSkillActivated"
   | "onDelta"
   | "onAgentMessageDelta"
@@ -3412,11 +3761,16 @@ type CodexNativeTurnCallbacks = Pick<
   | "onUsage"
   | "onItemStarted"
   | "onItemCompleted"
+  | "onPlanUpdated"
+  | "onPlanDelta"
+  | "onPlanArtifact"
+  | "onPlanExecutionUpdated"
   | "onMcpToolActivity"
-  | "onMcpConfirmationRequest"
+  | "onHostEvent"
   | "onMcpSetupWarning"
   | "onDiagnostics"
   | "onApprovalRequest"
+  | "onHostInteraction"
 >;
 
 /**
@@ -3425,6 +3779,7 @@ type CodexNativeTurnCallbacks = Pick<
  */
 function buildCodexNativeTurnCallbacks(ctx: {
   body: Element;
+  item: Zotero.Item;
   assistantMessage: Message;
   codexActivityTrace: ReturnType<
     typeof createCodexNativeActivityTraceController
@@ -3439,6 +3794,11 @@ function buildCodexNativeTurnCallbacks(ctx: {
   handleUsage: (usage: UsageStats) => void;
   conversationKey: number;
   conversationGeneration: number;
+  planContext?: import("../../agent/plans/types").PlanRuntimeContext;
+  actionContract?: AgentActionContract;
+  classifiedIntent?: import("../../agent/types").ClassifiedTurnIntent;
+  skillRoutingReceipt?: import("../../agent/types").AgentRuntimeRequest["skillRoutingReceipt"];
+  actionPreparation?: import("../../agent/contracts/actionPreparation").ActionPreparation;
 }): CodexNativeTurnCallbacks {
   const {
     body,
@@ -3456,7 +3816,21 @@ function buildCodexNativeTurnCallbacks(ctx: {
       ctx.conversationKey,
       ctx.conversationGeneration,
     );
+  if (ctx.planContext)
+    codexActivityTrace?.appendPlanEvent({
+      type: "provider_event",
+      providerType: "codex_plan_context",
+      payload: {
+        planContext: ctx.planContext,
+        actionContract: ctx.actionContract,
+      },
+    });
   return {
+    eventJournal: createAgentRunEventJournal({
+      conversationKey: ctx.conversationKey,
+      conversationGeneration: ctx.conversationGeneration,
+      model: assistantMessage.modelName,
+    }),
     onSkillActivated: (skillId) => {
       if (!isLive()) return;
       flushResponseStream("event");
@@ -3497,6 +3871,37 @@ function buildCodexNativeTurnCallbacks(ctx: {
         setStatusSafely(`Codex: ${itemType} completed`, "sending");
       }
     },
+    onPlanDelta: (event) => {
+      if (isLive()) handleDelta(event.delta);
+    },
+    onPlanArtifact: (artifact) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.appendPlanEvent({
+        type:
+          artifact.status === "awaiting_approval"
+            ? "plan_ready"
+            : "plan_updated",
+        artifact,
+      });
+    },
+    onPlanUpdated: (event) => {
+      if (!isLive()) return;
+      codexActivityTrace?.appendNativePlanProgress(event.steps);
+    },
+    onPlanExecutionUpdated: (ledger) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.appendPlanEvent({
+        type: "plan_execution_updated",
+        ledger,
+      });
+    },
+    onHostEvent: (event) => {
+      if (!isLive()) return;
+      flushResponseStream("event");
+      codexActivityTrace?.appendPlanEvent(event);
+    },
     onMcpToolActivity: (event) => {
       if (!isLive()) return;
       flushResponseStream("event");
@@ -3505,6 +3910,39 @@ function buildCodexNativeTurnCallbacks(ctx: {
         assistantMessage.quoteCitations,
         event.quoteCitations,
       );
+      if (event.phase === "completed" && event.ok) {
+        void (async () => {
+          if (
+            event.toolName === "research_update" &&
+            ctx.planContext?.phase === "executing"
+          ) {
+            const { loadResearchJobForExecution } =
+              await import("../../agent/research/store");
+            const job = await loadResearchJobForExecution(
+              ctx.planContext.executionId,
+            );
+            if (job) {
+              codexActivityTrace?.appendPlanEvent({
+                type: "plan_research_progress",
+                progress: {
+                  researchJobId: job.researchJobId,
+                  executionId: job.executionId,
+                  parentTaskId: job.parentTaskId,
+                  stage: job.activeStage,
+                  totalItems: job.totalItems,
+                  screenedItems: job.screenedItems,
+                  candidateItems: job.candidateItems,
+                  deepReadCompleted: job.deepReadCompleted,
+                  deepReadPlanned: job.deepReadPlanned,
+                  coverageStatus: job.coverageStatus,
+                },
+              });
+            }
+          }
+        })().catch((error) =>
+          ztoolkit.log("LLM: Failed to synchronize MCP plan state", error),
+        );
+      }
       const label =
         sanitizeText(event.toolLabel || "").trim() ||
         sanitizeText(event.toolName || "")
@@ -3518,23 +3956,6 @@ function buildCodexNativeTurnCallbacks(ctx: {
           "sending",
         );
       }
-    },
-    onMcpConfirmationRequest: async ({ requestId, action }) => {
-      if (!isLive())
-        return { approved: false, reason: "conversation_not_live" };
-      flushResponseStream("event");
-      setStatusSafely(
-        action.mode === "review"
-          ? "Codex is waiting for your Zotero review"
-          : "Codex is waiting for your Zotero approval",
-        "sending",
-      );
-      codexActivityTrace?.noteMcpConfirmationRequired(requestId, action);
-      const resolution = await showNativeMcpActionCard(body, requestId, action);
-      if (!isLive())
-        return { approved: false, reason: "conversation_not_live" };
-      codexActivityTrace?.noteMcpConfirmationResolved(requestId, resolution);
-      return resolution;
     },
     onMcpSetupWarning: (message) => {
       if (!isLive()) return;
@@ -3555,6 +3976,14 @@ function buildCodexNativeTurnCallbacks(ctx: {
         "sending",
       );
     },
+    onHostInteraction: async (action) => {
+      if (!isLive()) return { approved: false };
+      const requestId = `host-review-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+      codexActivityTrace?.noteMcpConfirmationRequired?.(requestId, action);
+      const resolution = await showNativeMcpActionCard(body, requestId, action);
+      codexActivityTrace?.noteMcpConfirmationResolved?.(requestId, resolution);
+      return isLive() ? resolution : { approved: false };
+    },
     onApprovalRequest: async (request) => {
       if (!isLive())
         return { approved: false, reason: "conversation_not_live" };
@@ -3564,9 +3993,68 @@ function buildCodexNativeTurnCallbacks(ctx: {
         request,
         trace: codexActivityTrace,
         setStatusSafely,
+        isCurrent: () =>
+          requireCurrentPanelOwnership(body, ctx.item, "agent-confirmation"),
       });
     },
   };
+}
+
+async function finalizeCodexPlanExecution(params: {
+  planContext?: import("../../agent/plans/types").PlanRuntimeContext;
+  answer: string;
+  assistantMessage: Message;
+  trace: ReturnType<typeof createCodexNativeActivityTraceController> | null;
+}): Promise<void> {
+  if (params.planContext?.phase !== "executing") return;
+  const { loadLatestPlanDocumentForExecution } =
+    await import("../../agent/documents/store");
+  const document = await loadLatestPlanDocumentForExecution(
+    params.planContext.executionId,
+  );
+  if (document) {
+    params.assistantMessage.text = document.visibleMarkdown;
+    params.assistantMessage.documentId = document.documentId;
+    params.assistantMessage.planDocumentId = document.documentId;
+    return;
+  }
+  const { loadPlanExecutionLedger } = await import("../../agent/plans/store");
+  let ledger = await loadPlanExecutionLedger(params.planContext.executionId);
+  const active = ledger?.tasks.find(
+    (task) => task.taskId === ledger?.activeTaskId,
+  );
+  const otherRequiredComplete = ledger?.tasks
+    .filter(
+      (task) => task.kind === "required_step" && task.taskId !== active?.taskId,
+    )
+    .every((task) => task.status === "completed" || task.status === "skipped");
+  if (active?.expectedEffect === "reasoning" && otherRequiredComplete) {
+    ledger = await planExecutionCoordinator.attachEvidence({
+      version: 1,
+      evidenceId: `${ledger!.executionId}:${active.taskId}:reasoning:codex-final`,
+      executionId: ledger!.executionId,
+      taskId: active.taskId,
+      kind: "reasoning_assertion",
+      verified: true,
+      summary: sanitizeText(params.answer).slice(0, 2000),
+      reference: `codex:${params.assistantMessage.agentRunId || params.assistantMessage.timestamp}:final`,
+      createdAt: Date.now(),
+    });
+    ledger = await planExecutionCoordinator.requestTransition({
+      executionId: ledger.executionId,
+      taskId: active.taskId,
+      toStatus: "completed",
+      requestedBy: "codex",
+      reason: "Bounded final reasoning assertion",
+    });
+    params.trace?.appendPlanEvent({
+      type: "plan_execution_updated",
+      ledger,
+    });
+  }
+  await planExecutionCoordinator.assertCanFinalize(
+    params.planContext.executionId,
+  );
 }
 
 function createPanelUpdateHelpers(
@@ -4608,15 +5096,11 @@ function shouldRequireBodyEvidenceQuoteSearch(params: {
     countQuoteScopedPapers(params.pairedUserMessage, params.runtimeRequest) > 1,
   );
   if (!hasScopedPool) return false;
-  const userText = [
-    params.pairedUserMessage?.text,
-    params.runtimeRequest?.userText,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  if (/\b(?:abstract|title|front\s+matter)\b/i.test(userText)) {
+  if (
+    params.runtimeRequest?.classifiedIntent?.semantic?.reading.source ===
+    "metadata"
+  )
     return false;
-  }
   return true;
 }
 
@@ -4681,7 +5165,7 @@ const MAX_QUOTE_VALIDATION_DECISION_ENTRIES = 1000;
 const MAX_QUOTE_VALIDATION_DECISION_BYTES = 4 * 1024 * 1024;
 const MAX_QUOTE_SOURCE_INDEX_ENTRIES = 64;
 const MAX_QUOTE_SOURCE_INDEX_BYTES = 2 * 1024 * 1024;
-const QUOTE_VALIDATION_POLICY_VERSION = 8;
+const QUOTE_VALIDATION_POLICY_VERSION = 9;
 type QuoteValidationDecision = ReturnType<
   typeof finalizeAssistantQuoteCitations
 >;
@@ -4990,7 +5474,8 @@ async function applyAssistantMessageQuoteGate(
             entry.status,
             entry.status === "matched"
               ? entry.certificate.documentFingerprint
-              : entry.status === "absent"
+              : entry.status === "absent" ||
+                  entry.status === "literal-not-found"
                 ? entry.documentFingerprint
                 : entry.reason,
             entry.status === "matched" ? entry.certificate.pageIndex : "",
@@ -5012,10 +5497,24 @@ async function applyAssistantMessageQuoteGate(
     : null;
   if (!finalized) {
     quoteValidationDecisionComputations += 1;
+    const reusableSourceIndex = reviewCitations.length
+      ? preparedSourceIndex ||
+        (evidenceSignature
+          ? getOrBuildCachedQuoteSourceIndex(
+              evidenceSignature,
+              evidence.sourceTexts,
+            )
+          : undefined)
+      : undefined;
     const sourceIndex = reviewCitations.length
       ? buildQuoteSourceIndex({
           quoteCitations: reviewCitations,
-          sourceTexts: evidence.sourceTexts,
+          sourceTexts: reusableSourceIndex
+            ? withReusableQuoteTextIndexes(
+                evidence.sourceTexts,
+                reusableSourceIndex,
+              )
+            : evidence.sourceTexts,
         })
       : preparedSourceIndex
         ? preparedSourceIndex
@@ -5115,11 +5614,11 @@ async function collectLivePdfQuoteSecondaryEvidence(params: {
         status: "matched",
         certificate: verification.certificate,
       });
-    } else if (verification.status === "absent") {
+    } else if (verification.status === "literal-not-found") {
       out.push({
         quoteKey: request.quoteKey,
         contextItemId: request.contextItemId,
-        status: "absent",
+        status: "literal-not-found",
         documentFingerprint: verification.documentFingerprint,
       });
     } else {
@@ -5552,16 +6051,52 @@ export function scheduleConversationQuoteRevalidation(
   validateLoadedConversationQuoteMessages(messages, normalizedKey);
 }
 
-function createQueuedRefresh(refresh: () => void): () => void {
-  let refreshQueued = false;
+const queuedPanelRefreshes = new WeakMap<
+  Element,
+  Set<ReturnType<typeof createCoalescedFrameScheduler>>
+>();
+function createQueuedRefresh(refresh: () => void, body?: Element): () => void {
+  const scheduler = createCoalescedFrameScheduler({
+    getWindow: () =>
+      body?.ownerDocument?.defaultView || Zotero.getMainWindow?.(),
+    run: () => {
+      if (body) queuedPanelRefreshes.get(body)?.delete(scheduler);
+      if (!body || body.isConnected) refresh();
+    },
+  });
   return () => {
-    if (refreshQueued) return;
-    refreshQueued = true;
-    setTimeout(() => {
-      refreshQueued = false;
-      refresh();
-    }, 50);
+    if (body) {
+      let pending = queuedPanelRefreshes.get(body);
+      if (!pending) {
+        pending = new Set();
+        queuedPanelRefreshes.set(body, pending);
+      }
+      pending.add(scheduler);
+    }
+    scheduler.schedule();
   };
+}
+
+export function disposeChatRendering(body: Element): void {
+  for (const scheduler of queuedPanelRefreshes.get(body) || [])
+    scheduler.cancel();
+  queuedPanelRefreshes.delete(body);
+  const box = body.querySelector<HTMLDivElement>("#llm-chat-box");
+  if (!box) return;
+  const frame = followBottomStabilizers.get(box);
+  if (frame !== undefined)
+    body.ownerDocument?.defaultView?.cancelAnimationFrame(frame);
+  followBottomStabilizers.delete(box);
+  for (const view of mountedAssistantViews.get(box)?.values() || []) {
+    disposeAgentTrace(view.trace);
+    if (view.answer) disposeStreamingMarkdown(view.answer);
+  }
+  mountedAssistantViews.delete(box);
+  for (const root of Array.from(
+    box.querySelectorAll<HTMLElement>(".llm-plan-container-execution"),
+  )) {
+    if (root) disposePlanProgress(root as HTMLElement);
+  }
 }
 
 function waitForUiStep(): Promise<void> {
@@ -5712,6 +6247,8 @@ type AssistantMessageSnapshot = Pick<
   | "reasoningDetails"
   | "reasoningOpen"
   | "interrupted"
+  | "completionStatus"
+  | "completionReason"
   | "webchatRunState"
   | "webchatCompletionReason"
   | "quoteCitations"
@@ -5753,6 +6290,8 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: message.reasoningOpen,
     interrupted: message.interrupted,
+    completionStatus: message.completionStatus,
+    completionReason: message.completionReason,
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
     quoteCitations: message.quoteCitations
@@ -5791,6 +6330,8 @@ function restoreAssistantSnapshot(
   message.reasoningDetails = snapshot.reasoningDetails;
   message.reasoningOpen = snapshot.reasoningOpen;
   message.interrupted = snapshot.interrupted;
+  message.completionStatus = snapshot.completionStatus;
+  message.completionReason = snapshot.completionReason;
   message.webchatRunState = snapshot.webchatRunState;
   message.webchatCompletionReason = snapshot.webchatCompletionReason;
   message.quoteCitations = snapshot.quoteCitations
@@ -5826,6 +6367,8 @@ function finalizeCancelledAssistantMessage(
   message.pendingAgentTraceEvents = undefined;
   message.streaming = false;
   message.interrupted = undefined;
+  message.completionStatus = undefined;
+  message.completionReason = undefined;
   message.webchatRunState = undefined;
   message.webchatCompletionReason = null;
 }
@@ -5877,6 +6420,7 @@ type CodexNativeMcpToolActivityEvent = {
   error?: string;
   quoteCitations?: QuoteCitation[];
   artifacts?: AgentToolArtifact[];
+  actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
 };
 
 type CodexToolActivityEventPayload = Extract<
@@ -6106,13 +6650,15 @@ function createCodexNativeActivityTraceController(
     createdAt: Date.now(),
   });
 
+  const snapshotEvents = () =>
+    events.map((entry, index) => ({
+      ...entry,
+      seq: index + 1,
+      payload: { ...entry.payload } as AgentEvent,
+    }));
   const sync = () => {
     assistantMessage.pendingAgentTraceEvents = events.length
-      ? events.map((entry, index) => ({
-          ...entry,
-          seq: index + 1,
-          payload: { ...entry.payload } as AgentEvent,
-        }))
+      ? snapshotEvents()
       : undefined;
     queueRefresh();
   };
@@ -6249,6 +6795,7 @@ function createCodexNativeActivityTraceController(
       text?: string;
       codeBlock?: string;
       artifacts?: AgentToolArtifact[];
+      actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
     },
     options: { matchRecentUnknown?: boolean } = {},
   ): string | null => {
@@ -6269,6 +6816,9 @@ function createCodexNativeActivityTraceController(
       ...(activity.text ? { text: activity.text } : {}),
       ...(activity.codeBlock ? { codeBlock: activity.codeBlock } : {}),
       ...(activity.artifacts?.length ? { artifacts: activity.artifacts } : {}),
+      ...(activity.actionReceipts?.length
+        ? { actionReceipts: activity.actionReceipts }
+        : {}),
     });
     const matchedUnknown =
       options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
@@ -6544,6 +7094,9 @@ function createCodexNativeActivityTraceController(
     phase: "started" | "completed",
   ): void => {
     if (isCodexNativeAgentMessageItem(event)) return;
+    // Proposals and user inputs have their own views and must not be repeated
+    // as generic tool/status text in the persisted assistant trace.
+    if (isCodexNativeItemType(event, ["plan", "usermessage"])) return;
     flushAllProgressCoalescers("event");
     if (appendStructuredOperationStatus(event, phase)) {
       sync();
@@ -6619,6 +7172,7 @@ function createCodexNativeActivityTraceController(
         ok: event.ok,
         text: event.error,
         artifacts: event.artifacts,
+        actionReceipts: event.actionReceipts,
       },
       { matchRecentUnknown: !existingItemId },
     );
@@ -6690,8 +7244,117 @@ function createCodexNativeActivityTraceController(
     }
   };
 
+  const appendPlanEvent = (event: AgentEvent): void => {
+    if (event.type === "provider_event") {
+      events.push(createEvent(event));
+      sync();
+      return;
+    }
+    if (event.type === "plan_scope_amended") {
+      events.push(createEvent(event));
+      sync();
+      return;
+    }
+    if (event.type === "plan_research_progress") {
+      const priorIndex = events.findIndex(
+        (entry) =>
+          entry.payload.type === "plan_research_progress" &&
+          entry.payload.progress.researchJobId === event.progress.researchJobId,
+      );
+      const record = createEvent(event);
+      if (priorIndex >= 0) events[priorIndex] = record;
+      else events.push(record);
+      sync();
+      return;
+    }
+    if (
+      event.type === "document_ready" ||
+      event.type === "plan_document_ready"
+    ) {
+      events.push(createEvent(event));
+      sync();
+      return;
+    }
+    if (
+      event.type !== "plan_updated" &&
+      event.type !== "plan_ready" &&
+      event.type !== "plan_execution_updated"
+    ) {
+      return;
+    }
+    const eventPlanId =
+      event.type === "plan_execution_updated"
+        ? event.ledger.planId
+        : event.artifact.planId;
+    const priorIndex = events.findIndex(
+      (entry) =>
+        ((entry.payload.type === "plan_updated" ||
+          entry.payload.type === "plan_ready") &&
+          entry.payload.artifact.planId === eventPlanId) ||
+        (entry.payload.type === "plan_execution_updated" &&
+          entry.payload.ledger.planId === eventPlanId),
+    );
+    const record = createEvent(event);
+    if (priorIndex >= 0) events[priorIndex] = record;
+    else events.push(record);
+    sync();
+  };
+
   return {
+    persist: async (
+      conversationKey: number,
+      generation: number,
+      status?: import("../../agent/types").AgentRunStatus,
+    ) => {
+      if (!events.length) return;
+      await withConversationWriteLock(conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(conversationKey, generation)
+        )
+          return;
+        const snapshot = snapshotEvents();
+        await saveAgentRunTraceSnapshot(
+          {
+            runId,
+            conversationKey,
+            mode: "agent",
+            model: assistantMessage.modelName,
+            status:
+              status ||
+              (events.some((entry) => entry.payload.type === "final")
+                ? "completed"
+                : "failed"),
+            createdAt: events[0].createdAt,
+            completedAt: Date.now(),
+            finalText: assistantMessage.text,
+          },
+          snapshot,
+        );
+        assistantMessage.agentRunId = runId;
+        agentRunTraceCache.set(runId, snapshot);
+      });
+    },
     appendAgentMessageDelta,
+    appendPlanEvent,
+    appendNativePlanProgress: (
+      steps: Array<{ content: string; status?: string }>,
+    ) => {
+      const changed = upsertProgressText(
+        "codex-plan-checklist",
+        steps
+          .map(
+            (step) =>
+              `${step.status === "completed" ? "✓" : "•"} ${step.content}`,
+          )
+          .join("\n"),
+        "replace",
+        steps.every((step) => step.status === "completed")
+          ? "completed"
+          : "running",
+      );
+      if (changed) sync();
+    },
     appendItemStatus,
     finish,
     noteSkillActivated,
@@ -7764,7 +8427,7 @@ export async function editLatestUserMessageAndRetry(
         agentRunId: retryPair.userMessage.agentRunId,
         selectedText: retryPair.userMessage.selectedText,
         selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-        selectedTexts: retryPair.userMessage.selectedTexts,
+        selectedTexts: retryPair.userMessage.selectedTexts || [],
         selectedTextSources: retryPair.userMessage.selectedTextSources,
         selectedTextPaperContexts:
           retryPair.userMessage.selectedTextPaperContexts,
@@ -7874,7 +8537,15 @@ export async function retryLatestAssistantResponse(
   modelAttachmentsOverride?: ChatAttachment[],
   requestId?: number,
   onProviderDispatch?: () => void,
+  retryOptions?: { continueIncomplete?: boolean },
 ) {
+  const ownershipLease = capturePanelOperationLease(body);
+  if (
+    !ownershipLease ||
+    !requireCurrentPanelOwnership(body, item, "retry-response")
+  ) {
+    return;
+  }
   const ui = getPanelRequestUI(body);
   const initialConversationKey = getConversationKey(item);
   let thisRequestId: number;
@@ -7910,7 +8581,9 @@ export async function retryLatestAssistantResponse(
   const requestIsActive = () =>
     isRequestOwner(conversationKey, thisRequestId) &&
     getCancelledRequestId(conversationKey) < thisRequestId &&
-    !getAbortController(conversationKey)?.signal.aborted;
+    !getAbortController(conversationKey)?.signal.aborted &&
+    isPanelOperationLeaseCurrent(ownershipLease) &&
+    requireCurrentPanelOwnership(body, item, "retry-response-continuation");
   const releaseRequest = () => {
     if (!finishPanelRequest(body, item, conversationKey, thisRequestId)) {
       return false;
@@ -7967,15 +8640,48 @@ export async function retryLatestAssistantResponse(
   const conversationGeneration = getConversationWriteGeneration(
     getConversationKey(item),
   );
+  const retryTraceEvents =
+    retryPair.assistantMessage.pendingAgentTraceEvents ||
+    (retryPair.assistantMessage.agentRunId
+      ? (await getAgentRunTrace(retryPair.assistantMessage.agentRunId)).events
+      : []);
+  const retryPlanEvent = retryTraceEvents
+    .map((event) => event.payload)
+    .find(
+      (event) =>
+        event.type === "provider_event" &&
+        event.providerType === "codex_plan_context",
+    );
+  const retryPlanContext =
+    retryPlanEvent?.type === "provider_event"
+      ? (retryPlanEvent.payload?.planContext as
+          | import("../../agent/plans/types").PlanRuntimeContext
+          | undefined)
+      : undefined;
+  const retryActionContract =
+    retryPlanEvent?.type === "provider_event"
+      ? (retryPlanEvent.payload?.actionContract as
+          | AgentActionContract
+          | undefined)
+      : undefined;
+
   const assistantMessage = retryPair.assistantMessage;
+  let codexActivityTrace: CodexNativeActivityTraceController | null = null;
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
+  const continueIncomplete = Boolean(
+    retryOptions?.continueIncomplete &&
+    assistantSnapshot.completionStatus === "incomplete" &&
+    assistantSnapshot.completionReason === "output_limit",
+  );
   // The retry rewrites (and later persists) the paired user row's model
   // identity and rebuilt contexts before any output exists. A failed retry
   // that restores the previous answer must roll the user row back with it,
   // or the stored turn pairs the old answer with the failed retry's metadata.
   const userSnapshot = takeRetryUserSnapshot(retryPair.userMessage);
-  assistantMessage.text = "";
+  assistantMessage.text = continueIncomplete ? assistantSnapshot.text : "";
   assistantMessage.interrupted = undefined;
+  assistantMessage.completionStatus = undefined;
+  assistantMessage.completionReason = undefined;
   assistantMessage.reasoningSummary = undefined;
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
@@ -8046,10 +8752,13 @@ export async function retryLatestAssistantResponse(
     return;
   }
 
-  const historyForLLM = history.slice(0, retryPair.userIndex);
+  const historyForLLM = history.slice(
+    0,
+    continueIncomplete ? retryPair.userIndex + 2 : retryPair.userIndex,
+  );
   const retrySelectedTextContexts = synthesizeSelectedTextContexts({
     selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-    selectedTexts: retryPair.userMessage.selectedTexts,
+    selectedTexts: retryPair.userMessage.selectedTexts || [],
     legacySelectedText: retryPair.userMessage.selectedText,
     selectedTextSources: retryPair.userMessage.selectedTextSources,
     selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
@@ -8088,6 +8797,9 @@ export async function retryLatestAssistantResponse(
     // wants inline anchor context in the rebuilt payload.
     includeAnchorContext: false,
   });
+  const dispatchQuestion = continueIncomplete
+    ? "Continue from the incomplete response. Resume exactly where it stopped, do not repeat prior text, and finish the answer."
+    : question;
   retryPair.userMessage.paperContexts = paperContexts.length
     ? paperContexts
     : undefined;
@@ -8162,7 +8874,7 @@ export async function retryLatestAssistantResponse(
         agentRunId: retryPair.userMessage.agentRunId,
         selectedText: retryPair.userMessage.selectedText,
         selectedTextContexts: retryPair.userMessage.selectedTextContexts,
-        selectedTexts: retryPair.userMessage.selectedTexts,
+        selectedTexts: retryPair.userMessage.selectedTexts || [],
         selectedTextSources: retryPair.userMessage.selectedTextSources,
         selectedTextPaperContexts:
           retryPair.userMessage.selectedTextPaperContexts,
@@ -8185,6 +8897,11 @@ export async function retryLatestAssistantResponse(
   const finalizeCancelledAssistant = async () => {
     flushResponseStream("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
+    await codexActivityTrace?.persist(
+      conversationKey,
+      conversationGeneration,
+      "cancelled",
+    );
     refreshChatSafely();
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
     await updateStoredLatestAssistantMessageByConversation(
@@ -8195,6 +8912,8 @@ export async function retryLatestAssistantResponse(
         timestamp: assistantMessage.timestamp,
         runMode: assistantMessage.runMode,
         agentRunId: assistantMessage.agentRunId,
+        documentId: assistantMessage.documentId,
+        planDocumentId: assistantMessage.planDocumentId,
         interrupted: assistantMessage.interrupted,
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
@@ -8364,10 +9083,11 @@ export async function retryLatestAssistantResponse(
     // Streaming flushes only mutate this assistant message, so re-render just
     // its bubble; refreshChat falls back to a full rebuild if the wrapper is
     // not in the DOM yet.
-    const queueRefresh = createQueuedRefresh(() =>
-      refreshAssistantMessageSafely(assistantMessage),
+    const queueRefresh = createQueuedRefresh(
+      () => refreshAssistantMessageSafely(assistantMessage),
+      body,
     );
-    const codexActivityTrace = isCodexNativeTurn
+    codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
     noteExplicitCodexNativeSkillInvocations(
@@ -8385,7 +9105,7 @@ export async function retryLatestAssistantResponse(
       ? [...(retryScreenshotImages || []), ...(contextPlan.modelImages || [])]
       : [];
     const requestParams = {
-      prompt: question,
+      prompt: dispatchQuestion,
       context: combinedContext,
       history: llmHistory,
       signal: getAbortController(conversationKey)?.signal,
@@ -8398,9 +9118,7 @@ export async function retryLatestAssistantResponse(
       providerProtocol: effectiveRequestConfig.providerProtocol,
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
-      maxTokens: effectiveRequestConfig.advanced?.maxTokens,
-      maxTokensExplicit:
-        effectiveRequestConfig.advanced?.maxTokensExplicit === true,
+      outputTokenLimit: effectiveRequestConfig.advanced?.outputTokenLimit,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
       profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
@@ -8467,11 +9185,56 @@ export async function retryLatestAssistantResponse(
           }),
         )
       : null;
+    const codexSemanticRequest = isCodexNativeTurn
+      ? await initAgentSubsystem().then(async (runtime) =>
+          runtime.prepareSemanticRequest(
+            await buildAgentRuntimeRequest({
+              conversationKey,
+              conversationGeneration,
+              sourceMessageTimestamp: retryPair.userMessage.timestamp,
+              item,
+              userText: question,
+              selectedTextContexts: retrySelectedTextContexts,
+              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
+              selectedTexts: retryPair.userMessage.selectedTexts || [],
+              selectedTextSources: retryPair.userMessage.selectedTextSources,
+              selectedTextPaperContexts:
+                retryPair.userMessage.selectedTextPaperContexts,
+              selectedTextNoteContexts:
+                retryPair.userMessage.selectedTextNoteContexts,
+              paperContexts: contextPlan.paperContexts,
+              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+              citationPaperContexts:
+                retryPair.userMessage.citationPaperContexts,
+              selectedCollectionContexts,
+              selectedTagContexts,
+              attachments,
+              localDocuments: retryLocalDocuments,
+              screenshots: allImages,
+              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
+              effectiveRequestConfig,
+              history: llmHistory,
+            }),
+            { signal: getAbortController(conversationKey)?.signal },
+          ),
+        )
+      : undefined;
     if (stopRetryPreparation()) return;
-    notifyProviderDispatch(body, ui, onProviderDispatch);
-    const answer = isCodexNativeTurn
-      ? (
-          await runCodexAppServerNativeTurn({
+    if (
+      !notifyProviderDispatch(
+        body,
+        ui,
+        item,
+        ownershipLease,
+        onProviderDispatch,
+      )
+    )
+      return;
+    const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
+      ? await (async () => {
+          const result = await runCodexAppServerNativeTurn({
+            semanticRequest: codexSemanticRequest!,
             scope: codexScope!,
             conversationGeneration,
             model: effectiveRequestConfig.model,
@@ -8485,7 +9248,7 @@ export async function retryLatestAssistantResponse(
               forcedSkillIds: retryPair.userMessage.forcedSkillIds,
               selectedTextContexts: retrySelectedTextContexts,
               resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-              selectedTexts: retryPair.userMessage.selectedTexts,
+              selectedTexts: retryPair.userMessage.selectedTexts || [],
               selectedTextSources: retryPair.userMessage.selectedTextSources,
               selectedTextPaperContexts:
                 retryPair.userMessage.selectedTextPaperContexts,
@@ -8503,6 +9266,7 @@ export async function retryLatestAssistantResponse(
             }),
             ...buildCodexNativeTurnCallbacks({
               body,
+              item,
               assistantMessage,
               codexActivityTrace,
               flushResponseStream,
@@ -8512,18 +9276,37 @@ export async function retryLatestAssistantResponse(
               handleUsage,
               conversationKey,
               conversationGeneration,
+              planContext: retryPlanContext,
+              actionContract: retryActionContract,
             }),
-          })
-        ).text
-      : await callLLMStream(
-          {
+          });
+          assistantMessage.agentRunId = result.agentRunId;
+          if (result.documentId) {
+            assistantMessage.documentId = result.documentId;
+          }
+          await finalizeCodexPlanExecution({
+            planContext: retryPlanContext,
+            answer: result.text,
+            assistantMessage,
+            trace: codexActivityTrace,
+          });
+          return {
+            text:
+              retryPlanContext?.phase === "planning"
+                ? "The plan is ready for review."
+                : result.text,
+            completion: { status: "complete" as const },
+          };
+        })()
+      : await callDirectChatTurnWithRecovery({
+          request: {
             ...requestParams,
             systemMessages,
           },
-          handleDelta,
-          handleReasoning,
-          handleUsage,
-        );
+          onDelta: handleDelta,
+          onReasoning: handleReasoning,
+          onUsage: handleUsage,
+        });
 
     if (
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -8537,10 +9320,30 @@ export async function retryLatestAssistantResponse(
     const hasGeneratedOutput = normalizeGeneratedChatImages(
       assistantMessage.generatedImages,
     ).length;
-    assistantMessage.text =
-      sanitizeText(answer) ||
+    const outputLimited =
+      modelOutcome.completion.status === "incomplete" &&
+      modelOutcome.completion.reason === "output_limit";
+    const responseText =
+      sanitizeText(modelOutcome.text) ||
       responseStreamCoalescer?.getFullText() ||
-      (hasGeneratedOutput ? "" : "No response.");
+      "";
+    const visibleResponseText = continueIncomplete
+      ? appendContinuationText(assistantSnapshot.text, responseText)
+      : responseText;
+    assistantMessage.text =
+      (assistantMessage.documentId || assistantMessage.planDocumentId
+        ? assistantMessage.text
+        : visibleResponseText) ||
+      (hasGeneratedOutput
+        ? ""
+        : outputLimited
+          ? EMPTY_OUTPUT_LIMIT_MESSAGE
+          : resolveEmptyModelOutcomeMessage(modelOutcome.completion));
+    assistantMessage.completionStatus = modelOutcome.completion.status;
+    assistantMessage.completionReason =
+      "reason" in modelOutcome.completion
+        ? modelOutcome.completion.reason
+        : undefined;
     await finalizeAssistantMessageQuoteCitations(assistantMessage, {
       pairedUserMessage: retryPair.userMessage,
       paperContexts: contextPlan.paperContexts,
@@ -8549,6 +9352,7 @@ export async function retryLatestAssistantResponse(
       conversationKey,
     });
     codexActivityTrace?.finish(assistantMessage.text);
+    await codexActivityTrace?.persist(conversationKey, conversationGeneration);
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
     assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
@@ -8574,7 +9378,11 @@ export async function retryLatestAssistantResponse(
         timestamp: assistantMessage.timestamp,
         runMode: assistantMessage.runMode,
         agentRunId: assistantMessage.agentRunId,
+        documentId: assistantMessage.documentId,
+        planDocumentId: assistantMessage.planDocumentId,
         interrupted: assistantMessage.interrupted,
+        completionStatus: assistantMessage.completionStatus,
+        completionReason: assistantMessage.completionReason,
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
         modelProviderLabel: assistantMessage.modelProviderLabel,
@@ -8634,6 +9442,10 @@ export async function retryLatestAssistantResponse(
       assistantMessage.reasoningDetails = streamedReasoningDetails;
       assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
       assistantMessage.streaming = false;
+      await codexActivityTrace?.persist(
+        conversationKey,
+        conversationGeneration,
+      );
       refreshChatSafely();
       const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
       await updateStoredLatestAssistantMessageByConversation(
@@ -9316,6 +10128,7 @@ export async function editUserTurnAndRetry(opts: {
 export type BuildAgentRuntimeRequestParams = {
   conversationKey: number;
   conversationGeneration?: number;
+  sourceMessageTimestamp?: number;
   item: Zotero.Item;
   activePaperContext?: PaperContextRef;
   userText: string;
@@ -9337,6 +10150,7 @@ export type BuildAgentRuntimeRequestParams = {
   forcedSkillIds?: string[];
   effectiveRequestConfig: EffectiveRequestConfig;
   history: ChatMessage[];
+  planContext?: import("../../agent/plans/types").PlanRuntimeContext;
 };
 
 function buildActiveNoteRuntimeContext(
@@ -9649,6 +10463,12 @@ async function buildAgentRuntimeRequest(
     enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
   ]);
   const requestLibraryID = Math.floor(Number(params.item.libraryID)) || 0;
+  const baseItem = resolveConversationBaseItem(params.item);
+  const activeNoteSession = resolveActiveNoteSession(params.item);
+  const conversationKind =
+    activeNoteSession?.conversationKind ||
+    resolveDisplayConversationKind(params.item) ||
+    undefined;
   const completePaperKey = (paper: PaperContextRef) =>
     `${Math.floor(Number(paper.libraryID || requestLibraryID))}:${Math.floor(
       Number(paper.itemId),
@@ -9663,17 +10483,14 @@ async function buildAgentRuntimeRequest(
           completePaperKey(paper) ===
           completePaperKey(params.activePaperContext!),
       ) || params.activePaperContext
-    : undefined;
+    : conversationKind === "paper"
+      ? resolvePaperContextRefFromItem(baseItem) || undefined
+      : undefined;
   const attachmentResourcePool = buildAgentAttachmentResourcePool({
     paperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
     selectedCollectionContexts: params.selectedCollectionContexts,
   });
-  const activeNoteSession = resolveActiveNoteSession(params.item);
-  const conversationKind =
-    activeNoteSession?.conversationKind ||
-    resolveDisplayConversationKind(params.item) ||
-    undefined;
   let registeredConversation: Awaited<
     ReturnType<typeof getRegisteredConversationScope>
   > = null;
@@ -9687,13 +10504,41 @@ async function buildAgentRuntimeRequest(
     // is temporarily unavailable.
   }
   const conversationInstanceID = registeredConversation?.instanceID;
+  const executingPlan =
+    params.planContext?.phase === "executing"
+      ? await import("../../agent/plans/store").then(async (store) => {
+          const ledger = await store.loadPlanExecutionLedger(
+            params.planContext?.phase === "executing"
+              ? params.planContext.executionId
+              : "",
+          );
+          const artifact = ledger
+            ? await store.loadPlanArtifact(ledger.planId, ledger.revision)
+            : null;
+          if (!ledger || !artifact || artifact.digest !== ledger.planDigest) {
+            throw new Error("The approved plan grant could not be verified");
+          }
+          return { ledger, artifact };
+        })
+      : null;
+  const priorPlanArtifact =
+    params.planContext?.phase === "planning" && params.planContext.revision > 1
+      ? await import("../../agent/plans/store").then((store) =>
+          store.loadPlanArtifact(
+            params.planContext!.planId,
+            params.planContext!.revision - 1,
+          ),
+        )
+      : null;
   return {
     conversationKey: params.conversationKey,
     conversationGeneration: params.conversationGeneration,
     mode: "agent",
     userText: params.userText,
+    planContext: params.planContext,
+    actionContract: executingPlan?.artifact.actionContract,
     conversationKind,
-    activeItemId: activeNoteSession?.noteId || params.item.id,
+    activeItemId: activeNoteSession?.noteId || baseItem?.id,
     activePaperContext: activePaperContext
       ? {
           ...activePaperContext,
@@ -9755,6 +10600,7 @@ async function buildAgentRuntimeRequest(
     libraryID: params.item.libraryID,
     activeNoteContext: buildActiveNoteRuntimeContext(params.item),
     metadata: {
+      sourceMessageTimestamp: params.sourceMessageTimestamp,
       claudeAutoCompactEligible:
         params.effectiveRequestConfig.modelProviderLabel === "Claude Code" &&
         isClaudeAutoCompactEnabled() &&
@@ -9766,6 +10612,9 @@ async function buildAgentRuntimeRequest(
       claudeHistoryLength: params.history.length,
       notesDirectoryConfig: getNotesDirectoryConfig() || undefined,
       conversationInstanceID,
+      planExecutionLedger: executingPlan?.ledger,
+      approvedPlanContract: executingPlan?.artifact.contract,
+      priorPlanArtifact,
     },
   };
 }
@@ -9776,12 +10625,21 @@ function buildAgentEngineDeps(
   currentItem?: Zotero.Item,
   conversationSystem?: ConversationSystem,
   conversationGeneration?: number,
+  panelBody?: Element,
+  ownershipLease?: PanelOperationLease | null,
 ): AgentEngineDeps {
-  const getEffectiveConversationSystem = (): ConversationSystem =>
+  const effectiveConversationSystem: ConversationSystem =
     conversationSystem ||
     (currentItem
       ? resolveEffectiveConversationSystem({ item: currentItem })
       : "upstream");
+  const getEffectiveConversationSystem = () => effectiveConversationSystem;
+  const canUpdateCapturedPanel = (operation: string): boolean =>
+    !currentItem ||
+    !panelBody ||
+    (Boolean(ownershipLease) &&
+      isPanelOperationLeaseCurrent(ownershipLease) &&
+      requireCurrentPanelOwnership(panelBody, currentItem, operation));
   return {
     conversationGeneration,
     chatHistory,
@@ -9792,7 +10650,11 @@ function buildAgentEngineDeps(
     nextRequestId,
     tryBeginRequest,
     isRequestOwner,
-    finishRequest,
+    finishRequest: (conversationKey, requestId) => {
+      const finished = finishRequest(conversationKey, requestId);
+      if (finished) syncRequestUIForConversation(conversationKey);
+      return finished;
+    },
     transferRequest: (fromConversationKey, toConversationKey, requestId) => {
       if (
         !transferPanelRequest(
@@ -9810,8 +10672,14 @@ function buildAgentEngineDeps(
     },
     getPanelRequestUI,
     setRequestUIBusy,
-    restoreRequestUIIdle,
-    scheduleQueuedInputDrain,
+    restoreRequestUIIdle: (body, conversationKey, requestId) => {
+      if (!canUpdateCapturedPanel("agent-request-finish")) return;
+      restoreRequestUIIdle(body, conversationKey, requestId);
+    },
+    scheduleQueuedInputDrain: (body, scope) => {
+      if (!canUpdateCapturedPanel("agent-queue-drain")) return;
+      scheduleQueuedInputDrain(body, scope);
+    },
     createPanelUpdateHelpers,
     ensureConversationLoaded,
     getConversationKey,
@@ -9845,7 +10713,7 @@ function buildAgentEngineDeps(
     findLatestRetryPair,
     reconstructRetryPayload,
     isReasoningExpandedByDefault,
-    createQueuedRefresh,
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, panelBody),
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
@@ -9868,6 +10736,10 @@ function buildAgentEngineDeps(
     },
     appendReasoningPart,
     persistConversationMessage: async (conversationKey, message) => {
+      // A dispatched turn owns its captured conversation, not the panel that
+      // happened to start it. Navigation may retire that panel while work
+      // continues. Scope validation and the generation-fenced store below
+      // prevent cross-conversation writes and resurrection after deletion.
       const guardedMessage = {
         ...message,
         conversationGeneration:
@@ -9969,6 +10841,8 @@ function buildAgentEngineDeps(
   };
 }
 
+export const buildAgentEngineDepsForTests = buildAgentEngineDeps;
+
 /**
  * Re-runs the latest user→assistant pair in agent mode.
  * Unlike `retryLatestAssistantResponse` (chat mode only), this function calls
@@ -9998,6 +10872,14 @@ async function retryLatestAgentResponse(
   onProviderDispatch?: () => void,
   activePaperContextOverride?: PaperContextRef,
 ): Promise<true> {
+  const ownershipLease = capturePanelOperationLease(body);
+  const isOwnershipCurrent = (operation: string) =>
+    Boolean(
+      ownershipLease &&
+      isPanelOperationLeaseCurrent(ownershipLease) &&
+      requireCurrentPanelOwnership(body, item, operation),
+    );
+  if (!isOwnershipCurrent("retry-agent-response")) return true;
   const conversationSystem = resolveEffectiveConversationSystem({
     item,
     authMode,
@@ -10016,7 +10898,15 @@ async function retryLatestAgentResponse(
       ),
     );
   }
+  if (!isOwnershipCurrent("retry-agent-response-load")) return true;
   await initAgentSubsystem();
+  if (!isOwnershipCurrent("retry-agent-response-runtime")) return true;
+  const guardedProviderDispatch = createOwnershipFencedProviderDispatch({
+    body,
+    item,
+    lease: ownershipLease!,
+    callback: onProviderDispatch,
+  });
   await retryAgentTurn(
     body,
     item,
@@ -10034,9 +10924,11 @@ async function retryLatestAgentResponse(
       item,
       conversationSystem,
       getConversationWriteGeneration(getConversationKey(item)),
+      body,
+      ownershipLease,
     ),
     requestId,
-    onProviderDispatch,
+    guardedProviderDispatch,
     activePaperContextOverride,
   );
   return true;
@@ -10082,7 +10974,16 @@ async function sendAgentQuestion(opts: {
   forcedSkillIds?: string[];
   pdfUploadSystemMessages?: string[];
   conversationSystem?: ConversationSystem;
+  planContext?: import("../../agent/plans/types").PlanRuntimeContext;
 }): Promise<void> {
+  const ownershipLease = capturePanelOperationLease(opts.body);
+  const isOwnershipCurrent = (operation: string) =>
+    Boolean(
+      ownershipLease &&
+      isPanelOperationLeaseCurrent(ownershipLease) &&
+      requireCurrentPanelOwnership(opts.body, opts.item, operation),
+    );
+  if (!isOwnershipCurrent("send-agent-question")) return;
   const conversationKey = getConversationKey(opts.item);
   if (
     opts.requestId !== undefined &&
@@ -10097,6 +10998,7 @@ async function sendAgentQuestion(opts: {
     conversationKey,
     conversationSystem: opts.conversationSystem,
   });
+  if (!isOwnershipCurrent("send-agent-question-scope")) return;
   if (!safeConversationScope) {
     const ui = getPanelRequestUI(opts.body);
     const helpers = createPanelUpdateHelpers(
@@ -10112,6 +11014,7 @@ async function sendAgentQuestion(opts: {
     return;
   }
   await initAgentSubsystem();
+  if (!isOwnershipCurrent("send-agent-question-runtime")) return;
   if (
     opts.requestId !== undefined &&
     (!isRequestOwner(conversationKey, opts.requestId) ||
@@ -10120,12 +11023,20 @@ async function sendAgentQuestion(opts: {
   ) {
     return;
   }
+  const guardedProviderDispatch = createOwnershipFencedProviderDispatch({
+    body: opts.body,
+    item: opts.item,
+    lease: ownershipLease!,
+    callback: opts.onProviderDispatch,
+  });
   await sendAgentTurn(
-    opts,
+    { ...opts, onProviderDispatch: guardedProviderDispatch },
     buildAgentEngineDeps(
       opts.item,
       opts.conversationSystem,
       getConversationWriteGeneration(getConversationKey(opts.item)),
+      opts.body,
+      ownershipLease,
     ),
   );
 }
@@ -10163,6 +11074,13 @@ export async function sendQuestion(
     agentRunId,
     skipAgentDispatch = false,
   } = opts;
+  const ownershipLease = capturePanelOperationLease(body);
+  if (
+    !ownershipLease ||
+    !requireCurrentPanelOwnership(body, item, "send-question")
+  ) {
+    return;
+  }
   const initialConversationKey = getConversationKey(item);
   const claimedHere = opts.requestId === undefined;
   let thisRequestId: number;
@@ -10177,7 +11095,9 @@ export async function sendQuestion(
   const requestIsActive = (conversationKey: number) =>
     isRequestOwner(conversationKey, thisRequestId) &&
     getCancelledRequestId(conversationKey) < thisRequestId &&
-    !getAbortController(conversationKey)?.signal.aborted;
+    !getAbortController(conversationKey)?.signal.aborted &&
+    isPanelOperationLeaseCurrent(ownershipLease) &&
+    requireCurrentPanelOwnership(body, item, "send-question-continuation");
   const finishBeforeDispatch = () => {
     if (!claimedHere) return false;
     const currentConversationKey = getConversationKey(item);
@@ -10292,6 +11212,7 @@ export async function sendQuestion(
         forcedSkillIds: opts.forcedSkillIds,
         pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
         conversationSystem: effectiveConversationSystem,
+        planContext: opts.planContext,
         requestId: thisRequestId,
         onProviderDispatch: opts.onProviderDispatch,
       });
@@ -10519,7 +11440,17 @@ export async function sendQuestion(
     };
 
     try {
-      notifyProviderDispatch(body, ui, opts.onProviderDispatch);
+      if (
+        !notifyProviderDispatch(
+          body,
+          ui,
+          item,
+          ownershipLease,
+          opts.onProviderDispatch,
+        )
+      ) {
+        return;
+      }
       await compactCodexAppServerConversation({
         conversationKey,
         codexPath: getEffectiveCodexAppServerBinaryPath(
@@ -10813,10 +11744,18 @@ export async function sendQuestion(
   refreshChatSafely();
 
   let assistantPersisted = false;
-  const persistAssistantOnce = async () => {
+  let codexActivityTrace: CodexNativeActivityTraceController | null = null;
+  const persistAssistantOnce = async (
+    status?: import("../../agent/types").AgentRunStatus,
+  ) => {
     if (assistantPersisted) return;
     assistantPersisted = true;
     if (!shouldPersistTurn) return;
+    await codexActivityTrace?.persist(
+      conversationKey,
+      conversationGeneration,
+      status,
+    );
     await persistConversationMessage(
       conversationKey,
       {
@@ -10826,10 +11765,14 @@ export async function sendQuestion(
         timestamp: assistantMessage.timestamp,
         runMode: assistantMessage.runMode,
         agentRunId: assistantMessage.agentRunId,
+        documentId: assistantMessage.documentId,
+        planDocumentId: assistantMessage.planDocumentId,
         modelName: assistantMessage.modelName,
         modelEntryId: assistantMessage.modelEntryId,
         modelProviderLabel: assistantMessage.modelProviderLabel,
         interrupted: assistantMessage.interrupted,
+        completionStatus: assistantMessage.completionStatus,
+        completionReason: assistantMessage.completionReason,
         reasoningSummary: assistantMessage.reasoningSummary,
         reasoningDetails: assistantMessage.reasoningDetails,
         webchatRunState: assistantMessage.webchatRunState,
@@ -10851,7 +11794,7 @@ export async function sendQuestion(
     flushResponseStream("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
-    await persistAssistantOnce();
+    await persistAssistantOnce("cancelled");
     setStatusSafely("Cancelled", "ready");
   };
   const stopInactiveRequest = async () => {
@@ -10864,8 +11807,9 @@ export async function sendQuestion(
 
   // [webchat] Dedicated pipeline — bypass context assembly, send raw PDF + question
   if (effectiveRequestConfig.providerProtocol === "web_sync") {
-    const webChatQueueRefresh = createQueuedRefresh(() =>
-      refreshAssistantMessageSafely(assistantMessage),
+    const webChatQueueRefresh = createQueuedRefresh(
+      () => refreshAssistantMessageSafely(assistantMessage),
+      body,
     );
     const reportWebChatSendOutcome = (
       outcome: "success" | "failed" | "cancelled",
@@ -10881,8 +11825,18 @@ export async function sendQuestion(
       );
       const webchatTarget = webchatTargetEntry?.id || "chatgpt";
       const webchatLabel = webchatTargetEntry?.label || "ChatGPT";
+      const previousWebChatAssistant = historyForLLM
+        .slice()
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "assistant" &&
+            message.modelName === effectiveRequestConfig.model &&
+            Boolean(message.webchatChatUrl || message.webchatChatId),
+        );
       setStatusSafely(`Sending to ${webchatLabel}…`, "sending");
-      const { sendWebChatQuestion } = await import("../../webchat/pipeline");
+      const { selectWebChatExpectedConversation, sendWebChatQuestion } =
+        await import("../../webchat/pipeline");
       if (await stopInactiveRequest()) {
         reportWebChatSendOutcome("cancelled");
         return;
@@ -10897,7 +11851,24 @@ export async function sendQuestion(
       // [webchat] Send PDF only when the caller explicitly requests it via chip state.
       // Always use dynamic port for the embedded relay server
       const { getRelayBaseUrl } = await import("../../webchat/relayServer");
-      notifyProviderDispatch(body, ui, opts.onProviderDispatch);
+      const expectedConversation = selectWebChatExpectedConversation({
+        explicitUrl: opts.webchatExpectedChatUrl,
+        explicitId: opts.webchatExpectedChatId,
+        historicalUrl: previousWebChatAssistant?.webchatChatUrl,
+        historicalId: previousWebChatAssistant?.webchatChatId,
+      });
+      if (
+        !notifyProviderDispatch(
+          body,
+          ui,
+          item,
+          ownershipLease,
+          opts.onProviderDispatch,
+        )
+      ) {
+        reportWebChatSendOutcome("cancelled");
+        return;
+      }
       const answer = await sendWebChatQuestion({
         item,
         question,
@@ -10911,6 +11882,7 @@ export async function sendQuestion(
             : undefined,
         chatgptMode,
         target: webchatTarget,
+        ...expectedConversation,
         signal: getAbortController(conversationKey)?.signal,
         onAnswerSnapshot: (text, snapshot) => {
           applyWebChatAnswerSnapshot(assistantMessage, text, snapshot);
@@ -11097,10 +12069,11 @@ export async function sendQuestion(
     // Streaming flushes only mutate this assistant message, so re-render just
     // its bubble; refreshChat falls back to a full rebuild if the wrapper is
     // not in the DOM yet.
-    const queueRefresh = createQueuedRefresh(() =>
-      refreshAssistantMessageSafely(assistantMessage),
+    const queueRefresh = createQueuedRefresh(
+      () => refreshAssistantMessageSafely(assistantMessage),
+      body,
     );
-    const codexActivityTrace = isCodexNativeTurn
+    codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
     noteExplicitCodexNativeSkillInvocations(
@@ -11134,9 +12107,7 @@ export async function sendQuestion(
       providerProtocol: effectiveRequestConfig.providerProtocol,
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
-      maxTokens: effectiveRequestConfig.advanced?.maxTokens,
-      maxTokensExplicit:
-        effectiveRequestConfig.advanced?.maxTokensExplicit === true,
+      outputTokenLimit: effectiveRequestConfig.advanced?.outputTokenLimit,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
       profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
@@ -11194,11 +12165,56 @@ export async function sendQuestion(
           }),
         )
       : null;
+    const codexSemanticRequest = isCodexNativeTurn
+      ? await initAgentSubsystem().then(async (runtime) => {
+          const planRequest = await buildAgentRuntimeRequest({
+            conversationKey,
+            conversationGeneration,
+            sourceMessageTimestamp: userMessage.timestamp,
+            item,
+            userText: shownQuestion,
+            selectedTextContexts: selectedTextContextsForMessage,
+            resolvedSelectedTextAnchors,
+            selectedTexts: selectedTextsForMessage,
+            selectedTextSources: selectedTextSourcesForMessage,
+            selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+            selectedTextNoteContexts: selectedTextNoteContextsForMessage,
+            paperContexts: contextPlan.paperContexts,
+            pdfPaperContexts: normalizedPdfPaperContexts,
+            fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+            citationPaperContexts: userMessage.citationPaperContexts,
+            selectedCollectionContexts: selectedCollectionContextsForMessage,
+            selectedTagContexts: selectedTagContextsForMessage,
+            attachments: modelAttachments || attachments,
+            localDocuments,
+            screenshots: allSendImages,
+            forcedSkillIds: opts.forcedSkillIds,
+            planContext: opts.planContext,
+            effectiveRequestConfig,
+            history: llmHistory,
+          });
+          return runtime.prepareSemanticRequest(planRequest, {
+            signal: getAbortController(conversationKey)?.signal,
+          });
+        })
+      : undefined;
+    const codexPlanActionContract = codexSemanticRequest?.actionContract;
     if (await stopInactiveRequest()) return;
-    notifyProviderDispatch(body, ui, opts.onProviderDispatch);
-    const answer = isCodexNativeTurn
-      ? (
-          await runCodexAppServerNativeTurn({
+    if (
+      !notifyProviderDispatch(
+        body,
+        ui,
+        item,
+        ownershipLease,
+        opts.onProviderDispatch,
+      )
+    ) {
+      return;
+    }
+    const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
+      ? await (async () => {
+          const result = await runCodexAppServerNativeTurn({
+            semanticRequest: codexSemanticRequest!,
             scope: codexScope!,
             conversationGeneration,
             model: effectiveRequestConfig.model,
@@ -11228,6 +12244,7 @@ export async function sendQuestion(
             }),
             ...buildCodexNativeTurnCallbacks({
               body,
+              item,
               assistantMessage,
               codexActivityTrace,
               flushResponseStream,
@@ -11237,18 +12254,42 @@ export async function sendQuestion(
               handleUsage,
               conversationKey,
               conversationGeneration,
+              planContext: opts.planContext,
+              actionContract: codexPlanActionContract,
+              classifiedIntent: codexSemanticRequest?.classifiedIntent,
+              skillRoutingReceipt: codexSemanticRequest?.skillRoutingReceipt,
+              actionPreparation: codexSemanticRequest?.actionPreparation,
             }),
-          })
-        ).text
-      : await callLLMStream(
-          {
+          });
+          assistantMessage.agentRunId = result.agentRunId;
+          if (result.documentId) {
+            assistantMessage.documentId = result.documentId;
+          }
+          return {
+            text:
+              opts.planContext?.phase === "planning"
+                ? "The plan is ready for review."
+                : result.text,
+            completion: { status: "complete" as const },
+          };
+        })()
+      : await callDirectChatTurnWithRecovery({
+          request: {
             ...requestParams,
             systemMessages,
           },
-          handleDelta,
-          handleReasoning,
-          handleUsage,
-        );
+          onDelta: handleDelta,
+          onReasoning: handleReasoning,
+          onUsage: handleUsage,
+        });
+    if (isCodexNativeTurn) {
+      await finalizeCodexPlanExecution({
+        planContext: opts.planContext,
+        answer: modelOutcome.text,
+        assistantMessage,
+        trace: codexActivityTrace,
+      });
+    }
 
     if (
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -11262,10 +12303,22 @@ export async function sendQuestion(
     const hasGeneratedOutput = normalizeGeneratedChatImages(
       assistantMessage.generatedImages,
     ).length;
+    const outputLimited =
+      modelOutcome.completion.status === "incomplete" &&
+      modelOutcome.completion.reason === "output_limit";
     assistantMessage.text =
-      sanitizeText(answer) ||
+      sanitizeText(modelOutcome.text) ||
       assistantMessage.text ||
-      (hasGeneratedOutput ? "" : "No response.");
+      (hasGeneratedOutput
+        ? ""
+        : outputLimited
+          ? EMPTY_OUTPUT_LIMIT_MESSAGE
+          : resolveEmptyModelOutcomeMessage(modelOutcome.completion));
+    assistantMessage.completionStatus = modelOutcome.completion.status;
+    assistantMessage.completionReason =
+      "reason" in modelOutcome.completion
+        ? modelOutcome.completion.reason
+        : undefined;
     await finalizeAssistantMessageQuoteCitations(assistantMessage, {
       pairedUserMessage: userMessage,
       paperContexts: contextPlan.paperContexts,
@@ -11566,6 +12619,109 @@ export function renderForkSourceMarkerInto(
   bubble.append(leftRule, button, rightRule);
 }
 
+type MountedAssistantView = {
+  wrapper: HTMLElement;
+  bubble: HTMLElement;
+  trace: HTMLElement;
+  user: Message | null;
+  runId?: string;
+  text: string;
+  quoteCitations?: Message["quoteCitations"];
+  quoteOverride?: Message["quoteDisplayOverride"];
+  answer?: HTMLElement;
+  streaming?: boolean;
+  documentId?: string;
+};
+const mountedAssistantViews = new WeakMap<
+  HTMLElement,
+  Map<Message, MountedAssistantView>
+>();
+
+/** Text/activity refreshes never rebuild the conversation or restore its scroll snapshot. */
+function updateMountedAssistantViews(
+  body: Element,
+  item: Zotero.Item,
+  box: HTMLDivElement,
+  messages: ReadonlySet<Message>,
+): boolean {
+  const views = mountedAssistantViews.get(box);
+  if (!views || !messages.size) return false;
+  for (const message of messages) {
+    const view = views.get(message);
+    if (
+      !view ||
+      view.wrapper.parentElement !== box ||
+      Boolean(message.streaming) !== Boolean(view.streaming) ||
+      message.compactMarker ||
+      (message.documentId || message.planDocumentId) !== view.documentId ||
+      message.agentRunId !== view.runId ||
+      message.generatedImages?.length
+    )
+      return false;
+  }
+  for (const message of messages) {
+    const view = views.get(message)!;
+    const events = message.agentRunId
+      ? getCachedAgentRunEvents(message.agentRunId)
+      : message.pendingAgentTraceEvents || [];
+    let interleaved = false;
+    const trace = renderAgentTrace({
+      doc: box.ownerDocument,
+      panelItem: item,
+      message,
+      userMessage: view.user,
+      events,
+      previous: view.trace,
+      allowPlanRecovery:
+        message === latestAssistantMessage(getConversationKey(item)),
+      onInterleavedText: () => {
+        interleaved = true;
+      },
+    });
+    if (trace && trace !== view.trace) {
+      view.trace.replaceWith(trace);
+      view.trace = trace;
+    }
+    if (
+      message.text !== view.text ||
+      message.quoteCitations !== view.quoteCitations ||
+      message.quoteDisplayOverride !== view.quoteOverride
+    ) {
+      const expandedQuoteCards = collectExpandedQuoteCardKeys(view.answer);
+      if (!view.answer) {
+        view.answer = box.ownerDocument.createElement("div");
+        view.answer.className = "llm-assistant-answer";
+        view.bubble.appendChild(view.answer);
+      }
+      renderAssistantRichText({
+        body,
+        panelItem: item,
+        bubble: view.answer as HTMLDivElement,
+        assistantMessage: message,
+        pairedUserMessage: view.user,
+        webSourceAnchors: getWebSourceAnchorsFromTrace(events),
+        incremental: true,
+        onContentRendered: () =>
+          stabilizeFollowBottomAfterAsyncChatContent(
+            body,
+            getConversationKey(item),
+            box,
+          ),
+      });
+      restoreExpandedQuoteCards(view.answer, expandedQuoteCards);
+      view.text = message.text;
+      view.quoteCitations = message.quoteCitations;
+      view.quoteOverride = message.quoteDisplayOverride;
+      updateStreamingTurnNavigator(body, message);
+      view.bubble.querySelector(".llm-typing")?.remove();
+    }
+    if (view.answer) view.answer.hidden = interleaved;
+  }
+  syncFloatingPlanProgress(box, getConversationKey(item));
+  scheduleFollowBottomStabilization(body, getConversationKey(item), box);
+  return true;
+}
+
 export type RefreshChatOptions = {
   rerenderAssistantMessages?: ReadonlySet<Message>;
 };
@@ -11578,6 +12734,26 @@ export function refreshChat(
   if (item && !isPanelConversationCurrent(body, item)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
+  if (item && options.rerenderAssistantMessages) {
+    const rerenderConversationKey = getConversationKey(item);
+    let updatedInPlace = false;
+    // The reader's view is anchored across the in-place update: a message
+    // changing height above the viewport must not move what they are reading.
+    withScrollGuard(
+      chatBox,
+      rerenderConversationKey,
+      () => {
+        updatedInPlace = updateMountedAssistantViews(
+          body,
+          item,
+          chatBox,
+          options.rerenderAssistantMessages!,
+        );
+      },
+      "anchor",
+    );
+    if (updatedInPlace) return;
+  }
   const doc = body.ownerDocument!;
   setPromptMenuTarget(null);
   const paperContextDisplayCache: PaperContextDisplayCache = new Map();
@@ -11597,6 +12773,7 @@ export function refreshChat(
       "#llm-token-usage",
     ) as HTMLElement | null;
     if (tokenUsageEl) tokenUsageEl.style.display = "none";
+    syncConversationTurnNavigator(body, [], { conversationKey: null });
     return;
   }
 
@@ -11616,14 +12793,33 @@ export function refreshChat(
     conversationKey,
     body,
   );
-  const cachedSnapshot = getChatScrollSnapshot(conversationKey);
-  const baselineSnapshot = hasActiveFollowBottomCatchupRequest(conversationKey)
-    ? buildFollowBottomScrollSnapshot(chatBox)
-    : pendingRestoreSnapshot
-      ? pendingRestoreSnapshot
-      : cachedSnapshot
-        ? cachedSnapshot
-        : buildChatScrollSnapshot(chatBox);
+  const activeNavigationSnapshot = getActiveChatNavigationSnapshot(chatBox);
+  // A targeted re-render keeps the current DOM, so the reader's live position
+  // is the truth: settle a stale follow-bottom intent and anchor the view that
+  // is actually on screen rather than the last persisted geometry.
+  const targetedRerenderRequested = Boolean(
+    options.rerenderAssistantMessages?.size,
+  );
+  const cachedSnapshot = targetedRerenderRequested
+    ? settleFollowBottomIntent(conversationKey, chatBox, {
+        streaming: conversationHasStreamingMessage(conversationKey),
+      })
+    : getChatScrollSnapshot(conversationKey);
+  const liveAnchoredSnapshot =
+    targetedRerenderRequested && cachedSnapshot?.mode === "manual"
+      ? buildAnchoredChatScrollSnapshot(chatBox)
+      : undefined;
+  const baselineSnapshot = activeNavigationSnapshot
+    ? activeNavigationSnapshot
+    : hasActiveFollowBottomCatchupRequest(conversationKey)
+      ? buildFollowBottomScrollSnapshot(chatBox)
+      : pendingRestoreSnapshot
+        ? pendingRestoreSnapshot
+        : liveAnchoredSnapshot
+          ? liveAnchoredSnapshot
+          : cachedSnapshot
+            ? cachedSnapshot
+            : buildChatScrollSnapshot(chatBox);
   const rawHistory = chatHistory.get(conversationKey) || [];
   // Turns queued for deletion stay in memory and DB until the undo window
   // closes; they are only hidden from the render.
@@ -11704,6 +12900,7 @@ export function refreshChat(
         if (panelRoot) panelRoot.dataset.startPageActive = "true";
       }
     }
+    syncConversationTurnNavigator(body, [], { conversationKey });
     return;
   }
 
@@ -11720,6 +12917,16 @@ export function refreshChat(
     }
   }
   if (!useTargetedRerender) {
+    for (const root of Array.from(
+      chatBox.querySelectorAll<HTMLElement>(".llm-plan-container-execution"),
+    )) {
+      if (root) disposePlanProgress(root as HTMLElement);
+    }
+    for (const view of mountedAssistantViews.get(chatBox)?.values() || []) {
+      disposeAgentTrace(view.trace);
+      if (view.answer) disposeStreamingMarkdown(view.answer);
+    }
+    mountedAssistantViews.delete(chatBox);
     chatBox.innerHTML = "";
   }
 
@@ -11765,7 +12972,14 @@ export function refreshChat(
 
     const bubble = doc.createElement("div") as HTMLDivElement;
     bubble.className = `llm-bubble ${isUser ? "user" : "assistant"}`;
+    if (!isUser) {
+      applyStableAnimationPhase(
+        bubble,
+        msg.waitingAnimationStartedAt || msg.timestamp,
+      );
+    }
     let inlineEditEl: HTMLElement | null = null;
+    let responseWebSourceAnchors: readonly WebSourceAnchor[] = [];
 
     if (isUser) {
       const contextBadgesRow = doc.createElement("div") as HTMLDivElement;
@@ -12590,13 +13804,16 @@ export function refreshChat(
         ? cachedTraceEvents
         : msg.pendingAgentTraceEvents || [];
       const webSourceAnchors = getWebSourceAnchorsFromTrace(traceEvents);
+      responseWebSourceAnchors = webSourceAnchors;
       let agentUsesInterleavedText = false;
       const agentTraceEl =
         msg.runMode === "agent" && !msg.compactMarker
           ? renderAgentTrace({
               doc,
+              panelItem: item,
               message: msg,
               userMessage: previousUserMessage,
+              allowPlanRecovery: index === latestAssistantIndex,
               events: traceEvents,
               onTraceMissing:
                 agentRunId && !hasCachedTrace
@@ -12609,11 +13826,17 @@ export function refreshChat(
               },
             })
           : null;
+      const agentTraceReplacesAssistantTurn =
+        agentTraceEl?.dataset.llmAssistantTurnReplacement === "true";
+      let answerHost: HTMLElement | undefined;
       if (hasAnswerText && !agentUsesInterleavedText) {
         const safeText = buildAssistantDisplayMarkdownForRender(
           msg,
           webSourceAnchors,
         );
+        answerHost = doc.createElement("div");
+        answerHost.className = "llm-assistant-answer";
+        bubble.appendChild(answerHost);
         if (msg.streaming) bubble.classList.add("streaming");
         if (msg.compactMarker) {
           renderCompactMarkerInto(
@@ -12625,8 +13848,14 @@ export function refreshChat(
           );
         } else
           try {
-            renderRenderedMarkdownInto(bubble, safeText, doc, {
-              onAsyncContentRendered: () => {
+            renderAssistantRichText({
+              body,
+              panelItem: item,
+              bubble: answerHost as HTMLDivElement,
+              assistantMessage: msg,
+              pairedUserMessage: previousUserMessage,
+              webSourceAnchors,
+              onContentRendered: () => {
                 stabilizeFollowBottomAfterAsyncChatContent(
                   body,
                   conversationKey,
@@ -12636,14 +13865,18 @@ export function refreshChat(
             });
           } catch (err) {
             ztoolkit.log("LLM render error:", err);
-            bubble.textContent = safeText;
+            answerHost.textContent = safeText;
           }
-        decorateWebSourceIndicators(bubble, doc, webSourceAnchors);
+        decorateWebSourceIndicators(answerHost, doc, webSourceAnchors);
       }
 
       const bubbleHeaderNodes: HTMLElement[] = [];
 
-      if (hasModelName && !msg.compactMarker) {
+      if (
+        hasModelName &&
+        !msg.compactMarker &&
+        !agentTraceReplacesAssistantTurn
+      ) {
         const modelHeader = doc.createElement("div") as HTMLDivElement;
         modelHeader.className = "llm-model-header";
 
@@ -12675,7 +13908,9 @@ export function refreshChat(
       const hasReasoningSummary = Boolean(msg.reasoningSummary?.trim());
       const hasReasoningDetails = Boolean(msg.reasoningDetails?.trim());
       const showTopReasoningPanel =
-        (hasReasoningSummary || hasReasoningDetails) && msg.runMode !== "agent";
+        !agentTraceReplacesAssistantTurn &&
+        (hasReasoningSummary || hasReasoningDetails) &&
+        msg.runMode !== "agent";
       if (showTopReasoningPanel) {
         const details = doc.createElement("details") as HTMLDetailsElement;
         details.className = "llm-agent-reasoning";
@@ -12760,41 +13995,66 @@ export function refreshChat(
       if (agentTraceEl) {
         bubbleHeaderNodes.push(agentTraceEl);
       }
+      if (agentTraceEl) {
+        let views = mountedAssistantViews.get(chatBox);
+        if (!views) {
+          views = new Map();
+          mountedAssistantViews.set(chatBox, views);
+        }
+        views.set(msg, {
+          wrapper,
+          bubble,
+          trace: agentTraceEl,
+          user: previousUserMessage,
+          runId: msg.agentRunId,
+          text: msg.text,
+          answer: answerHost,
+          streaming: msg.streaming,
+          documentId: msg.documentId || msg.planDocumentId,
+          quoteCitations: msg.quoteCitations,
+          quoteOverride: msg.quoteDisplayOverride,
+        });
+      }
 
       for (let i = bubbleHeaderNodes.length - 1; i >= 0; i -= 1) {
         bubble.insertBefore(bubbleHeaderNodes[i], bubble.firstChild);
       }
 
       if (hasGeneratedImages) {
-        renderAssistantGeneratedImagesInto(bubble, generatedImages, doc, {
-          onImageLoaded: () => {
-            stabilizeFollowBottomAfterAsyncChatContent(
-              body,
-              conversationKey,
-              chatBox,
-            );
-          },
-          onImageActionStatus: (message, level) => {
-            const status = body.querySelector(
-              "#llm-status",
-            ) as HTMLElement | null;
-            if (status) setStatus(status, message, level);
-          },
-        });
+        if (!agentTraceReplacesAssistantTurn) {
+          renderAssistantGeneratedImagesInto(bubble, generatedImages, doc, {
+            onImageLoaded: () => {
+              stabilizeFollowBottomAfterAsyncChatContent(
+                body,
+                conversationKey,
+                chatBox,
+              );
+            },
+            onImageActionStatus: (message, level) => {
+              const status = body.querySelector(
+                "#llm-status",
+              ) as HTMLElement | null;
+              if (status) setStatus(status, message, level);
+            },
+          });
+        }
       }
 
-      decorateCompletedAssistantCitationLinks({
-        body,
-        panelItem: item,
-        bubble,
-        assistantMessage: msg,
-        pairedUserMessage: previousUserMessage,
-        webSourceAnchors,
-      });
+      if (!agentTraceReplacesAssistantTurn) {
+        decorateCompletedAssistantCitationLinks({
+          body,
+          panelItem: item,
+          bubble,
+          assistantMessage: msg,
+          pairedUserMessage: previousUserMessage,
+          webSourceAnchors,
+        });
+      }
 
       if (
         !hasAnswerText &&
         !hasGeneratedImages &&
+        !agentTraceReplacesAssistantTurn &&
         !(msg.streaming && isClaudeStreamingConversation)
       ) {
         const typing = doc.createElement("div") as HTMLDivElement;
@@ -12804,7 +14064,7 @@ export function refreshChat(
         bubble.appendChild(typing);
       }
 
-      if (!msg.compactMarker) {
+      if (!msg.compactMarker && !agentTraceReplacesAssistantTurn) {
         attachAssistantResponseContextMenu({
           body,
           doc,
@@ -12854,6 +14114,7 @@ export function refreshChat(
         message: msg,
         pairedUserMessage: pairedUserForActions,
         conversationKey: actionConversationKey,
+        webSourceAnchors: responseWebSourceAnchors,
       });
       const actionDeleteTarget = buildAssistantResponseDeleteTarget({
         item,
@@ -12942,6 +14203,14 @@ export function refreshChat(
           conversationKey: actionConversationKey,
           userTimestamp: actionUserTimestamp,
           assistantTimestamp: actionAssistantTimestamp,
+        });
+      }
+      if (actionResponseTarget) {
+        appendAssistantResponseExpandAction({
+          body,
+          doc,
+          actions,
+          target: actionResponseTarget,
         });
       }
 
@@ -13036,6 +14305,75 @@ export function refreshChat(
       interruptedRow.appendChild(note);
     }
 
+    let outputLimitRow: HTMLDivElement | null = null;
+    if (
+      !isUser &&
+      msg.completionStatus === "incomplete" &&
+      msg.completionReason === "output_limit"
+    ) {
+      outputLimitRow = doc.createElement("div") as HTMLDivElement;
+      outputLimitRow.className = "llm-message-interrupted-row";
+      const note = doc.createElement("span") as HTMLSpanElement;
+      note.className = "llm-message-interrupted-note";
+      note.textContent = "⚠ Response reached the model’s output limit";
+      outputLimitRow.appendChild(note);
+
+      const originalEntry = getAvailableModelEntries().find(
+        (entry) =>
+          (msg.modelEntryId && entry.entryId === msg.modelEntryId) ||
+          (!msg.modelEntryId &&
+            entry.model === msg.modelName &&
+            entry.providerLabel === msg.modelProviderLabel),
+      );
+      const continueButton = doc.createElementNS(
+        HTML_NS,
+        "button",
+      ) as HTMLButtonElement;
+      continueButton.type = "button";
+      continueButton.className =
+        "llm-message-action llm-message-output-limit-continue";
+      continueButton.textContent = "Continue";
+      const isLatestIncomplete = index === latestAssistantIndex;
+      continueButton.disabled =
+        !item || !originalEntry || !conversationIsIdle || !isLatestIncomplete;
+      continueButton.title = !isLatestIncomplete
+        ? "Only the latest response can be continued"
+        : originalEntry
+          ? "Continue with the original model profile"
+          : "The original model profile is no longer available";
+      continueButton.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!item || !originalEntry || continueButton.disabled) return;
+        const continueReasoning = getSelectedReasoningForItem(
+          item.id,
+          originalEntry.model,
+          originalEntry.apiBase,
+          originalEntry.providerProtocol,
+          originalEntry.advanced?.profileOverride,
+        );
+        void retryLatestAssistantResponse(
+          body,
+          item,
+          originalEntry.model,
+          originalEntry.apiBase,
+          originalEntry.apiKey,
+          originalEntry.authMode,
+          originalEntry.providerProtocol,
+          originalEntry.entryId,
+          originalEntry.providerLabel,
+          continueReasoning,
+          originalEntry.advanced,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { continueIncomplete: true },
+        );
+      });
+      outputLimitRow.appendChild(continueButton);
+    }
+
     if (isUser && inlineEditEl) {
       wrapper.appendChild(inlineEditEl);
     } else {
@@ -13044,9 +14382,22 @@ export function refreshChat(
     wrapper.appendChild(meta);
     if (webchatStatusRow) wrapper.appendChild(webchatStatusRow);
     if (interruptedRow) wrapper.appendChild(interruptedRow);
+    if (outputLimitRow) wrapper.appendChild(outputLimitRow);
     const existingTargetedWrapper = targetedMessageWrappers.get(msg);
     if (useTargetedRerender && existingTargetedWrapper) {
+      const previousTrace = existingTargetedWrapper.querySelector<HTMLElement>(
+        ".llm-agent-activity",
+      );
+      if (previousTrace) disposeAgentTrace(previousTrace);
+      const previousAnswer = existingTargetedWrapper.querySelector<HTMLElement>(
+        ".llm-assistant-answer",
+      );
+      if (previousAnswer) disposeStreamingMarkdown(previousAnswer);
+      const expandedQuoteCards = collectExpandedQuoteCardKeys(
+        existingTargetedWrapper,
+      );
       existingTargetedWrapper.replaceWith(wrapper);
+      restoreExpandedQuoteCards(wrapper, expandedQuoteCards);
     } else {
       chatBox.appendChild(wrapper);
     }
@@ -13070,7 +14421,12 @@ export function refreshChat(
     }
   }
 
+  syncFloatingPlanProgress(chatBox, conversationKey);
   syncUserContextAlignmentWidths(body);
+  syncConversationTurnNavigator(body, history, {
+    conversationKey,
+    targetedMessages: useTargetedRerender ? requestedRerenders : undefined,
+  });
 
   applyChatScrollSnapshot(chatBox, baselineSnapshot);
   persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
@@ -13078,15 +14434,10 @@ export function refreshChat(
     scheduleFollowBottomStabilization(body, conversationKey, chatBox);
   } else {
     const win = body.ownerDocument?.defaultView;
-    const active = followBottomStabilizers.get(conversationKey);
-    if (active && win) {
-      if (typeof active.rafId === "number") {
-        win.cancelAnimationFrame(active.rafId);
-      }
-      if (typeof active.timeoutId === "number") {
-        win.clearTimeout(active.timeoutId);
-      }
-      followBottomStabilizers.delete(conversationKey);
+    const active = followBottomStabilizers.get(chatBox);
+    if (active !== undefined && win) {
+      win.cancelAnimationFrame(active);
+      followBottomStabilizers.delete(chatBox);
     }
   }
 }
@@ -13132,11 +14483,7 @@ export function refreshConversationPanels(
         syncPanelState?.();
       }
     };
-    if (chatBox) {
-      withScrollGuard(chatBox, conversationKey, updatePanel);
-    } else {
-      updatePanel();
-    }
+    updatePanel();
     refreshedPanels.add(body);
   };
 

@@ -1,3 +1,4 @@
+import { getPendingRequestId, recordLivePlanExecution } from "../state";
 /**
  * Agent mode execution engine.
  *
@@ -244,6 +245,7 @@ type AgentTurnEventContext = {
   messageDeltaCoalescer: { pushText: (text: string) => void };
   flushMessageDeltas: (reason: BlockStreamFlushReason) => void;
   queueRefresh: () => void;
+  refreshAssistant: () => void;
   refreshChatSafely: () => void;
   setStatusSafely: (text: string, kind: StatusKind) => void;
   pushTraceEvent: (runId: string, event: AgentEvent) => void;
@@ -257,7 +259,7 @@ type AgentTurnEventContext = {
  * only in which user message is paired with the turn, which history array
  * receives compact markers, and how compaction treats the assistant bubble.
  */
-function createAgentTurnEventHandler(
+export function createAgentTurnEventHandler(
   ctx: AgentTurnEventContext,
 ): (event: AgentEvent) => Promise<void> {
   const {
@@ -281,7 +283,19 @@ function createAgentTurnEventHandler(
     scheduleQueueDrain,
     uiRelease,
   } = ctx;
+  const executionRequestId = getPendingRequestId(conversationKey);
   return async (event: AgentEvent): Promise<void> => {
+    if (
+      event.type === "plan_execution_updated" &&
+      assistantMessage.agentRunId
+    ) {
+      recordLivePlanExecution(
+        conversationKey,
+        executionRequestId,
+        assistantMessage.agentRunId,
+        event.ledger,
+      );
+    }
     if (assistantMessage.agentRunId) {
       pushTraceEvent(assistantMessage.agentRunId, event);
     }
@@ -354,9 +368,7 @@ function createAgentTurnEventHandler(
               ui.tokenUsageEl,
               effectiveTokens,
               nextWindow,
-              body.querySelector(
-                "#llm-claude-context-gauge",
-              ) as HTMLElement | null,
+              body.querySelector("#llm-context-gauge") as HTMLElement | null,
               {
                 estimated: usageRecord.contextWindowIsAuthoritative !== true,
                 cacheReadTokens:
@@ -434,9 +446,9 @@ function createAgentTurnEventHandler(
         setStatusSafely(event.text, "sending");
         if (isCompactingStatus) {
           assistantMessage.pendingAgentTraceEvents = undefined;
-          queueRefresh();
         }
-        break;
+        queueRefresh();
+        return;
       }
       case "reasoning": {
         if (event.summary) {
@@ -537,8 +549,12 @@ function createAgentTurnEventHandler(
         return;
       }
       case "final":
+        assistantMessage.documentId = event.documentId || event.planDocumentId;
+        assistantMessage.planDocumentId = event.planDocumentId;
         assistantMessage.text =
-          deps.sanitizeText(event.text) ||
+          (assistantMessage.documentId
+            ? event.text
+            : deps.sanitizeText(event.text)) ||
           assistantMessage.pendingFinalText ||
           assistantMessage.text;
         assistantMessage.pendingFinalText = undefined;
@@ -549,7 +565,7 @@ function createAgentTurnEventHandler(
       default:
         break;
     }
-    refreshChatSafely();
+    ctx.refreshAssistant();
     await deps.waitForUiStep();
   };
 }
@@ -603,12 +619,20 @@ async function finalizeAgentTurnOutcome(ctx: {
 
   assistantMessage.agentRunId = outcome.runId;
   assistantMessage.runMode = "agent";
+  assistantMessage.documentId =
+    outcome.kind === "completed"
+      ? outcome.documentId || outcome.planDocumentId
+      : undefined;
+  assistantMessage.planDocumentId =
+    outcome.kind === "completed" ? outcome.planDocumentId : undefined;
   const finalOutcomeText =
     outcome.kind === "completed"
       ? outcome.text
       : assistantMessage.pendingFinalText || assistantMessage.text;
   assistantMessage.text =
-    deps.sanitizeText(finalOutcomeText) ||
+    (assistantMessage.documentId
+      ? finalOutcomeText
+      : deps.sanitizeText(finalOutcomeText)) ||
     assistantMessage.pendingFinalText ||
     assistantMessage.text ||
     "No response.";
@@ -952,6 +976,7 @@ type EffectiveRequestConfigShape = {
 type BuildAgentRuntimeRequestParamsShape = {
   conversationKey: number;
   conversationGeneration?: number;
+  sourceMessageTimestamp?: number;
   item: Zotero.Item;
   activePaperContext?: PaperContextRef;
   userText: string;
@@ -971,6 +996,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   localDocuments?: readonly LocalDocumentResource[];
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
+  planContext?: import("../../../agent/plans/types").PlanRuntimeContext;
   effectiveRequestConfig: EffectiveRequestConfigShape;
   history: ChatMessage[];
 };
@@ -1301,6 +1327,7 @@ export async function sendAgentTurn(
     modelAttachments?: ChatAttachment[];
     localDocuments?: readonly LocalDocumentResource[];
     forcedSkillIds?: string[];
+    planContext?: import("../../../agent/plans/types").PlanRuntimeContext;
   },
   deps: AgentEngineDeps,
 ): Promise<void> {
@@ -1335,6 +1362,7 @@ export async function sendAgentTurn(
     modelAttachments,
     localDocuments,
     forcedSkillIds,
+    planContext,
   } = opts;
   const conversationKey = deps.getConversationKey(item);
   const ui = deps.getPanelRequestUI(body);
@@ -1624,6 +1652,7 @@ export async function sendAgentTurn(
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
     conversationGeneration: deps.conversationGeneration,
+    sourceMessageTimestamp: userMessage.timestamp,
     item,
     activePaperContext,
     userText: question,
@@ -1643,6 +1672,7 @@ export async function sendAgentTurn(
     localDocuments,
     screenshots: images,
     forcedSkillIds,
+    planContext,
     effectiveRequestConfig,
     history: llmHistory,
   });
@@ -1708,6 +1738,8 @@ export async function sendAgentTurn(
       timestamp: persistedTimestamp,
       runMode: "agent",
       agentRunId: assistantMessage.agentRunId,
+      documentId: assistantMessage.documentId,
+      planDocumentId: assistantMessage.planDocumentId,
       modelName: assistantMessage.modelName,
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
@@ -1773,6 +1805,7 @@ export async function sendAgentTurn(
         messageDeltaCoalescer,
         flushMessageDeltas,
         queueRefresh,
+        refreshAssistant: () => refreshAssistantMessageSafely(assistantMessage),
         refreshChatSafely,
         setStatusSafely,
         pushTraceEvent,
@@ -2194,6 +2227,7 @@ export async function retryAgentTurn(
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
     conversationGeneration: deps.conversationGeneration,
+    sourceMessageTimestamp: retryPair.userMessage.timestamp,
     item,
     activePaperContext:
       activePaperContextOverride ?? retryPaperContext.activePaperContext,
@@ -2238,6 +2272,8 @@ export async function retryAgentTurn(
       timestamp: persistedTimestamp,
       runMode: "agent",
       agentRunId: assistantMessage.agentRunId,
+      documentId: assistantMessage.documentId,
+      planDocumentId: assistantMessage.planDocumentId,
       modelName: assistantMessage.modelName,
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
@@ -2298,6 +2334,7 @@ export async function retryAgentTurn(
         messageDeltaCoalescer,
         flushMessageDeltas,
         queueRefresh,
+        refreshAssistant: () => refreshAssistantMessageSafely(assistantMessage),
         refreshChatSafely,
         setStatusSafely,
         pushTraceEvent,

@@ -105,7 +105,7 @@ export function createMoveToCollectionTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -308,7 +308,7 @@ export function createMoveToCollectionTool(
       return ok({ action: input.action, operation: updatedOperation });
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     execute: async (input, context) => {

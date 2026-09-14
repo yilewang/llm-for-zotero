@@ -90,12 +90,6 @@ export async function loadConversationHistoryScope(
       : 0;
   if (normalizedPaperItemID <= 0) return [];
 
-  await conversationRepository.ensureCatalogEntry({
-    system: "upstream",
-    kind: "paper",
-    libraryID: normalizedLibraryID,
-    paperItemID: normalizedPaperItemID,
-  });
   const summaries = await conversationRepository.listCatalogEntries({
     system: "upstream",
     kind: "paper",

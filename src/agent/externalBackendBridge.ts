@@ -1,3 +1,6 @@
+import { loadWorkflowMaterial } from "./documents/workflowMaterial";
+import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
+import { hasCurrentSemanticIntent } from "./model/semanticTransport";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -18,10 +21,8 @@ import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
 import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
-import {
-  normalizeAgentPermissionMode,
-  type AgentPermissionMode,
-} from "../shared/agentPermissionMode";
+import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
+import { getClaudePermissionModePref } from "../claudeCode/prefs";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildClaudeZoteroMcpServerConfig,
@@ -33,10 +34,9 @@ import { dbg, dbgError } from "../utils/debugLogger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
 import type { AgentRuntime } from "./runtime";
 import {
-  addZoteroMcpConfirmationHandler,
   addZoteroMcpToolActivityObserver,
   registerScopedZoteroMcpScope,
-  setActiveZoteroMcpScope,
+  updateScopedZoteroMcpScope,
   type ZoteroMcpActiveScope,
   type ZoteroMcpToolActivityEvent,
 } from "./mcp/server";
@@ -89,6 +89,23 @@ import {
 } from "./context/turnPaperScope";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
+import { planExecutionCoordinator } from "./plans/coordinator";
+import { loadPlanArtifact, loadPlanExecutionLedger } from "./plans/store";
+import { loadResearchJobForExecution } from "./research/store";
+import {
+  loadLatestDocumentForRun,
+  loadLatestPlanDocumentForExecution,
+} from "./documents/store";
+import {
+  detectTurnIntent,
+  resolvePlanSkillRoutingReceipt,
+} from "./model/semanticIntentService";
+import { getAllSkills, getMatchedSkillIds } from "./skills";
+import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
+import {
+  PlanExecutionRunSession,
+  recordMcpPlanEvidence,
+} from "./plans/runSession";
 import {
   AgentEventLocalDocumentStreamRedactor,
   acquireLocalDocumentPathLease,
@@ -132,6 +149,7 @@ export type AgentRuntimeLike = Pick<
   | "getToolDefinition"
   | "unregisterTool"
   | "registerTool"
+  | "createActionContractForRequest"
   | "registerPendingConfirmation"
   | "resolveConfirmation"
   | "getRunTrace"
@@ -634,30 +652,27 @@ function getClaudeSettingSourcesCsvByPref(): string {
   return getClaudeSettingSourcesByPref().join(",");
 }
 
-function getAgentPermissionModePref(): AgentPermissionMode {
-  try {
-    const raw = Zotero.Prefs.get(
-      `${config.prefsPrefix}.agentPermissionMode`,
-      true,
-    );
-    return normalizeAgentPermissionMode(raw);
-  } catch {
-    return "safe";
-  }
-}
-
 function buildAgentPermissionMetadata(): {
-  permissionMode: AgentPermissionMode;
+  permissionMode: ClaudePermissionMode;
   allowDangerouslySkipPermissions?: true;
 } {
-  const permissionMode = getAgentPermissionModePref();
-  if (permissionMode === "yolo") {
+  const permissionMode = getClaudePermissionModePref();
+  if (permissionMode === "bypassPermissions") {
     return {
       permissionMode,
       allowDangerouslySkipPermissions: true,
     };
   }
   return { permissionMode };
+}
+
+function buildPlanAwareClaudePermissionMetadata(
+  request: AgentRuntimeRequest,
+): ReturnType<typeof buildAgentPermissionMetadata> {
+  if (request.planContext?.phase === "planning") {
+    return { permissionMode: "plan" };
+  }
+  return buildAgentPermissionMetadata();
 }
 
 function buildOriginalAgentModeInstructionBlock(): string {
@@ -698,6 +713,20 @@ function buildClaudeBridgeCustomInstruction(
     .map((entry) => entry.trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function buildDocumentOutcomeInstruction(request: AgentRuntimeRequest): string {
+  const policy = request.documentOutcomePolicy;
+  if (!policy?.required) return "";
+  const validation =
+    policy.integrityPolicy === "research_grounded"
+      ? "This is a research-grounded document. Read Zotero sources first, include a Scope and limitations section, use [[cite:C1]] tokens for supported claims, and copy the host-issued documentEvidenceRefs from successful read tools into the corresponding citation sources."
+      : "This is an authored document. Give it a complete Markdown structure; citations are optional unless the requested content needs them.";
+  return [
+    "The host requires a first-class document artifact for this turn. Ordinary prose is not a valid terminal answer.",
+    validation,
+    "Call the scoped Zotero MCP submit_document tool exactly once when the document is complete. Do not write a References section manually; Zotero generates it from citation mappings.",
+  ].join(" ");
 }
 
 export function buildClaudeBridgeCustomInstructionForTests(
@@ -1011,14 +1040,9 @@ async function runExternalBridgeTurn(
   const debugModeEnabled = false;
 
   const userTextRaw = params.request.userText || "";
-  const probeMatch = userTextRaw.match(
-    /^\s*\/(?:debug-)?permission-probe\b\s*(.*)$/i,
-  );
-  const probeRequested = Boolean(probeMatch && debugModeEnabled);
-  const probeStrippedText = probeMatch?.[1]?.trim() || "";
-  const userTextForBridge = probeRequested
-    ? probeStrippedText || "Permission probe run."
-    : userTextRaw;
+  const probeRequested =
+    debugModeEnabled && params.request.metadata?.testPermissionProbe === true;
+  const userTextForBridge = userTextRaw;
 
   const requestMetadata =
     params.request.metadata && typeof params.request.metadata === "object"
@@ -1046,10 +1070,18 @@ async function runExternalBridgeTurn(
       claudeConfigSource: getClaudeConfigSourcePref(),
       claudeSettingSources: getClaudeSettingSourcesByPref(),
       settingSources: getClaudeSettingSourcesCsvByPref(),
-      ...buildAgentPermissionMetadata(),
-      customInstruction: buildClaudeBridgeCustomInstruction({
-        rawPdfMode: requestLocalDocuments(params.request).length > 0,
-      }),
+      ...buildPlanAwareClaudePermissionMetadata(params.request),
+      customInstruction: [
+        buildClaudeBridgeCustomInstruction({
+          rawPdfMode: requestLocalDocuments(params.request).length > 0,
+        }),
+        params.request.planContext?.phase === "planning"
+          ? "Plan mode is active. Research and draft a structured plan only. Do not mutate Zotero, files, settings, processes, or external systems. Exit plan mode only when the plan is ready for explicit user approval."
+          : "",
+        buildDocumentOutcomeInstruction(params.request),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       providerIdentity,
       providerIdentityStack,
       model: resolveClaudeBridgeModelForMetadata(params.request.model),
@@ -1273,7 +1305,21 @@ function buildClaudeZoteroMcpScope(
     kind === "paper" ? selectedPaper?.itemId || activeItemId : undefined;
   const libraryID = resolveFallbackLibraryId(request);
   return {
+    runtimeAuthority: "claude",
+    sourceMessageTimestamp: Number(request.metadata?.sourceMessageTimestamp),
+    planContext: request.planContext,
+    actionContract: request.actionContract,
+    actionProgress: request.actionProgress,
+    clarificationHistory: request.clarificationHistory,
+    classifiedIntent: request.classifiedIntent,
+    actionPreparation: request.actionPreparation,
+    semanticProvider: request.semanticProvider,
+    documentOutcomePolicy: request.documentOutcomePolicy,
+    documentReadObservations: request.documentReadObservations,
+    documentArtifactObservations: request.documentArtifactObservations,
+    skillRoutingReceipt: request.skillRoutingReceipt,
     profileSignature,
+    conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
     libraryID,
     kind,
@@ -2572,6 +2618,8 @@ export function createExternalBackendBridgeRuntime(options: {
 
   return {
     listTools: () => coreRuntime.listTools(),
+    createActionContractForRequest: (request) =>
+      coreRuntime.createActionContractForRequest(request),
     getToolDefinition: (name: string) => coreRuntime.getToolDefinition(name),
     unregisterTool: (name: string) => coreRuntime.unregisterTool(name),
     registerTool: (tool) => coreRuntime.registerTool(tool),
@@ -2834,8 +2882,14 @@ export function createExternalBackendBridgeRuntime(options: {
     runTurn: async (rawParams: RunTurnParams): Promise<AgentRuntimeOutcome> => {
       const params: ResolvedRunTurnParams = {
         ...rawParams,
-        request: resolveAgentRuntimeRequest(rawParams.request),
+        request:
+          "turnPaperScope" in rawParams.request
+            ? (rawParams.request as AgentRuntimeRequest)
+            : resolveAgentRuntimeRequest(rawParams.request),
       };
+      params.request.conversationGeneration ??= getConversationWriteGeneration(
+        params.request.conversationKey,
+      );
       const requestMetadata =
         params.request.metadata && typeof params.request.metadata === "object"
           ? params.request.metadata
@@ -2974,6 +3028,83 @@ export function createExternalBackendBridgeRuntime(options: {
           makeProfilingEvent("frontend.run_turn.enter"),
         );
         await notifyIfLive(makeProfilingEvent("frontend.run_turn.enter"));
+        let approvedPlanArtifact: Awaited<ReturnType<typeof loadPlanArtifact>> =
+          null;
+        let routedSkillIds: string[] = [];
+        if (params.request.planContext?.phase === "executing") {
+          approvedPlanArtifact = await loadPlanArtifact(
+            params.request.planContext.planId,
+            params.request.planContext.revision,
+          );
+          const reused = await resolvePlanSkillRoutingReceipt(
+            approvedPlanArtifact?.skillRoutingReceipt,
+            getAllSkills(),
+          );
+          if (reused.changedExplicitSkillIds.length) {
+            throw new Error(
+              `Explicit plan skill changed after approval (${reused.changedExplicitSkillIds.join(", ")}); revise and approve the plan again`,
+            );
+          }
+          routedSkillIds = reused.skillIds;
+          params.request.classifiedIntent =
+            approvedPlanArtifact?.actionContract?.intent;
+        } else if (await hasCurrentSemanticIntent(params.request)) {
+          routedSkillIds =
+            params.request.skillRoutingReceipt?.skills.map(
+              (skill) => skill.id,
+            ) || [];
+        } else {
+          params.request.actionContract = undefined;
+          params.request.actionProgress = undefined;
+          params.request.semanticProvider = {
+            kind: "claude",
+            baseUrl: getBridgeUrl(),
+          };
+          const intent = await detectTurnIntent(
+            params.request,
+            getAllSkills(),
+            { signal: params.signal },
+          );
+          routedSkillIds = intent.skillIds;
+          params.request.classifiedIntent =
+            intent.classifiedIntent || undefined;
+          if (!params.request.classifiedIntent?.semantic)
+            throw new Error(
+              "Semantic interpretation is unavailable. No actions were authorized.",
+            );
+          params.request.skillRoutingReceipt = intent.routingReceipt;
+          if (intent.degraded) {
+            const degradedEvent: AgentEvent = {
+              type: "provider_event",
+              providerType: "turn_intent_classifier",
+              payload: {
+                status: "degraded_no_automatic_skills",
+                reason: intent.failureReason,
+              },
+            };
+            await appendPersistedEvent(degradedEvent);
+            await notifyIfLive(degradedEvent);
+          }
+        }
+        const matchedSkillIds = getMatchedSkillIds(
+          params.request,
+          routedSkillIds,
+        );
+        const plannedSpec =
+          approvedPlanArtifact?.contract?.deliverable.kind === "document"
+            ? approvedPlanArtifact.contract.deliverable.spec
+            : undefined;
+        params.request.documentOutcomePolicy = resolveDocumentOutcomePolicy({
+          request: params.request,
+          plannedDocumentKind: plannedSpec?.kind,
+          plannedResearch: Boolean(
+            approvedPlanArtifact?.contract?.investigation,
+          ),
+        });
+        if (!params.request.actionContract) {
+          params.request.actionContract =
+            await coreRuntime.createActionContractForRequest(params.request);
+        }
         const contextEnvelope = buildContextEnvelope(params.request);
         await appendPersistedEvent(
           makeProfilingEvent("frontend.context_envelope.ready"),
@@ -3022,13 +3153,129 @@ export function createExternalBackendBridgeRuntime(options: {
             await appendPersistedEvent(redactedEvent);
             await notifyIfLive(redactedEvent);
           }
+          if (
+            event.type === "provider_event" &&
+            event.providerType === "claude_plan" &&
+            params.request.planContext?.phase === "planning"
+          ) {
+            const payload = (event.payload || {}) as Record<string, unknown>;
+            const input =
+              payload.input && typeof payload.input === "object"
+                ? (payload.input as Record<string, unknown>)
+                : payload;
+            const planText = String(
+              input.plan || input.content || input.text || "",
+            ).trim();
+            const parsedSteps = planText
+              .split(/\r?\n/)
+              .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim())
+              .filter(Boolean);
+            const steps = parsedSteps.length ? parsedSteps : [planText];
+            if (steps[0]) {
+              const planning = params.request.planContext;
+              const structured = await loadPlanArtifact(
+                planning.planId,
+                planning.revision,
+              );
+              if (structured?.sourceRunId) {
+                const planEvent: AgentEvent = {
+                  type:
+                    structured.status === "awaiting_approval"
+                      ? "plan_ready"
+                      : "plan_updated",
+                  artifact: structured,
+                };
+                await appendPersistedEvent(planEvent);
+                await notifyIfLive(planEvent);
+                return;
+              }
+              const progressEvent: AgentEvent = {
+                type: "provider_event",
+                providerType: "native_plan_progress",
+                payload: {
+                  provider: "claude",
+                  text: planText,
+                  authority: "none",
+                  requiredTool: "update_plan",
+                },
+              };
+              await appendPersistedEvent(progressEvent);
+              await notifyIfLive(progressEvent);
+            }
+          }
+          if (
+            event.type === "provider_event" &&
+            event.providerType === "claude_task_progress" &&
+            params.request.planContext?.phase === "executing"
+          ) {
+            const ledger = await loadPlanExecutionLedger(
+              params.request.planContext.executionId,
+            );
+            const payload = (event.payload || {}) as Record<string, unknown>;
+            const input =
+              payload.input && typeof payload.input === "object"
+                ? (payload.input as Record<string, unknown>)
+                : payload;
+            const todos = Array.isArray(input.todos) ? input.todos : [];
+            if (ledger && todos.length) {
+              for (const value of todos) {
+                if (!value || typeof value !== "object") continue;
+                const todo = value as Record<string, unknown>;
+                const task = ledger.tasks.find(
+                  (candidate) =>
+                    candidate.taskId === todo.taskId ||
+                    candidate.content === todo.content,
+                );
+                const status = String(todo.status || "");
+                if (
+                  !task ||
+                  !["pending", "in_progress", "completed"].includes(status) ||
+                  task.status === status
+                ) {
+                  continue;
+                }
+                try {
+                  await planExecutionCoordinator.requestTransition({
+                    executionId: ledger.executionId,
+                    taskId: task.taskId,
+                    toStatus: status as "pending" | "in_progress" | "completed",
+                    requestedBy: "claude",
+                    reason: "Claude task event",
+                  });
+                } catch {
+                  // Provider task updates are requests; rejected transitions
+                  // leave the durable host ledger unchanged.
+                }
+              }
+              const next = await loadPlanExecutionLedger(ledger.executionId);
+              if (next) {
+                const planEvent: AgentEvent = {
+                  type: "plan_execution_updated",
+                  ledger: next,
+                };
+                await appendPersistedEvent(planEvent);
+                await notifyIfLive(planEvent);
+              }
+            }
+          }
         };
+        const planSession = new PlanExecutionRunSession(
+          params.request,
+          emitTurnEvent,
+        );
+        const planInitialization = await planSession.initialize();
+        if (planInitialization.kind === "failed") {
+          throw new Error(planInitialization.userMessage);
+        }
+        const pendingPlanEvidence: Promise<void>[] = [];
         let mcpServers: ClaudeMcpServersConfig | undefined;
         let allowedTools: string[] | undefined;
         let clearScopedMcpScope: () => void = () => undefined;
-        let clearActiveMcpScope: () => void = () => undefined;
-        let clearMcpConfirmationHandler: () => void = () => undefined;
         let unregisterMcpToolActivity: () => void = () => undefined;
+        let scopedMcpToken = "";
+        let currentMcpScope: (() => ZoteroMcpActiveScope | null) | undefined;
+        const hostReceipts: import("./contracts/types").AgentActionReceipt[] =
+          [];
         try {
           if (isNativeZoteroMcpToolsEnabled()) {
             const rawPdfMode = requestLocalDocuments(params.request).length > 0;
@@ -3037,44 +3284,137 @@ export function createExternalBackendBridgeRuntime(options: {
               params.request,
               profileSignature,
             );
-            const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
-            clearScopedMcpScope = scopedMcp.clear;
-            clearActiveMcpScope = setActiveZoteroMcpScope(mcpScope);
-            clearMcpConfirmationHandler = addZoteroMcpConfirmationHandler(
-              mcpScope,
-              async ({ requestId, action }) => {
-                const resolution = new Promise<AgentConfirmationResolution>(
-                  (resolve) => {
-                    coreRuntime.registerPendingConfirmation(requestId, resolve);
-                  },
-                );
-                await emitTurnEvent({
+            mcpScope.publishHostEvent = emitTurnEvent;
+            mcpScope.requestInteraction = async (action) => {
+              if (!writeAllowed() || params.signal?.aborted)
+                return { approved: false };
+              const requestId = `host-review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+              const pending = new Promise<AgentConfirmationResolution>(
+                (resolve) =>
+                  coreRuntime.registerPendingConfirmation(requestId, resolve),
+              );
+              const abort = () =>
+                coreRuntime.resolveConfirmation(requestId, false);
+              params.signal?.addEventListener("abort", abort, { once: true });
+              try {
+                const event: AgentEvent = {
                   type: "confirmation_required",
                   requestId,
                   action,
-                });
-                const settled = await resolution;
-                await emitTurnEvent({
+                };
+                await appendPersistedEvent(event);
+                await notifyIfLive(event);
+                const resolution = await pending;
+                const settled: AgentEvent = {
                   type: "confirmation_resolved",
                   requestId,
-                  approved: settled.approved,
-                  actionId: settled.actionId,
-                  data: settled.data,
-                });
-                return settled;
-              },
-            );
+                  ...resolution,
+                };
+                await appendPersistedEvent(settled);
+                await notifyIfLive(settled);
+                return writeAllowed() ? resolution : { approved: false };
+              } finally {
+                params.signal?.removeEventListener("abort", abort);
+                coreRuntime.resolveConfirmation(requestId, false);
+              }
+            };
+            const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
+            scopedMcpToken = scopedMcp.token;
+            currentMcpScope = scopedMcp.getState;
+            clearScopedMcpScope = scopedMcp.clear;
             unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
               (event) => {
-                const sameConversation =
-                  !event.conversationKey ||
-                  event.conversationKey === params.request.conversationKey;
-                const sameProfile =
-                  !event.profileSignature ||
-                  !profileSignature ||
-                  event.profileSignature === profileSignature;
-                if (!sameConversation || !sameProfile) return;
-                void emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
+                if (
+                  event.conversationKey !== params.request.conversationKey ||
+                  event.profileSignature !== profileSignature ||
+                  event.runId !== persistedRunId ||
+                  event.conversationGeneration !==
+                    params.request.conversationGeneration
+                )
+                  return;
+                if (event.phase === "completed")
+                  hostReceipts.push(...(event.actionReceipts || []));
+                if (
+                  event.phase === "completed" &&
+                  event.ok &&
+                  event.readObservations?.length
+                ) {
+                  const merged = new Map(
+                    (params.request.documentReadObservations || []).map(
+                      (entry) => [entry.observationId, entry],
+                    ),
+                  );
+                  for (const observation of event.readObservations) {
+                    merged.set(observation.observationId, observation);
+                  }
+                  params.request.documentReadObservations = [
+                    ...merged.values(),
+                  ];
+                }
+                const pending = (async () => {
+                  await emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
+                  if (
+                    event.phase === "completed" &&
+                    event.ok &&
+                    event.toolName === "update_plan" &&
+                    params.request.planContext?.phase === "planning"
+                  ) {
+                    const artifact = await loadPlanArtifact(
+                      params.request.planContext.planId,
+                      params.request.planContext.revision,
+                    );
+                    if (artifact) {
+                      await emitTurnEvent({
+                        type:
+                          artifact.status === "awaiting_approval"
+                            ? "plan_ready"
+                            : "plan_updated",
+                        artifact,
+                      });
+                    }
+                  }
+                  if (
+                    event.phase === "completed" &&
+                    event.ok &&
+                    event.toolName === "research_update" &&
+                    params.request.planContext?.phase === "executing"
+                  ) {
+                    const job = await loadResearchJobForExecution(
+                      params.request.planContext.executionId,
+                    );
+                    if (job) {
+                      await emitTurnEvent({
+                        type: "plan_research_progress",
+                        progress: {
+                          researchJobId: job.researchJobId,
+                          executionId: job.executionId,
+                          parentTaskId: job.parentTaskId,
+                          stage: job.activeStage,
+                          totalItems: job.totalItems,
+                          screenedItems: job.screenedItems,
+                          candidateItems: job.candidateItems,
+                          deepReadCompleted: job.deepReadCompleted,
+                          deepReadPlanned: job.deepReadPlanned,
+                          coverageStatus: job.coverageStatus,
+                        },
+                      });
+                    }
+                  }
+                  const ledger = await recordMcpPlanEvidence(
+                    params.request.planContext,
+                    event,
+                  );
+                  if (ledger) {
+                    await emitTurnEvent({
+                      type: "plan_execution_updated",
+                      ledger,
+                    });
+                  }
+                })();
+                pendingPlanEvidence.push(pending);
+                // Observe rejection immediately, but retain the original promise until
+                // the turn drains all evidence before reporting completion.
+                void pending.catch(() => undefined);
               },
             );
             const mcpConfig = buildClaudeZoteroMcpServerConfig({
@@ -3104,21 +3444,8 @@ export function createExternalBackendBridgeRuntime(options: {
               }),
             );
           }
-          const outcome = await runExternalBridgeTurn(bridgeUrl, {
-            ...params,
-            onStart: async (runId) => {
-              await ensurePersistedRun(runId);
-              if (writeAllowed()) await params.onStart?.(runId);
-            },
-            onEvent: emitTurnEvent,
-            contextEnvelope,
-            runtimeRequest,
-            allowedTools,
-            mcpServers,
-            scope,
-            registerPendingConfirmation: (requestId, resolve) =>
-              coreRuntime.registerPendingConfirmation(requestId, resolve),
-            resolveExternalConfirmation: async (requestId, resolution) => {
+          const resolveExternalConfirmation: ResolveExternalConfirmation =
+            async (requestId, resolution) => {
               const response = await fetch(
                 `${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`,
                 {
@@ -3165,8 +3492,148 @@ export function createExternalBackendBridgeRuntime(options: {
                         ? undefined
                         : "backend returned ok=false",
               };
-            },
+            };
+          const runBridge = async (
+            request: AgentRuntimeRequest,
+            bridgeRuntimeRequest: BridgeRuntimeRequest,
+            correctionAttempt = false,
+          ): Promise<AgentRuntimeOutcome> =>
+            runExternalBridgeTurn(bridgeUrl, {
+              ...params,
+              request,
+              onStart: async (runId) => {
+                const hadPersistedRun = Boolean(persistedRunId);
+                const logicalRunId =
+                  correctionAttempt && persistedRunId ? persistedRunId : runId;
+                if (scopedMcpToken) {
+                  updateScopedZoteroMcpScope(scopedMcpToken, {
+                    runId: logicalRunId,
+                  });
+                }
+                if (!correctionAttempt || !hadPersistedRun) {
+                  await ensurePersistedRun(runId);
+                  if (writeAllowed()) await params.onStart?.(runId);
+                }
+              },
+              onEvent: emitTurnEvent,
+              contextEnvelope,
+              runtimeRequest: bridgeRuntimeRequest,
+              allowedTools,
+              mcpServers,
+              scope,
+              registerPendingConfirmation: (requestId, resolve) =>
+                coreRuntime.registerPendingConfirmation(requestId, resolve),
+              resolveExternalConfirmation,
+            });
+          const loadFinalizedDocument = async () =>
+            params.request.classifiedIntent?.semantic?.materialOutputs?.length
+              ? loadWorkflowMaterial(params.request)
+              : params.request.planContext?.phase === "executing"
+                ? loadLatestPlanDocumentForExecution(
+                    params.request.planContext.executionId,
+                  )
+                : loadLatestDocumentForRun(persistedRunId);
+
+          let outcome = await runBridge(params.request, runtimeRequest);
+          await Promise.all(pendingPlanEvidence);
+          let terminalRunStatus: "completed" | "failed" =
+            outcome.kind === "completed" ? "completed" : "failed";
+          let finalizedDocument = null;
+          if (outcome.kind === "completed") {
+            finalizedDocument = await loadFinalizedDocument();
+          }
+          if (
+            outcome.kind === "completed" &&
+            params.request.documentOutcomePolicy?.required &&
+            !finalizedDocument
+          ) {
+            const correctionText =
+              "Host correction: this turn requires a finalized document artifact. Complete the requested document now and call the scoped Zotero submit_document tool exactly once. Do not return ordinary answer prose.";
+            const correctionRequest: AgentRuntimeRequest = {
+              ...params.request,
+              userText: correctionText,
+              metadata: {
+                ...(params.request.metadata || {}),
+                documentCorrectionAttempt: 1,
+              },
+            };
+            outcome = await runBridge(
+              correctionRequest,
+              { ...runtimeRequest, userText: correctionText },
+              true,
+            );
+            terminalRunStatus =
+              outcome.kind === "completed" ? "completed" : "failed";
+            await Promise.all(pendingPlanEvidence);
+            if (outcome.kind === "completed") {
+              finalizedDocument = await loadFinalizedDocument();
+            }
+          }
+          if (outcome.kind === "completed") {
+            const document = finalizedDocument;
+            if (document) {
+              outcome = {
+                ...outcome,
+                text: document.visibleMarkdown,
+                documentId: document.documentId,
+              };
+            }
+          }
+          const actionEvaluation = evaluatePreparedActionContract(
+            currentMcpScope ? currentMcpScope() || {} : params.request,
+            hostReceipts,
+          );
+          if (
+            actionEvaluation.state !== "satisfied" &&
+            actionEvaluation.state !== "cancelled"
+          ) {
+            terminalRunStatus = "failed";
+            const failure =
+              actionEvaluation.failure ||
+              "The requested action has no verified completion evidence.";
+            await emitTurnEvent({
+              type: "provider_event",
+              providerType: "agent_completion_unverified",
+              payload: { reason: failure },
+            });
+            outcome = {
+              kind: "completed",
+              runId: outcome.runId,
+              text: finalizedDocument
+                ? `${finalizedDocument.visibleMarkdown}\n\n${failure}`
+                : failure,
+              documentId: finalizedDocument?.documentId,
+              usedFallback: false,
+            };
+          }
+          const planDecision = await planSession.evaluateFinal({
+            canCorrect: false,
           });
+          if (planDecision.kind === "fail") {
+            terminalRunStatus = "failed";
+            outcome = {
+              kind: "completed",
+              runId: outcome.runId,
+              text: finalizedDocument
+                ? `${finalizedDocument.visibleMarkdown}\n\n${planDecision.failure}`
+                : planDecision.failure,
+              documentId: finalizedDocument?.documentId,
+              usedFallback: false,
+            };
+          }
+          if (
+            outcome.kind === "completed" &&
+            params.request.documentOutcomePolicy?.required &&
+            !finalizedDocument
+          ) {
+            terminalRunStatus = "failed";
+            outcome = {
+              kind: "completed",
+              runId: outcome.runId,
+              text: "The requested document was not finalized, so ordinary answer text cannot be accepted as the completed outcome.",
+              usedFallback: false,
+            };
+          }
           for (const redactedEvent of eventStreamRedactor.flush()) {
             await appendPersistedEvent(redactedEvent);
             await notifyIfLive(redactedEvent);
@@ -3187,7 +3654,7 @@ export function createExternalBackendBridgeRuntime(options: {
             await persistIfLive(() =>
               finishAgentRun(
                 finalRunId,
-                safeOutcome.kind === "completed" ? "completed" : "failed",
+                terminalRunStatus,
                 safeOutcome.kind === "completed"
                   ? safeOutcome.text
                   : safeOutcome.reason,
@@ -3196,11 +3663,14 @@ export function createExternalBackendBridgeRuntime(options: {
           }
           return safeOutcome;
         } catch (error) {
+          const failedRunStatus = params.signal?.aborted
+            ? "cancelled"
+            : "failed";
           if (persistedRunId) {
             await persistIfLive(() =>
               finishAgentRun(
                 persistedRunId,
-                "failed",
+                failedRunStatus,
                 turnPathRedactor.redactTerminalText(
                   error instanceof Error ? error.message : String(error),
                 ),
@@ -3240,7 +3710,7 @@ export function createExternalBackendBridgeRuntime(options: {
           await appendPersistedEvent(fallbackEvent);
           await notifyIfLive(fallbackEvent);
           await persistIfLive(() =>
-            finishAgentRun(fallbackRunId, "failed", message),
+            finishAgentRun(fallbackRunId, failedRunStatus, message),
           );
           if (
             typeof ztoolkit !== "undefined" &&
@@ -3251,8 +3721,6 @@ export function createExternalBackendBridgeRuntime(options: {
           throw new Error(message);
         } finally {
           unregisterMcpToolActivity();
-          clearMcpConfirmationHandler();
-          clearActiveMcpScope();
           clearScopedMcpScope();
         }
       } finally {

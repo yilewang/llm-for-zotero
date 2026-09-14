@@ -36,7 +36,6 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
   buildEvidencePack,
-  resolveEvidenceQuoteAnchorPolicy,
 } from "./pdfContext";
 import {
   isPdfContextAttachment,
@@ -851,7 +850,6 @@ function buildRetrievedAssemblyReadStrategy(params: {
   stopReason?: LibraryChatReadStrategyDiagnostics["stopReason"];
 }): LibraryChatReadStrategyDiagnostics {
   const base = resolveLibraryChatReadStrategy({
-    query: params.question,
     intent: "summarize",
     depth: "evidence",
     paperCount: params.papers.length,
@@ -1417,7 +1415,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
   const evidencePack = buildEvidencePack({
     papers: papers.map((paper) => paper.paperContext),
     candidates: selectedCandidates,
-    quoteAnchorPolicy: resolveEvidenceQuoteAnchorPolicy(question),
+    quoteAnchorPolicy: queryPlan.quoteAnchorPolicy,
   });
   const contextText =
     evidencePack.contextText ||
@@ -1475,36 +1473,6 @@ function appendContextBlocks(blocks: string[]): string {
 
 function isFirstPaperTurn(history: ChatMessage[] | undefined): boolean {
   return !history?.length;
-}
-
-function questionNeedsPaperCapabilityReminder(question: string): boolean {
-  const normalized = question.trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /\b(?:full text|full paper|whole paper|entire paper|entire article|whole article)\b/.test(
-      normalized,
-    ) ||
-    /\b(?:all sections|all parts|entire document|complete paper)\b/.test(
-      normalized,
-    ) ||
-    /\b(?:do you have access|can you access|can you read|did you read)\b/.test(
-      normalized,
-    ) ||
-    /\b(?:coverage|scope|everything in the paper)\b/.test(normalized)
-  );
-}
-
-function buildPaperFollowupAssistantInstruction(
-  question: string,
-): string | undefined {
-  if (!questionNeedsPaperCapabilityReminder(question)) return undefined;
-  return [
-    "If the user asks about access or coverage, answer directly that you can",
-    "access the paper's full text.",
-    "Do not say that you lack access or only have snippets.",
-    "Then say that, for this reply, you are using the abstract plus the most",
-    "relevant retrieved chunks instead of quoting the entire paper text.",
-  ].join(" ");
 }
 
 async function resolvePlannerPaperEntries(params: {
@@ -1649,8 +1617,7 @@ export async function resolveMultiContextPlan(params: {
     images: params.images,
     image: params.image,
     reasoning: params.reasoning,
-    maxTokens: params.advanced?.maxTokens,
-    maxTokensExplicit: params.advanced?.maxTokensExplicit,
+    outputTokenLimit: params.advanced?.outputTokenLimit,
     inputTokenCap: params.advanced?.inputTokenCap,
     systemPrompt: params.systemPrompt,
     apiBase: params.apiBase,
@@ -1912,7 +1879,7 @@ export async function resolveMultiContextPlan(params: {
   const activePaper = papers.find((paper) => paper.isActive) || null;
   if (queryPlan.readIntent === "full-once" && papers.length) {
     const targetResolution = resolveFullReadPaperTargets({
-      question: params.question,
+      selection: queryPlan.fullReadTargets || { kind: "active" },
       availablePapers: papers.map((paper) => paper.paperContext),
       selectedPapers: normalizePaperContextEntries(params.paperContexts || []),
       activePaper: activePaper?.paperContext,
@@ -2201,7 +2168,7 @@ export async function resolveMultiContextPlan(params: {
       quoteCitations: retrieved.quoteCitations,
       assistantInstruction: firstPaperTurn
         ? undefined
-        : buildPaperFollowupAssistantInstruction(params.question),
+        : "Describe reading coverage from the supplied evidence and coverage receipt. Do not claim to have read unavailable or unread text.",
       ...retrievedDiagnostics(retrieved),
     });
   }

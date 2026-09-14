@@ -9,31 +9,18 @@
 import type { DiscoveredModel } from "../modelCapabilities";
 import type { ModelProviderGroup } from "./modelProviders";
 import {
-  detectProviderPreset,
+  resolveProviderPresetId,
   providerPresetRequiresApiKey,
 } from "./providerPresets";
-import type { ProviderPresetId } from "./providerPresets";
 
 export type ProviderModelPickerGroup = Pick<ModelProviderGroup, "authMode"> &
   Partial<Pick<ModelProviderGroup, "apiBase" | "presetIdOverride">>;
-
-/**
- * Preset the picker should treat the group as. Non-API-key auth modes (codex,
- * copilot, webchat) keep their dedicated model flows, so they resolve to
- * "customized" here regardless of the stored API base.
- */
-export function resolveProviderPickerPresetId(
-  group: ProviderModelPickerGroup,
-): ProviderPresetId {
-  if (group.authMode !== "api_key") return "customized";
-  return group.presetIdOverride ?? detectProviderPreset(group.apiBase || "");
-}
 
 /** Fetch-and-select is offered only for preset (non-customized) API-key providers. */
 export function canFetchProviderModels(
   group: ProviderModelPickerGroup,
 ): boolean {
-  return resolveProviderPickerPresetId(group) !== "customized";
+  return resolveProviderPresetId(group) !== "customized";
 }
 
 /**
@@ -44,7 +31,7 @@ export function canFetchProviderModels(
 export function providerGroupRequiresApiKey(
   group: ProviderModelPickerGroup,
 ): boolean {
-  return providerPresetRequiresApiKey(resolveProviderPickerPresetId(group));
+  return providerPresetRequiresApiKey(resolveProviderPresetId(group));
 }
 
 export function sortModelOptions(models: DiscoveredModel[]): DiscoveredModel[] {

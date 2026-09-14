@@ -1,3 +1,5 @@
+import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
+import { createNoteConversationItem } from "./noteEditing/conversationItem";
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
@@ -44,6 +46,13 @@ import {
   isAtAutoFollowBottom,
   resolveStreamingScrollFollowAction,
 } from "./scrollFollowPolicy";
+import { isChatNavigationActive } from "./chatScrollSnapshots";
+import {
+  createConversationTurnNavigator,
+  disposeConversationTurnNavigator,
+  SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX,
+  STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX,
+} from "./conversationTurnNavigator";
 import {
   clearManualTextareaHeight,
   resizeTextareaToContent,
@@ -88,7 +97,6 @@ import {
   markWebChatConversationForceNewChat,
   clearWebChatConversationForceNewChat,
   consumeWebChatConversationForceNewChat,
-  resetWebChatConversationSessionState,
   currentRequestId,
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
@@ -150,7 +158,6 @@ import {
   setLastUsedUpstreamConversationMode,
   setLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
-  setLastUsedPaperConversationKey,
   removeLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
   setLockedGlobalConversationKey,
@@ -169,6 +176,7 @@ import {
   getConversationKey,
   ensureConversationLoaded,
   persistChatScrollSnapshot,
+  disposeChatRendering,
   isScrollUpdateSuspended,
   requestChatScrollFollowBottom,
   cancelChatScrollFollowBottomRequest,
@@ -193,6 +201,16 @@ import {
   getWorkflowTestSendInterceptor,
   notifyWorkflowTestSendSettled,
 } from "./workflowTestHooks";
+import {
+  bindStandalonePanelHost,
+  bindTestPanelHost,
+  canCommitPanelConversation,
+  capturePanelOperationLease,
+  getPanelHostBinding,
+  isPanelHostCompatibleWithPaper,
+  isPanelOperationLeaseCurrent,
+  requireCurrentPanelOwnership,
+} from "./panelHostOwnership";
 import {
   getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
@@ -315,7 +333,7 @@ import {
   type PaperSearchSlashToken,
 } from "./paperSearch";
 import {
-  resolvePaperScopedCommandInput,
+  resolvePaperScopedDefaultInput,
   type PaperScopedActionCollectionCandidate,
   type PaperScopedActionProfile,
 } from "./paperScopeCommand";
@@ -327,6 +345,7 @@ import type {
   AgentConfirmationResolution,
 } from "../../agent/types";
 import {
+  resolveConversationKeyForNoteFocus,
   createGlobalPortalItem,
   createPaperPortalItem,
   isGlobalPortalItem,
@@ -336,11 +355,11 @@ import {
   resolveConversationBaseItem,
   resolvePaperChatSourceItem,
   resolveInitialPanelItemState,
-  resolveActiveLibraryID,
   resolvePreferredConversationSystem,
   resolveNoteFocusSystemSwitch,
   resolveShortcutMode,
 } from "./portalScope";
+import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   RUNTIME_CONVERSATION_SYSTEMS,
   resolveRuntimeSystemToggleTarget,
@@ -392,6 +411,10 @@ import {
   type HistorySearchResult,
 } from "./setupHandlers/controllers/historySearchController";
 import {
+  createWebChatModeController,
+  type LeaveWebChatModeOptions,
+} from "./setupHandlers/controllers/webChatModeController";
+import {
   formatPaperContextCardAttachmentLine,
   formatPaperContextChipLabel,
   formatPaperContextChipTitle,
@@ -433,6 +456,7 @@ import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pd
 import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
 import { isZoteroPdfAttachmentCandidate } from "./setupHandlers/controllers/pdfAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
+import { attachFooterPermissionControl } from "./footerPermissionControl";
 import { createWebChatHistoryController } from "./setupHandlers/controllers/webChatHistoryController";
 import {
   createHistoryLifecycleController,
@@ -444,6 +468,17 @@ import { attachComposeCaptureController } from "./setupHandlers/controllers/comp
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
 import { createActionCommandController } from "./setupHandlers/controllers/actionCommandController";
+import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
+import {
+  PLAN_APPROVED_EVENT,
+  PLAN_CANCEL_EVENT,
+  PLAN_REVISE_EVENT,
+  beginPlanRevision,
+  disableComposePlanMode,
+  enableComposePlanMode,
+  getComposePlanState,
+  toggleComposePlanMode,
+} from "./planModeState";
 import { parseInlineActionCommand } from "./setupHandlers/controllers/actionCommandParams";
 import { addZoteroItemsAsDefaultContext } from "./contextSelectionActions";
 import { registerContextSurfaceActionTarget } from "./zoteroItemContextMenu";
@@ -506,7 +541,6 @@ import {
   removeLastUsedCodexGlobalConversationKey,
   removeLastUsedCodexPaperConversationKey,
   setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexPaperConversationKey,
   setLastUsedCodexConversationMode,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
@@ -587,6 +621,12 @@ export type SetupHandlersHooks = {
     | void;
   /** Called by standalone to clear force-new-chat intent before loading a session. */
   clearWebChatNewChatIntent?: () => void;
+  /**
+   * Called by standalone before it switches the conversation runtime while the
+   * mounted panel is in WebChat, so a non-webchat model entry is restored
+   * before the remount. Resolves false when the panel was not in WebChat.
+   */
+  leaveWebChatMode?: () => Promise<boolean>;
   /** Called by standalone to resolve the currently selected model consistently. */
   getCurrentModelName?: () => string | null;
 };
@@ -632,6 +672,13 @@ export function setupHandlers(
   });
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
+  if (__env__ !== "production" && !getPanelHostBinding(body)) {
+    if (existingPanelRoot?.dataset.standalone === "true") {
+      bindStandalonePanelHost(body, rawPanelItem);
+    } else {
+      bindTestPanelHost(body, rawPanelItem);
+    }
+  }
   const resolveLiveRawPanelItem = (): Zotero.Item | null => {
     if (activeContextPanelRawItems.has(body)) {
       return activeContextPanelRawItems.get(body) || null;
@@ -663,6 +710,7 @@ export function setupHandlers(
     modelMenu,
     reasoningBtn,
     runtimeModeBtn,
+    planModeChip,
     reasoningSlot,
     reasoningMenu,
     actionsRow,
@@ -737,6 +785,9 @@ export function setupHandlers(
     exportMenuNoteBtn,
     retryModelMenu,
     status,
+    permissionControl,
+    permissionButton,
+    permissionMenu,
     chatBox,
     panelRoot,
   } = panelRefs;
@@ -752,6 +803,20 @@ export function setupHandlers(
   }
 
   const isStandalonePanel = panelRoot.dataset.standalone === "true";
+  const chatShell = body.querySelector(
+    "#llm-chat-shell",
+  ) as HTMLDivElement | null;
+  if (chatBox && chatShell) {
+    createConversationTurnNavigator({
+      body,
+      chatShell,
+      chatBox,
+      conversationKey: item ? getConversationKey(item) : null,
+      minimumWidthPx: isStandalonePanel
+        ? STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX
+        : SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX,
+    });
+  }
 
   const thisGen = String(++setupHandlersGeneration);
   panelRoot.dataset.handlersAttached = thisGen;
@@ -760,7 +825,34 @@ export function setupHandlers(
     : "";
 
   activeContextPanels.set(body, () => item);
+  const ownershipProtectedEventTypes = [
+    "pointerdown",
+    "mousedown",
+    "click",
+    "command",
+    "keydown",
+    "input",
+    "change",
+    "paste",
+    "drop",
+  ] as const;
+  const enforcePanelOwnershipForEvent = (event: Event) => {
+    if (!item) return;
+    const target = event.target as Node | null;
+    if (target !== body && target && !panelRoot.contains(target)) return;
+    if (requireCurrentPanelOwnership(body, item, `panel-${event.type}`)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  for (const eventType of ownershipProtectedEventTypes) {
+    body.addEventListener(eventType, enforcePanelOwnershipForEvent, true);
+  }
   let isWebChatModeActive = () => panelRoot.dataset.webchatMode === "true";
+  let leaveWebChatMode: (
+    options?: LeaveWebChatModeOptions,
+  ) => Promise<boolean> = async () => false;
   const getQueuedFollowUpThreadKey = (): string | null =>
     buildQueuedFollowUpThreadKey({
       conversationSystem: currentConversationSystem,
@@ -1153,7 +1245,10 @@ export function setupHandlers(
       lastUsedRuntimeMode: getLastUsedRuntimeMode(),
     });
   };
+  let syncFooterPermissionControl = () => Promise.resolve();
+  let disposeFooterPermissionControl: (() => void) | null = null;
   const updateRuntimeModeButton = () => {
+    void syncFooterPermissionControl();
     if (!runtimeModeBtn) return;
     const indicator = runtimeModeBtn.querySelector(
       ".llm-agent-toggle-indicator",
@@ -1249,7 +1344,6 @@ export function setupHandlers(
       activeSystem: getConversationSystem(),
       codexEnabled: isCodexModeAvailable(),
       claudeEnabled: isClaudeModeAvailable(),
-      hidden: isWebChatModeActive(),
       busy: runtimeSystemSwitchInFlight,
     });
   };
@@ -1340,7 +1434,22 @@ export function setupHandlers(
     nextSystem: ConversationSystem,
     options?: { forceFresh?: boolean },
   ) => {
-    if (!item) return;
+    if (
+      !item ||
+      !requireCurrentPanelOwnership(body, item, "switch-provider-system")
+    ) {
+      return;
+    }
+    const ownershipLease = capturePanelOperationLease(body);
+    if (!ownershipLease) return;
+    // WebChat is an upstream-only provider mode. Restore a non-webchat model
+    // entry before the runtime changes so a later return to upstream (or the
+    // next Zotero start) cannot silently re-enter webchat. The runtime switch
+    // below replaces the conversation, so no paper conversation restore here.
+    if (isWebChatModeActive()) {
+      await leaveWebChatMode({ restoreConversation: false });
+      if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
+    }
     const noteSession = resolveCurrentNoteSession();
     if (noteSession) {
       const resolvedNextSystem = resolveNoteFocusSystemSwitch({
@@ -1351,6 +1460,25 @@ export function setupHandlers(
       if (!resolvedNextSystem) return;
       if (resolvedNextSystem === getConversationSystem()) return;
       persistDraftInputForCurrentConversation();
+      const nextKey = resolveConversationKeyForNoteFocus(item, {
+        conversationSystem: resolvedNextSystem,
+      });
+      if (!nextKey) return;
+      const nextItem = createNoteConversationItem(
+        item,
+        resolvedNextSystem,
+        nextKey,
+      );
+      if (
+        !canCommitPanelConversation(
+          body,
+          nextItem,
+          "switch-note-provider",
+          ownershipLease,
+        )
+      )
+        return;
+      item = nextItem;
       setConversationSystemPref(resolvedNextSystem);
       currentConversationSystem = resolvedNextSystem;
       syncConversationIdentity();
@@ -1361,11 +1489,7 @@ export function setupHandlers(
       updateRuntimeModeButton();
       updateRuntimeSystemToggles();
       if (options?.forceFresh === true) {
-        if (noteSession.conversationKind === "global") {
-          await createAndSwitchGlobalConversation(true);
-        } else {
-          await createAndSwitchPaperConversation(true);
-        }
+        await createAndSwitchPaperConversation(true);
         return;
       }
       await ensureConversationLoaded(item);
@@ -1432,8 +1556,23 @@ export function setupHandlers(
       const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
         conversationSystem: nextSystem,
       });
-      item = resolvedState.item || item;
-      basePaperItem = resolvedState.basePaperItem || basePaperItem;
+      const nextItem = resolvedState.item || item;
+      const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
+      if (
+        !isPanelOperationLeaseCurrent(ownershipLease) ||
+        !canCommitPanelConversation(
+          body,
+          nextItem,
+          "switch-provider-system-commit",
+          ownershipLease,
+        ) ||
+        (nextBasePaperItem &&
+          !isPanelHostCompatibleWithPaper(body, nextBasePaperItem))
+      ) {
+        return;
+      }
+      item = nextItem;
+      basePaperItem = nextBasePaperItem;
       syncConversationIdentity();
       await createAndSwitchPaperConversation(true);
       return;
@@ -1443,13 +1582,29 @@ export function setupHandlers(
     const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
       conversationSystem: nextSystem,
     });
-    item = resolvedState.item || item;
-    basePaperItem = resolvedState.basePaperItem || basePaperItem;
+    const nextItem = resolvedState.item || item;
+    const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
+    if (
+      !isPanelOperationLeaseCurrent(ownershipLease) ||
+      !canCommitPanelConversation(
+        body,
+        nextItem,
+        "switch-provider-system-commit",
+        ownershipLease,
+      ) ||
+      (nextBasePaperItem &&
+        !isPanelHostCompatibleWithPaper(body, nextBasePaperItem))
+    ) {
+      return;
+    }
+    item = nextItem;
+    basePaperItem = nextBasePaperItem;
     syncConversationIdentity();
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
     await ensureConversationLoaded(item as Zotero.Item);
+    if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
     await renderShortcuts(
       body,
       item as Zotero.Item,
@@ -1498,16 +1653,7 @@ export function setupHandlers(
   };
   const resolveCurrentPaperBaseItem = (): Zotero.Item | null => {
     const noteSession = resolveCurrentNoteSession();
-    if (noteSession?.noteKind === "item") {
-      const parentItem = resolveCurrentNoteParentItem();
-      if (parentItem) {
-        basePaperItem = parentItem;
-        return parentItem;
-      }
-    }
-    if (noteSession) {
-      return null;
-    }
+    if (noteSession) return resolveConversationBaseItem(item);
     const resolvedBaseItem = chooseCurrentPaperBaseItemForMode({
       isGlobalMode: isGlobalMode(),
       liveRawBaseItem: resolvePaperChatBaseItem(resolveLiveRawPanelItem()),
@@ -1515,11 +1661,7 @@ export function setupHandlers(
       cachedBasePaperItem: resolvePaperChatBaseItem(basePaperItem),
       currentItemBaseItem: resolvePaperChatBaseItem(item),
     });
-    if (resolvedBaseItem) {
-      basePaperItem = resolvedBaseItem;
-      return resolvedBaseItem;
-    }
-    return null;
+    return resolvedBaseItem || null;
   };
 
   // Compute conversation key early so all closures can reference it.
@@ -1537,7 +1679,24 @@ export function setupHandlers(
   const getTextContextConversationKey = (): number | null =>
     item ? getConversationKey(item) : null;
   const syncConversationIdentity = () => {
+    if (
+      item &&
+      !canCommitPanelConversation(body, item, "sync-conversation-identity")
+    ) {
+      return;
+    }
+    const previousConversationKey = conversationKey;
     conversationKey = item ? getConversationKey(item) : null;
+    if (
+      resolveCurrentNoteSession() &&
+      previousConversationKey &&
+      conversationKey
+    ) {
+      copyNoteEditingSelectedTextContext({
+        fromConversationKey: previousConversationKey,
+        toConversationKey: conversationKey,
+      });
+    }
     activeContextPanels.set(body, () => item);
     void retainClaudeRuntimeForBody(body, item);
     if ((body as HTMLElement).dataset?.standalone === "true") {
@@ -1561,8 +1720,11 @@ export function setupHandlers(
     });
     panelRoot.dataset.conversationSystem = currentConversationSystem;
     syncQueuedFollowUpRegistration();
-    const currentBasePaperItemID =
-      mode === "paper" ? Number(resolveCurrentPaperBaseItem()?.id || 0) : 0;
+    const currentBasePaperItemID = noteSession
+      ? noteSession.parentItemId || 0
+      : mode === "paper"
+        ? Number(resolveCurrentPaperBaseItem()?.id || 0)
+        : 0;
     panelRoot.dataset.basePaperItemId =
       Number.isFinite(currentBasePaperItemID) && currentBasePaperItemID > 0
         ? `${Math.floor(currentBasePaperItemID)}`
@@ -1617,11 +1779,6 @@ export function setupHandlers(
             paperStateKey,
             normalizedConversationKey,
           );
-          setLastUsedCodexPaperConversationKey(
-            libraryID,
-            Math.floor(currentBasePaperItemID),
-            normalizedConversationKey,
-          );
         }
       } else {
         activeConversationModeByLibrary.set(libraryID, mode);
@@ -1651,11 +1808,6 @@ export function setupHandlers(
             paperStateKey,
             normalizedConversationKey,
           );
-          setLastUsedPaperConversationKey(
-            libraryID,
-            Math.floor(currentBasePaperItemID),
-            normalizedConversationKey,
-          );
         }
       }
     }
@@ -1672,9 +1824,7 @@ export function setupHandlers(
       // [webchat] Don't overwrite — applyWebChatModeUI manages the chip in webchat mode
       if (!modeChipBtn.querySelector(".llm-webchat-dot")) {
         const currentLabel = noteSession
-          ? noteSession.conversationKind === "global"
-            ? t("Library chat")
-            : t("Paper chat")
+          ? t("Note chat")
           : mode === "global"
             ? t("Library chat")
             : t("Paper chat");
@@ -1718,9 +1868,39 @@ export function setupHandlers(
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
     const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
     const codexModePrefKey = `${config.prefsPrefix}.enableCodexAppServerMode`;
+    const permissionPrefObservers: Array<{
+      key: string;
+      system: ConversationSystem;
+    }> = [
+      {
+        key: `${config.prefsPrefix}.originalAgentPermissionMode`,
+        system: "upstream",
+      },
+      {
+        key: `${config.prefsPrefix}.claudeCodePermissionMode`,
+        system: "claude_code",
+      },
+      {
+        key: `${config.prefsPrefix}.agentBackendBridgeUrl`,
+        system: "claude_code",
+      },
+      {
+        key: `${config.prefsPrefix}.agentClaudeConfigSource`,
+        system: "claude_code",
+      },
+      {
+        key: `${config.prefsPrefix}.codexAppServerPermissionState`,
+        system: "codex",
+      },
+      {
+        key: `${config.prefsPrefix}.codexAppServerPath`,
+        system: "codex",
+      },
+    ];
     let agentObserverId: symbol | undefined;
     let claudeObserverId: symbol | undefined;
     let codexObserverId: symbol | undefined;
+    const permissionObserverIds: symbol[] = [];
     const unregister = (observerId: symbol | undefined) => {
       if (observerId === undefined) return;
       try {
@@ -1733,6 +1913,9 @@ export function setupHandlers(
       unregister(agentObserverId);
       unregister(claudeObserverId);
       unregister(codexObserverId);
+      for (const observerId of permissionObserverIds.splice(0)) {
+        unregister(observerId);
+      }
       agentObserverId = undefined;
       claudeObserverId = undefined;
       codexObserverId = undefined;
@@ -1805,6 +1988,22 @@ export function setupHandlers(
         onCodexModePrefChange,
         true,
       );
+      for (const observer of permissionPrefObservers) {
+        permissionObserverIds.push(
+          (Zotero as any).Prefs.registerObserver(
+            observer.key,
+            () => {
+              if (isPanelUnavailable()) {
+                cleanupPrefObservers?.();
+                return;
+              }
+              if (getConversationSystem() !== observer.system) return;
+              void syncFooterPermissionControl();
+            },
+            true,
+          ),
+        );
+      }
     } catch {
       // Zotero.Prefs.registerObserver not available – no live sync
     }
@@ -1894,13 +2093,14 @@ export function setupHandlers(
     captureChatBoxViewportState();
   };
 
+  let cleanupStreamingScrollListeners = () => {};
   if (item && chatBox) {
     const handleStreamingFollowWheel = (event: WheelEvent) => {
       noteQuoteValidationUserActivity();
       if (!item || !chatBox) return;
       if (!isCurrentConversationStreaming()) return;
       if (event.deltaY < 0) {
-        cancelChatScrollFollowBottomRequest(item);
+        cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
         return;
       }
       if (event.deltaY <= 0) return;
@@ -1939,7 +2139,11 @@ export function setupHandlers(
       // Skip persistence when scroll was caused by our own programmatic
       // scrollTop writes or by layout mutations (e.g. button relayout
       // changing the flex-sized chat area).
-      if (isScrollUpdateSuspended()) {
+      if (isScrollUpdateSuspended(chatBox || undefined)) {
+        captureChatBoxViewportState();
+        return;
+      }
+      if (isChatNavigationActive(chatBox)) {
         captureChatBoxViewportState();
         return;
       }
@@ -1955,7 +2159,7 @@ export function setupHandlers(
           isStreaming: isCurrentConversationStreaming(),
         });
         if (followAction === "cancel") {
-          cancelChatScrollFollowBottomRequest(item);
+          cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
         } else if (followAction === "follow") {
           requestChatScrollFollowBottom(body, item, chatBox);
           captureChatBoxViewportState();
@@ -1966,9 +2170,32 @@ export function setupHandlers(
       captureChatBoxViewportState();
     };
     chatBox.addEventListener("wheel", handleStreamingFollowWheel, {
-      passive: false,
+      passive: true,
     });
     chatBox.addEventListener("scroll", persistScroll, { passive: true });
+    const handleStreamingScrollKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable=true]")) return;
+      if (
+        ["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+        (event.key === " " && event.shiftKey)
+      ) {
+        if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
+      }
+    };
+    const handleStreamingTouch = () => {
+      if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
+    };
+    chatBox.addEventListener("keydown", handleStreamingScrollKey);
+    chatBox.addEventListener("touchstart", handleStreamingTouch, {
+      passive: true,
+    });
+    cleanupStreamingScrollListeners = () => {
+      chatBox.removeEventListener("wheel", handleStreamingFollowWheel);
+      chatBox.removeEventListener("scroll", persistScroll);
+      chatBox.removeEventListener("keydown", handleStreamingScrollKey);
+      chatBox.removeEventListener("touchstart", handleStreamingTouch);
+    };
   }
 
   // Capture scroll before click/focus interactions that may trigger a panel
@@ -2022,10 +2249,59 @@ export function setupHandlers(
       uploadBtn.setAttribute("aria-expanded", "false");
     }
   };
+  const getCurrentPlanProvider = (): "original" | "codex" | "claude" =>
+    isClaudeConversationSystem()
+      ? "claude"
+      : isCodexConversationSystem()
+        ? "codex"
+        : "original";
+  const isPlanAvailable = () =>
+    !isWebChatModeActive() &&
+    (isRuntimeConversationSystem() || getCurrentRuntimeMode() === "agent");
+  const syncPlanModeChip = () => {
+    if (!planModeChip || !item) return;
+    const state = getComposePlanState(getConversationKey(item));
+    planModeChip.style.display =
+      isPlanAvailable() && state?.enabled ? "inline-flex" : "none";
+    planModeChip.dataset.planId = state?.planId || "";
+    planModeChip.dataset.planRevision = state ? `${state.revision}` : "";
+  };
+  const activatePlanMode = () => {
+    if (!item || isWebChatModeActive()) return;
+    if (!isPlanAvailable()) {
+      if (status) {
+        setStatus(status, "Plan mode is available in Agent mode", "warning");
+      }
+      return;
+    }
+    enableComposePlanMode({
+      conversationKey: getConversationKey(item),
+      provider: getCurrentPlanProvider(),
+    });
+    syncPlanModeChip();
+    if (status) setStatus(status, "Plan mode enabled", "ready");
+  };
   let openModelMenu = () => {};
   let closeModelMenu = () => {
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
   };
+  {
+    const controller = attachFooterPermissionControl({
+      body,
+      control: permissionControl,
+      button: permissionButton,
+      menu: permissionMenu,
+      getConversationSystem,
+      getRuntimeMode: getCurrentRuntimeMode,
+      onWarning: (message) => {
+        if (status) setStatus(status, message, "warning");
+      },
+    });
+    syncFooterPermissionControl = controller.sync;
+    disposeFooterPermissionControl = controller.dispose;
+    void syncFooterPermissionControl();
+  }
+  syncPlanModeChip();
   let openReasoningMenu = () => {};
   let closeReasoningMenu = () => {
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -2099,6 +2375,22 @@ export function setupHandlers(
     ensureConversationLoaded,
     getConversationKey,
     getHistory: (conversationKey) => chatHistory.get(conversationKey) || [],
+    captureOwnership: (operation, targetConversationKey) => {
+      const ownedItem = item;
+      if (
+        !ownedItem ||
+        !requireCurrentPanelOwnership(body, ownedItem, operation) ||
+        (targetConversationKey &&
+          getConversationKey(ownedItem) !== targetConversationKey)
+      ) {
+        return null;
+      }
+      const lease = capturePanelOperationLease(body);
+      if (!lease) return null;
+      return () =>
+        isPanelOperationLeaseCurrent(lease) &&
+        requireCurrentPanelOwnership(body, ownedItem, `${operation}-commit`);
+    },
     resolveActiveNoteSession,
     closeResponseMenu,
     closePromptMenu,
@@ -4611,11 +4903,26 @@ export function setupHandlers(
     modeChipBtn,
     getItem: () => item,
     setItem: (nextItem) => {
+      if (
+        nextItem &&
+        !canCommitPanelConversation(
+          body,
+          nextItem,
+          "commit-conversation-identity",
+        )
+      ) {
+        return false;
+      }
       item = nextItem as any;
+      return true;
     },
     getBasePaperItem: () => basePaperItem,
     setBasePaperItem: (nextItem) => {
+      if (nextItem && !isPanelHostCompatibleWithPaper(body, nextItem)) {
+        return false;
+      }
       basePaperItem = nextItem;
+      return true;
     },
     getConversationSystem,
     isClaudeConversationSystem,
@@ -4711,7 +5018,6 @@ export function setupHandlers(
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      isWebChatModeActive() ||
       (clickedSystem === "codex"
         ? !isCodexModeAvailable()
         : !isClaudeModeAvailable())
@@ -5044,6 +5350,7 @@ export function setupHandlers(
             title: getModelOptionTitle(entry),
           },
         );
+        option.dataset.entryId = entry.entryId;
         if (entry.catalogAvailability === "saved-unavailable") {
           option.disabled = true;
           option.classList.add("llm-model-option-disabled");
@@ -5083,16 +5390,22 @@ export function setupHandlers(
             updateReasoningButton();
             return;
           }
-          // [webchat] Remember current model before switching to webchat
           const wasWebChat = isWebChatMode();
+          setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
+          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+          // [webchat] Picking an API model from inside webchat is a mode exit:
+          // the shared owner restores the entry, drops the hidden session
+          // row, and returns to the paper's remembered conversation.
+          if (wasWebChat && entry.authMode !== "webchat") {
+            void leaveWebChatMode({ targetEntryId: entry.entryId });
+            return;
+          }
+          // [webchat] Remember current model before switching to webchat
           if (!wasWebChat && entry.authMode === "webchat") {
-            const { selectedEntryId } = getSelectedModelInfo();
-            previousNonWebchatModelId = selectedEntryId || null;
+            webChatModeController.rememberModelBeforeEnteringWebChat();
           }
 
           setSelectedModelEntry(entry.entryId);
-          setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
-          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
 
           // Keep the relay target synchronized when switching between webchat
           // providers as well as when entering webchat from a local/API model.
@@ -5518,31 +5831,28 @@ export function setupHandlers(
     const enabledLevels = options
       .filter((option) => option.enabled)
       .map((option) => option.level);
-    const cachedProvider = selectedReasoningProviderCache.get(item.id);
-    const cachedLevel =
-      cachedProvider === provider ? selectedReasoningCache.get(item.id) : null;
-    let selectedLevel =
-      cachedLevel ||
+    const previousLevel =
+      selectedReasoningCache.get(item.id) ||
       getLastUsedReasoningLevelForProvider(provider) ||
-      (provider === "anthropic"
-        ? "none"
-        : getLastUsedReasoningLevel() || "none");
-    if (provider === "anthropic") {
-      if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
-        selectedLevel = "none";
-      }
-    } else if (enabledLevels.length > 0) {
-      if (
-        selectedLevel === "none" ||
-        !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
-      ) {
-        selectedLevel = enabledLevels[0];
-      }
-    } else {
-      selectedLevel = "none";
+      getLastUsedReasoningLevel();
+    const resolved = getSelectedReasoningForItem(
+      item.id,
+      currentModel,
+      selectedProfile?.apiBase,
+      selectedProfile?.providerProtocol,
+      selectedProfile?.advanced?.profileOverride,
+    );
+    const selectedLevel = resolved?.level || "auto";
+    if (
+      reasoningBtn &&
+      previousLevel &&
+      previousLevel !== "auto" &&
+      previousLevel !== "default" &&
+      selectedLevel === "auto"
+    ) {
+      reasoningBtn.dataset.reasoningAdjustment =
+        "The previous reasoning level is unavailable for this model. Using the provider default.";
     }
-    selectedReasoningCache.set(item.id, selectedLevel);
-    selectedReasoningProviderCache.set(item.id, provider);
     return { provider, currentModel, options, enabledLevels, selectedLevel };
   };
 
@@ -5578,8 +5888,6 @@ export function setupHandlers(
     }
   };
 
-  // [webchat] Remember the previous model so "Exit" can restore it
-  let previousNonWebchatModelId: string | null = null;
   let webchatConnectionTimer: ReturnType<typeof setInterval> | null = null;
   // Simple abort token — Zotero's Gecko context lacks AbortController.
   let webchatPreloadAbort: { aborted: boolean } | null = null;
@@ -5662,12 +5970,44 @@ export function setupHandlers(
 
   // Expose webchat intent clearing via hooks so standalone can call it
   // when loading a conversation from its own sidebar/popup.
+  const webChatModeController = createWebChatModeController({
+    getItem: () => item,
+    isWebChatMode: () => isWebChatMode(),
+    getConversationKey,
+    getAvailableModelEntries,
+    getSelectedModelEntryId: () =>
+      getSelectedModelInfo().selectedEntryId || null,
+    setSelectedModelEntry,
+    abortPreload: abortWebChatPreload,
+    removePreloadOverlay: () => {
+      body.querySelector(".llm-webchat-preload")?.remove();
+    },
+    stopConnectionCheck: () => stopWebChatConnectionCheck(),
+    clearNewChatIntent: clearNextWebChatNewChatIntent,
+    applyWebChatModeUI: () => applyWebChatModeUI(),
+    updateModelButton: () => updateModelButton(),
+    updateReasoningButton: () => updateReasoningButton(),
+    readComposerText: () => inputBox?.value || "",
+    writeComposerText: (text) => {
+      if (!inputBox) return;
+      inputBox.value = text;
+      resizeTextareaToContent(inputBox);
+    },
+    switchPaperConversation: async () =>
+      (await switchPaperConversation()) === true,
+    refreshChatPreservingScroll: () => refreshChatPreservingScroll(),
+    resetComposePreviewUI: () => resetComposePreviewUI(),
+    log: (message, ...args) => ztoolkit.log(message, ...args),
+  });
+  leaveWebChatMode = webChatModeController.leaveWebChatMode;
   if (hooks) {
     hooks.clearWebChatNewChatIntent = () => {
       clearNextWebChatNewChatIntent();
     };
     hooks.getCurrentModelName = () =>
       getSelectedModelInfo().currentModel || null;
+    hooks.leaveWebChatMode = () =>
+      leaveWebChatMode({ restoreConversation: false });
   }
 
   const startWebChatConnectionCheck = (dot: HTMLElement) => {
@@ -5738,16 +6078,14 @@ export function setupHandlers(
                   choice.value.toLowerCase() ===
                   directSelection.mode.toLowerCase(),
               )?.label || "Auto"
-            : selectedLevel === "none"
-              ? "off"
-              : available
-                ? getReasoningLevelDisplayLabel(
-                    selectedLevel as LLMReasoningLevel,
-                    provider,
-                    currentModel,
-                    options,
-                  )
-                : "off";
+            : available
+              ? getReasoningLevelDisplayLabel(
+                  selectedLevel as LLMReasoningLevel,
+                  provider,
+                  currentModel,
+                  options,
+                )
+              : "Not supported";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
       const reasoningLabel = resolvedReasoningLabel;
@@ -5760,7 +6098,9 @@ export function setupHandlers(
       reasoningBtn.style.background = "";
       reasoningBtn.style.borderColor = "";
       reasoningBtn.style.color = "";
-      const reasoningHint = "Click to adjust reasoning level";
+      const reasoningHint =
+        reasoningBtn.dataset.reasoningAdjustment ||
+        "Click to adjust reasoning level";
       reasoningBtn.dataset.reasoningLabel = reasoningLabel;
       reasoningBtn.dataset.reasoningHint = reasoningHint;
       scheduleResponsiveLayoutSync();
@@ -5929,65 +6269,18 @@ export function setupHandlers(
       return;
     }
     if (!enabledLevels.length) {
-      const offOption = createElement(
+      const unavailable = createElement(
         body.ownerDocument as Document,
         "button",
         "llm-response-menu-item llm-reasoning-option",
         {
           type: "button",
-          textContent: "\u2713 off",
+          textContent: "Not supported",
         },
       );
-      const applyOffSelection = (e: Event) => {
-        if (!isPrimaryPointerEvent(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        if (isClaudeConversationSystem()) {
-          clearClaudeReasoningDisplayOverride();
-          setClaudeReasoningModePref("auto");
-        } else {
-          selectedReasoningCache.clear();
-          selectedReasoningCache.set(item.id, "none");
-          selectedReasoningProviderCache.set(item.id, provider);
-          setLastUsedReasoningLevelForProvider(provider, "none");
-          if (provider !== "anthropic") {
-            setLastUsedReasoningLevel("none");
-          }
-        }
-        setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
-        updateReasoningButton();
-      };
-      offOption.addEventListener("pointerdown", applyOffSelection);
-      offOption.addEventListener("click", applyOffSelection);
-      reasoningMenu.appendChild(offOption);
+      unavailable.disabled = true;
+      reasoningMenu.appendChild(unavailable);
       return;
-    }
-    if (provider === "anthropic") {
-      const isSelected = selectedLevel === "none";
-      const offOption = createElement(
-        body.ownerDocument as Document,
-        "button",
-        "llm-response-menu-item llm-reasoning-option",
-        {
-          type: "button",
-          textContent: isSelected ? "\u2713 Off" : "Off",
-        },
-      );
-      const applyAnthropicOffSelection = (e: Event) => {
-        if (!isPrimaryPointerEvent(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        selectedReasoningCache.set(item.id, "none");
-        selectedReasoningProviderCache.set(item.id, provider);
-        setLastUsedReasoningLevelForProvider(provider, "none");
-        setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
-        updateReasoningButton();
-      };
-      offOption.addEventListener("pointerdown", applyAnthropicOffSelection);
-      offOption.addEventListener("click", applyAnthropicOffSelection);
-      reasoningMenu.appendChild(offOption);
     }
     for (const optionState of options) {
       const level = optionState.level;
@@ -6019,9 +6312,13 @@ export function setupHandlers(
             clearClaudeReasoningDisplayOverride();
             setClaudeReasoningModePref(nextMode as any);
           } else {
+            if (reasoningBtn) delete reasoningBtn.dataset.reasoningAdjustment;
             selectedReasoningCache.clear();
             selectedReasoningCache.set(item.id, level);
-            selectedReasoningProviderCache.set(item.id, provider);
+            selectedReasoningProviderCache.set(
+              item.id,
+              provider === "unsupported" ? "customized" : provider,
+            );
             setLastUsedReasoningLevelForProvider(provider, level);
             if (provider !== "anthropic") {
               setLastUsedReasoningLevel(level);
@@ -6189,14 +6486,6 @@ export function setupHandlers(
         delete modeChipBtn.dataset.webchatStatic;
         modeChipBtn.style.cursor = "";
       }
-    }
-
-    // Model dropdown: fully disabled in webchat (model is ChatGPT, use Exit to change)
-    if (modelBtn) {
-      (modelBtn as HTMLButtonElement).disabled = isWebChat;
-      modelBtn.style.opacity = isWebChat ? "0.5" : "";
-      modelBtn.style.cursor = isWebChat ? "default" : "";
-      modelBtn.style.pointerEvents = isWebChat ? "none" : "";
     }
 
     // [webchat] Pre-fetch history in background so it's ready when user clicks
@@ -6415,17 +6704,29 @@ export function setupHandlers(
       return codexDirectController?.getSendReasoning();
     }
     const { provider, enabledLevels, selectedLevel } = getReasoningState();
-    if (provider === "unsupported" || selectedLevel === "none")
-      return undefined;
+    if (!enabledLevels.length) return undefined;
     if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
       return undefined;
     }
-    return { provider, level: selectedLevel as LLMReasoningLevel };
+    return {
+      provider: provider === "unsupported" ? "customized" : provider,
+      level: selectedLevel as LLMReasoningLevel,
+    };
   };
 
   const { processIncomingFiles } = createFileIntakeController({
     body,
     getItem: () => item,
+    captureOwnership: (ownedItem, operation) => {
+      if (!requireCurrentPanelOwnership(body, ownedItem, operation)) {
+        return null;
+      }
+      const lease = capturePanelOperationLease(body);
+      if (!lease) return null;
+      return () =>
+        isPanelOperationLeaseCurrent(lease) &&
+        requireCurrentPanelOwnership(body, ownedItem, `${operation}-commit`);
+    },
     getCurrentModel: () => getSelectedModelInfo().currentModel,
     getCurrentPdfSupport: () => {
       const profile = getSelectedProfile();
@@ -6583,6 +6884,8 @@ export function setupHandlers(
     logError: (message, error) => {
       ztoolkit.log(message, error);
     },
+    activatePlanMode,
+    isPlanAvailable,
   });
   const {
     isActionPickerOpen,
@@ -6841,6 +7144,8 @@ export function setupHandlers(
     body,
     inputBox,
     getItem: () => item,
+    requireCurrentOwnership: (candidateItem, operation) =>
+      requireCurrentPanelOwnership(body, candidateItem, operation),
     beginRequest: beginPanelRequest,
     isRequestOwner,
     finishRequest: finishPanelRequest,
@@ -6988,6 +7293,47 @@ export function setupHandlers(
     consumeForcedSkillIds,
   });
   doSend = sendFlowController.doSend;
+  const handlePlanApproved = (event: Event) => {
+    const detail = (event as CustomEvent<{ planId?: string }>).detail;
+    syncPlanModeChip();
+    void doSend({
+      overrideText: `Execute the approved plan${detail?.planId ? ` ${detail.planId}` : ""}. Follow the durable task ledger and verify every required step.`,
+    });
+  };
+  const handlePlanRevise = (event: Event) => {
+    if (!item) return;
+    const detail = (
+      event as CustomEvent<{
+        planId: string;
+        revision: number;
+        provider: "original" | "codex" | "claude";
+        comment: string;
+      }>
+    ).detail;
+    if (!detail?.planId || !detail.comment?.trim()) return;
+    beginPlanRevision({
+      conversationKey: getConversationKey(item),
+      planId: detail.planId,
+      revision: detail.revision + 1,
+      provider: detail.provider,
+    });
+    syncPlanModeChip();
+    void doSend({
+      // Native Plan receives the prior artifact and revision instructions in
+      // its turn context. Keep the user's request intact for action contracts.
+      overrideText:
+        detail.provider === "codex" && isCodexAppServerModeEnabled()
+          ? detail.comment.trim()
+          : `Revise the prior plan using this feedback: ${detail.comment.trim()}`,
+    });
+  };
+  const handlePlanCancel = () => {
+    if (item) disableComposePlanMode(getConversationKey(item));
+    syncPlanModeChip();
+  };
+  body.addEventListener(PLAN_APPROVED_EVENT, handlePlanApproved);
+  body.addEventListener(PLAN_REVISE_EVENT, handlePlanRevise);
+  body.addEventListener(PLAN_CANCEL_EVENT, handlePlanCancel);
   // The header trash action uses the same durable, undoable deletion
   // lifecycle as Delete in conversation history.
   const executeSend = async () => {
@@ -7347,13 +7693,19 @@ export function setupHandlers(
     runtimeModeBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!item) return;
+      if (
+        !item ||
+        !requireCurrentPanelOwnership(body, item, "switch-runtime-mode")
+      ) {
+        return;
+      }
       const nextMode: ChatRuntimeMode =
         getCurrentRuntimeMode() === "agent" ? "chat" : "agent";
       setCurrentRuntimeMode(nextMode);
       // Only an explicit toggle updates the sticky default, so implicit
       // switches (/compact, skill selection) stay scoped to this conversation.
       setLastUsedRuntimeMode(nextMode);
+      syncPlanModeChip();
       if (status) {
         setStatus(
           status,
@@ -7363,6 +7715,90 @@ export function setupHandlers(
           "ready",
         );
       }
+    });
+  }
+
+  if (planModeChip) {
+    planModeChip.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (
+        !item ||
+        !requireCurrentPanelOwnership(body, item, "cancel-agent-plan")
+      ) {
+        return;
+      }
+      const ownershipLease = capturePanelOperationLease(body);
+      const ownershipItem = item;
+      if (!ownershipLease) return;
+      void (async () => {
+        const key = getConversationKey(ownershipItem);
+        const state = getComposePlanState(key);
+        if (!state) return;
+        if (state.submitted) {
+          const confirmed = await showStandaloneConfirmationDialog(
+            body.ownerDocument,
+            {
+              title: "Cancel this plan?",
+              message:
+                "Planning will stop. The cancelled plan remains visible in the conversation history.",
+              confirmLabel: "Cancel plan",
+              cancelLabel: "Keep planning",
+              destructive: true,
+            },
+          );
+          if (!confirmed) return;
+          if (
+            !isPanelOperationLeaseCurrent(ownershipLease) ||
+            !requireCurrentPanelOwnership(
+              body,
+              ownershipItem,
+              "cancel-agent-plan-commit",
+            )
+          ) {
+            return;
+          }
+          getAbortController(key)?.abort();
+          await import("../../agent/plans/coordinator").then(
+            ({ planExecutionCoordinator }) => {
+              if (
+                !isPanelOperationLeaseCurrent(ownershipLease) ||
+                !requireCurrentPanelOwnership(
+                  body,
+                  ownershipItem,
+                  "cancel-agent-plan-artifact",
+                )
+              ) {
+                return;
+              }
+              return planExecutionCoordinator.cancelArtifact({
+                planId: state.planId,
+                revision: state.revision,
+              });
+            },
+          );
+          if (
+            !isPanelOperationLeaseCurrent(ownershipLease) ||
+            !requireCurrentPanelOwnership(
+              body,
+              ownershipItem,
+              "cancel-agent-plan-result",
+            )
+          ) {
+            return;
+          }
+        }
+        disableComposePlanMode(key);
+        syncPlanModeChip();
+        const CustomEventCtor = body.ownerDocument.defaultView?.CustomEvent;
+        if (CustomEventCtor)
+          body.dispatchEvent(
+            new CustomEventCtor(PLAN_CANCEL_EVENT, {
+              bubbles: true,
+              detail: { planId: state.planId, revision: state.revision },
+            }),
+          );
+      })();
     });
   }
 
@@ -7458,6 +7894,40 @@ export function setupHandlers(
         selectActivePaperPickerRow();
         return;
       }
+    }
+    if (
+      ke.key === "Tab" &&
+      ke.shiftKey &&
+      !ke.altKey &&
+      !ke.ctrlKey &&
+      !ke.metaKey
+    ) {
+      const anotherSurfaceOwnsShortcut =
+        isFloatingMenuOpen(modelMenu) ||
+        isFloatingMenuOpen(reasoningMenu) ||
+        isFloatingMenuOpen(retryModelMenu) ||
+        isHistoryMenuOpen() ||
+        isHistoryNewMenuOpen() ||
+        Boolean(actionHitlPanel && actionHitlPanel.style.display !== "none") ||
+        Boolean(body.ownerDocument.querySelector("[role='dialog']"));
+      if (anotherSurfaceOwnsShortcut) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item || isWebChatModeActive()) return;
+      if (!isPlanAvailable()) return;
+      const enabled = toggleComposePlanMode({
+        conversationKey: getConversationKey(item),
+        provider: getCurrentPlanProvider(),
+      });
+      syncPlanModeChip();
+      if (status) {
+        setStatus(
+          status,
+          enabled ? "Plan mode enabled" : "Plan mode disabled",
+          "ready",
+        );
+      }
+      return;
     }
     // Backspace at position 0 with active badge: remove it
     if (
@@ -7783,6 +8253,12 @@ export function setupHandlers(
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
   }): boolean => {
+    if (
+      !item ||
+      !requireCurrentPanelOwnership(body, item, "cancel-active-request")
+    ) {
+      return false;
+    }
     const cancelledReviewRequestIds = cancelVisiblePendingConfirmationCards(
       chatBox || body,
       (requestId, resolution) =>
@@ -7875,46 +8351,7 @@ export function setupHandlers(
 
       // [webchat] "Exit" button → restore previous model and leave webchat mode
       if (isWebChatMode()) {
-        abortWebChatPreload();
-        // Immediately remove preload overlay for instant visual feedback
-        body.querySelector(".llm-webchat-preload")?.remove();
-        stopWebChatConnectionCheck();
-        clearNextWebChatNewChatIntent();
-        // Restore previous model, or fall back to first non-webchat model
-        const restoreId =
-          previousNonWebchatModelId ||
-          getAvailableModelEntries().find((e) => e.authMode !== "webchat")
-            ?.entryId ||
-          null;
-        if (restoreId) {
-          setSelectedModelEntry(restoreId);
-        }
-        previousNonWebchatModelId = null;
-        // Refresh UI back to normal mode
-        updateModelButton();
-        updateReasoningButton();
-        applyWebChatModeUI();
-        // Drop only transient WebChat state. WebChat shares the normal paper
-        // key, so deleting persisted conversation rows here would erase the
-        // user's regular paper chat.
-        const key = getConversationKey(item);
-        resetWebChatConversationSessionState(key);
-        webChatIsolatedConversationKeys.delete(key);
-        chatHistory.delete(key);
-        loadedConversationKeys.delete(key);
-        void (async () => {
-          try {
-            await ensureConversationLoaded(item as Zotero.Item);
-          } catch (err) {
-            ztoolkit.log(
-              "LLM: Failed to reload conversation after webchat exit",
-              err,
-            );
-          }
-          restoreDraftInputForCurrentConversation();
-          refreshChatPreservingScroll();
-          resetComposePreviewUI();
-        })();
+        void leaveWebChatMode();
         return;
       }
 
@@ -7934,9 +8371,17 @@ export function setupHandlers(
     disconnectObserverCleanup?.();
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
+    disposeFooterPermissionControl?.();
+    disposeFooterPermissionControl = null;
     cleanupMineruPaperSourceObservers?.();
     cleanupModelCapabilitySubscription?.();
     cleanupModelCapabilitySubscription = null;
+    disposeConversationTurnNavigator(body);
+    disposeChatRendering(body);
+    cleanupStreamingScrollListeners();
+    body.removeEventListener(PLAN_APPROVED_EVENT, handlePlanApproved);
+    body.removeEventListener(PLAN_REVISE_EVENT, handlePlanRevise);
+    body.removeEventListener(PLAN_CANCEL_EVENT, handlePlanCancel);
     codexDirectController?.dispose();
     codexDirectController = null;
     body.removeEventListener(
@@ -7948,6 +8393,9 @@ export function setupHandlers(
       handleQuoteValidationUserActivity,
       true,
     );
+    for (const eventType of ownershipProtectedEventTypes) {
+      body.removeEventListener(eventType, enforcePanelOwnershipForEvent, true);
+    }
     unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);

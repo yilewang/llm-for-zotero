@@ -1,7 +1,46 @@
 {
   "schemaVersion": 1,
-  "revision": 3,
+  "revision": 4,
   "models": [
+    {
+      "match": {
+        "provider": "openai",
+        "exact": "gpt-6-astra"
+      },
+      "reasoning": {
+        "kind": "select",
+        "options": [
+          {
+            "id": "low",
+            "label": "Low",
+            "effort": "low"
+          },
+          {
+            "id": "medium",
+            "label": "Medium",
+            "effort": "medium"
+          },
+          {
+            "id": "high",
+            "label": "High",
+            "effort": "high"
+          },
+          {
+            "id": "xhigh",
+            "label": "XHigh",
+            "effort": "xhigh"
+          },
+          {
+            "id": "max",
+            "label": "Max",
+            "effort": "max"
+          }
+        ]
+      },
+      "sampling": {
+        "temperature": "unsupported"
+      }
+    },
     {
       "match": {
         "provider": "kimi",

@@ -43,7 +43,7 @@ DEFAULT_POPPLER_BIN_VALUE = os.environ.get("LLM_FOR_ZOTERO_POPPLER_BIN") or (
 DEFAULT_POPPLER_BIN = Path(DEFAULT_POPPLER_BIN_VALUE).expanduser()
 MIN_ACCEPTED_CONFIDENCE = 0.40
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
-DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v4"
+DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v6"
 
 CAPTION_PATTERN = re.compile(
     r"^\s*((?:Extended\s+Data\s+)?Fig(?:ure)?\.?\s*S?\d+[A-Za-z]?|"
@@ -135,19 +135,7 @@ def label_namespace(label: str) -> str:
     return "main"
 
 
-def query_requests_extended_or_supplementary(query: str) -> bool:
-    return bool(
-        re.search(r"\bextended\s+data\b", query or "", re.I)
-        or re.search(r"\bsupp(?:lementary|lemental)?\b", query or "", re.I)
-        or re.search(r"(?i)\bfig(?:ure)?\.?\s*S\d+\b", query or "")
-    )
 
-
-def label_allowed_for_all_query(label: str, query: str) -> bool:
-    namespace = label_namespace(label)
-    if namespace == "main":
-        return True
-    return query_requests_extended_or_supplementary(query)
 
 
 @dataclass
@@ -567,7 +555,10 @@ def targets_from_manifest(case: PdfCase) -> list[Target]:
 def targets_from_mineru_semantics(case: PdfCase) -> list[Target]:
     content_path = case.mineru_dir / "content_list.json"
     if not content_path.exists():
-        return []
+        candidates = sorted(case.mineru_dir.glob("*_content_list.json"))
+        if len(candidates) != 1:
+            return []
+        content_path = candidates[0]
     try:
         content = json.loads(content_path.read_text())
     except Exception:
@@ -1759,107 +1750,38 @@ def safe_stem(value: str) -> str:
     return value[:90] or "figure"
 
 
-def query_requests_all_figures(query: str) -> bool:
-    text = re.sub(r"\s+", " ", query or "").strip().lower()
-    if not text:
-        return True
-    return bool(
-        re.search(r"\b(all|every|each)\s+(?:of\s+the\s+)?fig(?:ure)?s?\b", text)
-        or re.search(r"\bfig(?:ure)?s?\s+(?:all|overview|summary)\b", text)
-    )
-
-
-def query_requests_table(query: str) -> bool:
-    return bool(re.search(r"(?i)\btables?\s+(?:[S]?\d+|[IVX]+)\b", query or ""))
-
-
-def query_panel_hints(query: str) -> dict[str, str]:
-    hints: dict[str, str] = {}
-    for match in re.finditer(r"(?i)\bpanel\s+(\d+)\s*([a-z])\b", query or ""):
-        hints[f"Figure {match.group(1)}"] = match.group(2).lower()
-    for match in re.finditer(r"(?i)\bfig(?:ure)?\.?\s*(\d+)\s*([a-z])\b", query or ""):
-        hints[f"Figure {match.group(1)}"] = match.group(2).lower()
-    return hints
-
-
-def expand_requested_figure_labels(query: str) -> set[str]:
-    text = query or ""
-    labels: set[str] = set()
-    extended_numbers: set[str] = set()
-    supplementary_numbers: set[str] = set()
-    for match in re.finditer(
-        r"(?i)\bExtended\s+Data\s+Fig(?:ure)?\.?\s*(\d+)\b",
-        text,
-    ):
-        number = match.group(1)
-        extended_numbers.add(number)
-        labels.add(f"Extended Data Figure {number}")
-    for match in re.finditer(
-        r"(?i)\bSupplementary\s+Fig(?:ure)?\.?\s*(S?\d+)\b",
-        text,
-    ):
-        number = match.group(1).upper()
-        supplementary_numbers.add(number)
-        labels.add(f"Supplementary Figure {number}")
-    for match in re.finditer(
-        r"(?i)\b(?:fig(?:ure)?s?\.?|figs?\.?)\s+([S\dA-Za-z,\s&\-–—toand]+)",
-        text,
-    ):
-        segment = match.group(1)
-        segment = re.split(r"(?i)\b(?:on|in|from|with|about|and\s+save|write)\b", segment)[0]
-        numbers = re.findall(r"(?i)\bS?\d+\b", segment)
-        if not numbers:
-            continue
-        if len(numbers) == 2 and re.search(r"[-–—]|\bto\b", segment, re.I):
-            start_raw, end_raw = numbers
-            if start_raw.upper().startswith("S") or end_raw.upper().startswith("S"):
-                for number in numbers:
-                    labels.add(f"Figure {number.upper()}")
-            else:
-                start = int(start_raw)
-                end = int(end_raw)
-                if start <= end and end - start <= 80:
-                    for number in range(start, end + 1):
-                        labels.add(f"Figure {number}")
-                else:
-                    for number in numbers:
-                        labels.add(f"Figure {number}")
-        else:
-            for number in numbers:
-                labels.add(f"Figure {number.upper()}")
-    for label in query_panel_hints(text):
-        labels.add(label)
-    for number in extended_numbers:
-        labels.discard(f"Figure {number}")
-    for number in supplementary_numbers:
-        labels.discard(f"Figure {number}")
-    return labels
+def decode_figure_selection(raw: str) -> dict[str, Any]:
+    selection = json.loads(raw)
+    if (not isinstance(selection, dict)
+            or not isinstance(selection.get("labels"), list)
+            or not all(isinstance(label, str) and label.strip() for label in selection["labels"])
+            or selection.get("kind") not in ("figures", "tables", "both")
+            or not isinstance(selection.get("includeSupplementary"), bool)):
+        raise ValueError("A structured figure selection is required")
+    return selection
 
 
 def direct_entry_matches_request(
     figure: dict[str, Any],
     *,
-    query: str,
+    selection: dict[str, Any],
     pages: set[int],
 ) -> bool:
-    requested_labels = expand_requested_figure_labels(query)
-    table_requested = query_requests_table(query)
-    all_requested = query_requests_all_figures(query) or (
-        not requested_labels and not table_requested
-    )
+    requested_labels = {normalize_label(label) for label in selection["labels"]}
+    all_requested = not requested_labels and selection["kind"] != "tables"
     label = normalize_label(str(figure.get("label") or ""))
     page_number = int(figure.get("pageNumber") or 0)
     caption_page_number = int(figure.get("captionPageNumber") or page_number or 0)
     if pages and page_number not in pages and caption_page_number not in pages:
         return False
     if all_requested:
-        return label_allowed_for_all_query(label, query)
+        return label_namespace(label) == "main" or selection["includeSupplementary"]
     return label in requested_labels
 
 
 def filter_direct_figures(
     figures: list[dict[str, Any]],
-    query: str,
+    selection: dict[str, Any],
     pages: set[int],
 ) -> list[dict[str, Any]]:
     filtered: list[dict[str, Any]] = []
@@ -1867,7 +1789,7 @@ def filter_direct_figures(
         crop_path = figure.get("cropPath")
         if not crop_path:
             continue
-        if direct_entry_matches_request(figure, query=query, pages=pages):
+        if direct_entry_matches_request(figure, selection=selection, pages=pages):
             filtered.append(figure)
     return filtered
 
@@ -1875,7 +1797,7 @@ def filter_direct_figures(
 def direct_expected_figures(
     result: dict[str, Any],
     *,
-    query: str,
+    selection: dict[str, Any],
     pages: set[int],
 ) -> list[dict[str, Any]]:
     expected: list[dict[str, Any]] = []
@@ -1883,7 +1805,7 @@ def direct_expected_figures(
     for figure in result.get("figures", []):
         if not isinstance(figure, dict):
             continue
-        if not direct_entry_matches_request(figure, query=query, pages=pages):
+        if not direct_entry_matches_request(figure, selection=selection, pages=pages):
             continue
         label = normalize_label(str(figure.get("label") or ""))
         page_number = int(figure.get("pageNumber") or 0)
@@ -1918,13 +1840,12 @@ def stable_figure_id(label: str, page_number: int, index: int) -> str:
 def direct_output_figures(
     result: dict[str, Any],
     *,
-    query: str,
+    selection: dict[str, Any],
     pages: set[int],
     crop_dir: Path,
 ) -> list[dict[str, Any]]:
     crop_dir.mkdir(parents=True, exist_ok=True)
-    panel_hints = query_panel_hints(query)
-    selected = filter_direct_figures(result.get("figures", []), query, pages)
+    selected = filter_direct_figures(result.get("figures", []), selection, pages)
     id_counts: dict[str, int] = {}
     outputs: list[dict[str, Any]] = []
     for figure in selected:
@@ -1952,7 +1873,6 @@ def direct_output_figures(
                 ),
                 "cropPath": str(final_crop),
                 "captionText": str(figure.get("captionText") or ""),
-                "panelHint": panel_hints.get(label),
                 "rect": figure.get("rect") or {},
                 "confidence": float(figure.get("confidence") or 0),
                 "source": str(figure.get("source") or "raw-pdf-evaluator"),
@@ -1988,6 +1908,7 @@ def parse_page_set(raw: str | None) -> set[int]:
 
 
 def run_direct_mode(args: argparse.Namespace) -> int:
+    selection = decode_figure_selection(args.selection)
     pdf_path = Path(args.pdf).expanduser()
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -2052,13 +1973,13 @@ def run_direct_mode(args: argparse.Namespace) -> int:
         pages = parse_page_set(args.pages)
         figures = direct_output_figures(
             result,
-            query=str(args.query or ""),
+            selection=selection,
             pages=pages,
             crop_dir=Path(args.crop_dir).expanduser(),
         )
         expected_figures = direct_expected_figures(
             result,
-            query=str(args.query or ""),
+            selection=selection,
             pages=pages,
         )
         missing_figures = [
@@ -2269,7 +2190,7 @@ def evaluate_case(
                 "captionPageNumber": target.page_number,
                 "pageRelation": relation,
                 "captionSource": target.source,
-                "captionText": target.caption_text[:240],
+                "captionText": target.caption_text,
                 "source": candidate.source,
                 "confidence": round(candidate.confidence, 3),
                 "rect": candidate.rect.to_json(),
@@ -2302,7 +2223,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pdf", type=Path)
     parser.add_argument("--mineru-dir", type=Path)
-    parser.add_argument("--query", type=str, default="")
+    parser.add_argument("--selection", type=str, help="Host-resolved figure selection JSON for direct extraction")
     parser.add_argument(
         "--pages",
         type=str,

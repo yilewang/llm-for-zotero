@@ -50,7 +50,11 @@ describe("quote anchor leak boundaries", function () {
     assert.include(menuSource, "target.quoteCitations");
     assert.include(chatSource, "buildQuoteExpandedMarkdown(");
     assert.include(notesSource, "buildQuoteExpandedMarkdown(");
-    assert.include(chatSource, "buildQuoteDisplayMarkdown(");
+    const sharedRenderer = source(
+      "src/modules/contextPanel/assistantRichText.ts",
+    );
+    assert.include(chatSource, 'from "./assistantRichText"');
+    assert.include(sharedRenderer, "buildQuoteDisplayMarkdown");
     assert.notInclude(
       chatSource,
       "replaceQuoteCitationPlaceholdersForMarkdown(",

@@ -54,6 +54,12 @@ describe("quoteTextSearch", function () {
       )?.proseSegments,
       ["The surrounding prose remains searchable at ", ""],
     );
+    assert.deepEqual(
+      splitQuoteAtPairedInlineMath(
+        "The variance \\(\\sigma^2\\) changes at $t + 1$.",
+      )?.mathSegments,
+      ["\\sigma^2", "t + 1"],
+    );
   });
 
   it("refuses malformed and display-math delimiters", function () {

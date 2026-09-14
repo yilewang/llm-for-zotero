@@ -141,6 +141,7 @@ const REASONING_LEVEL_SELECTIONS = {
   has: (value: string) => isReasoningLevelSelection(value),
 };
 const REASONING_PROVIDER_SELECTION_KEYS = new Set([
+  "customized",
   "openai",
   "gemini",
   "deepseek",

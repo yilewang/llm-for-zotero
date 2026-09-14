@@ -51,6 +51,30 @@ describe("apply_tags tool", function () {
     assert.deepEqual(field.rows[0].value, []);
   });
 
+  it("keeps pagination for a batch even when its last page contains one paper", function () {
+    const tool = createApplyTagsTool(fakeGateway);
+    for (const id of [
+      "auto_tag:page:2:2:size:20:tags:5",
+      "auto_tag:page:1:1:size:20:tags:5",
+    ]) {
+      const input = tool.validate({
+        action: "add",
+        id,
+        assignments: id.includes("page:2")
+          ? [{ itemId: 7, tags: ["memory"] }]
+          : [
+              { itemId: 7, tags: ["memory"] },
+              { itemId: 8, tags: ["fmri"] },
+            ],
+      });
+      assert.isTrue(input.ok);
+      if (!input.ok) continue;
+      const action = tool.createPendingAction!(input.value, baseContext);
+      assert.isTrue(action.fields.some((field) => field.id === "pageSize"));
+      assert.match(action.title, /^Page /);
+    }
+  });
+
   it("still rejects an all-empty tag submission", async function () {
     const tool = createApplyTagsTool(fakeGateway);
 

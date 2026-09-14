@@ -144,26 +144,12 @@ export function createWebChatHistoryController(
         if (!item) return;
         void (async () => {
           const key = deps.getConversationKey(item);
-          const isDeepSeekSession =
-            typeof session.chatUrl === "string" &&
-            /chat\.deepseek\.com/i.test(session.chatUrl);
+          const { getWebChatTargetByUrl } =
+            await import("../../../../webchat/types");
+          const sessionTarget = getWebChatTargetByUrl(session.chatUrl);
+          const isDeepSeekSession = sessionTarget?.id === "deepseek";
           try {
-            let loadModelName = "chatgpt.com";
-            try {
-              if (session.chatUrl) {
-                const loadUrl = new URL(session.chatUrl);
-                const { WEBCHAT_TARGETS: targets } =
-                  await import("../../../../webchat/types");
-                const matched = targets.find(
-                  (wt) =>
-                    loadUrl.hostname === wt.modelName ||
-                    loadUrl.hostname === `www.${wt.modelName}`,
-                );
-                if (matched) loadModelName = matched.modelName;
-              }
-            } catch {
-              // Keep default.
-            }
+            const loadModelName = sessionTarget?.modelName || "chatgpt.com";
             deps.setConversationHistory(key, [
               {
                 role: "assistant",
@@ -199,6 +185,12 @@ export function createWebChatHistoryController(
                   modelProviderLabel:
                     message.kind === "bot" ? "WebChat" : undefined,
                   reasoningDetails: message.thinking || undefined,
+                  webchatChatUrl:
+                    message.kind === "bot"
+                      ? session.chatUrl || undefined
+                      : undefined,
+                  webchatChatId:
+                    message.kind === "bot" ? session.id : undefined,
                 });
               }
               deps.setStatusMessage?.(

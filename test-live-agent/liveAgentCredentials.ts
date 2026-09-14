@@ -89,8 +89,14 @@ function legacyCredentials(readPref: (key: string) => string) {
     : null;
 }
 
-export async function resolveLiveAgentCredentials(): Promise<LiveAgentCredentials | null> {
-  const requestedModel = environmentValue("LLM_FOR_ZOTERO_LIVE_MODEL");
+export async function resolveLiveAgentCredentials(
+  options: {
+    requestedModel?: string;
+    profilePath?: string;
+  } = {},
+): Promise<LiveAgentCredentials | null> {
+  const requestedModel =
+    options.requestedModel ?? environmentValue("LLM_FOR_ZOTERO_LIVE_MODEL");
   const activeRead = (key: string) =>
     String(Zotero.Prefs.get(`${PREF_PREFIX}.${key}`, true) || "");
   if (requestedModel) {
@@ -104,7 +110,8 @@ export async function resolveLiveAgentCredentials(): Promise<LiveAgentCredential
     if (legacy) return legacy;
   }
 
-  const profilePath = environmentValue("LLM_FOR_ZOTERO_LIVE_PROFILE_PATH");
+  const profilePath =
+    options.profilePath ?? environmentValue("LLM_FOR_ZOTERO_LIVE_PROFILE_PATH");
   if (!profilePath) return null;
   try {
     const contents = await Zotero.File.getContentsAsync(profilePath);

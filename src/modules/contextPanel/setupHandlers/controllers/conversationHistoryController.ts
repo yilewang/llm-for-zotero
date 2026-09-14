@@ -248,11 +248,11 @@ export function resolveHistoryEntryPaperBaseItem<
   const isRegular = Boolean(item.isRegularItem?.());
   const isAttachment = Boolean(item.isAttachment?.());
   const isNote = Boolean(item.isNote?.());
-  if (isRegular && !isAttachment && !isNote) {
+  if ((isRegular && !isAttachment) || isNote) {
     return isHistoryPaperItemDeleted(item) ? null : item;
   }
 
-  if (isAttachment || isNote) {
+  if (isAttachment) {
     const parentID = normalizeHistoryPaperItemID(item.parentID);
     if (parentID) {
       try {

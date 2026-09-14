@@ -10,6 +10,7 @@ import type {
   AgentToolResult,
   AgentToolReviewResolution,
 } from "../types";
+import { defaultInvocationPlan } from "../authorization/invocationPlan";
 import { describeLibraryMutationActions } from "../contracts/actionContract";
 import { fail, ok } from "./shared";
 
@@ -133,7 +134,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
   name: string;
   description: string;
   inputSchema: object;
-  mutability: "read" | "write";
+  executionClass: "read" | "control" | "external_effect";
   requiresConfirmation: boolean;
   label: string;
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
@@ -146,7 +147,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
       name: params.name,
       description: params.description,
       inputSchema: params.inputSchema,
-      mutability: params.mutability,
+      executionClass: params.executionClass,
       requiresConfirmation: params.requiresConfirmation,
       exposure: "model",
       tier: params.tier || "normal",
@@ -171,21 +172,12 @@ export function createDelegatingTool<TResult = unknown>(params: {
       }
       return tool.spec.requiresConfirmation;
     },
-    async planMutation(input, context) {
+    async planInvocation(input, context) {
       const tool = input.delegateTool;
-      if (tool.planMutation) {
-        return tool.planMutation(input.delegateInput, context);
+      if (tool.planInvocation) {
+        return tool.planInvocation(input.delegateInput, context);
       }
-      const requiresConfirmation = tool.shouldRequireConfirmation
-        ? await tool.shouldRequireConfirmation(input.delegateInput, context)
-        : tool.spec.requiresConfirmation;
-      return {
-        effect: requiresConfirmation ? ("write" as const) : ("none" as const),
-        reversibility: "none" as const,
-        reason: requiresConfirmation
-          ? "The delegated operation did not provide a durable inverse plan."
-          : undefined,
-      };
+      return defaultInvocationPlan(tool.spec.executionClass);
     },
     async acceptInheritedApproval(input, approval, context) {
       const tool = input.delegateTool;

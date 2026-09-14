@@ -147,7 +147,7 @@ describe("gemini 3.x reasoning profiles", function () {
         name: "query_library",
         description: "search",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
     ];
@@ -170,4 +170,31 @@ describe("gemini 3.x reasoning profiles", function () {
     const thinkingConfig = thinkingConfigOf(captured.bodies[0]);
     assert.equal(thinkingConfig.thinkingLevel, "minimal");
   });
+
+  for (const mode of ["chat", "agent"] as const) {
+    it(`leaves Auto reasoning to Gemini in ${mode}`, async function () {
+      const captured = mockFetchCapturingBody();
+      const params = {
+        model: "gemini-3.6-flash",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "gemini-test",
+        providerProtocol: "gemini_native" as const,
+        reasoning: { provider: "gemini" as const, level: "auto" },
+      };
+      if (mode === "chat")
+        await callLLMStream({ ...params, prompt: "Hello" }, () => undefined);
+      else
+        await new GeminiNativeAgentAdapter().runStep({
+          request: {
+            ...params,
+            conversationKey: 1,
+            mode: "agent",
+            userText: "Hello",
+          },
+          messages: [{ role: "user", content: "Hello" }],
+          tools: [],
+        });
+      assert.notProperty(captured.bodies[0].generationConfig, "thinkingConfig");
+    });
+  }
 });

@@ -1,4 +1,5 @@
 import { config } from "../../../package.json";
+import { installStandaloneWindowTitlebar } from "./standaloneWindowTitlebar";
 import { HTML_NS } from "../../utils/domHelpers";
 import { createInlineSvgElement } from "./mermaidSvg";
 
@@ -177,6 +178,8 @@ function initializeStandaloneSvgWindow(
   stage.appendChild(svg);
   viewport.appendChild(stage);
   root.replaceChildren(toolbar, viewport);
+  // Inside the root, so the strip inherits the canvas surface colour.
+  installStandaloneWindowTitlebar(doc, root);
 
   let scale = 1;
   let baseFitWidth = 0;

@@ -862,6 +862,79 @@ describe("agent engine final UI release", function () {
     ]);
   });
 
+  it("publishes answer chunks during generation, separately from reasoning, before final completion", async function () {
+    const conversationKey = 554;
+    const history: any[] = [];
+    let beforeFinal:
+      | { text: string; streaming: boolean; documentId: unknown }
+      | undefined;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        onEvent?: (event: any) => Promise<void> | void;
+      }) => {
+        await params.onEvent?.({
+          type: "reasoning",
+          round: 1,
+          details: "Reasoning stays separate.",
+        });
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "The methods use three complementary analyses. ",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 550));
+        const message = history[history.length - 1];
+        beforeFinal = {
+          text: message.text,
+          streaming: message.streaming,
+          documentId: message.documentId,
+        };
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "The second part follows.",
+        });
+        await params.onEvent?.({
+          type: "final",
+          text: "The methods use three complementary analyses. The second part follows.",
+        });
+        return {
+          kind: "completed",
+          runId: "stream-before-final",
+          text: "The methods use three complementary analyses. The second part follows.",
+          usedFallback: false,
+        };
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, history);
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Explain this paper's methods.",
+      },
+      deps,
+    );
+    assert.deepEqual(beforeFinal, {
+      text: "The methods use three complementary analyses. ",
+      streaming: true,
+      documentId: undefined,
+    });
+    assert.notInclude(
+      history[history.length - 1].text,
+      "Reasoning stays separate.",
+    );
+  });
+
   it("preserves partial text and flags interruption when the runtime drops mid-stream", async function () {
     const conversationKey = 555;
     const statuses: string[] = [];

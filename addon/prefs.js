@@ -24,10 +24,12 @@ pref("enableClaudeCodeMode", false);
 pref("agentBackendBridgeUrl", "http://127.0.0.1:19787");
 pref("agentClaudeConfigSource", "default");
 pref("agentPermissionMode", "safe");
-// How much the in-plugin agent may change the library unattended. Separate
-// from agentPermissionMode, whose help text promises it governs the Claude
-// Code bridge only -- see src/shared/agentLibraryWriteMode.ts.
-pref("agentLibraryWriteMode", "auto");
+pref("claudeCodePermissionMode", "default");
+pref("claudeCodePermissionModeMigrationDone", false);
+// Complete permission mode for the in-plugin Original Agent. Claude Code and
+// Codex retain their independent native permission profiles.
+pref("originalAgentPermissionMode", "auto");
+pref("originalAgentPermissionModeMigrationDone", false);
 pref("tavilyApiKey", "");
 pref("conversationSystem", "upstream");
 pref("enableCodexAppServerMode", false);
@@ -36,8 +38,15 @@ pref("codexAppServerReasoning", "auto");
 pref("codexAppServerPath", "");
 pref("codexAppServerConversationModeMap", "");
 pref("codexAppServerZoteroMcpToolsEnabled", true);
+pref("externalMcpWritesEnabled", false);
 pref("codexAppServerNativeApprovalsEnabled", false);
 pref("codexAppServerApprovalsReviewer", "user");
+pref("codexAppServerPermissionProfile", ":read-only");
+pref(
+  "codexAppServerPermissionState",
+  '{"boundary":{"kind":"profile","profileId":":workspace"},"approvalOverride":{"policy":"on-request","reviewer":"user"}}',
+);
+pref("codexAppServerPermissionStateMigrationDone", false);
 pref("codexNativeSkillMode", "native");
 pref("codexNativeSkillRoutingMode", "hybrid");
 pref("codexAppServerGlobalConversationMap", "");

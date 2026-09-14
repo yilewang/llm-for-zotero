@@ -11,6 +11,7 @@ const AGENT_MODE_PREFS = {
   enableClaudeCodeMode: false,
   enableCodexAppServerMode: false,
   conversationSystem: "upstream",
+  agentLibraryWriteMode: "auto",
 };
 
 async function withPrefs<T>(
@@ -70,6 +71,70 @@ describe("workflow: agent mode persistence", function () {
     fixtures.push(fixture);
     return fixture;
   }
+
+  it("keeps the footer visible and the context gauge hollow before the first message", async function () {
+    await withPrefs(AGENT_MODE_PREFS, async () => {
+      const paper = await createPaper("Agent Blank Footer Paper");
+      const panel = await api.renderPanelForItem(paper.parentItemId);
+
+      const blankChat = await api.getDiagnostics(panel.panelId);
+      assert.isTrue(blankChat.startPageActive);
+      assert.isTrue(blankChat.statusBarVisible);
+      assert.closeTo(
+        blankChat.contextGaugeWidth || 0,
+        Number.parseFloat(blankChat.statusFontSize || "0"),
+        0.01,
+      );
+      assert.equal(blankChat.contextGaugeHeight, blankChat.contextGaugeWidth);
+      assert.equal(
+        blankChat.contextGaugeInnerBackground,
+        blankChat.panelBackground,
+      );
+      assert.isFalse(blankChat.permissionControlVisible);
+
+      const blankAgent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      assert.equal(blankAgent.runtimeMode, "agent");
+      assert.isTrue(blankAgent.startPageActive);
+      assert.isTrue(blankAgent.statusBarVisible);
+      assert.isTrue(blankAgent.permissionControlVisible);
+      assert.equal(blankAgent.permissionModeText, "auto");
+      assert.equal(
+        blankAgent.permissionModeFontSize,
+        blankAgent.statusFontSize,
+      );
+      assert.closeTo(
+        blankAgent.contextGaugeWidth || 0,
+        Number.parseFloat(blankAgent.permissionModeFontSize || "0"),
+        0.01,
+      );
+      assert.isBelow(
+        blankAgent.contextGaugeInnerWidth || 0,
+        blankAgent.contextGaugeWidth || 0,
+      );
+      assert.equal(
+        blankAgent.contextGaugeInnerBackground,
+        blankAgent.panelBackground,
+      );
+      const wrappedFooter = await api.measurePanelFooterLayout(panel.panelId, {
+        width: 220,
+        statusText:
+          "This intentionally long status message must wrap onto additional lines without moving the permission and context controls.",
+      });
+      assert.isTrue(wrappedFooter.statusWrapped);
+      assert.isTrue(wrappedFooter.controlsPinnedToFirstLine);
+      assert.isTrue(wrappedFooter.textGlyphsAligned);
+      assert.closeTo(
+        wrappedFooter.permissionTextTop,
+        wrappedFooter.statusTextTop,
+        0.5,
+      );
+      assert.closeTo(
+        wrappedFooter.permissionTextBottom,
+        wrappedFooter.statusTextBottom,
+        0.5,
+      );
+    });
+  });
 
   it("carries an enabled agent mode to another paper and across a restart", async function () {
     await withPrefs(AGENT_MODE_PREFS, async () => {

@@ -2,18 +2,22 @@
  * Webchat preloading screen.
  *
  * Shows an animated overlay on the chat area that verifies connectivity
- * to the relay server, Chrome extension, and ChatGPT tab before enabling
+ * to the relay server, Chrome extension, and selected provider tab before enabling
  * webchat mode.  Self-contained module for easy transfer to llm-for-zotero.
  */
 
 import { createElement } from "../utils/domHelpers";
 import {
-  ATTACHMENT_DELIVERY_CONTRACT_VERSION,
   relayGetExtensionLiveness,
   relayGetExtensionStatus,
+  relayGetExtensionReadinessError,
   relayClearExtensionStatus,
 } from "./relayServer";
-import { WEBCHAT_TARGETS } from "./types";
+import {
+  WEBCHAT_TARGETS,
+  getWebChatTargetByModelName,
+  isWebChatUrlForTarget,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,40 +64,28 @@ function describeChatSiteFailure(
 ): string {
   const status = relayGetExtensionStatus();
   const siteName = siteLabel;
+  const target = targetHost
+    ? getWebChatTargetByModelName(targetHost)
+    : undefined;
   if (!status) {
     return `Open ${siteName} in Chrome and wait for the extension heartbeat.`;
   }
   if (!status.chatTabAlive) {
     return `Open ${siteName} in your Chrome browser.`;
   }
-  if (targetHost && status.chatUrl) {
-    try {
-      const host = new URL(status.chatUrl).hostname;
-      if (!host.includes(targetHost)) {
-        return `The active extension tab is ${host}; open ${targetHost} instead.`;
-      }
-    } catch {
-      return `Open ${targetHost} in your Chrome browser.`;
-    }
+  const reportedUrl = status.url || status.chatUrl;
+  if (target && reportedUrl && !isWebChatUrlForTarget(reportedUrl, target.id)) {
+    return `The active extension tab is not ${target.label}; open ${target.hostname} instead.`;
+  }
+  if (target && !reportedUrl) {
+    return `Open ${target.hostname} in your Chrome browser and wait for the extension heartbeat.`;
   }
   if (status.contentScriptAlive === false) {
     return "The Sync for Zotero content script is not responding; reload the chat tab or refresh the extension.";
   }
-  if (
-    !status.supportedDeliveryContracts.includes(
-      ATTACHMENT_DELIVERY_CONTRACT_VERSION,
-    )
-  ) {
-    return `The installed Sync for Zotero browser extension is too old: it does not support WebChat delivery contract ${ATTACHMENT_DELIVERY_CONTRACT_VERSION}. Update the Sync for Zotero extension in your browser, then reload the chat tab.`;
-  }
-  if (
-    status.mainWorldInjected === false ||
-    status.networkHookActive === false
-  ) {
-    return "The page network bridge is inactive; reload the chat tab after refreshing the extension.";
-  }
-  if (status.composerFound === false) {
-    return "The extension cannot find the chat composer; wait for the page to finish loading or reload the chat tab.";
+  const readinessError = relayGetExtensionReadinessError(target?.id);
+  if (readinessError) {
+    return readinessError;
   }
   if (status.sendControlState) {
     return `Chat site is open, but the send control is ${status.sendControlState}.`;
@@ -108,31 +100,20 @@ function describeChatSiteFailure(
 
 /** Build the chatsite step dynamically so it can filter by the target hostname. */
 function makeChatSiteStep(targetHost?: string): PreloadStep {
+  const target = targetHost
+    ? getWebChatTargetByModelName(targetHost)
+    : undefined;
   return {
     key: "chatsite",
     label: "Chat site tab",
     check: () => {
       const status = relayGetExtensionStatus();
       if (!status?.chatTabAlive) return false;
-      if (targetHost) {
-        if (!status.chatUrl) return false;
-        try {
-          if (!new URL(status.chatUrl).hostname.includes(targetHost)) {
-            return false;
-          }
-        } catch {
-          return false;
-        }
+      if (target) {
+        const reportedUrl = status.url || status.chatUrl;
+        if (!isWebChatUrlForTarget(reportedUrl, target.id)) return false;
       }
-      return (
-        status.contentScriptAlive !== false &&
-        status.mainWorldInjected !== false &&
-        status.networkHookActive !== false &&
-        status.composerFound !== false &&
-        status.supportedDeliveryContracts.includes(
-          ATTACHMENT_DELIVERY_CONTRACT_VERSION,
-        )
-      );
+      return relayGetExtensionReadinessError(target?.id) === null;
     },
     maxAttempts: 30,
     failHint: targetHost

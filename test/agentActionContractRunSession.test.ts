@@ -1,9 +1,13 @@
+import { classifiedFixture, semanticFixture } from "./helpers/semanticIntent";
+import { semanticContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   ActionContractRunSession,
   readLatestActionContractCheckpoint,
   type ActionContractCheckpoint,
 } from "../src/agent/contracts/actionContractRunSession";
+import { ActionReferenceResolutionError } from "../src/agent/contracts/actionScope";
+import { evaluateActionContract } from "../src/agent/contracts/actionEvaluation";
 import type {
   AgentActionContract,
   AgentActionProgressLedger,
@@ -16,23 +20,25 @@ function createContract(
   id = "contract-1",
   overrides: Partial<AgentActionContract> = {},
 ): AgentActionContract {
-  return {
-    version: 2,
-    id,
-    writeDisposition: "required",
-    interpretationSource: "classifier",
-    obligations: [
-      {
-        id: `${id}:obligation:0`,
-        capability: "command.execute",
-        operation: "command_execute",
-        proofDomain: "execution",
-        coverage: "all",
-        targetKind: "items",
-      },
-    ],
-    ...overrides,
-  };
+  return semanticContractFixture(
+    semanticContractFixture({
+      version: 3,
+      id,
+      writeDisposition: "required",
+      interpretationSource: "classifier",
+      obligations: [
+        {
+          id: `${id}:obligation:0`,
+          capability: "command.execute",
+          operation: "command_execute",
+          proofDomain: "execution",
+          coverage: "all",
+          targetKind: "items",
+        },
+      ],
+      ...overrides,
+    }),
+  );
 }
 
 function createProgress(
@@ -96,6 +102,7 @@ function checkpointEvent(contract: unknown, progress: unknown): AgentEvent {
 function createHarness(
   params: {
     userText?: string;
+    classifiedIntent?: import("../src/agent/types").ClassifiedTurnIntent;
     contract?: AgentActionContract | null;
     createError?: unknown;
   } = {},
@@ -106,6 +113,7 @@ function createHarness(
     conversationKey: 1,
     mode: "agent",
     userText: params.userText || "run the command",
+    classifiedIntent: params.classifiedIntent || classifiedFixture(),
     model: "test-model",
     apiBase: "https://example.invalid",
     apiKey: "test",
@@ -156,7 +164,7 @@ describe("ActionContractRunSession checkpoint parsing", function () {
   }> = [
     {
       name: "rejects the wrong contract version",
-      contract: { ...contract, version: 1 },
+      contract: { ...contract, version: 2 },
       progress,
     },
     {
@@ -215,6 +223,53 @@ describe("ActionContractRunSession checkpoint parsing", function () {
 });
 
 describe("ActionContractRunSession initialization", function () {
+  it("restores verified effects and saved material for the same approved Plan contract", async function () {
+    const contract = createContract("approved");
+    const progress = createProgress(contract, {
+      materialOutputs: [
+        {
+          outputId: "summary",
+          documentId: "stable",
+          documentVersion: 1,
+          contentHash: "hash",
+        },
+      ],
+    });
+    progress.obligations[0].status = "fulfilled";
+    const harness = createHarness();
+    harness.request.planContext = { phase: "executing" } as any;
+    harness.request.actionContract = contract;
+    await harness.session.initialize({ checkpoint: { contract, progress } });
+    assert.deepEqual(
+      harness.request.actionProgress?.materialOutputs,
+      progress.materialOutputs,
+    );
+    assert.equal(
+      harness.request.actionProgress?.obligations[0].status,
+      "fulfilled",
+    );
+  });
+  it("does not restore superseded actions from a bare resume classification", async function () {
+    const prior = createContract("superseded");
+    const current = createContract("revised");
+    const harness = createHarness({
+      userText: "Continue, but save a file instead of running the command",
+      contract: current,
+      classifiedIntent: classifiedFixture({
+        semantic: semanticFixture({
+          continuation: "resume",
+          noteDestination: "file",
+        }),
+        actionIntents: [],
+      }),
+    });
+    await harness.session.initialize({
+      checkpoint: { contract: prior, progress: createProgress(prior) },
+    });
+    assert.strictEqual(harness.request.actionContract, current);
+    assert.notEqual(harness.request.actionContract?.id, prior.id);
+  });
+
   const resumeTexts = [
     "continue",
     "resume the task",
@@ -225,10 +280,15 @@ describe("ActionContractRunSession initialization", function () {
   ];
 
   for (const userText of resumeTexts) {
-    it(`restores a checkpoint for ${JSON.stringify(userText)}`, async function () {
+    it(`requires explicit reuse bindings for ${JSON.stringify(userText)}`, async function () {
       const restoredContract = createContract("restored");
       const restoredProgress = createProgress(restoredContract);
-      const harness = createHarness({ userText });
+      const harness = createHarness({
+        userText,
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({ continuation: "resume" }),
+        }),
+      });
       const result = await harness.session.initialize({
         checkpoint: {
           contract: restoredContract,
@@ -236,10 +296,10 @@ describe("ActionContractRunSession initialization", function () {
         },
       });
       assert.deepEqual(result, { kind: "ready" });
-      assert.strictEqual(harness.request.actionContract, restoredContract);
-      assert.strictEqual(harness.request.actionProgress, restoredProgress);
-      assert.equal(harness.createContractCalls, 0);
-      assert.equal(harness.createProgressCalls, 0);
+      assert.notEqual(harness.request.actionContract?.id, restoredContract.id);
+      assert.notStrictEqual(harness.request.actionProgress, restoredProgress);
+      assert.equal(harness.createContractCalls, 1);
+      assert.equal(harness.createProgressCalls, 1);
     });
   }
 
@@ -265,11 +325,30 @@ describe("ActionContractRunSession initialization", function () {
     assert.equal(harness.createProgressCalls, 1);
   });
 
+  it("persists the semantic revision even when references still need input", async function () {
+    const harness = createHarness({
+      createError: new ActionReferenceResolutionError("Choose a destination"),
+    });
+    await harness.session.initialize({ checkpoint: null });
+    const saved = harness.events.find(
+      (event) =>
+        event.type === "provider_event" &&
+        event.providerType === "agent_semantic_intent",
+    );
+    assert.exists(saved);
+    assert.deepEqual(
+      (saved as any).payload.intent,
+      harness.request.classifiedIntent,
+    );
+    assert.equal(harness.request.actionPreparation?.state, "needs_input");
+    assert.isUndefined(harness.request.actionContract);
+  });
+
   it("emits the initial ready snapshot", async function () {
     const harness = createHarness();
     await harness.session.initialize({ checkpoint: null });
-    assert.lengthOf(harness.events, 1);
-    assert.deepEqual(harness.events[0], {
+    assert.lengthOf(harness.events, 2);
+    assert.deepEqual(harness.events[1], {
       type: "provider_event",
       providerType: "agent_action_contract",
       payload: {
@@ -287,21 +366,51 @@ describe("ActionContractRunSession initialization", function () {
       userMessage:
         "I could not safely resolve the requested action scope: scope exploded",
     });
-    assert.deepEqual(harness.events, [
-      {
-        type: "provider_event",
-        providerType: "agent_action_contract",
-        payload: {
-          state: "failed",
-          retryable: true,
-          reason: "scope exploded",
+    assert.deepEqual(
+      harness.events.filter(
+        (event) =>
+          event.type !== "provider_event" ||
+          event.providerType !== "agent_semantic_intent",
+      ),
+      [
+        {
+          type: "provider_event",
+          providerType: "agent_action_contract",
+          payload: {
+            state: "failed",
+            retryable: true,
+            reason: "scope exploded",
+          },
         },
-      },
-    ]);
+      ],
+    );
   });
 });
 
 describe("ActionContractRunSession state machine", function () {
+  it("uses only receipts explicitly bound to the requested obligation", function () {
+    const contract = createContract();
+    const matching = createReceipt({
+      id: "matching",
+      obligationId: contract.obligations[0].id,
+    });
+    const unbound = createReceipt({ id: "unbound" });
+    const wrongBinding = createReceipt({
+      id: "wrong-binding",
+      obligationId: "other-obligation",
+    });
+
+    assert.equal(evaluateActionContract(contract, [unbound]).state, "pending");
+    assert.equal(
+      evaluateActionContract(contract, [wrongBinding]).state,
+      "pending",
+    );
+    assert.equal(
+      evaluateActionContract(contract, [matching, unbound, wrongBinding]).state,
+      "satisfied",
+    );
+  });
+
   it("keeps checkpointing inert without an active contract", async function () {
     const harness = createHarness({ contract: null });
     await harness.session.initialize({ checkpoint: null });
@@ -309,7 +418,13 @@ describe("ActionContractRunSession state machine", function () {
     const callback: AgentToolContext["checkpointActionProgress"] =
       checkpointActionProgress;
     await callback?.();
-    assert.isEmpty(harness.events);
+    assert.isEmpty(
+      harness.events.filter(
+        (event) =>
+          event.type !== "provider_event" ||
+          event.providerType !== "agent_semantic_intent",
+      ),
+    );
   });
 
   it("checkpoints through the explicitly wrapped tool-context callback", async function () {
@@ -321,16 +436,23 @@ describe("ActionContractRunSession state machine", function () {
     };
     const callback = context.checkpointActionProgress;
     await callback?.();
-    assert.deepEqual(harness.events, [
-      {
-        type: "provider_event",
-        providerType: "agent_action_contract",
-        payload: {
-          contract: harness.request.actionContract,
-          progress: harness.request.actionProgress,
+    assert.deepEqual(
+      harness.events.filter(
+        (event) =>
+          event.type !== "provider_event" ||
+          event.providerType !== "agent_semantic_intent",
+      ),
+      [
+        {
+          type: "provider_event",
+          providerType: "agent_action_contract",
+          payload: {
+            contract: harness.request.actionContract,
+            progress: harness.request.actionProgress,
+          },
         },
-      },
-    ]);
+      ],
+    );
   });
 
   it("records receipts in order without applying them to progress", async function () {
@@ -377,9 +499,13 @@ describe("ActionContractRunSession state machine", function () {
       progress.obligations[0].status = status;
       const harness = createHarness({
         userText: "continue",
-        contract: createContract("unused"),
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({ continuation: "resume" }),
+        }),
+        contract,
       });
-      await harness.session.initialize({ checkpoint: { contract, progress } });
+      harness.request.actionProgress = progress;
+      await harness.session.initialize({ checkpoint: null });
       const decision = await harness.session.evaluateFinal({
         canCorrect: true,
       });
@@ -440,7 +566,7 @@ describe("ActionContractRunSession state machine", function () {
     assert.isAbove(progress.updatedAt, 1);
   });
 
-  it("reports a failed evaluation without committing terminal progress", async function () {
+  it("accepts a zero-obligation contract regardless of classifier uncertainty", async function () {
     const contract = createContract("uncertain-contract", {
       writeDisposition: "uncertain",
       obligations: [],
@@ -451,16 +577,39 @@ describe("ActionContractRunSession state machine", function () {
 
     const decision = await harness.session.evaluateFinal({ canCorrect: false });
 
-    assert.equal(decision.kind, "fail");
-    assert.equal(progress.state, "pending");
+    assert.deepEqual(decision, { kind: "accept" });
+    assert.equal(progress.state, "satisfied");
     assert.equal(
       harness.events.at(-1)?.type === "provider_event"
         ? harness.events.at(-1)?.payload?.state
         : undefined,
-      "failed",
+      "satisfied",
     );
-    if (decision.kind !== "fail") return;
-    harness.session.commitRejectedFinal(decision);
-    assert.equal(progress.state, "failed");
+  });
+
+  it("accepts a zero-obligation final despite every unrelated receipt outcome", async function () {
+    const contract = createContract("informational-contract", {
+      writeDisposition: "none",
+      obligations: [],
+    });
+    const harness = createHarness({ contract });
+    await harness.session.initialize({ checkpoint: null });
+    await harness.session.recordToolReceipts([
+      createReceipt({ id: "denied", status: "failed" }),
+      createReceipt({ id: "rejected", status: "failed" }),
+      createReceipt({ id: "cancelled", status: "cancelled" }),
+      createReceipt({ id: "partial", status: "partial" }),
+      createReceipt({ id: "unverified", status: "unverified" }),
+      createReceipt({
+        id: "execution-only",
+        verification: "execution_only",
+      }),
+      createReceipt({ id: "observed", status: "observed" }),
+    ]);
+
+    const decision = await harness.session.evaluateFinal({ canCorrect: true });
+
+    assert.deepEqual(decision, { kind: "accept" });
+    assert.equal(harness.request.actionProgress!.state, "satisfied");
   });
 });

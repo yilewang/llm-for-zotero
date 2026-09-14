@@ -4,11 +4,6 @@ description: Import cited papers into your Zotero library by DOI
 version: 3
 contexts: any
 activation: auto
-match: /\b(add|import|save|get)\b.*\b(to|into)\s*(my\s*)?(library|zotero|collection)\b/i
-match: /\b(add|import|save)\b.*\breference\s*(#|no\.?|number)?\s*\d/i
-match: /\breference\s*(#|no\.?|number)?\s*\d+\b.*\b(add|import|save|library)\b/i
-match: /\bcited\b.*\b(add|import|save)\b/i
-match: /\b(add|import)\b.*\b(this|these|that|those)\s*(paper|article|study|studies)\b/i
 ---
 
 <!--

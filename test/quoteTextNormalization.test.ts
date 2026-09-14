@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
   collectQuoteTextAlignmentRunsAllowingLayoutFragments,
   findCanonicalQuoteSourceSpan,
@@ -120,6 +121,19 @@ describe("quoteTextNormalization", function () {
     );
 
     assert.isEmpty(spans);
+  });
+
+  it("accepts sentence punctuation emitted in the next PDF.js text item", function () {
+    const source =
+      "The updated model produces znew\u0003.We adapt the method to another setting.";
+    const query = "The updated model produces $z^{\\text{new}}$.";
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      query,
+    );
+
+    assert.lengthOf(spans, 1);
+    assert.equal(spans[0].text, "The updated model produces znew\u0003.");
   });
 
   it("removes line-bound manuscript numbers without removing semantic numbers", function () {
@@ -322,6 +336,82 @@ describe("quoteTextNormalization", function () {
 
     assert.lengthOf(spans, 1);
     assert.equal(spans[0].text, source);
+  });
+
+  it("aligns LwF text scripts to joined and split PDF math tokens", function () {
+    const quote =
+      "In Learning without Forgetting (LwF) [30], the model is copied before task $t$ is learned. The copied model produces fixed logits $z^{\\text{old}}$ on the new-task data, and the updated model produces $z^{\\text{new}}$.";
+
+    for (const source of [
+      "In Learning without Forgetting (LwF) [30], the model is copied before task t is learned. The copied model produces fixed logits zold on the new-task data, and the updated model produces znew.",
+      "In Learning without Forgetting (LwF) [30], the model is copied before task t is learned. The copied model produces fixed logits z old on the new-task data, and the updated model produces z new.",
+    ]) {
+      const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+        buildQuoteTextIndex(source),
+        quote,
+      );
+
+      assert.lengthOf(spans, 1, source);
+      assert.equal(spans[0].text, source);
+    }
+  });
+
+  it("classifies bounded academic extraction equivalences without dropping math atoms", function () {
+    const assessment = assessAcademicQuoteAlignment(
+      "The relation α + β gives R² ≤ 30 and the copied logits z old after line-\n151 wrapping.",
+      "The relation $\\mathbf{\\alpha} + \\mathrm{\\beta}$ gives $R^{2} \\leq 30$ and the copied logits $z^{\\text{old}}$ after line wrapping.",
+    );
+
+    assert.isTrue(assessment.allMeaningfulTokensSupported);
+    assert.isFalse(assessment.hasUnexplainedSemanticHardDifference);
+    assert.includeMembers(assessment.transformations, [
+      "latex-presentation",
+      "script-form",
+      "greek-name",
+      "operator-glyph",
+      "line-wrap-hyphenation",
+    ]);
+    assert.includeMembers(
+      assessment.displayedTokens.map((token) => token.kind),
+      ["prose", "number", "operator", "math-identifier", "formatting-syntax"],
+    );
+  });
+
+  it("keeps OCR-damaged equation text incomplete instead of inventing support", function () {
+    const assessment = assessAcademicQuoteAlignment(
+      "The propensity was ρðwÞ ¼ tanhð10wÞ in the fitted model.",
+      "The propensity was $\\rho(w) = \\tanh(10w)$ in the fitted model.",
+    );
+
+    assert.isFalse(assessment.allMeaningfulTokensSupported);
+    assert.isFalse(assessment.hasUnexplainedSemanticHardDifference);
+  });
+
+  it("keeps mixed PDF and LaTeX equation fragments incomplete instead of treating them as mutations", function () {
+    const assessment = assessAcademicQuoteAlignment(
+      "Recall that the weights are proportional to y*0|\\mathbf{y}{*0}y*0 through plasticity.",
+      "Recall that the weights are proportional to $y_{*0}^\\top y_0$ through plasticity.",
+    );
+
+    assert.isFalse(assessment.allMeaningfulTokensSupported);
+    assert.isFalse(assessment.hasUnexplainedSemanticHardDifference);
+  });
+
+  it("records semantic math and prose mutations as hard differences", function () {
+    const source =
+      "The lower estimate $\\mathbf{x}^{2} \\leq 30$ did increase after training.";
+    for (const quote of [
+      source.replace("lower", "upper"),
+      source.replace("x", "y"),
+      source.replace("^{2}", "^{3}"),
+      source.replace("\\leq", "\\geq"),
+      source.replace("30", "3"),
+      source.replace("did increase", "did not increase"),
+      `${source} This tail was invented.`,
+    ]) {
+      const assessment = assessAcademicQuoteAlignment(source, quote);
+      assert.isTrue(assessment.hasUnexplainedSemanticHardDifference, quote);
+    }
   });
 
   it("ignores presentational HTML around PDF superscripts and subscripts", function () {

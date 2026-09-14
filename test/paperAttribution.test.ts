@@ -48,6 +48,26 @@ describe("paperAttribution", function () {
     }
   });
 
+  it("uses the shared title and undated fallback for source labels", function () {
+    delete globalScope.Zotero;
+    assert.equal(
+      formatPaperSourceLabel({
+        itemId: 1,
+        contextItemId: 2,
+        title: "Untimed study",
+      }),
+      "(Untimed study, n.d.)",
+    );
+    assert.equal(
+      formatPaperSourceLabel({
+        itemId: 1,
+        contextItemId: 2,
+        title: "Study",
+        firstCreator: "Smith",
+      }),
+      "(Smith)",
+    );
+  });
   it("formats author-year citation labels using Zotero Creator field directly", function () {
     const label = formatPaperCitationLabel({
       itemId: 1,
@@ -143,7 +163,7 @@ describe("paperAttribution", function () {
       contextItemId: 99,
       title: "Untitled",
     });
-    assert.equal(label, "Paper 42 - Text Context");
+    assert.equal(label, "Untitled, n.d. - Text Context");
   });
 
   it("resolves paper context display metadata from live Zotero items", function () {

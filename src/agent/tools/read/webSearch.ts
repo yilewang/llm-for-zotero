@@ -12,6 +12,7 @@ import type {
 } from "../../../webAccess/types";
 import { registerWebSearchSources } from "../../../webAccess/runSources";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { fail, ok, validateObject } from "../shared";
 import {
   createConfiguredWebAccessProvider,
@@ -36,25 +37,11 @@ export type WebSearchToolResult = WebSearchResponse & {
   citation: ReturnType<typeof webCitationInstruction>;
 };
 
-const EXPLICIT_WEB_SEARCH_FALLBACK_PATTERNS = [
-  /\b(?:web search|search (?:the )?(?:web|internet)|search online|online search|browse (?:the )?web|look up online|verify online|check online)\b/i,
-  /\b(?:search|browse|look up|find|verify|check|provide|cite|give)\b.{0,80}\b(?:website|online sources?|official sources?|official website|official documentation)\b/i,
-];
-
-const TIME_SENSITIVE_WEB_FALLBACK_PATTERN =
-  /\b(?:latest (?:version|release|news|price|status|schedule)|today(?:'s)?|news|weather|forecast|breaking news|release notes?|current (?:price|version|release|status|schedule|weather|officeholder|president|ceo)|currently (?:serves|serving|holds|available)|price of|as of)\b/i;
-
 export function matchesWebSearchGuidance(
-  request: Pick<AgentRuntimeRequest, "userText" | "classifiedIntent">,
+  request: Pick<AgentRuntimeRequest, "classifiedIntent">,
 ): boolean {
   const intent = request.classifiedIntent?.externalSearchIntent;
-  if (intent !== undefined) return intent === "web" || intent === "both";
-  const userText = request.userText || "";
-  return (
-    EXPLICIT_WEB_SEARCH_FALLBACK_PATTERNS.some((pattern) =>
-      pattern.test(userText),
-    ) || TIME_SENSITIVE_WEB_FALLBACK_PATTERN.test(userText)
-  );
+  return intent === "web" || intent === "both";
 }
 
 function normalizeTopic(value: unknown): WebSearchTopic {
@@ -247,7 +234,7 @@ export function createWebSearchTool(
           },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
       localAgentOnly: true,
     },
@@ -282,6 +269,14 @@ export function createWebSearchTool(
         buildSearchTraceDetails(args, content),
     },
     validate: validateWebSearchInput,
+    planInvocation: (input) =>
+      readOnlyInvocationPlan({
+        domains: ["network"],
+        effects: ["read", "egress"],
+        targets: [input.query],
+        reason:
+          "The configured web provider receives the search query and returns public results.",
+      }),
     execute: async (input, context) => {
       if (!context.runId) {
         throw new Error("web_search requires an active local agent run.");

@@ -191,8 +191,9 @@ describe("tool validation compatibility", function () {
     if (!read.ok) return;
     assert.equal(read.value.action, "read");
     assert.equal(read.value.filePath, "/tmp/source.md");
-    assert.isFalse(
-      await tool.shouldRequireConfirmation?.(read.value, baseContext),
+    assert.equal(
+      (await tool.planInvocation?.(read.value, baseContext))?.impact,
+      "read_only",
     );
 
     const write = tool.validate({
@@ -203,8 +204,9 @@ describe("tool validation compatibility", function () {
     assert.isTrue(write.ok);
     if (!write.ok) return;
     assert.equal(write.value.action, "write");
-    assert.isTrue(
-      await tool.shouldRequireConfirmation?.(write.value, baseContext),
+    assert.equal(
+      (await tool.planInvocation?.(write.value, baseContext))?.impact,
+      "state_change",
     );
 
     const pathAlias = tool.validate({
@@ -224,8 +226,9 @@ describe("tool validation compatibility", function () {
     if (!modeAlias.ok) return;
     assert.equal(modeAlias.value.action, "write");
     assert.equal(modeAlias.value.filePath, "/tmp/from-mode.md");
-    assert.isTrue(
-      await tool.shouldRequireConfirmation?.(modeAlias.value, baseContext),
+    assert.equal(
+      (await tool.planInvocation?.(modeAlias.value, baseContext))?.impact,
+      "state_change",
     );
 
     const createAlias = tool.validate({
@@ -336,11 +339,10 @@ describe("tool validation compatibility", function () {
       actionlessMineruFullMd.value.filePath,
       "/tmp/llm-for-zotero-mineru/51/full.md",
     );
-    assert.isFalse(
-      await tool.shouldRequireConfirmation?.(
-        actionlessMineruFullMd.value,
-        baseContext,
-      ),
+    assert.equal(
+      (await tool.planInvocation?.(actionlessMineruFullMd.value, baseContext))
+        ?.impact,
+      "read_only",
     );
 
     const actionlessMineruManifest = tool.validate({

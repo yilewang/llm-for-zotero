@@ -1,65 +1,160 @@
+import {
+  OPERATION_CATALOG,
+  operationCatalogEntry,
+} from "../contracts/operationCatalog";
+import { isActionIndexList } from "../contracts/workflowDependencies";
+import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import type {
   AgentActionCapability,
   AgentActionIntent,
   AgentActionOperation,
   AgentActionParameters,
   AgentActionProofDomain,
-  AgentRuntimeRequest,
 } from "../types";
-import {
-  capabilityForLibraryMutation,
-  isLibraryMutationOperationType,
-} from "../services/libraryMutation/handlerOperations";
-import type { WriteNoteDestination } from "../writeNoteDestination";
 
-const EXTERNAL_OPERATION_DETAILS: Partial<
-  Record<
-    AgentActionOperation,
-    { capability: AgentActionCapability; proofDomain: AgentActionProofDomain }
-  >
-> = {
-  note_create: { capability: "zotero.notes", proofDomain: "zotero_state" },
-  note_edit: { capability: "zotero.notes", proofDomain: "zotero_state" },
-  note_append: { capability: "zotero.notes", proofDomain: "zotero_state" },
-  annotation_write: {
-    capability: "zotero.annotations",
-    proofDomain: "zotero_state",
+/** Model-facing structure for the same action fields decoded below. Names and
+ * destinations are semantic references; numeric identities are optional. */
+export const ACTION_INTENT_RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "operation",
+    "coverage",
+    "targetKind",
+    "scopeRole",
+    "reviewPreference",
+  ],
+  properties: {
+    dependsOn: {
+      type: "array",
+      items: { type: "integer", minimum: 0 },
+      uniqueItems: true,
+    },
+    contentFrom: { type: "string", minLength: 1 },
+    destinationFrom: {
+      type: "integer",
+      minimum: 0,
+      description:
+        "Index of an earlier create_collection action supplying this destination; an action reference, never a native collection ID.",
+    },
+    reviewPreference: {
+      type: "string",
+      enum: ["default", "review", "direct"],
+      description:
+        "For this action only: review means the user wants to inspect changes before applying; direct means the user explicitly requests execution without optional review; otherwise default. Never infer review merely because the model chooses tags, metadata, papers, or destinations.",
+    },
+    operation: { type: "string", enum: Object.keys(OPERATION_CATALOG) },
+    coverage: { type: "string", enum: ["one", "some", "all"] },
+    targetKind: { type: "string", enum: ["papers", "items"] },
+    scopeRole: { type: "string", enum: ["source", "destination"] },
+    scope: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "path", "includeDescendants"],
+      properties: {
+        kind: { const: "collection" },
+        referenceKind: { enum: ["literal", "descriptive"] },
+        path: { type: "string", minLength: 1 },
+        includeDescendants: { type: "boolean" },
+      },
+    },
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        metadataValues: {
+          type: "object",
+          additionalProperties: true,
+          minProperties: 1,
+        },
+        ...Object.fromEntries(
+          [
+            "tag",
+            "newTag",
+            "collectionName",
+            "filePath",
+            "newName",
+            "newPath",
+            "savedSearchName",
+            "contentHash",
+            "settingsKey",
+            "settingsValue",
+          ].map((key) => [key, { type: "string", minLength: 1 }]),
+        ),
+        ...Object.fromEntries(
+          ["tags", "metadataFields", "identifiers", "filePaths"].map((key) => [
+            key,
+            { type: "array", items: { type: "string" }, minItems: 1 },
+          ]),
+        ),
+        ...Object.fromEntries(
+          [
+            "destinationCollectionId",
+            "collectionId",
+            "savedSearchId",
+            "targetItemId",
+            "targetNoteId",
+            "revertCount",
+          ].map((key) => [key, { type: "integer", minimum: 1 }]),
+        ),
+        collectionIds: {
+          type: "array",
+          items: { type: "integer", minimum: 1 },
+          minItems: 1,
+        },
+        parentCollectionId: { type: ["integer", "null"], minimum: 1 },
+        sourceCollectionId: {
+          anyOf: [{ type: "integer", minimum: 1 }, { const: "all" }],
+        },
+        pageIndex: { type: "integer", minimum: 0 },
+        noteMode: { enum: ["create", "edit", "append"] },
+        semanticAction: {
+          enum: ["add", "remove", "rename", "merge", "delete", "setColor"],
+        },
+        deleteItems: { type: "boolean" },
+        permanent: { type: "boolean" },
+      },
+    },
+    constraints: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        tagPrefix: { type: "string" },
+        readMode: { const: "full" },
+        collectionMode: { const: "move" },
+      },
+    },
+    targetSelectors: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "value"],
+        properties: {
+          kind: { enum: ["item_id", "item_key", "title"] },
+          value: { type: ["string", "integer"] },
+        },
+      },
+    },
+    discovery: {
+      type: "object",
+      additionalProperties: false,
+      required: ["description", "source"],
+      properties: {
+        description: { type: "string" },
+        source: { enum: ["context", "library", "collection"] },
+        collectionPath: { type: "string" },
+      },
+    },
   },
-  settings_update: {
-    capability: "zotero.settings",
-    proofDomain: "zotero_state",
-  },
-  undo: { capability: "zotero.undo", proofDomain: "zotero_state" },
-  revert: { capability: "zotero.undo", proofDomain: "zotero_state" },
-  file_write: { capability: "file.write", proofDomain: "file_state" },
-  command_execute: {
-    capability: "command.execute",
-    proofDomain: "execution",
-  },
-  zotero_script_execute: {
-    capability: "zotero.script",
-    proofDomain: "execution",
-  },
-  read_full: { capability: "zotero.read", proofDomain: "zotero_state" },
-};
+} as const;
 
 function operationDetails(operation: string): {
   operation: AgentActionOperation;
   capability: AgentActionCapability;
   proofDomain: AgentActionProofDomain;
 } | null {
-  if (isLibraryMutationOperationType(operation)) {
-    return {
-      operation,
-      capability: capabilityForLibraryMutation(operation),
-      proofDomain: "zotero_state",
-    };
-  }
-  const external =
-    EXTERNAL_OPERATION_DETAILS[operation as AgentActionOperation];
-  return external
-    ? { operation: operation as AgentActionOperation, ...external }
-    : null;
+  return operationCatalogEntry(operation);
 }
 
 function parseParameters(value: unknown): AgentActionParameters | undefined {
@@ -96,6 +191,12 @@ function parseParameters(value: unknown): AgentActionParameters | undefined {
   };
   const parameters: AgentActionParameters = {
     ...(tags?.length ? { tags } : {}),
+    ...(record.metadataValues &&
+    typeof record.metadataValues === "object" &&
+    !Array.isArray(record.metadataValues) &&
+    Object.keys(record.metadataValues).length
+      ? { metadataValues: record.metadataValues as Record<string, unknown> }
+      : {}),
     ...(stringArray("metadataFields")
       ? { metadataFields: stringArray("metadataFields") }
       : {}),
@@ -190,6 +291,8 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
       ? operationDetails(record.operation)
       : null;
   if (!details) return null;
+  const targetSelectors = parseTargetSelectors(record.targetSelectors);
+  if (record.targetSelectors !== undefined && !targetSelectors) return null;
   if (
     record.coverage !== "one" &&
     record.coverage !== "some" &&
@@ -197,6 +300,40 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
   ) {
     return null;
   }
+  const discovery = record.discovery as AgentActionIntent["discovery"];
+  if (
+    discovery !== undefined &&
+    (!discovery ||
+      typeof discovery.description !== "string" ||
+      !discovery.description.trim() ||
+      !["context", "library", "collection"].includes(discovery.source) ||
+      (discovery.source === "collection" &&
+        (typeof discovery.collectionPath !== "string" ||
+          !discovery.collectionPath.trim())) ||
+      Object.keys(discovery).some(
+        (key) => !["description", "source", "collectionPath"].includes(key),
+      ))
+  )
+    return null;
+  if (
+    record.reviewPreference !== undefined &&
+    !["default", "review", "direct"].includes(String(record.reviewPreference))
+  )
+    return null;
+  const parameters = parseParameters(record.parameters);
+  if (
+    record.parameters !== undefined &&
+    !canonicalJsonEqual(record.parameters, parameters || {})
+  )
+    return null;
+  if (record.targetKind !== "items" && record.targetKind !== "papers")
+    return null;
+  if (
+    record.scopeRole !== undefined &&
+    record.scopeRole !== "source" &&
+    record.scopeRole !== "destination"
+  )
+    return null;
   const rawScope = record.scope;
   const scope =
     rawScope &&
@@ -204,6 +341,13 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
     (rawScope as { kind?: unknown }).kind === "collection"
       ? {
           kind: "collection" as const,
+          ...((rawScope as { referenceKind?: unknown }).referenceKind ===
+          "descriptive"
+            ? { referenceKind: "descriptive" as const }
+            : (rawScope as { referenceKind?: unknown }).referenceKind ===
+                "literal"
+              ? { referenceKind: "literal" as const }
+              : {}),
           path:
             typeof (rawScope as { path?: unknown }).path === "string" &&
             (rawScope as { path: string }).path.trim()
@@ -214,6 +358,7 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
               .includeDescendants === true,
         }
       : undefined;
+  if (rawScope !== undefined && !scope) return null;
   const constraintsValue = record.constraints;
   const constraintsRecord =
     constraintsValue && typeof constraintsValue === "object"
@@ -226,12 +371,73 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
   const readMode = constraintsRecord.readMode === "full" ? "full" : undefined;
   const collectionMode =
     constraintsRecord.collectionMode === "move" ? "move" : undefined;
+  const constraints = {
+    ...(tagPrefix ? { tagPrefix } : {}),
+    ...(readMode ? { readMode } : {}),
+    ...(collectionMode ? { collectionMode } : {}),
+  };
+  if (
+    record.constraints !== undefined &&
+    !canonicalJsonEqual(record.constraints, constraints)
+  )
+    return null;
+  if (rawScope && typeof rawScope === "object") {
+    if (
+      Object.keys(rawScope).some(
+        (key) =>
+          !["kind", "path", "includeDescendants", "referenceKind"].includes(
+            key,
+          ),
+      )
+    )
+      return null;
+    if (
+      (rawScope as any).referenceKind !== undefined &&
+      !["literal", "descriptive"].includes((rawScope as any).referenceKind)
+    )
+      return null;
+    if (
+      typeof (rawScope as Record<string, unknown>).includeDescendants !==
+      "boolean"
+    )
+      return null;
+  }
+  if (
+    record.destinationFrom !== undefined &&
+    (!Number.isSafeInteger(record.destinationFrom) ||
+      Number(record.destinationFrom) < 0)
+  )
+    return null;
+  if (record.dependsOn !== undefined && !isActionIndexList(record.dependsOn))
+    return null;
+  if (
+    record.contentFrom !== undefined &&
+    (typeof record.contentFrom !== "string" || !record.contentFrom.trim())
+  )
+    return null;
   return {
     ...details,
+    ...(record.reviewPreference !== undefined
+      ? {
+          reviewPreference:
+            record.reviewPreference as AgentActionIntent["reviewPreference"],
+        }
+      : {}),
+    ...(record.dependsOn !== undefined
+      ? { dependsOn: record.dependsOn as number[] }
+      : {}),
+    ...(typeof record.contentFrom === "string"
+      ? { contentFrom: record.contentFrom }
+      : {}),
+    ...(typeof record.destinationFrom === "number"
+      ? { destinationFrom: record.destinationFrom }
+      : {}),
+    ...(discovery ? { discovery } : {}),
     coverage: record.coverage,
     targetKind: record.targetKind === "items" ? "items" : "papers",
     scopeRole: record.scopeRole === "destination" ? "destination" : "source",
-    parameters: parseParameters(record.parameters),
+    parameters,
+    ...(targetSelectors ? { targetSelectors } : {}),
     ...(scope ? { scope } : {}),
     ...(tagPrefix || readMode || collectionMode
       ? {
@@ -245,334 +451,35 @@ function parseActionIntent(value: unknown): AgentActionIntent | null {
   };
 }
 
+function parseTargetSelectors(
+  value: unknown,
+): AgentActionIntent["targetSelectors"] | undefined {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const selectors: NonNullable<AgentActionIntent["targetSelectors"]> = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return undefined;
+    if (
+      entry.kind === "item_id" &&
+      Number.isInteger(entry.value) &&
+      entry.value > 0
+    ) {
+      selectors.push({ kind: "item_id", value: entry.value });
+    } else if (
+      (entry.kind === "title" || entry.kind === "item_key") &&
+      typeof entry.value === "string" &&
+      entry.value.trim() &&
+      (entry.kind !== "item_key" || /^[A-Z0-9]{8}$/i.test(entry.value))
+    ) {
+      selectors.push({ kind: entry.kind, value: entry.value.trim() });
+    } else return undefined;
+  }
+  return selectors;
+}
+
 export function parseActionIntents(value: unknown): AgentActionIntent[] {
   return Array.isArray(value)
     ? value
         .map(parseActionIntent)
         .filter((intent): intent is AgentActionIntent => Boolean(intent))
     : [];
-}
-
-function actionIntentKey(intent: AgentActionIntent): string {
-  return [
-    intent.operation,
-    intent.coverage,
-    intent.targetKind,
-    intent.scope?.path || "",
-    intent.scope?.includeDescendants ? "descendants" : "direct",
-    intent.scopeRole || "source",
-    JSON.stringify(intent.parameters || {}),
-  ].join("|");
-}
-
-export function mergeActionIntents(
-  primary: AgentActionIntent[],
-  secondary: AgentActionIntent[],
-): AgentActionIntent[] {
-  const merged = new Map<string, AgentActionIntent>();
-  for (const intent of [...primary, ...secondary]) {
-    const key = actionIntentKey(intent);
-    if (!merged.has(key)) merged.set(key, intent);
-  }
-  return [...merged.values()];
-}
-
-export function reconcileNoteDestinationActionIntents(
-  intents: AgentActionIntent[],
-  destination: WriteNoteDestination,
-): AgentActionIntent[] {
-  if (destination === "none") return intents;
-  const wantsFile = destination === "file" || destination === "both";
-  const wantsZotero = destination === "zotero" || destination === "both";
-  const isZoteroNote = (intent: AgentActionIntent) =>
-    intent.operation === "note_create" ||
-    intent.operation === "note_edit" ||
-    intent.operation === "note_append";
-  const retained = intents.filter(
-    (intent) =>
-      (intent.operation !== "file_write" || wantsFile) &&
-      (!isZoteroNote(intent) || wantsZotero),
-  );
-  const additions: AgentActionIntent[] = [];
-  if (
-    wantsFile &&
-    !retained.some((intent) => intent.operation === "file_write")
-  ) {
-    additions.push({
-      operation: "file_write",
-      proofDomain: "file_state",
-      capability: "file.write",
-      coverage: "one",
-      targetKind: "items",
-    });
-  }
-  if (wantsZotero && !retained.some(isZoteroNote)) {
-    additions.push({
-      operation: "note_create",
-      proofDomain: "zotero_state",
-      capability: "zotero.notes",
-      coverage: "one",
-      targetKind: "items",
-      parameters: { noteMode: "create" },
-    });
-  }
-  return mergeActionIntents(retained, additions);
-}
-
-function requestedCoverage(text: string): AgentActionIntent["coverage"] {
-  if (/\b(?:all|every|each)\b/i.test(text)) return "all";
-  if (/\b(?:this|current|one|single)\b/i.test(text)) return "one";
-  return "some";
-}
-
-function requestedCollectionScope(
-  request: Pick<AgentRuntimeRequest, "userText" | "turnPaperScope">,
-): AgentActionIntent["scope"] | undefined {
-  const text = request.userText || "";
-  const named = text.match(
-    /\b(?:collection|folder)\s+(?:named\s+)?["“']([^"”']+)["”']/i,
-  )?.[1];
-  if (!named && !request.turnPaperScope.collections.length) return undefined;
-  return {
-    kind: "collection",
-    ...(named && !request.turnPaperScope.collections.length
-      ? { path: named.trim() }
-      : {}),
-    includeDescendants:
-      /\b(?:subcollections?|descendants?|including children)\b/i.test(text),
-  };
-}
-
-function quotedValueAfter(text: string, noun: string): string | undefined {
-  return text
-    .match(
-      new RegExp(`\\b${noun}\\s+(?:named\\s+)?["“']([^"”']+)["”']`, "i"),
-    )?.[1]
-    ?.trim();
-}
-
-function requestedFilePath(text: string): string | undefined {
-  const quoted = text.match(/["“'](\/[^"”'\r\n]+\.[A-Za-z0-9]+)["”']/)?.[1];
-  if (quoted) return quoted.trim();
-  return text
-    .match(/(?:^|\s)(\/[^\s"'<>|]+\.[A-Za-z0-9]+)(?=\s|$)/)?.[1]
-    ?.trim();
-}
-
-function mutationRequestIsExplicit(text: string): boolean {
-  if (
-    /\b(?:do not|don't|dont|never|without (?:changing|modifying|writing)|only a question|hypothetical|for advice)\b/i.test(
-      text,
-    )
-  ) {
-    return false;
-  }
-  if (/^\s*(?:what|which|why|how|should|would|could|if)\b/i.test(text)) {
-    return false;
-  }
-  return /^\s*(?:please\s+)?(?:add|apply|assign|remove|replace|set|tag|update|edit|change|correct|create|write|save|append|import|trash|restore|delete|rename|relink|move|file|merge|relate|unrelate|annotate|undo|revert|run|execute|export)\b/i.test(
-    text,
-  );
-}
-
-/** High-confidence fallback used only when the classifier call fails. */
-export function inferActionIntentsFromRequest(
-  request: Pick<AgentRuntimeRequest, "userText" | "turnPaperScope">,
-): AgentActionIntent[] {
-  const text = (request.userText || "").trim();
-  if (!text) return [];
-  const coverage = requestedCoverage(text);
-  const scope = requestedCollectionScope(request);
-  const intents: AgentActionIntent[] = [];
-  const add = (
-    operation: AgentActionOperation,
-    parameters?: AgentActionParameters,
-    options: Partial<
-      Pick<
-        AgentActionIntent,
-        "targetKind" | "scopeRole" | "scope" | "constraints"
-      >
-    > = {},
-  ) => {
-    const details = operationDetails(operation);
-    if (!details) return;
-    intents.push({
-      ...details,
-      coverage,
-      targetKind: options.targetKind || "papers",
-      scopeRole: options.scopeRole || "source",
-      scope: Object.prototype.hasOwnProperty.call(options, "scope")
-        ? options.scope
-        : scope,
-      parameters,
-      constraints: options.constraints,
-    });
-  };
-
-  if (mutationRequestIsExplicit(text)) {
-    const tagSegment = text.split(
-      /\b(?:to|in|for)\s+(?:the\s+)?(?:collection|folder)\b/i,
-    )[0];
-    const tags = [...tagSegment.matchAll(/["“']([^"”']+)["”']/g)]
-      .map((match) => match[1].trim())
-      .filter(Boolean);
-    if (
-      /\b(?:add|apply|assign|tag)\b[\s\S]{0,60}\btags?\b|^\s*(?:please\s+)?tag\b/i.test(
-        text,
-      )
-    ) {
-      add("apply_tags", tags.length ? { tags } : undefined);
-    } else if (/\bremove\b[\s\S]{0,60}\btags?\b/i.test(text)) {
-      add("remove_tags", tags.length ? { tags } : undefined);
-    } else if (/\b(?:replace|set)\b[\s\S]{0,60}\btags?\b/i.test(text)) {
-      add("set_item_tags", tags.length ? { tags } : undefined);
-    }
-
-    if (
-      /^\s*(?:please\s+)?create\b[\s\S]{0,50}\b(?:collection|folder)\b/i.test(
-        text,
-      )
-    ) {
-      add(
-        "create_collection",
-        {
-          collectionName: quotedValueAfter(text, "(?:collection|folder)"),
-        },
-        { targetKind: "items", scope: undefined },
-      );
-    } else if (
-      /^\s*(?:please\s+)?delete\b[\s\S]{0,50}\b(?:collection|folder)\b/i.test(
-        text,
-      )
-    ) {
-      add("delete_collection", undefined, {
-        targetKind: "items",
-      });
-    } else if (
-      /^\s*(?:please\s+)?(?:rename|move)\b[\s\S]{0,50}\b(?:collection|folder)\b/i.test(
-        text,
-      )
-    ) {
-      add("update_collection", undefined, {
-        targetKind: "items",
-      });
-    } else if (
-      /\b(?:move|file|add)\b[\s\S]{0,60}\b(?:papers?|items?)\b[\s\S]{0,60}\b(?:collection|folder)\b/i.test(
-        text,
-      )
-    ) {
-      add("move_to_collection", undefined, {
-        targetKind: "items",
-        constraints: /\bmove\b/i.test(text)
-          ? { collectionMode: "move" }
-          : undefined,
-      });
-    } else if (
-      /\bremove\b[\s\S]{0,60}\b(?:papers?|items?)\b[\s\S]{0,60}\b(?:collection|folder)\b/i.test(
-        text,
-      )
-    ) {
-      add("remove_from_collection", undefined, { targetKind: "items" });
-    }
-
-    if (
-      /\b(?:update|edit|change|correct|set|replace|enrich)\b[\s\S]{0,100}\b(?:metadata|fields?|extra|title|abstract|doi|date|year|authors?|creators?|publication)\b/i.test(
-        text,
-      )
-    ) {
-      add("update_metadata");
-    }
-    if (/\b(?:create|write|save)\b[\s\S]{0,50}\bnotes?\b/i.test(text)) {
-      add("note_create", { noteMode: "create" }, { targetKind: "items" });
-    } else if (/\bappend\b[\s\S]{0,50}\bnotes?\b/i.test(text)) {
-      add("note_append", { noteMode: "append" }, { targetKind: "items" });
-    } else if (
-      /\b(?:edit|update|replace)\b[\s\S]{0,50}\bnotes?\b/i.test(text)
-    ) {
-      add("note_edit", { noteMode: "edit" }, { targetKind: "items" });
-    }
-    if (/\bimport\b[\s\S]{0,50}\b(?:files?|pdfs?)\b/i.test(text)) {
-      add("import_local_files", undefined, {
-        targetKind: "items",
-        scopeRole: "destination",
-      });
-    } else if (
-      /\bimport\b[\s\S]{0,50}\b(?:doi|isbn|pmid|arxiv|identifiers?)\b/i.test(
-        text,
-      )
-    ) {
-      add("import_identifiers", undefined, {
-        targetKind: "items",
-        scopeRole: "destination",
-      });
-    }
-    if (/\btrash\b[\s\S]{0,40}\b(?:papers?|items?|entries)\b/i.test(text)) {
-      add("trash_items", undefined, { targetKind: "items" });
-    } else if (
-      /\b(?:restore|undelete)\b[\s\S]{0,40}\b(?:papers?|items?|entries)\b/i.test(
-        text,
-      )
-    ) {
-      add("restore_from_trash", undefined, { targetKind: "items" });
-    } else if (
-      /\bmerge\b[\s\S]{0,40}\b(?:papers?|items?|entries|duplicates?)\b/i.test(
-        text,
-      )
-    ) {
-      add("merge_items", undefined, { targetKind: "items" });
-    }
-    if (/\bdelete\b[\s\S]{0,40}\battachments?\b/i.test(text)) {
-      add("delete_attachment", undefined, { targetKind: "items" });
-    } else if (/\brename\b[\s\S]{0,40}\battachments?\b/i.test(text)) {
-      add("rename_attachment", undefined, { targetKind: "items" });
-    } else if (/\brelink\b[\s\S]{0,40}\battachments?\b/i.test(text)) {
-      add("relink_attachment", undefined, { targetKind: "items" });
-    }
-    if (/\bannotate\b[\s\S]{0,50}\b(?:pdf|paper|document)\b/i.test(text)) {
-      add("annotation_write", undefined, { targetKind: "items" });
-    }
-    if (/^\s*(?:please\s+)?undo\b/i.test(text))
-      add("undo", undefined, { targetKind: "items", scope: undefined });
-    if (/^\s*(?:please\s+)?revert\b/i.test(text))
-      add("revert", undefined, { targetKind: "items", scope: undefined });
-    if (
-      /\b(?:write|save|export)\b[\s\S]{0,80}\b(?:file|markdown|csv|json|vault)\b/i.test(
-        text,
-      )
-    ) {
-      const filePath = requestedFilePath(text);
-      add("file_write", filePath ? { filePath } : undefined, {
-        targetKind: "items",
-        scope: undefined,
-      });
-    }
-    if (
-      /^\s*(?:please\s+)?(?:run|execute)\b[\s\S]{0,40}\b(?:command|shell)\b/i.test(
-        text,
-      )
-    ) {
-      add("command_execute", undefined, {
-        targetKind: "items",
-        scope: undefined,
-      });
-    } else if (
-      /^\s*(?:please\s+)?(?:run|execute)\b[\s\S]{0,40}\bzotero\b[\s\S]{0,20}\bscript\b/i.test(
-        text,
-      )
-    ) {
-      add("zotero_script_execute", undefined, {
-        targetKind: "items",
-        scope: undefined,
-      });
-    }
-  }
-
-  if (
-    /^\s*(?:please\s+)?(?:read|review|analy[sz]e|inspect)\b[\s\S]{0,50}\b(?:full|entire|complete|exhaustive)\b[\s\S]{0,30}\b(?:paper|text|pdf|document)\b/i.test(
-      text,
-    )
-  ) {
-    add("read_full", undefined, { constraints: { readMode: "full" } });
-  }
-  return mergeActionIntents([], intents);
 }

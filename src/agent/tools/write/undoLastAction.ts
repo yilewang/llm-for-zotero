@@ -1,14 +1,18 @@
-import type { AgentWriteToolDefinition } from "../../types";
-import { fail, ok, validateObject } from "../shared";
-import type { ZoteroGateway } from "../../services/zoteroGateway";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
 import { revertActions } from "../../services/changeReverter";
+import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   listJournalActions,
   selectUndoJournalAction,
 } from "../../store/changeJournal";
+import type { AgentWriteToolDefinition } from "../../types";
+import { fail, ok, validateObject } from "../shared";
 
 type UndoLastActionInput = {
-  /** Internal confirmation witness; this is not part of the tool schema. */
+  /** Exact durable action, optionally supplied by a completed result card. */
   actionId?: string;
 };
 
@@ -36,9 +40,15 @@ export function createUndoLastActionTool(
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        properties: {},
+        properties: {
+          actionId: {
+            type: "string",
+            description:
+              "Exact journal action to undo; omit to select the latest reversible action.",
+          },
+        },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
     presentation: {
@@ -70,34 +80,70 @@ export function createUndoLastActionTool(
         },
       },
     },
-    validate: (_args) => {
-      return ok<UndoLastActionInput>({});
+    validate: (args) => {
+      if (!validateObject<Record<string, unknown>>(args))
+        return fail("Undo expects an object");
+      if (
+        args.actionId !== undefined &&
+        (typeof args.actionId !== "string" || !args.actionId.trim())
+      )
+        return fail("actionId must be a non-empty journal identity");
+      return ok<UndoLastActionInput>(
+        typeof args.actionId === "string" ? { actionId: args.actionId } : {},
+      );
     },
-    shouldRequireConfirmation: async (_input, context) => {
-      const selection = await selectUndoJournalAction({
-        conversationKey: context.request.conversationKey,
-      });
-      return Boolean(selection.action);
-    },
-    planMutation: async (_input, context) => {
-      const selection = await selectUndoJournalAction({
-        conversationKey: context.request.conversationKey,
-      });
-      return selection.action
-        ? {
-            effect: "write",
+    acceptInheritedApproval: (input, approval) =>
+      approval.sourceToolName === "note_change" &&
+      approval.sourceMode === "approval" &&
+      approval.sourceActionId === input.actionId,
+
+    planInvocation: async (input, context) => {
+      if (context.authorization?.standalone && !input.actionId)
+        throw new Error(
+          "Standalone MCP undo requires an explicit actionId from a write receipt.",
+        );
+      const action = input.actionId
+        ? (
+            await listJournalActions({
+              actionId: input.actionId,
+              conversationKey: context.request.conversationKey,
+              limit: 1,
+              pendingOnly: true,
+            })
+          )[0]
+        : (
+            await selectUndoJournalAction({
+              conversationKey: context.request.conversationKey,
+            })
+          ).action;
+      return action
+        ? stateChangeInvocationPlan({
+            targets: [`journal-action:${action.actionId}`],
             reversibility: "none",
             reason:
               "Undo replays an inverse without creating a redo action, so the undo itself cannot be automatically undone.",
-            requiresConfirmation: true,
-          }
-        : { effect: "none", reversibility: "full" };
+          })
+        : readOnlyInvocationPlan({
+            reason: "There is no journalled action to undo.",
+          });
     },
     createPendingAction: async (_input, context) => {
-      const selection = await selectUndoJournalAction({
-        conversationKey: context.request.conversationKey,
-      });
-      const { action, newerIrreversible } = selection;
+      const selection = context.authorization?.standalone
+        ? { action: undefined, newerIrreversible: [] }
+        : await selectUndoJournalAction({
+            conversationKey: context.request.conversationKey,
+          });
+      const { newerIrreversible } = selection;
+      const action = _input.actionId
+        ? (
+            await listJournalActions({
+              actionId: _input.actionId,
+              conversationKey: context.request.conversationKey,
+              limit: 1,
+              pendingOnly: true,
+            })
+          )[0]
+        : selection.action;
       _input.actionId = action?.actionId;
       return {
         toolName: "undo_last_action",
@@ -163,9 +209,15 @@ export function createUndoLastActionTool(
       return ok({ ...input, actionId });
     },
     execute: async (_input, context) => {
-      const selection = await selectUndoJournalAction({
-        conversationKey: context.request.conversationKey,
-      });
+      if (context.authorization?.standalone && !_input.actionId)
+        throw new Error(
+          "Standalone MCP undo requires an explicit actionId from a write receipt.",
+        );
+      const selection = context.authorization?.standalone
+        ? { action: undefined, newerIrreversible: [] }
+        : await selectUndoJournalAction({
+            conversationKey: context.request.conversationKey,
+          });
       const action = _input.actionId
         ? (
             await listJournalActions({

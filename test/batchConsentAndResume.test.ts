@@ -1,3 +1,4 @@
+import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 import { assert } from "chai";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
 import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
@@ -13,6 +14,7 @@ describe("batched note writing", function () {
   let saved: Array<{ itemId: number; content: string }>;
   let trashed: number[][];
   let nextNoteId: number;
+  let native: ReturnType<typeof installNativeNoteStore>;
 
   function gateway(overrides: Record<string, unknown> = {}) {
     return {
@@ -21,6 +23,7 @@ describe("batched note writing", function () {
           ? null
           : {
               id,
+              libraryID: 1,
               getDisplayTitle: () => `Paper ${id}`,
               getField: () => "",
             },
@@ -41,6 +44,7 @@ describe("batched note writing", function () {
 
   const context = {
     request: { conversationKey: 1, libraryID: 1 },
+    journalFallbackApproved: true,
     modelName: "test-model",
   } as never;
 
@@ -48,6 +52,15 @@ describe("batched note writing", function () {
     saved = [];
     trashed = [];
     nextNoteId = 500;
+    native = installNativeNoteStore({
+      startId: 500,
+      onSave: (note) =>
+        saved.push({ itemId: note.parentID, content: note.getNote() }),
+    });
+  });
+
+  afterEach(function () {
+    return native.restore();
   });
 
   it("writes one note per item in a single operation", async function () {

@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { classifiedFixture, semanticFixture } from "./helpers/semanticIntent";
 import { PdfFigureExtractionService } from "../src/agent/services/pdfFigureExtractionService";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
@@ -7,6 +8,8 @@ import {
   buildPdfFigureCropPdfFingerprint,
 } from "../src/modules/contextPanel/pdfFigureCropCache";
 import type { AgentToolContext } from "../src/agent/types";
+import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
+import { createTrustedReadObservations } from "../src/agent/plans/readObservation";
 
 describe("PdfFigureExtractionService", function () {
   const encoder = new TextEncoder();
@@ -162,6 +165,114 @@ describe("PdfFigureExtractionService", function () {
     };
   }
 
+  it("returns submission-ready document assets and page evidence from the real figure result shape", async function () {
+    const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    const bytes = Uint8Array.from(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/aYAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    files.set(cropPath, bytes);
+    files.set("/tmp/paper.pdf", encoder.encode("source PDF bytes"));
+    const items = new Map([
+      [11, { id: 11, key: "PAPER001", libraryID: 1 }],
+      [
+        22,
+        {
+          id: 22,
+          key: "PDF00001",
+          libraryID: 1,
+          parentID: 11,
+          getFilePathAsync: async () => "/tmp/paper.pdf",
+        },
+      ],
+    ]);
+    globalScope.Zotero = {
+      DataDirectory: { dir: "/tmp/zotero" },
+      Items: { get: (id: number) => items.get(id) },
+    };
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => [cachedFigure(cropPath)],
+    } as never).extractFigures({
+      input: { query: "Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
+      context: {
+        ...context,
+        request: {
+          ...context.request,
+          documentOutcomePolicy: {
+            required: true,
+            documentKind: "report",
+            integrityPolicy: "research_grounded",
+            trigger: "document_intent",
+          },
+        },
+      },
+      paperContexts: [paperContext],
+    });
+    const asset = result.figures?.[0].documentAsset as Record<string, unknown>;
+    assert.isObject(
+      asset,
+      "the model must receive all host-owned asset metadata",
+    );
+    assert.include(asset, {
+      durablePath: cropPath,
+      width: 1,
+      height: 1,
+      byteLength: bytes.length,
+    });
+    assert.match(String(asset.contentHash), /^sha256:[a-f0-9]{64}$/);
+    assert.equal(result.artifacts?.[0].contentHash, asset.contentHash);
+    const tool = createSubmitDocumentTool({} as never);
+    const parsed = tool.validate({
+      title: "Summary",
+      markdown: "# Summary\n\nOne extracted figure.",
+      citations: [],
+      quotes: [],
+      assets: [asset],
+      groundingReviewed: "passed",
+      groundingIssues: [],
+    });
+    assert.isTrue(parsed.ok);
+    const observations = await createTrustedReadObservations({
+      toolName: "paper_read",
+      callId: "figure-read",
+      input: { mode: "figures" },
+      result,
+    });
+    assert.lengthOf(observations, 1);
+    assert.deepInclude(observations[0], {
+      itemKey: "PAPER001",
+      attachmentItemKey: "PDF00001",
+      pageIndex: 1,
+      sourceFingerprint: (asset.provenance as Record<string, unknown>)
+        .sourceFingerprint,
+    });
+    assert.deepEqual(observations[0].capabilities, ["figure"]);
+  });
+
+  it("leaves missing semantic figure scope unresolved without starting extraction", async function () {
+    let calls = 0;
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        calls++;
+        return [];
+      },
+    } as never).extractFigures({
+      input: { query: "all figures" },
+      context,
+      paperContexts: [paperContext],
+    });
+    assert.equal(calls, 0);
+    assert.equal(result.status, "no_figures");
+    assert.include(result.warnings?.join(" ") || "", "unresolved");
+  });
+
   it("returns verified cached crops before source-PDF extraction", async function () {
     const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     files.set(cropPath, encoder.encode("png"));
@@ -194,6 +305,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -210,7 +326,7 @@ describe("PdfFigureExtractionService", function () {
     );
   });
 
-  it("does not parse numeric prose after a figure label as another requested figure", async function () {
+  it("selects cached figures from semantic intent even when tool prose names another figure", async function () {
     const figure1CropPath =
       "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     const figure2CropPath =
@@ -253,8 +369,22 @@ describe("PdfFigureExtractionService", function () {
         throw new Error("source extraction should not run for cached crops");
       },
     } as never).extractFigures({
-      input: { query: "Figure 1 has 2 panels" },
-      context,
+      input: { query: "Show Figure 2 instead" },
+      context: {
+        ...context,
+        request: {
+          ...context.request,
+          classifiedIntent: classifiedFixture({
+            semantic: semanticFixture({
+              figures: {
+                labels: ["Figure 1"],
+                kind: "figures",
+                includeSupplementary: false,
+              },
+            }),
+          }),
+        },
+      },
       paperContexts: [paperContext],
     });
 
@@ -299,6 +429,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 2" },
+      selection: {
+        labels: ["Figure 2"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -347,6 +482,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -405,6 +545,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -441,6 +586,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -489,6 +639,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -537,6 +692,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -590,6 +750,7 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain all figures" },
+      selection: { labels: [], kind: "figures", includeSupplementary: false },
       context,
       paperContexts: [paperContext],
     });
@@ -637,6 +798,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1", pages: [1] },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -705,6 +871,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [pdfOnlyPaperContext],
     });
@@ -763,6 +934,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -821,6 +997,7 @@ describe("PdfFigureExtractionService", function () {
       }),
     } as never).extractFigures({
       input: { query: "explain all figures" },
+      selection: { labels: [], kind: "figures", includeSupplementary: false },
       context,
       paperContexts: [paperContext],
     });
@@ -855,6 +1032,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -887,6 +1069,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });
@@ -929,6 +1116,11 @@ describe("PdfFigureExtractionService", function () {
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context,
       paperContexts: [paperContext],
     });

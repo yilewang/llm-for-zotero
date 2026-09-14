@@ -103,10 +103,17 @@ describe("collection move semantics", function () {
 
   it("leaves the item in its old collection when adding (unchanged default)", async function () {
     const gateway = makeGateway();
-    await gateway.addItemsToCollections({
+    const result = await gateway.addItemsToCollections({
       assignments: [{ itemId: 101, targetCollectionId: 30 }],
     });
     assert.deepEqual(items.get(101)?.collections, [10, 30]);
+    assert.equal(
+      result.movedCount,
+      0,
+      "An addition must not be reported as a move",
+    );
+    assert.equal(result.addedCount, 1);
+    assert.equal(result.items[0].status, "added");
   });
 
   it("actually removes the source collection when moving", async function () {

@@ -45,7 +45,10 @@ describe("libraryRetrieveTriage", function () {
       profileOverride: { forModel: "gpt-5.4" },
       llmCall: async (params) => {
         captured = params as unknown as Record<string, unknown>;
-        return '{"selectedItemIds":["1"]}';
+        return {
+          text: '{"selectedItemIds":["1"]}',
+          completion: { status: "complete" as const },
+        };
       },
     });
 
@@ -54,6 +57,9 @@ describe("libraryRetrieveTriage", function () {
       provider: "openai",
       level: "low",
     });
-    assert.equal(captured.maxTokens, 1_424);
+    assert.deepEqual(captured.outputTokenLimit, {
+      mode: "custom",
+      tokens: 1_424,
+    });
   });
 });

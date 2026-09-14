@@ -367,15 +367,107 @@ describe("minimal source-match quote gate workflow", function () {
           /\[\[quote:Q_[a-z0-9]+\]\]/g,
         ) || []
       ).length,
-      2,
+      1,
     );
     assert.lengthOf(
       assistantMessage.quoteDisplayOverride?.quoteCitations || [],
-      2,
+      1,
     );
     assert.equal(
       assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]?.citationLabel,
       "(Climer et al., 2025)",
+    );
+  });
+
+  for (const [representation, sourceMath] of [
+    ["joined", ["zold", "znew"]],
+    ["split", ["z old", "z new"]],
+  ] as const) {
+    it(`verifies the stored LwF quote against ${representation} PDF scripts without rewriting history`, async function () {
+      const quote =
+        "In Learning without Forgetting (LwF) [30], the model is copied before task $t$ is learned. The copied model produces fixed logits $z^{\\text{old}}$ on the new-task data, and the updated model produces $z^{\\text{new}}$.";
+      const raw = `> ${quote}\n>\n> (Si and Qin, 2026)`;
+      const sourceText = `In Learning without Forgetting (LwF) [30], the model is copied before task t is learned. The copied model produces fixed logits ${sourceMath[0]} on the new-task data, and the updated model produces ${sourceMath[1]}.`;
+      const source = installPdfSource(contextItemId, sourceText);
+      restoreSource = source.restore;
+      const userMessage: Message = {
+        role: "user",
+        text: "Explain Learning without Forgetting.",
+        timestamp: 1,
+        paperContexts: [
+          {
+            ...paper,
+            itemId: 3942,
+            title: "Continual-learning rules shape representational drift",
+            firstCreator: "Si and Qin",
+            year: "2026",
+          },
+        ],
+      };
+      const assistantMessage: Message = {
+        role: "assistant",
+        text: raw,
+        timestamp: 2,
+      };
+      chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+      finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+        pairedUserMessage: userMessage,
+        conversationKey,
+      });
+      await waitForAssistantQuoteValidationForTests(conversationKey);
+
+      assert.equal(assistantMessage.text, raw);
+      assert.isUndefined(assistantMessage.quoteCitations);
+      assert.match(
+        assistantMessage.quoteDisplayOverride?.markdown || "",
+        /\[\[quote:Q_[a-z0-9]+\]\]/,
+      );
+      assert.notInclude(
+        assistantMessage.quoteDisplayOverride?.markdown || "",
+        "Not a source quote",
+      );
+      assert.equal(
+        assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]
+          ?.pageHintLabel,
+        "1",
+      );
+    });
+  }
+
+  it("keeps a complete-paper equation miss neutral when extraction drops an operator", async function () {
+    const quote =
+      "The bounded estimate $x \\leq 30$ remained stable after training.";
+    const raw = `> ${quote}\n>\n> (Example et al., 2026)`;
+    const source = installPdfSource(
+      contextItemId,
+      "The bounded estimate x 30 remained stable after training.",
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the estimate.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(assistantMessage.text, raw);
+    assert.isUndefined(assistantMessage.quoteCitations);
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || raw,
+      "Not a source quote",
     );
   });
 

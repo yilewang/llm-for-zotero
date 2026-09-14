@@ -1,5 +1,5 @@
 import type { RuntimeModelEntry } from "../utils/modelProviders";
-import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
+import { DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
 import {
   buildCodexReasoningChoices,
   buildCodexRuntimeModelCandidates,
@@ -228,7 +228,7 @@ function createRuntimeModelEntry(params: {
     displayModelLabel: params.displayModelLabel,
     advanced: {
       temperature: DEFAULT_TEMPERATURE,
-      maxTokens: DEFAULT_MAX_TOKENS,
+      outputTokenLimit: { mode: "auto" },
     },
   };
 }

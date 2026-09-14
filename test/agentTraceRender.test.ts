@@ -1,4 +1,11 @@
+import {
+  renderPlanProgress,
+  disposePlanProgress,
+  isFloatingPlanExecutionStatus,
+} from "../src/modules/contextPanel/agentTrace/planProgressView";
 import { assert } from "chai";
+import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
+import type { AgentConfirmationResolution } from "../src/agent/types";
 import { readFileSync } from "node:fs";
 import {
   buildAgentTraceChipDetails,
@@ -46,6 +53,10 @@ import {
   isEmbeddableGeneratedImage,
   resolveGeneratedImageAsset,
 } from "../src/modules/contextPanel/generatedImageAssets";
+import {
+  getStableAnimationDelay,
+  STABLE_ANIMATION_DELAY_PROPERTY,
+} from "../src/modules/contextPanel/stableAnimationPhase";
 
 class FakeClassList {
   private readonly classes = new Set<string>();
@@ -64,8 +75,23 @@ class FakeClassList {
     for (const cls of classes) this.classes.delete(cls);
   }
 
+  toggle(cls: string, force?: boolean): boolean {
+    const enabled = force === undefined ? !this.classes.has(cls) : force;
+    if (enabled) this.classes.add(cls);
+    else this.classes.delete(cls);
+    return enabled;
+  }
+
   toString(): string {
     return Array.from(this.classes).join(" ");
+  }
+}
+
+class FakeStyleDeclaration {
+  [key: string]: string | ((name: string, value: string) => void);
+
+  setProperty(name: string, value: string): void {
+    this[name] = value;
   }
 }
 
@@ -79,11 +105,59 @@ class FakeElement {
   public title = "";
   public disabled = false;
   public attributes: Record<string, string> = {};
+  public style = new FakeStyleDeclaration();
+  public offsetHeight = 0;
+  public scrollHeight = 0;
+  public offsetTop = 0;
+  public offsetWidth = 0;
   private copyableChildren: FakeElement[] = [];
   private html = "";
   private listeners = new Map<string, Array<(event: any) => void>>();
 
-  constructor(public readonly tagName = "div") {}
+  public parentElement: FakeElement | null = null;
+  get childNodes() {
+    return this.children;
+  }
+  get nodeType() {
+    return 1;
+  }
+  get nodeName() {
+    return this.tagName.toUpperCase();
+  }
+  get nextSibling(): FakeElement | null {
+    const siblings = this.parentElement?.children || [];
+    return siblings[siblings.indexOf(this) + 1] || null;
+  }
+  get isConnected() {
+    return false;
+  }
+  remove() {
+    this.parentElement?.removeChild(this);
+  }
+  removeChild(child: FakeElement) {
+    const index = this.children.indexOf(child);
+    if (index >= 0) this.children.splice(index, 1);
+    child.parentElement = null;
+    return child;
+  }
+  getAttribute(name: string) {
+    return this.attributes[name] ?? null;
+  }
+  hasAttribute(name: string) {
+    return name in this.attributes;
+  }
+  removeAttribute(name: string) {
+    delete this.attributes[name];
+  }
+  constructor(public readonly tagName = "div") {
+    const attributes = this.attributes;
+    Object.defineProperty(attributes, Symbol.iterator, {
+      value: function* () {
+        for (const [name, value] of Object.entries(attributes))
+          yield { name, value };
+      },
+    });
+  }
 
   set className(value: string) {
     this.classList.add(...value.split(/\s+/).filter(Boolean));
@@ -134,7 +208,16 @@ class FakeElement {
     if (selector === ":scope .llm-codeblock-shell") {
       return this.findByClass("llm-codeblock-shell");
     }
+    if (selector.startsWith(".")) return this.findByClass(selector.slice(1));
+    if (selector === "summary") return this.findAllByTag("summary")[0] || null;
     return null;
+  }
+
+  removeEventListener(type: string, listener: (event: any) => void): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) || []).filter((fn) => fn !== listener),
+    );
   }
 
   addEventListener(type: string, listener: (event: any) => void): void {
@@ -198,16 +281,12 @@ class FakeElement {
   }
 
   insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
-    if (!before) {
-      this.children.unshift(child);
-      return child;
-    }
-    const index = this.children.indexOf(before);
-    if (index < 0) {
-      this.children.unshift(child);
-      return child;
-    }
-    this.children.splice(index, 0, child);
+    if (child === before) return child;
+    child.remove();
+    const index = before ? this.children.indexOf(before) : -1;
+    if (index < 0) this.children.push(child);
+    else this.children.splice(index, 0, child);
+    child.parentElement = this;
     return child;
   }
 
@@ -216,13 +295,19 @@ class FakeElement {
   }
 
   append(...children: FakeElement[]): void {
-    this.children.push(...children);
+    for (const child of children) this.appendChild(child);
   }
 
   appendChild(child: FakeElement): FakeElement {
-    this.children.push(child);
-    return child;
+    return this.insertBefore(child, null);
   }
+
+  replaceChildren(...children: FakeElement[]): void {
+    for (const child of [...this.children]) this.removeChild(child);
+    this.append(...children);
+  }
+
+  focus(): void {}
 
   findByClass(className: string): FakeElement | null {
     if (this.classList.contains(className)) return this;
@@ -302,6 +387,7 @@ const fakeDocument = {
   createElement: (tagName: string) => new FakeElement(tagName),
   createElementNS: (_namespace: string, tagName: string) =>
     new FakeElement(tagName),
+  querySelectorAll: () => [],
 } as unknown as Document;
 
 const throwingTemplateDocument = {
@@ -511,6 +597,67 @@ const obsidianStyleMermaidFixture = [
   "    V --> O3",
   "    D --> O4",
 ].join("\n");
+
+describe("native host authority trace", function () {
+  it("loads durable history while retaining temporary native activity during the handoff", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "temporary",
+        seq: 1,
+        eventType: "status",
+        createdAt: 1000,
+        payload: { type: "status", text: "Verified native activity" },
+      },
+    ];
+    const message: any = {
+      role: "assistant",
+      text: "Done",
+      timestamp: 2000,
+      runMode: "agent",
+      agentRunId: "durable",
+      streaming: false,
+      pendingAgentTraceEvents: events,
+    };
+    let loads = 0;
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      onTraceMissing: () => {
+        loads++;
+      },
+    })!;
+    assert.equal(
+      loads,
+      1,
+      "temporary events must not prevent loading the durable run",
+    );
+    const next = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [],
+      previous: first,
+    }) as unknown as FakeElement;
+    assert.notInclude(collectFakeText(next), "Loading agent activity");
+    assert.lengthOf(next.findAllByClass("llm-agent-activity-details"), 1);
+  });
+  it("retains semantic events instead of discarding them as non-Plan events", function () {
+    const message: any = { role: "assistant", text: "", timestamp: 1 };
+    const trace = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => {},
+    );
+    trace.appendPlanEvent({
+      type: "provider_event",
+      providerType: "agent_semantic_intent",
+      payload: { intent: { id: "intent-1" } },
+    });
+    assert.equal(
+      message.pendingAgentTraceEvents?.[0].payload.providerType,
+      "agent_semantic_intent",
+    );
+  });
+});
 
 describe("Mermaid rendering helpers", function () {
   it("quotes flowchart labels with punctuation that Mermaid parses poorly", function () {
@@ -999,10 +1146,253 @@ describe("rendered Markdown code block source controls", function () {
 });
 
 describe("agentTrace render", function () {
+  it("keeps continuous animation phase anchored to its lifecycle start", function () {
+    assert.equal(getStableAnimationDelay(1_000, 1_000), "0ms");
+    assert.equal(getStableAnimationDelay(1_000, 2_750), "-1750ms");
+    assert.equal(getStableAnimationDelay(undefined, 2_750), "0ms");
+
+    const originalNow = Date.now;
+    Date.now = () => 5_000;
+    try {
+      const trace = renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 500,
+          waitingAnimationStartedAt: 1_000,
+          runMode: "agent",
+          streaming: true,
+        },
+        events: [
+          {
+            runId: "run-stable-animation",
+            seq: 1,
+            eventType: "status",
+            payload: {
+              type: "status",
+              text: "Planning the request and reviewing context",
+            },
+            createdAt: 1_000,
+          },
+        ],
+      }) as unknown as FakeElement;
+      assert.equal(trace.style[STABLE_ANIMATION_DELAY_PROPERTY], "-4000ms");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("phase-anchors every reconstructed continuous progress animation", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const relevantSelector =
+      /(?:llm-at-(?:row-)?planning|llm-typing-dot|llm-plan-progress-trigger-dot|llm-plan-task-badge-in_progress|llm-compact-marker-pending)/;
+    const infiniteRules = Array.from(
+      css.matchAll(/animation:[^;]*\binfinite\b[^;]*;/g),
+    ).flatMap((match) => {
+      const declarationIndex = match.index || 0;
+      const blockStart = css.lastIndexOf("{", declarationIndex);
+      const previousBlockEnd = css.lastIndexOf("}", declarationIndex);
+      const blockEnd = css.indexOf("}", declarationIndex);
+      const selector = css.slice(previousBlockEnd + 1, blockStart).trim();
+      if (!relevantSelector.test(selector)) return [];
+      return [{ selector, body: css.slice(blockStart + 1, blockEnd) }];
+    });
+
+    assert.lengthOf(infiniteRules, 7);
+    for (const { selector, body } of infiniteRules) {
+      assert.include(
+        body,
+        "--llm-stable-animation-delay",
+        `missing stable phase for ${selector.trim()}`,
+      );
+    }
+  });
+
+  it("floats only starting or running Plan execution states", function () {
+    assert.isTrue(isFloatingPlanExecutionStatus("running"));
+    assert.isFalse(isFloatingPlanExecutionStatus("interrupted"));
+    assert.isFalse(isFloatingPlanExecutionStatus("waiting_for_user"));
+    assert.isFalse(isFloatingPlanExecutionStatus("completed"));
+    assert.isFalse(isFloatingPlanExecutionStatus("failed"));
+  });
+
   it("formats compact Codex-style activity durations", function () {
     assert.equal(formatAgentActivityDuration(250), "1s");
     assert.equal(formatAgentActivityDuration(259_000), "4m 19s");
     assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
+  });
+
+  it("replaces planning activity with one question at a time", async function () {
+    const action: AgentPendingAction = {
+      toolName: "request_user_input",
+      mode: "review",
+      title: "Plan needs your input",
+      confirmLabel: "Continue planning",
+      cancelLabel: "Cancel plan",
+      fields: [
+        {
+          type: "choice",
+          id: "scope",
+          label: "Which corpus should the review use?",
+          allowCustom: true,
+          customPlaceholder: "Something else…",
+          requiredForActionIds: ["continue"],
+          options: [
+            {
+              id: "collection",
+              label: "Selected collection",
+              description: "Use the current collection only.",
+            },
+            { id: "library", label: "Whole library" },
+          ],
+        },
+        {
+          type: "choice",
+          id: "search",
+          label: "Should external search be included?",
+          allowCustom: true,
+          requiredForActionIds: ["continue"],
+          options: [
+            { id: "no", label: "Zotero only" },
+            { id: "yes", label: "Include external search" },
+          ],
+        },
+      ],
+      actions: [
+        { id: "continue", label: "Continue planning", approved: true },
+        { id: "cancel", label: "Cancel plan", approved: false },
+      ],
+      defaultActionId: "continue",
+      cancelActionId: "cancel",
+    };
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+        streaming: true,
+      },
+      events: [
+        {
+          runId: "run-question-card",
+          seq: 1,
+          eventType: "status",
+          payload: {
+            type: "status",
+            text: "Planning the request and reviewing context",
+          },
+          createdAt: 1,
+        },
+        {
+          runId: "run-question-card",
+          seq: 2,
+          eventType: "confirmation_required",
+          payload: {
+            type: "confirmation_required",
+            requestId: "question-card",
+            action,
+          },
+          createdAt: 2,
+        },
+      ],
+    }) as unknown as FakeElement;
+
+    assert.equal(trace.dataset.llmAssistantTurnReplacement, "true");
+    assert.isNull(trace.findByClass("llm-agent-activity-details"));
+    assert.lengthOf(trace.findAllByClass("llm-planning-question-panel"), 1);
+    assert.include(
+      collectFakeText(trace.findByClass("llm-planning-question-panel")),
+      "Which corpus should the review use?",
+    );
+    assert.include(
+      collectFakeText(trace.findByClass("llm-planning-question-panel")),
+      "Use the current collection only.",
+    );
+
+    const firstOption = trace.findAllByClass("llm-planning-question-option")[0];
+    firstOption.dispatchFakeEvent("click");
+    assert.isTrue(
+      firstOption.classList.contains("llm-planning-question-option-selected"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    assert.include(
+      collectFakeText(trace.findByClass("llm-planning-question-panel")),
+      "Should external search be included?",
+    );
+    assert.equal(
+      trace.findByClass("llm-planning-question-counter")?.textContent,
+      "2 / 2",
+    );
+
+    const finalOption = trace.findAllByClass("llm-planning-question-option")[0];
+    finalOption.dispatchFakeEvent("click");
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    assert.include(
+      collectFakeText(trace.findByClass("llm-planning-question-panel")),
+      "Should external search be included?",
+      "the final option waits for explicit submission",
+    );
+
+    const previous = trace.findAllByClass("llm-planning-question-nav-btn")[0];
+    previous.dispatchFakeEvent("click");
+    assert.include(
+      collectFakeText(trace.findByClass("llm-planning-question-panel")),
+      "Which corpus should the review use?",
+    );
+    assert.isTrue(
+      trace
+        .findAllByClass("llm-planning-question-option")[0]
+        .classList.contains("llm-planning-question-option-selected"),
+      "the earlier answer is retained",
+    );
+  });
+
+  it("accepts a custom planning-question answer in the card", function () {
+    const card = renderPendingActionCard(fakeDocument, {
+      requestId: "custom-question-card",
+      action: {
+        toolName: "request_user_input",
+        mode: "review",
+        title: "Plan needs your input",
+        confirmLabel: "Continue planning",
+        cancelLabel: "Cancel plan",
+        fields: [
+          {
+            type: "choice",
+            id: "scope",
+            label: "Which corpus?",
+            allowCustom: true,
+            options: [
+              { id: "collection", label: "Collection" },
+              { id: "library", label: "Library" },
+            ],
+            requiredForActionIds: ["continue"],
+          },
+        ],
+        actions: [
+          { id: "continue", label: "Continue planning", approved: true },
+          { id: "cancel", label: "Cancel plan", approved: false },
+        ],
+        defaultActionId: "continue",
+        cancelActionId: "cancel",
+      },
+    }) as unknown as FakeElement;
+    const customInput = card.findByClass(
+      "llm-planning-question-custom-input",
+    ) as FakeElement & { value: string };
+    const continueButton = card.findByClass("llm-planning-question-continue");
+    assert.isTrue(continueButton?.disabled);
+    customInput.value = "A curated paper list";
+    customInput.dispatchFakeEvent("input");
+    assert.isFalse(continueButton?.disabled);
+    assert.isTrue(
+      card
+        .findByClass("llm-planning-question-custom")
+        ?.classList.contains("llm-planning-question-custom-selected"),
+    );
   });
 
   it("suppresses complete and partial web markers in streamed trace text", function () {
@@ -1175,6 +1565,515 @@ describe("agentTrace render", function () {
       completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
       "Worked for 4m 19s",
     );
+  });
+
+  it("labels planning and approved execution in the activity disclosure", function () {
+    const baseMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 2_000,
+      runMode: "agent" as const,
+      streaming: true,
+    };
+    const planning = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...baseMessage },
+      events: [
+        {
+          runId: "run-planning-label",
+          seq: 1,
+          eventType: "status",
+          payload: {
+            type: "status",
+            text: "Planning the request and reviewing context",
+          },
+          createdAt: 1_000,
+        },
+      ],
+    }) as unknown as FakeElement;
+    assert.equal(
+      planning.findByClass("llm-agent-activity-summary")?.textContent,
+      "Planning…",
+    );
+    const planningRow = planning.findByClass("llm-at-row-planning-active");
+    assert.isNotNull(planningRow);
+    assert.isTrue(
+      planningRow?.children[0]?.classList.contains("llm-at-planning-drive"),
+    );
+    assert.lengthOf(planning.findAllByClass("llm-at-planning-drive-pixel"), 9);
+
+    const executing = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...baseMessage },
+      events: [
+        {
+          runId: "run-execution-label",
+          seq: 1,
+          eventType: "status",
+          payload: { type: "status", text: "Executing the approved plan" },
+          createdAt: 1_000,
+        },
+      ],
+    }) as unknown as FakeElement;
+    assert.equal(
+      executing.findByClass("llm-agent-activity-summary")?.textContent,
+      "Executing plan…",
+    );
+    assert.isNull(executing.findByClass("llm-at-planning-drive"));
+  });
+
+  it("renders execution progress as a compact accessible pill with the full ledger in a popover", function () {
+    const makeTask = (
+      id: string,
+      status: "completed" | "in_progress" | "pending",
+      content: string,
+    ) => ({
+      version: 1 as const,
+      taskId: id,
+      executionId: "execution-pill",
+      planStepId: id,
+      kind: "required_step" as const,
+      content,
+      activeForm: status === "in_progress" ? "Drafting the brief" : content,
+      acceptanceCriteria: [`${content} is complete`],
+      expectedEffect: "artifact" as const,
+      obligationIds: [],
+      status,
+      attemptCount: status === "pending" ? 0 : 1,
+      evidenceIds: status === "completed" ? [`evidence-${id}`] : [],
+      failureReasons: [],
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-plan-pill",
+        seq: 1,
+        eventType: "plan_execution_updated",
+        payload: {
+          type: "plan_execution_updated",
+          ledger: {
+            version: 1,
+            executionId: "execution-pill",
+            planId: "plan-pill",
+            revision: 1,
+            planDigest: "digest",
+            conversationKey: 1,
+            attempt: 1,
+            provider: "original",
+            grant: {
+              version: 1,
+              planId: "plan-pill",
+              revision: 1,
+              planDigest: "digest",
+              conversationKey: 1,
+              conversationGeneration: 1,
+              approvedAt: 1,
+            },
+            status: "running",
+            activeTaskId: "step-2",
+            tasks: [
+              makeTask("step-1", "completed", "Search the library"),
+              makeTask("step-2", "in_progress", "Draft the document"),
+              makeTask("step-3", "pending", "Finalize references"),
+            ],
+            evidence: [],
+            startedAt: 1,
+            updatedAt: 2,
+          },
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 2, streaming: true },
+      events,
+    }) as unknown as FakeElement;
+    assert.isNull(
+      trace.findByClass("llm-plan-container-execution"),
+      "even stale streaming history cannot mount progress",
+    );
+    const root = renderPlanProgress(
+      fakeDocument,
+      (events[0].payload as any).ledger,
+      events,
+    ) as unknown as FakeElement;
+    const trigger = root?.findByClass("llm-plan-progress-trigger");
+    const popover = root?.findByClass("llm-plan-progress-popover");
+
+    assert.exists(root);
+    assert.equal(root?.dataset.llmPlanExecutionId, "execution-pill");
+    assert.equal(root?.dataset.llmPlanExecutionStatus, "running");
+    assert.include(collectFakeText(trigger), "Task progress");
+    assert.include(collectFakeText(trigger), "1/3");
+    assert.notInclude(collectFakeText(trigger), "Drafting the brief");
+    assert.include(collectFakeText(popover), "Drafting the brief");
+    assert.include(collectFakeText(popover), "Search the library");
+    assert.include(collectFakeText(popover), "Finalize references");
+    assert.equal(trigger?.attributes["aria-expanded"], "false");
+    assert.include(
+      trigger?.attributes["aria-label"] || "",
+      "1 of 3 required steps complete",
+    );
+    assert.exists(popover?.findByClass("llm-plan-task-list"));
+    const progress = popover?.findByClass("llm-plan-progress");
+    assert.equal(progress?.attributes.role, "progressbar");
+    assert.equal(progress?.attributes["aria-valuemin"], "0");
+    assert.equal(progress?.attributes["aria-valuemax"], "3");
+    assert.equal(progress?.attributes["aria-valuenow"], "1");
+    assert.notInclude(collectFakeText(progress), "steps complete");
+
+    root?.dispatchFakeEvent("mouseenter");
+    assert.isTrue(root?.classList.contains("llm-plan-progress-hover"));
+    root?.dispatchFakeEvent("mouseleave");
+    assert.isFalse(root?.classList.contains("llm-plan-progress-hover"));
+
+    trigger?.dispatchFakeEvent("click");
+    assert.isTrue(root?.classList.contains("llm-plan-progress-open"));
+    assert.equal(trigger?.attributes["aria-expanded"], "true");
+    assert.include(trigger?.attributes["aria-label"] || "", "Hide");
+    trigger?.dispatchFakeEvent("click");
+    assert.isFalse(root?.classList.contains("llm-plan-progress-open"));
+  });
+
+  it("keeps the task progress hover card compact without changing plan cards", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const popoverRule =
+      css.match(/\.llm-plan-progress-popover\s*\{[\s\S]*?\}/)?.[0] || "";
+    const compactTaskLineRule =
+      css.match(
+        /\.llm-plan-progress-popover\s+\.llm-plan-task-line\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const compactTaskBadgeRule =
+      css.match(
+        /\.llm-plan-progress-popover\s+\.llm-plan-task-badge\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const baseTaskLineRule =
+      css.match(/(?<!popover )\.llm-plan-task-line\s*\{[\s\S]*?\}/)?.[0] || "";
+
+    assert.include(popoverRule, "max-width: 420px");
+    assert.include(popoverRule, "max-height: min(50vh, 360px)");
+    assert.include(popoverRule, "padding: 8px");
+    assert.include(popoverRule, "border-radius: 10px");
+    assert.include(compactTaskLineRule, "min-height: 32px");
+    assert.include(compactTaskLineRule, "padding: 5px 7px");
+    assert.include(compactTaskBadgeRule, "flex-basis: 18px");
+    assert.include(compactTaskBadgeRule, "width: 18px");
+    assert.include(compactTaskBadgeRule, "height: 18px");
+    assert.include(baseTaskLineRule, "min-height: 42px");
+    assert.notInclude(css, ".llm-plan-progress-trigger-current");
+  });
+
+  it("keeps clicked task progress open across live execution rerenders", function () {
+    const renderProgress = (
+      status: "running" | "completed",
+      updatedAt: number,
+      previous?: FakeElement,
+    ) =>
+      (() => {
+        const events: AgentRunEventRecord[] = [
+          {
+            runId: "run-stable-progress",
+            seq: updatedAt,
+            eventType: "plan_execution_updated",
+            payload: {
+              type: "plan_execution_updated",
+              ledger: {
+                version: 1,
+                executionId: "execution-stable-progress",
+                planId: "plan-stable-progress",
+                revision: 1,
+                planDigest: "digest",
+                conversationKey: 1,
+                attempt: 1,
+                provider: "original",
+                grant: {
+                  version: 1,
+                  planId: "plan-stable-progress",
+                  revision: 1,
+                  planDigest: "digest",
+                  conversationKey: 1,
+                  conversationGeneration: 1,
+                  approvedAt: 1,
+                },
+                status,
+                activeTaskId: status === "running" ? "step-1" : undefined,
+                tasks: [
+                  {
+                    version: 1,
+                    taskId: "step-1",
+                    executionId: "execution-stable-progress",
+                    planStepId: "step-1",
+                    kind: "required_step",
+                    content: "Draft the document",
+                    activeForm: "Drafting the document",
+                    acceptanceCriteria: ["The document is complete"],
+                    expectedEffect: "artifact",
+                    obligationIds: [],
+                    status: status === "running" ? "in_progress" : "completed",
+                    attemptCount: 1,
+                    evidenceIds:
+                      status === "completed" ? ["evidence-step-1"] : [],
+                    failureReasons: [],
+                    createdAt: 1,
+                    updatedAt,
+                  },
+                ],
+                evidence: [],
+                startedAt: 1,
+                completedAt: status === "completed" ? updatedAt : undefined,
+                updatedAt,
+              },
+            },
+            createdAt: updatedAt,
+          },
+        ];
+        const trace = renderAgentTrace({
+          doc: fakeDocument,
+          message: {
+            role: "assistant",
+            text: "",
+            timestamp: updatedAt,
+            streaming: status === "running",
+          },
+          events,
+        }) as unknown as FakeElement;
+        assert.isNull(trace.findByClass("llm-plan-container-execution"));
+        return renderPlanProgress(
+          fakeDocument,
+          (events[0].payload as any).ledger,
+          events,
+          previous as unknown as HTMLElement,
+        ) as unknown as FakeElement;
+      })();
+
+    const first = renderProgress("running", 2);
+    const firstRoot = first.findByClass("llm-plan-container-execution");
+    firstRoot
+      ?.findByClass("llm-plan-progress-trigger")
+      ?.dispatchFakeEvent("click");
+    assert.isTrue(firstRoot?.classList.contains("llm-plan-progress-open"));
+
+    const updated = renderProgress("running", 3, first);
+    const updatedRoot = updated.findByClass("llm-plan-container-execution");
+    const updatedTrigger = updatedRoot?.findByClass(
+      "llm-plan-progress-trigger",
+    );
+    assert.isTrue(updatedRoot?.classList.contains("llm-plan-progress-open"));
+    assert.equal(updatedTrigger?.attributes["aria-expanded"], "true");
+    assert.include(updatedTrigger?.attributes["aria-label"] || "", "Hide");
+
+    disposePlanProgress(updated as unknown as HTMLElement);
+    assert.isNull(updated.parentElement);
+    const restarted = renderProgress("running", 5);
+    const restartedRoot = restarted.findByClass("llm-plan-container-execution");
+    assert.isFalse(restartedRoot?.classList.contains("llm-plan-progress-open"));
+  });
+
+  it("disposes progress observers and listeners when its live owner unmounts", function () {
+    let observers = 0;
+    const listeners = new Set<EventListener>();
+    const doc = {
+      ...fakeDocument,
+      defaultView: {
+        ResizeObserver: class {
+          observe() {
+            observers++;
+          }
+          disconnect() {
+            observers--;
+          }
+        },
+        addEventListener(_type: string, listener: EventListener) {
+          listeners.add(listener);
+        },
+        removeEventListener(_type: string, listener: EventListener) {
+          listeners.delete(listener);
+        },
+      },
+    } as unknown as Document;
+    const root = renderPlanProgress(
+      doc,
+      {
+        executionId: "dispose",
+        planId: "dispose",
+        revision: 1,
+        status: "running",
+        createdAt: 1,
+        updatedAt: 1,
+        tasks: [],
+      } as any,
+      [],
+    ) as unknown as FakeElement;
+    const trigger = root.findByClass("llm-plan-progress-trigger")!;
+    assert.equal(observers, 1);
+    assert.equal(listeners.size, 1);
+    disposePlanProgress(root as unknown as HTMLElement);
+    trigger.dispatchFakeEvent("click");
+    assert.equal(observers, 0);
+    assert.equal(listeners.size, 0);
+    assert.equal(trigger.attributes["aria-expanded"], "false");
+  });
+
+  for (const status of [
+    "pending",
+    "running",
+    "waiting_for_user",
+    "blocked",
+    "interrupted",
+    "completed",
+    "completed_with_exceptions",
+    "failed",
+    "cancelled",
+    "superseded",
+  ]) {
+    it(`never projects ${status} historical ledgers as task progress`, function () {
+      const trace = renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 2,
+          streaming: true,
+          runMode: "agent",
+        },
+        events: [
+          {
+            runId: "historical",
+            seq: 1,
+            eventType: "plan_execution_updated",
+            createdAt: 1,
+            payload: {
+              type: "plan_execution_updated",
+              ledger: { executionId: "historical", status, tasks: [] } as any,
+            },
+          },
+        ],
+      }) as unknown as FakeElement;
+      assert.isNull(trace.findByClass("llm-plan-container-execution"));
+      assert.isNull(trace.findByClass("llm-plan-progress-trigger"));
+    });
+  }
+
+  it("keeps plan review actions centered in one row at narrow widths", function () {
+    const source = readFileSync(
+      "src/modules/contextPanel/agentTrace/render.ts",
+      "utf8",
+    );
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const actionsRule =
+      css.match(/\.llm-plan-review-actions\s*\{[\s\S]*?\}/)?.[0] || "";
+    const actionButtonRule =
+      css.match(
+        /\.llm-plan-review-actions\s+\.llm-plan-action\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const cancelRule =
+      css.match(
+        /\.llm-plan-review-actions\s+\.llm-plan-cancel\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const approveOpticalRule =
+      css.match(
+        /\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-full,\s*\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-compact\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+
+    assert.match(
+      source,
+      /actions\.className\s*=\s*"llm-plan-actions llm-plan-review-actions"/,
+    );
+    assert.include(source, "llm-plan-action-label-full");
+    assert.include(source, "llm-plan-action-label-compact");
+    assert.include(actionsRule, "display: grid");
+    assert.include(
+      actionsRule,
+      "grid-template-columns: repeat(3, minmax(0, 1fr))",
+    );
+    assert.include(actionsRule, "align-items: stretch");
+    assert.include(actionsRule, "width: 100%");
+    assert.include(actionButtonRule, "justify-content: center");
+    assert.include(actionButtonRule, "white-space: nowrap");
+    assert.include(cancelRule, "margin-left: 0");
+    assert.include(approveOpticalRule, "position: relative");
+    assert.include(approveOpticalRule, "top: -1px");
+    assert.include(css, "@container (max-width: 360px)");
+  });
+
+  it("normalizes coverage search and filter metrics in one aligned row", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const controlsRule =
+      css.match(/\.llm-plan-document-coverage-controls\s*\{[\s\S]*?\}/)?.[0] ||
+      "";
+    const fieldsRule =
+      css.match(
+        /\.llm-plan-document-coverage-controls input,\s*\.llm-plan-document-coverage-controls select\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+
+    assert.include(controlsRule, "display: grid");
+    assert.include(
+      controlsRule,
+      "grid-template-columns: minmax(0, 1fr) minmax(84px, auto)",
+    );
+    assert.include(controlsRule, "align-items: center");
+    assert.include(fieldsRule, "box-sizing: border-box");
+    assert.include(fieldsRule, "height: 28px");
+    assert.include(fieldsRule, "margin: 0");
+    assert.include(fieldsRule, "padding: 0 9px");
+    assert.include(fieldsRule, "line-height: 1.2");
+  });
+
+  it("keeps host-owned plan bookkeeping out of the visible tool trace", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-plan-tools",
+        seq: 1,
+        eventType: "status",
+        payload: {
+          type: "status",
+          text: "Planning the request and reviewing context",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-plan-tools",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-plan",
+          name: "update_plan",
+          args: { ready: true, steps: [] },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-plan-tools",
+        seq: 3,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-plan",
+          name: "update_plan",
+          ok: true,
+          content: { artifact: {} },
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const visible = items.map((item) =>
+      item.type === "action"
+        ? item.row.text
+        : item.type === "message"
+          ? item.text
+          : "",
+    );
+    assert.include(
+      visible,
+      "Planning the request against the available context.",
+    );
+    assert.notMatch(visible.join("\n"), /update plan|using update/i);
   });
 
   it("rules off the activity trace once an answer follows it", function () {
@@ -1457,6 +2356,54 @@ describe("agentTrace render", function () {
     assert.isNotNull(
       completedTrace.findByClass("llm-agent-output-divider"),
       "the canonical final answer is rendered below the completed trace",
+    );
+  });
+
+  it("keeps native proposal and user-message items out of generic activity text", function () {
+    const message: any = {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => {},
+    );
+    for (const type of ["plan", "userMessage"]) {
+      controller.appendItemStatus(
+        { id: type, type, details: "Already rendered by its owning view" },
+        "started",
+      );
+      controller.appendItemStatus(
+        { id: type, type, details: "Already rendered by its owning view" },
+        "completed",
+      );
+    }
+    assert.isUndefined(message.pendingAgentTraceEvents);
+  });
+
+  it("refreshes native checklist progress without creating a reviewable proposal", function () {
+    const message: any = {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+    };
+    let refreshes = 0;
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => {
+        refreshes += 1;
+      },
+    );
+    controller.appendNativePlanProgress([
+      { content: "Inspect the scope", status: "completed" },
+    ]);
+    assert.equal(refreshes, 1);
+    assert.deepEqual(
+      message.pendingAgentTraceEvents.map((e: any) => e.eventType),
+      ["codex_progress"],
     );
   });
 
@@ -1795,6 +2742,19 @@ describe("agentTrace render", function () {
           );
         }
       }
+    }
+  });
+
+  it("preserves all native note heading levels without allowing executable attributes", function () {
+    for (let level = 1; level <= 6; level++) {
+      const heading = createSanitizerElement(`h${level}`);
+      assert.isTrue(
+        isSafeRenderedMarkdownElementForTests(heading),
+        `h${level}`,
+      );
+      assert.isFalse(
+        isSafeRenderedMarkdownAttributeForTests(heading, "onclick", "alert(1)"),
+      );
     }
   });
 
@@ -2416,6 +3376,48 @@ describe("agentTrace render", function () {
       "Used Read Paper",
       "Used Read Paper",
     ]);
+  });
+
+  it("preserves host-verified Zotero receipts when native tool events coalesce", function () {
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+    const receipt = {
+      id: "host-receipt",
+      operation: "move_to_collection",
+      status: "applied",
+    };
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:filing",
+      phase: "completed",
+      toolName: "update_library",
+      arguments: { kind: "collections", action: "add" },
+      ok: true,
+      actionReceipts: [receipt],
+    } as any);
+    controller.appendItemStatus(
+      {
+        id: "native-filing",
+        type: "tool_call",
+        name: "mcp__llm_for_zotero__update_library",
+        arguments: { kind: "collections", action: "add" },
+      },
+      "completed",
+    );
+    const events = (assistantMessage as any).pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events
+        .filter((entry: any) => entry.payload.type === "codex_tool_activity")
+        .flatMap((entry: any) => entry.payload.actionReceipts || []),
+      [receipt],
+    );
   });
 
   it("coalesces duplicate Codex native and MCP activity before rendering", function () {
@@ -3912,6 +4914,331 @@ describe("agentTrace render", function () {
     });
   });
 
+  it("splits one logical reasoning step around a visible agent message", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-reasoning-message-boundary",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "Checked the first batch.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-reasoning-message-boundary",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "message-1",
+          text: "Classifications batch 3: 89 items reviewed.",
+          kind: "assistant_message",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-reasoning-message-boundary",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "Continued with the remaining receipts.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+    const messageIndex = items.findIndex(
+      (item) =>
+        item.type === "message" &&
+        item.text === "Classifications batch 3: 89 items reviewed.",
+    );
+
+    assert.lengthOf(reasoningItems, 2);
+    assert.equal(reasoningItems[0].logicalKey, reasoningItems[1].logicalKey);
+    assert.notEqual(reasoningItems[0].key, reasoningItems[1].key);
+    assert.equal(reasoningItems[0].summary, "Checked the first batch.");
+    assert.equal(
+      reasoningItems[1].summary,
+      "Continued with the remaining receipts.",
+    );
+    assert.isBelow(items.indexOf(reasoningItems[0]), messageIndex);
+    assert.isBelow(messageIndex, items.indexOf(reasoningItems[1]));
+  });
+
+  it("splits fallback reasoning around a visible agent message", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-fallback-reasoning-message-boundary",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "First thought.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-fallback-reasoning-message-boundary",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "message-1",
+          text: "The first pass is complete.",
+          kind: "assistant_message",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-fallback-reasoning-message-boundary",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "Second thought.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.lengthOf(reasoningItems, 2);
+    assert.deepEqual(
+      reasoningItems.map((item) => item.summary),
+      ["First thought.", "Second thought."],
+    );
+    assert.notEqual(reasoningItems[0].key, reasoningItems[1].key);
+  });
+
+  it("splits reasoning around visible status and confirmation-card activity", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-visible-boundaries",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "Before status.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-visible-boundaries",
+        seq: 2,
+        eventType: "status",
+        payload: {
+          type: "status",
+          text: "Reviewing classifications",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-visible-boundaries",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "Before confirmation.",
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-visible-boundaries",
+        seq: 4,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "confirmation-1",
+          action: {
+            toolName: "write_note",
+            mode: "approval",
+            title: "Approve note creation",
+            confirmLabel: "Create note",
+            cancelLabel: "Cancel",
+            fields: [],
+          },
+        },
+        createdAt: 4,
+      },
+      {
+        runId: "run-visible-boundaries",
+        seq: 5,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "After confirmation.",
+        },
+        createdAt: 5,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.deepEqual(
+      reasoningItems.map((item) => item.summary),
+      ["Before status.", "Before confirmation.", "After confirmation."],
+    );
+    assert.equal(new Set(reasoningItems.map((item) => item.key)).size, 3);
+  });
+
+  it("keeps reasoning consecutive across hidden provider and usage events", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-hidden-boundaries",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "First ",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-hidden-boundaries",
+        seq: 2,
+        eventType: "provider_event",
+        payload: {
+          type: "provider_event",
+          providerType: "openai_compatible",
+          payload: { kind: "stream_tick" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-hidden-boundaries",
+        seq: 3,
+        eventType: "usage",
+        payload: {
+          type: "usage",
+          round: 1,
+          promptTokens: 10,
+          completionTokens: 2,
+          totalTokens: 12,
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-hidden-boundaries",
+        seq: 4,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "second.",
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.lengthOf(reasoningItems, 1);
+    assert.equal(reasoningItems[0].summary, "First second.");
+  });
+
+  it("keeps expansion state independent for split segments of one logical step", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-independent-reasoning-segments",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "First segment.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-independent-reasoning-segments",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "message-1",
+          text: "Intermediate update.",
+          kind: "assistant_message",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-independent-reasoning-segments",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "shared-step",
+          details: "Second segment.",
+        },
+        createdAt: 3,
+      },
+    ];
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+
+    const firstRender = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    const firstSummaries = firstRender.findAllByClass(
+      "llm-agent-reasoning-summary",
+    );
+    assert.lengthOf(firstSummaries, 2);
+    firstSummaries[0].dispatchFakeEvent("pointerdown");
+
+    const secondRender = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    const reasoningBlocks = secondRender.findAllByClass(
+      "llm-agent-reasoning",
+    ) as Array<FakeElement & { open?: boolean }>;
+
+    assert.lengthOf(reasoningBlocks, 2);
+    assert.isTrue(Boolean(reasoningBlocks[0].open));
+    assert.isFalse(Boolean(reasoningBlocks[1].open));
+  });
+
   it("renders Codex traces around app-server concepts", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -3995,6 +5322,7 @@ describe("agentTrace render", function () {
         payload: {
           type: "reasoning",
           round: 1,
+          stepId: "shared-step",
           details: "First thought.",
         },
         createdAt: 1,
@@ -4018,6 +5346,7 @@ describe("agentTrace render", function () {
         payload: {
           type: "reasoning",
           round: 1,
+          stepId: "shared-step",
           details: "Second thought.",
         },
         createdAt: 3,
@@ -4031,13 +5360,14 @@ describe("agentTrace render", function () {
     assert.deepInclude(reasoningItems[0], {
       type: "reasoning",
       summary: "First thought.",
-      label: "Thinking",
+      label: "Thinking for step 1",
     });
     assert.deepInclude(reasoningItems[1], {
       type: "reasoning",
       summary: "Second thought.",
-      label: "Thinking",
+      label: "Thinking for step 1",
     });
+    assert.notEqual(reasoningItems[0].key, reasoningItems[1].key);
   });
 
   it("uses a single primary action surface for multi-action review cards", function () {
@@ -4058,8 +5388,189 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getPendingActionButtonLayout(action), {
       hasActionChooser: true,
-      showsFooterExecuteButton: false,
+      showsFooterExecuteButton: true,
     });
+  });
+
+  it("promotes drawer alternatives without executing them immediately", function () {
+    const action: AgentPendingAction = {
+      toolName: "approve_research_expansion",
+      mode: "review",
+      title: "More scoped papers qualify for deep reading.",
+      description: "Choose how the research should continue.",
+      confirmLabel: "Continue research",
+      cancelLabel: "Revise or cancel",
+      actions: [
+        {
+          id: "expand_continue",
+          label: "Expand and continue",
+          style: "primary",
+        },
+        {
+          id: "finish_limitations",
+          label: "Finish with limitations",
+          style: "secondary",
+        },
+        {
+          id: "revise_cancel",
+          label: "Revise or cancel",
+          style: "secondary",
+        },
+      ],
+      defaultActionId: "expand_continue",
+      cancelActionId: "revise_cancel",
+      fields: [],
+    };
+
+    const card = renderPendingActionCard(fakeDocument, {
+      requestId: "research-expansion",
+      action,
+    }) as unknown as FakeElement;
+    const content = card.findByClass("llm-agent-hitl-content");
+    const drawer = card.findByClass("llm-agent-hitl-action-choices");
+    const footer = card.findByClass("llm-agent-hitl-footer");
+    const toggle = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "alternatives");
+    const execute = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "save");
+    const cancel = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "cancel");
+    const alternative = card
+      .findAllByClass("llm-agent-hitl-alternative")
+      .find((button) => button.dataset.actionChoice === "finish_limitations");
+
+    assert.strictEqual(card.children[0], content);
+    assert.exists(drawer);
+    assert.exists(footer);
+    assert.exists(toggle);
+    assert.exists(execute);
+    assert.exists(cancel);
+    assert.equal(toggle?.attributes["aria-expanded"], "false");
+    assert.equal(drawer?.dataset.open, "false");
+    assert.equal(execute?.textContent, "Expand and continue");
+    assert.equal(execute?.dataset.actionId, "expand_continue");
+
+    toggle?.dispatchFakeEvent("click");
+    assert.equal(toggle?.attributes["aria-expanded"], "true");
+    assert.equal(drawer?.dataset.open, "true");
+
+    assert.doesNotThrow(() => alternative?.dispatchFakeEvent("click"));
+    assert.equal(card.dataset.activeActionId, "finish_limitations");
+    assert.equal(drawer?.dataset.open, "false");
+    assert.equal(execute?.textContent, "Finish with limitations");
+    assert.equal(execute?.dataset.actionId, "finish_limitations");
+    assert.isFalse(cancel?.disabled || false);
+  });
+
+  it("preserves the note diff subtree inside the redesigned card body", function () {
+    const action: AgentPendingAction = {
+      toolName: "edit_current_note",
+      mode: "review",
+      title: "Review note update",
+      description: "Review the proposed note changes before applying them.",
+      confirmLabel: "Apply edit",
+      cancelLabel: "Cancel",
+      fields: [
+        {
+          type: "diff_preview",
+          id: "noteDiff",
+          label: "Note changes",
+          before: "Old claim\nShared context",
+          after: "New claim\nShared context",
+          contextLines: 0,
+        },
+      ],
+    };
+
+    const card = renderPendingActionCard(fakeDocument, {
+      requestId: "note-edit-diff",
+      action,
+    }) as unknown as FakeElement;
+    const content = card.findByClass("llm-agent-hitl-content");
+    const diff = card.findByClass("llm-agent-hitl-diff");
+
+    assert.strictEqual(card.children[0], content);
+    assert.exists(diff?.findByClass("llm-agent-hitl-diff-body"));
+    assert.exists(diff?.findByClass("llm-agent-hitl-diff-gutter"));
+    assert.exists(diff?.findByClass("llm-agent-hitl-diff-line-remove"));
+    assert.exists(diff?.findByClass("llm-agent-hitl-diff-line-add"));
+    assert.exists(diff?.findByClass("llm-agent-hitl-diff-content"));
+  });
+
+  it("shows scoped fields for a promoted edit action and can return safely", function () {
+    const action: AgentPendingAction = {
+      toolName: "literature_search",
+      mode: "review",
+      title: "Review online literature results",
+      confirmLabel: "Import selected",
+      cancelLabel: "Cancel",
+      actions: [
+        { id: "import", label: "Import selected", style: "primary" },
+        {
+          id: "new_search",
+          label: "Search again",
+          style: "secondary",
+          executionMode: "edit",
+          submitLabel: "Confirm search",
+          backLabel: "Get back",
+        },
+        { id: "cancel", label: "Cancel", style: "secondary" },
+      ],
+      defaultActionId: "import",
+      cancelActionId: "cancel",
+      fields: [
+        {
+          type: "text",
+          id: "nextQuery",
+          label: "Next search query",
+          value: "plasticity",
+          visibleForActionIds: ["new_search"],
+          requiredForActionIds: ["new_search"],
+        },
+      ],
+    };
+
+    const card = renderPendingActionCard(fakeDocument, {
+      requestId: "search-again",
+      action,
+    }) as unknown as FakeElement;
+    const field = card.findByClass(
+      "llm-agent-hitl-field",
+    ) as unknown as HTMLElement | null;
+    const toggle = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "alternatives") as unknown as
+      | HTMLElement
+      | undefined;
+    const back = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "back") as unknown as
+      | HTMLElement
+      | undefined;
+    const execute = card
+      .findAllByTag("button")
+      .find((button) => button.dataset.kind === "save");
+    const editAlternative = card
+      .findAllByClass("llm-agent-hitl-alternative")
+      .find((button) => button.dataset.actionChoice === "new_search");
+
+    assert.isTrue(Boolean(field?.hidden));
+    assert.isFalse(Boolean(toggle?.hidden));
+    assert.isTrue(Boolean(back?.hidden));
+
+    editAlternative?.dispatchFakeEvent("click");
+    assert.isFalse(Boolean(field?.hidden));
+    assert.isTrue(Boolean(toggle?.hidden));
+    assert.isFalse(Boolean(back?.hidden));
+    assert.equal(execute?.textContent, "Confirm search");
+
+    (back as unknown as FakeElement | undefined)?.dispatchFakeEvent("click");
+    assert.isTrue(Boolean(field?.hidden));
+    assert.isFalse(Boolean(toggle?.hidden));
+    assert.equal(execute?.textContent, "Import selected");
   });
 
   it("shows a footer execute button when a multi-action review needs extra input", function () {
@@ -4152,6 +5663,94 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("renders a single-paper auto-tag review and regenerates before applying", function () {
+    const tool = createApplyTagsTool({
+      getPaperTargetsByItemIds: () => [
+        {
+          itemId: 7,
+          title: "Distributed and drifting representations of working memory",
+          firstCreator: "Adam et al.",
+          year: "2025",
+          tags: [],
+        },
+      ],
+    } as never);
+    const input = tool.validate({
+      action: "add",
+      id: "auto_tag:page:1:1:size:20:tags:5",
+      assignments: [{ itemId: 7, tags: ["working memory", "fmri"] }],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const action = tool.createPendingAction!(input.value, {} as never);
+    const resolutions: AgentConfirmationResolution[] = [];
+    const card = renderPendingActionCard(
+      fakeDocument,
+      {
+        requestId: "auto-tag-single",
+        action,
+      },
+      (_requestId, resolution) => {
+        resolutions.push(resolution);
+      },
+    ) as unknown as FakeElement;
+    assert.equal(action.title, "Add tags to 1 item");
+    assert.isNull(card.findByClass("llm-agent-hitl-page-indicator"));
+    assert.isNull(card.findByClass("llm-agent-hitl-paged-footer-field"));
+    assert.exists(card.findByClass("llm-agent-hitl-tag-assignment-table"));
+    const controls = card.findByClass("llm-agent-hitl-paged-top-controls")!;
+    assert.include(
+      controls.findByClass("llm-agent-hitl-control-help")!.textContent,
+      "regenerates",
+    );
+    const select = controls.findAllByTag("select")[0] as FakeElement & {
+      value: string;
+    };
+    assert.equal(select.getAttribute("aria-label"), "Tags per paper");
+    select.value = "3";
+    select.dispatchFakeEvent("change");
+    assert.lengthOf(resolutions, 1);
+    assert.isFalse(resolutions[0].approved);
+    assert.equal(resolutions[0].actionId, "refresh");
+    assert.equal(resolutions[0].data?.tagsPerPaper, "3");
+    assert.isTrue(select.disabled);
+    assert.isTrue(
+      card.findByClass("llm-agent-hitl-paged-confirm-btn")!.disabled,
+    );
+  });
+
+  it("keeps auto-tag controls compact, tags readable, and actions separated", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const footer = css.match(
+      /\.llm-agent-hitl-paged-actions\s*\{[\s\S]*?\}/,
+    )![0];
+    assert.notInclude(footer, "margin-top: 0");
+    const controls = css.match(
+      /\.llm-agent-hitl-paged-top-field,\s*\.llm-agent-hitl-paged-footer-field\s*\{[\s\S]*?\}/,
+    )![0];
+    assert.include(controls, "flex-direction: row");
+    const numberControl = css.match(
+      /\.llm-agent-hitl-paged-top-field \.llm-agent-hitl-page-input,\s*\.llm-agent-hitl-paged-footer-field \.llm-agent-hitl-page-input\s*\{[\s\S]*?\}/,
+    )![0];
+    assert.include(numberControl, "appearance: none");
+    assert.include(numberControl, "text-align: center");
+    assert.include(numberControl, "text-align-last: center");
+    assert.include(numberControl, "width: 40px");
+    assert.include(numberControl, "min-height: 26px");
+    assert.notInclude(
+      css,
+      ".llm-agent-hitl-paged-footer-field .llm-agent-hitl-label {\n    display: none",
+    );
+    assert.match(
+      css,
+      /\.llm-agent-hitl-tag-assignment-table \.llm-agent-hitl-assignment-row\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/,
+    );
+    assert.match(
+      css,
+      /\.llm-agent-hitl-tag-chip-list\s*\{[^}]*flex-wrap: wrap/,
+    );
+  });
+
   it("renders paged review controls with refresh in the card header and navigation split across the footer", function () {
     const action: AgentPendingAction = {
       toolName: "move_to_collection",
@@ -4205,8 +5804,8 @@ describe("agentTrace render", function () {
     assert.exists(card.findByClass("llm-agent-hitl-refresh-btn"));
     assert.isNull(card.findByClass("llm-agent-hitl-action-choices"));
     assert.equal(
-      card.findByClass("llm-agent-hitl-header")?.textContent,
-      "Action required",
+      card.findByClass("llm-plan-status")?.textContent,
+      "Awaiting approval",
     );
     const topControls = card.findByClass("llm-agent-hitl-paged-top-controls");
     assert.equal(
@@ -4223,7 +5822,7 @@ describe("agentTrace render", function () {
       topControls
         ?.findByClass("llm-agent-hitl-paged-top-field")
         ?.findAllByTag("label")[0]?.textContent,
-      "of tags per paper",
+      "Tags per paper",
     );
 
     const footer = card.findByClass("llm-agent-hitl-paged-actions");
@@ -4939,6 +6538,125 @@ describe("agentTrace render", function () {
     });
   });
 
+  it("keeps streamed text before reasoning inline and terminal text in the answer area", function () {
+    const intermediateText = "I checked the first set of receipts.";
+    const terminalText = "The receipt-backed classification is complete.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-message-reasoning-message",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: intermediateText },
+        createdAt: 1,
+      },
+      {
+        runId: "run-message-reasoning-message",
+        seq: 2,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "Verifying the remaining evidence.",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-message-reasoning-message",
+        seq: 3,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: terminalText },
+        createdAt: 3,
+      },
+    ];
+
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: terminalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Gemini",
+        streaming: true,
+      });
+    const inlineTexts = items
+      .filter(
+        (
+          item,
+        ): item is Extract<(typeof items)[number], { type: "inline_text" }> =>
+          item.type === "inline_text",
+      )
+      .map((item) => item.text);
+    const intermediateIndex = items.findIndex(
+      (item) => item.type === "inline_text" && item.text === intermediateText,
+    );
+    const reasoningIndex = items.findIndex((item) => item.type === "reasoning");
+
+    assert.isTrue(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.deepEqual(inlineTexts, [intermediateText]);
+    assert.isBelow(intermediateIndex, reasoningIndex);
+  });
+
+  it("deduplicates the final answer after interleaved reasoning activity", function () {
+    const intermediateText = "I checked the first set of receipts.";
+    const finalText = "The receipt-backed classification is complete.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-message-reasoning-final",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: intermediateText },
+        createdAt: 1,
+      },
+      {
+        runId: "run-message-reasoning-final",
+        seq: 2,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "Verifying the remaining evidence.",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-message-reasoning-final",
+        seq: 3,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: finalText },
+        createdAt: 3,
+      },
+      {
+        runId: "run-message-reasoning-final",
+        seq: 4,
+        eventType: "final",
+        payload: { type: "final", text: finalText },
+        createdAt: 4,
+      },
+    ];
+
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "OpenAI",
+      });
+    const inlineTexts = items
+      .filter(
+        (
+          item,
+        ): item is Extract<(typeof items)[number], { type: "inline_text" }> =>
+          item.type === "inline_text",
+      )
+      .map((item) => item.text);
+
+    assert.isTrue(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.deepEqual(inlineTexts, [intermediateText]);
+  });
+
   it("joins streamed interleaved text across hidden provider events", function () {
     const sentence =
       "Now let me find the Obsidian vault location and look for any existing note for this paper.";
@@ -5451,7 +7169,8 @@ describe("agentTrace render", function () {
           callId: "call-script",
           name: "zotero_script",
           args: {
-            mode: "read",
+            access: "library",
+            effect: "read",
             script: "const secretScript = 'do not show';",
             metadata: "public metadata should remain",
             nested: {
@@ -5568,4 +7287,115 @@ describe("agentTrace render", function () {
     assert.include(actionTexts, "Invoked Skill: evidence-based-qa");
     assert.notInclude(actionTexts, "Using Skill: evidence-based-qa");
   });
+
+  it("labels a judgment write as the agent's own call", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-judgment",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-judgment",
+          name: "judgment_tags",
+          ok: true,
+          actionReceipts: [],
+          content: { tagged: 1 },
+          authority: "yolo_judgment",
+        },
+        createdAt: 1,
+      },
+    ];
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const rows = items.flatMap((item) =>
+      item.type === "action" ? [item.row.text] : [],
+    );
+    // The trace always opens with the request row; the judgment write must add
+    // exactly one visible row after it.
+    assert.deepEqual(rows, [
+      "Request received",
+      "Judgment Tags completed (agent's own call)",
+    ]);
+  });
+
+  it("keeps the judgment label ahead of the merged-result shortcut", function () {
+    // A tool whose result merges into the call row returns before any row is
+    // built. Only a live agent runtime resolves tool presentation, which this
+    // renderer harness has no way to provide, so the ordering is pinned at the
+    // source instead of through a rendered event.
+    const source = readFileSync(
+      "src/modules/contextPanel/agentTrace/render.ts",
+      "utf8",
+    );
+    const caseStart = source.indexOf('case "tool_result": {');
+    assert.isAtLeast(caseStart, 0);
+    const judgmentAt = source.indexOf(
+      'const judgment = entry.payload.authority === "yolo_judgment";',
+      caseStart,
+    );
+    const mergeAt = source.indexOf("mergeResultIntoCallTrace", caseStart);
+    assert.isAtLeast(judgmentAt, 0, "the judgment check must exist");
+    assert.isAtLeast(mergeAt, 0);
+    assert.isBelow(
+      judgmentAt,
+      mergeAt,
+      "a judgment write must be labelled before the merge shortcut returns",
+    );
+    assert.include(
+      source.slice(judgmentAt, mergeAt),
+      "!judgment &&",
+      "the merge shortcut must not swallow a judgment write",
+    );
+  });
+});
+
+describe("new research progress presentation", function () {
+  for (const fromToolResult of [false, true])
+    it("maps known paper references without altering the progress layout", function () {
+      const events = [
+        fromToolResult
+          ? {
+              type: "tool_result",
+              name: "update_plan",
+              callId: "plan",
+              ok: true,
+              content: { displayLabels: { "1:AAAA1111": "(Smith, 2024)" } },
+            }
+          : {
+              type: "provider_event",
+              providerType: "paper_display_labels",
+              payload: {
+                version: 1,
+                displayLabels: { "1:AAAA1111": "(Smith, 2024)" },
+              },
+            },
+        { type: "message_delta", text: "Inspecting AAAA1111 after recovery." },
+        {
+          type: "message_rollback",
+          text: "Inspecting AAAA1111 after recovery.",
+          length: 39,
+        },
+        {
+          type: "reasoning",
+          round: 1,
+          details: "Evidence for 1:AAAA1111 is retained.",
+        },
+      ].map((payload, index) => ({
+        runId: "new-research",
+        seq: index,
+        eventType: payload.type,
+        payload,
+        createdAt: index,
+      })) as AgentRunEventRecord[];
+      const result = buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      });
+      const serialized = JSON.stringify(result.items);
+      assert.notInclude(serialized, "AAAA1111");
+      assert.include(serialized, "(Smith, 2024)");
+      assert.isTrue(result.items.some((item) => item.type === "inline_text"));
+    });
 });

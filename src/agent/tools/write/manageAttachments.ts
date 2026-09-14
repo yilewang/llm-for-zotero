@@ -58,14 +58,20 @@ export function createManageAttachmentsTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(attachment|rename.*file|relink|broken.*link|missing.*file|delete.*attachment|remove.*attachment)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.actionIntents.some((action) =>
+            [
+              "delete_attachment",
+              "rename_attachment",
+              "relink_attachment",
+            ].includes(action.operation),
+          ),
         ),
       instruction:
         "Use manage_attachments to delete, rename, or re-link a single attachment. " +
@@ -251,7 +257,7 @@ export function createManageAttachmentsTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

@@ -1,11 +1,15 @@
 import {
-  normalizeMaxTokensForRequest,
   parseStatusFromErrorMessage,
+  requireCompleteModelText,
   type ChatParams,
   type ReasoningConfig,
 } from "./llmClient";
+import { resolveOutputRequestPolicy } from "./outputTokenPolicy";
 import type { ModelProviderAuthMode } from "./modelProviders";
-import type { ProviderProtocol } from "./providerProtocol";
+import {
+  inferLegacyProviderProtocol,
+  type ProviderProtocol,
+} from "./providerProtocol";
 import {
   getModelCapabilities,
   type ModelCapabilityProvider,
@@ -14,12 +18,14 @@ import {
   type ReasoningCapabilityOption,
 } from "../modelCapabilities";
 import type { ReasoningLevel, ReasoningProvider } from "./reasoningProfiles";
+import type { ModelTurnOutcome } from "../shared/llm";
 import { getGeminiReasoningProfileForModel } from "./reasoningProfiles";
 import { callLLMWithTimeout } from "./llmCallTimeout";
 
 export type UtilityLLMFailureReason =
   | "not_configured"
   | "budget_unavailable"
+  | "output_limit"
   | "timeout"
   | "transport"
   | "empty";
@@ -28,7 +34,7 @@ export type UtilityLLMFailure = {
   ok: false;
   reason: UtilityLLMFailureReason;
   /**
-   * The provider's own error text, truncated. `reason` is a five-value enum
+   * The provider's own error text, truncated. `reason` is a typed category
    * chosen so callers can branch on it; without this a 401, a 429 and a
    * dropped socket are all indistinguishable in the log.
    */
@@ -76,8 +82,12 @@ export type UtilityLLMParams = {
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
   profileOverride?: ModelProfileOverride;
+  /** Preserve a supported configured reasoning level for semantic interpretation. */
+  reasoning?: ReasoningConfig;
   /** The caller's useful JSON output, excluding any reasoning reserve. */
   jsonBudget: number;
+  /** Minimum capacity for configured reasoning; does not alter its effort level. */
+  reasoningReserveTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
   /**
@@ -89,7 +99,7 @@ export type UtilityLLMParams = {
   timeoutMs: number;
   systemMessages?: string[];
   /** Test seam: replaces the actual model call. */
-  llmCall?: (chatParams: ChatParams) => Promise<string>;
+  llmCall?: (chatParams: ChatParams) => Promise<ModelTurnOutcome>;
 };
 
 type UtilityReasoningPlan = {
@@ -241,11 +251,17 @@ function buildReasoningPlan(params: {
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
   profileOverride?: ModelProfileOverride;
+  reasoning?: ReasoningConfig;
 }): UtilityReasoningPlan | null {
   const capabilities = getModelCapabilities({
     model: params.model,
     apiBase: params.apiBase,
-    protocol: params.providerProtocol,
+    protocol:
+      params.providerProtocol ||
+      inferLegacyProviderProtocol({
+        authMode: params.authMode,
+        apiBase: params.apiBase,
+      }),
     authMode: params.authMode,
     profileOverride: params.profileOverride,
   });
@@ -255,8 +271,41 @@ function buildReasoningPlan(params: {
   );
   const reasoning = capabilities.reasoning;
 
+  const planForOption = (
+    option: ReasoningCapabilityOption,
+    selectedProvider: ReasoningProvider,
+  ): UtilityReasoningPlan => {
+    const level = normalize(option.id) as ReasoningLevel;
+    return {
+      reasoning: { provider: selectedProvider, level },
+      reserveTokens: isDisabledOption(option)
+        ? 0
+        : (numericReserveFromControls(option) ??
+          (capabilities.provider === "gemini"
+            ? numericGeminiReserve(params.model, level)
+            : undefined) ??
+          REASONING_RESERVE_BY_LEVEL[level] ??
+          1024),
+    };
+  };
+  const configured =
+    params.reasoning?.provider === provider
+      ? reasoning.options.find(
+          (option) =>
+            option.enabled !== false &&
+            normalize(option.id) === params.reasoning?.level,
+        )
+      : undefined;
+  if (configured && provider) return planForOption(configured, provider);
+
   // Anthropic's bounded utility requests deliberately never inherit manual or
   // adaptive thinking. A profile-authored disabled control is still honored.
+  if (
+    capabilities.provider === "anthropic" &&
+    capabilities.provenance.reasoning === "legacy"
+  ) {
+    return { reasoning: undefined, reserveTokens: 0 };
+  }
   const disabled = findDisabledOption(reasoning, provider);
   if (disabled) {
     return {
@@ -278,34 +327,11 @@ function buildReasoningPlan(params: {
 
   const option = findLowestSupportedOption(reasoning);
   if (option && provider) {
-    const level = normalize(option.id) as ReasoningLevel;
-    return {
-      reasoning: { provider, level },
-      reserveTokens:
-        numericReserveFromControls(option) ??
-        (capabilities.provider === "gemini"
-          ? numericGeminiReserve(params.model, level)
-          : undefined) ??
-        REASONING_RESERVE_BY_LEVEL[level] ??
-        1_024,
-    };
+    return planForOption(option, provider);
   }
 
-  // A live catalog can say that reasoning is enabled without publishing its
-  // option list. Use the provider's conservative lowest selector where the
-  // adapter knows how to encode it; otherwise let the feature degrade.
-  if (
-    reasoning.kind === "server_default" &&
-    (capabilities.provider === "openai" ||
-      capabilities.provider === "gemini") &&
-    provider
-  ) {
-    return {
-      reasoning: { provider, level: "low" },
-      reserveTokens: REASONING_RESERVE_BY_LEVEL.low,
-    };
-  }
-  return null;
+  // Unknown controls must not manufacture a low effort. The server owns Auto.
+  return { reasoning: undefined, reserveTokens: 1024 };
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -352,6 +378,7 @@ export async function callUtilityLLM(
     authMode: params.authMode,
     providerProtocol: params.providerProtocol,
     profileOverride: params.profileOverride,
+    reasoning: params.reasoning,
   });
   if (!plan) {
     return {
@@ -362,25 +389,39 @@ export async function callUtilityLLM(
   }
 
   const jsonBudget = Math.max(1, Math.floor(params.jsonBudget));
-  const requiredBudget = jsonBudget + plan.reserveTokens;
-  const maxTokens = normalizeMaxTokensForRequest({
-    value: requiredBudget,
+  const reasoningReserve =
+    plan.reserveTokens > 0
+      ? Math.max(
+          plan.reserveTokens,
+          Math.floor(params.reasoningReserveTokens || 0),
+        )
+      : 0;
+  const requiredBudget = jsonBudget + reasoningReserve;
+  const outputPolicy = resolveOutputRequestPolicy({
+    setting: { mode: "custom", tokens: requiredBudget },
     model,
     apiBase: params.apiBase,
-    protocol: params.providerProtocol,
+    protocol:
+      params.providerProtocol ||
+      inferLegacyProviderProtocol({
+        authMode: params.authMode,
+        apiBase: params.apiBase,
+      }),
     authMode: params.authMode,
     profileOverride: params.profileOverride,
   });
+  const maxTokens =
+    outputPolicy.mode === "numeric" ? outputPolicy.tokens : requiredBudget;
   if (maxTokens < requiredBudget) {
     return {
       ok: false,
       reason: "budget_unavailable",
-      detail: `${model} caps output at ${maxTokens} tokens, below the ${requiredBudget} this call needs (${jsonBudget} JSON + ${plan.reserveTokens} reasoning reserve)`,
+      detail: `${model} caps output at ${maxTokens} tokens, below the ${requiredBudget} this call needs (${jsonBudget} JSON + ${reasoningReserve} reasoning reserve)`,
     };
   }
 
   try {
-    const text = await callLLMWithTimeout({
+    const outcome = await callLLMWithTimeout({
       prompt: params.prompt,
       model,
       apiBase: params.apiBase,
@@ -390,12 +431,26 @@ export async function callUtilityLLM(
       profileOverride: params.profileOverride,
       reasoning: plan.reasoning,
       temperature: params.temperature ?? 0,
-      maxTokens,
+      outputTokenLimit: { mode: "custom", tokens: maxTokens },
       parentSignal: params.signal,
       timeoutMs: params.timeoutMs,
       systemMessages: params.systemMessages,
       llmCall: params.llmCall,
     });
+    if (
+      outcome.completion.status === "incomplete" &&
+      outcome.completion.reason === "output_limit"
+    ) {
+      return {
+        ok: false,
+        reason: "output_limit",
+        detail: `Structured utility call exhausted its ${maxTokens}-token output budget.`,
+      };
+    }
+    const text =
+      outcome.completion.status === "complete"
+        ? outcome.text
+        : requireCompleteModelText(outcome, "Structured utility call");
     if (!text.trim()) {
       return {
         ok: false,

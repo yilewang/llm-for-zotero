@@ -22,6 +22,35 @@ export type ZoteroChangeListener = (
 export class ZoteroChangeDispatcher {
   private readonly listeners = new Map<string, ZoteroChangeListener>();
   private tail: Promise<void> = Promise.resolve();
+  private nativeObserverId?: string;
+
+  registerNativeObserver(): void {
+    if (this.nativeObserverId) return;
+    this.nativeObserverId = Zotero.Notifier.registerObserver(
+      {
+        notify: (event, type, ids, extraData) =>
+          this.dispatch({ event, type, ids, extraData }),
+      },
+      [
+        "item",
+        "collection",
+        "collection-item",
+        "item-tag",
+        "tag",
+        "group",
+        "relation",
+        "file",
+        "trash",
+      ],
+      "llm-for-zotero-library-changes",
+    );
+  }
+
+  unregisterNativeObserver(): void {
+    if (!this.nativeObserverId) return;
+    Zotero.Notifier.unregisterObserver(this.nativeObserverId);
+    this.nativeObserverId = undefined;
+  }
 
   subscribe(id: string, listener: ZoteroChangeListener): () => void {
     this.listeners.set(id, listener);
@@ -82,6 +111,7 @@ export class ZoteroChangeDispatcher {
   }
 
   clearForTests(): void {
+    this.unregisterNativeObserver();
     this.listeners.clear();
     this.tail = Promise.resolve();
   }

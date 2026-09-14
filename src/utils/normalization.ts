@@ -1,5 +1,5 @@
 /**
- * Shared normalization helpers for temperature and max-tokens values.
+ * Shared normalization helpers for temperature and explicit output limits.
  *
  * Accepts both `number` and `string` inputs so the same function can be used
  * by the LLM client (numbers), the preferences UI (strings), and the context
@@ -7,7 +7,7 @@
  */
 
 import {
-  DEFAULT_MAX_TOKENS,
+  DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT,
   DEFAULT_TEMPERATURE,
   DEFAULT_INPUT_TOKEN_CAP,
   MAX_ALLOWED_TOKENS,
@@ -54,13 +54,15 @@ export function resolveGeminiTemperature(
   return DEFAULT_TEMPERATURE;
 }
 
-/** Clamp a max-tokens value to [1, MAX_ALLOWED_TOKENS], falling back to DEFAULT_MAX_TOKENS. */
+/** Normalize a user-selected Custom output limit. */
 export function normalizeMaxTokens(value?: number | string): number {
   const parsed =
     typeof value === "string"
       ? Number.parseInt(value, 10)
       : Math.floor(Number(value));
-  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_TOKENS;
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT;
+  }
   return Math.min(parsed, MAX_ALLOWED_TOKENS);
 }
 
@@ -74,7 +76,9 @@ export function normalizeMaxTokensForModel(
     typeof value === "string"
       ? Number.parseInt(value, 10)
       : Math.floor(Number(value));
-  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_TOKENS;
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT;
+  }
   return Math.min(
     parsed,
     getCatalogOutputTokenLimit(modelName || "", identity),

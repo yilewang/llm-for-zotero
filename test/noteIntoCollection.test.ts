@@ -1,3 +1,4 @@
+import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 import { assert } from "chai";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
@@ -139,26 +140,26 @@ describe("note into a collection (issue #374)", function () {
   });
 
   it("treats a collection request as standalone even when target says item", async function () {
-    const { gateway, saved } = makeGateway();
-    const tool = createEditCurrentNoteTool(gateway as never);
-    const result = tool.validate({
-      mode: "create",
-      content: "The answer.",
-      target: "item",
-      collections: [88],
-    });
-    assert.isTrue(result.ok);
-    if (!result.ok) return;
-
-    await tool.execute(result.value, context);
-
-    assert.equal(saved.length, 1);
-    assert.equal(
-      saved[0].target,
-      "standalone",
-      "a child note cannot be a collection member, so the collection wins",
-    );
-    assert.deepEqual(saved[0].collections, [88]);
+    const native = installNativeNoteStore();
+    try {
+      const { gateway } = makeGateway();
+      const tool = createEditCurrentNoteTool(gateway as never);
+      const result = tool.validate({
+        mode: "create",
+        content: "The answer.",
+        target: "item",
+        collections: [88],
+      });
+      assert.isTrue(result.ok);
+      if (!result.ok) return;
+      await tool.execute(result.value, context);
+      assert.equal(native.notes.size, 1);
+      const [note] = native.notes.values();
+      assert.isUndefined(note.parentID);
+      assert.deepEqual(note.getCollections(), [88]);
+    } finally {
+      native.restore();
+    }
   });
 
   /**
@@ -178,7 +179,9 @@ describe("note into a collection (issue #374)", function () {
         Item: class {
           libraryID = 0;
           parentID: number | undefined;
-          id = 777;
+          id = 0;
+          key = "";
+          async loadPrimaryData() {}
           constructor(public itemType: string) {}
           addToCollection(id: number) {
             filed.push(id);
@@ -189,7 +192,8 @@ describe("note into a collection (issue #374)", function () {
             return "";
           }
         },
-        Items: { get: () => null },
+        Utilities: { generateObjectKey: () => "IMAGE777" },
+        Items: { get: () => null, getByLibraryAndKey: () => null },
         debug: () => undefined,
       };
 

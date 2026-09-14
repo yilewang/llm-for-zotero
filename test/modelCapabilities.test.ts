@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import bundledRegistry from "../registry/model-capabilities.v1.json";
 import {
   compileReasoningControls,
   configureModelCapabilityRuntime,
@@ -220,7 +221,7 @@ describe("model capability service", function () {
           return new Response(
             JSON.stringify({
               schemaVersion: 1,
-              revision: 4,
+              revision: bundledRegistry.revision + 1,
               models: [
                 {
                   match: { provider: "kimi", exact: "kimi-v4" },
@@ -287,7 +288,7 @@ describe("model capability service", function () {
           text: async () =>
             JSON.stringify({
               schemaVersion: 1,
-              revision: 4,
+              revision: bundledRegistry.revision + 1,
               models: [
                 {
                   match: { provider: "kimi", exact: "kimi-v4" },

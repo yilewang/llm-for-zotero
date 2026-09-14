@@ -117,9 +117,12 @@ function validateControlPatch(value: unknown): value is ModelControlPatch {
   return true;
 }
 
-function validateReasoning(value: unknown): value is ModelReasoningCapability {
+export function validateReasoning(
+  value: unknown,
+): value is ModelReasoningCapability {
   if (!isRecord(value)) return false;
   if (
+    value.kind !== "unknown" &&
     value.kind !== "none" &&
     value.kind !== "server_default" &&
     value.kind !== "toggle" &&
@@ -153,6 +156,12 @@ function validateReasoning(value: unknown): value is ModelReasoningCapability {
     if (option.enabled !== undefined && typeof option.enabled !== "boolean") {
       return false;
     }
+    if (
+      option.effort !== undefined &&
+      (typeof option.effort !== "string" ||
+        !/^[a-z][a-z0-9_-]{0,31}$/.test(option.effort))
+    )
+      return false;
     return (
       option.controls === undefined || validateControlPatch(option.controls)
     );

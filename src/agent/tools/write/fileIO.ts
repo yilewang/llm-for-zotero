@@ -1,8 +1,18 @@
+import { loadWorkflowMaterial } from "../../documents/workflowMaterial";
+import { prepareDocumentMarkdownExport } from "../../documents/exportBundle";
+import {
+  loadLatestDocumentForRun,
+  loadLatestPlanDocumentForExecution,
+} from "../../documents/store";
 /**
  * Tool for reading and writing files on the local filesystem.
  * Enables the agent to read data files, write scripts, export results, etc.
  */
 import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
 import type { PaperContextRef } from "../../../shared/types";
 import {
   formatPaperCitationLabel,
@@ -10,7 +20,7 @@ import {
 } from "../../../modules/contextPanel/paperAttribution";
 import { ok, fail, validateObject } from "../shared";
 import { getLocalParentPath } from "../../../utils/localPath";
-import { executeExternalMutation } from "../../services/mutationCoordinator";
+import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import {
   sha256Bytes,
   storeRecoveryBytes,
@@ -27,7 +37,6 @@ type FileIOInput = {
   encoding?: string;
   offset?: number;
   length?: number;
-  allowOverwrite?: boolean;
 };
 
 type FileIOAction = FileIOInput["action"];
@@ -393,16 +402,10 @@ async function readFileBytes(filePath: string): Promise<Uint8Array> {
 /**
  * Write a file using Gecko-compatible I/O APIs.
  */
-async function writeFile(
+async function writeFileBytes(
   filePath: string,
-  content: string,
-  encoding: string,
+  bytes: Uint8Array,
 ): Promise<void> {
-  if (!/^utf-?8$/i.test(encoding)) {
-    throw new Error("file_io writes support UTF-8 encoding only");
-  }
-  const bytes = new TextEncoder().encode(content);
-
   // Ensure parent directory exists
   const parent = getLocalParentPath(filePath);
   if (parent && parent !== filePath) {
@@ -426,26 +429,184 @@ async function writeFile(
   throw new Error("File I/O is not available in this Zotero environment");
 }
 
+async function writeJournaledFile(
+  filePath: string,
+  nextBytes: Uint8Array,
+  context: AgentToolContext,
+) {
+  const nextChecksum = await sha256Bytes(nextBytes);
+  return executeExternalMutation({
+    context,
+    toolName: "file_io",
+    plan: async () => {
+      const existedBeforeWrite = await fileExists(filePath);
+      const previousBytes =
+        existedBeforeWrite === true ? await readFileBytes(filePath) : null;
+      const recovery =
+        previousBytes !== null
+          ? await storeRecoveryBytes(previousBytes)
+          : undefined;
+      const previousChecksum =
+        previousBytes === null ? null : await sha256Bytes(previousBytes);
+      return {
+        operation: "write_file",
+        description:
+          existedBeforeWrite === false
+            ? `Create file: ${filePath}`
+            : `Overwrite file: ${filePath}`,
+        forward: {
+          path: filePath,
+          encoding: "utf-8",
+          checksum: nextChecksum,
+        },
+        inverse:
+          existedBeforeWrite === false
+            ? {
+                version: 1,
+                kind: "file",
+                operation: "delete",
+                path: filePath,
+              }
+            : recovery
+              ? {
+                  version: 1,
+                  kind: "file",
+                  operation: "restore",
+                  path: filePath,
+                  encoding: "utf-8",
+                  payload: recovery,
+                }
+              : undefined,
+        precondition: {
+          kind: "file",
+          path: filePath,
+          exists: existedBeforeWrite === true,
+          checksum: previousChecksum,
+        },
+        reversibility:
+          existedBeforeWrite === false || recovery ? "full" : "none",
+        reason:
+          existedBeforeWrite === null
+            ? "The prior file state could not be determined."
+            : undefined,
+      };
+    },
+    execute: async () => {
+      await writeFileBytes(filePath, nextBytes);
+      const readbackBytes = await readFileBytes(filePath);
+      const readbackChecksum = await sha256Bytes(readbackBytes);
+      return {
+        result: {
+          action: "write",
+          filePath: filePath,
+          bytesWritten: nextBytes.byteLength,
+          exists: true,
+          expectedContentHash: nextChecksum,
+          contentHash: readbackChecksum,
+        },
+        expectedPostcondition: {
+          kind: "file",
+          path: filePath,
+          exists: true,
+          checksum: nextChecksum,
+        },
+        affectedCount: 1,
+        effect: "applied",
+      };
+    },
+  });
+}
+
+async function resolveFileWriteBundle(
+  input: FileIOInput,
+  context?: AgentToolContext,
+) {
+  const document =
+    (context && (await loadWorkflowMaterial(context.request))) ||
+    (context?.request.planContext?.phase === "executing"
+      ? await loadLatestPlanDocumentForExecution(
+          context.request.planContext.executionId,
+        )
+      : context?.runId
+        ? await loadLatestDocumentForRun(context.runId)
+        : null);
+  const mustUseDocument =
+    context?.request.documentOutcomePolicy?.required &&
+    ["file", "both"].includes(
+      context.request.classifiedIntent?.semantic?.noteDestination || "none",
+    );
+  if (
+    mustUseDocument &&
+    (!document || document.visibleMarkdown !== input.content)
+  )
+    throw new Error(
+      "Finalize the requested document and export its exact visibleMarkdown payload before saving the file.",
+    );
+  if (document && document.visibleMarkdown === input.content) {
+    if (document.conversationKey !== context?.request.conversationKey)
+      throw new Error("Finalized material belongs to a different conversation");
+    const bundle = await prepareDocumentMarkdownExport(
+      document,
+      input.filePath,
+    );
+    return {
+      documentId: document.documentId,
+      contentHash: document.contentHash,
+      files: [
+        ...bundle.assets.map((asset) => ({
+          path: asset.path,
+          bytes: asset.bytes,
+        })),
+        { path: bundle.path, bytes: bundle.bytes },
+      ],
+    };
+  }
+  return {
+    documentId: undefined,
+    contentHash: undefined,
+    files: [
+      {
+        path: input.filePath,
+        bytes: new TextEncoder().encode(input.content || ""),
+      },
+    ],
+  };
+}
+
 export function createFileIOTool(): AgentWriteToolDefinition<
   FileIOInput,
   unknown
 > {
   return {
-    describeAction: (input) =>
-      input.action === "write"
-        ? [
-            {
-              id: `file_write:${input.filePath}`,
-              proofDomain: "file_state",
-              capability: "file.write",
-              operation: "file_write",
-              source: "file_io",
-              parameters: { filePath: input.filePath },
-              requestedTargets: [`file:${input.filePath}`],
-              destinationCollectionIds: [],
-            },
-          ]
-        : [],
+    describeAction: async (input, context) => {
+      if (input.action !== "write") return [];
+      const bundle = await resolveFileWriteBundle(input, context);
+      const files = await Promise.all(
+        bundle.files.map(async (file) => ({
+          path: file.path,
+          contentHash: await sha256Bytes(file.bytes),
+          byteLength: file.bytes.length,
+        })),
+      );
+      return [
+        {
+          id: `file_write:${input.filePath}`,
+          proofDomain: "file_state",
+          capability: "file.write",
+          operation: "file_write",
+          source: "file_io",
+          parameters: {
+            filePath: input.filePath,
+            documentId: bundle.documentId,
+            contentHash: bundle.contentHash,
+          },
+          requestedTargets: files.map((file) => `file:${file.path}`),
+          destinationCollectionIds: [],
+          expectedContentHash: files[files.length - 1].contentHash,
+          expectedFiles: files,
+        },
+      ];
+    },
     spec: {
       name: "file_io",
       description:
@@ -487,14 +648,14 @@ export function createFileIOTool(): AgentWriteToolDefinition<
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(read.*file|write.*file|save.*file|export.*csv|export.*json|write.*script|create.*file|save.*to.*(desktop|disk|folder))\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.semantic?.supportTools?.includes("file_io"),
         ),
       instruction:
         "Use file_io to read or write files on the user's filesystem. " +
@@ -655,36 +816,26 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       };
     },
 
-    async shouldRequireConfirmation(input, _context) {
-      // Read operations are safe — auto-approve
-      if (input.action === "read") return false;
-      const exists = await fileExists(input.filePath);
-      // New file writes are reversible by deleting the created file, so they
-      // can run directly. Unknown existence is treated like an overwrite.
-      if (exists === false) return false;
-      // Existing files are overwrites and always require review, even if this
-      // conversation previously enabled file_io auto-accept.
-      return true;
-    },
-
-    async planMutation(input) {
+    async planInvocation(input, context) {
       if (input.action === "read") {
-        return { effect: "none", reversibility: "full" };
+        return readOnlyInvocationPlan({
+          domains: ["filesystem"],
+          targets: [input.filePath],
+          reason: "The host-owned file reader cannot modify the target.",
+        });
       }
       const exists = await fileExists(input.filePath);
-      return {
-        effect: "write",
+      const bundle = await resolveFileWriteBundle(input, context);
+      return stateChangeInvocationPlan({
+        domains: ["filesystem"],
+        effects: [exists === false ? "create" : "modify"],
+        targets: bundle.files.map((file) => file.path),
         reversibility: "full",
         reason:
           exists === true
             ? "The existing file content is stored with a checksum before overwrite."
             : "A newly created file can be removed by its durable inverse.",
-        requiresConfirmation: exists !== false,
-      };
-    },
-
-    applyConfirmation(input) {
-      return ok({ ...input, allowOverwrite: true });
+      });
     },
 
     async execute(input, context) {
@@ -802,115 +953,41 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         }
       }
 
-      // write
-      const nextContent = input.content || "";
-      const nextBytes = new TextEncoder().encode(nextContent);
-      const nextChecksum = await sha256Bytes(nextBytes);
-      if (
-        (await fileExists(input.filePath)) === true &&
-        !input.allowOverwrite
-      ) {
-        return {
-          content: {
-            action: "write",
-            filePath: input.filePath,
-            error:
-              "Refusing to overwrite an existing file without confirmation",
-          },
-          effect: "none",
-        };
+      const bundle = await resolveFileWriteBundle(input, context);
+      const exportedFiles = [];
+      let changed = false;
+      let actionId: string | undefined;
+      for (const file of bundle.files) {
+        const expectedHash = await sha256Bytes(file.bytes);
+        // Reconcile verified members on retry without replaying their write.
+        if (
+          (await fileExists(file.path)) &&
+          (await sha256Bytes(await readFileBytes(file.path))) === expectedHash
+        ) {
+          exportedFiles.push({
+            filePath: file.path,
+            exists: true,
+            contentHash: expectedHash,
+            expectedContentHash: expectedHash,
+            bytesWritten: file.bytes.length,
+          });
+          continue;
+        }
+        const result = await writeJournaledFile(file.path, file.bytes, context);
+        changed ||= result.effect !== "none";
+        actionId = (result.content as any).actionId || actionId;
+        exportedFiles.push(result.content);
       }
-      return executeExternalMutation({
-        context,
-        toolName: "file_io",
-        plan: async () => {
-          const existedBeforeWrite = await fileExists(input.filePath);
-          if (existedBeforeWrite === true && !input.allowOverwrite) {
-            throw new Error(
-              "Refusing to overwrite an existing file without confirmation",
-            );
-          }
-          const previousBytes =
-            existedBeforeWrite === true
-              ? await readFileBytes(input.filePath)
-              : null;
-          const recovery =
-            previousBytes !== null
-              ? await storeRecoveryBytes(previousBytes)
-              : undefined;
-          const previousChecksum =
-            previousBytes === null ? null : await sha256Bytes(previousBytes);
-          return {
-            operation: "write_file",
-            description:
-              existedBeforeWrite === false
-                ? `Create file: ${input.filePath}`
-                : `Overwrite file: ${input.filePath}`,
-            forward: {
-              path: input.filePath,
-              encoding: input.encoding || "utf-8",
-              checksum: nextChecksum,
-            },
-            inverse:
-              existedBeforeWrite === false
-                ? {
-                    version: 1,
-                    kind: "file",
-                    operation: "delete",
-                    path: input.filePath,
-                  }
-                : recovery
-                  ? {
-                      version: 1,
-                      kind: "file",
-                      operation: "restore",
-                      path: input.filePath,
-                      encoding: input.encoding || "utf-8",
-                      payload: recovery,
-                    }
-                  : undefined,
-            precondition: {
-              kind: "file",
-              path: input.filePath,
-              exists: existedBeforeWrite === true,
-              checksum: previousChecksum,
-            },
-            reversibility:
-              existedBeforeWrite === false || recovery ? "full" : "none",
-            reason:
-              existedBeforeWrite === null
-                ? "The prior file state could not be determined."
-                : undefined,
-          };
+      const primary = exportedFiles[exportedFiles.length - 1];
+      return {
+        effect: changed ? "applied" : "none",
+        content: {
+          ...primary,
+          actionId,
+          documentId: bundle.documentId,
+          exportedFiles,
         },
-        execute: async () => {
-          await writeFile(
-            input.filePath,
-            nextContent,
-            input.encoding || "utf-8",
-          );
-          const readbackBytes = await readFileBytes(input.filePath);
-          const readbackChecksum = await sha256Bytes(readbackBytes);
-          return {
-            result: {
-              action: "write",
-              filePath: input.filePath,
-              bytesWritten: nextBytes.byteLength,
-              exists: true,
-              expectedContentHash: nextChecksum,
-              contentHash: readbackChecksum,
-            },
-            expectedPostcondition: {
-              kind: "file",
-              path: input.filePath,
-              exists: true,
-              checksum: nextChecksum,
-            },
-            affectedCount: 1,
-            effect: "applied",
-          };
-        },
-      });
+      };
     },
   };
 }

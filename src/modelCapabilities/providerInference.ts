@@ -26,7 +26,7 @@ const MODEL_NAME_RULES: Array<{
   { provider: "grok", pattern: /(^|[/:])grok(?:\b|[.-])/ },
   { provider: "anthropic", pattern: /(^|[/:.])claude(?:\b|[.-])/ },
   { provider: "gemini", pattern: /gemini/ },
-  { provider: "openai", pattern: /^(gpt-5|o\d)(\b|[.-])/ },
+  { provider: "openai", pattern: /^(gpt-\d+|o\d+)(\b|[.-])/ },
   { provider: "glm", pattern: /(^|[/:])glm(?:\b|[.-])/ },
   { provider: "minimax", pattern: /(^|[/:])minimax(?:\b|[.-])/ },
 ];

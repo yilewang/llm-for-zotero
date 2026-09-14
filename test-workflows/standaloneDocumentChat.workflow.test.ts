@@ -45,6 +45,19 @@ function diagnosticsMessage(
   return JSON.stringify(
     {
       activeTab: diagnostics.activeTab,
+      sidebarState: diagnostics.sidebarState,
+      customTitlebar: diagnostics.customTitlebar,
+      collapseToggleHost: diagnostics.collapseToggleHost,
+      sidebarWidthPx: diagnostics.sidebarWidthPx,
+      sidebarFlyout: diagnostics.sidebarFlyout,
+      sidebarPanelWidthPx: diagnostics.sidebarPanelWidthPx,
+      sidebarPanelOpacity: diagnostics.sidebarPanelOpacity,
+      sidebarContent: diagnostics.sidebarContent,
+      windowButtonsWidthPx: diagnostics.windowButtonsWidthPx,
+      sidebarActionOrder: diagnostics.sidebarActionOrder,
+      sidebarPrimaryActionOrder: diagnostics.sidebarPrimaryActionOrder,
+      titleActionLabels: diagnostics.titleActionLabels,
+      alignment: diagnostics.alignment,
       conversationKey: diagnostics.conversationKey,
       activeItemId: diagnostics.activeItemId,
       rawContextItemId: diagnostics.rawContextItemId,
@@ -113,6 +126,262 @@ describe("workflow: standalone document chat", function () {
       if (fixture) await api.cleanupFixture(fixture);
     }
     await api.reset();
+  });
+
+  it("preserves the full sidebar content when revealed by hover", async function () {
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Unified Standalone Sidebar",
+      pdfTitle: "Workflow Unified Standalone Sidebar PDF",
+    });
+    fixtures.push(fixture);
+
+    let expanded = await api.openStandaloneForItem(fixture.parentItemId);
+    // History loads asynchronously after the chat panel mounts. Compare a
+    // populated sidebar rather than racing its initial empty render.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (expanded.sidebarContent?.historyText) break;
+      await Zotero.Promise.delay(25);
+      expanded = await api.getStandaloneDiagnostics();
+    }
+    assert.isNotEmpty(expanded.sidebarContent?.historyText || "");
+    assert.equal(
+      expanded.sidebarState,
+      "expanded",
+      diagnosticsMessage(expanded),
+    );
+    // The library icon and label are gone from the header for good; on macOS
+    // the native traffic lights take that space instead.
+    assert.equal(
+      expanded.collapseToggleHost,
+      "sidebar-header",
+      diagnosticsMessage(expanded),
+    );
+    if (expanded.customTitlebar) {
+      assert.isAbove(
+        expanded.windowButtonsWidthPx ?? 0,
+        0,
+        diagnosticsMessage(expanded),
+      );
+    }
+    assert.deepEqual(
+      expanded.sidebarActionOrder,
+      ["new-chat", "search-history", "skills", "preferences"],
+      diagnosticsMessage(expanded),
+    );
+    assert.deepEqual(
+      expanded.sidebarPrimaryActionOrder,
+      ["new-chat", "search-history", "skills"],
+      diagnosticsMessage(expanded),
+    );
+    assert.deepEqual(
+      expanded.titleActionLabels,
+      ["Export", "Delete conversation"],
+      diagnosticsMessage(expanded),
+    );
+    assert.isDefined(expanded.alignment, diagnosticsMessage(expanded));
+    assert.isAtMost(
+      expanded.alignment?.toolbarCenterDeltaPx ?? Number.POSITIVE_INFINITY,
+      0.5,
+      diagnosticsMessage(expanded),
+    );
+    assert.isAtMost(
+      expanded.alignment?.titleCenterDeltaPx ?? Number.POSITIVE_INFINITY,
+      0.5,
+      diagnosticsMessage(expanded),
+    );
+    assert.isAtMost(
+      expanded.alignment?.toolbarControlCenterDeltaPx ??
+        Number.POSITIVE_INFINITY,
+      0.5,
+      diagnosticsMessage(expanded),
+    );
+    assert.isAtMost(
+      expanded.alignment?.titleTextCenterDeltaPx ?? Number.POSITIVE_INFINITY,
+      0.5,
+      diagnosticsMessage(expanded),
+    );
+
+    const collapsedSidebar = await api.toggleStandaloneSidebar();
+    assert.equal(
+      collapsedSidebar.sidebarState,
+      "collapsed",
+      diagnosticsMessage(collapsedSidebar),
+    );
+    assert.deepEqual(
+      collapsedSidebar.sidebarActionOrder,
+      expanded.sidebarActionOrder,
+      diagnosticsMessage(collapsedSidebar),
+    );
+
+    // Collapsed now means the rail is gone from the layout altogether, so the
+    // window controls and the collapse toggle both move into the tab row.
+    assert.equal(
+      collapsedSidebar.collapseToggleHost,
+      "tab-row",
+      diagnosticsMessage(collapsedSidebar),
+    );
+    assert.equal(
+      collapsedSidebar.sidebarWidthPx ?? -1,
+      0,
+      diagnosticsMessage(collapsedSidebar),
+    );
+    assert.equal(
+      collapsedSidebar.sidebarFlyout,
+      "closed",
+      diagnosticsMessage(collapsedSidebar),
+    );
+
+    // Hovering the toggle floats the sidebar back over the content, so its
+    // actions stay reachable without expanding the rail again.
+    const hovered = await api.hoverStandaloneSidebarToggle();
+    assert.equal(hovered.sidebarFlyout, "open", diagnosticsMessage(hovered));
+    assert.isAbove(
+      hovered.sidebarPanelWidthPx ?? 0,
+      100,
+      diagnosticsMessage(hovered),
+    );
+    assert.equal(hovered.sidebarPanelOpacity, 1, diagnosticsMessage(hovered));
+    // The rail itself still takes no space: the panel is floating above the
+    // chat rather than pushing it aside.
+    assert.equal(hovered.sidebarWidthPx ?? -1, 0, diagnosticsMessage(hovered));
+    assert.deepEqual(
+      hovered.sidebarContent?.labels,
+      expanded.sidebarContent?.labels,
+      "Hover must preserve every action label and its usable width",
+    );
+    assert.deepEqual(
+      hovered.sidebarContent?.actionWidths,
+      expanded.sidebarContent?.actionWidths,
+      "Hover must preserve full action hit targets",
+    );
+    assert.isAbove(hovered.sidebarContent?.historyHeight ?? 0, 0);
+    assert.equal(
+      hovered.sidebarContent?.historyText,
+      expanded.sidebarContent?.historyText,
+      "Hover must retain the original history",
+    );
+
+    const win = (Zotero as any).LLMForZotero.data.standaloneWindow as Window;
+    const doc = win.document;
+    const panel = doc.querySelector(".llm-standalone-sidebar-panel");
+    const toolbar = doc.querySelector(".llm-standalone-tab-row")!;
+    assert.equal(
+      panel!.getBoundingClientRect().top,
+      toolbar.getBoundingClientRect().top,
+      "The flyout surface must reach the window top without a cutoff above New chat",
+    );
+    for (const node of Array.from(
+      doc.querySelectorAll(".llm-standalone-tab-row-leading button"),
+    )) {
+      const control = node as HTMLElement;
+      const rect = control.getBoundingClientRect();
+      if (!rect.width || !rect.height) continue;
+      assert.isTrue(
+        control.contains(
+          doc.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+          ),
+        ),
+        "Window toolbar controls must stay clickable above the flyout surface",
+      );
+    }
+    for (const [action, overlayClass] of [
+      ["search-history", ".llm-standalone-search-overlay"],
+      ["skills", ".llm-standalone-skill-overlay"],
+    ]) {
+      await api.hoverStandaloneSidebarToggle();
+      const button = doc.querySelector(
+        `[data-sidebar-action="${action}"]`,
+      ) as HTMLElement;
+      const rect = button.getBoundingClientRect();
+      assert.isTrue(
+        button.contains(
+          doc.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+          ),
+        ),
+        `${action} must be clickable in the flyout`,
+      );
+      button.click();
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (
+          (
+            doc.querySelector(
+              `#llmforzotero-standalone-chat-root > ${overlayClass}`,
+            ) as HTMLElement
+          ).style.display !== "none"
+        )
+          break;
+        await Zotero.Promise.delay(25);
+      }
+      assert.notEqual(
+        (
+          doc.querySelector(
+            `#llmforzotero-standalone-chat-root > ${overlayClass}`,
+          ) as HTMLElement
+        ).style.display,
+        "none",
+        `${action} must open its existing dialog`,
+      );
+      const overlay = doc.querySelector(
+        `#llmforzotero-standalone-chat-root > ${overlayClass}`,
+      )!;
+      (
+        overlay.querySelector(
+          ".llm-standalone-search-close, .llm-standalone-skill-close",
+        ) as HTMLElement
+      ).click();
+    }
+    const previousChat = await api.seedStandaloneUserMessage(
+      "Sidebar hover action regression",
+    );
+    await api.hoverStandaloneSidebarToggle();
+    (
+      doc.querySelector('[data-sidebar-action="new-chat"]') as HTMLElement
+    ).click();
+    let newChat = await api.getStandaloneDiagnostics();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (newChat.conversationKey !== previousChat.conversationKey) break;
+      await Zotero.Promise.delay(25);
+      newChat = await api.getStandaloneDiagnostics();
+    }
+    assert.notEqual(newChat.conversationKey, previousChat.conversationKey);
+    assert.equal(newChat.sidebarState, "collapsed");
+    assert.equal(
+      doc.querySelector(".llm-standalone-sidebar-panel"),
+      panel,
+      "Actions must retain the same sidebar instance",
+    );
+    const reopened = await api.hoverStandaloneSidebarToggle();
+    assert.deepEqual(
+      reopened.sidebarContent?.labels,
+      expanded.sidebarContent?.labels,
+    );
+    const historySelector = `.llm-standalone-conv-item[data-conversation-key="${previousChat.conversationKey}"]`;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (doc.querySelector(historySelector)) break;
+      await Zotero.Promise.delay(25);
+    }
+    const historyRow = doc.querySelector(historySelector) as HTMLElement;
+    assert.isOk(
+      historyRow,
+      "The saved conversation stays available in the flyout",
+    );
+    historyRow.click();
+    let restored = await api.getStandaloneDiagnostics();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (restored.messageText?.includes("Sidebar hover action regression"))
+        break;
+      await Zotero.Promise.delay(25);
+      restored = await api.getStandaloneDiagnostics();
+    }
+    assert.include(
+      restored.messageText || "",
+      "Sidebar hover action regression",
+    );
+    assert.equal(restored.sidebarState, "collapsed");
   });
 
   it("opens a top-level Zotero PDF attachment in Paper Chat and sends with attachment-owned context", async function () {

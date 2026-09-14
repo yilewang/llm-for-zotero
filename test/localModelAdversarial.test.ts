@@ -207,7 +207,7 @@ describe("local model support — adversarial", function () {
 
     it("keeps DeepSeek's hosted encoding intact", function () {
       const payload = buildReasoningPayload(
-        { provider: "deepseek", level: "high" },
+        { provider: "deepseek", level: "default" },
         false,
         "deepseek-reasoner",
         "https://api.deepseek.com/v1",

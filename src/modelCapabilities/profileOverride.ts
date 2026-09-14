@@ -404,6 +404,10 @@ export function normalizeProfileOverride(
           id,
           label: String(option.label || option.id || "").trim(),
           enabled: option.enabled !== false,
+          ...(typeof option.effort === "string" &&
+          isValidReasoningLevelId(option.effort)
+            ? { effort: option.effort }
+            : {}),
           ...(body ? { controls: { body } } : {}),
         };
       })

@@ -1,14 +1,74 @@
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { createSearchLiteratureOnlineTool } from "../src/agent/tools/read/searchLiteratureOnline";
 import type { AgentToolContext } from "../src/agent/types";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 describe("search_literature_online tool", function () {
+  it("returns discovery candidates for ranking and leaves explicit imports to mutation authorization", async function () {
+    const tool = createSearchLiteratureOnlineTool({} as never);
+    const result = {
+      callId: "discovery",
+      name: "literature_search",
+      ok: true,
+      content: {
+        mode: "search",
+        results: [
+          {
+            id: "https://openalex.org/W456",
+            title: "A relevant paper",
+            doi: "10.1000/relevant",
+            authors: ["Fixture Author"],
+            year: 2024,
+          },
+        ],
+      },
+    };
+    for (const mode of ["safe", "auto", "yolo"]) {
+      const context = {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          userText: "Find five papers relevant to the current paper.",
+          metadata: { permissionMode: mode },
+        },
+      };
+      const input = tool.validate({
+        mode: "search",
+        query: "population coding",
+        workflow: "answer",
+      });
+      assert.isTrue(input.ok);
+      if (!input.ok) return;
+      assert.isNull(
+        await tool.createResultReviewAction?.(input.value, result, context),
+        mode,
+      );
+      const importInput = tool.validate({
+        mode: "search",
+        query: "population coding",
+        workflow: "review",
+      });
+      if (!importInput.ok) throw new Error("Invalid fixture");
+      assert.isNull(
+        await tool.createResultReviewAction?.(importInput.value, result, {
+          ...context,
+          request: {
+            ...context.request,
+            userText:
+              'Find and import the top five relevant papers on neural population coding and representational drift into "imports". Import exactly five papers not already in the library, not just recommendations; skip duplicates and choose another relevant paper if needed.',
+          },
+        }),
+        mode,
+      );
+    }
+  });
   const baseContext: AgentToolContext = {
+    runId: "search-tool-test",
     request: resolvedAgentRequest({
       conversationKey: 11,
       mode: "agent",
-      userText: "Find related papers",
+      userText: "Explain the evidence on this topic using scholarly sources",
       libraryID: 1,
     }),
     item: null,
@@ -236,7 +296,7 @@ describe("search_literature_online tool", function () {
     assert.isNull(reviewAction);
   });
 
-  it("opens the literature review card only for review workflow", async function () {
+  it("returns saved candidate references even when discovery asks for review", async function () {
     (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
       (async (url: string | URL | Request) => {
         const href = String(url);
@@ -276,7 +336,7 @@ describe("search_literature_online tool", function () {
     if (!validated.ok) return;
 
     const result = await tool.execute(validated.value, baseContext);
-    assert.equal((result as { workflow: string }).workflow, "review");
+    assert.equal((result as { workflow: string }).workflow, "answer");
     const reviewAction = await tool.createResultReviewAction?.(
       validated.value,
       {
@@ -287,8 +347,8 @@ describe("search_literature_online tool", function () {
       },
       baseContext,
     );
-    assert.equal(reviewAction?.toolName, "literature_search");
-    assert.equal(reviewAction?.title, "Review online literature results");
+    assert.isNull(reviewAction);
+    assert.isString((result as { candidateSetId: string }).candidateSetId);
   });
 
   it("adds guidance for live paper discovery requests", function () {
@@ -301,6 +361,13 @@ describe("search_literature_online tool", function () {
         conversationKey: 11,
         mode: "agent",
         userText: "can you find related papers from internet to me",
+        classifiedIntent: {
+          semantic: semanticFixture(),
+          retrievalIntent: "none",
+          externalSearchIntent: "literature",
+          wantedSections: [],
+          actionIntents: [],
+        },
       }) || false,
     );
     assert.include(tool.guidance?.instruction || "", "workflow:'answer'");
@@ -310,6 +377,13 @@ describe("search_literature_online tool", function () {
         conversationKey: 12,
         mode: "agent",
         userText: "search the web for the latest Zotero release notes",
+        classifiedIntent: {
+          semantic: semanticFixture(),
+          retrievalIntent: "none",
+          externalSearchIntent: "web",
+          wantedSections: [],
+          actionIntents: [],
+        },
       }) || false,
     );
     assert.isTrue(
@@ -318,6 +392,7 @@ describe("search_literature_online tool", function () {
         mode: "agent",
         userText: "查找论文并核对当前官方文档",
         classifiedIntent: {
+          semantic: semanticFixture(),
           retrievalIntent: "none",
           externalSearchIntent: "both",
           wantedSections: [],

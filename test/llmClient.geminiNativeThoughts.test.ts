@@ -122,7 +122,7 @@ describe("llmClient gemini native thought parts", function () {
       },
     );
 
-    assert.equal(result, "Final answer.");
+    assert.equal(result.text, "Final answer.");
     assert.equal(deltas.join(""), "Final answer.");
     assert.equal(reasoning.join(""), "Considering the request.");
   });
@@ -153,9 +153,36 @@ describe("llmClient gemini native thought parts", function () {
       },
     );
 
-    assert.equal(result, "Signed answer.");
+    assert.equal(result.text, "Signed answer.");
     assert.equal(deltas.join(""), "Signed answer.");
     assert.equal(reasoning.join(""), "");
+  });
+
+  it("marks a reasoning-only MAX_TOKENS stream as output-limited", async function () {
+    mockGeminiFetch({
+      stream: () =>
+        makeSseStream([
+          'data: {"candidates":[{"content":{"parts":[{"text":"Long private reasoning","thought":true}]},"finishReason":"MAX_TOKENS"}]}\n\n',
+        ]),
+    });
+
+    const outcome = await callLLMStream(
+      {
+        prompt: "Solve this.",
+        model: "gemini-3.6-flash",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "gemini-test",
+        providerProtocol: "gemini_native",
+      },
+      () => undefined,
+    );
+
+    assert.equal(outcome.text, "");
+    assert.deepEqual(outcome.completion, {
+      status: "incomplete",
+      reason: "output_limit",
+      providerReason: "MAX_TOKENS",
+    });
   });
 
   it("drops thought parts from non-streaming answers", async function () {
@@ -182,7 +209,7 @@ describe("llmClient gemini native thought parts", function () {
       providerProtocol: "gemini_native",
     });
 
-    assert.equal(output, "Visible answer.");
+    assert.equal(output.text, "Visible answer.");
   });
 
   it("sends a user-authored reasoning level, thought summaries intact", async function () {

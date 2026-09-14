@@ -353,6 +353,51 @@ export function estimateTextTokens(text: string): number {
   );
 }
 
+const BASE64_BLOB_MIN_CHARS = 4_096;
+const BASE64_PROBE_CHARS = 512;
+/** Base64 media is billed per image/page, not per character; ~40 chars/token is a conservative middle. */
+const BASE64_CHARS_PER_TOKEN = 40;
+
+function looksLikeBase64Blob(text: string): boolean {
+  if (text.length < BASE64_BLOB_MIN_CHARS) return false;
+  const probeStart = text.startsWith("data:")
+    ? text.indexOf(";base64,") + ";base64,".length
+    : 0;
+  if (probeStart < 0) return false;
+  return /^[A-Za-z0-9+/=]+$/.test(
+    text.slice(probeStart, probeStart + BASE64_PROBE_CHARS),
+  );
+}
+
+/**
+ * Estimate the prompt tokens of a wire payload (any provider shape) by
+ * walking it: text weighs like prompt text, base64 media weighs per blob
+ * rather than per character. Used to size the transmitted output cap.
+ */
+export function estimateWirePayloadTokens(value: unknown): number {
+  if (typeof value === "string") {
+    return looksLikeBase64Blob(value)
+      ? Math.ceil(value.length / BASE64_CHARS_PER_TOKEN)
+      : estimateTextTokens(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return 1;
+  if (Array.isArray(value)) {
+    let total = 0;
+    for (const entry of value) total += estimateWirePayloadTokens(entry);
+    return total;
+  }
+  if (value && typeof value === "object") {
+    let total = 0;
+    for (const [key, entry] of Object.entries(value)) {
+      if (entry === undefined || entry === null) continue;
+      total += 1 + estimateWirePayloadTokens(entry);
+      void key;
+    }
+    return total;
+  }
+  return 0;
+}
+
 export function estimateConversationTokens(
   messages: InputCapMessage[],
 ): number {

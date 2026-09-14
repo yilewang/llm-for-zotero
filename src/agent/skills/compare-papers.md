@@ -4,11 +4,6 @@ description: Compare selected papers or collection papers by theme, methodology,
 version: 7
 contexts: paper-set,library-corpus
 activation: auto
-match: /\b(compare|contrast|difference|differ|similarities|similarity)\b.*\b(papers?|articles?|studies|works?)\b/i
-match: /\b(papers?|articles?|studies)\b.*\b(compare|contrast|difference|differ|similarities|similarity)\b/i
-match: /\bcomparative\s+(analysis|review|study)\b/i
-match: /\bhow\s+(does|do|is|are)\b.*\bdiffer\b/i
-match: /\bcompare\b.*\b(methods?|methodology|sections?|approach|results?|limitations?)\b/i
 ---
 
 <!--

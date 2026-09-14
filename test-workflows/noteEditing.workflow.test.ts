@@ -54,6 +54,10 @@ function assertDualRuntimeControls(
     visible.filter((toggle) => toggle.active).map((toggle) => toggle.system),
     activeSystem ? [activeSystem] : [],
   );
+  assert.isTrue(
+    visible.every((toggle) => !toggle.disabled),
+    "the runtime switch is settled before the next interaction",
+  );
 }
 
 async function diagnosticsMessage(
@@ -197,7 +201,7 @@ describe("workflow: note editing mode", function () {
     });
   });
 
-  it("keeps standalone notes on library chat without parent paper context", async function () {
+  it("keeps standalone notes in their own chat without parent paper context", async function () {
     const selectedSentence =
       "Standalone notes should not borrow a paper unless the user adds one.";
     fixture = await api.createStandaloneNoteFixture({
@@ -206,7 +210,7 @@ describe("workflow: note editing mode", function () {
 
     const panel = await api.renderPanelForItem(fixture.noteItemId);
     const initialDiagnostics = await api.getDiagnostics(panel.panelId);
-    assert.equal(initialDiagnostics.conversationKind, "global");
+    assert.equal(initialDiagnostics.conversationKind, "paper");
     assert.isTrue(
       initialDiagnostics.historyNewVisible,
       await diagnosticsMessage(api, panel.panelId),
@@ -224,7 +228,9 @@ describe("workflow: note editing mode", function () {
     assert.isUndefined(send.selectedTextNoteContexts?.[0]?.parentItemId);
     assert.equal(send.activeNoteContext?.noteKind, "standalone");
     assert.isUndefined(send.activeNoteContext?.parentItemId);
-    assert.isUndefined(
+    // The note chats in its own conversation, so the send still carries a
+    // resolved context source; a standalone note simply resolves to no paper.
+    assert.isNull(
       send.contextSource?.paperContext,
       await diagnosticsMessage(api, panel.panelId),
     );
@@ -232,11 +238,50 @@ describe("workflow: note editing mode", function () {
       send,
       system: "upstream",
       noteItemId: fixture.noteItemId,
-      conversationKind: "global",
+      conversationKind: "paper",
     });
   });
 
-  it("routes upstream, Codex, and Claude Code sends through parent paper conversations", async function () {
+  for (const kind of ["standalone", "item"] as const) {
+    it(`creates and deletes conversations while retaining ${kind} note focus`, async function () {
+      fixture =
+        kind === "standalone"
+          ? await api.createStandaloneNoteFixture({
+              noteHtml: "<p>Conversation navigation sentence.</p>",
+            })
+          : await api.createItemNoteFixture({
+              title: "Note navigation parent",
+              pdfTitle: "Note navigation PDF",
+              noteHtml: "<p>Conversation navigation sentence.</p>",
+            });
+      const panel = await api.renderPanelForItem(fixture.noteItemId);
+      await api.seedPanelStoredTurn(
+        panel.panelId,
+        "Original note question",
+        "Original answer",
+      );
+      const before = await api.getDiagnostics(panel.panelId);
+      const fresh = await api.startNewPanelConversation(panel.panelId);
+      assert.notEqual(fresh.conversationKey, before.conversationKey);
+      assert.equal(fresh.noteId, fixture.noteItemId);
+      await api.seedPanelStoredTurn(
+        panel.panelId,
+        "Temporary note question",
+        "Temporary answer",
+      );
+      await api.clickPanelDelete(panel.panelId);
+      const deleted = await api.getDiagnostics(panel.panelId);
+      assert.notEqual(deleted.conversationKey, fresh.conversationKey);
+      assert.equal(deleted.noteId, fixture.noteItemId);
+      const send = await api.ask(
+        panel.panelId,
+        "Explain this note after navigation",
+      );
+      assert.equal(send.activeNoteContext?.noteId, fixture.noteItemId);
+    });
+  }
+
+  it("routes upstream, Codex, and Claude Code sends through the note own conversations", async function () {
     const selectedSentence = "Runtime-specific note chats must stay isolated.";
     fixture = await api.createItemNoteFixture({
       title: "Workflow Runtime Note Parent",
@@ -456,6 +501,18 @@ describe("workflow: note editing mode", function () {
     );
   });
 
+  it("labels a standalone note as Note chat when opened", async function () {
+    fixture = await api.createStandaloneNoteFixture({
+      noteHtml: "<p>Standalone note label consistency.</p>",
+    });
+    const standalone = await api.openStandaloneForItem(fixture.noteItemId);
+    try {
+      assert.equal(standalone.paperTabText, "Note chat");
+    } finally {
+      await api.closeStandalone();
+    }
+  });
+
   it("switches a standalone note directly between both toolbar runtimes", async function () {
     fixture = await api.createItemNoteFixture({
       title: "Workflow Standalone Runtime Parent",
@@ -474,10 +531,12 @@ describe("workflow: note editing mode", function () {
           (fixture as WorkflowTestNoteFixture).noteItemId,
         );
         assert.equal(initial.conversationSystem, "upstream");
+        assert.equal(initial.paperTabText, "Note chat");
         assertDualRuntimeControls(initial);
 
         const codex = await api.clickStandaloneSystemToggle("codex");
         assert.equal(codex.conversationSystem, "codex");
+        assert.equal(codex.paperTabText, "Note chat");
         assert.isTrue(
           isConversationKeyForKind(
             "codex",
@@ -490,6 +549,7 @@ describe("workflow: note editing mode", function () {
 
         const claude = await api.clickStandaloneSystemToggle("claude_code");
         assert.equal(claude.conversationSystem, "claude_code");
+        assert.equal(claude.paperTabText, "Note chat");
         assert.isTrue(
           isConversationKeyForKind(
             "claude_code",

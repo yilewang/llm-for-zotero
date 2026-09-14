@@ -77,6 +77,9 @@ type SearchReviewPrepared =
     };
 
 type SearchReviewArgs = {
+  targetCollectionId?: number;
+  destinationLabel?: string;
+  shortfallReason?: string;
   workflow?: SearchLiteratureOnlineWorkflow;
   mode?: SearchLiteratureOnlineMode;
   source?: SearchLiteratureOnlineSource;
@@ -317,30 +320,6 @@ function buildMetadataChoiceOptions(
   });
 }
 
-function buildPaperNoteTemplate(
-  context: AgentToolContext,
-  prepared: Extract<SearchReviewPrepared, { kind: "paper_results" }>,
-): string {
-  const paperTitle = getReferencePaperTitle(context) || "Current paper";
-  const header = `## Related papers for ${paperTitle}`;
-  const detail = [
-    prepared.source ? `Source: ${prepared.source}` : null,
-    prepared.mode ? `Mode: ${prepared.mode}` : null,
-    prepared.query ? `Query: ${prepared.query}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const items = prepared.papers
-    .map((paper) => {
-      const doi = paper.importIdentifier?.startsWith("10.")
-        ? ` DOI: ${paper.importIdentifier}`
-        : "";
-      return `- ${paper.title}${paper.subtitle ? ` (${paper.subtitle})` : ""}${doi}`;
-    })
-    .join("\n");
-  return [header, detail, "", items].filter(Boolean).join("\n");
-}
-
 function buildMetadataNoteTemplate(
   context: AgentToolContext,
   rows: SearchReviewMetadataRow[],
@@ -388,7 +367,7 @@ function prepareSearchReview(
     | SearchLiteratureOnlineMode
     | undefined;
   const results = Array.isArray(content.results) ? content.results : [];
-  if (!mode || results.length === 0) {
+  if (!mode || (results.length === 0 && !content.sessionId)) {
     return null;
   }
 
@@ -443,17 +422,17 @@ function prepareSearchReview(
     const title = readString(record.title);
     if (!title) continue;
     papers.push({
-      rowId: `paper-${index + 1}`,
+      rowId: readString(record.discoveryPaperId) || `paper-${index + 1}`,
       title,
       subtitle: buildPaperSubtitle(record),
-      body: readString(record.abstract),
+      body: readString(record.relevanceReason) || readString(record.abstract),
       badges: buildPaperBadges(record),
       href: readString(record.openAccessUrl) || readString(record.sourceUrl),
       importIdentifier: buildImportIdentifier(record),
       raw: record,
     });
   }
-  if (!papers.length) return null;
+  if (!papers.length && !content.sessionId) return null;
   return {
     kind: "paper_results",
     mode,
@@ -483,21 +462,6 @@ function getSearchActionButtons(kind: SearchReviewPrepared["kind"]) {
   }
   return [
     { id: "import", label: "Import selected", style: "primary" as const },
-    {
-      id: "save_note",
-      label: "Save selected as note",
-      style: "secondary" as const,
-      executionMode: "edit" as const,
-      submitLabel: "Save selected as note",
-    },
-    {
-      id: "new_search",
-      label: "Search again",
-      style: "secondary" as const,
-      executionMode: "edit" as const,
-      submitLabel: "Confirm search",
-      backLabel: "Get back",
-    },
     { id: "cancel", label: "Cancel", style: "secondary" as const },
   ];
 }
@@ -543,6 +507,9 @@ function normalizeSearchReviewArgs(args: unknown): SearchReviewArgs {
   const record = args as Record<string, unknown>;
   const paperContext = validateMetadataPaperContext(record.paperContext);
   return {
+    targetCollectionId: readPositiveInt(record.targetCollectionId),
+    destinationLabel: readString(record.destinationLabel),
+    shortfallReason: readString(record.shortfallReason),
     workflow: readString(record.workflow) as
       | SearchLiteratureOnlineWorkflow
       | undefined,
@@ -746,14 +713,26 @@ export function createSearchLiteratureReviewAction(
   }
 
   const normalizedArgs = normalizeSearchReviewArgs(args);
-  const noteContent = buildPaperNoteTemplate(context, prepared);
   return {
-    toolName: "literature_search",
+    toolName: "literature_review",
     mode: "review",
-    title: "Review online literature results",
-    description:
-      "Select the papers you want to import or save to a note, or refine with a follow-up search.",
+    title: "Relevant papers",
+    ...((result.content as { sessionId?: string }).sessionId
+      ? {
+          discovery: {
+            sessionId: (result.content as { sessionId: string }).sessionId,
+            revision: (result.content as { revision: number }).revision,
+          },
+        }
+      : {}),
+    description: [
+      `${prepared.papers.length} ranked papers · Import to ${normalizedArgs.destinationLabel || `Library ${context.request.libraryID}`}`,
+      normalizedArgs.shortfallReason,
+    ]
+      .filter(Boolean)
+      .join("\n"),
     confirmLabel: "Import selected",
+    selectionAction: { fieldId: "selectedPaperIds", verb: "Import" },
     cancelLabel: "Cancel",
     actions: getSearchActionButtons(prepared.kind),
     defaultActionId: "import",
@@ -762,7 +741,7 @@ export function createSearchLiteratureReviewAction(
       {
         type: "paper_result_list",
         id: "selectedPaperIds",
-        label: "Search results",
+        label: "Papers",
         rows: prepared.papers.map((paper) => ({
           id: paper.rowId,
           title: paper.title,
@@ -771,48 +750,25 @@ export function createSearchLiteratureReviewAction(
           badges: paper.badges,
           href: paper.href,
           importIdentifier: paper.importIdentifier,
-          checked: true,
+          checked: paper.raw.checked !== false,
           year: typeof paper.raw.year === "number" ? paper.raw.year : undefined,
           citationCount:
             typeof paper.raw.citationCount === "number"
               ? paper.raw.citationCount
               : undefined,
         })),
-        minSelectedByAction: [
-          { actionId: "import", min: 1 },
-          { actionId: "save_note", min: 1 },
-        ],
-        visibleForActionIds: ["import", "save_note"],
-      },
-      ...buildNoteDraftReviewFields(noteContent),
-      {
-        type: "text",
-        id: "nextQuery",
-        label: "Next search query",
-        value: prepared.query || getReferencePaperTitle(context) || "",
-        visibleForActionIds: ["new_search"],
-        requiredForActionIds: ["new_search"],
-      },
-      {
-        type: "select",
-        id: "nextSource",
-        label: "Search source",
-        value: normalizedArgs.source || "openalex",
-        options: [
-          { id: "openalex", label: "OpenAlex" },
-          { id: "arxiv", label: "arXiv" },
-          { id: "europepmc", label: "Europe PMC" },
-        ],
-        visibleForActionIds: ["new_search"],
-        requiredForActionIds: ["new_search"],
-      },
-      {
-        type: "text",
-        id: "nextLimit",
-        label: "Result limit",
-        value: String(normalizedArgs.limit || 10),
-        visibleForActionIds: ["new_search"],
-        requiredForActionIds: ["new_search"],
+        loadMoreActionId:
+          (result.content as { sessionId?: string; outcome?: string })
+            .sessionId &&
+          (result.content as { outcome?: string }).outcome !== "no_more"
+            ? "find_more"
+            : undefined,
+        loadMoreLabel:
+          (result.content as { outcome?: string }).outcome === "search_failed"
+            ? "Retry finding more"
+            : `Find ${Number((result.content as { batchSize?: number }).batchSize) || 5} more`,
+        minSelectedByAction: [{ actionId: "import", min: 1 }],
+        visibleForActionIds: ["import"],
       },
     ],
   };
@@ -993,22 +949,10 @@ export function resolveSearchLiteratureReview(
           kind: "identifiers",
           identifiers,
           libraryID: normalizedArgs.libraryID || context.request.libraryID,
-          // The card dropped this entirely, so the path the UI actually
-          // steers users toward — search, review, Import — could never file
-          // into a collection and dumped everything into the library root.
-          // The collection the turn was scoped to is the obvious default.
-          targetCollectionId:
-            readPositiveInt(
-              (normalizedArgs as { targetCollectionId?: unknown })
-                .targetCollectionId,
-            ) ||
-            readPositiveInt(
-              context.request.turnPaperScope.collections[0]?.collectionId,
-            ) ||
-            undefined,
+          targetCollectionId: normalizedArgs.targetCollectionId,
         },
         inheritedApproval: {
-          sourceToolName: "literature_search",
+          sourceToolName: "literature_review",
           sourceActionId: "import",
           sourceMode: "review",
         } satisfies AgentInheritedApproval,
@@ -1017,65 +961,6 @@ export function resolveSearchLiteratureReview(
         onSuccess: "Imported the selected papers into Zotero.",
         onDenied: "Paper import was cancelled.",
         onError: "Could not import the selected papers into Zotero.",
-      },
-    };
-  }
-
-  if (actionId === "save_note") {
-    const noteContent = normalizeNoteSourceText(
-      readString(data.noteContent) || buildPaperNoteTemplate(context, prepared),
-    );
-    return {
-      kind: "invoke_tool",
-      call: {
-        name: "note_write",
-        arguments: {
-          mode: "create",
-          content: noteContent,
-          target: "item",
-        },
-        inheritedApproval: {
-          sourceToolName: "literature_search",
-          sourceActionId: "save_paper_note",
-          sourceMode: "review",
-        } satisfies AgentInheritedApproval,
-      },
-      terminalText: {
-        onSuccess: "Saved the selected papers to a note.",
-        onDenied: "Paper note save was cancelled.",
-        onError: "Could not save the selected papers to a note.",
-      },
-    };
-  }
-
-  if (actionId === "new_search") {
-    return {
-      kind: "invoke_tool",
-      call: {
-        name: "literature_search",
-        arguments: {
-          workflow: "review",
-          mode: "search",
-          query:
-            readString(data.nextQuery) ||
-            prepared.query ||
-            getReferencePaperTitle(context) ||
-            context.request.userText,
-          source:
-            (readString(data.nextSource) as
-              | SearchLiteratureOnlineSource
-              | undefined) ||
-            normalizedArgs.source ||
-            "openalex",
-          limit: Math.min(
-            25,
-            Math.max(
-              1,
-              readPositiveInt(data.nextLimit) || normalizedArgs.limit || 10,
-            ),
-          ),
-          libraryID: normalizedArgs.libraryID || context.request.libraryID,
-        },
       },
     };
   }

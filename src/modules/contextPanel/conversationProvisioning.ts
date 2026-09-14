@@ -1,5 +1,7 @@
 declare const Zotero: any;
 
+import { getNoteConversation } from "./noteEditing/conversationItem";
+
 import {
   buildDefaultClaudeGlobalConversationKey,
   buildDefaultClaudePaperConversationKey,
@@ -108,6 +110,11 @@ function bindSyntheticPortalItemToEntry(
   entry: ConversationCatalogEntry | null,
 ): void {
   if (!entry || !item || typeof item !== "object") return;
+  const noteConversation = getNoteConversation(item);
+  if (noteConversation) {
+    noteConversation.conversationKey = entry.conversationKey;
+    return;
+  }
   const candidate = item as Zotero.Item & {
     __llmGlobalPortalItem?: boolean;
     __llmPaperPortalItem?: boolean;
@@ -669,6 +676,31 @@ async function provisionCodexConversation(scope: {
   paperItemID?: number;
 }): Promise<ConversationCatalogEntry | null> {
   return provisionRuntimeConversationUncoalesced("codex", scope);
+}
+
+export async function provisionDefaultPaperConversation(params: {
+  system: ConversationSystem;
+  libraryID: number;
+  paperItemID: number;
+}): Promise<ConversationCatalogEntry | null> {
+  const libraryID = normalizePositiveInt(params.libraryID);
+  const paperItemID = normalizePositiveInt(params.paperItemID);
+  if (!libraryID || !paperItemID) return null;
+  await initConversationKeyLedgerStore();
+  const conversationKey =
+    params.system === "claude_code"
+      ? buildDefaultClaudePaperConversationKey(paperItemID)
+      : params.system === "codex"
+        ? buildDefaultCodexPaperConversationKey(paperItemID)
+        : paperItemID;
+  // Paper restoration and host loading must share the complete lookup/create
+  // decision, including the identity allocated for a retired default key.
+  return provisionConversationEntry(params.system, {
+    conversationKey,
+    kind: "paper",
+    libraryID,
+    paperItemID,
+  });
 }
 
 export async function provisionConversationScopeForItem(params: {

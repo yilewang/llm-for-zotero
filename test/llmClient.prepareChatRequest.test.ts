@@ -99,6 +99,153 @@ describe("llmClient prepareChatRequest", function () {
     );
   });
 
+  it("emits the exact Auto payload policy for optional and required protocols", async function () {
+    const capture = async (
+      params: Parameters<typeof callLLM>[0],
+      reply: unknown,
+    ): Promise<Record<string, unknown>> => {
+      let body: Record<string, unknown> = {};
+      mockFetch(async (_url, init) => {
+        body = JSON.parse(String(init?.body || "{}")) as Record<
+          string,
+          unknown
+        >;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => reply,
+          text: async () => "",
+        };
+      });
+      await callLLM({ ...params, outputTokenLimit: { mode: "auto" } });
+      return body;
+    };
+
+    const responses = await capture(
+      {
+        prompt: "hi",
+        model: "gpt-4o-mini",
+        apiBase: "https://api.openai.com/v1/responses",
+        apiKey: "test",
+        providerProtocol: "responses_api",
+      },
+      { status: "completed", output_text: "ok" },
+    );
+    assert.notProperty(responses, "max_output_tokens");
+
+    const chat = await capture(
+      {
+        prompt: "hi",
+        model: "chat-compatible-model",
+        apiBase: "https://provider.example/v1",
+        apiKey: "test",
+        providerProtocol: "openai_chat_compat",
+      },
+      { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+    );
+    assert.notProperty(chat, "max_tokens");
+    assert.notProperty(chat, "max_completion_tokens");
+
+    const gemini = await capture(
+      {
+        prompt: "hi",
+        model: "gemini-2.5-pro",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "test",
+        providerProtocol: "gemini_native",
+      },
+      {
+        candidates: [
+          { content: { parts: [{ text: "ok" }] }, finishReason: "STOP" },
+        ],
+      },
+    );
+    assert.notNestedProperty(gemini, "generationConfig.maxOutputTokens");
+
+    const anthropic = await capture(
+      {
+        prompt: "hi",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "test",
+        providerProtocol: "anthropic_messages",
+      },
+      { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" },
+    );
+    assert.equal(anthropic.max_tokens, 64_000);
+  });
+
+  it("transmits a validated Custom output limit only on protocols that honor it", async function () {
+    const capture = async (
+      params: Parameters<typeof callLLM>[0],
+      reply: unknown,
+    ): Promise<Record<string, unknown>> => {
+      let body: Record<string, unknown> = {};
+      mockFetch(async (_url, init) => {
+        body = JSON.parse(String(init?.body || "{}")) as Record<
+          string,
+          unknown
+        >;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => reply,
+          text: async () => "",
+        };
+      });
+      await callLLM({
+        ...params,
+        outputTokenLimit: { mode: "custom", tokens: 123 },
+      });
+      return body;
+    };
+
+    const responses = await capture(
+      {
+        prompt: "hi",
+        model: "gpt-4o-mini",
+        apiBase: "https://api.openai.com/v1/responses",
+        apiKey: "test",
+        providerProtocol: "responses_api",
+      },
+      { status: "completed", output_text: "ok" },
+    );
+    assert.equal(responses.max_output_tokens, 123);
+
+    const chat = await capture(
+      {
+        prompt: "hi",
+        model: "chat-compatible-model",
+        apiBase: "https://provider.example/v1",
+        apiKey: "test",
+        providerProtocol: "openai_chat_compat",
+      },
+      { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+    );
+    assert.equal(chat.max_tokens, 123);
+
+    const gemini = await capture(
+      {
+        prompt: "hi",
+        model: "gemini-2.5-pro",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "test",
+        providerProtocol: "gemini_native",
+      },
+      {
+        candidates: [
+          { content: { parts: [{ text: "ok" }] }, finishReason: "STOP" },
+        ],
+      },
+    );
+    assert.equal(
+      (gemini.generationConfig as Record<string, unknown>).maxOutputTokens,
+      123,
+    );
+  });
+
   it("includes extra system messages in the prepared request payload", function () {
     const prepared = prepareChatRequest({
       prompt: "Answer the question.",
@@ -149,7 +296,7 @@ describe("llmClient prepareChatRequest", function () {
       apiKey: "xai-test",
     });
 
-    assert.equal(output, "OK");
+    assert.equal(output.text, "OK");
     assert.isNotNull(capturedBody);
     assert.notProperty(capturedBody as object, "instructions");
     assert.isArray(capturedBody?.input);
@@ -221,7 +368,7 @@ describe("llmClient prepareChatRequest", function () {
       () => undefined,
     );
 
-    assert.equal(output, "OK");
+    assert.equal(output.text, "OK");
     assert.isNotNull(capturedBody);
     assert.isArray(capturedBody?.messages);
     const messages = capturedBody?.messages as Array<Record<string, unknown>>;
@@ -344,8 +491,7 @@ describe("llmClient prepareChatRequest", function () {
         authMode: "codex_auth",
         providerProtocol: "gemini_native",
         temperature: 1.8,
-        maxTokens: 7,
-        maxTokensExplicit: true,
+        outputTokenLimit: { mode: "custom", tokens: 7 },
         profileOverride: {
           forModel: "gpt-codex",
           extraBody: { dormant_advanced_value: true },
@@ -359,7 +505,7 @@ describe("llmClient prepareChatRequest", function () {
       () => undefined,
     );
 
-    assert.equal(output, "OK");
+    assert.equal(output.text, "OK");
     assert.equal(capturedUrl, CODEX_DIRECT_RESPONSES_URL);
     assert.deepEqual(capturedBody.reasoning, {
       effort: "max",
@@ -375,7 +521,7 @@ describe("llmClient prepareChatRequest", function () {
     assert.equal(capturedHeaders.get("Authorization"), "Bearer direct-token");
     assert.equal(capturedHeaders.get("ChatGPT-Account-ID"), "account-789");
 
-    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
       await callLLMStream(
         {
           prompt: `Use ${effort}`,
@@ -394,21 +540,6 @@ describe("llmClient prepareChatRequest", function () {
         effort,
       );
     }
-
-    await callLLMStream(
-      {
-        prompt: "Hello again",
-        model: "gpt-codex",
-        authMode: "codex_auth",
-        reasoning: {
-          provider: "openai",
-          level: "default",
-          effort: "ultra",
-        },
-      },
-      () => undefined,
-    );
-    assert.notProperty(capturedBody, "reasoning");
   });
 
   it("keeps image content for DeepSeek vision models in automatic mode", function () {
@@ -511,7 +642,7 @@ describe("llmClient prepareChatRequest", function () {
       () => undefined,
     );
 
-    assert.equal(output, "OK");
+    assert.equal(output.text, "OK");
     assert.notProperty(capturedBody || {}, "thinking");
     assert.notProperty(capturedBody || {}, "output_config");
     assert.equal(capturedBody?.temperature, 0.3);
@@ -729,7 +860,7 @@ describe("llmClient prepareChatRequest", function () {
         providerProtocol: "anthropic_messages",
         reasoning: { provider: "anthropic", level: "xhigh" },
         temperature: 0.3,
-        maxTokens: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 4096 },
       },
       () => undefined,
     );
@@ -759,7 +890,7 @@ describe("llmClient prepareChatRequest", function () {
         providerProtocol: "anthropic_messages",
         reasoning: { provider: "anthropic", level: "high" },
         temperature: 0.3,
-        maxTokens: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 4096 },
       },
       () => undefined,
     );
@@ -789,7 +920,7 @@ describe("llmClient prepareChatRequest", function () {
         apiKey: "anthropic-test",
         providerProtocol: "anthropic_messages",
         reasoning: { provider: "anthropic", level: "xhigh" },
-        maxTokens: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 4096 },
       },
       () => undefined,
     );
@@ -829,8 +960,41 @@ describe("llmClient prepareChatRequest", function () {
       },
     );
 
-    assert.equal(output, "Done");
+    assert.equal(output.text, "Done");
     assert.deepEqual(reasoningChunks, ["Plan first."]);
+  });
+
+  it("maps Anthropic streaming stop_reason max_tokens to an incomplete outcome", async function () {
+    mockFetch(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: makeSseStream([
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial answer"}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]),
+      json: async () => ({}),
+      text: async () => "",
+    }));
+
+    const outcome = await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+      },
+      () => undefined,
+    );
+
+    assert.equal(outcome.text, "Partial answer");
+    assert.deepEqual(outcome.completion, {
+      status: "incomplete",
+      reason: "output_limit",
+      providerReason: "max_tokens",
+    });
   });
 
   it("does not leak Anthropic thinking fields into OpenAI-compatible Claude calls", async function () {
@@ -865,7 +1029,7 @@ describe("llmClient prepareChatRequest", function () {
       () => undefined,
     );
 
-    assert.equal(output, "OK");
+    assert.equal(output.text, "OK");
     assert.notProperty(capturedBody || {}, "thinking");
     assert.notProperty(capturedBody || {}, "output_config");
     assert.notProperty(capturedBody || {}, "reasoning_effort");
@@ -905,7 +1069,7 @@ describe("llmClient prepareChatRequest", function () {
         providerProtocol: "anthropic_messages",
         reasoning: { provider: "anthropic", level: "high" },
         temperature: 0.3,
-        maxTokens: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 4096 },
       },
       () => undefined,
     );
@@ -929,7 +1093,7 @@ describe("llmClient prepareChatRequest", function () {
           apiKey: "anthropic-test",
           providerProtocol: "anthropic_messages",
           reasoning: { provider: "anthropic", level: "high" },
-          maxTokens: 1024,
+          outputTokenLimit: { mode: "custom", tokens: 1024 },
         },
         () => undefined,
       );
@@ -1034,7 +1198,12 @@ describe("llmClient prepareChatRequest", function () {
           apiKey: "",
           authMode: "codex_auth",
           models: [
-            { id: "m1", model: "gpt-5.4", temperature: 0.3, maxTokens: 256 },
+            {
+              id: "m1",
+              model: "gpt-5.4",
+              temperature: 0.3,
+              outputTokenLimit: { mode: "auto" },
+            },
           ],
         },
       ]),
@@ -1108,7 +1277,7 @@ describe("llmClient prepareChatRequest", function () {
       prompt: "ping",
       model: "gpt-5.4",
     });
-    assert.equal(output, "OK after refresh");
+    assert.equal(output.text, "OK after refresh");
     assert.equal(apiCallCount, 2);
     assert.isAtLeast(writes.length, 1);
     assert.include(writes[writes.length - 1], "new-access");

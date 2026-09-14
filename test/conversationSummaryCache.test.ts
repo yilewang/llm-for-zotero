@@ -37,8 +37,15 @@ describe("conversation summary cache", function () {
     scheduleLLMSummary(1, buildHistory(12), {
       ...CONFIG,
       llmCall: async (params) => {
-        seen = (params as unknown as { maxTokens?: number }).maxTokens;
-        return "- drift grows with age";
+        seen = (
+          params as unknown as {
+            outputTokenLimit?: { mode: string; tokens?: number };
+          }
+        ).outputTokenLimit?.tokens;
+        return {
+          text: "- drift grows with age",
+          completion: { status: "complete" as const },
+        };
       },
     });
     await flushPendingSummaries();
@@ -100,7 +107,10 @@ describe("conversation summary cache", function () {
       },
       llmCall: async () => {
         calls += 1;
-        return "- unreachable";
+        return {
+          text: "- unreachable",
+          completion: { status: "complete" as const },
+        };
       },
     };
 
@@ -190,7 +200,10 @@ describe("conversation summary cache", function () {
       llmCall: async () => {
         calls += 1;
         if (shouldFail) throw new Error("503 Service Unavailable");
-        return "- drift grows with age";
+        return {
+          text: "- drift grows with age",
+          completion: { status: "complete" as const },
+        };
       },
     };
 

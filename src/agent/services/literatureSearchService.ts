@@ -1139,6 +1139,12 @@ export class LiteratureSearchService {
     }
 
     if (!doi) {
+      if (mode === "references" || mode === "citations")
+        return {
+          results: [],
+          source: "OpenAlex",
+          message: `Cannot retrieve ${mode}: the seed paper has no DOI. Keyword matches would not establish this relationship.`,
+        };
       if (titleFallback) {
         const results = dedupe(await fetchKeywordSearch(titleFallback, limit));
         return {
@@ -1158,6 +1164,12 @@ export class LiteratureSearchService {
 
     const work = await resolveOpenAlexWork(doi);
     if (!work) {
+      if (mode === "references" || mode === "citations")
+        return {
+          results: [],
+          source: "OpenAlex",
+          message: `Cannot retrieve ${mode}: the seed paper was not found on OpenAlex.`,
+        };
       if (titleFallback) {
         const results = dedupe(await fetchKeywordSearch(titleFallback, limit));
         return {

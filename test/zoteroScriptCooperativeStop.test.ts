@@ -51,7 +51,8 @@ describe("zotero_script cooperative cancellation", function () {
       allowUnsandboxedTestExecution: true,
     });
     const validated = tool.validate({
-      mode: "read",
+      access: "library",
+      effect: "read",
       script,
       description: "cancellation probe",
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
@@ -147,7 +148,8 @@ describe("zotero_script cooperative cancellation", function () {
       allowUnsandboxedTestExecution: true,
     });
     const validated = tool.validate({
-      mode: "write",
+      access: "library",
+      effect: "write",
       description: "snapshot, overrun, keep snapshotting",
       timeoutMs: 1000,
       // One item is snapshotted before the budget expires; two more are

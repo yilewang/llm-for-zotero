@@ -1,4 +1,5 @@
 import type { AgentWriteToolDefinition } from "../../types";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { fail, ok, validateObject } from "../shared";
 import { classifyRequest } from "../../model/requestClassifier";
 
@@ -24,7 +25,7 @@ export function createSelfContainedTestTool(): AgentWriteToolDefinition<
           target: { type: "string" },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
     guidance: {
@@ -68,7 +69,10 @@ export function createSelfContainedTestTool(): AgentWriteToolDefinition<
     },
     // This development-only tool exercises the confirmation UI but does not
     // mutate Zotero or the filesystem.
-    planMutation: () => ({ effect: "none", reversibility: "full" }),
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        reason: "This development-only review card has no external effect.",
+      }),
     createPendingAction: (input) => ({
       toolName: "self_contained_test_tool",
       title: "Review self-contained demo",

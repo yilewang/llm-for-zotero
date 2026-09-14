@@ -1,3 +1,4 @@
+import type { SemanticDecisions } from "../model/semanticDecisions";
 import {
   ensureAttachmentBlobFromPath,
   persistAttachmentBlob,
@@ -103,6 +104,7 @@ export type SourcePdfFigureExtractionParams = ResolvePdfTargetInput & {
   figureCacheDir: string;
   mineruCacheDir?: string;
   query: string;
+  selection: NonNullable<SemanticDecisions["figures"]>;
   pages?: number[];
   dpi?: number;
 };
@@ -1681,14 +1683,6 @@ export async function renderPdfFigurePageToCanvas(params: {
   };
 }
 
-export function isExplicitWholeDocumentRequest(
-  text: string | undefined,
-): boolean {
-  const normalized = sanitizeText(text).toLowerCase();
-  if (!normalized) return false;
-  return /\b(entire|whole|full)\s+(pdf|paper|document)\b/.test(normalized);
-}
-
 export class PdfPageService {
   constructor(
     private readonly pdfService: PdfService,
@@ -1729,8 +1723,8 @@ export class PdfPageService {
           materialized.scriptPath,
           "--pdf",
           target.storedPath,
-          "--query",
-          params.query || "",
+          "--selection",
+          JSON.stringify(params.selection),
           "--crop-dir",
           cropDir,
           "--out",
@@ -1874,7 +1868,7 @@ export class PdfPageService {
   getUserExplicitPageSelection(
     request: AgentRuntimeRequest,
   ): ParsedPageSelection | null {
-    return parsePageSelectionText(request.userText);
+    return parsePageSelectionValue(request.classifiedIntent?.semantic?.pages);
   }
 
   getActivePageIndex(): number | null {

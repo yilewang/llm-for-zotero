@@ -1,5 +1,7 @@
 declare const Zotero: any;
 
+import { getNoteConversation } from "./conversationItem";
+
 import type {
   ActiveNoteSession,
   ConversationSystem,
@@ -20,6 +22,7 @@ function normalizeTitle(value: unknown): string {
 function resolveActiveTabTitleForNote(
   item: Zotero.Item | null | undefined,
 ): string {
+  item = getNoteConversation(item)?.note || item;
   const noteId = normalizePositiveInt(item?.id);
   if (!noteId) return "";
   const tabsCandidates = [
@@ -74,6 +77,7 @@ function resolveActiveTabTitleForNote(
 export function resolveNoteEditingParentItem(
   item: Zotero.Item | null | undefined,
 ): Zotero.Item | null {
+  item = getNoteConversation(item)?.note || item;
   if (!(item as any)?.isNote?.()) return null;
   const parentID = normalizePositiveInt(item?.parentID);
   if (!parentID) return null;
@@ -84,6 +88,7 @@ export function resolveNoteEditingParentItem(
 export function resolveNoteEditingTitle(
   item: Zotero.Item | null | undefined,
 ): string {
+  item = getNoteConversation(item)?.note || item;
   if (!(item as any)?.isNote?.()) return "";
   const activeTabTitle = resolveActiveTabTitleForNote(item);
   if (activeTabTitle) return activeTabTitle;
@@ -111,6 +116,7 @@ export function resolveNoteEditingTitle(
 export function resolveNoteEditingScope(
   item: Zotero.Item | null | undefined,
 ): NoteEditingScope | null {
+  item = getNoteConversation(item)?.note || item;
   if (!(item as any)?.isNote?.()) return null;
   const noteId = normalizePositiveInt(item?.id);
   const libraryID = normalizePositiveInt(item?.libraryID);
@@ -123,7 +129,9 @@ export function resolveNoteEditingScope(
     libraryID,
     title,
     parentItemId: parentItem?.id,
-    conversationKind: parentItem ? "paper" : "global",
+    // The catalog's historical "paper" kind is an individual-item scope.
+    // Notes use their own item, never a library or parent-paper conversation.
+    conversationKind: "paper",
   };
 }
 

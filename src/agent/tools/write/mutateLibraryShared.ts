@@ -2,18 +2,17 @@
  * Shared helpers used by the focused facade tools for building
  * confirmation cards, normalizing inputs, and executing operations.
  */
-import type {
-  AgentMutationPlan,
-  AgentPendingField,
-  AgentToolContext,
-  AgentWriteToolOutput,
-} from "../../types";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
+import type { ActionEffect } from "../../authorization/types";
 import type {
   ApplyTagsOperation,
-  MoveToCollectionOperation,
-  UpdateMetadataOperation,
   LibraryMutationOperation,
   LibraryMutationService,
+  MoveToCollectionOperation,
+  UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import { executeLibraryMutationAction } from "../../services/mutationCoordinator";
 import type {
@@ -25,6 +24,12 @@ import type {
   ZoteroGateway,
 } from "../../services/zoteroGateway";
 import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../../services/zoteroGateway";
+import type {
+  AgentInvocationPlan,
+  AgentPendingField,
+  AgentToolContext,
+  AgentWriteToolOutput,
+} from "../../types";
 import {
   normalizePositiveInt,
   normalizeStringArray,
@@ -119,7 +124,7 @@ export function normalizeTagAssignmentsFromResolution(
  * The renderer's checklist accessor returns the *checked* row ids as strings
  * (`agentTrace/render.ts` `getSelectedIds`), so the three states a caller must
  * tell apart are:
- *   - `undefined` — no resolution at all (the `auto_approve` / non-HITL path).
+ *   - `undefined` — no resolution at all (the `automatic` / non-HITL path).
  *     The caller keeps its original operation.
  *   - `[]` — the user was asked and unchecked everything. This is a decision,
  *     not an absence, and destructive callers must surface it as an error
@@ -630,9 +635,11 @@ export async function planLibraryMutations(
   mutationService: LibraryMutationService,
   operations: LibraryMutationOperation[],
   context: AgentToolContext,
-): Promise<AgentMutationPlan> {
+): Promise<AgentInvocationPlan> {
   if (!operations.length) {
-    return { effect: "none", reversibility: "full" };
+    return readOnlyInvocationPlan({
+      reason: "The validated library operation contains no changes.",
+    });
   }
   const plans = [];
   for (const operation of operations) {
@@ -643,15 +650,59 @@ export async function planLibraryMutations(
     : plans.every((plan) => plan.reversibility === "none")
       ? "none"
       : "partial";
-  return {
-    effect: "write",
+  const createOperations = new Set<LibraryMutationOperation["type"]>([
+    "create_collection",
+    "create_items",
+    "import_identifiers",
+    "import_local_files",
+    "save_note",
+    "save_notes_batch",
+    "save_saved_search",
+  ]);
+  const deleteOperations = new Set<LibraryMutationOperation["type"]>([
+    "delete_attachment",
+    "delete_collection",
+    "delete_saved_search",
+    "remove_from_collection",
+    "remove_tags",
+    "trash_items",
+  ]);
+  const effects = [
+    ...new Set<ActionEffect>(
+      operations.map((operation) =>
+        createOperations.has(operation.type)
+          ? "create"
+          : deleteOperations.has(operation.type)
+            ? "delete"
+            : "modify",
+      ),
+    ),
+  ];
+  const targets = [
+    ...new Set(
+      operations.flatMap((operation) =>
+        Object.entries(operation).flatMap(([key, value]) => {
+          if (!/(?:id|ids|path|paths)$/i.test(key)) return [];
+          return (Array.isArray(value) ? value : [value])
+            .filter(
+              (entry): entry is string | number =>
+                typeof entry === "string" || typeof entry === "number",
+            )
+            .map((entry) => `${key}:${entry}`);
+        }),
+      ),
+    ),
+  ];
+  return stateChangeInvocationPlan({
+    effects,
+    targets,
     reversibility,
     reason:
       plans
         .map((plan) => plan.reason)
         .filter((reason): reason is string => Boolean(reason))
-        .join(" ") || undefined,
-  };
+        .join(" ") || "The validated Zotero library operation changes state.",
+  });
 }
 
 // ── Metadata & Creator normalization ─────────────────────────────────────────

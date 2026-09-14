@@ -68,12 +68,12 @@ describe("noteSelection", function () {
     } as unknown as Document;
   }
 
-  it("reads the selected text from a focused textarea", function () {
+  it("preserves selected spacing from a focused note textarea", function () {
     const textarea = new FakeTextArea("Alpha beta   gamma delta", 6, 18);
     const selectedText = getEditableSelectionFromDocument(
       buildDocument(textarea),
     );
-    assert.equal(selectedText, "beta gamma");
+    assert.equal(selectedText, "beta   gamma");
   });
 
   it("ignores selections inside the llm panel textarea", function () {

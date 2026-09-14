@@ -160,14 +160,16 @@ export function createUpdateMetadataTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(fix|correct|update|enrich|complete|sync)\b.*\b(metadata|fields?|title|authors?|doi|year|date|abstract)\b/i.test(
-          request.userText,
+        Boolean(
+          request.classifiedIntent?.actionIntents.some(
+            (action) => action.operation === "update_metadata",
+          ),
         ),
       instruction:
         "When the user asks to fix, correct, or enrich metadata from external sources, " +
@@ -330,7 +332,7 @@ export function createUpdateMetadataTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, input.operations, context),
 
     async execute(input, context) {

@@ -1,7 +1,7 @@
 {
   "name": "llm-for-zotero",
   "type": "module",
-  "version": "3.9.5",
+  "version": "3.9.6",
   "description": "AI research agent rooted in your Zotero library",
   "config": {
     "addonName": "llm-for-zotero",
@@ -32,6 +32,9 @@
     "test": "npm run typecheck && npm run test:unit && npm run test:workflow",
     "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/**/*.test.ts'",
     "test:workflow": "node scripts/run-workflow-tests.mjs",
+    "test:behavior": "node scripts/run-behavior-tests.mjs",
+    "test:behavior:smoke": "node scripts/run-behavior-tests.mjs --tier smoke",
+    "eval:skill-router": "tsx scripts/evaluate-skill-router.ts",
     "test:webchat:live": "node scripts/run-workflow-tests.mjs --webchat-live",
     "update-deps": "npm update --save",
     "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live"
@@ -42,6 +45,7 @@
     "katex": "^0.16.28",
     "marked": "^16.4.2",
     "mermaid": "^11.15.0",
+    "parse5": "^8.0.0",
     "zotero-plugin-toolkit": "^5.1.0-beta.13"
   },
   "devDependencies": {

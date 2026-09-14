@@ -1692,6 +1692,9 @@ async function attemptCitationParagraphJump(params: {
   verifiedSourceMatchText?: string;
   verifiedFullSpan?: boolean;
 }): Promise<ExactQuoteJumpResult> {
+  // Source navigation is user-initiated. Raise an existing PDF above standalone
+  // chat/document windows too, even if its paragraph cannot be highlighted.
+  Zotero.getMainWindow()?.focus();
   const quoteTexts = Array.from(
     new Set(
       [
@@ -3361,6 +3364,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       }
       const opened = await openReaderForItem(firstCandidate.contextItemId);
       if (opened) {
+        Zotero.getMainWindow()?.focus();
         if (status) {
           setStatus(
             status,
@@ -3894,7 +3898,7 @@ async function resolveAndNavigateAssistantCitation(params: {
     }
   } finally {
     endNavigationActivity();
-    if (hasQuoteText && !quoteJumpSucceeded) {
+    if (hasQuoteText) {
       const EventConstructor =
         params.body.ownerDocument?.defaultView?.Event || null;
       if (EventConstructor) {
@@ -4317,7 +4321,7 @@ type QuoteCardPointerPoint = {
   clientY: number;
 };
 
-type QuoteCardStatus = "verified" | "unverified" | "not-source";
+type QuoteCardStatus = "verified" | "unresolved" | "not-source";
 
 function isMouseEventLike(event: Event): event is MouseEvent {
   const mouseEvent = event as MouseEvent;
@@ -4441,6 +4445,59 @@ function appendQuoteCardBodyContent(
 
 export const appendQuoteCardBodyContentForTests = appendQuoteCardBodyContent;
 
+/**
+ * Expanded/collapsed is reader state, not message state. When an answer is
+ * re-rendered (quote validation flips a card, a trace refresh, a targeted
+ * wrapper rebuild) the cards are recreated, so the owner of the rebuild asks
+ * for the keys that were open before and restores them on the new cards.
+ */
+const quoteCardExpansionControls = new WeakMap<
+  HTMLElement,
+  (expanded: boolean) => void
+>();
+
+function quoteCardStateKey(card: HTMLElement): string {
+  const occurrenceId = card.dataset.quoteOccurrenceId || "";
+  if (occurrenceId) return `occurrence:${occurrenceId}`;
+  const citationId = card.dataset.quoteCitationId || "";
+  return citationId ? `citation:${citationId}` : "";
+}
+
+function queryQuoteCards(root: ParentNode | null | undefined): HTMLElement[] {
+  if (!root || typeof root.querySelectorAll !== "function") return [];
+  return Array.from(
+    root.querySelectorAll(
+      ".llm-quote-card",
+    ) as unknown as ArrayLike<HTMLElement>,
+  );
+}
+
+export function collectExpandedQuoteCardKeys(
+  root: ParentNode | null | undefined,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const card of queryQuoteCards(root)) {
+    if (card.dataset.quoteInteractive !== "true") continue;
+    if (card.dataset.expanded !== "true") continue;
+    const key = quoteCardStateKey(card);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+export function restoreExpandedQuoteCards(
+  root: ParentNode | null | undefined,
+  keys: ReadonlySet<string>,
+): void {
+  if (!keys.size) return;
+  for (const card of queryQuoteCards(root)) {
+    if (card.dataset.quoteInteractive !== "true") continue;
+    const key = quoteCardStateKey(card);
+    if (!key || !keys.has(key)) continue;
+    quoteCardExpansionControls.get(card)?.(true);
+  }
+}
+
 function createQuoteCardElement(params: {
   ownerDoc: Document;
   quoteText: string;
@@ -4449,15 +4506,22 @@ function createQuoteCardElement(params: {
   citationContent?: Node;
   quoteContent?: DocumentFragment | null;
   status?: QuoteCardStatus;
+  interactive?: boolean;
 }): HTMLElement {
   const status = params.status || "verified";
-  const interactive = status === "verified";
+  const interactive = params.interactive ?? status === "verified";
   const wrapper = params.ownerDoc.createElement("div");
   wrapper.className = params.quoteCitationId
     ? "llm-quote-card llm-quote-citation-anchor"
     : "llm-quote-card";
   wrapper.dataset.quoteStatus = status;
+  wrapper.dataset.quoteInteractive = interactive ? "true" : "false";
   wrapper.dataset.expanded = interactive ? "false" : "true";
+  if (status === "unresolved") {
+    wrapper.title = params.citationContent
+      ? "Source match incomplete; click to search the paper."
+      : "Source match incomplete.";
+  }
   if (params.quoteCitationId) {
     wrapper.dataset.quoteCitationId = params.quoteCitationId;
   }
@@ -4475,6 +4539,12 @@ function createQuoteCardElement(params: {
 
   wrapper.appendChild(content);
   if (params.citationContent) {
+    if (status === "unresolved" && params.citationContent.nodeType === 1) {
+      (params.citationContent as Element).setAttribute(
+        "aria-label",
+        "Source match incomplete; click to search the paper.",
+      );
+    }
     const citation = params.ownerDoc.createElement("span");
     citation.className = "llm-quote-card-citation";
     citation.appendChild(params.citationContent);
@@ -4509,7 +4579,7 @@ function createQuoteCardElement(params: {
   content.append(preview, body);
 
   const setExpanded = (expanded: boolean) => {
-    if (wrapper.dataset.quoteStatus !== "verified") {
+    if (wrapper.dataset.quoteInteractive !== "true") {
       wrapper.dataset.expanded = "true";
       content.removeAttribute("aria-expanded");
       return;
@@ -4518,6 +4588,7 @@ function createQuoteCardElement(params: {
     wrapper.dataset.expanded = expanded ? "true" : "false";
     content.setAttribute("aria-expanded", expanded ? "true" : "false");
   };
+  quoteCardExpansionControls.set(wrapper, setExpanded);
   const toggleExpanded = () => {
     setExpanded(wrapper.dataset.expanded !== "true");
   };
@@ -4535,7 +4606,7 @@ function createQuoteCardElement(params: {
   let quoteCardPointerStart: QuoteCardPointerPoint | null = null;
   let shouldSuppressQuoteCardToggle = false;
   wrapper.addEventListener("mousedown", (event: Event) => {
-    if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.quoteInteractive !== "true") return;
     if (!isMouseEventLike(event)) return;
     quoteCardPointerStart = {
       clientX: event.clientX,
@@ -4546,7 +4617,7 @@ function createQuoteCardElement(params: {
     }
   });
   wrapper.addEventListener("mouseup", (event: Event) => {
-    if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.quoteInteractive !== "true") return;
     if (!isMouseEventLike(event)) return;
     if (
       event.button !== 0 ||
@@ -4558,11 +4629,11 @@ function createQuoteCardElement(params: {
     }
   });
   wrapper.addEventListener("contextmenu", () => {
-    if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.quoteInteractive !== "true") return;
     shouldSuppressQuoteCardToggle = true;
   });
   wrapper.addEventListener("click", (event: Event) => {
-    if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.quoteInteractive !== "true") return;
     if (shouldIgnoreToggle(event.target)) return;
     if (shouldSuppressQuoteCardToggle) {
       shouldSuppressQuoteCardToggle = false;
@@ -4576,7 +4647,7 @@ function createQuoteCardElement(params: {
     toggleExpanded();
   });
   content.addEventListener("keydown", (event: KeyboardEvent) => {
-    if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.quoteInteractive !== "true") return;
     if (event.key !== "Enter" && event.key !== " ") return;
     if (shouldIgnoreToggle(event.target)) return;
     event.preventDefault();
@@ -4607,6 +4678,8 @@ function createFallbackQuoteCardElement(params: {
     quoteText: params.quoteText,
     citationContent,
     quoteContent: params.quoteContent,
+    status: "unresolved",
+    interactive: Boolean(params.citationContent || params.citationLabel),
   });
 }
 
@@ -4626,7 +4699,8 @@ function createQuoteCitationAnchorElement(params: {
       ownerDoc: params.ownerDoc,
       quoteText: displayText,
       quoteCitationId: params.quoteCitation.id,
-      status: "unverified",
+      status: "unresolved",
+      interactive: false,
     });
   }
   const lookupText = resolveQuoteCitationLookupText(params.quoteCitation);
@@ -4677,7 +4751,8 @@ function createQuoteRenderOccurrenceElement(params: {
         quoteCitationId: trustedCitation.id,
         quoteOccurrenceId: params.occurrence.occurrenceId,
         quoteContent: params.quoteContent,
-        status: "unverified",
+        status: "unresolved",
+        interactive: false,
       });
     }
     const lookupText = resolveQuoteCitationLookupText(trustedCitation);
@@ -4728,7 +4803,8 @@ function createQuoteRenderOccurrenceElement(params: {
       quoteText: params.occurrence.displayText,
       quoteOccurrenceId: params.occurrence.occurrenceId,
       quoteContent: params.quoteContent,
-      status: "unverified",
+      status: "unresolved",
+      interactive: false,
     });
   }
   const citationContent: Node = createCitationButton({
@@ -4754,7 +4830,8 @@ function createQuoteRenderOccurrenceElement(params: {
     quoteOccurrenceId: params.occurrence.occurrenceId,
     citationContent,
     quoteContent: params.quoteContent,
-    status: "verified",
+    status: "unresolved",
+    interactive: true,
   });
 }
 
@@ -5267,7 +5344,7 @@ export function decorateAssistantCitationLinks(params: {
   for (const [blockquoteIndex, blockquote] of blockquotes.entries()) {
     if (
       blockquote.closest(
-        ".llm-quote-citation-anchor, [data-quote-status='not-source'], [data-quote-status='unverified']",
+        ".llm-quote-citation-anchor, [data-quote-status='not-source'], [data-quote-status='unresolved']",
       )
     ) {
       continue;

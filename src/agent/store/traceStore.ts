@@ -10,6 +10,8 @@ import {
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
 import type {
   AgentEvent,
@@ -214,7 +216,8 @@ function scheduleAgentRunTraceExport(runId: string, delayMs = 250): void {
   traceExportTimers.set(normalizedRunId, timer);
 }
 
-export async function initAgentTraceStore(): Promise<void> {
+/** Schema preparation is safe while other conversations are running. */
+export async function ensureAgentTraceSchema(): Promise<void> {
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `CREATE TABLE IF NOT EXISTS ${AGENT_RUNS_TABLE} (
@@ -258,14 +261,19 @@ export async function initAgentTraceStore(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS ${AGENT_RUN_EVENTS_INDEX}
        ON ${AGENT_RUN_EVENTS_TABLE} (run_id, seq, id)`,
     );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${AGENT_RUNS_TABLE}
-       SET status = ?, completed_at = ?, final_text = ?
-       WHERE status = 'running'`,
-      ["failed", Date.now(), INTERRUPTED_AGENT_RUN_MARKER],
-    );
     await installConversationKeyLedgerAgentTriggers();
   });
+}
+
+/** Startup recovery runs only before the new runtime is published. */
+export async function initAgentTraceStore(): Promise<void> {
+  await ensureAgentTraceSchema();
+  await Zotero.DB.queryAsync(
+    `UPDATE ${AGENT_RUNS_TABLE}
+     SET status = ?, completed_at = ?, final_text = ?
+     WHERE status = 'running'`,
+    ["failed", Date.now(), INTERRUPTED_AGENT_RUN_MARKER],
+  );
   await sweepOrphanedAgentTraceExports();
 }
 
@@ -521,10 +529,34 @@ export async function getLatestAgentRunForConversation(
   return toAgentRunRecord(rows?.[0]);
 }
 
+/** Every run of a conversation, oldest first; the flight report joins them to an execution. */
+export async function listAgentRunsForConversation(
+  conversationKey: number,
+): Promise<AgentRunRecord[]> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId,
+            conversation_key AS conversationKey,
+            mode,
+            model_name AS modelName,
+            status,
+            created_at AS createdAt,
+            completed_at AS completedAt,
+            final_text AS finalText
+     FROM ${AGENT_RUNS_TABLE}
+     WHERE conversation_key = ?
+     ORDER BY created_at ASC, rowid ASC`,
+    [conversationKey],
+  )) as AgentRunRow[] | undefined;
+  return (rows || [])
+    .map((row) => toAgentRunRecord(row))
+    .filter((run): run is AgentRunRecord => Boolean(run));
+}
+
 export async function appendAgentRunEvent(
   runId: string,
   seq: number,
   event: AgentEvent,
+  createdAt = Date.now(),
 ): Promise<void> {
   const conversationKey = runConversationKeys.get(runId);
   if (conversationKey && isConversationKeyRetiredInMemory(conversationKey)) {
@@ -534,9 +566,53 @@ export async function appendAgentRunEvent(
     `INSERT INTO ${AGENT_RUN_EVENTS_TABLE}
       (run_id, seq, event_type, payload_json, created_at)
      VALUES (?, ?, ?, ?, ?)`,
-    [runId, seq, event.type, JSON.stringify(event), Date.now()],
+    [runId, seq, event.type, JSON.stringify(event), createdAt],
   );
   scheduleAgentRunTraceExport(runId);
+}
+
+/** Save a provider's coalesced trace before publishing the message that refers to it. */
+export async function saveAgentRunTraceSnapshot(
+  record: AgentRunRecord,
+  events: readonly AgentRunEventRecord[],
+): Promise<void> {
+  await Zotero.DB.executeTransaction(async () => {
+    await createAgentRun(record);
+    if (!runConversationKeys.has(record.runId)) return;
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id = ?`,
+      [record.runId],
+    );
+    for (const [index, event] of events.entries()) {
+      await appendAgentRunEvent(
+        record.runId,
+        index + 1,
+        event.payload,
+        event.createdAt,
+      );
+    }
+  });
+}
+
+export async function appendAgentRunEventAfterLatest(
+  runId: string,
+  event: AgentEvent,
+): Promise<AgentRunEventRecord> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT COALESCE(MAX(seq), 0) AS maxSeq
+     FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id = ?`,
+    [runId],
+  )) as Array<{ maxSeq?: unknown }> | undefined;
+  const seq = Math.max(0, Number(rows?.[0]?.maxSeq || 0)) + 1;
+  const createdAt = Date.now();
+  await Zotero.DB.queryAsync(
+    `INSERT INTO ${AGENT_RUN_EVENTS_TABLE}
+      (run_id, seq, event_type, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [runId, seq, event.type, JSON.stringify(event), createdAt],
+  );
+  scheduleAgentRunTraceExport(runId);
+  return { runId, seq, eventType: event.type, payload: event, createdAt };
 }
 
 export async function listAgentRunEvents(
@@ -707,4 +783,76 @@ export async function clearAgentTraceState(
   }
   if (firstFileError) throw firstFileError;
   return cleanupRunIDs;
+}
+
+/** Durable host events for provider-owned turns, using the existing run store. */
+export type AgentRunEventJournal = {
+  runId: string;
+  append(event: AgentEvent): Promise<void>;
+  finish(status: AgentRunStatus, text: string): Promise<void>;
+};
+
+export function createAgentRunEventJournal(params: {
+  conversationKey: number;
+  conversationGeneration: number;
+  model?: string;
+}): AgentRunEventJournal {
+  const runId = `native-host:${params.conversationKey}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  let started = false;
+  let closed = false;
+  let seq = 0;
+  let queue = Promise.resolve();
+  const enqueue = (task: () => Promise<void>) => {
+    queue = queue.then(() =>
+      withConversationWriteLock(params.conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(params.conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            params.conversationKey,
+            params.conversationGeneration,
+          )
+        )
+          throw new Error(
+            "The conversation changed; native execution authority is no longer current.",
+          );
+        if (!started) {
+          await createAgentRun({
+            runId,
+            conversationKey: params.conversationKey,
+            mode: "agent",
+            model: params.model,
+            status: "running",
+            createdAt: Date.now(),
+          });
+          const trace = await getAgentRunTrace(runId);
+          if (!trace.run)
+            throw new Error(
+              "The native turn could not persist its execution authority.",
+            );
+          started = true;
+        }
+        await task();
+      }),
+    );
+    return queue;
+  };
+  return {
+    runId,
+    append(event) {
+      if (closed)
+        return Promise.reject(
+          new Error("The native run is already finalized."),
+        );
+      const snapshot = JSON.parse(JSON.stringify(event)) as AgentEvent;
+      return enqueue(() => appendAgentRunEvent(runId, ++seq, snapshot));
+    },
+    finish(status, text) {
+      if (closed) return queue;
+      closed = true;
+      return enqueue(async () => {
+        await appendAgentRunEvent(runId, ++seq, { type: "final", text });
+        await finishAgentRun(runId, status, text);
+      });
+    },
+  };
 }

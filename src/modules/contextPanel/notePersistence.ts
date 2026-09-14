@@ -1,3 +1,4 @@
+import { noteHtmlMatches } from "../../utils/noteHtml";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
 import type { ResolvedNoteMetadata } from "../../services/zoteroMetadata/types";
 
@@ -88,7 +89,7 @@ function createNotifierQueueHandle(): NotifierQueueHandle {
   };
 }
 
-function stripZoteroNoteWrapper(html: string): string {
+export function stripZoteroNoteWrapper(html: string): string {
   const normalized = (html || "").trim();
   const match = normalized.match(
     /^<div class="zotero-note znv\d+">([\s\S]*)<\/div>$/,
@@ -96,32 +97,49 @@ function stripZoteroNoteWrapper(html: string): string {
   return (match?.[1] || normalized).trim();
 }
 
-function noteHtmlMatches(actual: string, expected: string): boolean {
-  return stripZoteroNoteWrapper(actual) === stripZoteroNoteWrapper(expected);
+export type NativeNoteVerification = Readonly<{
+  schemaVersion: 1;
+  noteId: number;
+  html: string;
+  expectedHtml: string;
+  matches: boolean;
+}>;
+
+export class NoteVerificationError extends Error {
+  constructor(
+    readonly verification: NativeNoteVerification | null,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
-async function reloadAndVerifyNote(
+/** A successful read is always a forced native reload, never an in-memory echo. */
+export async function verifyNativeNoteHtml(
   note: Zotero.Item,
   expectedHtml: string,
-): Promise<{ matches: boolean; reloaded: boolean }> {
-  const reload = (
-    note as Zotero.Item & {
-      reload?: (
-        dataTypes?: string[],
-        reloadUnchanged?: boolean,
-      ) => Promise<void>;
-    }
-  ).reload;
-  if (typeof reload === "function") {
-    await reload.call(note, ["note"], true);
-    return {
-      matches: noteHtmlMatches(note.getNote() || "", expectedHtml),
-      reloaded: true,
-    };
+): Promise<NativeNoteVerification> {
+  if (typeof note.reload !== "function") {
+    throw new NoteVerificationError(
+      null,
+      "Native note verification is unavailable: reload is not supported",
+    );
   }
+  try {
+    await note.reload(["note"], true);
+  } catch {
+    throw new NoteVerificationError(
+      null,
+      "Native note verification is unavailable: the note could not be reloaded",
+    );
+  }
+  const html = note.getNote() || "";
   return {
-    matches: noteHtmlMatches(note.getNote() || "", expectedHtml),
-    reloaded: false,
+    schemaVersion: 1,
+    noteId: note.id,
+    html,
+    expectedHtml,
+    matches: noteHtmlMatches(html, expectedHtml),
   };
 }
 
@@ -130,45 +148,34 @@ async function persistAndVerifyNoteHtml(
   expectedHtml: string,
   saveOptions: NotePersistenceSaveOptions,
   alreadySaved = false,
-): Promise<void> {
-  let saveResult: number | boolean | undefined;
+): Promise<NativeNoteVerification> {
+  let saveError: unknown;
   if (!alreadySaved) {
     note.setNote(expectedHtml);
-    saveResult = await note.saveTx(saveOptions as never);
+    try {
+      await note.saveTx(saveOptions as never);
+    } catch (error) {
+      saveError = error;
+    }
   }
-  const firstVerification = await reloadAndVerifyNote(note, expectedHtml);
-  if (
-    firstVerification.matches &&
-    (alreadySaved || firstVerification.reloaded || saveResult !== false)
-  ) {
-    return;
-  }
-
-  note.setNote(expectedHtml);
-  saveResult = await note.saveTx(saveOptions as never);
-  const retryVerification = await reloadAndVerifyNote(note, expectedHtml);
-  if (
-    retryVerification.matches &&
-    (retryVerification.reloaded || saveResult !== false)
-  ) {
-    return;
-  }
-
-  throw new Error("Zotero note content did not persist after retry");
+  const verification = await verifyNativeNoteHtml(note, expectedHtml);
+  // A notification or post-commit exception does not undo the native commit.
+  if (verification.matches) return verification;
+  throw new NoteVerificationError(
+    verification,
+    saveError instanceof Error
+      ? `Native note content does not match the prepared change after save: ${saveError.message}`
+      : "Native note content does not match the prepared change",
+  );
 }
 
-/**
- * Write HTML to an existing note and verify (via a forced reload) that it
- * actually persisted, retrying once. Zotero's saveTx can silently no-op —
- * the #327 failure class — so append/replace/undo paths must use this
- * instead of a bare setNote()+saveTx(), same as note creation does.
- */
+/** Write once and verify. Recovery decisions belong to the action coordinator. */
 export async function persistVerifiedNoteHtml(
   note: Zotero.Item,
   html: string,
   saveOptions: NotePersistenceSaveOptions = {},
-): Promise<void> {
-  await persistAndVerifyNoteHtml(note, html, saveOptions);
+): Promise<NativeNoteVerification> {
+  return persistAndVerifyNoteHtml(note, html, saveOptions);
 }
 
 function resolveCreatedNoteId(
@@ -245,6 +252,14 @@ function buildCreatedNoteReceipt(params: {
   };
 }
 
+export async function readCreatedNoteReceipt(
+  note: Zotero.Item,
+): Promise<CreatedZoteroNoteReceipt | undefined> {
+  return buildCreatedNoteReceipt({
+    final: await readCreatedNoteMetadata(note.id, note),
+  });
+}
+
 /**
  * Create a Zotero note without exposing an intermediate placeholder to item
  * observers. The first persisted state is always useful content. When assets
@@ -263,9 +278,12 @@ export async function createFinalizedZoteroNote(
   let initialCreatedNoteMetadata: ResolvedNoteMetadata | undefined;
 
   try {
-    params.note.setNote(params.initialHtml);
-    const saveResult = await params.note.saveTx(queue.saveOptions as never);
-    noteId = resolveCreatedNoteId(params.note, saveResult);
+    await persistVerifiedNoteHtml(
+      params.note,
+      params.initialHtml,
+      queue.saveOptions,
+    );
+    noteId = resolveCreatedNoteId(params.note, undefined);
 
     try {
       initialCreatedNoteMetadata = await readCreatedNoteMetadata(
@@ -306,7 +324,7 @@ export async function createFinalizedZoteroNote(
           error instanceof Error ? error.message : String(error || "unknown");
         warnings.push(`Note asset finalization failed: ${message}`);
         logSafely(params.log, "LLM: Note asset finalization failed", error);
-        finalHtml = params.initialHtml;
+        throw new Error(`Note asset finalization is incomplete: ${message}`);
       }
     }
 
@@ -359,7 +377,11 @@ export async function createFinalizedZoteroNote(
   }
 
   if (primaryError) throw primaryError;
-  if (commitError) throw commitError;
+  if (commitError && result) {
+    result.warnings.push(
+      "The note content was saved and verified, but its notifications could not be delivered",
+    );
+  }
   if (!result) {
     throw new Error("Zotero note persistence completed without a result");
   }

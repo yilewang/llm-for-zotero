@@ -3,6 +3,7 @@ import { libraryMutationHandlers } from "../src/agent/services/libraryMutation/h
 import type { LibraryMutationOperationType } from "../src/agent/services/libraryMutation/handlerDefinition";
 import {
   createdObjectIdsForLibraryMutation,
+  executeMutationFromHandler,
   isRegisteredLibraryMutationOperation,
   mutationPostconditionIsSatisfied,
 } from "../src/agent/services/libraryMutation/handlerOperations";
@@ -79,12 +80,41 @@ describe("library mutation handler registry", function () {
         { type: "create_collection", name: "Methods" },
         {
           result: {
-            collectionId: 42,
+            collection: { collectionId: 42 },
             unrelated: { itemId: 999, savedSearchId: 888 },
           },
         },
       ),
       { itemIds: [], collectionIds: [42], savedSearchIds: [] },
+    );
+  });
+
+  it("captures collection identity from the actual forward executor result", async function () {
+    const operation = {
+      type: "create_collection" as const,
+      name: "Methods",
+      libraryID: 1,
+    };
+    const execution = await executeMutationFromHandler(
+      operation,
+      { request: {}, item: null } as never,
+      {
+        resolveLibraryID: () => 1,
+        createCollection: async () => ({
+          collectionId: 42,
+          name: "Methods",
+          libraryID: 1,
+          path: "Methods",
+        }),
+      } as never,
+    );
+    assert.deepEqual(
+      createdObjectIdsForLibraryMutation(operation, execution.result),
+      {
+        itemIds: [],
+        collectionIds: [42],
+        savedSearchIds: [],
+      },
     );
   });
 

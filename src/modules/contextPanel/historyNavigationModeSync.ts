@@ -66,6 +66,11 @@ export type HistoryNavigationModeSnapshot = {
   restore: () => void;
 };
 
+type GuardedRestore = {
+  isStillPrimed: () => boolean;
+  restore: () => void;
+};
+
 type HistoryNavigationModeParams = {
   system: ConversationSystem;
   libraryID: number;
@@ -127,6 +132,17 @@ function noopSnapshot(): HistoryNavigationModeSnapshot {
   return { restore: () => undefined };
 }
 
+function buildGuardedSnapshot(
+  callbacks: GuardedRestore[],
+): HistoryNavigationModeSnapshot {
+  return {
+    restore: () => {
+      if (!callbacks.every(({ isStillPrimed }) => isStillPrimed())) return;
+      for (const { restore } of [...callbacks].reverse()) restore();
+    },
+  };
+}
+
 export function primeHistoryNavigationMode(
   params: HistoryNavigationModeParams,
 ): HistoryNavigationModeSnapshot {
@@ -137,7 +153,7 @@ export function primeHistoryNavigationMode(
   const paperItemID = normalizePositiveInt(params.paperItemID);
   const mode: HistoryNavigationMode =
     params.mode === "global" ? "global" : "paper";
-  const restoreCallbacks: Array<() => void> = [];
+  const restoreCallbacks: GuardedRestore[] = [];
 
   if (params.system === "claude_code") {
     const libraryKey = buildClaudeLibraryStateKey(libraryID);
@@ -148,13 +164,17 @@ export function primeHistoryNavigationMode(
     const previousMode = getLastUsedClaudeConversationMode(libraryID);
     activeClaudeConversationModeByLibrary.set(libraryKey, mode);
     setLastUsedClaudeConversationMode(libraryID, mode);
-    restoreCallbacks.push(() => {
-      restoreMapEntry(modeSnapshot);
-      restoreOptionalMode(
-        previousMode,
-        (value) => setLastUsedClaudeConversationMode(libraryID, value),
-        () => removeLastUsedClaudeConversationMode(libraryID),
-      );
+    restoreCallbacks.push({
+      isStillPrimed: () =>
+        activeClaudeConversationModeByLibrary.get(libraryKey) === mode,
+      restore: () => {
+        restoreMapEntry(modeSnapshot);
+        restoreOptionalMode(
+          previousMode,
+          (value) => setLastUsedClaudeConversationMode(libraryID, value),
+          () => removeLastUsedClaudeConversationMode(libraryID),
+        );
+      },
     });
 
     if (mode === "global" && conversationKey) {
@@ -166,13 +186,18 @@ export function primeHistoryNavigationMode(
         getLastUsedClaudeGlobalConversationKey(libraryID);
       activeClaudeGlobalConversationByLibrary.set(libraryKey, conversationKey);
       setLastUsedClaudeGlobalConversationKey(libraryID, conversationKey);
-      restoreCallbacks.push(() => {
-        restoreMapEntry(globalSnapshot);
-        restoreOptionalNumber(
-          previousGlobalKey,
-          (value) => setLastUsedClaudeGlobalConversationKey(libraryID, value),
-          () => removeLastUsedClaudeGlobalConversationKey(libraryID),
-        );
+      restoreCallbacks.push({
+        isStillPrimed: () =>
+          activeClaudeGlobalConversationByLibrary.get(libraryKey) ===
+          conversationKey,
+        restore: () => {
+          restoreMapEntry(globalSnapshot);
+          restoreOptionalNumber(
+            previousGlobalKey,
+            (value) => setLastUsedClaudeGlobalConversationKey(libraryID, value),
+            () => removeLastUsedClaudeGlobalConversationKey(libraryID),
+          );
+        },
       });
     } else if (mode === "paper" && conversationKey && paperItemID) {
       const paperKey = buildClaudePaperStateKey(libraryID, paperItemID);
@@ -190,27 +215,28 @@ export function primeHistoryNavigationMode(
         paperItemID,
         conversationKey,
       );
-      restoreCallbacks.push(() => {
-        restoreMapEntry(paperSnapshot);
-        restoreOptionalNumber(
-          previousPaperKey,
-          (value) =>
-            setLastUsedClaudePaperConversationKey(
-              libraryID,
-              paperItemID,
-              value,
-            ),
-          () =>
-            removeLastUsedClaudePaperConversationKey(libraryID, paperItemID),
-        );
+      restoreCallbacks.push({
+        isStillPrimed: () =>
+          activeClaudePaperConversationByPaper.get(paperKey) ===
+          conversationKey,
+        restore: () => {
+          restoreMapEntry(paperSnapshot);
+          restoreOptionalNumber(
+            previousPaperKey,
+            (value) =>
+              setLastUsedClaudePaperConversationKey(
+                libraryID,
+                paperItemID,
+                value,
+              ),
+            () =>
+              removeLastUsedClaudePaperConversationKey(libraryID, paperItemID),
+          );
+        },
       });
     }
 
-    return {
-      restore: () => {
-        for (const restore of [...restoreCallbacks].reverse()) restore();
-      },
-    };
+    return buildGuardedSnapshot(restoreCallbacks);
   }
 
   if (params.system === "codex") {
@@ -222,13 +248,17 @@ export function primeHistoryNavigationMode(
     const previousMode = getLastUsedCodexConversationMode(libraryID);
     activeCodexConversationModeByLibrary.set(libraryKey, mode);
     setLastUsedCodexConversationMode(libraryID, mode);
-    restoreCallbacks.push(() => {
-      restoreMapEntry(modeSnapshot);
-      restoreOptionalMode(
-        previousMode,
-        (value) => setLastUsedCodexConversationMode(libraryID, value),
-        () => removeLastUsedCodexConversationMode(libraryID),
-      );
+    restoreCallbacks.push({
+      isStillPrimed: () =>
+        activeCodexConversationModeByLibrary.get(libraryKey) === mode,
+      restore: () => {
+        restoreMapEntry(modeSnapshot);
+        restoreOptionalMode(
+          previousMode,
+          (value) => setLastUsedCodexConversationMode(libraryID, value),
+          () => removeLastUsedCodexConversationMode(libraryID),
+        );
+      },
     });
 
     if (mode === "global" && conversationKey) {
@@ -240,13 +270,18 @@ export function primeHistoryNavigationMode(
         getLastUsedCodexGlobalConversationKey(libraryID);
       activeCodexGlobalConversationByLibrary.set(libraryKey, conversationKey);
       setLastUsedCodexGlobalConversationKey(libraryID, conversationKey);
-      restoreCallbacks.push(() => {
-        restoreMapEntry(globalSnapshot);
-        restoreOptionalNumber(
-          previousGlobalKey,
-          (value) => setLastUsedCodexGlobalConversationKey(libraryID, value),
-          () => removeLastUsedCodexGlobalConversationKey(libraryID),
-        );
+      restoreCallbacks.push({
+        isStillPrimed: () =>
+          activeCodexGlobalConversationByLibrary.get(libraryKey) ===
+          conversationKey,
+        restore: () => {
+          restoreMapEntry(globalSnapshot);
+          restoreOptionalNumber(
+            previousGlobalKey,
+            (value) => setLastUsedCodexGlobalConversationKey(libraryID, value),
+            () => removeLastUsedCodexGlobalConversationKey(libraryID),
+          );
+        },
       });
     } else if (mode === "paper" && conversationKey && paperItemID) {
       const paperKey = buildCodexPaperStateKey(libraryID, paperItemID);
@@ -264,22 +299,27 @@ export function primeHistoryNavigationMode(
         paperItemID,
         conversationKey,
       );
-      restoreCallbacks.push(() => {
-        restoreMapEntry(paperSnapshot);
-        restoreOptionalNumber(
-          previousPaperKey,
-          (value) =>
-            setLastUsedCodexPaperConversationKey(libraryID, paperItemID, value),
-          () => removeLastUsedCodexPaperConversationKey(libraryID, paperItemID),
-        );
+      restoreCallbacks.push({
+        isStillPrimed: () =>
+          activeCodexPaperConversationByPaper.get(paperKey) === conversationKey,
+        restore: () => {
+          restoreMapEntry(paperSnapshot);
+          restoreOptionalNumber(
+            previousPaperKey,
+            (value) =>
+              setLastUsedCodexPaperConversationKey(
+                libraryID,
+                paperItemID,
+                value,
+              ),
+            () =>
+              removeLastUsedCodexPaperConversationKey(libraryID, paperItemID),
+          );
+        },
       });
     }
 
-    return {
-      restore: () => {
-        for (const restore of [...restoreCallbacks].reverse()) restore();
-      },
-    };
+    return buildGuardedSnapshot(restoreCallbacks);
   }
 
   const modeSnapshot = snapshotMapEntry(
@@ -289,13 +329,17 @@ export function primeHistoryNavigationMode(
   const previousMode = getLastUsedUpstreamConversationMode(libraryID);
   activeConversationModeByLibrary.set(libraryID, mode);
   setLastUsedUpstreamConversationMode(libraryID, mode);
-  restoreCallbacks.push(() => {
-    restoreMapEntry(modeSnapshot);
-    restoreOptionalMode(
-      previousMode,
-      (value) => setLastUsedUpstreamConversationMode(libraryID, value),
-      () => removeLastUsedUpstreamConversationMode(libraryID),
-    );
+  restoreCallbacks.push({
+    isStillPrimed: () =>
+      activeConversationModeByLibrary.get(libraryID) === mode,
+    restore: () => {
+      restoreMapEntry(modeSnapshot);
+      restoreOptionalMode(
+        previousMode,
+        (value) => setLastUsedUpstreamConversationMode(libraryID, value),
+        () => removeLastUsedUpstreamConversationMode(libraryID),
+      );
+    },
   });
 
   if (mode === "global" && conversationKey) {
@@ -307,13 +351,17 @@ export function primeHistoryNavigationMode(
       getLastUsedUpstreamGlobalConversationKey(libraryID);
     activeGlobalConversationByLibrary.set(libraryID, conversationKey);
     setLastUsedUpstreamGlobalConversationKey(libraryID, conversationKey);
-    restoreCallbacks.push(() => {
-      restoreMapEntry(globalSnapshot);
-      restoreOptionalNumber(
-        previousGlobalKey,
-        (value) => setLastUsedUpstreamGlobalConversationKey(libraryID, value),
-        () => removeLastUsedUpstreamGlobalConversationKey(libraryID),
-      );
+    restoreCallbacks.push({
+      isStillPrimed: () =>
+        activeGlobalConversationByLibrary.get(libraryID) === conversationKey,
+      restore: () => {
+        restoreMapEntry(globalSnapshot);
+        restoreOptionalNumber(
+          previousGlobalKey,
+          (value) => setLastUsedUpstreamGlobalConversationKey(libraryID, value),
+          () => removeLastUsedUpstreamGlobalConversationKey(libraryID),
+        );
+      },
     });
   } else if (mode === "paper" && conversationKey && paperItemID) {
     const paperKey = buildPaperStateKey(libraryID, paperItemID);
@@ -327,20 +375,20 @@ export function primeHistoryNavigationMode(
     );
     activePaperConversationByPaper.set(paperKey, conversationKey);
     setLastUsedPaperConversationKey(libraryID, paperItemID, conversationKey);
-    restoreCallbacks.push(() => {
-      restoreMapEntry(paperSnapshot);
-      restoreOptionalNumber(
-        previousPaperKey,
-        (value) =>
-          setLastUsedPaperConversationKey(libraryID, paperItemID, value),
-        () => removeLastUsedPaperConversationKey(libraryID, paperItemID),
-      );
+    restoreCallbacks.push({
+      isStillPrimed: () =>
+        activePaperConversationByPaper.get(paperKey) === conversationKey,
+      restore: () => {
+        restoreMapEntry(paperSnapshot);
+        restoreOptionalNumber(
+          previousPaperKey,
+          (value) =>
+            setLastUsedPaperConversationKey(libraryID, paperItemID, value),
+          () => removeLastUsedPaperConversationKey(libraryID, paperItemID),
+        );
+      },
     });
   }
 
-  return {
-    restore: () => {
-      for (const restore of [...restoreCallbacks].reverse()) restore();
-    },
-  };
+  return buildGuardedSnapshot(restoreCallbacks);
 }

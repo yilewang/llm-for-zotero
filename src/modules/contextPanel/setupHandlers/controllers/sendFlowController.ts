@@ -36,6 +36,11 @@ import {
   resolveNoteEditingScope,
 } from "../../noteEditing";
 import { readNoteSnapshot } from "../../noteSnapshot";
+import {
+  getPlanningRuntimeContext,
+  restorePendingPlanExecution,
+  takePendingPlanExecution,
+} from "../../planModeState";
 
 type StatusLevel = "ready" | "warning" | "error";
 
@@ -83,6 +88,7 @@ type SendFlowControllerDeps = {
   body: Element;
   inputBox: HTMLTextAreaElement;
   getItem: () => Zotero.Item | null;
+  requireCurrentOwnership?: (item: Zotero.Item, operation: string) => boolean;
   beginRequest: (
     body: Element,
     item: Zotero.Item,
@@ -270,7 +276,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 } {
   const doSend = async (options?: SendFlowOptions) => {
     const item = deps.getItem();
-    if (!item) return;
+    if (
+      !item ||
+      (deps.requireCurrentOwnership &&
+        !deps.requireCurrentOwnership(item, "send"))
+    ) {
+      return;
+    }
 
     const textContextConversationKey = deps.getConversationKey(item);
     const capturedDraft = deps.inputBox.value;
@@ -288,6 +300,14 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     const requestIsActive = () =>
       deps.isRequestOwner(request.conversationKey, request.requestId) &&
       !request.signal.aborted;
+    const operationIsActive = () =>
+      requestIsActive() &&
+      (!deps.requireCurrentOwnership ||
+        deps.requireCurrentOwnership(item, "send-continuation"));
+    let planContext = getPlanningRuntimeContext(request.conversationKey);
+    let pendingPlanExecution: Awaited<
+      ReturnType<typeof takePendingPlanExecution>
+    >;
     const shouldClearDraft = !options?.preserveInputDraft;
     let submittedInputRestored = false;
     let providerDispatchStarted = false;
@@ -308,6 +328,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.onComposerDraftCleared?.();
         deps.persistDraftInput();
       }
+      pendingPlanExecution = await takePendingPlanExecution(
+        request.conversationKey,
+      );
+      planContext = pendingPlanExecution || planContext;
       deps.closeSlashMenu();
       deps.closePaperPicker();
       deps.autoLockGlobalChat();
@@ -331,7 +355,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       );
       const primarySelectedText = selectedTexts[0] || "";
       const contextSource = await deps.resolveContextSource();
-      if (!requestIsActive()) return;
+      if (!operationIsActive()) return;
       const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
       const selectedCollectionContexts = deps.getSelectedCollectionContexts(
         item.id,
@@ -363,7 +387,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             paperContexts: allSelectedPaperContexts,
           })
         : [];
-      if (!requestIsActive()) return;
+      if (!operationIsActive()) return;
       // Resolve PDFs based on model capability. The visible chip/attachment state
       // stays unchanged; these variables are the provider-specific model inputs.
       const isWebChat = earlyProfile?.authMode === "webchat";
@@ -464,7 +488,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         isWebChat,
         useCodexAttachmentPolicy,
       });
-      if (!requestIsActive()) return;
+      if (!operationIsActive()) return;
       if (!pdfInputs.ok) return;
       const {
         selectedFiles,
@@ -476,7 +500,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       if (localDocuments.length && deps.isClaudeConversationSystem()) {
         try {
           await deps.preflightLocalPdfCapability?.();
-          if (!requestIsActive()) return;
+          if (!operationIsActive()) return;
         } catch (error) {
           deps.setStatusMessage?.(
             error instanceof Error && error.message.trim()
@@ -589,13 +613,16 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         delete dataset.commandAction;
         delete dataset.commandParams;
       }
-      const displayQuestion = commandAction
-        ? commandParams
-          ? `/${commandAction} ${commandParams}`
-          : `/${commandAction}`
-        : primarySelectedText
-          ? resolvedPromptText
-          : rawSubmittedText || resolvedPromptText;
+      const displayQuestion =
+        planContext?.phase === "executing"
+          ? "Approved plan"
+          : commandAction
+            ? commandParams
+              ? `/${commandAction} ${commandParams}`
+              : `/${commandAction}`
+            : primarySelectedText
+              ? resolvedPromptText
+              : rawSubmittedText || resolvedPromptText;
 
       const titleSeed =
         deps.normalizeConversationTitleSeed(rawSubmittedText) ||
@@ -652,7 +679,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const activeEditSession = deps.getActiveEditSession();
       if (activeEditSession) {
         const latest = await deps.getLatestEditablePair();
-        if (!requestIsActive()) return;
+        if (!operationIsActive()) return;
         if (!latest) {
           deps.setActiveEditSession(null);
           deps.setStatusMessage?.("No editable latest prompt", "error");
@@ -800,13 +827,14 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           : composedQuestion;
       if (shouldRetainClaudeRuntime) {
         await deps.retainClaudeRuntime?.(deps.body, item);
-        if (!requestIsActive()) return;
+        if (!operationIsActive()) return;
       }
       const activeNoteScope = resolveNoteEditingScope(item);
       const activeNoteContext = buildNoteEditingTurnContext({
         scope: activeNoteScope,
         snapshot: readNoteSnapshot(item),
       }).activeNoteContext;
+      if (!operationIsActive()) return;
       let webchatSendOutcome: "success" | "failed" | "cancelled" | null = null;
       const sendTask = deps.sendQuestion({
         body: deps.body,
@@ -866,6 +894,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         onWebChatSendOutcome: (outcome) => {
           webchatSendOutcome = outcome;
         },
+        planContext,
       });
       if (hasPaperComposeState && !isWebChat) {
         deps.consumePaperModeState(item.id);
@@ -927,6 +956,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
       if (finished && !providerDispatchStarted) {
         restoreSubmittedInput();
+        restorePendingPlanExecution(
+          request.conversationKey,
+          pendingPlanExecution,
+        );
       }
       deps.autoUnlockGlobalChat();
       deps.onSendSettled?.();

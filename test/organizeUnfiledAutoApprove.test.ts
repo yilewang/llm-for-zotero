@@ -1,15 +1,15 @@
 import { assert } from "chai";
-import { organizeUnfiledAction } from "../src/agent/actions/organizeUnfiled";
 import type { ActionExecutionContext } from "../src/agent/actions";
+import { organizeUnfiledAction } from "../src/agent/actions/organizeUnfiled";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 
 /**
- * Under `auto_approve` there is no human to fill in a blank row, so an item
+ * Under `automatic` there is no human to fill in a blank row, so an item
  * the model could not confidently place is dropped from the assignment list.
  * That is correct — but it used to happen silently, so an unattended run
  * reported success while quietly leaving items unfiled.
  */
-describe("organize_unfiled under auto_approve", function () {
+describe("organize_unfiled under automatic", function () {
   function makeTarget(itemId: number) {
     return {
       itemId,
@@ -43,7 +43,7 @@ describe("organize_unfiled under auto_approve", function () {
         }),
       } as never,
       libraryID: 1,
-      confirmationMode: "auto_approve",
+      confirmationMode: "automatic",
       onProgress: (event) => progress.push(event as never),
       requestConfirmation: async () => ({ approved: true }),
       // No `llm`, so nothing gets a confident suggestion and every item is

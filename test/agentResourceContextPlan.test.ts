@@ -344,7 +344,7 @@ describe("agent resource context plan", function () {
         name: "guided_tool",
         description: "guided test tool",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
       guidance: {
@@ -588,7 +588,7 @@ describe("agent resource context plan", function () {
         name: "guided_tool",
         description: "guided test tool",
         inputSchema: { type: "object" },
-        mutability: "read",
+        executionClass: "read",
         requiresConfirmation: false,
       },
       guidance: {

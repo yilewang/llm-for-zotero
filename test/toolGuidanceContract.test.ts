@@ -1,3 +1,8 @@
+import {
+  actionFixture,
+  classifiedFixture,
+  semanticFixture,
+} from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
@@ -49,6 +54,29 @@ function readSourceFiles(): Array<{ path: string; content: string }> {
 }
 
 describe("tool guidance contracts", function () {
+  it("derives collection execution guidance from the resolved contract", function () {
+    const registry = createBuiltInToolRegistry({
+      zoteroGateway: {} as never,
+      pdfService: {} as never,
+      pdfPageService: {} as never,
+      retrievalService: {} as never,
+    });
+    const guidance = registry
+      .listToolDefinitions()
+      .find((tool) => tool.spec.name === "library_search")!.guidance!
+      .instruction;
+    assert.include(guidance, "constraints.collectionMode");
+    assert.notInclude(guidance, "When the user asks to MOVE");
+    assert.notInclude(guidance, "let the confirmation card collect");
+    const update = registry
+      .listToolDefinitions()
+      .find((tool) => tool.spec.name === "library_update")!;
+    const schema = JSON.stringify(update.spec.inputSchema);
+    assert.notInclude(schema, "whenever the user says");
+    assert.include(schema, "constraints.collectionMode");
+    assert.include(schema, "sourceCollectionId");
+  });
+
   it("keeps library retrieve reference lists aligned with coverage wording", function () {
     const prompt = AGENT_PERSONA_INSTRUCTIONS.join("\n");
 
@@ -250,17 +278,17 @@ describe("tool guidance contracts", function () {
       assert.isString(content);
     }
 
-    assert.include(analyzeFigures!, "use `paper_read({ mode:'figures'");
+    assert.include(analyzeFigures!, "call `paper_read` in `figures` mode");
     assert.include(messageBuilder!, "precise PDF crops");
     assert.include(paperRead!, "mode:'figures'");
-    assert.include(writeNote!, "extracted PDF crop paths returned");
+    assert.include(writeNote!, "host-issued figure assets");
     assert.notInclude(noteTools!, "returns no_figures");
     assert.notInclude(agentPersona!, "figure_crops");
-    assert.include(writeNote!, "write a text-only note");
-    assert.include(analyzeFigures!, "Switch to text-only mode");
+    assert.include(writeNote!, "switch to text-only mode");
+    assert.include(analyzeFigures!, "preserve the textual evidence");
     assert.include(
       analyzeFigures!,
-      "User-provided image inputs are unaffected",
+      "User-provided images remain separate evidence inputs",
     );
     assert.include(
       messageBuilder!,
@@ -317,6 +345,7 @@ describe("tool guidance contracts", function () {
       noteWrite!.guidance!.matches({
         ...baseRequest,
         userText: "Create a Zotero note about this paper.",
+        classifiedIntent: actionFixture("note_create"),
       }),
     );
   });

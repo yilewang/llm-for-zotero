@@ -9,7 +9,7 @@ import {
 } from "../src/utils/normalization";
 import {
   DEFAULT_INPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
+  DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT,
   DEFAULT_TEMPERATURE,
   MAX_ALLOWED_INPUT_TOKEN_CAP,
   MAX_ALLOWED_TOKENS,
@@ -32,11 +32,17 @@ describe("normalization", function () {
   });
 
   describe("normalizeMaxTokens", function () {
-    it("should use default max tokens for invalid input", function () {
-      assert.equal(normalizeMaxTokens(undefined), DEFAULT_MAX_TOKENS);
-      assert.equal(normalizeMaxTokens(0), DEFAULT_MAX_TOKENS);
-      assert.equal(normalizeMaxTokens(""), DEFAULT_MAX_TOKENS);
-      assert.equal(normalizeMaxTokens("abc"), DEFAULT_MAX_TOKENS);
+    it("uses the explicit Custom seed for invalid Custom input", function () {
+      assert.equal(
+        normalizeMaxTokens(undefined),
+        DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT,
+      );
+      assert.equal(normalizeMaxTokens(0), DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT);
+      assert.equal(normalizeMaxTokens(""), DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT);
+      assert.equal(
+        normalizeMaxTokens("abc"),
+        DEFAULT_CUSTOM_OUTPUT_TOKEN_LIMIT,
+      );
     });
 
     it("should clamp to [1, MAX_ALLOWED_TOKENS]", function () {

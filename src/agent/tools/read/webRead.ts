@@ -5,6 +5,7 @@ import type {
 } from "../../types";
 import type { WebAccessDepth, WebReadResponse } from "../../../webAccess/types";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   applyRunSourceIds,
   assertWebReadUrlsFromSearch,
@@ -140,7 +141,7 @@ export function createWebReadTool(
           },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
       localAgentOnly: true,
     },
@@ -170,6 +171,14 @@ export function createWebReadTool(
         buildReadTraceDetails(args, content),
     },
     validate: validateWebReadInput,
+    planInvocation: (input) =>
+      readOnlyInvocationPlan({
+        domains: ["network"],
+        effects: ["read", "egress"],
+        targets: [...input.urls],
+        reason:
+          "The configured web provider fetches the requested public URLs without changing local state.",
+      }),
     execute: async (input, context) => {
       if (!context.runId) {
         throw new Error("web_read requires an active local agent run.");

@@ -374,27 +374,70 @@ describe("webchat isolation", function () {
       resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
       "utf8",
     );
-    const restoreStart = source.indexOf(
-      "restoreDraftInputForCurrentConversation();",
-    );
-    const webchatBranch = source.indexOf(
+    // Anchor on the cold-start branch itself: the webchat branch that ends in
+    // the paper-mode fallback, not the first webchat check in the file.
+    const paperBranch = source.indexOf("} else if (isPaperMode()) {");
+    const webchatBranch = source.lastIndexOf(
       "if (isWebChatMode()) {",
-      restoreStart,
-    );
-    const paperBranch = source.indexOf(
-      "} else if (isPaperMode()) {",
-      webchatBranch,
+      paperBranch,
     );
     const webchatBlock = source.slice(webchatBranch, paperBranch);
 
-    assert.isAtLeast(restoreStart, 0);
-    assert.isAtLeast(webchatBranch, restoreStart);
+    assert.isAtLeast(webchatBranch, 0);
     assert.isAbove(paperBranch, webchatBranch);
     assert.include(
       webchatBlock,
       "initializeWebChatConversationForCurrentItem();",
     );
     assert.notInclude(webchatBlock, "switchPaperConversation()");
+  });
+
+  it("leaves webchat through the shared owner before any runtime switch", function () {
+    const setupHandlers = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+    const standalone = readFileSync(
+      resolve(here, "../src/modules/contextPanel/standaloneWindow.ts"),
+      "utf8",
+    );
+
+    // Panel: the runtime switch owner leaves webchat itself, so every caller
+    // (toggle click, preference change, fork navigation) is covered.
+    const panelSwitchStart = setupHandlers.indexOf(
+      "const switchConversationSystem = async (",
+    );
+    const panelNoteBranch = setupHandlers.indexOf(
+      "const noteSession = resolveCurrentNoteSession();",
+      panelSwitchStart,
+    );
+    assert.isAtLeast(panelSwitchStart, 0);
+    assert.isAbove(panelNoteBranch, panelSwitchStart);
+    assert.include(
+      setupHandlers.slice(panelSwitchStart, panelNoteBranch),
+      "await leaveWebChatMode({ restoreConversation: false });",
+    );
+    // The toggle no longer refuses to run in webchat and the model button is
+    // no longer disabled there: leaving is a transition, not a locked door.
+    assert.notInclude(setupHandlers, "hidden: isWebChatModeActive()");
+    assert.notInclude(setupHandlers, ".disabled = isWebChat;");
+
+    // Standalone: its own runtime switch asks the mounted panel to leave
+    // webchat before remounting, and its toggles stay visible in webchat.
+    const standaloneSwitchStart = standalone.indexOf(
+      "const switchConversationSystem = async (",
+    );
+    const standaloneNoteBranch = standalone.indexOf(
+      "const activeNoteSession = resolveActiveNoteSession(activeItem);",
+      standaloneSwitchStart,
+    );
+    assert.isAtLeast(standaloneSwitchStart, 0);
+    assert.isAbove(standaloneNoteBranch, standaloneSwitchStart);
+    assert.include(
+      standalone.slice(standaloneSwitchStart, standaloneNoteBranch),
+      "await currentChatHooks?.leaveWebChatMode?.();",
+    );
+    assert.notInclude(standalone, "hidden: isInWebChatMode");
   });
 
   it("preserves an unsent webchat draft during panel state refreshes", function () {
@@ -495,7 +538,7 @@ describe("webchat isolation", function () {
       "restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);",
       resolvedGuard,
     );
-    const streamCall = retryBlock.indexOf("callLLMStream");
+    const streamCall = retryBlock.indexOf("callDirectChatTurnWithRecovery");
     assert.isAtLeast(
       resolvedGuard,
       0,

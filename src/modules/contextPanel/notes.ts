@@ -34,6 +34,8 @@ import type {
 import {
   readNoteSnapshot,
   stripNoteHtml,
+  stripNoteMarkup,
+  decodeNoteHtmlEntities,
   type NoteSnapshot,
 } from "./noteSnapshot";
 import {
@@ -85,17 +87,7 @@ import {
 
 export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
 
-function decodeNoteHtmlEntities(text: string): string {
-  return text
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
-
-function isLikelyHtmlNoteContent(text: string): boolean {
+export function isLikelyHtmlNoteContent(text: string): boolean {
   if (!text || !/[<>]/.test(text)) return false;
   return /<\/?(?:p|div|span|strong|b|em|i|u|a|ul|ol|li|blockquote|h[1-6]|br|hr|code|pre)\b/i.test(
     text,
@@ -106,55 +98,76 @@ export function normalizeNoteSourceText(contentText: string): string {
   const raw = sanitizeText(contentText || "").trim();
   if (!raw) return "";
   if (!isLikelyHtmlNoteContent(raw)) return raw;
+  return decodeNoteHtmlEntities(noteHtmlToMarkdown(raw)) || stripNoteHtml(raw);
+}
 
+/** Compose first; decode entities once at the public HTML-to-text boundary. */
+function noteHtmlToMarkdown(raw: string): string {
   let normalized = raw.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  // Native serialization can remove all whitespace between paragraphs. Preserve
+  // block boundaries explicitly, including every paragraph of a quotation.
+  const quote =
+    /<blockquote\b[^>]*>((?:(?!<\/?blockquote\b)[\s\S])*)<\/blockquote>/gi;
+  while (/<blockquote\b/i.test(normalized)) {
+    const next = normalized.replace(
+      quote,
+      (_match, body: string) =>
+        `\n\n${noteHtmlToMarkdown(body)
+          .split("\n")
+          .map((line) => (line ? `> ${line}` : ">"))
+          .join("\n")}\n\n`,
+    );
+    if (next === normalized) break;
+    normalized = next;
+  }
 
   normalized = normalized.replace(
     /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
     (_match, _quote, href, text) => {
-      const label = stripNoteHtml(text).trim();
-      const decodedHref = decodeNoteHtmlEntities(`${href || ""}`).trim();
-      if (!label) return decodedHref;
-      return decodedHref ? `[${label}](${decodedHref})` : label;
+      const label = stripNoteMarkup(text).trim();
+      const target = `${href || ""}`.trim();
+      if (!label) return target;
+      return target ? `[${label}](${target})` : label;
     },
   );
   normalized = normalized.replace(
     /<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi,
-    (_match, _tag, text) => `**${stripNoteHtml(text).trim()}**`,
+    (_match, _tag, text) => `**${stripNoteMarkup(text).trim()}**`,
   );
   normalized = normalized.replace(
     /<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi,
-    (_match, _tag, text) => `*${stripNoteHtml(text).trim()}*`,
+    (_match, _tag, text) => `*${stripNoteMarkup(text).trim()}*`,
   );
   normalized = normalized.replace(
     /<code[^>]*>([\s\S]*?)<\/code>/gi,
-    (_match, text) => `\`${stripNoteHtml(text).trim()}\``,
+    (_match, text) => `\`${stripNoteMarkup(text).trim()}\``,
   );
   normalized = normalized.replace(
     /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
-    (_match, text) =>
-      `\n\n\`\`\`\n${decodeNoteHtmlEntities(stripNoteHtml(text))}\n\`\`\`\n\n`,
+    (_match, text) => `\n\n\`\`\`\n${stripNoteMarkup(text)}\n\`\`\`\n\n`,
   );
   normalized = normalized.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");
   normalized = normalized.replace(/<br\s*\/?>/gi, "\n");
   normalized = normalized.replace(
     /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
     (_match, level, text) =>
-      `\n\n${"#".repeat(Number(level) || 1)} ${stripNoteHtml(text).trim()}\n\n`,
+      `\n\n${"#".repeat(Number(level) || 1)} ${stripNoteMarkup(text).trim()}\n\n`,
   );
   normalized = normalized.replace(/<li[^>]*>/gi, "\n- ");
   normalized = normalized.replace(/<\/li>/gi, "");
-  normalized = normalized.replace(/<blockquote[^>]*>/gi, "\n\n> ");
-  normalized = normalized.replace(/<\/blockquote>/gi, "\n\n");
+  normalized = normalized.replace(
+    /<\/?(?:p|div|section|article)\b[^>]*>/gi,
+    "\n\n",
+  );
   // Strip remaining HTML tags, but preserve <img> tags (for embedded figures)
   normalized = normalized.replace(/<(?!img\b)[^>]+>/g, "");
-  normalized = decodeNoteHtmlEntities(normalized)
+  normalized = normalized
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  return normalized || stripNoteHtml(raw);
+  return normalized;
 }
 
 export function renderRawNoteHtml(contentText: string): string {
@@ -520,6 +533,20 @@ function stripTrailingPluginFooter(text: string): string {
   );
 }
 
+function wrapAssistantNoteHtml(
+  responseHtml: string,
+  queryHtml: string,
+  source: string,
+  timestamp: string,
+): string {
+  const queryBlock = queryHtml
+    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+    : "";
+  // Zotero derives the native title from the first text block. Keep the
+  // authored content first and retain export provenance after the response.
+  return `<div>${responseHtml}</div><p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}${NOTE_FOOTER_HTML}`;
+}
+
 function buildAssistantNoteHtml(
   contentText: string,
   modelName: string,
@@ -554,10 +581,12 @@ function buildAssistantNoteHtml(
       quoteCitations,
     );
   }
-  const queryBlock = queryHtml
-    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-    : "";
-  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+  return wrapAssistantNoteHtml(
+    `${responseHtml}${generatedImagesHtml}`,
+    queryHtml,
+    source,
+    timestamp,
+  );
 }
 
 async function buildAssistantNoteHtmlForSave(
@@ -602,10 +631,12 @@ async function buildAssistantNoteHtmlForSave(
       quoteCitations,
     );
   }
-  const queryBlock = queryHtml
-    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-    : "";
-  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+  return wrapAssistantNoteHtml(
+    `${responseHtml}${generatedImagesHtml}`,
+    queryHtml,
+    source,
+    timestamp,
+  );
 }
 
 function renderChatMessageHtmlForNote(
@@ -1167,7 +1198,7 @@ async function buildChatHistoryNotePayloadForSave(
   };
 }
 
-function appendAssistantAnswerToNoteHtml(
+export function appendNoteHtml(
   existingHtml: string,
   newAnswerHtml: string,
 ): string {
@@ -1175,6 +1206,14 @@ function appendAssistantAnswerToNoteHtml(
   const addition = (newAnswerHtml || "").trim();
   if (!base) return addition;
   if (!addition) return base;
+  // Native editors store all note content inside the schema container.
+  // Appending outside it forces an editor rewrite during save verification.
+  const schema = base.match(
+    /^(<div\b[^>]*\bdata-schema-version=[^>]*>)([\s\S]*)<\/div>$/i,
+  );
+  if (schema) {
+    return `${schema[1]}${schema[2].trim()}\n<hr>\n${addition}\n</div>`;
+  }
   return `${base}<hr/>${addition}`;
 }
 
@@ -1407,10 +1446,7 @@ export async function createNoteFromAssistantText(
     if (existingNote) {
       try {
         const html = await buildHtml(existingNote.id);
-        const appendedHtml = appendAssistantAnswerToNoteHtml(
-          existingNote.getNote() || "",
-          html,
-        );
+        const appendedHtml = appendNoteHtml(existingNote.getNote() || "", html);
         // Verified write: a silently lost saveTx (the #327 failure class)
         // throws here, falling through to create a new note instead of
         // reporting a success that never reached the database.

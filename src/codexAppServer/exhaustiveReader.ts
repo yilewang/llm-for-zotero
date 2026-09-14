@@ -3,7 +3,11 @@ import {
   createExhaustiveBatchAnalyzer,
   type ExhaustiveBatchAnalyzer,
 } from "../shared/exhaustiveDocumentReader";
-import { callLLM, DEFAULT_CODEX_API_BASE } from "../utils/llmClient";
+import {
+  callLLM,
+  DEFAULT_CODEX_API_BASE,
+  requireCompleteModelText,
+} from "../utils/llmClient";
 import type { ModelProfileOverride } from "../modelCapabilities";
 
 export type CodexAppServerExhaustiveReaderSession = {
@@ -37,7 +41,7 @@ export function createCodexAppServerExhaustiveReaderSession(params: {
   let disposed = false;
 
   const analyzeBatch = createExhaustiveBatchAnalyzer(
-    async ({ prompt, systemMessages, signal, maxTokens, temperature }) => {
+    async ({ prompt, systemMessages, signal, temperature }) => {
       if (disposed) {
         throw new Error("Codex exhaustive reader session is closed");
       }
@@ -46,19 +50,21 @@ export function createCodexAppServerExhaustiveReaderSession(params: {
       // tool surface. Batch reading is a pure completion task, so send it to
       // the Codex Responses endpoint with no tools instead of attempting to
       // maintain a fragile deny-list of app-server features.
-      return callLLM({
-        prompt,
-        systemMessages,
-        signal,
-        model,
-        reasoning: params.reasoning,
-        maxTokens,
-        temperature,
-        apiBase: DEFAULT_CODEX_API_BASE,
-        authMode: "codex_auth",
-        providerProtocol: "codex_responses",
-        profileOverride: params.profileOverride,
-      });
+      return requireCompleteModelText(
+        await callLLM({
+          prompt,
+          systemMessages,
+          signal,
+          model,
+          reasoning: params.reasoning,
+          temperature,
+          apiBase: DEFAULT_CODEX_API_BASE,
+          authMode: "codex_auth",
+          providerProtocol: "codex_responses",
+          profileOverride: params.profileOverride,
+        }),
+        "Codex exhaustive reading batch",
+      );
     },
   );
 

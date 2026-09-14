@@ -274,7 +274,7 @@ describe("multiContextPlanner", function () {
     assert.include(full.contextText, "Full Paper Contexts:");
     assert.include(full.contextText, "Paper 1");
     assert.include(full.contextText, "Citation data for this paper:");
-    assert.include(full.contextText, "sourceLabel: (Paper 3)");
+    assert.include(full.contextText, "sourceLabel: (Paper C, n.d.)");
     assert.isAbove(full.estimatedTokens, 0);
   });
 
@@ -508,7 +508,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 2048,
       },
     });
@@ -547,7 +547,10 @@ describe("multiContextPlanner", function () {
       historyPaperContexts: [],
       history: [],
       model: "gpt-4o-mini",
-      advanced: { inputTokenCap: 2048, maxTokens: 256 },
+      advanced: {
+        inputTokenCap: 2048,
+        outputTokenLimit: { mode: "custom", tokens: 256 },
+      },
       queryPlan: buildRetrievalQueryPlan({
         query: "请先通读整篇论文，再回答。",
         readIntent: "full-once",
@@ -591,7 +594,10 @@ describe("multiContextPlanner", function () {
       historyPaperContexts: [],
       history: [],
       model: "gpt-4o-mini",
-      advanced: { inputTokenCap: 4096, maxTokens: 256 },
+      advanced: {
+        inputTokenCap: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 256 },
+      },
       queryPlan: buildRetrievalQueryPlan({
         query: "Read the complete paper.",
         readIntent: "full-once",
@@ -639,11 +645,17 @@ describe("multiContextPlanner", function () {
       historyPaperContexts: [],
       history: [],
       model: "gpt-4o-mini",
-      advanced: { inputTokenCap: 4096, maxTokens: 256 },
-      queryPlan: buildRetrievalQueryPlan({
-        query: "Read the complete second selected paper.",
-        readIntent: "full-once",
-      }),
+      advanced: {
+        inputTokenCap: 4096,
+        outputTokenLimit: { mode: "custom", tokens: 256 },
+      },
+      queryPlan: {
+        ...buildRetrievalQueryPlan({
+          query: "Read the complete second selected paper.",
+          readIntent: "full-once",
+        }),
+        fullReadTargets: { kind: "item_ids", itemIds: [124] },
+      },
     });
 
     assert.equal(plan.strategy, "paper-exhaustive-full");
@@ -677,7 +689,10 @@ describe("multiContextPlanner", function () {
         historyPaperContexts: [],
         history: [],
         model: "gpt-4o-mini",
-        advanced: { inputTokenCap: 4096, maxTokens: 256 },
+        advanced: {
+          inputTokenCap: 4096,
+          outputTokenLimit: { mode: "custom", tokens: 256 },
+        },
         queryPlan: buildRetrievalQueryPlan({
           query: "Read the full paper.",
           readIntent: "full-once",
@@ -688,7 +703,10 @@ describe("multiContextPlanner", function () {
     }
 
     assert.instanceOf(caught, Error);
-    assert.include((caught as Error).message, "ambiguous");
+    assert.include(
+      (caught as Error).message,
+      "not available in the frozen context",
+    );
   });
 
   it("uses focused retrieval on paper-mode follow-up turns even when full text would fit", async function () {
@@ -957,7 +975,7 @@ describe("multiContextPlanner", function () {
     assert.include((plan as any).coverageReceipt?.text, "Planned papers: 1");
   });
 
-  it("adds a capability reminder only for follow-up questions about access or coverage", async function () {
+  it("supplies the same evidence-based coverage instruction independently of follow-up wording", async function () {
     const paper = registerMockPaper({
       itemId: 34,
       contextItemId: 35,
@@ -997,8 +1015,8 @@ describe("multiContextPlanner", function () {
     });
 
     assert.equal(plan.strategy, "paper-followup-retrieval");
-    assert.include(plan.assistantInstruction || "", "full text");
-    assert.isUndefined(unrelated.assistantInstruction);
+    assert.include(plan.assistantInstruction || "", "reading coverage");
+    assert.equal(unrelated.assistantInstruction, plan.assistantInstruction);
   });
 
   it("keeps explicit full-text papers in full context before falling back to retrieval for overflow", async function () {
@@ -1030,7 +1048,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 1200,
+        outputTokenLimit: { mode: "custom", tokens: 1200 },
         inputTokenCap: 8000,
       },
     });
@@ -1062,7 +1080,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-5.4",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 1_000_000,
       },
     });
@@ -1118,7 +1136,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 8_000,
       },
     });
@@ -1202,7 +1220,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 3_000,
       },
     });
@@ -1269,12 +1287,15 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
-        inputTokenCap: 2_000,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
+        // Leave a small evidence budget after the shared system instructions.
+        inputTokenCap: 2_500,
       },
     });
 
     assert.equal(plan.mode, "retrieval");
+    assert.isAbove(plan.contextBudget.contextBudgetTokens, 0);
+    assert.isBelow(plan.contextBudget.contextBudgetTokens, 512);
     assert.isAbove(
       plan.selectedChunkCount,
       0,
@@ -1339,7 +1360,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 1_600,
       },
     });
@@ -1401,7 +1422,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 1,
       },
     });
@@ -1465,7 +1486,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 12_000,
       },
     });
@@ -1530,7 +1551,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 8_000,
       },
     });
@@ -1593,7 +1614,7 @@ describe("multiContextPlanner", function () {
       model: "gpt-4o-mini",
       advanced: {
         temperature: 0.2,
-        maxTokens: 512,
+        outputTokenLimit: { mode: "custom", tokens: 512 },
         inputTokenCap: 8_000,
       },
     });

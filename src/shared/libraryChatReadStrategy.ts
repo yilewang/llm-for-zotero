@@ -1,3 +1,5 @@
+import { resolveResearchPolicy } from "../agent/research/policy";
+
 export type LibraryChatReadStrategy =
   | "catalog"
   | "abstract_map"
@@ -42,7 +44,7 @@ export type LibraryChatCoverageReceipt = {
 };
 
 export type LibraryChatReadStrategyInput = {
-  query?: string;
+  answerStyle?: LibraryChatAnswerStyle;
   intent?: "enumerate" | "verify" | "summarize";
   depth?: "pool" | "metadata" | "evidence" | "verify";
   paperCount: number;
@@ -50,44 +52,14 @@ export type LibraryChatReadStrategyInput = {
   explicitPaperScope?: boolean;
 };
 
-export const DEEP_SYNTHESIS_MAX_PAPERS = 25;
-export const EVIDENCE_OVERVIEW_MAX_PAPERS = 80;
-
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim().toLowerCase();
-}
+const CHAT_RESEARCH_POLICY = resolveResearchPolicy("chat");
+export const DEEP_SYNTHESIS_MAX_PAPERS =
+  CHAT_RESEARCH_POLICY.deepSynthesisMaxPapers;
+export const EVIDENCE_OVERVIEW_MAX_PAPERS =
+  CHAT_RESEARCH_POLICY.evidenceOverviewMaxPapers;
 
 function normalizeNonNegativeInteger(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
-}
-
-function queryLooksLikeQuoteRequest(query: string): boolean {
-  return /\b(?:direct\s+quotes?|exact\s+(?:quotes?|wording|passages?)|verbatim|quote\s+the|quotations?|blockquotes?|source\s+wording|original\s+wording)\b/.test(
-    query,
-  );
-}
-
-export function queryLooksLikeBroadSynthesis(query: string): boolean {
-  return /\b(?:commonalit(?:y|ies)|common\s+themes?|themes?|synthesi[sz]e|synthesis|overview|summari[sz]e|summary|compare|contrast|similarit(?:y|ies)|differences?|taxonomy|what\s+do\s+(?:these|those|the)\s+papers?\s+(?:say|show|argue)|across\s+(?:these|those|the)\s+papers?)\b/.test(
-    query,
-  );
-}
-
-function answerStyleForQuery(
-  query: string,
-  intent: LibraryChatReadStrategyInput["intent"],
-): LibraryChatAnswerStyle {
-  if (queryLooksLikeQuoteRequest(query) || intent === "verify") {
-    return "quote_answer";
-  }
-  if (/\b(?:compare|contrast|similarit(?:y|ies)|differences?)\b/.test(query)) {
-    return "comparison";
-  }
-  if (intent === "enumerate") return "enumeration";
-  if (queryLooksLikeBroadSynthesis(query) || intent === "summarize") {
-    return "concise_overview";
-  }
-  return "evidence_answer";
 }
 
 export function resolveLibraryChatReadStrategy(
@@ -101,14 +73,17 @@ export function resolveLibraryChatReadStrategy(
   | "stopReason"
   | "coverageFrontier"
 > {
-  const query = normalizeText(input.query);
   const paperCount = Math.max(0, Math.floor(input.paperCount || 0));
-  const answerStyle = answerStyleForQuery(query, input.intent);
-  if (
-    input.depth === "verify" ||
-    input.intent === "verify" ||
-    queryLooksLikeQuoteRequest(query)
-  ) {
+  const answerStyle =
+    input.answerStyle ||
+    (input.intent === "verify"
+      ? "quote_answer"
+      : input.intent === "enumerate"
+        ? "enumeration"
+        : input.intent === "summarize"
+          ? "concise_overview"
+          : "evidence_answer");
+  if (input.depth === "verify" || input.intent === "verify") {
     return {
       resolvedStrategy: "quote_verify",
       answerStyle,
@@ -136,8 +111,7 @@ export function resolveLibraryChatReadStrategy(
     input.scopeType === "collection" ||
     input.scopeType === "tag" ||
     input.scopeType === "mixed";
-  const broadSynthesis =
-    input.intent === "summarize" || queryLooksLikeBroadSynthesis(query);
+  const broadSynthesis = input.intent === "summarize";
   if (
     boundedScope &&
     broadSynthesis &&

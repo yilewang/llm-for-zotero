@@ -120,9 +120,14 @@ for (const [index, entry] of json.models.entries()) {
   }
   if (entry.reasoning) {
     if (
-      !["none", "server_default", "toggle", "fixed", "select"].includes(
-        entry.reasoning.kind,
-      )
+      ![
+        "unknown",
+        "none",
+        "server_default",
+        "toggle",
+        "fixed",
+        "select",
+      ].includes(entry.reasoning.kind)
     ) {
       fail(`models[${index}] has an invalid reasoning kind`);
     }
@@ -135,6 +140,12 @@ for (const [index, entry] of json.models.entries()) {
       );
     }
     for (const option of entry.reasoning.options) {
+      if (
+        option?.effort !== undefined &&
+        (typeof option.effort !== "string" ||
+          !/^[a-z][a-z0-9_-]{0,31}$/.test(option.effort))
+      )
+        fail(`models[${index}] has an invalid reasoning effort`);
       if (
         !option ||
         typeof option.id !== "string" ||

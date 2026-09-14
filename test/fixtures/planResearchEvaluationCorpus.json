@@ -1,0 +1,137 @@
+[
+  {
+    "id": "synonym-1",
+    "feature": "synonym",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:synonym"],
+    "synthesizedSourceRefs": ["e:synonym"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "abbreviation-1",
+    "feature": "abbreviation",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:abbr"],
+    "synthesizedSourceRefs": ["e:abbr"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "multilingual-1",
+    "feature": "multilingual",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:multi"],
+    "synthesizedSourceRefs": ["e:multi"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "indirect-symptom-1",
+    "feature": "indirect_symptom",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:symptom"],
+    "synthesizedSourceRefs": ["e:symptom"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "criterion-near-miss-1",
+    "feature": "criterion_near_miss",
+    "goldRelevant": false,
+    "goldDecision": "exclude",
+    "predictedRelevant": false,
+    "predictedDecision": "exclude",
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "missing-abstract-1",
+    "feature": "missing_abstract",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:body"],
+    "synthesizedSourceRefs": ["e:body"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "unindexed-pdf-1",
+    "feature": "unindexed_pdf",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:unindexed"],
+    "synthesizedSourceRefs": ["e:unindexed"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "ocr-failure-1",
+    "feature": "ocr_failure",
+    "goldRelevant": true,
+    "goldDecision": "unresolved",
+    "predictedRelevant": true,
+    "predictedDecision": "unresolved",
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "duplicate-attachment-1",
+    "feature": "duplicate_attachment",
+    "goldRelevant": false,
+    "goldDecision": "exclude",
+    "predictedRelevant": false,
+    "predictedDecision": "exclude",
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "changed-pdf-1",
+    "feature": "changed_pdf",
+    "goldRelevant": true,
+    "goldDecision": "unresolved",
+    "predictedRelevant": true,
+    "predictedDecision": "unresolved",
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "contradiction-1",
+    "feature": "contradiction",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:contradiction"],
+    "synthesizedSourceRefs": ["e:contradiction"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "negative-evidence-1",
+    "feature": "negative_evidence",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:negative"],
+    "synthesizedSourceRefs": ["e:negative"],
+    "researchSelectedMutationAuthorized": true
+  },
+  {
+    "id": "mutation-preview-1",
+    "feature": "research_selected_mutation",
+    "goldRelevant": true,
+    "goldDecision": "include",
+    "predictedRelevant": true,
+    "predictedDecision": "include",
+    "expectedSourceRefs": ["e:mutation"],
+    "synthesizedSourceRefs": ["e:mutation"],
+    "researchSelectedMutationAuthorized": true
+  }
+]

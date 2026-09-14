@@ -25,7 +25,7 @@ describe("standalone window sizing", function () {
         requestedWidth: 380,
         containerWidth: 700,
       }),
-      287,
+      335,
     );
     assert.equal(
       computeStandaloneSidebarPanelWidth({
@@ -42,7 +42,7 @@ describe("standalone window sizing", function () {
         requestedWidth: 420,
         containerWidth: 640,
       }),
-      { renderedWidth: 227, effectiveMaxWidth: 227 },
+      { renderedWidth: 275, effectiveMaxWidth: 275 },
     );
   });
 
@@ -53,6 +53,10 @@ describe("standalone window sizing", function () {
     const attributes = new Map<string, string>();
     const classes = new Set<string>();
     const container = {
+      style: {
+        setProperty: (name: string, value: string) =>
+          cssProperties.set(name, value),
+      },
       clientWidth: 900,
       classList: {
         add: (name: string) => classes.add(name),
@@ -60,11 +64,6 @@ describe("standalone window sizing", function () {
       },
     } as unknown as HTMLElement;
     const sidebarPanel = {
-      style: {
-        setProperty: (name: string, value: string) => {
-          cssProperties.set(name, value);
-        },
-      },
       getBoundingClientRect: () => ({ width: 220 }),
     } as unknown as HTMLElement;
     const separator = {
@@ -136,9 +135,9 @@ describe("standalone window sizing", function () {
     windowListeners.get("resize")?.({} as Event);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
-      "227px",
+      "275px",
     );
-    assert.equal(attributes.get("aria-valuemax"), "227");
+    assert.equal(attributes.get("aria-valuemax"), "275");
     assert.deepEqual(committedWidths, [300, 288]);
 
     (container as unknown as { clientWidth: number }).clientWidth = 900;
@@ -165,7 +164,7 @@ describe("standalone window sizing", function () {
     windowListeners.get("resize")?.({} as Event);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
-      "387px",
+      "420px",
     );
     assert.deepEqual(committedWidths, [300, 288, 420]);
 
@@ -177,15 +176,15 @@ describe("standalone window sizing", function () {
     } as unknown as KeyboardEvent);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
-      "375px",
+      "408px",
     );
-    assert.deepEqual(committedWidths, [300, 288, 420, 375]);
+    assert.deepEqual(committedWidths, [300, 288, 420, 408]);
 
     (container as unknown as { clientWidth: number }).clientWidth = 900;
     windowListeners.get("resize")?.({} as Event);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
-      "375px",
+      "408px",
     );
 
     cleanup();
@@ -203,6 +202,10 @@ describe("standalone window sizing", function () {
     let nextFrameId = 1;
     let containerWidth = 640;
     const container = {
+      style: {
+        setProperty: (name: string, value: string) =>
+          cssProperties.set(name, value),
+      },
       get clientWidth() {
         widthReads += 1;
         return containerWidth;
@@ -210,11 +213,6 @@ describe("standalone window sizing", function () {
       classList: { add: () => {}, remove: () => {} },
     } as unknown as HTMLElement;
     const sidebarPanel = {
-      style: {
-        setProperty: (name: string, value: string) => {
-          cssProperties.set(name, value);
-        },
-      },
       getBoundingClientRect: () => ({ width: 220 }),
     } as unknown as HTMLElement;
     const separator = {
@@ -273,7 +271,7 @@ describe("standalone window sizing", function () {
     assert.equal(widthReads, 2);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
-      "227px",
+      "275px",
     );
 
     windowListeners.get("mouseup")?.({} as Event);

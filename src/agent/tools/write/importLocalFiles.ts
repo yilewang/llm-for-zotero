@@ -4,18 +4,18 @@
  * .bib, .enw, .nbib, RDF) are read through Zotero's translators rather than
  * attached, which is what "import my references" means.
  */
-import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type ImportLocalFilesOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
-  ok,
   fail,
-  validateObject,
   normalizePositiveInt,
   normalizeStringArray,
+  ok,
+  validateObject,
 } from "../shared";
 import {
   executeAndRecordUndo,
@@ -74,14 +74,16 @@ export function createImportLocalFilesTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(import.*file|import.*pdf|import.*from.*(desktop|download|folder|directory|disk)|local.*file|add.*file.*library)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.actionIntents.some(
+            (action) => action.operation === "import_local_files",
+          ),
         ),
       instruction:
         "Use import_local_files to import local files (PDFs, etc.) from the user's filesystem into Zotero. " +
@@ -178,7 +180,7 @@ export function createImportLocalFilesTool(
         resolutionData,
         FILES_CHECKLIST_FIELD_ID,
       );
-      // No resolution — auto_approve / non-HITL path.
+      // No resolution — automatic / non-HITL path.
       if (selected === undefined) {
         return ok(input);
       }
@@ -203,7 +205,7 @@ export function createImportLocalFilesTool(
       });
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

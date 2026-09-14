@@ -1,4 +1,6 @@
+import { getAbortController } from "./apiHelpers";
 import { callLLM, type ChatParams } from "./llmClient";
+import type { ModelTurnOutcome } from "../shared/llm";
 
 /** Default bound for short, internal model calls. */
 export const DEFAULT_LLM_CALL_TIMEOUT_MS = 10_000;
@@ -7,7 +9,7 @@ export type LLMCallWithTimeoutParams = Omit<ChatParams, "signal"> & {
   parentSignal?: AbortSignal;
   timeoutMs?: number;
   /** Test seam: replaces callLLM. */
-  llmCall?: (chatParams: ChatParams) => Promise<string>;
+  llmCall?: (chatParams: ChatParams) => Promise<ModelTurnOutcome>;
 };
 
 /**
@@ -18,15 +20,25 @@ export type LLMCallWithTimeoutParams = Omit<ChatParams, "signal"> & {
  */
 export async function callLLMWithTimeout(
   params: LLMCallWithTimeoutParams,
-): Promise<string> {
+): Promise<ModelTurnOutcome> {
   const { parentSignal, timeoutMs, llmCall, ...chatParams } = params;
   const budgetMs = timeoutMs || DEFAULT_LLM_CALL_TIMEOUT_MS;
-  const AbortControllerCtor = (
-    globalThis as { AbortController?: typeof AbortController }
-  ).AbortController;
+  const createAbortError = () => {
+    const error = new Error("LLM call aborted");
+    error.name = "AbortError";
+    return error;
+  };
+  if (parentSignal?.aborted) throw createAbortError();
+  const AbortControllerCtor = getAbortController();
   const controller = AbortControllerCtor ? new AbortControllerCtor() : null;
-  const onAbort = () => controller?.abort();
-  parentSignal?.addEventListener("abort", onAbort, { once: true });
+  let onAbort: () => void;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      controller?.abort();
+      reject(createAbortError());
+    };
+  });
+  parentSignal?.addEventListener("abort", onAbort!, { once: true });
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
@@ -43,9 +55,9 @@ export async function callLLMWithTimeout(
     // A request may reject after the timeout wins the race. Keep that late
     // rejection handled so a bounded helper never creates an unhandled error.
     call.catch(() => {});
-    return await Promise.race([call, timeoutPromise]);
+    return await Promise.race([call, timeoutPromise, abortPromise]);
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-    parentSignal?.removeEventListener("abort", onAbort);
+    parentSignal?.removeEventListener("abort", onAbort!);
   }
 }

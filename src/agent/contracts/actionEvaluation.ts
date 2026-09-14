@@ -8,6 +8,7 @@ import type {
   AgentToolEffect,
 } from "../types";
 import { innermostToolResult } from "./toolResultEnvelope";
+import { operationCatalogEntry } from "./operationCatalog";
 
 export type ContractEvaluation = {
   state:
@@ -20,6 +21,88 @@ export type ContractEvaluation = {
   correction?: string;
   failure?: string;
 };
+
+/** Shared completion boundary for original and native provider turns. */
+export function evaluatePreparedActionContract(
+  request: Pick<
+    import("../types").AgentRuntimeRequest,
+    | "actionContract"
+    | "actionProgress"
+    | "actionPreparation"
+    | "classifiedIntent"
+  >,
+  receipts: AgentActionReceipt[],
+): ContractEvaluation {
+  const delegated = receipts.filter(
+    (receipt) => receipt.executionAuthority === "external_runtime",
+  );
+  if (delegated.length) {
+    // The calling agent owns action intent. Report the actual effects without
+    // reinterpreting them through Original Agent obligations or inviting replay.
+    if (delegated.every(receiptVerified)) return { state: "satisfied" };
+    const state = delegated.some((receipt) => receipt.status === "failed")
+      ? "failed"
+      : delegated.every((receipt) => receipt.status === "cancelled")
+        ? "cancelled"
+        : delegated.some(
+              (receipt) =>
+                receipt.status === "partial" || receiptVerified(receipt),
+            )
+          ? "partial"
+          : "unverified";
+    return {
+      state,
+      failure: `Delegated action results:\n${formatReceiptStatus(delegated)}`,
+    };
+  }
+  if (
+    request.actionPreparation &&
+    request.actionPreparation.state !== "ready"
+  ) {
+    return {
+      state: "failed",
+      failure:
+        request.actionPreparation.issues.join(" ") ||
+        "Semantic action preparation is incomplete; completion cannot be verified.",
+    };
+  }
+  const contract = request.actionContract;
+  if (
+    !contract &&
+    request.actionPreparation?.state === "ready" &&
+    request.classifiedIntent?.semantic &&
+    request.classifiedIntent.writeDisposition === "none" &&
+    !request.classifiedIntent.actionIntents.length &&
+    !request.classifiedIntent.semantic.questions.length
+  )
+    return { state: "satisfied" };
+  if (contract?.version !== 4 || !contract.intent?.semantic) {
+    return {
+      state: "failed",
+      failure:
+        "A current semantic action contract is unavailable; no completed action can be claimed.",
+    };
+  }
+  const actions = evaluateActionContract(
+    contract,
+    receipts,
+    request.actionProgress,
+  );
+  const missingOutputs = (
+    contract.intent.semantic.materialOutputs || []
+  ).filter(
+    (output) =>
+      !request.actionProgress?.materialOutputs?.some(
+        (material) => material.outputId === output.id,
+      ),
+  );
+  if (missingOutputs.length && actions.state === "satisfied")
+    return {
+      state: "pending",
+      correction: `Finalize the remaining requested material with submit_document: ${missingOutputs.map((output) => output.id).join(", ")}. The earlier actions are already verified; do not repeat them.`,
+    };
+  return actions;
+}
 
 const ACTION_CORRECTION_GUIDANCE: Partial<
   Record<AgentActionCapability, string>
@@ -88,21 +171,29 @@ export function createUnverifiedReceipt(params: {
 /** Used only outside the configured Agent contract service. */
 export function createFallbackToolReceipts(params: {
   toolName: string;
-  mutability: "read" | "write";
+  executionClass: "read" | "control" | "external_effect";
   input: unknown;
   ok: boolean;
   effect?: AgentToolEffect;
   cancelled?: boolean;
   reason?: string;
   content?: unknown;
+  actionContract?: AgentActionContract;
 }): AgentActionReceipt[] {
   if (
-    params.mutability === "read" &&
+    params.executionClass === "read" &&
     params.ok &&
     params.input &&
     typeof params.input === "object" &&
     (params.input as { mode?: unknown }).mode === "full"
   ) {
+    const matchingObligations = (
+      params.actionContract?.obligations || []
+    ).filter(
+      (obligation) =>
+        obligation.operation === "read_full" &&
+        obligation.proofDomain === "zotero_state",
+    );
     return [
       {
         version: 2,
@@ -111,6 +202,10 @@ export function createFallbackToolReceipts(params: {
         proofDomain: "zotero_state",
         capability: "zotero.read",
         operation: "read_full",
+        obligationId:
+          matchingObligations.length === 1
+            ? matchingObligations[0].id
+            : undefined,
         verification: "verified",
         status: "observed",
         requestedTargets: [],
@@ -122,23 +217,19 @@ export function createFallbackToolReceipts(params: {
       },
     ];
   }
-  if (params.mutability === "read") return [];
-  const operation: AgentActionOperation =
+  if (params.executionClass !== "external_effect") return [];
+  const operation =
     params.toolName === "file_io"
       ? "file_write"
       : params.toolName === "run_command"
         ? "command_execute"
         : params.toolName === "zotero_script"
           ? "zotero_script_execute"
-          : "read_full";
-  const capability: AgentActionCapability =
-    params.toolName === "file_io"
-      ? "file.write"
-      : params.toolName === "run_command"
-        ? "command.execute"
-        : params.toolName === "zotero_script"
-          ? "zotero.script"
-          : "zotero.read";
+          : null;
+  if (!operation) return [];
+  const authority = operationCatalogEntry(operation);
+  if (!authority) return [];
+  const { capability, proofDomain } = authority;
   if (params.toolName === "file_io" && params.ok) {
     const content = innermostToolResult(params.content);
     const filePath = String(content.filePath || "");
@@ -154,7 +245,7 @@ export function createFallbackToolReceipts(params: {
         version: 2,
         id: `file_write:fallback:${filePath}`,
         proposalId: `file_write:fallback:${filePath}`,
-        proofDomain: "file_state",
+        proofDomain,
         capability: "file.write",
         operation: "file_write",
         verification: verified ? "verified" : "unverified",
@@ -183,7 +274,7 @@ export function createFallbackToolReceipts(params: {
         version: 2,
         id: `${operation}:fallback`,
         proposalId: `${operation}:fallback`,
-        proofDomain: "execution",
+        proofDomain,
         capability,
         operation,
         verification: "execution_only",
@@ -201,13 +292,7 @@ export function createFallbackToolReceipts(params: {
     createUnverifiedReceipt({
       operation,
       capability,
-      proofDomain:
-        params.toolName === "file_io"
-          ? "file_state"
-          : params.toolName === "run_command" ||
-              params.toolName === "zotero_script"
-            ? "execution"
-            : "zotero_state",
+      proofDomain,
       status: params.cancelled
         ? "cancelled"
         : params.ok && params.effect === "partial"
@@ -230,10 +315,7 @@ function receiptMatches(
   receipt: AgentActionReceipt,
   obligation: AgentActionObligation,
 ): boolean {
-  return receipt.obligationId
-    ? receipt.obligationId === obligation.id
-    : receipt.operation === obligation.operation &&
-        receipt.proofDomain === obligation.proofDomain;
+  return receipt.obligationId === obligation.id;
 }
 
 function receiptVerified(receipt: AgentActionReceipt): boolean {
@@ -245,41 +327,60 @@ function receiptVerified(receipt: AgentActionReceipt): boolean {
   );
 }
 
+/**
+ * A requested action the host dropped during contract building has no
+ * obligation to satisfy, so nothing else in this evaluation would notice it.
+ * It counts as done only when some receipt shows the same operation actually
+ * took effect; an unmatched judgment receipt qualifies, because in yolo the
+ * agent is expected to perform the dropped action with a target of its own
+ * choosing.
+ */
+function uncoveredSkippedActions(
+  contract: AgentActionContract,
+  receipts: AgentActionReceipt[],
+): string {
+  const effective = new Set(
+    receipts
+      .filter(
+        (receipt) =>
+          receipt.status === "applied" ||
+          receipt.status === "already_satisfied" ||
+          receipt.status === "partial" ||
+          receipt.status === "observed",
+      )
+      .map((receipt) => receipt.operation),
+  );
+  const uncovered = [
+    ...new Set(
+      (contract.skippedActions || [])
+        .filter((skipped) => !effective.has(skipped.operation))
+        .map((skipped) => skipped.operation),
+    ),
+  ];
+  return uncovered
+    .map(
+      (operation) =>
+        `The requested ${operation.replace(/_/g, " ")} could not be resolved and was not performed.`,
+    )
+    .join(" ");
+}
+
 export function evaluateActionContract(
   contract: AgentActionContract,
   receipts: AgentActionReceipt[],
   progress?: AgentActionProgressLedger,
 ): ContractEvaluation {
-  if (contract.writeDisposition === "uncertain") {
-    return {
-      state: "failed",
-      failure:
-        "I could not determine whether you intended a write, so no mutation was allowed. Please state the exact action and target scope.",
-    };
-  }
+  const skippedFailure = uncoveredSkippedActions(contract, receipts);
+  // The action contract is a completion contract, not a retrospective tool
+  // allowlist. Authorization already enforced hard constraints before a tool
+  // could run. With no requested obligations there is therefore nothing for
+  // finalization to prove, and unrelated rejected, cancelled, or unverified
+  // exploratory calls must not invalidate an informational answer.
   if (!contract.obligations.length) {
-    if (contract.writeDisposition === "none") {
-      const blockedWrites = receipts.filter(
-        (receipt) =>
-          receipt.proposalId === "missing-proposal" ||
-          receipt.operation !== "read_full",
-      );
-      if (!blockedWrites.length) return { state: "satisfied" };
-      return {
-        state: "failed",
-        correction:
-          "Correction for this turn: the request authorized no writes, and a mutation attempt was blocked. Do not retry or claim that anything changed; answer the original request using read-only tools only.",
-        failure:
-          "A model-originated write was blocked because this request authorized no mutations. No library or file change was verified.",
-      };
-    }
-    return {
-      state: "failed",
-      failure:
-        "The requested write could not be represented as a valid typed obligation, so no mutation was allowed.",
-    };
+    return skippedFailure
+      ? { state: "failed", failure: skippedFailure }
+      : { state: "satisfied" };
   }
-
   const missing: AgentActionObligation[] = [];
   const failed: AgentActionObligation[] = [];
   let sawPartial = false;
@@ -316,7 +417,10 @@ export function evaluateActionContract(
     if (matching.some((receipt) => receipt.status === "failed")) {
       failed.push(obligation);
     }
-    if (obligation.targetBoundary && obligation.scopeRole !== "destination") {
+    if (
+      obligation.targetBoundary &&
+      (obligation.scopeRole !== "destination" || obligation.destinationCreation)
+    ) {
       const covered = new Set(
         verified.flatMap((receipt) => [
           ...receipt.appliedTargets,
@@ -338,7 +442,10 @@ export function evaluateActionContract(
       (receipt) => receipt.verification === "unverified",
     );
   }
-  if (!missing.length) return { state: "satisfied" };
+  if (!missing.length)
+    return skippedFailure
+      ? { state: "failed", failure: skippedFailure }
+      : { state: "satisfied" };
 
   const labels = missing.map((obligation) => {
     const scope = obligation.scope
@@ -357,13 +464,14 @@ export function evaluateActionContract(
       ),
     ),
   ];
-  const state = failed.length
-    ? "failed"
-    : sawPartial
-      ? "partial"
-      : sawUnverified
-        ? "unverified"
-        : "pending";
+  const state =
+    failed.length || skippedFailure
+      ? "failed"
+      : sawPartial
+        ? "partial"
+        : sawUnverified
+          ? "unverified"
+          : "pending";
   const guidance = actionToolGuidanceForCapabilities(
     missing.map((obligation) => obligation.capability),
   );
@@ -374,7 +482,8 @@ export function evaluateActionContract(
       `${guidance} Retry only unresolved targets. Completion requires independently verified post-state; a successful call, command exit, script output, or model prose is not semantic proof.`,
     failure:
       `I could not verify completion of: ${labels.join("; ")}.` +
-      (failureReasons.length ? ` ${failureReasons.join("; ")}` : ""),
+      (failureReasons.length ? ` ${failureReasons.join("; ")}` : "") +
+      (skippedFailure ? ` ${skippedFailure}` : ""),
   };
 }
 

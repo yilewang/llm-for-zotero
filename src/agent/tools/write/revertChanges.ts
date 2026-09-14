@@ -1,4 +1,8 @@
-import type { AgentWriteToolDefinition } from "../../types";
+import type { AgentWriteToolDefinition, AgentToolContext } from "../../types";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   analyzeJournalActions,
@@ -6,6 +10,7 @@ import {
 } from "../../services/changeReverter";
 import {
   selectRevertJournalActions,
+  listJournalActions,
   type JournalAction,
   type JournalActionWithSteps,
 } from "../../store/changeJournal";
@@ -13,8 +18,45 @@ import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 
 type RevertChangesInput = {
   count: number;
+  actionIds?: string[];
   dryRun: boolean;
 };
+
+async function selectActions(
+  input: RevertChangesInput,
+  context: AgentToolContext,
+) {
+  if (!input.actionIds) {
+    if (context.authorization?.standalone)
+      throw new Error(
+        "Standalone MCP recovery requires explicit actionIds from write receipts.",
+      );
+    return selectRevertJournalActions({
+      conversationKey: context.request.conversationKey,
+      count: input.count,
+    });
+  }
+  const actions = await listJournalActions({
+    actionIds: input.actionIds,
+    conversationKey: context.request.conversationKey,
+    pendingOnly: true,
+    limit: input.actionIds.length,
+  });
+  const missing = input.actionIds.filter(
+    (id) => !actions.some((action) => action.actionId === id),
+  );
+  if (missing.length)
+    throw new Error(
+      `Journal actions ${missing.join(", ")} are unavailable in this execution history.`,
+    );
+  // The journal owns newest-first ordering, including equal timestamps.
+  return {
+    actions: actions.filter((action) => action.reversibility !== "none"),
+    skippedIrreversible: actions.filter(
+      (action) => action.reversibility === "none",
+    ),
+  };
+}
 
 /**
  * Reverts the agent's recent library changes from the durable journal.
@@ -44,7 +86,9 @@ export function createRevertChangesTool(
               operation: "revert",
               source: "zotero_native",
               parameters: { revertCount: input.count },
-              requestedTargets: [],
+              requestedTargets: (input.actionIds || []).map(
+                (id) => `journal-action:${id}`,
+              ),
               destinationCollectionIds: [],
             },
           ],
@@ -56,6 +100,13 @@ export function createRevertChangesTool(
         type: "object",
         additionalProperties: false,
         properties: {
+          actionIds: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+            description:
+              "Exact journal action IDs from write receipts. Required for standalone MCP recovery; mutually exclusive with count.",
+          },
           count: {
             type: "number",
             description:
@@ -68,7 +119,7 @@ export function createRevertChangesTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -105,51 +156,54 @@ export function createRevertChangesTool(
         return fail("Expected an object, for example { count: 1 }");
       }
       const record = (args || {}) as Record<string, unknown>;
+      if (
+        record.actionIds !== undefined &&
+        (!Array.isArray(record.actionIds) ||
+          !record.actionIds.length ||
+          record.actionIds.some((id) => typeof id !== "string" || !id.trim()) ||
+          record.count !== undefined)
+      )
+        return fail(
+          "actionIds must be a non-empty list of identities and cannot be combined with count.",
+        );
       return ok({
+        ...(Array.isArray(record.actionIds)
+          ? {
+              actionIds: [
+                ...new Set(record.actionIds.map((id) => String(id).trim())),
+              ],
+            }
+          : {}),
         count: normalizePositiveInt(record.count) ?? 1,
         dryRun: record.dryRun === true,
       });
     },
 
-    /**
-     * A dry run changes nothing, so it needs no card; and there is nothing to
-     * confirm when the journal has no pending entries.
-     */
-    async shouldRequireConfirmation(input, context) {
-      if (input.dryRun) return false;
-      const selection = await selectRevertJournalActions({
-        conversationKey: context.request.conversationKey,
-        count: input.count,
-      });
-      return selection.actions.length > 0;
-    },
-
-    async planMutation(input, context) {
+    async planInvocation(input, context) {
+      const selection = await selectActions(input, context);
       if (input.dryRun) {
-        return { effect: "none", reversibility: "full" };
+        return readOnlyInvocationPlan({
+          reason: "A dry run reads journal state without applying inverses.",
+        });
       }
-      const selection = await selectRevertJournalActions({
-        conversationKey: context.request.conversationKey,
-        count: input.count,
-      });
       return selection.actions.length
-        ? {
-            effect: "write",
+        ? stateChangeInvocationPlan({
+            targets: selection.actions.map(
+              (action) => `journal-action:${action.actionId}`,
+            ),
             reversibility: "none",
             reason:
               "Reverting history does not create redo entries, so the revert itself cannot be automatically undone.",
-            requiresConfirmation: true,
-          }
-        : { effect: "none", reversibility: "full" };
+          })
+        : readOnlyInvocationPlan({
+            reason: "There are no journalled actions to revert.",
+          });
     },
 
     async createPendingAction(input, context) {
       // Irreversible actions never consume the count budget; they are
       // disclosed as changes that will remain, matching undo_last_action.
-      const selection = await selectRevertJournalActions({
-        conversationKey: context.request.conversationKey,
-        count: input.count,
-      });
+      const selection = await selectActions(input, context);
       const pending = selection.actions;
       const summary = [
         describeEntries(pending),
@@ -179,10 +233,7 @@ export function createRevertChangesTool(
     },
 
     async execute(input, context) {
-      const selection = await selectRevertJournalActions({
-        conversationKey: context.request.conversationKey,
-        count: input.count,
-      });
+      const selection = await selectActions(input, context);
       const pending = selection.actions;
       const skippedIrreversible = selection.skippedIrreversible.map(
         (action) => ({

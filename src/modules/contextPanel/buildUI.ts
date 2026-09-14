@@ -17,14 +17,14 @@ import {
   type SlashBaseMenuItem,
 } from "./slashMenuBehavior";
 import {
-  getPaperPortalBaseItemID,
-  isPaperPortalItem,
+  resolveConversationBaseItem,
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
   resolvePreferredConversationSystem,
 } from "./portalScope";
 import { getConversationKey } from "./conversationIdentity";
 import { createRuntimeSystemControls } from "./runtimeSystemControls";
+import { buildContextUsagePresentation } from "./textUtils";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -62,14 +62,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const conversationItemId = hasItem && item ? getConversationKey(item) : 0;
   const basePaperItemId =
     hasItem && item
-      ? activeNoteSession?.parentItemId ||
-        (isPaperPortalItem(item)
-          ? getPaperPortalBaseItemID(item) || 0
-          : item.isAttachment() && item.parentID
-            ? item.parentID
-            : isPaperMode
-              ? item.id
-              : 0)
+      ? activeNoteSession
+        ? activeNoteSession.parentItemId || 0
+        : isPaperMode
+          ? Number(resolveConversationBaseItem(item)?.id || 0)
+          : 0
       : 0;
   const hasPaperContext = basePaperItemId > 0;
 
@@ -175,9 +172,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   modeSwitchWrap.dataset.mode = hasItem && isGlobalMode ? "global" : "paper";
 
   const modeChipLabel = activeNoteSession
-    ? activeNoteSession.conversationKind === "global"
-      ? t("Library chat")
-      : t("Paper chat")
+    ? t("Note chat")
     : isGlobalMode
       ? t("Library chat")
       : t("Paper chat");
@@ -201,22 +196,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     },
   });
 
-  const claudeContextGauge = createElement(
-    doc,
-    "div",
-    "llm-claude-context-gauge",
-    {
-      id: "llm-claude-context-gauge",
-    },
-  ) as HTMLDivElement;
-  claudeContextGauge.style.display = "none";
-  claudeContextGauge.setAttribute("aria-hidden", "true");
-
-  headerRuntimeControls.append(
-    modeSwitchWrap,
-    runtimeSystemControls.group,
-    claudeContextGauge,
-  );
+  headerRuntimeControls.append(modeSwitchWrap, runtimeSystemControls.group);
   historyBar.append(historyNewBtn, historyToggle, headerRuntimeControls);
 
   headerInfo.append(title, historyBar);
@@ -596,6 +576,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
+  const planModeChip = createElement(
+    doc,
+    "button",
+    "llm-selected-context llm-paper-context-chip llm-plan-mode-chip",
+    {
+      id: "llm-plan-mode-chip",
+      type: "button",
+      title: t("Cancel Plan mode"),
+    },
+  );
+  planModeChip.style.display = "none";
+  planModeChip.setAttribute("aria-label", t("Cancel Plan mode"));
+  const planModeChipLabel = createElement(
+    doc,
+    "span",
+    "llm-plan-mode-chip-label",
+    { textContent: `${t("Plan")}  ×` },
+  );
+  planModeChip.appendChild(planModeChipLabel);
+  contextPreviews.appendChild(planModeChip);
   const selectedContextList = createElement(
     doc,
     "div",
@@ -964,10 +964,59 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
         : t("Ready")
       : t("Select an item or open a PDF"),
   });
+  const footerControls = createElement(doc, "div", "llm-footer-controls");
+  const permissionControl = createElement(
+    doc,
+    "div",
+    "llm-permission-control",
+    { id: "llm-permission-control" },
+  );
+  permissionControl.style.display = "none";
+  const permissionButton = createElement(
+    doc,
+    "button",
+    "llm-permission-toggle",
+    {
+      id: "llm-permission-toggle",
+      type: "button",
+      title: t("Permission mode"),
+    },
+  );
+  permissionButton.setAttribute("aria-haspopup", "menu");
+  permissionButton.setAttribute("aria-expanded", "false");
+  const permissionMenu = createElement(doc, "div", "llm-permission-menu", {
+    id: "llm-permission-menu",
+  });
+  permissionMenu.setAttribute("role", "menu");
+  permissionMenu.style.display = "none";
+  permissionControl.append(permissionButton, permissionMenu);
+
+  const contextUsageControl = createElement(
+    doc,
+    "span",
+    "llm-context-usage-control",
+  );
+  const contextUsagePresentation = buildContextUsagePresentation({
+    sessionTokens: 0,
+  });
+  const contextGauge = createElement(doc, "span", "llm-context-gauge", {
+    id: "llm-context-gauge",
+    title: contextUsagePresentation.title,
+  });
+  contextGauge.setAttribute("role", "img");
+  contextGauge.setAttribute("tabindex", "0");
+  contextGauge.setAttribute("aria-label", contextUsagePresentation.title);
+  contextGauge.setAttribute("aria-describedby", "llm-token-usage");
   const tokenUsage = createElement(doc, "span", "llm-token-usage", {
     id: "llm-token-usage",
   });
-  statusBar.append(statusLine, tokenUsage);
+  tokenUsage.setAttribute("role", "tooltip");
+  tokenUsage.dataset.label = contextUsagePresentation.label;
+  tokenUsage.dataset.summary = contextUsagePresentation.summary;
+  tokenUsage.dataset.detail = contextUsagePresentation.detail;
+  contextUsageControl.append(contextGauge, tokenUsage);
+  footerControls.append(permissionControl, contextUsageControl);
+  statusBar.append(statusLine, footerControls);
 
   actionsLeft.append(
     uploadSlot,

@@ -45,7 +45,7 @@ export const collectionSearchExecutors = {
           : buildCollectionAddInverse(
               result.items
                 .filter(
-                  (item) => item.status === "moved" && item.targetCollectionId,
+                  (item) => item.status === "added" && item.targetCollectionId,
                 )
                 .map((item) => ({
                   itemId: item.itemId,

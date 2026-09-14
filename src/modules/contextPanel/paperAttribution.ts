@@ -1,3 +1,4 @@
+import { formatPaperDisplayLabel } from "../../shared/paperDisplayLabels";
 import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
@@ -259,19 +260,13 @@ export function formatPaperCitationLabel(
 ): string {
   if (!paperContext) return "Paper";
   const metadata = resolvePaperContextDisplayMetadata(paperContext);
-  const creator = metadata.firstCreator;
-  const year = metadata.year;
-  if (creator) {
-    return year ? `${creator}, ${year}` : creator;
-  }
-  const fallbackId =
-    Number.isFinite(paperContext.itemId) && paperContext.itemId > 0
-      ? Math.floor(paperContext.itemId)
-      : Number.isFinite(paperContext.contextItemId) &&
-          paperContext.contextItemId > 0
-        ? Math.floor(paperContext.contextItemId)
-        : 0;
-  return fallbackId > 0 ? `Paper ${fallbackId}` : "Paper";
+  return formatPaperDisplayLabel(
+    {
+      title: paperContext.title,
+      ...metadata,
+    },
+    { preserveUndatedCitation: true },
+  ).slice(1, -1);
 }
 
 export function formatPaperSourceLabel(

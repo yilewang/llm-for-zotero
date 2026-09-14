@@ -596,7 +596,7 @@ describe("pdfContext multi-context helpers", function () {
       rendered,
       "> Despite global representational drift, the relative geometry remained stable across conditions.",
     );
-    assert.include(rendered, "Source label: (Paper 2)");
+    assert.include(rendered, "Source label: (Paper B, n.d.)");
     assert.include(rendered, "> Shared claim B");
     assert.notInclude(rendered, "[P1-C4]");
 

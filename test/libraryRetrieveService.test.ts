@@ -1,3 +1,4 @@
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   LibraryRetrieveService as ResolvedLibraryRetrieveService,
@@ -2787,7 +2788,11 @@ describe("LibraryRetrieveService classified intent defaults", function () {
 
   it("uses the classified retrieval intent as the default", async function () {
     const result = await run({
-      classifiedIntent: { retrievalIntent: "summarize", wantedSections: [] },
+      classifiedIntent: {
+        semantic: semanticFixture(),
+        retrievalIntent: "summarize",
+        wantedSections: [],
+      },
     });
 
     assert.equal(result.intent, "summarize");
@@ -2796,7 +2801,11 @@ describe("LibraryRetrieveService classified intent defaults", function () {
   it("lets explicit tool-arg intent beat the classified intent", async function () {
     const result = await run({
       intent: "verify",
-      classifiedIntent: { retrievalIntent: "summarize", wantedSections: [] },
+      classifiedIntent: {
+        semantic: semanticFixture(),
+        retrievalIntent: "summarize",
+        wantedSections: [],
+      },
     });
 
     assert.equal(result.intent, "verify");
@@ -2953,6 +2962,7 @@ describe("LibraryRetrieveService body-evidence defaults", function () {
       request: {
         ...REQUEST,
         classifiedIntent: {
+          semantic: semanticFixture(),
           retrievalIntent: "enumerate",
           wantedSections: ["methods"],
         },

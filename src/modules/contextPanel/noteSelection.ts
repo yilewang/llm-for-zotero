@@ -74,6 +74,7 @@ function getEditableTextControlSelectionFromDocument(doc: Document): string {
       Math.min(selectionStart, selectionEnd),
       Math.max(selectionStart, selectionEnd),
     ),
+    "note-edit",
   );
 }
 
@@ -83,7 +84,10 @@ export function getEditableSelectionFromDocument(doc: Document): string {
     return fromTextControl;
   }
   const selection = doc.defaultView?.getSelection?.() || null;
-  const selectedText = normalizeSelectedText(selection?.toString() || "");
+  const selectedText = normalizeSelectedText(
+    selection?.toString() || "",
+    "note-edit",
+  );
   if (!selection || !selectedText || selection.isCollapsed) {
     return "";
   }

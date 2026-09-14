@@ -81,7 +81,7 @@ import {
   clearDeletedAgentConversationState,
   clearPersistedAgentConversationRowsInTransaction,
 } from "./agentConversationCleanup";
-import { initAgentTraceStore } from "../../agent/store/traceStore";
+import { ensureAgentTraceSchema } from "../../agent/store/traceStore";
 import { resolveConversationRefForKey } from "../../shared/conversationRef";
 import {
   getConversationScopeValidationDetails,
@@ -314,7 +314,7 @@ function buildOperations(
     deleteLocalConversationRows: async (target) => {
       // Ensure the trace-file cleanup table exists before the owning catalog
       // transaction starts; the transaction callback itself is DML-only.
-      await initAgentTraceStore();
+      await ensureAgentTraceSchema();
       await conversationRepository.deleteLocalConversationRows({
         instanceID: target.instanceID,
         conversationID: target.conversationID,

@@ -63,3 +63,27 @@ export type UsageStats = {
   /** True when contextTokens/contextWindow came from the provider/runtime. */
   contextWindowIsAuthoritative?: boolean;
 };
+
+export type ModelTurnCompletion =
+  | { status: "complete"; providerReason?: never }
+  | {
+      status: "incomplete";
+      reason: "output_limit" | "context_limit" | "provider_pause";
+      providerReason?: string;
+    }
+  | {
+      status: "blocked";
+      reason: "safety" | "refusal" | "malformed_tool_call" | "other";
+      providerReason?: string;
+    };
+
+/**
+ * Provider-independent terminal result for one model response. Hidden
+ * reasoning is deliberately excluded; continuationState may contain only the
+ * opaque, non-secret provider material needed to resume the current response.
+ */
+export type ModelTurnOutcome = {
+  text: string;
+  completion: ModelTurnCompletion;
+  continuationState?: unknown;
+};

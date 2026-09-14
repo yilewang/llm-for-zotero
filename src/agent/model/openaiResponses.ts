@@ -1,7 +1,6 @@
 import {
   buildReasoningPayload,
   buildPromptCachePayloadHints,
-  normalizeMaxTokensForRequest,
   postWithReasoningFallback,
   resolveRequestAuthState,
   uploadFilesForResponses,
@@ -17,6 +16,12 @@ import type {
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import { buildAgentModelCapabilities } from "./contentCapabilities";
+import { resolveAgentTransmittedOutputPolicy } from "./limits";
+import { estimateWirePayloadTokens } from "../../utils/modelInputCap";
+import {
+  buildAgentRecoveryInstruction,
+  resolveAgentRecoverableCompletion,
+} from "./completion";
 import {
   buildResponsesContinuationInput,
   buildResponsesInitialInput,
@@ -106,6 +111,15 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
       apiBase: request.apiBase || "",
       authMode: request.authMode,
     });
+    const outputPolicy = resolveAgentTransmittedOutputPolicy(
+      request,
+      "responses_api",
+      estimateWirePayloadTokens({
+        instructions,
+        input: inputItems,
+        tools: params.tools,
+      }),
+    );
     const response = await postWithReasoningFallback({
       url,
       auth,
@@ -130,15 +144,9 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           tool_choice: "auto",
           store: false,
           stream: true,
-          max_output_tokens: normalizeMaxTokensForRequest({
-            value: request.advanced?.maxTokens,
-            maxTokensExplicit: request.advanced?.maxTokensExplicit,
-            model: request.model || "",
-            apiBase: request.apiBase,
-            protocol: "responses_api",
-            authMode: request.authMode,
-            profileOverride: request.advanced?.profileOverride,
-          }),
+          ...(outputPolicy.mode === "numeric"
+            ? { max_output_tokens: outputPolicy.tokens }
+            : {}),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
             ? {}
@@ -161,6 +169,35 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
       : normalizeResponsesStepFromPayload(
           (await response.json()) as ResponsesPayload,
         );
+    const recoveryReason = resolveAgentRecoverableCompletion(
+      normalized.completion,
+    );
+    if (recoveryReason) {
+      this.conversationItems = [
+        ...inputItems,
+        ...normalized.outputItems.filter((item) => {
+          if (!item || typeof item !== "object") return true;
+          const type = String(
+            (item as { type?: unknown }).type ?? "",
+          ).toLowerCase();
+          return type !== "function_call" && type !== "tool_call";
+        }),
+      ];
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: normalized.completion.providerReason,
+        text: normalized.text,
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: {
+          role: "assistant",
+          content: normalized.text,
+        },
+      };
+    }
     this.conversationItems = [...inputItems, ...normalized.outputItems];
     if (normalized.toolCalls.length) {
       return {

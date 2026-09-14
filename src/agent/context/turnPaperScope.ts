@@ -574,3 +574,17 @@ export function getActiveTurnPaper(
 ): TurnPaperRef | undefined {
   return scope.papers.find((entry) => entry.roles.includes("active"))?.paper;
 }
+
+/** Resolve an interpreted paper-set reference only against the frozen turn. */
+export function getInterpretedTurnPapers(
+  scope: TurnPaperScope,
+  intent: "active" | "added" | "all_visible" | "unspecified" | undefined,
+): TurnPaperRef[] | undefined {
+  if (!intent || intent === "unspecified") return undefined;
+  const active = getActiveTurnPaper(scope);
+  if (intent === "active") return active ? [active] : [];
+  const papers = scope.papers.map((entry) => entry.paper);
+  return intent === "all_visible"
+    ? papers
+    : papers.filter((paper) => paper.itemId !== active?.itemId);
+}

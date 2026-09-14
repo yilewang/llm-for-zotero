@@ -2,7 +2,6 @@
  * Focused facade tool for adding and removing tags on Zotero papers.
  * Provides a self-describing schema for managing Zotero tags.
  */
-import type { AgentWriteToolDefinition } from "../../types";
 import {
   buildPagedReviewActionConfig,
   buildPageSizeSelectField,
@@ -16,18 +15,19 @@ import {
   type RemoveTagsOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
-  ok,
   fail,
-  validateObject,
   normalizePositiveIntArray,
   normalizeStringArray,
+  ok,
+  validateObject,
 } from "../shared";
 import {
   buildTagAssignmentField,
-  normalizeTagAssignmentsFromResolution,
-  getTagAssignmentFieldId,
   executeAndRecordUndo,
+  getTagAssignmentFieldId,
+  normalizeTagAssignmentsFromResolution,
   planLibraryMutations,
 } from "./mutateLibraryShared";
 
@@ -88,7 +88,7 @@ export function createApplyTagsTool(
         },
         additionalProperties: false,
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -196,22 +196,27 @@ export function createApplyTagsTool(
         const operation = input.operation as ApplyTagsOperation;
         const tagField = buildTagAssignmentField(operation, zoteroGateway);
         const pageMeta = readPagedOperationMeta(operation.id);
+        const assignments = operation.assignments || [];
+        const itemCount = assignments.length || operation.itemIds?.length || 0;
+        const isSinglePaper = itemCount === 1 && pageMeta?.totalPages === 1;
         const fields = [
           ...(tagField ? [tagField] : []),
           ...(pageMeta
             ? [
                 buildTagsPerPaperSelectField(pageMeta.tagsPerPaper),
-                buildPageSizeSelectField(pageMeta.pageSize),
+                ...(!isSinglePaper
+                  ? [buildPageSizeSelectField(pageMeta.pageSize)]
+                  : []),
               ]
             : []),
         ];
 
-        const assignments = operation.assignments || [];
-        const itemCount = assignments.length || operation.itemIds?.length || 0;
-        const pageLabel = readPagedOperationLabel(operation.id);
+        const pageLabel = isSinglePaper
+          ? ""
+          : readPagedOperationLabel(operation.id);
         const tagSummary = operation.tags?.length
           ? `Tags to add: ${operation.tags.join(", ")}`
-          : "Review the suggested per-paper tag additions.";
+          : "Edit or remove suggested tags, or add your own. Existing tags are kept.";
 
         return {
           toolName: "apply_tags",
@@ -289,7 +294,7 @@ export function createApplyTagsTool(
           );
         }
 
-        // No resolution data (auto_approve / non-HITL path). Validate the
+        // No resolution data (automatic / non-HITL path). Validate the
         // original operation has something to apply so we don't silently
         // pass through an empty request.
         const hasNonEmptyAssignments = operation.assignments?.some(
@@ -310,7 +315,7 @@ export function createApplyTagsTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

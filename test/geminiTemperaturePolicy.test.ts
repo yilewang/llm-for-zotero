@@ -118,7 +118,7 @@ describe("gemini temperature policy", function () {
       name: "query_library",
       description: "search",
       inputSchema: { type: "object" },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
   ];

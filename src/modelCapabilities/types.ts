@@ -55,6 +55,7 @@ export type ModelCapabilityLimits = {
 };
 
 export type ReasoningCapabilityKind =
+  | "unknown"
   | "none"
   | "server_default"
   | "toggle"
@@ -76,7 +77,13 @@ export type ReasoningCapabilityOption = {
   label: string;
   enabled?: boolean;
   controls?: ModelControlPatch;
+  /** Portable effort value, encoded by the selected OpenAI API protocol. */
+  effort?: string;
 };
+
+export type ModelReasoningSelection =
+  | { kind: "auto" }
+  | { kind: "option"; option: ReasoningCapabilityOption };
 
 export type ModelReasoningCapability = {
   kind: ReasoningCapabilityKind;
@@ -163,6 +170,8 @@ export type DiscoveredModel = {
   /** Server-declared feature support, e.g. Ollama's `capabilities: ["tools"]`. */
   features?: Partial<ModelFeatureCapabilities>;
   reasoningSupported?: boolean;
+  /** Optional structured extension using the same contract as the registry. */
+  reasoning?: ModelReasoningCapability;
   displayName?: string;
   source: "live";
 };

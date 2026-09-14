@@ -1,3 +1,4 @@
+import { createAbortController } from "./apiHelpers";
 import type {
   ReasoningConfig,
   ReasoningEvent,
@@ -49,8 +50,18 @@ type ActivityHandler = () => void;
 type NotificationHandler = (params: unknown) => void;
 type RequestHandler = (
   params: unknown,
-  id: number,
+  id: string | number,
+  signal: AbortSignal,
 ) => unknown | Promise<unknown>;
+
+type ServerRequest = {
+  handler: RequestHandler;
+  controller: AbortController;
+  method: string;
+  threadId?: string;
+  turnId?: string;
+  pending: boolean;
+};
 
 export type CodexAppServerItemEvent = {
   id?: string;
@@ -131,6 +142,20 @@ export class CodexAppServerProcess {
   private activityHandlers = new Set<ActivityHandler>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private requestHandlers = new Map<string, Set<RequestHandler>>();
+  private serverRequests = new Map<string | number, ServerRequest>();
+
+  hasPendingUserInput(threadId?: string, turnId?: string): boolean {
+    return Array.from(this.serverRequests.values()).some(
+      (request) =>
+        request.pending &&
+        !request.controller.signal.aborted &&
+        (!threadId || request.threadId === threadId) &&
+        (!turnId || request.turnId === turnId) &&
+        (request.method.endsWith("/requestUserInput") ||
+          request.method.endsWith("/requestApproval") ||
+          request.method === "mcpServer/elicitation/request"),
+    );
+  }
   private closeHandlers = new Set<() => void>();
   private readLoopPromise: Promise<void> | null = null;
   private stderrLoopPromise: Promise<void> | null = null;
@@ -143,6 +168,7 @@ export class CodexAppServerProcess {
   private destroyed = false;
   private didNotifyClose = false;
   private injectItemsSupport: CodexAppServerInjectItemsSupport = "unknown";
+  private protocolInitialized = false;
 
   private constructor(proc: unknown, launchDescription = "") {
     this.proc = proc;
@@ -338,10 +364,13 @@ export class CodexAppServerProcess {
     }
 
     if ("id" in msg && msg.id !== null && msg.id !== undefined) {
-      const id = msg.id as number;
-      const pending = this.pendingRequests.get(id);
+      const id = msg.id as string | number;
+      const pending =
+        typeof msg.method === "string"
+          ? undefined
+          : this.pendingRequests.get(id as number);
       if (pending) {
-        this.pendingRequests.delete(id);
+        this.pendingRequests.delete(id as number);
         if ("error" in msg) {
           pending.reject(
             new Error(
@@ -382,12 +411,27 @@ export class CodexAppServerProcess {
           | RequestHandler
           | undefined;
         if (!handler) return;
+        if (this.serverRequests.has(id)) return;
+        const identity = msg.params as
+          | { threadId?: string; turnId?: string }
+          | undefined;
+        const request: ServerRequest = {
+          handler,
+          controller: createAbortController(),
+          method: msg.method,
+          threadId: identity?.threadId,
+          turnId: identity?.turnId,
+          pending: true,
+        };
+        this.serverRequests.set(id, request);
         Promise.resolve()
-          .then(() => handler(msg.params, id))
+          .then(() => handler(msg.params, id, request.controller.signal))
           .then((result) => {
+            if (request.controller.signal.aborted) return;
             this.writeRawMessage({ id, result });
           })
           .catch((error) => {
+            if (request.controller.signal.aborted) return;
             this.writeRawMessage({
               id,
               error: {
@@ -395,10 +439,37 @@ export class CodexAppServerProcess {
                 message: error instanceof Error ? error.message : String(error),
               },
             });
+          })
+          .finally(() => {
+            request.pending = false;
           });
         return;
       }
     } else if (typeof msg.method === "string") {
+      if (msg.method === "serverRequest/resolved") {
+        const event = msg.params as {
+          requestId: string | number;
+          threadId?: string;
+        };
+        const request = this.serverRequests.get(event.requestId);
+        if (request && event.threadId === request.threadId)
+          request.controller.abort();
+      }
+      if (msg.method === "turn/completed") {
+        const event = msg.params as {
+          threadId?: string;
+          turnId?: string;
+          turn?: { id?: string };
+        };
+        const turnId = event.turn?.id || event.turnId;
+        for (const request of this.serverRequests.values()) {
+          if (
+            request.turnId === turnId &&
+            (!event.threadId || request.threadId === event.threadId)
+          )
+            request.controller.abort();
+        }
+      }
       const handlers = this.notificationHandlers.get(msg.method);
       if (handlers) {
         for (const handler of handlers) {
@@ -529,6 +600,11 @@ export class CodexAppServerProcess {
     handlers.add(handler);
     return () => {
       this.requestHandlers.get(method)?.delete(handler);
+      for (const [id, request] of this.serverRequests) {
+        if (request.handler !== handler) continue;
+        request.controller.abort();
+        this.serverRequests.delete(id);
+      }
     };
   }
 
@@ -538,6 +614,10 @@ export class CodexAppServerProcess {
 
   setInjectItemsSupport(value: CodexAppServerInjectItemsSupport): void {
     this.injectItemsSupport = value;
+  }
+
+  isProtocolInitialized(): boolean {
+    return this.protocolInitialized;
   }
 
   private async initialize(): Promise<void> {
@@ -550,6 +630,7 @@ export class CodexAppServerProcess {
       capabilities: { experimentalApi: true },
     });
     this.sendNotification("initialized");
+    this.protocolInitialized = true;
   }
 
   private writeRawMessage(message: Record<string, unknown>): void {
@@ -604,6 +685,9 @@ export class CodexAppServerProcess {
         pending.reject(error);
       }
       this.pendingRequests.clear();
+      for (const request of this.serverRequests.values())
+        request.controller.abort();
+      this.serverRequests.clear();
     }
     if (killProcess) {
       try {
@@ -1077,9 +1161,24 @@ function extractCodexAppServerNotificationTurnId(rawParams: unknown): string {
   return "";
 }
 
+export type CodexNativePlanDelta = {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+};
+export type CodexNativePlanProposal = {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  text: string;
+};
+
 export function waitForCodexAppServerTurnCompletion(params: {
   proc: CodexAppServerProcess;
-  turnId: string;
+  turnId?: string;
+  /** Starts generation only after event listeners are installed. */
+  startTurn?: () => Promise<string>;
   threadId?: string;
   onTextDelta?: (delta: string) => void | Promise<void>;
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>;
@@ -1089,6 +1188,12 @@ export function waitForCodexAppServerTurnCompletion(params: {
   ) => void | Promise<void>;
   onItemStarted?: (event: CodexAppServerItemEvent) => void | Promise<void>;
   onItemCompleted?: (event: CodexAppServerItemEvent) => void | Promise<void>;
+  onPlanDelta?: (event: CodexNativePlanDelta) => void | Promise<void>;
+  onPlanCompleted?: (event: CodexNativePlanProposal) => void | Promise<void>;
+  onPlanUpdated?: (event: {
+    explanation?: string;
+    steps: Array<{ content: string; status?: string }>;
+  }) => void | Promise<void>;
   onTurnCompleted?: (event: {
     turnId: string;
     status?: string;
@@ -1101,13 +1206,13 @@ export function waitForCodexAppServerTurnCompletion(params: {
 }): Promise<string> {
   const {
     proc,
-    turnId,
     onTextDelta,
     onReasoning,
     onUsage,
     onAgentMessageDelta,
     onItemStarted,
     onItemCompleted,
+    onPlanUpdated,
     onTurnCompleted,
     signal,
     cacheKey,
@@ -1118,6 +1223,33 @@ export function waitForCodexAppServerTurnCompletion(params: {
     return Promise.reject(createAbortError());
   }
   return new Promise((resolve, reject) => {
+    let turnId = params.turnId || "";
+    let proposalText: string | undefined;
+    let callbacks = Promise.resolve();
+    let callbackError: unknown;
+    let unsubscribeClose = () => {};
+    const completedProposals = new Set<string>();
+    const enqueue = (callback: () => void | Promise<void>) => {
+      callbacks = callbacks.then(callback).catch((error) => {
+        callbackError ||= error;
+      });
+    };
+    const buffered: Array<() => void> = [];
+    const subscribe = (method: string, callback: (value: unknown) => void) =>
+      proc.onNotification(method, (value) => {
+        const deliver = () => {
+          if (settled || !value || typeof value !== "object") return;
+          const record = value as Record<string, any>;
+          const eventThread = record.threadId || record.thread?.id;
+          if (params.threadId && eventThread && eventThread !== params.threadId)
+            return;
+          const eventTurn = extractCodexAppServerNotificationTurnId(value);
+          if (eventTurn && eventTurn !== turnId) return;
+          callback(value);
+        };
+        if (!turnId) buffered.push(deliver);
+        else deliver();
+      });
     let accumulated = "";
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1125,6 +1257,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
     let lastMessageItemId = "";
     const messageTextByItemId = new Map<string, string>();
     const getResolvedMessageText = () => {
+      if (proposalText !== undefined) return proposalText;
       if (lastMessageItemId) {
         const text = messageTextByItemId.get(lastMessageItemId);
         if (typeof text === "string") return text;
@@ -1251,6 +1384,10 @@ export function waitForCodexAppServerTurnCompletion(params: {
         clearTimeout(timeoutId);
       }
       timeoutId = setTimeout(() => {
+        if (proc.hasPendingUserInput(params.threadId, turnId)) {
+          scheduleTimeout();
+          return;
+        }
         if (cacheKey) {
           destroyCachedCodexAppServerProcess(
             cacheKey,
@@ -1312,7 +1449,10 @@ export function waitForCodexAppServerTurnCompletion(params: {
       unsubUsage();
       unsubItemStarted();
       unsubItemCompleted();
+      unsubPlanUpdated();
+      unsubPlanDelta();
       unsubCompleted();
+      unsubscribeClose();
       if (timeoutId !== null) {
         clearTimeout(timeoutId);
       }
@@ -1325,7 +1465,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
     });
     scheduleTimeout();
 
-    const unsubDelta = proc.onNotification(
+    const unsubDelta = subscribe(
       "item/agentMessage/delta",
       (rawParams: unknown) => {
         const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
@@ -1362,7 +1502,67 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
-    const unsubReasoningSummary = proc.onNotification(
+    const unsubPlanDelta = subscribe("item/plan/delta", (value) => {
+      const event = value as Record<string, unknown>;
+      if (typeof event.itemId !== "string" || typeof event.delta !== "string")
+        return;
+      enqueue(() =>
+        params.onPlanDelta?.({
+          threadId: String(event.threadId || params.threadId || ""),
+          turnId,
+          itemId: event.itemId as string,
+          delta: event.delta as string,
+        }),
+      );
+    });
+
+    const unsubPlanUpdated = subscribe(
+      "turn/plan/updated",
+      (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
+        if (!rawParams || typeof rawParams !== "object") return;
+        const record = rawParams as Record<string, unknown>;
+        const rawSteps = Array.isArray(record.plan)
+          ? record.plan
+          : Array.isArray(record.steps)
+            ? record.steps
+            : [];
+        const steps = rawSteps
+          .map((value) => {
+            if (!value || typeof value !== "object") return null;
+            const step = value as Record<string, unknown>;
+            const content = normalizeCodexAppServerFieldText(
+              step.step ?? step.content ?? step.text,
+              4000,
+            );
+            if (!content) return null;
+            return {
+              content,
+              ...(normalizeCodexAppServerFieldText(step.status, 80)
+                ? {
+                    status: normalizeCodexAppServerFieldText(step.status, 80),
+                  }
+                : {}),
+            };
+          })
+          .filter((value): value is { content: string; status?: string } =>
+            Boolean(value),
+          );
+        if (!steps.length) return;
+        Promise.resolve(
+          onPlanUpdated?.({
+            explanation: normalizeCodexAppServerFieldText(
+              record.explanation,
+              8000,
+            ),
+            steps,
+          }),
+        ).catch(() => {});
+      },
+    );
+
+    const unsubReasoningSummary = subscribe(
       "item/reasoning/summaryTextDelta",
       (rawParams: unknown) => {
         const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
@@ -1387,7 +1587,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
-    const unsubReasoningDetails = proc.onNotification(
+    const unsubReasoningDetails = subscribe(
       "item/reasoning/textDelta",
       (rawParams: unknown) => {
         const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
@@ -1412,7 +1612,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
-    const unsubUsage = proc.onNotification(
+    const unsubUsage = subscribe(
       "thread/tokenUsage/updated",
       (rawParams: unknown) => {
         const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
@@ -1477,29 +1677,44 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
-    const unsubItemStarted = proc.onNotification(
-      "item/started",
-      (rawParams: unknown) => {
-        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
-        if (eventTurnId && eventTurnId !== turnId) return;
-        const item = extractCodexAppServerItem(rawParams);
-        if (!item) return;
-        Promise.resolve(onItemStarted?.(item)).catch(() => {
-          // Ignore downstream consumer errors so the transport can finish cleanly.
-        });
-      },
-    );
+    const unsubItemStarted = subscribe("item/started", (rawParams: unknown) => {
+      const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+      if (eventTurnId && eventTurnId !== turnId) return;
+      const item = extractCodexAppServerItem(rawParams);
+      if (!item) return;
+      Promise.resolve(onItemStarted?.(item)).catch(() => {
+        // Ignore downstream consumer errors so the transport can finish cleanly.
+      });
+    });
 
-    const unsubItemCompleted = proc.onNotification(
+    const unsubItemCompleted = subscribe(
       "item/completed",
       (rawParams: unknown) => {
         const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
         if (eventTurnId && eventTurnId !== turnId) return;
         const item = extractCodexAppServerItem(rawParams);
         if (!item) return;
-        Promise.resolve(onItemCompleted?.(item)).catch(() => {
-          // Ignore downstream consumer errors so the transport can finish cleanly.
-        });
+        enqueue(() => onItemCompleted?.(item));
+        if (
+          item.type === "plan" &&
+          item.id &&
+          !completedProposals.has(item.id)
+        ) {
+          completedProposals.add(item.id);
+          proposalText = item.details || "";
+          const proposal = {
+            threadId: String(
+              (rawParams as Record<string, unknown>).threadId ||
+                params.threadId ||
+                "",
+            ),
+            turnId,
+            itemId: item.id,
+            text: proposalText,
+          };
+          enqueue(() => params.onPlanCompleted?.(proposal));
+          return;
+        }
         if (isCodexAppServerAgentMessageItem(item)) {
           const text = item.details || item.summary || "";
           if (text && item.id) {
@@ -1519,43 +1734,58 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
-    const unsubCompleted = proc.onNotification(
-      "turn/completed",
-      (rawParams: unknown) => {
-        const notification = rawParams as {
-          turn?: { id?: string; status?: string };
-          turnId?: string;
-          status?: string;
-        };
-        const completedTurnId =
-          typeof notification.turn?.id === "string"
-            ? notification.turn.id
-            : typeof notification.turnId === "string"
-              ? notification.turnId
-              : "";
-        if (completedTurnId !== turnId) return;
-        const status =
-          typeof notification.turn?.status === "string"
-            ? notification.turn.status
-            : typeof notification.status === "string"
-              ? notification.status
-              : undefined;
-        Promise.resolve(
-          onTurnCompleted?.({ turnId: completedTurnId, status }),
-        ).catch(() => {
-          // Ignore downstream consumer errors so the transport can finish cleanly.
-        });
-        if (status === "completed") {
+    const unsubCompleted = subscribe("turn/completed", (rawParams: unknown) => {
+      const notification = rawParams as {
+        turn?: { id?: string; status?: string };
+        turnId?: string;
+        status?: string;
+      };
+      const completedTurnId =
+        typeof notification.turn?.id === "string"
+          ? notification.turn.id
+          : typeof notification.turnId === "string"
+            ? notification.turnId
+            : "";
+      if (completedTurnId !== turnId) return;
+      const status =
+        typeof notification.turn?.status === "string"
+          ? notification.turn.status
+          : typeof notification.status === "string"
+            ? notification.status
+            : undefined;
+      enqueue(() => onTurnCompleted?.({ turnId: completedTurnId, status }));
+      void callbacks.then(() => {
+        if (callbackError) {
+          settle(() => reject(callbackError));
+        } else if (status === "completed") {
           settle(() => resolve(getResolvedMessageText()));
-          return;
+        } else if (status === "interrupted") {
+          settle(() => reject(createAbortError()));
+        } else {
+          settle(() =>
+            reject(new Error(`Turn ended with status: ${status ?? "unknown"}`)),
+          );
         }
-        settle(() =>
-          reject(new Error(`Turn ended with status: ${status ?? "unknown"}`)),
-        );
-      },
-    );
+      });
+    });
 
     signal?.addEventListener("abort", abortHandler, { once: true });
+    unsubscribeClose = proc.onClose(() => {
+      void callbacks.then(() =>
+        settle(() => reject(new Error("Codex app-server connection closed"))),
+      );
+    });
+    if (!settled && params.startTurn) {
+      void params
+        .startTurn()
+        .then((id) => {
+          if (settled) return;
+          if (!id) throw new Error("Codex app-server did not return a turn ID");
+          turnId = id;
+          for (const deliver of buffered.splice(0)) deliver();
+        })
+        .catch((error) => settle(() => reject(error)));
+    }
   });
 }
 

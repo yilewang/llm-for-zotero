@@ -9,12 +9,7 @@ import {
   renderActionTransitionCard,
   shouldExecuteAgentActionImmediatelyFromSlash,
 } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandController";
-import {
-  parseInlineActionCommand,
-  parseCommandParams,
-  resolveNaturalLanguageActionIntent,
-  resolvePagedCollectionScopeInput,
-} from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandParams";
+import { parseInlineActionCommand } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandParams";
 import type {
   AgentConfirmationResolution,
   AgentPendingAction,
@@ -287,7 +282,7 @@ function makeSkill(id: string): AgentSkill {
     id,
     description: `${id} description`,
     version: 1,
-    patterns: [],
+
     contexts: ["any"],
     activation: "both",
     instruction: `${id} instructions`,
@@ -323,6 +318,7 @@ function createControllerHarness(
     shouldRenderSkillSlashMenu?: () => boolean;
     isClaudeConversationSystem?: () => boolean;
     authMode?: "codex_app_server";
+    onSend?: (text: string) => void;
   } = {},
 ) {
   const doc = new FakeDocument();
@@ -374,6 +370,8 @@ function createControllerHarness(
     isClaudeConversationSystem:
       options.isClaudeConversationSystem || (() => false),
     getCurrentRuntimeMode: () => "chat",
+    activatePlanMode: () => undefined,
+    isPlanAvailable: () => false,
     setCurrentRuntimeMode: () => {
       runtimeSwitches += 1;
     },
@@ -384,7 +382,9 @@ function createControllerHarness(
     getEffectiveFullTextPaperContexts: () => [],
     getSelectedProfile: () =>
       options.authMode ? { authMode: options.authMode } : null,
-    getDoSend: () => null,
+    getDoSend: () => async () => {
+      options.onSend?.(inputBox.value);
+    },
     closeRetryModelMenu: () => undefined,
     closeModelMenu: () => undefined,
     closeReasoningMenu: () => undefined,
@@ -477,278 +477,23 @@ describe("actionCommandController", function () {
     { collectionId: 55, name: "Neuroscience", path: "Lab/Neuroscience" },
   ];
 
-  it("resolves natural auto_tag requests against the selected collection chip", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "auto tag this current folder",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
+  it("sends every free-text slash argument through the Agent turn", async function () {
+    for (const params of [
+      "this folder",
+      "前十篇论文",
+      "collection Bayesian",
+      "do not change existing tags",
+      "10",
+    ]) {
+      const sent: string[] = [];
+      const { controller } = createControllerHarness({
+        onSend: (text) => {
+          sent.push(text);
         },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "this current folder",
-          collectionIds: [13],
-        },
-        userQuery: "this current folder",
-      },
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "/auto_tag this folder",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "this folder",
-          collectionIds: [13],
-        },
-        userQuery: "this folder",
-      },
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "please run /auto_tag this folder",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "this folder",
-          collectionIds: [13],
-        },
-        userQuery: "this folder",
-      },
-    );
-  });
-
-  it("defaults natural auto_tag requests to selected scope chips", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "auto tag",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          pageSize: 20,
-          collectionIds: [13],
-        },
-        userQuery: "auto tag",
-      },
-    );
-  });
-
-  it("resolves natural audit_library requests against the selected collection chip", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "audit this current folder",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "audit_library",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "this current folder",
-          collectionId: 13,
-        },
-        userQuery: "this current folder",
-      },
-    );
-  });
-
-  it("resolves named collections for natural auto_tag and audit_library requests", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "please run auto_tag on collection Neuroscience",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: { mode: "library" },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "collection Neuroscience",
-          collectionIds: [55],
-        },
-        userQuery: "collection Neuroscience",
-      },
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "run audit_library on collection Neuroscience",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: { mode: "library" },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "audit_library",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "collection Neuroscience",
-          collectionId: 55,
-        },
-        userQuery: "collection Neuroscience",
-      },
-    );
-  });
-
-  it("reports ambiguous named natural collection scopes", function () {
-    const result = resolveNaturalLanguageActionIntent({
-      text: "auto tag collection Neuroscience",
-      mode: "library",
-      actions: scopedIntentActions,
-      requestContext: { mode: "library" },
-      collectionCandidates: [
-        { collectionId: 55, name: "Neuroscience", path: "Lab/Neuroscience" },
-        {
-          collectionId: 56,
-          name: "Neuroscience",
-          path: "Archive/Neuroscience",
-        },
-      ],
-    });
-
-    assert.equal(result.kind, "error");
-    assert.include(result.kind === "error" ? result.error : "", "ambiguous");
-  });
-
-  it("does not route excluded or explanatory natural action text", function () {
-    const organizeResult = resolveNaturalLanguageActionIntent({
-      text: "organize_unfiled this folder",
-      mode: "library",
-      actions: scopedIntentActions,
-      requestContext: {
-        mode: "library",
-        selectedCollectionContexts: [
-          { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-        ],
-      },
-      collectionCandidates: scopedIntentCollections,
-    });
-    assert.equal(organizeResult.kind, "error");
-    assert.include(
-      organizeResult.kind === "error" ? organizeResult.error : "",
-      "does not support collection scope",
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "discover_related this folder",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedCollectionContexts: [
-            { collectionId: 13, name: "Dynamical_System", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      { kind: "none" },
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "what does audit_library do?",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: { mode: "library" },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      { kind: "none" },
-    );
-  });
-
-  it("resolves natural auto_tag requests against the selected tag chip", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "auto tag this tag",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: {
-          mode: "library",
-          selectedTagContexts: [
-            { name: "Stable", normalizedName: "stable", libraryID: 1 },
-          ],
-        },
-        collectionCandidates: scopedIntentCollections,
-        tagCandidates: [{ name: "Stable" }],
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "tag",
-          pageSize: 20,
-          userQuery: "this tag",
-          tagNames: ["Stable"],
-        },
-        userQuery: "this tag",
-      },
-    );
+      });
+      await controller.handleInlineCommand("auto_tag", params);
+      assert.deepEqual(sent, [`/auto_tag ${params}`]);
+    }
   });
 
   it("routes immediate action chips by chat mode", function () {
@@ -783,27 +528,6 @@ describe("actionCommandController", function () {
     );
   });
 
-  it("parses bare numeric paged library action params as limits", function () {
-    assert.deepEqual(parseCommandParams("auto_tag", "10", "library"), {
-      scope: "all",
-      pageSize: 20,
-      userQuery: "10",
-      limit: 10,
-    });
-    assert.deepEqual(
-      parseCommandParams("auto_tag", "page size 10", "library"),
-      {
-        scope: "all",
-        pageSize: 10,
-        userQuery: "page size 10",
-      },
-    );
-    assert.deepEqual(parseCommandParams("auto_tag", "10", "paper"), {
-      userQuery: "10",
-      limit: 10,
-    });
-  });
-
   it("parses full-message slash actions before normal chat send", function () {
     assert.deepEqual(
       parseInlineActionCommand("/auto_tag collection Geometry"),
@@ -818,195 +542,6 @@ describe("actionCommandController", function () {
     });
     assert.isNull(parseInlineActionCommand("please run /auto_tag"));
     assert.isNull(parseInlineActionCommand("/"));
-  });
-
-  it("defers semantic slash scopes while preserving deterministic slash defaults", function () {
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "/auto_tag the folder about dynamical systems",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: { mode: "library" },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      { kind: "none" },
-    );
-
-    assert.deepEqual(
-      resolveNaturalLanguageActionIntent({
-        text: "/auto_tag 10",
-        mode: "library",
-        actions: scopedIntentActions,
-        requestContext: { mode: "library" },
-        collectionCandidates: scopedIntentCollections,
-      }),
-      {
-        kind: "action",
-        actionName: "auto_tag",
-        input: {
-          scope: "all",
-          pageSize: 20,
-          userQuery: "10",
-          limit: 10,
-        },
-        userQuery: "10",
-      },
-    );
-
-    const missingCollectionName = resolveNaturalLanguageActionIntent({
-      text: "/auto_tag collection",
-      mode: "library",
-      actions: scopedIntentActions,
-      requestContext: { mode: "library" },
-      collectionCandidates: scopedIntentCollections,
-    });
-    assert.equal(missingCollectionName.kind, "error");
-    assert.include(
-      missingCollectionName.kind === "error" ? missingCollectionName.error : "",
-      "collection <name>",
-    );
-  });
-
-  it("leaves collection names out of raw paged action params", function () {
-    const parsed = parseCommandParams(
-      "auto_tag",
-      "collection Neuroscience",
-      "library",
-    );
-
-    assert.deepEqual(parsed, {
-      scope: "all",
-      pageSize: 20,
-      userQuery: "collection Neuroscience",
-    });
-    assert.notProperty(parsed, "collectionName");
-  });
-
-  it("resolves collection names to action-specific paged inputs", function () {
-    const collections = [
-      { collectionId: 55, name: "Neuroscience", path: "Lab/Neuroscience" },
-    ];
-
-    assert.deepEqual(
-      resolvePagedCollectionScopeInput({
-        actionName: "auto_tag",
-        rawParams: "collection Neuroscience",
-        baseInput: parseCommandParams(
-          "auto_tag",
-          "collection Neuroscience",
-          "library",
-        ),
-        collectionCandidates: collections,
-      }),
-      {
-        kind: "input",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "collection Neuroscience",
-          collectionIds: [55],
-        },
-      },
-    );
-
-    assert.deepEqual(
-      resolvePagedCollectionScopeInput({
-        actionName: "audit_library",
-        rawParams: "collection Neuroscience",
-        baseInput: parseCommandParams(
-          "audit_library",
-          "collection Neuroscience",
-          "library",
-        ),
-        collectionCandidates: collections,
-      }),
-      {
-        kind: "input",
-        input: {
-          scope: "collection",
-          pageSize: 20,
-          userQuery: "collection Neuroscience",
-          collectionId: 55,
-        },
-      },
-    );
-  });
-
-  it("reports ambiguous or missing paged collection scopes", function () {
-    const ambiguous = resolvePagedCollectionScopeInput({
-      actionName: "auto_tag",
-      rawParams: "collection Neuroscience",
-      baseInput: parseCommandParams(
-        "auto_tag",
-        "collection Neuroscience",
-        "library",
-      ),
-      collectionCandidates: [
-        { collectionId: 55, name: "Neuroscience", path: "Lab/Neuroscience" },
-        {
-          collectionId: 56,
-          name: "Neuroscience",
-          path: "Archive/Neuroscience",
-        },
-      ],
-    });
-
-    assert.equal(ambiguous.kind, "error");
-    assert.include(
-      ambiguous.kind === "error" ? ambiguous.error : "",
-      "ambiguous",
-    );
-
-    const missing = resolvePagedCollectionScopeInput({
-      actionName: "auto_tag",
-      rawParams: "collection Neuroscience",
-      baseInput: parseCommandParams(
-        "auto_tag",
-        "collection Neuroscience",
-        "library",
-      ),
-      collectionCandidates: [],
-    });
-
-    assert.equal(missing.kind, "error");
-    assert.include(
-      missing.kind === "error" ? missing.error : "",
-      'No collection matches "Neuroscience"',
-    );
-
-    const empty = resolvePagedCollectionScopeInput({
-      actionName: "auto_tag",
-      rawParams: "collection",
-      baseInput: parseCommandParams("auto_tag", "collection", "library"),
-      collectionCandidates: [],
-    });
-
-    assert.equal(empty.kind, "error");
-    assert.include(
-      empty.kind === "error" ? empty.error : "",
-      "collection <name>",
-    );
-  });
-
-  it("rejects collection source scope for organize_unfiled", function () {
-    const resolved = resolvePagedCollectionScopeInput({
-      actionName: "organize_unfiled",
-      rawParams: "collection Neuroscience",
-      baseInput: parseCommandParams(
-        "organize_unfiled",
-        "collection Neuroscience",
-        "library",
-      ),
-      collectionCandidates: [
-        { collectionId: 55, name: "Neuroscience", path: "Lab/Neuroscience" },
-      ],
-    });
-
-    assert.equal(resolved.kind, "error");
-    assert.include(
-      resolved.kind === "error" ? resolved.error : "",
-      "does not support collection scope",
-    );
   });
 
   it("recognizes paged review navigation as a transition instead of a close", function () {
@@ -1058,18 +593,44 @@ describe("actionCommandController", function () {
 
     assert.equal(card.getAttribute("role"), "status");
     assert.equal(card.getAttribute("aria-live"), "polite");
+    assert.exists(card.querySelector(".llm-agent-hitl-status-content"));
+    assert.include(card.className, "llm-plan-container");
     assert.equal(
-      card.querySelector(".llm-agent-hitl-header")?.textContent,
+      card.querySelector(".llm-plan-status")?.textContent,
       "Working",
     );
     assert.equal(
-      card.querySelector(".llm-agent-hitl-title")?.textContent,
+      card.querySelector(".llm-plan-title")?.textContent,
       "Rendering previous page",
     );
     assert.include(
       card.querySelector(".llm-agent-hitl-description")?.textContent || "",
       "previous review page",
     );
+  });
+
+  it("uses the shared action-card visual hierarchy for progress", function () {
+    const doc = new FakeDocument();
+    const body = doc.createElement("div");
+    const chatBox = doc.createElement("div");
+    body.appendChild(chatBox);
+    const lifecycle = createActionCommandLifecycle({
+      body: body as unknown as Element,
+      actionHitlPanel: null,
+      chatBox: chatBox as unknown as HTMLDivElement,
+      syncHasActionCardAttr: () => undefined,
+    });
+
+    const progress = lifecycle.createActionProgressIndicator("apply_tags");
+    const card = chatBox.querySelector(".llm-action-progress-card");
+
+    assert.equal(
+      card?.querySelector(".llm-plan-status")?.textContent,
+      "Working",
+    );
+    assert.exists(card?.querySelector(".llm-plan-title"));
+    assert.include(card?.className || "", "llm-plan-container");
+    progress.remove();
   });
 
   it("replaces an approved action HITL card with a working state", async function () {
@@ -1112,7 +673,7 @@ describe("actionCommandController", function () {
     );
 
     assert.equal(
-      chatBox.querySelector(".llm-agent-hitl-title")?.textContent,
+      chatBox.querySelector(".llm-plan-title")?.textContent,
       "Add tags",
     );
     assert.isFunction(resolveConfirmation);
@@ -1124,7 +685,7 @@ describe("actionCommandController", function () {
       actionId: "confirm",
     });
     assert.equal(
-      chatBox.querySelector(".llm-agent-hitl-title")?.textContent,
+      chatBox.querySelector(".llm-plan-title")?.textContent,
       "Working on approved action",
     );
     assert.include(
@@ -1212,6 +773,8 @@ describe("actionCommandController", function () {
       isWebChatMode: () => false,
       isClaudeConversationSystem: () => false,
       getCurrentRuntimeMode: () => "chat",
+      activatePlanMode: () => undefined,
+      isPlanAvailable: () => false,
       setCurrentRuntimeMode: () => {
         runtimeSwitches += 1;
       },

@@ -1,5 +1,5 @@
 import { config } from "../../package.json";
-import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "./llmDefaults";
+import { DEFAULT_TEMPERATURE } from "./llmDefaults";
 import {
   normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
@@ -11,9 +11,14 @@ import {
   normalizeProviderProtocolForAuthMode,
   type ProviderProtocol,
 } from "./providerProtocol";
-import { detectProviderPreset, getProviderPreset } from "./providerPresets";
+import {
+  detectProviderPreset,
+  getProviderPreset,
+  normalizeProviderPresetId,
+  resolveProviderPresetId,
+} from "./providerPresets";
 import type { ProviderPresetId } from "./providerPresets";
-import type { ModelInputMode } from "../shared/types";
+import type { ModelInputMode, OutputTokenLimitSetting } from "../shared/types";
 import {
   CATALOG_EXCLUDED_AUTH_MODES,
   refreshConfiguredModelCatalogs,
@@ -35,9 +40,7 @@ export type LegacyModelSlotKey =
 
 export type AdvancedModelConfig = {
   temperature: number;
-  maxTokens: number;
-  /** Distinguishes an untouched default from an explicit equal-valued choice. */
-  maxTokensExplicit?: boolean;
+  outputTokenLimit: OutputTokenLimitSetting;
   inputTokenCap?: number;
   inputMode?: ModelInputMode;
   /**
@@ -153,8 +156,7 @@ export type LegacyMigrationResult = {
 
 type AdvancedModelConfigInput = {
   temperature?: number | string | null;
-  maxTokens?: number | string | null;
-  maxTokensExplicit?: boolean;
+  outputTokenLimit?: unknown;
   inputTokenCap?: number | string | null;
   inputMode?: unknown;
   profileOverride?: unknown;
@@ -168,9 +170,11 @@ type ZoteroPrefsAPI = {
 const MODEL_PROVIDER_GROUPS_PREF_KEY = "modelProviderGroups";
 const MODEL_PROVIDER_GROUPS_MIGRATION_VERSION_PREF_KEY =
   "modelProviderGroupsMigrationVersion";
+const OUTPUT_TOKEN_AUTO_MIGRATION_NOTICE_PREF_KEY =
+  "outputTokenAutoMigrationNoticePending";
 const LAST_USED_MODEL_ENTRY_ID_PREF_KEY = "lastUsedModelEntryId";
 const LEGACY_LAST_MODEL_PROFILE_PREF_KEY = "lastUsedModelProfile";
-const MODEL_PROVIDER_GROUPS_MIGRATION_VERSION = 7;
+const MODEL_PROVIDER_GROUPS_MIGRATION_VERSION = 9;
 const modelProviderGroupListeners = new Set<() => void>();
 
 function getZoteroPrefs(): ZoteroPrefsAPI | null {
@@ -236,21 +240,24 @@ function normalizeAdvancedModelConfig(
   // enforced where the override is consumed — `applyProfileOverride` for
   // capabilities, `resolveUserExtraBody` for request parameters.
   const profileOverride = normalizeProfileOverride(value?.profileOverride);
-  const maxTokens = normalizeMaxTokens(
-    `${value?.maxTokens ?? DEFAULT_MAX_TOKENS}`,
-  );
-  const maxTokensExplicit =
-    value?.maxTokensExplicit === true ||
-    (value?.maxTokensExplicit === undefined &&
-      value?.maxTokens !== undefined &&
-      value?.maxTokens !== null &&
-      maxTokens !== DEFAULT_MAX_TOKENS);
+  const rawOutputTokenLimit = value?.outputTokenLimit;
+  const outputTokenLimit: OutputTokenLimitSetting =
+    rawOutputTokenLimit &&
+    typeof rawOutputTokenLimit === "object" &&
+    !Array.isArray(rawOutputTokenLimit) &&
+    (rawOutputTokenLimit as { mode?: unknown }).mode === "custom"
+      ? {
+          mode: "custom",
+          tokens: normalizeMaxTokens(
+            (rawOutputTokenLimit as { tokens?: number | string }).tokens,
+          ),
+        }
+      : { mode: "auto" };
   return {
     temperature: normalizeTemperature(
       `${value?.temperature ?? DEFAULT_TEMPERATURE}`,
     ),
-    maxTokens,
-    ...(maxTokensExplicit ? { maxTokensExplicit: true } : {}),
+    outputTokenLimit,
     inputTokenCap: normalizeOptionalInputTokenCap(value?.inputTokenCap),
     ...(inputMode ? { inputMode } : {}),
     ...(profileOverride ? { profileOverride } : {}),
@@ -404,7 +411,10 @@ function normalizeWebChatTargetRows(models: unknown): WebChatTargetRow[] {
   return rows;
 }
 
-function normalizeGroup(group: unknown): ModelProviderGroup | null {
+function normalizeGroup(
+  group: unknown,
+  migrateStoredDefaults: boolean,
+): ModelProviderGroup | null {
   if (!group || typeof group !== "object") return null;
   const rawGroup = group as RawProviderGroup;
 
@@ -454,7 +464,9 @@ function normalizeGroup(group: unknown): ModelProviderGroup | null {
 
   const models = Array.isArray(rawGroup.models)
     ? rawGroup.models
-        .map((entry) => normalizeGroupModel(entry, authMode))
+        .map((entry) =>
+          normalizeGroupModel(entry, authMode, migrateStoredDefaults),
+        )
         .filter((entry): entry is ModelProviderModel => Boolean(entry))
     : [];
   const apiBase = normalizeApiBase(normalizeString(rawGroup.apiBase));
@@ -469,7 +481,7 @@ function normalizeGroup(group: unknown): ModelProviderGroup | null {
       apiBase,
     }),
     models,
-    presetIdOverride: normalizePresetIdOverride(rawGroup.presetIdOverride),
+    presetIdOverride: normalizeProviderPresetId(rawGroup.presetIdOverride),
   };
 }
 
@@ -537,13 +549,13 @@ function hasSelectableModelEntryId(
 
 function normalizeAndCollapseModelProviderGroups(
   raw: unknown[],
-  migrateStoredDirectGroups: boolean,
+  migrateStoredGroups: boolean,
 ): ModelProviderGroup[] {
   const legacySelection = resolveLegacyCodexDirectSelection(raw);
   const groups: ModelProviderGroup[] = [];
   let directGroup: CodexDirectProviderGroup | null = null;
   for (const value of raw) {
-    const group = normalizeGroup(value);
+    const group = normalizeGroup(value, migrateStoredGroups);
     if (!group) continue;
     if (group.authMode !== "codex_auth") {
       groups.push(group);
@@ -570,7 +582,7 @@ function normalizeAndCollapseModelProviderGroups(
       directGroup.models.push({ id: createId("model"), model: selectedModel });
     }
   }
-  if (migrateStoredDirectGroups) {
+  if (migrateStoredGroups) {
     const lastUsedEntryId = getStringPref(LAST_USED_MODEL_ENTRY_ID_PREF_KEY);
     const selectedRow = directGroup?.models.find(
       (row) =>
@@ -592,24 +604,17 @@ function normalizeAndCollapseModelProviderGroups(
   }
   return groups;
 }
-function normalizePresetIdOverride(
-  value: unknown,
-): ProviderPresetId | undefined {
-  if (value !== "customized") return undefined;
-  return "customized";
-}
-
 function normalizeGroupModel(
   model: unknown,
   authMode: ModelProviderAuthMode,
+  migrateStoredDefaults: boolean,
 ): ModelProviderModel | null {
   if (!model || typeof model !== "object") return null;
   const rawModel = model as {
     id?: unknown;
     model?: unknown;
     temperature?: unknown;
-    maxTokens?: unknown;
-    maxTokensExplicit?: unknown;
+    outputTokenLimit?: unknown;
     inputTokenCap?: unknown;
     inputMode?: unknown;
     providerProtocol?: unknown;
@@ -619,11 +624,11 @@ function normalizeGroupModel(
   const advanced = normalizeAdvancedModelConfig(
     {
       temperature: Number(rawModel.temperature),
-      maxTokens: Number(rawModel.maxTokens),
-      maxTokensExplicit:
-        typeof rawModel.maxTokensExplicit === "boolean"
-          ? rawModel.maxTokensExplicit
-          : undefined,
+      // Version 9 deliberately resets every old or explicit cap to Auto.
+      // After that migration, newly saved Custom values round-trip normally.
+      outputTokenLimit: migrateStoredDefaults
+        ? { mode: "auto" }
+        : rawModel.outputTokenLimit,
       inputTokenCap: rawModel.inputTokenCap as number | string | undefined,
       inputMode: rawModel.inputMode,
       profileOverride: rawModel.profileOverride,
@@ -644,24 +649,12 @@ function normalizeGroupModel(
   };
 }
 
-function resolveStoredPresetId(group: ModelProviderGroup): ProviderPresetId {
-  if (
-    group.authMode === "codex_auth" ||
-    group.authMode === "codex_app_server" ||
-    group.authMode === "copilot_auth" ||
-    group.authMode === "webchat"
-  ) {
-    return "customized";
-  }
-  return group.presetIdOverride ?? detectProviderPreset(group.apiBase);
-}
-
 function resolveRuntimeProviderProtocol(
   group: ModelProviderGroup,
   modelEntry?: ModelProviderModel,
 ): ProviderProtocol {
   const authMode = normalizeProviderAuthMode(group.authMode);
-  const presetId = resolveStoredPresetId(group);
+  const presetId = resolveProviderPresetId(group);
   const fallback =
     presetId === "customized"
       ? undefined
@@ -706,11 +699,11 @@ function parseStoredModelProviderGroups(raw: string): ModelProviderGroup[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    const shouldMigrateCodexDirectGroups =
+    const shouldMigrateStoredGroups =
       getMigrationVersion() < MODEL_PROVIDER_GROUPS_MIGRATION_VERSION;
     return normalizeAndCollapseModelProviderGroups(
       parsed,
-      shouldMigrateCodexDirectGroups,
+      shouldMigrateStoredGroups,
     );
   } catch (_err) {
     return [];
@@ -763,10 +756,6 @@ function resolveLegacyModelSlot(
   const temperature = normalizeTemperature(
     getStringPref(`temperature${suffix}`) || `${DEFAULT_TEMPERATURE}`,
   );
-  const storedMaxTokens = getStringPref(`maxTokens${suffix}`);
-  const maxTokens = normalizeMaxTokens(
-    storedMaxTokens || `${DEFAULT_MAX_TOKENS}`,
-  );
   const inputTokenCap = normalizeOptionalInputTokenCap(
     getStringPref(`inputTokenCap${suffix}`),
   );
@@ -779,10 +768,7 @@ function resolveLegacyModelSlot(
     apiKey,
     model: modelName,
     temperature,
-    maxTokens,
-    ...(storedMaxTokens && maxTokens !== DEFAULT_MAX_TOKENS
-      ? { maxTokensExplicit: true }
-      : {}),
+    outputTokenLimit: { mode: "auto" },
     inputTokenCap,
   };
 }
@@ -838,6 +824,12 @@ export function buildModelProviderGroupsFromLegacySlots(
 }
 
 function migrateLegacyModelProviderGroups(): ModelProviderGroup[] {
+  const hadLegacyOutputTokenSetting = [
+    "maxTokensPrimary",
+    "maxTokensSecondary",
+    "maxTokensTertiary",
+    "maxTokensQuaternary",
+  ].some((key) => Boolean(getStringPref(key)));
   const legacySlots = (
     ["primary", "secondary", "tertiary", "quaternary"] as LegacyModelSlotKey[]
   )
@@ -845,6 +837,9 @@ function migrateLegacyModelProviderGroups(): ModelProviderGroup[] {
     .filter((slot): slot is LegacyModelSlot => Boolean(slot));
   const migration = buildModelProviderGroupsFromLegacySlots(legacySlots);
   storeModelProviderGroups(migration.groups);
+  if (hadLegacyOutputTokenSetting) {
+    setPref(OUTPUT_TOKEN_AUTO_MIGRATION_NOTICE_PREF_KEY, true);
+  }
 
   const legacyLastUsedProfile = getStringPref(
     LEGACY_LAST_MODEL_PROFILE_PREF_KEY,
@@ -871,6 +866,7 @@ function ensureModelProviderGroups(): ModelProviderGroup[] {
     const parsed = parseStoredModelProviderGroups(raw);
     if (getMigrationVersion() < MODEL_PROVIDER_GROUPS_MIGRATION_VERSION) {
       storeModelProviderGroups(parsed);
+      setPref(OUTPUT_TOKEN_AUTO_MIGRATION_NOTICE_PREF_KEY, true);
     }
     return parsed;
   }
@@ -882,6 +878,17 @@ function ensureModelProviderGroups(): ModelProviderGroup[] {
 
 export function getModelProviderGroups(): ModelProviderGroup[] {
   return ensureModelProviderGroups();
+}
+
+/** Consume the one-time notice emitted after resetting stored caps to Auto. */
+export function consumeOutputTokenAutoMigrationNotice(): boolean {
+  const pending =
+    getZoteroPrefs()?.get?.(
+      prefKey(OUTPUT_TOKEN_AUTO_MIGRATION_NOTICE_PREF_KEY),
+      true,
+    ) === true;
+  if (pending) setPref(OUTPUT_TOKEN_AUTO_MIGRATION_NOTICE_PREF_KEY, false);
+  return pending;
 }
 
 export function setModelProviderGroups(groups: ModelProviderGroup[]): void {
@@ -1021,10 +1028,11 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
       }
       continue;
     }
-    const baseProviderLabel = deriveProviderLabel(
-      group.apiBase,
-      groupIndex + 1,
-    );
+    const presetId = resolveProviderPresetId(group);
+    const baseProviderLabel =
+      presetId === "customized"
+        ? deriveProviderLabel(group.apiBase, groupIndex + 1)
+        : getProviderPreset(presetId).label;
     const providerLabel =
       authMode === "codex_app_server"
         ? `${baseProviderLabel} (app server)`
@@ -1082,7 +1090,7 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
 export function buildProviderCatalogIdentity(
   group: ModelProviderGroup,
 ): ModelCatalogIdentity {
-  const presetId = resolveStoredPresetId(group);
+  const presetId = resolveProviderPresetId(group);
   return {
     provider: presetId === "customized" ? undefined : presetId,
     model: "",

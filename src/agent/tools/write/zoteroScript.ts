@@ -3,16 +3,20 @@
  * privileged Gecko runtime. This is the "ultimate generalization" — the agent
  * can perform any operation the Zotero API supports.
  *
- * Both modes execute privileged code and therefore require source review.
- * "read" means that no undo instrumentation is expected; it is not an
- * authorization boundary and must never bypass confirmation.
+ * Library/read mode runs against a host-owned allowlisted facade. Privileged
+ * mode retains broader APIs and is therefore never treated as a proven read.
  */
 import type { AgentWriteToolDefinition, AgentToolContext } from "../../types";
-import { ok, fail, validateObject } from "../shared";
 import {
-  currentMutationActionId,
-  executeExternalMutation,
-} from "../../services/mutationCoordinator";
+  ambiguousInvocationPlan,
+  prohibitedInvocationPlan,
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
+import type { ActionRiskSignal } from "../../authorization/types";
+import { ok, fail, validateObject } from "../shared";
+import { currentMutationActionId } from "../../services/mutationCoordinator";
+import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { listJournalObservationObjectIds } from "../../store/changeJournal";
 import {
   sha256Bytes,
@@ -28,13 +32,14 @@ import { fingerprintText } from "../../contracts/actionOperationEvidence";
 // ── Types ───────────────────────────────────────────────────────────────────
 
 type ZoteroScriptInput = {
-  mode: "read" | "write";
+  access: "library" | "privileged";
+  effect: "read" | "write";
   script: string;
   description: string;
   timeoutMs: number;
 };
 
-type ZoteroScriptRuntimeOptions = {
+export type ZoteroScriptRuntimeOptions = {
   /** Explicit unit-test seam. Production execution must fail closed. */
   allowUnsandboxedTestExecution?: boolean;
 };
@@ -137,13 +142,14 @@ const SNAPSHOT_FIELDS = [
  * when that boundary is unavailable; unit tests use an explicit seam instead
  * of silently weakening shipped behavior.
  */
-function compileScript(
+export function compileScript(
   source: string,
-  isWrite: boolean,
+  access: ZoteroScriptInput["access"] | "operations",
+  effect: ZoteroScriptInput["effect"],
   options: ZoteroScriptRuntimeOptions,
 ): (zotero: unknown, env: unknown) => Promise<unknown> {
   const cu = getComponentsUtils();
-  const sandbox = createScriptSandbox(isWrite);
+  const sandbox = createScriptSandbox(access, effect);
   if (sandbox && typeof cu?.evalInSandbox === "function") {
     try {
       // Evaluated inside the sandbox, so the compiled function closes over
@@ -201,12 +207,14 @@ function getComponentsUtils(): any {
  * A sandbox whose globals are only what a Zotero script legitimately needs.
  *
  * Notably absent: `Components`, `Services`, and `ChromeUtils`, each of which
- * is a route back to the unwrapped platform. `Zotero.DB` is withheld in write
- * mode as well — raw SQL emits no notifier events and cannot be inverted by
- * any mechanism, so a script that reaches it is unjournalable by
- * construction.
+ * is a route back to the unwrapped platform. `Zotero.DB` is withheld in every
+ * mode — raw SQL emits no notifier events and cannot be confined or
+ * journalled safely through arbitrary code.
  */
-function createScriptSandbox(isWrite: boolean): unknown | null {
+function createScriptSandbox(
+  access: ZoteroScriptInput["access"] | "operations",
+  effect: ZoteroScriptInput["effect"],
+): unknown | null {
   const cu = getComponentsUtils();
   const sandboxCtor = cu?.Sandbox;
   const principal = (
@@ -222,17 +230,22 @@ function createScriptSandbox(isWrite: boolean): unknown | null {
       wantGlobalProperties: [
         "atob",
         "btoa",
-        "fetch",
+        ...(access === "privileged" ? ["fetch"] : []),
         "TextDecoder",
         "TextEncoder",
       ],
       wantComponents: false,
     });
     Object.assign(sandbox, {
-      Zotero: buildScriptZotero(isWrite),
-      setTimeout: (globalThis as any).setTimeout,
-      clearTimeout: (globalThis as any).clearTimeout,
-      console: (globalThis as any).console,
+      Zotero:
+        access === "operations" ? undefined : buildScriptZotero(access, effect),
+      ...((access === "operations" || access === "library") && effect === "read"
+        ? {}
+        : {
+            setTimeout: (globalThis as any).setTimeout,
+            clearTimeout: (globalThis as any).clearTimeout,
+            console: (globalThis as any).console,
+          }),
     });
     return sandbox;
   } catch {
@@ -241,18 +254,377 @@ function createScriptSandbox(isWrite: boolean): unknown | null {
 }
 
 /**
- * The Zotero handed to a script. Write mode loses `DB`: raw SQL bypasses the
- * notifier entirely and cannot be reverted, so it must not be reachable from
- * a script whose whole contract is that its changes are undoable.
+ * The Zotero handed to a script. Every mode loses `DB`: raw SQL bypasses the
+ * notifier entirely and cannot be made safe by a declared read effect.
  */
-function buildScriptZotero(isWrite: boolean): unknown {
+const LIBRARY_SCRIPT_DENIED_ZOTERO_PROPERTIES = new Set<PropertyKey>([
+  "DB",
+  "Prefs",
+  "HTTP",
+  "File",
+  "Utilities",
+  "Attachments",
+  "PDFWorker",
+  "Fulltext",
+  "Server",
+  "Connector",
+  "Sync",
+  "Translate",
+  "Translators",
+  "ProgressWindow",
+  "getActiveZoteroPane",
+  "launchFile",
+  "openInViewer",
+]);
+
+const READ_ONLY_ITEM_METHODS = new Set([
+  "fileExists",
+  "fileExistsAsync",
+  "getAnnotations",
+  "getAttachments",
+  "getBestAttachment",
+  "getBestAttachments",
+  "getCollections",
+  "getCreators",
+  "getCreatorsJSON",
+  "getDisplayTitle",
+  "getField",
+  "getFilePath",
+  "getFilePathAsync",
+  "getFilename",
+  "getNotes",
+  "getNote",
+  "getRelatedItems",
+  "getRelations",
+  "getTags",
+  "isAnnotation",
+  "isAttachment",
+  "isFeedItem",
+  "isImportedAttachment",
+  "isLinkedFileAttachment",
+  "isNote",
+  "isPDFAttachment",
+  "isRegularItem",
+  "isTopLevelItem",
+  "isWebAttachment",
+  "toJSON",
+  "toResponseJSON",
+]);
+
+const READ_ONLY_COLLECTION_METHODS = new Set([
+  "getChildCollections",
+  "getChildItems",
+  "getDescendents",
+  "hasDescendent",
+  "hasItem",
+  "toJSON",
+]);
+
+function readOnlyViolation(property: PropertyKey): never {
+  throw new Error(
+    `Library read scripts cannot access the non-read Zotero API ${String(property)}.`,
+  );
+}
+
+function detachedReadOnlyData(
+  value: unknown,
+  seen = new WeakMap<object, unknown>(),
+): unknown {
+  if (!value || typeof value !== "object") return value;
+  const object = value as Record<string, unknown>;
+  const existing = seen.get(object);
+  if (existing) return existing;
+  const output: unknown[] | Record<string, unknown> = Array.isArray(value)
+    ? []
+    : Object.create(null);
+  seen.set(object, output);
+  for (const key of Object.keys(object)) {
+    const entry = Reflect.get(object, key, object);
+    if (typeof entry === "function") continue;
+    (output as Record<string, unknown>)[key] = detachedReadOnlyData(
+      entry,
+      seen,
+    );
+  }
+  return Object.freeze(output);
+}
+
+function mapMaybePromise(
+  value: unknown,
+  mapper: (entry: unknown) => unknown,
+): unknown {
+  return value && typeof (value as { then?: unknown }).then === "function"
+    ? Promise.resolve(value).then(mapper)
+    : mapper(value);
+}
+
+export function safeHostFunction(
+  invoke: (...args: unknown[]) => unknown,
+): (...args: unknown[]) => unknown {
+  const callable = (...args: unknown[]) => invoke(...args);
+  return new Proxy(callable, {
+    get(_target, property) {
+      if (property === "name") return "readOnlyZoteroMethod";
+      if (property === "length") return callable.length;
+      return undefined;
+    },
+    getPrototypeOf: () => null,
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  });
+}
+
+function readOnlyObjectFacade(params: {
+  value: Record<PropertyKey, unknown>;
+  methods: ReadonlySet<string>;
+  mapMethodResult?: (method: string, result: unknown) => unknown;
+}): unknown {
+  return new Proxy(Object.create(null) as Record<PropertyKey, unknown>, {
+    get(_target, property) {
+      const entry = Reflect.get(params.value, property, params.value);
+      if (typeof entry !== "function") return detachedReadOnlyData(entry);
+      if (typeof property !== "string" || !params.methods.has(property)) {
+        return safeHostFunction(() => readOnlyViolation(property));
+      }
+      return safeHostFunction((...args) =>
+        mapMaybePromise(Reflect.apply(entry, params.value, args), (result) =>
+          params.mapMethodResult
+            ? params.mapMethodResult!(property, result)
+            : detachedReadOnlyData(result),
+        ),
+      );
+    },
+    has(_target, property) {
+      const entry = Reflect.get(params.value, property, params.value);
+      return (
+        typeof entry !== "function" ||
+        (typeof property === "string" && params.methods.has(property))
+      );
+    },
+    getPrototypeOf: () => null,
+    set: () => readOnlyViolation("property assignment"),
+    defineProperty: () => readOnlyViolation("property definition"),
+    deleteProperty: () => readOnlyViolation("property deletion"),
+  });
+}
+
+function readOnlyItem(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  return readOnlyObjectFacade({
+    value: value as Record<PropertyKey, unknown>,
+    methods: READ_ONLY_ITEM_METHODS,
+  });
+}
+
+function readOnlyItems(value: unknown): unknown {
+  return Array.isArray(value)
+    ? Object.freeze(value.map((entry) => readOnlyItem(entry)))
+    : readOnlyItem(value);
+}
+
+function readOnlyCollection(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  return readOnlyObjectFacade({
+    value: value as Record<PropertyKey, unknown>,
+    methods: READ_ONLY_COLLECTION_METHODS,
+    mapMethodResult: (method, result) =>
+      method === "getChildItems"
+        ? readOnlyItems(result)
+        : method === "getChildCollections"
+          ? readOnlyCollections(result)
+          : detachedReadOnlyData(result),
+  });
+}
+
+function readOnlyCollections(value: unknown): unknown {
+  return Array.isArray(value)
+    ? Object.freeze(value.map((entry) => readOnlyCollection(entry)))
+    : readOnlyCollection(value);
+}
+
+function readOnlySearch(value: unknown, configurable: boolean): unknown {
+  if (!value || typeof value !== "object") return value;
+  const search = value as Record<PropertyKey, unknown>;
+  const methods = new Set(["addCondition", "getConditions", "search"]);
+  return new Proxy(Object.create(null) as Record<PropertyKey, unknown>, {
+    get(_target, property) {
+      const entry = Reflect.get(search, property, search);
+      if (typeof entry !== "function") return detachedReadOnlyData(entry);
+      if (typeof property !== "string" || !methods.has(property)) {
+        return safeHostFunction(() => readOnlyViolation(property));
+      }
+      return safeHostFunction((...args) =>
+        mapMaybePromise(
+          Reflect.apply(entry, search, args),
+          detachedReadOnlyData,
+        ),
+      );
+    },
+    getPrototypeOf: () => null,
+    set(_target, property, next) {
+      if (
+        configurable &&
+        (property === "libraryID" || property === "joinMode")
+      ) {
+        Reflect.set(search, property, next, search);
+        return true;
+      }
+      return readOnlyViolation(property);
+    },
+    defineProperty: () => readOnlyViolation("property definition"),
+    deleteProperty: () => readOnlyViolation("property deletion"),
+  });
+}
+
+function readOnlyNamespace(params: {
+  value: unknown;
+  methods: readonly string[];
+  mapResult: (result: unknown) => unknown;
+}): Record<string, unknown> {
+  const namespace = Object.create(null) as Record<string, unknown>;
+  const value = params.value as Record<PropertyKey, unknown> | undefined;
+  for (const method of params.methods) {
+    namespace[method] = safeHostFunction((...args) => {
+      const implementation = value?.[method];
+      if (typeof implementation !== "function") {
+        throw new Error(`Zotero.${method} is unavailable in this runtime.`);
+      }
+      return mapMaybePromise(
+        Reflect.apply(implementation, value, args),
+        params.mapResult,
+      );
+    });
+  }
+  const frozen = Object.freeze(namespace);
+  return new Proxy(frozen, {
+    get(target, property, receiver) {
+      if (Object.prototype.hasOwnProperty.call(target, property)) {
+        return Reflect.get(target, property, receiver);
+      }
+      return readOnlyViolation(property);
+    },
+    has: (target, property) =>
+      Object.prototype.hasOwnProperty.call(target, property),
+    getPrototypeOf: () => null,
+    set: () => readOnlyViolation("property assignment"),
+    defineProperty: () => readOnlyViolation("property definition"),
+    deleteProperty: () => readOnlyViolation("property deletion"),
+  });
+}
+
+function buildLibraryReadZotero(): unknown {
   const real = Zotero as unknown as Record<string, unknown>;
-  if (!isWrite) return real;
+  const facade = Object.create(null) as Record<string, unknown>;
+  facade.Items = readOnlyNamespace({
+    value: real.Items,
+    methods: [
+      "exists",
+      "get",
+      "getAll",
+      "getAsync",
+      "getByLibraryAndKey",
+      "getDeleted",
+      "getIDFromLibraryAndKey",
+      "getLibraryAndKeyFromID",
+      "getTopLevel",
+    ],
+    mapResult: readOnlyItems,
+  });
+  facade.Collections = readOnlyNamespace({
+    value: real.Collections,
+    methods: [
+      "get",
+      "getByLibrary",
+      "getByLibraryAndKey",
+      "getByParent",
+      "getIDFromLibraryAndKey",
+      "getLibraryAndKeyFromID",
+    ],
+    mapResult: readOnlyCollections,
+  });
+  const libraries = Object.assign(
+    Object.create(null) as Record<string, unknown>,
+    readOnlyNamespace({
+      value: real.Libraries,
+      methods: [
+        "exists",
+        "get",
+        "getAll",
+        "getName",
+        "getType",
+        "isEditable",
+        "isFilesEditable",
+      ],
+      mapResult: detachedReadOnlyData,
+    }),
+  );
+  libraries.userLibraryID = detachedReadOnlyData(
+    (real.Libraries as Record<string, unknown> | undefined)?.userLibraryID,
+  );
+  facade.Libraries = Object.freeze(libraries);
+  facade.Tags = readOnlyNamespace({
+    value: real.Tags,
+    methods: [
+      "getAll",
+      "getAllWithin",
+      "getColor",
+      "getColors",
+      "getID",
+      "getName",
+    ],
+    mapResult: detachedReadOnlyData,
+  });
+  facade.Searches = readOnlyNamespace({
+    value: real.Searches,
+    methods: [
+      "get",
+      "getAll",
+      "getAsync",
+      "getByLibrary",
+      "getByLibraryAndKey",
+    ],
+    mapResult: (result) =>
+      Array.isArray(result)
+        ? Object.freeze(result.map((entry) => readOnlySearch(entry, false)))
+        : readOnlySearch(result, false),
+  });
+  const RealSearch = real.Search;
+  if (typeof RealSearch === "function") {
+    facade.Search = new Proxy(function () {}, {
+      construct(_target, args) {
+        return readOnlySearch(
+          Reflect.construct(RealSearch, args),
+          true,
+        ) as object;
+      },
+      apply(_target, _thisArg, args) {
+        return readOnlySearch(Reflect.construct(RealSearch, args), true);
+      },
+      get: () => undefined,
+      getPrototypeOf: () => null,
+    });
+  }
+  return Object.freeze(facade);
+}
+
+function buildScriptZotero(
+  access: ZoteroScriptInput["access"],
+  effect: ZoteroScriptInput["effect"],
+): unknown {
+  if (access === "library" && effect === "read") {
+    return buildLibraryReadZotero();
+  }
+  const real = Zotero as unknown as Record<string, unknown>;
   return new Proxy(real, {
     get(target, prop, receiver) {
-      if (prop === "DB") {
+      if (
+        prop === "DB" ||
+        (access === "library" &&
+          LIBRARY_SCRIPT_DENIED_ZOTERO_PROPERTIES.has(prop))
+      ) {
         throw new Error(
-          "Zotero.DB is not available to write-mode scripts: raw SQL emits no change notifications and cannot be undone. Use the Zotero item and collection APIs instead.",
+          `${String(prop)} is not available to this Zotero script access level.`,
         );
       }
       return Reflect.get(target, prop, receiver);
@@ -477,7 +849,8 @@ function scriptResultContent(
   recoveryWarnings: string[] = [],
 ): Record<string, unknown> {
   return {
-    mode: input.mode,
+    access: input.access,
+    effect: input.effect,
     description: input.description,
     output: result.output,
     returnValue: result.returnValue,
@@ -499,7 +872,8 @@ function scriptResultContent(
 
 async function executeScript(params: {
   script: string;
-  mode: "read" | "write";
+  access: ZoteroScriptInput["access"];
+  effect: ZoteroScriptInput["effect"];
   timeoutMs: number;
   libraryID: number;
   runtimeOptions: ZoteroScriptRuntimeOptions;
@@ -508,11 +882,12 @@ async function executeScript(params: {
   const snapshots = new Map<number, ItemSnapshot>();
   const declarativeInverses: unknown[] = [];
   const createdItemIds = new Set<number>();
-  const isWrite = params.mode === "write";
+  const isWrite = params.effect === "write";
   const deadline = Date.now() + params.timeoutMs;
 
   const env = {
-    mode: params.mode,
+    access: params.access,
+    effect: params.effect,
     libraryID: params.libraryID,
     log: (msg: string) => {
       logBuffer.push(String(msg));
@@ -585,19 +960,40 @@ async function executeScript(params: {
       createdItemIds.add(id);
     },
   };
+  const executionEnv =
+    params.access === "library" && params.effect === "read"
+      ? Object.freeze(
+          Object.assign(Object.create(null) as Record<string, unknown>, {
+            access: env.access,
+            effect: env.effect,
+            libraryID: env.libraryID,
+            log: safeHostFunction((...args) => env.log(String(args[0]))),
+            shouldStop: safeHostFunction(env.shouldStop),
+            remainingMs: safeHostFunction(env.remainingMs),
+          }),
+        )
+      : env;
 
   try {
-    const fn = compileScript(params.script, isWrite, params.runtimeOptions);
+    const fn = compileScript(
+      params.script,
+      params.access,
+      params.effect,
+      params.runtimeOptions,
+    );
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<"timeout">((resolve) => {
       timeoutHandle = setTimeout(() => resolve("timeout"), params.timeoutMs);
     });
 
-    // The proxied Zotero is passed on BOTH paths. The sandbox additionally
-    // closes the ambient-globals bypass where it is available; this guard
-    // holds even when it is not.
-    const resultPromise = fn(buildScriptZotero(isWrite), env);
+    // The exact facade is passed on both paths. Production additionally uses
+    // a sandbox without ambient platform globals; the unsandboxed path is an
+    // explicit unit-test seam only.
+    const resultPromise = fn(
+      buildScriptZotero(params.access, params.effect),
+      executionEnv,
+    );
 
     let raceResult: unknown | "timeout";
     try {
@@ -688,16 +1084,38 @@ function attemptsDirectNoteWrite(script: string): boolean {
   );
 }
 
+function scriptRiskSignals(script: string): ActionRiskSignal[] {
+  const signals: ActionRiskSignal[] = [];
+  if (/\bZotero\s*\.\s*DB\b|\braw\s+sql\b/i.test(script)) {
+    signals.push("raw_database");
+  }
+  if (
+    /originalAgentPermissionMode|agentLibraryWriteMode|authorization|grantStore/i.test(
+      script,
+    )
+  ) {
+    signals.push("authorization_tampering");
+  }
+  return signals;
+}
+
+function scriptHasObviousMutation(script: string): boolean {
+  return /\.(?:save|saveTx|erase|eraseTx|setField|setTags|addTag|removeTag|setCollections|addToCollection|removeFromCollection|setNote|setRelatedItems|setType|fromJSON)\s*\(|\bnew\s+Zotero\s*\.\s*(?:Item|Collection|Search)\b/i.test(
+    script,
+  );
+}
+
 // ── Guidance ────────────────────────────────────────────────────────────────
 
 const ZOTERO_SCRIPT_GUIDANCE = `## zotero_script — Zotero Runtime JavaScript
 
 Your script receives two globals:
-- \`Zotero\` — the full Zotero API object
+- \`Zotero\` — the constrained library facade or privileged Zotero API selected by \`access\`
 - \`env\` — execution environment
 
 ### env object
-- \`env.mode\`: "read" or "write"
+- \`env.access\`: "library" or "privileged"
+- \`env.effect\`: "read" or "write"
 - \`env.libraryID\`: number (active library ID)
 - \`env.log(msg)\`: append output (shown to user / returned to agent)
 - \`env.snapshot(item)\`: capture item state for undo (write mode only, call BEFORE mutating)
@@ -730,8 +1148,8 @@ env.log(\`Total: \${count} items\`);
 \`\`\`
 
 ### Common APIs
-Beyond items and collections, the full local Zotero API is available here, and
-several areas have no typed tool at all — reach for them directly:
+With \`access:'privileged'\`, the broader local Zotero API is available when a
+semantic tool or the library facade cannot perform the requested operation:
 \`Zotero.Tags\` (rename/delete/colour a tag library-wide),
 \`Zotero.Attachments.importFromFile / linkFromFile\`,
 \`Zotero.Searches\` (saved searches),
@@ -766,7 +1184,7 @@ several areas have no typed tool at all — reach for them directly:
 4. The script body is an async function — top-level await is supported
 5. Do NOT use \`eraseTx()\` — use Zotero trash instead (item.deleted = true; await item.saveTx())
 6. Do NOT create or edit Zotero notes here. Use note_write for all Zotero note creation, edits, and appends so note validation still runs.
-7. Write mode runs with \`Zotero.DB\` withheld: raw SQL emits no change notifications and cannot be undone, so use the item and collection APIs. Read mode keeps it.
+7. \`Zotero.DB\` is withheld from every arbitrary script facade: raw SQL emits no change notifications and cannot be confined or journalled safely, so use the item and collection APIs.
 8. Write straightforward code — no dry-run branching needed. The script runs directly, and undo_last_action uses durable snapshots and declarative inverses to revert covered effects.
 9. In any loop over more than a few dozen items, check \`env.shouldStop()\` and return early when it is true. The timeout cannot interrupt a running script — it only stops *waiting* for it — so a script that ignores this keeps mutating the library after the tool has already reported failure, and those later changes cannot be undone. Return partial results; a partial answer you can undo beats a complete one you cannot.
    \`\`\`
@@ -785,40 +1203,48 @@ export function createZoteroScriptTool(
   runtimeOptions: ZoteroScriptRuntimeOptions = {},
 ): AgentWriteToolDefinition<ZoteroScriptInput, unknown> {
   return {
-    describeAction: (input) => [
-      {
-        id: `zotero_script_execute:${fingerprintText(input.script)}`,
-        proofDomain: "execution",
-        capability: "zotero.script",
-        operation: "zotero_script_execute",
-        source: "zotero_script",
-        parameters: {
-          commandFingerprint: fingerprintText(input.script),
-        },
-        requestedTargets: [],
-        destinationCollectionIds: [],
-      },
-    ],
+    describeAction: (input) =>
+      input.access === "library" && input.effect === "read"
+        ? []
+        : [
+            {
+              id: `zotero_script_execute:${fingerprintText(input.script)}`,
+              proofDomain: "execution",
+              capability: "zotero.script",
+              operation: "zotero_script_execute",
+              source: "zotero_script",
+              parameters: {
+                commandFingerprint: fingerprintText(input.script),
+              },
+              requestedTargets: [],
+              destinationCollectionIds: [],
+            },
+          ],
     spec: {
       name: "zotero_script",
       description:
-        "Execute a JavaScript script inside Zotero's runtime with full API access. " +
-        "All scripts require source review because the Zotero API is privileged. " +
-        "Two modes: mode:'read' for gathering data without undo instrumentation; " +
-        "mode:'write' for mutations (runs directly with durable recovery; env.snapshot(item), env.recordCreatedItem(item), or env.addInverse(data) is required). " +
+        "Execute JavaScript inside Zotero with an explicit access level and effect. " +
+        "Use access:'library' for the constrained library facade or access:'privileged' only when platform capabilities are required. " +
+        "Use effect:'read' for gathering data or effect:'write' for mutations with durable recovery. " +
         "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.recordCreatedItem, env.addInverse, env.libraryID, env.shouldStop, env.remainingMs). " +
         "Long loops must check env.shouldStop() and return early; an over-deadline script is allowed to settle before the tool returns. " +
         "Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        required: ["mode", "script", "description"],
+        required: ["access", "effect", "script", "description"],
         properties: {
-          mode: {
+          access: {
+            type: "string",
+            enum: ["library", "privileged"],
+            description:
+              "'library' for the constrained Zotero library facade, or 'privileged' for broader Zotero runtime APIs.",
+          },
+          effect: {
             type: "string",
             enum: ["read", "write"],
             description:
-              "'read' for gathering/computing data, 'write' for mutations (direct execution + undo).",
+              "'read' for gathering/computing data, or 'write' for journalled mutations.",
           },
           script: {
             type: "string",
@@ -837,14 +1263,16 @@ export function createZoteroScriptTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(rename.*all|batch|bulk|all.*attachments|all.*items|every.*paper|for\s+each|iterate|loop|procedural|custom.*script|scan.*all|check.*every|find.*all.*that)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.semantic?.supportTools?.includes(
+            "zotero_script",
+          ),
         ),
       instruction: ZOTERO_SCRIPT_GUIDANCE,
     },
@@ -857,12 +1285,12 @@ export function createZoteroScriptTool(
             args && typeof args === "object"
               ? (args as Record<string, unknown>)
               : {};
-          const mode = String(a.mode || "script");
+          const effect = String(a.effect || "script");
           const desc =
             typeof a.description === "string"
               ? a.description
               : "Zotero operation";
-          return `${mode === "read" ? "Reading" : "Running"}: ${desc}`;
+          return `${effect === "read" ? "Reading" : "Running"}: ${desc}`;
         },
         onPending: "Preparing Zotero script",
         onApproved: "Executing Zotero script",
@@ -884,11 +1312,17 @@ export function createZoteroScriptTool(
 
     validate(args: unknown) {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail("Expected an object with mode, script, and description");
+        return fail(
+          "Expected an object with access, effect, script, and description",
+        );
       }
-      const mode = args.mode;
-      if (mode !== "read" && mode !== "write") {
-        return fail("mode must be 'read' or 'write'");
+      const access = args.access;
+      if (access !== "library" && access !== "privileged") {
+        return fail("access must be 'library' or 'privileged'");
+      }
+      const effect = args.effect;
+      if (effect !== "read" && effect !== "write") {
+        return fail("effect must be 'read' or 'write'");
       }
       if (typeof args.script !== "string" || !args.script.trim()) {
         return fail("script is required: the JavaScript code to execute");
@@ -899,9 +1333,9 @@ export function createZoteroScriptTool(
         );
       }
       const script = args.script.trim();
-      if (mode === "write" && !hasUndoInstrumentation(script)) {
+      if (effect === "write" && !hasUndoInstrumentation(script)) {
         return fail(
-          "mode 'write' scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes, so the durable journal can describe recovery",
+          "effect 'write' scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes, so the durable journal can describe recovery",
         );
       }
       // Not gated on mode: `mode` is a declaration, not a sandbox — the
@@ -922,41 +1356,61 @@ export function createZoteroScriptTool(
       const timeoutMs = Math.min(Math.max(timeoutRaw, 1000), 120000);
 
       return ok<ZoteroScriptInput>({
-        mode,
+        access,
+        effect,
         script,
         description: args.description.trim(),
         timeoutMs,
       });
     },
 
-    /**
-     * Write-mode scripts mutate the live library through privileged JS, so the
-     * source is the only meaningful thing to approve — a model-authored
-     * one-line description is not consent. Read mode only relaxes undo
-     * instrumentation; it does not make the full Zotero API structurally
-     * immutable, so its source must be reviewed too.
-     */
-    shouldRequireConfirmation() {
-      return true;
-    },
-
-    planMutation(input) {
-      if (input.mode === "read") {
-        return {
-          effect: "write",
-          reversibility: "none",
-          requiresConfirmation: true,
+    planInvocation(input) {
+      const targets = [
+        `library:${input.access}`,
+        fingerprintText(input.script),
+      ];
+      const riskSignals = scriptRiskSignals(input.script);
+      if (riskSignals.length) {
+        return prohibitedInvocationPlan({
+          mechanism: "zotero_script",
+          domains: ["privileged_zotero"],
+          effects: ["modify"],
+          targets,
+          riskSignals,
           reason:
-            "Read mode relaxes undo instrumentation but still exposes mutable privileged APIs, so effects cannot be proven absent or recovered.",
-        };
+            "The script attempts to cross an enforced Zotero integrity boundary.",
+        });
       }
-      return {
-        effect: "write",
+      if (input.effect === "read" && input.access === "library") {
+        return readOnlyInvocationPlan({
+          mechanism: "zotero_script",
+          domains: ["zotero_library"],
+          targets,
+          reason:
+            "The library read facade removes platform capabilities and blocks persistent Zotero mutators.",
+        });
+      }
+      if (input.effect === "read" && !scriptHasObviousMutation(input.script)) {
+        return ambiguousInvocationPlan({
+          mechanism: "zotero_script",
+          domains: ["privileged_zotero", "filesystem", "network"],
+          effects: ["read", "create", "modify", "delete", "egress"],
+          targets,
+          reason:
+            "Privileged JavaScript is not runtime-confined to reads; static inspection cannot prove arbitrary code harmless.",
+        });
+      }
+      return stateChangeInvocationPlan({
+        mechanism: "zotero_script",
+        assurance:
+          input.effect === "write" ? "unknown" : "statically_recognized",
+        domains: ["privileged_zotero", "filesystem", "network"],
+        effects: ["modify"],
+        targets,
         reversibility: "partial",
-        requiresConfirmation: true,
         reason:
           "Only snapshotted, explicitly created, and declaratively inverted effects can be recovered.",
-      };
+      });
     },
 
     createPendingAction(input) {
@@ -992,7 +1446,22 @@ export function createZoteroScriptTool(
 
     async execute(input, context) {
       const libraryID = resolveLibraryID(context);
-      const isWrite = input.mode === "write";
+      const isWrite = input.effect === "write";
+
+      if (input.access === "library" && !isWrite) {
+        const result = await executeScript({
+          script: input.script,
+          access: input.access,
+          effect: input.effect,
+          timeoutMs: input.timeoutMs,
+          libraryID,
+          runtimeOptions,
+        });
+        return {
+          content: scriptResultContent(input, result),
+          effect: "none",
+        };
+      }
 
       return executeExternalMutation({
         context,
@@ -1002,7 +1471,8 @@ export function createZoteroScriptTool(
           description: input.description,
           forward: {
             script: input.script,
-            mode: input.mode,
+            access: input.access,
+            effect: input.effect,
             libraryID,
             timeoutMs: input.timeoutMs,
           },
@@ -1010,12 +1480,13 @@ export function createZoteroScriptTool(
           deferredInverse: isWrite,
           reason: isWrite
             ? "Only snapshotted, explicitly created, and declaratively inverted effects are covered."
-            : "Read mode exposes mutable privileged APIs without undo instrumentation, so any effects are irreversible.",
+            : "Privileged read execution exposes mutable runtime APIs without undo instrumentation, so any effects are irreversible.",
         },
         execute: async () => {
           const result = await executeScript({
             script: input.script,
-            mode: input.mode,
+            access: input.access,
+            effect: input.effect,
             timeoutMs: input.timeoutMs,
             libraryID,
             runtimeOptions,
@@ -1030,7 +1501,7 @@ export function createZoteroScriptTool(
               result: scriptResultContent(input, result, observedIds),
               reversibility: "none" as const,
               reason:
-                "Read mode exposes mutable privileged APIs without undo instrumentation, so the journal conservatively records the invocation as irreversible.",
+                "Privileged read execution exposes mutable runtime APIs without undo instrumentation, so the journal conservatively records the invocation as irreversible.",
               affectedCount: observedIds.length || 1,
               // The API is not structurally read-only, and raw DB effects do
               // not emit notifier events. Treating the invocation as no-effect

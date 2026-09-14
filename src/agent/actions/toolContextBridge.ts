@@ -1,13 +1,13 @@
-import type { AgentToolContext } from "../types";
-import type { AgentToolRegistry } from "../tools/registry";
+import { getTurnPapersWithRoles } from "../context/requestTurnPaperScope";
 import type { ZoteroGateway } from "../services/zoteroGateway";
+import type { AgentToolRegistry } from "../tools/registry";
+import type { AgentToolContext } from "../types";
 import type {
-  ActionConfirmationMode,
   ActionCheckpoint,
+  ActionConfirmationMode,
   ActionExecutionContext,
   ActionProgressEvent,
 } from "./types";
-import { getTurnPapersWithRoles } from "../context/requestTurnPaperScope";
 
 /**
  * Builds an ActionExecutionContext from a tool call.
@@ -36,9 +36,11 @@ export function buildActionExecutionContext(params: {
   const request = context.request;
 
   return {
+    toolContext: context,
     // Registry and gateway are constructor dependencies of the
     // tool that calls this, not data carried on the context.
     registry: params.registry,
+    resolvePreparedAction: context.resolvePreparedAction,
     // Carried so every change an action makes is filed under the user's real
     // conversation. Without this the executor's synthetic request used 0,
     // and neither undo path could ever find the entries.
@@ -65,6 +67,9 @@ export function buildActionExecutionContext(params: {
      */
     requestConfirmation:
       params.requestConfirmation ??
+      (context.requestActionReview
+        ? async (_requestId, action) => context.requestActionReview!(action)
+        : undefined) ??
       (async () => {
         throw new Error(
           "This action requested an inline confirmation, which the paged tool path cannot satisfy. Run it from the slash-command surface, or port it to the paged review flow.",
@@ -72,6 +77,8 @@ export function buildActionExecutionContext(params: {
       }),
     llm: buildActionLlmConfig(context),
     requestContext: {
+      actionEntryPoint: request.actionEntryPoint || "conversation",
+      classifiedIntent: request.classifiedIntent,
       mode: request.conversationKind === "paper" ? "paper" : "library",
       activeItemId: request.activeItemId,
       selectedPaperContexts: [...getTurnPapersWithRoles(request, ["selected"])],

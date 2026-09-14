@@ -1,3 +1,4 @@
+import type { ActionConstraint } from "../authorization/types";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
@@ -49,6 +50,7 @@ export type AgentActionParameters = {
     | "setColor";
   tags?: string[];
   metadataFields?: string[];
+  metadataValues?: Record<string, unknown>;
   tag?: string;
   newTag?: string;
   collectionName?: string;
@@ -64,6 +66,7 @@ export type AgentActionParameters = {
   targetItemId?: number;
   pageIndex?: number;
   revertCount?: number;
+  /** Visible plain text from the prepared native payload, already decoded once. */
   expectedText?: string;
   newName?: string;
   newPath?: string;
@@ -74,20 +77,40 @@ export type AgentActionParameters = {
   permanent?: boolean;
   filePath?: string;
   contentHash?: string;
+  documentId?: string;
   commandFingerprint?: string;
   settingsKey?: string;
   settingsValue?: string;
 };
 
 export type AgentActionIntent = {
+  /** Semantic preference for this action, frozen with its intent revision. */
+  reviewPreference?: "default" | "review" | "direct";
+  /** Zero-based indexes into the frozen action list. */
+  dependsOn?: number[];
+  /** Index of the create_collection action that supplies a future destination. */
+  destinationFrom?: number;
+  /** Identity of authored material from semantic.materialOutputs. */
+  contentFrom?: string;
   capability: AgentActionCapability;
   operation: AgentActionOperation;
   proofDomain: AgentActionProofDomain;
   coverage: "one" | "some" | "all";
   targetKind: "papers" | "items";
   parameters?: AgentActionParameters;
+  discovery?: {
+    description: string;
+    source: "context" | "library" | "collection";
+    collectionPath?: string;
+  };
+  /** Literal native identities, resolved and frozen by the host before execution. */
+  targetSelectors?: Array<
+    | { kind: "item_id"; value: number }
+    | { kind: "item_key" | "title"; value: string }
+  >;
   scope?: {
     kind: "collection";
+    referenceKind?: "literal" | "descriptive";
     path?: string;
     includeDescendants: boolean;
   };
@@ -101,6 +124,10 @@ export type AgentActionIntent = {
 
 export type AgentActionObligation = AgentActionIntent & {
   id: string;
+  /** Index of the interpreted action, which may expand to several native obligations. */
+  sourceActionIndex?: number;
+  /** The destination must be created and natively verified by this same contract. */
+  destinationCreation?: { obligationId: string; libraryID: number };
   scope?: AgentActionIntent["scope"] & {
     libraryID: number;
     collectionId: number;
@@ -116,11 +143,25 @@ export type AgentActionObligation = AgentActionIntent & {
 
 /** Immutable interpretation of one user request. */
 export type AgentActionContract = {
-  version: 2;
+  version: 2 | 3 | 4;
   id: string;
+  /** Only explicit user restrictions are authoritative at execution time. */
+  hardConstraints?: Array<
+    ActionConstraint | { kind: "no_write"; description: string }
+  >;
   writeDisposition: "none" | "required" | "uncertain";
-  interpretationSource: "classifier" | "deterministic_fallback";
+  interpretationSource: "semantic" | "classifier" | "deterministic_fallback";
+  intent?: import("../types").ClassifiedTurnIntent;
   obligations: AgentActionObligation[];
+  /** Readings the host or interpreter chose on the user's behalf (yolo). */
+  assumptions?: string[];
+  /**
+   * Requested actions the host dropped while building the contract because
+   * their reference could not be resolved (yolo only). They carry no
+   * obligation, so completion evaluation reports each one as not performed
+   * unless a receipt for the same operation shows the agent did it anyway.
+   */
+  skippedActions?: { actionIndex: number; operation: AgentActionOperation }[];
 };
 
 export type AgentActionObligationProgress = {
@@ -152,6 +193,22 @@ export type AgentActionProgressLedger = {
   correctionCount: number;
   obligations: AgentActionObligationProgress[];
   appliedReceiptKeys: string[];
+  materialOutputs?: import("./workflowDependencies").MaterialOutputReceipt[];
+  authorizationGrants?: Array<{
+    version?: 2;
+    interaction?: import("../authorization/types").ActionInteraction;
+    proposalDigest: string;
+    toolName: string;
+    authority:
+      | "external_runtime"
+      | "safe_confirmation"
+      | "auto_policy"
+      | "yolo"
+      | "yolo_judgment"
+      | "plan_approval";
+    status: "staged" | "executed" | "failed" | "uncertain";
+    createdAt: number;
+  }>;
   updatedAt: number;
 };
 
@@ -172,10 +229,18 @@ export type AgentActionProposal = {
   requestedTargets: string[];
   destinationCollectionIds: number[];
   expectedContentHash?: string;
+  /** Host-derived finalized export bundle, bound into the exact proposal digest. */
+  expectedFiles?: Array<{
+    path: string;
+    contentHash: string;
+    byteLength: number;
+  }>;
 };
 
 export type AgentActionReceipt = {
   version: 2;
+  /** Stamped by the invocation controller, never supplied by tool arguments. */
+  executionAuthority?: "external_runtime";
   id: string;
   obligationId?: string;
   proposalId: string;

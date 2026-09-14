@@ -2,6 +2,7 @@ import type { QuoteCitation } from "../../shared/types";
 import type { Message } from "./types";
 import {
   bindQuoteCitationToDisplayedText,
+  findAdjacentStandaloneQuoteCitation,
   normalizeQuoteCitations,
   parseStructuredBlockquoteQuoteBinding,
   QUOTE_CITATION_PATTERN,
@@ -385,6 +386,27 @@ export function buildQuoteRenderPlan(
     }
 
     const blockquoteMarkdown = quoteLines.join("\n");
+    const adjacentAnchor = !containsStructuredQuoteAnchor(blockquoteMarkdown)
+      ? findAdjacentStandaloneQuoteCitation({
+          markdownLines: lines,
+          followingLineStartIndex: index,
+        })
+      : null;
+    const adjacentCitation = adjacentAnchor
+      ? citationsById.get(adjacentAnchor.quoteCitationId)
+      : undefined;
+    const adjacentBinding = adjacentCitation
+      ? bindQuoteCitationToDisplayedText(adjacentCitation, blockquoteMarkdown)
+      : undefined;
+    if (adjacentAnchor && adjacentBinding) {
+      out.push(
+        pushOccurrence(
+          createOccurrenceFromCitation(adjacentBinding, nextOccurrenceIndex()),
+        ),
+      );
+      index = adjacentAnchor.lineIndex;
+      continue;
+    }
     if (containsStructuredQuoteAnchor(blockquoteMarkdown)) {
       const structuredBinding =
         parseStructuredBlockquoteQuoteBinding(quoteLines);

@@ -2,18 +2,18 @@
  * Focused facade tool for importing papers into Zotero by DOI, ISBN, arXiv ID, or URL.
  * Provides a self-describing schema for importing papers by identifier.
  */
-import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type ImportIdentifiersOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import type { AgentWriteToolDefinition } from "../../types";
 import {
-  ok,
   fail,
-  validateObject,
   normalizePositiveInt,
   normalizeStringArray,
+  ok,
+  validateObject,
 } from "../shared";
 import {
   executeAndRecordUndo,
@@ -56,7 +56,7 @@ export function createImportIdentifiersTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -89,7 +89,10 @@ export function createImportIdentifiersTool(
     acceptInheritedApproval: async (_input, approval) => {
       // Accept review-mode approvals from search_literature_online review cards
       return (
-        approval.sourceMode === "review" && approval.sourceActionId === "import"
+        (approval.sourceMode === "review" ||
+          (approval.sourceMode === "approval" &&
+            approval.sourceToolName === "discover_related")) &&
+        approval.sourceActionId === "import"
       );
     },
 
@@ -158,7 +161,7 @@ export function createImportIdentifiersTool(
         resolutionData,
         IDENTIFIERS_CHECKLIST_FIELD_ID,
       );
-      // No resolution — auto_approve / non-HITL path.
+      // No resolution — automatic / non-HITL path.
       if (selected === undefined) {
         return ok(input);
       }
@@ -183,7 +186,7 @@ export function createImportIdentifiersTool(
       });
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

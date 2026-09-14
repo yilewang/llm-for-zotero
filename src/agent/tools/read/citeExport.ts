@@ -11,6 +11,7 @@
 import type { AgentToolDefinition } from "../../types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { ok, fail, validateObject, normalizePositiveIntArray } from "../shared";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 
 type CiteExportInput = {
   action: "cite" | "bibliography" | "export" | "styles" | "formats";
@@ -67,7 +68,7 @@ export function createCiteExportTool(
           },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
 
@@ -96,8 +97,10 @@ export function createCiteExportTool(
 
     guidance: {
       matches: (request) =>
-        /\b(cite|citation|citations|reference|references|bibliograph|apa|mla|chicago|harvard|vancouver|ieee|bibtex|biblatex|ris|csl|export)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.semantic?.supportTools?.includes(
+            "library_cite",
+          ),
         ),
       instruction:
         "When the user asks for a citation, a reference, or a bibliography in any style, call library_cite — do not compose one yourself. Zotero's CSL engine produces the correct entry for the style; a citation written from memory looks right and is frequently wrong in exactly the details that matter (author initials, page ranges, edition, container title). If the style they name is not installed, say so and list what is, rather than approximating it.",
@@ -152,6 +155,11 @@ export function createCiteExportTool(
       });
     },
 
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: ["zotero_library"],
+        reason: "Citation formatting and export read Zotero metadata only.",
+      }),
     async execute(input) {
       if (input.action === "styles") {
         return { styles: zoteroGateway.listCitationStyles() };

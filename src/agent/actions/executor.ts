@@ -1,3 +1,6 @@
+import { resolvePreparedActionReview } from "../tools/execution/review";
+import { withConversationWriteLock } from "../../shared/conversationWriteFence";
+import { resolveAgentRuntimeRequest } from "../context/resolvedAgentRequest";
 import type {
   AgentToolCall,
   AgentToolContext,
@@ -5,7 +8,6 @@ import type {
   PreparedToolExecution,
 } from "../types";
 import type { ActionExecutionContext } from "./types";
-import { resolveAgentRuntimeRequest } from "../context/resolvedAgentRequest";
 
 let _callCounter = 0;
 function nextCallId(): string {
@@ -23,7 +25,30 @@ function buildToolContext(
   const syntheticItem = ctx.requestContext?.activeItemId
     ? ctx.zoteroGateway.getItem(ctx.requestContext.activeItemId)
     : null;
+  if (ctx.toolContext)
+    return {
+      ...ctx.toolContext,
+      request: {
+        ...ctx.toolContext.request,
+        actionEntryPoint:
+          ctx.requestContext?.actionEntryPoint || "conversation",
+        actionContract:
+          ctx.requestContext?.actionContract ||
+          ctx.toolContext.request.actionContract,
+        actionProgress:
+          ctx.requestContext?.actionProgress ||
+          ctx.toolContext.request.actionProgress,
+        classifiedIntent:
+          ctx.requestContext?.classifiedIntent ||
+          ctx.toolContext.request.classifiedIntent,
+      },
+      signal: ctx.signal || ctx.toolContext.signal,
+      journalActionScope:
+        ctx.journalActionScope || ctx.toolContext.journalActionScope,
+      journalToolName: ctx.journalToolName || ctx.toolContext.journalToolName,
+    };
   return {
+    signal: ctx.signal,
     // Actions run outside an agent turn, so we build a synthetic request.
     request: resolveAgentRuntimeRequest({
       // Carried from the caller. Hard-coding 0 filed every action-driven
@@ -31,6 +56,8 @@ function buildToolContext(
       // could find them.
       conversationKey: ctx.conversationKey ?? 0,
       mode: "agent",
+      actionEntryPoint: ctx.requestContext?.actionEntryPoint || "action_ui",
+      classifiedIntent: ctx.requestContext?.classifiedIntent,
       userText: stepDescription,
       libraryID: ctx.libraryID,
       activeItemId: ctx.requestContext?.activeItemId,
@@ -51,45 +78,13 @@ function buildToolContext(
   };
 }
 
-function attachConfirmationResolution(
-  result: AgentToolResult,
-  resolution: { actionId?: string; data?: unknown },
-): AgentToolResult {
-  if (!resolution.actionId) return result;
-  const content: Record<string, unknown> =
-    result.content &&
-    typeof result.content === "object" &&
-    !Array.isArray(result.content)
-      ? { ...(result.content as Record<string, unknown>) }
-      : { value: result.content };
-  content.confirmationActionId = resolution.actionId;
-  if (resolution.data !== undefined) {
-    content.confirmationData = resolution.data;
-  }
-  return {
-    ...result,
-    content,
-  };
-}
-
-function withConfirmationActionId(
-  data: unknown,
-  actionId: string | undefined,
-): unknown {
-  if (!actionId) return data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return { ...(data as Record<string, unknown>), __actionId: actionId };
-  }
-  return { __actionId: actionId, value: data };
-}
-
 /**
  * Executes a single tool call from within an action step.
  *
  * - Calls `registry.prepareExecution()` to validate input and check confirmation.
  * - If the tool returns a direct result, returns it immediately.
  * - If the tool requires confirmation, routes based on `ctx.confirmationMode`:
- *   - `"auto_approve"` — calls `execute()` without asking the user.
+ *   - `"automatic"` — central policy grants direct authority or surfaces required review.
  *   - `"native_ui"` — emits a `confirmation_required` progress event and awaits
  *     the caller's `requestConfirmation()` to get the user's resolution.
  *   - `"mcp_response"` — same as native_ui; the MCP server handles the pause.
@@ -106,6 +101,7 @@ export async function callTool(
   args: unknown,
   ctx: ActionExecutionContext,
   stepDescription = "",
+  inheritedApproval?: import("../types").AgentInheritedApproval,
 ): Promise<AgentToolResult> {
   const call: AgentToolCall = {
     id: nextCallId(),
@@ -116,52 +112,45 @@ export async function callTool(
   const prepared: PreparedToolExecution = await ctx.registry.prepareExecution(
     call,
     toolContext,
-    // An action is started by an explicit user gesture (a slash command or
-    // the action picker), which is its own consent — autonomy gates that
-    // bound the model's tool loop do not apply here.
+    // Preserve the originating authority and lifetime across the shared action pipeline.
     {
-      callerKind: "action",
+      callerKind:
+        ctx.toolContext && ctx.requestContext?.actionEntryPoint !== "action_ui"
+          ? "model"
+          : "action",
+      ...toolContext.nestedExecutionOptions,
+      executeWithLock:
+        toolContext.nestedExecutionOptions?.executeWithLock ||
+        ((task) =>
+          withConversationWriteLock(toolContext.request.conversationKey, task)),
+      checkpointedWorkflow: Boolean(ctx.journalActionScope),
+      inheritedApproval,
       // Native action pages are an explicit review workflow. Preserve that
       // workflow even when the operation is fully reversible and the global
       // write mode would otherwise auto-approve it.
-      forceConfirmation: ctx.confirmationMode !== "auto_approve",
+      forceConfirmation:
+        ctx.requestContext?.actionEntryPoint !== "conversation",
     },
   );
 
-  if (prepared.kind === "result") {
-    return prepared.execution.result;
-  }
+  const deliver = (result: AgentToolResult) => {
+    ctx.toolContext?.recordChildExecution?.(result);
+    return result;
+  };
+  if (prepared.kind === "result") return deliver(prepared.execution.result);
+  if (ctx.resolvePreparedAction)
+    return deliver((await ctx.resolvePreparedAction(prepared)).result);
 
-  // Confirmation required
-  if (ctx.confirmationMode === "auto_approve") {
-    const execution = await prepared.execute(undefined);
-    return execution.result;
-  }
-
-  // native_ui or mcp_response: surface the confirmation card to the caller
-  ctx.onProgress({
-    type: "confirmation_required",
-    requestId: prepared.requestId,
-    action: prepared.action,
-  });
-
-  const resolution = await ctx.requestConfirmation(
-    prepared.requestId,
-    prepared.action,
+  return deliver(
+    (
+      await resolvePreparedActionReview(
+        prepared,
+        async (action, requestId) => {
+          ctx.onProgress({ type: "confirmation_required", requestId, action });
+          return ctx.requestConfirmation(requestId, action);
+        },
+        toolContext.nestedExecutionOptions?.isExecutionAllowed,
+      )
+    ).result,
   );
-
-  if (!resolution.approved) {
-    return attachConfirmationResolution(prepared.deny(resolution.data).result, {
-      actionId: resolution.actionId,
-      data: resolution.data,
-    });
-  }
-
-  const execution = await prepared.execute(
-    withConfirmationActionId(resolution.data, resolution.actionId),
-  );
-  return attachConfirmationResolution(execution.result, {
-    actionId: resolution.actionId,
-    data: resolution.data,
-  });
 }

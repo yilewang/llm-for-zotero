@@ -1,22 +1,22 @@
-import type {
-  AgentConfirmationResolution,
-  AgentJournalActionScope,
-  AgentPendingAction,
-  AgentActionContract,
-  AgentActionProgressLedger,
-} from "../types";
-import type { AgentToolRegistry } from "../tools/registry";
-import type { ZoteroGateway } from "../services/zoteroGateway";
-import type { ModelProviderAuthMode } from "../../utils/modelProviders";
-import type { ProviderProtocol } from "../../utils/providerProtocol";
+import type { ModelProfileOverride } from "../../modelCapabilities";
 import type {
   CollectionContextRef,
   PaperContextRef,
   TagContextRef,
 } from "../../shared/types";
-import type { PaperScopedActionProfile } from "./paperScopeTypes";
-import type { ModelProfileOverride } from "../../modelCapabilities";
+import type { ModelProviderAuthMode } from "../../utils/modelProviders";
+import type { ProviderProtocol } from "../../utils/providerProtocol";
 import type { UtilityLLMParams } from "../../utils/utilityLLM";
+import type { ZoteroGateway } from "../services/zoteroGateway";
+import type { AgentToolRegistry } from "../tools/registry";
+import type {
+  AgentActionContract,
+  AgentActionProgressLedger,
+  AgentConfirmationResolution,
+  AgentJournalActionScope,
+  AgentPendingAction,
+} from "../types";
+import type { PaperScopedActionProfile } from "./paperScopeTypes";
 
 /**
  * LLM credentials that an action can use to call the model directly
@@ -39,15 +39,11 @@ export type ActionLLMConfig = {
  *
  * - `"native_ui"`: The action pauses and emits a `confirmation_required` progress event.
  *   The caller opens Zotero's native UI dialog and resolves it via `requestConfirmation`.
- * - `"auto_approve"`: All confirmations are automatically approved without user interaction.
- *   Useful for trusted batch operations.
+ * - `"automatic"`: Central mode policy authorizes each exact proposal; required review is surfaced.
  * - `"mcp_response"`: The action pauses and the confirmation card is returned in the MCP
  *   response body so an external agent can handle it.
  */
-export type ActionConfirmationMode =
-  | "native_ui"
-  | "auto_approve"
-  | "mcp_response";
+export type ActionConfirmationMode = "native_ui" | "automatic" | "mcp_response";
 
 export type ActionProgressEvent =
   | { type: "step_start"; step: string; index: number; total: number }
@@ -70,6 +66,8 @@ export type ActionCheckpoint = {
 };
 
 export type ActionRequestContext = {
+  actionEntryPoint?: "action_ui" | "conversation";
+  classifiedIntent?: import("../types").ClassifiedTurnIntent;
   mode?: "paper" | "library";
   activeItemId?: number;
   selectedPaperContexts?: PaperContextRef[];
@@ -81,6 +79,9 @@ export type ActionRequestContext = {
 };
 
 export type ActionExecutionContext = {
+  /** Original host context for conversational invocations; never model tool arguments. */
+  toolContext?: import("../types").AgentToolContext;
+  resolvePreparedAction?: import("../types").AgentToolContext["resolvePreparedAction"];
   /** The tool registry — used by ActionExecutor to call tools deterministically. */
   registry: AgentToolRegistry;
   /**

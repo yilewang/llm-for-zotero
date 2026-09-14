@@ -28,7 +28,8 @@ describe("zotero_script confirmation", function () {
 
   function validated(mode: "read" | "write", script: string) {
     const result = tool.validate({
-      mode,
+      access: mode === "read" ? "library" : "privileged",
+      effect: mode,
       script,
       description: "Tidy collections",
     });
@@ -43,13 +44,12 @@ describe("zotero_script confirmation", function () {
   const WRITE_SCRIPT =
     "const items = await Zotero.Items.getAll(1);\nfor (const i of items) { env.snapshot(i); i.addTag('x'); await i.saveTx(); }";
 
-  it("requires confirmation for a write-mode script", async function () {
+  it("classifies a write-mode script as a state change", async function () {
     const input = validated("write", WRITE_SCRIPT);
-    const required = await tool.shouldRequireConfirmation?.(input, context);
-    assert.isTrue(
-      required,
-      "write scripts mutate the library and must be confirmed",
-    );
+    const plan = await tool.planInvocation?.(input, context);
+    assert.equal(plan?.mechanism, "zotero_script");
+    assert.equal(plan?.impact, "state_change");
+    assert.include(plan?.effects || [], "modify");
   });
 
   it("shows the actual source in a code_preview field, not a summary", async function () {
@@ -66,13 +66,27 @@ describe("zotero_script confirmation", function () {
     );
   });
 
-  it("requires confirmation for a read-mode script", async function () {
+  it("proves library read mode at the runtime boundary", async function () {
     const input = validated("read", "return Zotero.Items.getAll(1).length;");
-    const required = await tool.shouldRequireConfirmation?.(input, context);
-    assert.isTrue(
-      required,
-      "read mode relaxes undo instrumentation but still exposes privileged APIs",
-    );
+    const plan = await tool.planInvocation?.(input, context);
+    assert.equal(plan?.mechanism, "zotero_script");
+    assert.equal(plan?.impact, "read_only");
+    assert.equal(plan?.assurance, "runtime_enforced");
+  });
+
+  it("keeps privileged read mode ambiguous", async function () {
+    const input = tool.validate({
+      access: "privileged",
+      effect: "read",
+      script: "return Zotero.Items.getAll(1).length;",
+      description: "Count items",
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const plan = await tool.planInvocation?.(input.value, context);
+    assert.equal(plan?.mechanism, "zotero_script");
+    assert.equal(plan?.impact, "ambiguous");
+    assert.equal(plan?.assurance, "unknown");
   });
 });
 
@@ -93,7 +107,8 @@ describe("zotero_script mode guards", function () {
 
   it("refuses a note write declared as read mode", function () {
     const result = tool.validate({
-      mode: "read",
+      access: "library",
+      effect: "read",
       script: NOTE_WRITE_SCRIPT,
       description: "Sneak a note in",
     });
@@ -105,7 +120,8 @@ describe("zotero_script mode guards", function () {
 
   it("still refuses a note write in write mode", function () {
     const result = tool.validate({
-      mode: "write",
+      access: "privileged",
+      effect: "write",
       script: `env.snapshot(null); ${NOTE_WRITE_SCRIPT}`,
       description: "Sneak a note in",
     });
@@ -114,7 +130,8 @@ describe("zotero_script mode guards", function () {
 
   it("still accepts an ordinary read script with no undo instrumentation", function () {
     const result = tool.validate({
-      mode: "read",
+      access: "library",
+      effect: "read",
       script: "return Zotero.Items.getAll(1).length;",
       description: "Count items",
     });

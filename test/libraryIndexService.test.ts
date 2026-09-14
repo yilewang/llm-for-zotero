@@ -137,6 +137,7 @@ describe("LibraryIndexService", function () {
     getAll?: (libraryID?: number) => Promise<Zotero.Item[]>;
     libraryName?: string;
   }) {
+    libraryIndexService.clearForTests();
     const allSeeds = [...params.topLevel, ...(params.children || [])];
     const itemById = new Map(
       allSeeds.map((seed) => [seed.id, makeItem(seed)] as const),
@@ -204,6 +205,38 @@ describe("LibraryIndexService", function () {
       },
     };
   }
+
+  it("counts metadata-only regular items in collection browsing without counting notes or attachments", async function () {
+    installFixture({
+      topLevel: [
+        { id: 1, collections: [10] },
+        { id: 2, collections: [11] },
+        { id: 3, kind: "note", collections: [10] },
+        { id: 4, kind: "attachment", collections: [10] },
+        { id: 5 },
+        { id: 6, deleted: true, collections: [10] },
+      ],
+      collections: [
+        {
+          id: 10,
+          name: "Parent",
+          childItems: [1, 3, 4, 6],
+          childCollections: [11],
+        },
+        { id: 11, name: "Child", parentID: 10, childItems: [2] },
+      ],
+    });
+    const result = await new ZoteroGateway().browseCollections({
+      libraryID: 1,
+    });
+    const parent = result.collections.find(
+      (collection) => collection.collectionId === 10,
+    )!;
+    assert.equal(parent.paperCount, 1);
+    assert.equal(parent.descendantPaperCount, 2);
+    assert.equal(parent.childCollections[0].paperCount, 1);
+    assert.equal(result.unfiled.paperCount, 1);
+  });
 
   it("shares one cold projection and preserves canonical primitive semantics", async function () {
     const regular: ItemSeed = {

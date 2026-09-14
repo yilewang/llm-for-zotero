@@ -3,6 +3,7 @@ import type {
   WorkflowTestApi,
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
+import { STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX } from "../src/modules/contextPanel/conversationTurnNavigator";
 
 function getWorkflowTestApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
@@ -227,6 +228,27 @@ describe("workflow: conversation view has a single scrollbar", function () {
     await api.seedStandaloneConversation(turns);
 
     const win = getStandaloneWindow();
+    const standaloneNavigator = win.document.querySelector(
+      ".llm-turn-navigator",
+    ) as HTMLElement | null;
+    assert.isOk(
+      standaloneNavigator,
+      "standalone should mount the shared turn navigator",
+    );
+    assert.lengthOf(
+      Array.from(win.document.querySelectorAll(".llm-turn-navigator-marker")),
+      3,
+      "standalone should project one marker per query",
+    );
+    const standaloneChatShell = win.document.querySelector(
+      "#llm-chat-shell",
+    ) as HTMLElement | null;
+    assert.equal(
+      !standaloneNavigator?.hidden,
+      (standaloneChatShell?.getBoundingClientRect().width || 0) >=
+        STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX,
+      "standalone visibility should follow the chat-column width",
+    );
     const scrollers = collectVerticalScrollers(win);
     const report = [
       "vertical scrollers:",
@@ -278,6 +300,16 @@ describe("workflow: conversation view has a single scrollbar", function () {
       '[data-llm-workflow-test="true"]',
     ) as HTMLElement | null;
     assert.isOk(host, "workflow panel host should be mounted");
+    assert.lengthOf(
+      Array.from(host?.querySelectorAll(".llm-turn-navigator") || []),
+      1,
+      "sidepanel should mount the same shared turn navigator",
+    );
+    assert.lengthOf(
+      Array.from(host?.querySelectorAll(".llm-turn-navigator-marker") || []),
+      1,
+      "sidepanel should project its query into the shared navigator",
+    );
     const hostStyle = mainWin.getComputedStyle(host as HTMLElement);
     assert.notInclude(
       ["auto", "scroll"],
@@ -371,6 +403,24 @@ describe("workflow: conversation view has a single scrollbar", function () {
     ]) {
       const resized = await api.resizeStandaloneWindow(size.width, size.height);
       const win = getStandaloneWindow();
+      const navigator = win.document.querySelector(
+        ".llm-turn-navigator",
+      ) as HTMLElement | null;
+      const navigatorVisible = Boolean(
+        navigator &&
+        !navigator.hidden &&
+        win.document
+          .querySelector("#llm-chat-shell")
+          ?.classList.contains("llm-turn-navigator-visible"),
+      );
+      const chatShellWidth =
+        win.document.querySelector("#llm-chat-shell")?.getBoundingClientRect()
+          .width || 0;
+      assert.equal(
+        navigatorVisible,
+        chatShellWidth >= STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX,
+        `standalone navigator visibility should follow the ${STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX}px chat-column threshold at ${size.width}px`,
+      );
       const scrollers = collectVerticalScrollers(win);
       const nonMessages = scrollers.filter(
         (s) => !s.desc.includes("llm-messages"),
@@ -382,6 +432,7 @@ describe("workflow: conversation view has a single scrollbar", function () {
       reports.push(
         [
           `size ${resized.innerWidth}x${resized.innerHeight} vertical scrollers:`,
+          `  turn navigator visible=${navigatorVisible} shellWidth=${Math.round(chatShellWidth)}`,
           ...scrollers.map(
             (s) =>
               `  ${s.desc} overflowY=${s.overflowY} ` +

@@ -15,7 +15,10 @@ describe("fileIntakeController", function () {
     return new File([bytes], name, { type, lastModified: 123 });
   }
 
-  function createController(pdfSupport: PdfSupport) {
+  function createController(
+    pdfSupport: PdfSupport,
+    overrides: Record<string, unknown> = {},
+  ) {
     const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
     const selectedImageCache = new Map<number, string[]>();
     const statuses: Array<{ message: string; level: string }> = [];
@@ -42,6 +45,7 @@ describe("fileIntakeController", function () {
       setStatusMessage: (message, level) => {
         statuses.push({ message, level });
       },
+      ...overrides,
     });
     return {
       ...controller,
@@ -90,5 +94,36 @@ describe("fileIntakeController", function () {
       message: "Uploaded 1 attachment(s)",
       level: "ready",
     });
+  });
+
+  it("does not read or persist files when panel ownership is poisoned", async function () {
+    const controller = createController("native", {
+      captureOwnership: () => null,
+    });
+
+    await controller.processIncomingFiles([
+      makeFile("paper.pdf", "application/pdf"),
+    ]);
+
+    assert.lengthOf(controller.persisted, 0);
+    assert.isUndefined(controller.selectedFileAttachmentCache.get(item.id));
+    assert.deepEqual(controller.statuses, []);
+  });
+
+  it("does not commit a file whose panel ownership changes during intake", async function () {
+    let owned = true;
+    const controller = createController("native", {
+      captureOwnership: () => () => owned,
+    });
+
+    const processing = controller.processIncomingFiles([
+      makeFile("archive.bin", "application/octet-stream"),
+    ]);
+    owned = false;
+    await processing;
+
+    assert.lengthOf(controller.persisted, 0);
+    assert.isUndefined(controller.selectedFileAttachmentCache.get(item.id));
+    assert.deepEqual(controller.statuses, []);
   });
 });

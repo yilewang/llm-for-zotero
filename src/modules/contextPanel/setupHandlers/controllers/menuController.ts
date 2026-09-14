@@ -26,6 +26,10 @@ export function positionFloatingMenu(
   owner: Element,
   menu: HTMLDivElement,
   anchor: HTMLButtonElement,
+  options: {
+    horizontalAlignment?: "start" | "center";
+    verticalPlacement?: "adaptive" | "above";
+  } = {},
 ): void {
   const win = owner.ownerDocument?.defaultView;
   if (!win) return;
@@ -67,15 +71,26 @@ export function positionFloatingMenu(
   const anchorRect = anchor.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
 
-  let left = anchorRect.left;
+  let left =
+    options.horizontalAlignment === "center"
+      ? anchorRect.left + (anchorRect.width - menuRect.width) / 2
+      : anchorRect.left;
   const maxLeft = Math.max(boundaryLeft, boundaryRight - menuRect.width);
   left = Math.min(Math.max(boundaryLeft, left), maxLeft);
 
   const belowTop = anchorRect.bottom + gap;
   const aboveTop = anchorRect.top - gap - menuRect.height;
-  let top = belowTop;
+  let top = options.verticalPlacement === "above" ? aboveTop : belowTop;
 
-  if (belowTop + menuRect.height > boundaryBottom) {
+  if (options.verticalPlacement === "above" && aboveTop < boundaryTop) {
+    top =
+      belowTop + menuRect.height <= boundaryBottom
+        ? belowTop
+        : Math.max(boundaryTop, boundaryBottom - menuRect.height);
+  } else if (
+    options.verticalPlacement !== "above" &&
+    belowTop + menuRect.height > boundaryBottom
+  ) {
     if (aboveTop >= boundaryTop) {
       top = aboveTop;
     } else {

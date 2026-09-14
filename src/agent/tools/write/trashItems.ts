@@ -2,13 +2,13 @@
  * Focused facade tool for moving Zotero items to the trash.
  * Provides a self-describing schema for trashing Zotero items.
  */
-import type { AgentWriteToolDefinition } from "../../types";
 import {
   LibraryMutationService,
   type TrashItemsOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { ok, fail, validateObject, normalizePositiveIntArray } from "../shared";
+import type { AgentWriteToolDefinition } from "../../types";
+import { fail, normalizePositiveIntArray, ok, validateObject } from "../shared";
 import {
   executeAndRecordUndo,
   normalizeChecklistItemIdsFromResolution,
@@ -42,7 +42,7 @@ export function createTrashItemsTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -130,7 +130,7 @@ export function createTrashItemsTool(
         resolutionData,
         TRASH_CHECKLIST_FIELD_ID,
       );
-      // No resolution at all — the auto_approve / non-HITL path. Keep the
+      // No resolution at all — the automatic / non-HITL path. Keep the
       // operation the model asked for.
       if (selected === undefined) {
         return ok(input);
@@ -156,7 +156,7 @@ export function createTrashItemsTool(
       });
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

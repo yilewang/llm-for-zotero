@@ -316,7 +316,7 @@ function createRuntimeModelEntry(params: {
     displayModelLabel: params.displayName || params.model,
     advanced: {
       temperature: 0.7,
-      maxTokens: 8192,
+      outputTokenLimit: { mode: "auto" },
     },
   };
 }

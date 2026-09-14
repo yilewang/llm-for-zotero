@@ -23,7 +23,9 @@ import type { PaperReadFigureExtractionResult } from "../tools/read/paperRead";
 import type { PdfTarget } from "../tools/read/pdfToolUtils";
 import type { AgentToolArtifact, AgentToolContext } from "../types";
 import type { PdfPageService } from "./pdfPageService";
-import { parseDocumentReferences } from "../../shared/documentReferences";
+import type { SemanticDecisions } from "../model/semanticDecisions";
+import { sha256Bytes } from "../store/journalRecoveryBlobStore";
+import type { PlanDocumentAsset } from "../documents/types";
 
 const FIGURE_EXTRACTION_RENDER_SCALE = 1.8;
 
@@ -35,6 +37,8 @@ type FigureExtractionInput = {
 
 type FigureExtractionParams = {
   input: FigureExtractionInput;
+  /** Host-owned selectors; free-text tool queries cannot change them. */
+  selection?: SemanticDecisions["figures"];
   context: AgentToolContext;
   paperContexts: NonNullable<PdfTarget["paperContext"]>[];
 };
@@ -46,6 +50,7 @@ type FigureCropPageService = PdfPageService & {
     figureCacheDir: string;
     mineruCacheDir?: string;
     query: string;
+    selection: NonNullable<SemanticDecisions["figures"]>;
     pages?: number[];
     dpi?: number;
   }) => Promise<
@@ -108,6 +113,52 @@ function artifactForFigure(
     pageIndex: figure.pageNumber - 1,
     pageLabel: `${figure.pageNumber}`,
     paperContext,
+  };
+}
+
+/** Crops are host-produced PNGs. Read their bytes instead of asking the model
+ * to invent hashes, dimensions, or native source identity for a document. */
+async function describeDocumentFigure(
+  figure: ExtractedPdfFigure,
+  paperContext: NonNullable<PdfTarget["paperContext"]>,
+  sourceFingerprint: string,
+): Promise<PlanDocumentAsset> {
+  const io = (
+    globalThis as unknown as {
+      IOUtils: { read: (path: string) => Promise<Uint8Array> };
+    }
+  ).IOUtils;
+  const bytes = await io.read(figure.cropPath);
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length < 24 || signature.some((byte, i) => bytes[i] !== byte)) {
+    throw new Error(`Extracted figure ${figure.label} is not a valid PNG`);
+  }
+  const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const item = Zotero.Items.get(paperContext.itemId);
+  const attachment = Zotero.Items.get(paperContext.contextItemId);
+  if (!item?.key || !attachment?.key) {
+    throw new Error(
+      `Native source identity is unavailable for ${figure.label}`,
+    );
+  }
+  return {
+    assetId: `${attachment.key}-${figure.id}`,
+    contentHash: `sha256:${await sha256Bytes(bytes)}`,
+    mimeType: "image/png",
+    byteLength: bytes.byteLength,
+    width: header.getUint32(16),
+    height: header.getUint32(20),
+    caption: figure.captionText?.trim() || figure.label,
+    durablePath: figure.cropPath,
+    provenance: {
+      origin: "extracted",
+      libraryID: item.libraryID,
+      itemKey: item.key,
+      attachmentItemKey: attachment.key,
+      sourceFingerprint,
+      pageIndex: figure.pageNumber - 1,
+      extractionToolVersion: `pdf-figure-crop:${PDF_FIGURE_CROP_ALGORITHM_VERSION}`,
+    },
   };
 }
 
@@ -176,127 +227,35 @@ function normalizeRequestedPages(pages: number[] | undefined): Set<number> {
   return normalized;
 }
 
-function queryRequestsAllFigures(query: string): boolean {
-  const text = normalizeText(query).toLowerCase();
-  if (!text) return true;
-  return (
-    /\b(all|every|each)\s+(?:of\s+the\s+)?fig(?:ure)?s?\b/i.test(text) ||
-    /\bfig(?:ure)?s?\s+(?:all|overview|summary)\b/i.test(text)
-  );
-}
-
-function queryRequestsExtendedOrSupplementary(query: string): boolean {
-  return (
-    /\bextended\s+data\b/i.test(query) ||
-    /\bsupp(?:lementary|lemental)?\b/i.test(query) ||
-    /\bfig(?:ure)?\.?\s*S\d+\b/i.test(query)
-  );
-}
-
-function queryRequestsTable(query: string): boolean {
-  return /\btables?\s+(?:S?\d+|[IVX]+)\b/i.test(query);
-}
-
-function labelAllowedForAllQuery(label: string, query: string): boolean {
+function labelAllowedForAllQuery(
+  label: string,
+  includeSupplementary: boolean,
+): boolean {
   const normalized = normalizeText(label);
   if (/^Extended Data Figure\s+\d+/i.test(normalized)) {
-    return queryRequestsExtendedOrSupplementary(query);
+    return includeSupplementary;
   }
   if (
     /^Supplementary Figure\s+/i.test(normalized) ||
     /^Figure\s+S\d+/i.test(normalized)
   ) {
-    return queryRequestsExtendedOrSupplementary(query);
+    return includeSupplementary;
   }
   return true;
 }
 
-const FIGURE_LABEL_LIST_PATTERN =
-  /\b(?:fig(?:ure)?s?\.?|figs?\.?)\s+(S?\d+[A-Za-z]?(?:\s*(?:(?:,\s*(?:and\s+)?)|(?:&|\band\b|[-\u2013\u2014]|\bto\b)\s*)S?\d+[A-Za-z]?)*)(?![A-Za-z0-9])/gi;
-
-function extractRequestedFigureLabels(query: string): Set<string> {
-  const labels = new Set<string>();
-  const extendedNumbers = new Set<string>();
-  const supplementaryNumbers = new Set<string>();
-
-  for (const reference of parseDocumentReferences(query)) {
-    if (reference.kind !== "figure") continue;
-    addFigureLabelKey(labels, `Figure ${reference.id}`);
-  }
-
-  for (const match of query.matchAll(
-    /\bExtended\s+Data\s+Fig(?:ure)?\.?\s*(\d+)\b/gi,
-  )) {
-    const number = match[1];
-    if (!number) continue;
-    extendedNumbers.add(number);
-    addFigureLabelKey(labels, `Extended Data Figure ${number}`);
-  }
-
-  for (const match of query.matchAll(
-    /\bSupplementary\s+Fig(?:ure)?\.?\s*(S?\d+)\b/gi,
-  )) {
-    const number = match[1]?.toUpperCase();
-    if (!number) continue;
-    supplementaryNumbers.add(number);
-    addFigureLabelKey(labels, `Supplementary Figure ${number}`);
-  }
-
-  for (const match of query.matchAll(FIGURE_LABEL_LIST_PATTERN)) {
-    const rawSegment = match[1] || "";
-    const numbers = Array.from(rawSegment.matchAll(/\bS?\d+[A-Za-z]?\b/gi)).map(
-      (item) => item[0].toUpperCase(),
-    );
-    if (!numbers.length) continue;
-    if (
-      numbers.length === 2 &&
-      /[-\u2013\u2014]|\bto\b/i.test(rawSegment) &&
-      !numbers[0].startsWith("S") &&
-      !numbers[1].startsWith("S") &&
-      /^\d+$/.test(numbers[0]) &&
-      /^\d+$/.test(numbers[1])
-    ) {
-      const start = Number.parseInt(numbers[0], 10);
-      const end = Number.parseInt(numbers[1], 10);
-      if (start <= end && end - start <= 80) {
-        for (let number = start; number <= end; number += 1) {
-          addFigureLabelKey(labels, `Figure ${number}`);
-        }
-        continue;
-      }
-    }
-    for (const number of numbers) {
-      addFigureLabelKey(labels, `Figure ${number}`);
-    }
-  }
-
-  for (const match of query.matchAll(/\bpanel\s+(\d+)\s*([a-z])\b/gi)) {
-    if (match[1]) addFigureLabelKey(labels, `Figure ${match[1]}`);
-  }
-
-  for (const number of extendedNumbers) {
-    labels.delete(normalizeFigureLabelKey(`Figure ${number}`));
-  }
-  for (const number of supplementaryNumbers) {
-    labels.delete(normalizeFigureLabelKey(`Figure ${number}`));
-  }
-
-  return labels;
-}
-
 function buildCachedFigureRequest(
-  query: string,
+  selection: NonNullable<SemanticDecisions["figures"]>,
   pages: number[] | undefined,
 ): CachedFigureRequest {
-  const requestedLabels = extractRequestedFigureLabels(query);
-  const tableRequested = queryRequestsTable(query);
+  const requestedLabels = new Set<string>();
+  for (const label of selection.labels)
+    addFigureLabelKey(requestedLabels, label);
   return {
     requestedLabels,
     oneBasedPages: normalizeRequestedPages(pages),
-    allFigures:
-      queryRequestsAllFigures(query) ||
-      (!requestedLabels.size && !tableRequested),
-    tableRequested,
+    allFigures: !requestedLabels.size && selection.kind !== "tables",
+    tableRequested: selection.kind !== "figures",
   };
 }
 
@@ -319,13 +278,15 @@ function figureMatchesRequest(
     "label" | "baseLabel" | "pageNumber" | "captionPageNumber"
   >,
   request: CachedFigureRequest,
-  query: string,
+  includeSupplementary: boolean,
 ): boolean {
   if (!figureMatchesPages(figure, request.oneBasedPages)) return false;
   const labels = new Set<string>();
   addFigureRecordLabelKeys(labels, figure);
   if (request.allFigures) {
-    return [...labels].some((label) => labelAllowedForAllQuery(label, query));
+    return [...labels].some((label) =>
+      labelAllowedForAllQuery(label, includeSupplementary),
+    );
   }
   for (const label of labels) {
     if (request.requestedLabels.has(label)) return true;
@@ -356,7 +317,7 @@ function cachedCoverageLabels(
 
 function manifestFigureLabelsForAllRequest(
   manifest: MineruManifest | null,
-  query: string,
+  includeSupplementary: boolean,
 ): Set<string> {
   const labels = new Set<string>();
   if (!manifest) return labels;
@@ -371,7 +332,9 @@ function manifestFigureLabelsForAllRequest(
     const recordLabels = new Set<string>();
     addFigureRecordLabelKeys(recordLabels, figure);
     if (
-      ![...recordLabels].some((label) => labelAllowedForAllQuery(label, query))
+      ![...recordLabels].some((label) =>
+        labelAllowedForAllQuery(label, includeSupplementary),
+      )
     ) {
       continue;
     }
@@ -385,22 +348,23 @@ function selectCachedFiguresForRequest(params: {
   expectedFigures: ExpectedPdfFigure[];
   missingFigures: ExpectedPdfFigure[];
   manifest: MineruManifest | null;
-  query: string;
+  selection: NonNullable<SemanticDecisions["figures"]>;
+  includeSupplementary?: boolean;
   pages?: number[];
 }): {
   figures: ExtractedPdfFigure[];
   expectedFigures: ExpectedPdfFigure[];
   missingFigures: ExpectedPdfFigure[];
 } | null {
-  const request = buildCachedFigureRequest(params.query, params.pages);
+  const request = buildCachedFigureRequest(params.selection, params.pages);
   const figures = params.figures.filter((figure) =>
-    figureMatchesRequest(figure, request, params.query),
+    figureMatchesRequest(figure, request, params.includeSupplementary === true),
   );
   const expectedFigures = params.expectedFigures.filter((figure) =>
-    figureMatchesRequest(figure, request, params.query),
+    figureMatchesRequest(figure, request, params.includeSupplementary === true),
   );
   const missingFigures = params.missingFigures.filter((figure) =>
-    figureMatchesRequest(figure, request, params.query),
+    figureMatchesRequest(figure, request, params.includeSupplementary === true),
   );
   const coverage = cachedCoverageLabels(
     figures,
@@ -413,7 +377,7 @@ function selectCachedFiguresForRequest(params: {
     if (request.oneBasedPages.size) return null;
     const manifestLabels = manifestFigureLabelsForAllRequest(
       params.manifest,
-      params.query,
+      params.includeSupplementary === true,
     );
     if (!manifestLabels.size) return null;
     for (const label of manifestLabels) {
@@ -439,7 +403,8 @@ async function readVerifiedCachedFigures(params: {
   manifestHash: string;
   pdfFingerprint: string;
   paperContext: NonNullable<PdfTarget["paperContext"]>;
-  query: string;
+  selection: NonNullable<SemanticDecisions["figures"]>;
+  includeSupplementary?: boolean;
   pages?: number[];
 }): Promise<{
   figures: ExtractedPdfFigure[];
@@ -515,7 +480,8 @@ async function readVerifiedCachedFigures(params: {
     expectedFigures,
     missingFigures,
     manifest: params.manifest,
-    query: params.query,
+    selection: params.selection,
+    includeSupplementary: params.includeSupplementary,
     pages: params.pages,
   });
 }
@@ -526,8 +492,29 @@ export class PdfFigureExtractionService {
   async extractFigures(
     params: FigureExtractionParams,
   ): Promise<PaperReadFigureExtractionResult> {
-    const query = params.input.query || params.context.request.userText || "";
-    const figures: ExtractedPdfFigure[] = [];
+    const selection =
+      params.selection ||
+      params.context.request.classifiedIntent?.semantic?.figures;
+    const query = params.input.query || selection?.labels.join(", ") || "";
+    if (!selection)
+      return {
+        mode: "figures",
+        status: "no_figures",
+        query,
+        figures: [],
+        artifacts: [],
+        warnings: [
+          "Figure selection is unresolved. Prepare semantic figure intent before extracting crops.",
+        ],
+      };
+    const figures: Array<
+      ExtractedPdfFigure & {
+        paperContext: NonNullable<PdfTarget["paperContext"]>;
+        pageIndex: number;
+        sourceFingerprint: string;
+        documentAsset?: PlanDocumentAsset;
+      }
+    > = [];
     const artifacts: AgentToolArtifact[] = [];
     const warnings: string[] = [];
     const expectedFigures: ExpectedPdfFigure[] = [];
@@ -551,6 +538,45 @@ export class PdfFigureExtractionService {
         : null;
       const manifestHash = buildPdfFigureCropManifestHash(manifest);
       const pdfFingerprint = buildPdfFigureCropPdfFingerprint(paperContext);
+      const recordFigures = async (rows: ExtractedPdfFigure[]) => {
+        let sourceFingerprint = pdfFingerprint;
+        const needsDocumentAssets =
+          params.context.request.documentOutcomePolicy?.required;
+        if (needsDocumentAssets && rows.length) {
+          const attachment = Zotero.Items.get(attachmentId);
+          const sourcePath = await attachment?.getFilePathAsync();
+          if (!sourcePath)
+            throw new Error("The figure source PDF is unavailable");
+          const io = (
+            globalThis as unknown as {
+              IOUtils: { read: (path: string) => Promise<Uint8Array> };
+            }
+          ).IOUtils;
+          sourceFingerprint = `sha256:${await sha256Bytes(await io.read(sourcePath))}`;
+        }
+        for (const figure of rows) {
+          const documentAsset = needsDocumentAssets
+            ? await describeDocumentFigure(
+                figure,
+                paperContext,
+                sourceFingerprint,
+              )
+            : undefined;
+          figures.push({
+            ...figure,
+            paperContext,
+            pageIndex: figure.pageNumber - 1,
+            sourceFingerprint,
+            ...(documentAsset ? { documentAsset } : {}),
+          });
+          artifacts.push({
+            ...artifactForFigure(figure, paperContext),
+            ...(documentAsset
+              ? { contentHash: documentAsset.contentHash }
+              : {}),
+          });
+        }
+      };
       const cached = await readVerifiedCachedFigures({
         cacheDir: figureCacheDir,
         attachmentId,
@@ -558,16 +584,14 @@ export class PdfFigureExtractionService {
         manifestHash,
         pdfFingerprint,
         paperContext,
-        query,
+        selection,
+        includeSupplementary: selection.includeSupplementary,
         pages: params.input.pages,
       });
       if (cached) {
         expectedFigures.push(...cached.expectedFigures);
         missingFigures.push(...cached.missingFigures);
-        for (const figure of cached.figures) {
-          figures.push(figure);
-          artifacts.push(artifactForFigure(figure, paperContext));
-        }
+        await recordFigures(cached.figures);
         continue;
       }
       const pageService = this.pdfPageService as FigureCropPageService;
@@ -585,10 +609,7 @@ export class PdfFigureExtractionService {
         missingFigures.push(...rawMissingFigures);
         if (result.warnings?.length) warnings.push(...result.warnings);
         if (!rawFigures.length) return false;
-        for (const figure of rawFigures) {
-          figures.push(figure);
-          artifacts.push(artifactForFigure(figure, paperContext));
-        }
+        await recordFigures(rawFigures);
         await writePdfFigureCropCacheToDir(figureCacheDir, {
           version: PDF_FIGURE_CROP_CACHE_VERSION,
           attachmentId,
@@ -630,6 +651,7 @@ export class PdfFigureExtractionService {
             paperContext,
             figureCacheDir,
             ...(mineruCacheDir ? { mineruCacheDir } : {}),
+            selection,
             query,
             pages: params.input.pages,
             dpi: 216,
@@ -680,7 +702,7 @@ export class PdfFigureExtractionService {
       guidance: figures.length
         ? missingFigures.length
           ? "Figure extraction returned partial results. Use the returned PDF crop paths only, state any missing crops plainly, and do not embed MinerU source image paths."
-          : "Figure extraction succeeded. Use the returned cropPath values for figure analysis and figure notes; do not call paper_read again for the same figure and do not embed MinerU source image paths."
+          : "Figure extraction succeeded. Use the returned cropPath values for figure analysis and figure notes; do not call paper_read again for the same figure and do not embed MinerU source image paths. For submit_document, copy each chosen figure's documentAsset object into assets; the host displays those figures and captions. Do not put image paths in the document Markdown."
         : "No extracted figure crop was produced; switch to text-only mode for analysis, note taking, and follow-up artifacts: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders. Explicitly state that figure extraction failed or no extracted crops are available, and that explanations are based on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected.",
       figures,
       artifacts,

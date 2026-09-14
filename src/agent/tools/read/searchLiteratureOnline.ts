@@ -1,11 +1,18 @@
 import type { PaperContextRef } from "../../../shared/types";
 import type {
   AgentRuntimeRequest,
+  AgentToolContext,
   AgentToolDefinition,
   AgentTraceDetail,
 } from "../../types";
 import { LiteratureSearchService } from "../../services/literatureSearchService";
+import { identifyLiteratureCandidates } from "../../services/literatureDiscovery";
+import {
+  isExplicitLiteratureImport,
+  isLiteratureDiscovery,
+} from "../../model/literatureIntent";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   createSearchLiteratureReviewAction,
   resolveSearchLiteratureReview,
@@ -28,6 +35,9 @@ type SearchLiteratureOnlineMode =
 
 type SearchLiteratureOnlineWorkflow = "answer" | "review";
 
+export const LITERATURE_WORKFLOW_GUIDANCE =
+  "Use literature_search to retrieve scholarly candidates, not to present a raw result pool. When the user only asks to find/recommend relevant papers, read the current paper, search and assess titles/abstracts, then call literature_review with the requested number (five when unspecified) of ranked candidate references and short evidence-based relevance reasons. Search further if results are weak; never pad a shortlist. Respect explicit references/citations/source constraints. A Find more continuation requests another batch of the original size: assess unused saved candidates first, then search further as needed, and submit only new candidates with the provided sessionId and revision. The paper-only import-selection card is required in Safe, Auto and YOLO, and discovery never imports silently. Explicit import requests instead use workflow:'answer' to gather and rank candidates, skip existing duplicates, then call library_import for exactly the requested number and destination. Central mutation authorization handles Safe confirmation and direct Auto/YOLO execution. Do not substitute a discovery card for an explicit import. Use workflow:'answer' for evidence supporting an answer/review document; only metadata review continues to use workflow:'review', mode:'metadata'.";
+
 type SearchLiteratureOnlineInput = {
   workflow: SearchLiteratureOnlineWorkflow;
   mode: SearchLiteratureOnlineMode;
@@ -43,17 +53,14 @@ type SearchLiteratureOnlineInput = {
   libraryID?: number;
 };
 
-const LITERATURE_SEARCH_FALLBACK_PATTERN =
-  /\b(?:(?:related|similar)\s+(?:papers?|studies|articles?)|(?:find|discover|recommend|search|look up)(?:\s+\S+){0,8}\s+(?:papers?|studies|scholarly articles?|academic literature|research literature)|(?:search|review)\s+(?:the\s+)?literature|literature search|scholarly search|citations?|references?|papers?\s+(?:by|from)|publications?\s+(?:by|from)|doi|arxiv)\b/i;
-
 export function matchesLiteratureSearchGuidance(
-  request: Pick<AgentRuntimeRequest, "userText" | "classifiedIntent">,
+  request: Pick<AgentRuntimeRequest, "classifiedIntent">,
 ): boolean {
   const intent = request.classifiedIntent?.externalSearchIntent;
   if (intent !== undefined) {
     return intent === "literature" || intent === "both";
   }
-  return LITERATURE_SEARCH_FALLBACK_PATTERN.test(request.userText || "");
+  return false;
 }
 
 function readTraceString(value: unknown): string | undefined {
@@ -166,7 +173,7 @@ export function createSearchLiteratureOnlineTool(
     spec: {
       name: "search_literature_online",
       description:
-        "Search live scholarly sources or fetch canonical external metadata. Use workflow:'answer' to gather scholarly results for chat answers, or workflow:'review' for Zotero import/review-card workflows.",
+        "Search scholarly sources and return saved candidate references for ranking. Use literature_review afterward for discovery selection, or library_import directly for an explicit import request. Metadata review uses workflow:'review', mode:'metadata'.",
       inputSchema: {
         type: "object",
         required: ["mode"],
@@ -176,7 +183,7 @@ export function createSearchLiteratureOnlineTool(
             type: "string",
             enum: ["answer", "review"],
             description:
-              "answer returns scholarly search results directly to the model for source-cited answers. review opens the Zotero review card for importing papers, saving notes, refining searches, or applying metadata.",
+              "answer returns scholarly evidence. review marks discovery candidates for subsequent ranking and literature_review; only mode:'metadata' opens review immediately.",
           },
           mode: {
             type: "string",
@@ -209,13 +216,13 @@ export function createSearchLiteratureOnlineTool(
           libraryID: { type: "number" },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
     guidance: {
       matches: matchesLiteratureSearchGuidance,
       instruction:
-        "When the request needs external scholarly evidence, use search_literature_online with workflow:'answer' by default so the model can answer from scholarly results and cite sources. A mixed request may also use web_search for distinct general-web evidence. Use workflow:'review' only when the user wants to import/add papers to Zotero, save selected search results to a note, refine results inside the card, or review metadata changes. Do not use this tool for questions about the content of papers already in context (e.g. counting references, summarizing, explaining). Preserve the user's language by default." +
+        LITERATURE_WORKFLOW_GUIDANCE +
         "\n\nSource selection:" +
         "\n• recommendations, references, citations modes → always use source:'openalex' (only OpenAlex supports these)." +
         "\n• search mode → source:'openalex' (default, broadest coverage), source:'arxiv' (preprints, CS/ML/physics), or source:'europepmc' (biomedical/life sciences)." +
@@ -350,18 +357,34 @@ export function createSearchLiteratureOnlineTool(
         libraryID: normalizePositiveInt(args.libraryID),
       });
     },
+    planInvocation: (input) =>
+      readOnlyInvocationPlan({
+        domains: ["network"],
+        effects: ["read", "egress"],
+        targets: input.query ? [input.query] : [],
+        reason:
+          "The literature provider receives the query and returns public metadata without changing Zotero.",
+      }),
     execute: async (input, context) => {
       const results = await service.execute(input, context);
-      return {
-        workflow: input.workflow,
+      const content = {
+        workflow: input.mode === "metadata" ? input.workflow : "answer",
         mode: input.mode,
         ...((results && typeof results === "object"
           ? results
           : { results }) as object),
       };
+      if (input.mode === "metadata") return content;
+      return identifyLiteratureCandidates(
+        content,
+        context,
+        !isExplicitLiteratureImport(context.request) &&
+          (isLiteratureDiscovery(context.request) ||
+            input.workflow === "review"),
+      );
     },
     createResultReviewAction: (input, result, context) =>
-      input.workflow === "review"
+      input.mode === "metadata" && input.workflow === "review"
         ? createSearchLiteratureReviewAction(result, context, input)
         : null,
     resolveResultReview: (input, result, resolution, context) =>

@@ -98,6 +98,7 @@ import {
   initConversationCleanupJobs,
   type ConversationCleanupProviderScope,
 } from "./conversationCleanupJobs";
+import { copyPlanDocumentOwnersForFork } from "../../agent/documents/store";
 
 export type ConversationCatalogKind = "global" | "paper";
 
@@ -1008,6 +1009,35 @@ export const conversationRepository = {
         await cleanupForkEntry();
         return null;
       }
+      const [sourceMessages, targetMessages] = await Promise.all([
+        conversationRepository.loadMessages({
+          system: params.system,
+          conversationKey: sourceConversationKey,
+          limit: 10_000,
+        }),
+        conversationRepository.loadMessages({
+          system: params.system,
+          conversationKey: entry.conversationKey,
+          limit: 10_000,
+        }),
+      ]);
+      const sourceAssistantTimestamps = sourceMessages
+        .filter(
+          (message) =>
+            message.role === "assistant" &&
+            message.timestamp <= throughAssistantTimestamp,
+        )
+        .map((message) => message.timestamp);
+      const targetAssistantTimestamps = targetMessages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.timestamp);
+      await copyPlanDocumentOwnersForFork({
+        sourceConversationKey,
+        targetConversationKey: entry.conversationKey,
+        throughAssistantTimestamp,
+        sourceAssistantTimestamps,
+        targetAssistantTimestamps,
+      });
 
       const titleSeed =
         normalizeTitle(params.title) ||

@@ -2,11 +2,12 @@ import { usesMaxCompletionTokens } from "../../utils/apiHelpers";
 import {
   buildReasoningPayload,
   buildPromptCachePayloadHints,
-  normalizeMaxTokensForRequest,
+  normalizeProviderCompletion,
   postWithReasoningFallback,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
 import { normalizeTemperature } from "../../utils/normalization";
+import { detectProviderPreset } from "../../utils/providerPresets";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
 import { extractContextCacheUsage } from "../../contextCache/manager";
 import type {
@@ -15,6 +16,7 @@ import type {
   AgentModelStep,
   AgentRuntimeRequest,
   AgentToolCall,
+  ToolSpec,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import { buildAgentModelCapabilities } from "./contentCapabilities";
@@ -25,8 +27,15 @@ import {
   parseToolCallArguments,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
+import { resolveAgentTransmittedOutputPolicy } from "./limits";
+import { estimateWirePayloadTokens } from "../../utils/modelInputCap";
+import {
+  buildAgentRecoveryInstruction,
+  resolveAgentRecoverableCompletion,
+} from "./completion";
 
 type ChatCompletionChoice = {
+  finish_reason?: string | null;
   message?: {
     content?: string | null;
     reasoning_content?: string | null;
@@ -81,6 +90,231 @@ function isToolCapableApiBase(request: AgentRuntimeRequest): boolean {
   if (!apiBase) return false;
   if (request.authMode === "codex_auth") return false;
   return true;
+}
+
+const KIMI_JSON_SCHEMA_KEYWORDS = new Set([
+  "$id",
+  "$defs",
+  "$ref",
+  "type",
+  "properties",
+  "required",
+  "additionalProperties",
+  "anyOf",
+  "items",
+  "enum",
+  "maximum",
+  "minimum",
+  "maxLength",
+  "minLength",
+  "maxItems",
+  "minItems",
+  "title",
+  "description",
+  "default",
+]);
+
+const KIMI_JSON_TYPES = [
+  "null",
+  "boolean",
+  "object",
+  "array",
+  "number",
+  "integer",
+  "string",
+] as const;
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => cloneJsonValue(entry));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      cloneJsonValue(entry),
+    ]),
+  );
+}
+
+function mergeKimiAnyOfBranch(
+  constraints: Record<string, unknown>,
+  variant: unknown,
+): unknown {
+  if (!variant || typeof variant !== "object" || Array.isArray(variant)) {
+    return variant;
+  }
+  const branch = variant as Record<string, unknown>;
+  const merged = {
+    ...constraints,
+    ...branch,
+  };
+  if (
+    constraints.properties &&
+    typeof constraints.properties === "object" &&
+    !Array.isArray(constraints.properties) &&
+    branch.properties &&
+    typeof branch.properties === "object" &&
+    !Array.isArray(branch.properties)
+  ) {
+    merged.properties = {
+      ...(constraints.properties as Record<string, unknown>),
+      ...(branch.properties as Record<string, unknown>),
+    };
+  }
+  if (Array.isArray(constraints.required) && Array.isArray(branch.required)) {
+    merged.required = Array.from(
+      new Set([...constraints.required, ...branch.required]),
+    );
+  }
+  return merged;
+}
+
+function inferKimiJsonSchemaType(
+  schema: Record<string, unknown>,
+): (typeof KIMI_JSON_TYPES)[number] | undefined {
+  if (
+    schema.properties !== undefined ||
+    schema.required !== undefined ||
+    schema.additionalProperties !== undefined
+  ) {
+    return "object";
+  }
+  if (
+    schema.items !== undefined ||
+    schema.minItems !== undefined ||
+    schema.maxItems !== undefined
+  ) {
+    return "array";
+  }
+  if (schema.minLength !== undefined || schema.maxLength !== undefined) {
+    return "string";
+  }
+  if (schema.minimum !== undefined || schema.maximum !== undefined) {
+    return "number";
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length) {
+    const types = new Set(
+      schema.enum.map((value) =>
+        value === null
+          ? "null"
+          : typeof value === "number"
+            ? "number"
+            : typeof value,
+      ),
+    );
+    const [type] = types;
+    if (
+      types.size === 1 &&
+      KIMI_JSON_TYPES.includes(type as (typeof KIMI_JSON_TYPES)[number])
+    ) {
+      return type as (typeof KIMI_JSON_TYPES)[number];
+    }
+  }
+  return undefined;
+}
+
+function normalizeKimiJsonSchema(schema: unknown, isRoot = true): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return cloneJsonValue(schema);
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(
+    schema as Record<string, unknown>,
+  )) {
+    if (!KIMI_JSON_SCHEMA_KEYWORDS.has(key)) continue;
+    if ((key === "$id" || key === "$defs") && !isRoot) continue;
+    if (key === "properties" || key === "$defs") {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        normalized[key] = cloneJsonValue(value);
+        continue;
+      }
+      normalized[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(
+          ([name, childSchema]) => [
+            name,
+            normalizeKimiJsonSchema(childSchema, false),
+          ],
+        ),
+      );
+      continue;
+    }
+    if (key === "anyOf" && Array.isArray(value)) {
+      normalized.anyOf = value.map((variant) =>
+        normalizeKimiJsonSchema(variant, false),
+      );
+      continue;
+    }
+    if (
+      key === "items" ||
+      (key === "additionalProperties" &&
+        value !== null &&
+        typeof value === "object")
+    ) {
+      normalized[key] = normalizeKimiJsonSchema(value, false);
+      continue;
+    }
+    normalized[key] = cloneJsonValue(value);
+  }
+
+  if (
+    !Array.isArray(normalized.anyOf) &&
+    normalized.type === undefined &&
+    normalized.$ref === undefined
+  ) {
+    const inferredType = inferKimiJsonSchemaType(normalized);
+    if (inferredType) return { type: inferredType, ...normalized };
+    const { description, title } = normalized;
+    return {
+      ...(description !== undefined ? { description } : {}),
+      ...(title !== undefined ? { title } : {}),
+      anyOf: KIMI_JSON_TYPES.map((type) => ({ type })),
+    };
+  }
+
+  if (!Array.isArray(normalized.anyOf)) return normalized;
+
+  const outer: Record<string, unknown> = {};
+  const constraints: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(normalized)) {
+    if (key === "anyOf") continue;
+    if (
+      key === "description" ||
+      key === "title" ||
+      key === "$id" ||
+      key === "$defs"
+    ) {
+      outer[key] = value;
+    } else {
+      constraints[key] = value;
+    }
+  }
+
+  return {
+    ...outer,
+    anyOf: normalized.anyOf.map((variant) =>
+      normalizeKimiJsonSchema(
+        mergeKimiAnyOfBranch(constraints, variant),
+        false,
+      ),
+    ),
+  };
+}
+
+function buildProviderFunctionTools(
+  request: AgentRuntimeRequest,
+  tools: ToolSpec[],
+) {
+  const serializedTools = buildOpenAIFunctionTools(tools);
+  if (detectProviderPreset(request.apiBase || "") !== "kimi") {
+    return serializedTools;
+  }
+  return serializedTools.map((tool) => ({
+    ...tool,
+    function: {
+      ...tool.function,
+      parameters: normalizeKimiJsonSchema(tool.function.parameters) as object,
+    },
+  }));
 }
 
 function hasPdfFileRef(message: AgentModelMessage): boolean {
@@ -241,6 +475,7 @@ async function parseOpenAIChatCompletionStream(
   toolCalls: AgentToolCall[];
   reasoningText: string;
   reasoningContentText: string;
+  finishReason?: string;
 }> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder("utf-8");
@@ -248,6 +483,7 @@ async function parseOpenAIChatCompletionStream(
   let fullText = "";
   let reasoningText = "";
   let reasoningContentText = "";
+  let finishReason: string | undefined;
   const toolCallMap = new Map<number, StreamedToolCallAccumulator>();
 
   try {
@@ -292,6 +528,9 @@ async function parseOpenAIChatCompletionStream(
             }
           }
           const choice = parsed?.choices?.[0];
+          if (typeof choice?.finish_reason === "string") {
+            finishReason = choice.finish_reason;
+          }
           const delta = choice?.delta;
           if (!delta) continue;
 
@@ -362,7 +601,13 @@ async function parseOpenAIChatCompletionStream(
     });
   }
 
-  return { text: fullText, toolCalls, reasoningText, reasoningContentText };
+  return {
+    text: fullText,
+    toolCalls,
+    reasoningText,
+    reasoningContentText,
+    finishReason,
+  };
 }
 
 function isStreamingResponse(response: Response): boolean {
@@ -409,6 +654,14 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           ...(await buildMessagesPayload(params.continuationMessages || [])),
         ]
       : await buildMessagesPayload(params.messages);
+    const outputPolicy = resolveAgentTransmittedOutputPolicy(
+      request,
+      "openai_chat_compat",
+      estimateWirePayloadTokens({
+        messages: resolvedMessages,
+        tools: params.tools,
+      }),
+    );
     const response = await postWithReasoningFallback({
       url,
       auth,
@@ -427,33 +680,15 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           model: request.model,
           messages: resolvedMessages,
           ...buildPromptCachePayloadHints(request.contextCache),
-          tools: buildOpenAIFunctionTools(params.tools),
+          tools: buildProviderFunctionTools(request, params.tools),
           tool_choice: "auto",
           stream: true,
           stream_options: { include_usage: true },
-          ...(usesMaxCompletionTokens(request.model || "")
-            ? {
-                max_completion_tokens: normalizeMaxTokensForRequest({
-                  value: request.advanced?.maxTokens,
-                  maxTokensExplicit: request.advanced?.maxTokensExplicit,
-                  model: request.model || "",
-                  apiBase: request.apiBase,
-                  protocol: "openai_chat_compat",
-                  authMode: request.authMode,
-                  profileOverride: request.advanced?.profileOverride,
-                }),
-              }
-            : {
-                max_tokens: normalizeMaxTokensForRequest({
-                  value: request.advanced?.maxTokens,
-                  maxTokensExplicit: request.advanced?.maxTokensExplicit,
-                  model: request.model || "",
-                  apiBase: request.apiBase,
-                  protocol: "openai_chat_compat",
-                  authMode: request.authMode,
-                  profileOverride: request.advanced?.profileOverride,
-                }),
-              }),
+          ...(outputPolicy.mode === "numeric"
+            ? usesMaxCompletionTokens(request.model || "")
+              ? { max_completion_tokens: outputPolicy.tokens }
+              : { max_tokens: outputPolicy.tokens }
+            : {}),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
             ? {}
@@ -475,22 +710,65 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
 
     // Stream path: parse SSE and deliver text deltas progressively
     if (response.body && isStreamingResponse(response)) {
-      const result = await parseOpenAIChatCompletionStream(
-        response.body,
-        params.onTextDelta,
-        params.onReasoning,
-        params.onUsage,
-      );
+      let result: Awaited<ReturnType<typeof parseOpenAIChatCompletionStream>>;
+      try {
+        result = await parseOpenAIChatCompletionStream(
+          response.body,
+          params.onTextDelta,
+          params.onReasoning,
+          params.onUsage,
+        );
+      } catch (error) {
+        // This adapter executes no tools while parsing. A broken stream can
+        // safely retry the unfinished model step, never its partial calls.
+        if (
+          params.signal?.aborted ||
+          !/^(?:Error: )?Error in input stream$/.test(String(error))
+        )
+          throw error;
+        const assistantMessage = { role: "assistant" as const, content: "" };
+        this.conversationMessages = [...resolvedMessages, assistantMessage];
+        return {
+          kind: "incomplete",
+          reason: "stream_interrupted",
+          text: "",
+          recoveryInstruction: buildAgentRecoveryInstruction(
+            "stream_interrupted",
+            "tool call",
+          ),
+          assistantMessage,
+        };
+      }
+      const completion = normalizeProviderCompletion(result.finishReason);
+      const recoveryReason = resolveAgentRecoverableCompletion(completion);
       this.conversationMessages = [
         ...resolvedMessages,
-        buildNativeAssistantMessage({
-          modelName: request.model,
-          text: result.text,
-          reasoningText: result.reasoningText,
-          reasoningContentText: result.reasoningContentText,
-          toolCalls: result.toolCalls,
-        }),
+        recoveryReason
+          ? { role: "assistant", content: result.text }
+          : buildNativeAssistantMessage({
+              modelName: request.model,
+              text: result.text,
+              reasoningText: result.reasoningText,
+              reasoningContentText: result.reasoningContentText,
+              toolCalls: result.toolCalls,
+            }),
       ];
+      if (recoveryReason) {
+        return {
+          kind: "incomplete",
+          reason: recoveryReason,
+          providerReason: completion.providerReason,
+          text: result.text,
+          recoveryInstruction: buildAgentRecoveryInstruction(
+            recoveryReason,
+            "tool call",
+          ),
+          assistantMessage: {
+            role: "assistant",
+            content: result.text,
+          },
+        };
+      }
       if (result.toolCalls.length) {
         return {
           kind: "tool_calls",
@@ -542,6 +820,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
       }
     }
     const message = data.choices?.[0]?.message;
+    const finishReason = data.choices?.[0]?.finish_reason;
     const reasoningContentText =
       typeof message?.reasoning_content === "string"
         ? message.reasoning_content
@@ -553,16 +832,36 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     }
     const toolCalls = normalizeToolCalls(message?.tool_calls);
     const text = typeof message?.content === "string" ? message.content : "";
+    const completion = normalizeProviderCompletion(finishReason);
+    const recoveryReason = resolveAgentRecoverableCompletion(completion);
     this.conversationMessages = [
       ...resolvedMessages,
-      buildNativeAssistantMessage({
-        modelName: request.model,
-        text,
-        reasoningText,
-        reasoningContentText,
-        toolCalls,
-      }),
+      recoveryReason
+        ? { role: "assistant", content: text }
+        : buildNativeAssistantMessage({
+            modelName: request.model,
+            text,
+            reasoningText,
+            reasoningContentText,
+            toolCalls,
+          }),
     ];
+    if (recoveryReason) {
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: completion.providerReason,
+        text,
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: {
+          role: "assistant",
+          content: text,
+        },
+      };
+    }
     if (toolCalls.length) {
       return {
         kind: "tool_calls",

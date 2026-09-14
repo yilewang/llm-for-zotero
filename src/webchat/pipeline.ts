@@ -4,7 +4,7 @@
  * Unlike the normal LLM pipeline, this:
  *   - Attaches the exact selected PDF when `sendPdf` is true (controlled by chip state)
  *   - Sends only the raw question text (no system messages, no history)
- *   - Submits via the embedded Zotero relay → Chrome extension → ChatGPT.com
+ *   - Submits via the embedded Zotero relay → Chrome extension → provider site
  */
 
 import { readLocalFileBytes } from "../utils/llmClient";
@@ -150,8 +150,11 @@ export type WebChatSendOptions = {
   images?: string[];
   /** ChatGPT mode: "instant", "thinking_standard", or "thinking_extended". */
   chatgptMode?: string;
-  /** Which webchat target to use: "chatgpt" | "deepseek". */
+  /** Which registered webchat target to use. */
   target?: string;
+  /** Existing remote conversation that a follow-up must remain bound to. */
+  expectedChatUrl?: string | null;
+  expectedChatId?: string | null;
   signal?: AbortSignal;
   onAnswerSnapshot: (text: string, snapshot: WebChatAnswerSnapshot) => void;
   onThinkingSnapshot?: (
@@ -160,8 +163,26 @@ export type WebChatSendOptions = {
   ) => void;
 };
 
+export function selectWebChatExpectedConversation(input: {
+  explicitUrl?: string;
+  explicitId?: string;
+  historicalUrl?: string;
+  historicalId?: string;
+}): { expectedChatUrl?: string; expectedChatId?: string } {
+  if (input.explicitUrl || input.explicitId) {
+    return {
+      expectedChatUrl: input.explicitUrl,
+      expectedChatId: input.explicitId,
+    };
+  }
+  return {
+    expectedChatUrl: input.historicalUrl,
+    expectedChatId: input.historicalId,
+  };
+}
+
 /**
- * Send a question to ChatGPT via the embedded Zotero relay.
+ * Send a question to a registered web provider via the embedded Zotero relay.
  * Attaches the exact selected paper PDF only when `sendPdf` is true.
  * The caller determines whether to send PDF based on the paper chip state.
  *
@@ -179,6 +200,8 @@ export async function sendWebChatQuestion(
     images,
     chatgptMode,
     target,
+    expectedChatUrl,
+    expectedChatId,
     signal,
     onAnswerSnapshot,
     onThinkingSnapshot,
@@ -232,6 +255,8 @@ export async function sendWebChatQuestion(
     chatgptMode,
     forceNewChat,
     target,
+    expectedChatUrl,
+    expectedChatId,
   );
 
   // --- Poll for streaming response ---

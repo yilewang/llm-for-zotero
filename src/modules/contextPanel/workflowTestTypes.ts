@@ -41,12 +41,41 @@ export type WorkflowTestRuntimeSystemToggle = {
   ariaPressed: boolean;
 };
 
+export type WorkflowTestPermissionSurfaceDiagnostics = {
+  provider: ConversationSystem | null;
+  visible: boolean;
+  compactLabel: string;
+  accessibleName: string;
+  disabled: boolean;
+  expanded: boolean;
+  menuVisible: boolean;
+  rows: Array<{
+    id: string;
+    label: string;
+    level: string;
+    risk: string;
+    disabled: boolean;
+    accessibleName: string;
+  }>;
+};
+
+export type WorkflowTestConfirmationDialogDiagnostics = {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  destructive: boolean;
+};
+
 export type WorkflowTestDuplicatePanelSetupDiagnostics = {
   samePanelRoot: boolean;
   initializationGenerationBefore: string;
   initializationGenerationAfter: string;
   panelStateSyncBefore: boolean;
   panelStateSyncAfter: boolean;
+  turnNavigatorCountBefore: number;
+  turnNavigatorCountAfter: number;
 };
 
 export type WorkflowTestDraftRefreshDiagnostics = {
@@ -126,6 +155,20 @@ export type WorkflowTestRuntimeGeometry = {
   centeredContentOffset: number;
 };
 
+export type WorkflowTestFooterLayout = {
+  statusHeight: number;
+  statusLineHeight: number;
+  statusTop: number;
+  controlsTop: number;
+  statusTextTop: number;
+  permissionTextTop: number;
+  statusTextBottom: number;
+  permissionTextBottom: number;
+  statusWrapped: boolean;
+  controlsPinnedToFirstLine: boolean;
+  textGlyphsAligned: boolean;
+};
+
 export type WorkflowTestStandaloneComposerResizeDiagnostics = {
   heightBeforeDrag: number;
   heightAfterDrag: number;
@@ -155,8 +198,21 @@ export type WorkflowTestDiagnostics = {
   historyNewVisible?: boolean;
   historyToggleVisible?: boolean;
   runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
+  webChatMode?: boolean;
+  modelButtonDisabled?: boolean;
   inputValue?: string;
   statusText?: string;
+  startPageActive?: boolean;
+  statusBarVisible?: boolean;
+  permissionControlVisible?: boolean;
+  permissionModeText?: string;
+  permissionModeFontSize?: string;
+  statusFontSize?: string;
+  contextGaugeWidth?: number;
+  contextGaugeHeight?: number;
+  contextGaugeInnerWidth?: number;
+  contextGaugeInnerBackground?: string;
+  panelBackground?: string;
   tokenUsageText?: string;
   messageText?: string;
   lastSend: SendQuestionOptions | null;
@@ -182,10 +238,52 @@ export type WorkflowTestTargetedQuoteRefreshResult = {
   targetWasReplaced: boolean;
   targetNotSourceCardCount: number;
   targetStrongBodyCount: number;
+  /**
+   * Probe for the reader's view: a quote card expanded in a later message must
+   * survive a targeted re-render that also changes the height of an earlier
+   * message, and it must stay where the reader left it in the viewport.
+   */
+  scrollStability: {
+    chatBoxScrollable: boolean;
+    earlierWrapperHeightDelta: number;
+    expandedBeforeRerender: boolean;
+    expandedAfterRerender: boolean;
+    expandedBodyTextAfterRerender: string;
+    /** Cards in the expanded message that share the clicked card's citation id. */
+    sameCitationCards: number;
+    /** How far the card moved between the reader's scroll and the next frames, before any click. */
+    settleDrift: number;
+    cardTopDelta: number;
+    scrollTopDelta: number;
+    diagnostics: Record<string, unknown>;
+  };
 };
 
 export type WorkflowTestStandaloneDiagnostics = {
   activeTab?: "paper" | "open" | null;
+  sidebarState?: "expanded" | "collapsed";
+  customTitlebar: boolean;
+  collapseToggleHost?: "sidebar-header" | "tab-row";
+  sidebarWidthPx?: number;
+  sidebarFlyout?: "open" | "closed";
+  sidebarPanelWidthPx?: number;
+  sidebarPanelOpacity?: number;
+  sidebarContent?: {
+    labels: Array<{ text: string; width: number; opacity: number }>;
+    historyHeight: number;
+    historyText: string;
+    actionWidths: number[];
+  };
+  windowButtonsWidthPx?: number;
+  sidebarActionOrder: string[];
+  sidebarPrimaryActionOrder: string[];
+  titleActionLabels: string[];
+  alignment?: {
+    toolbarCenterDeltaPx: number;
+    titleCenterDeltaPx: number;
+    toolbarControlCenterDeltaPx: number;
+    titleTextCenterDeltaPx: number;
+  };
   conversationKey?: number;
   activeItemId?: number;
   rawContextItemId?: number;
@@ -307,8 +405,26 @@ export type WorkflowTestStaleAgentTraceIsolationResult = {
   paperBMessageRowsAfterPaperBAppend: number;
 };
 
+export type WorkflowTestCrossPaperHistoryIsolationResult = {
+  paperAConversationKey: number;
+  paperBConversationKey: number;
+  selectedLibraryItemID: number;
+  foreignMutationObserved: boolean;
+  panelAConversationKey: number;
+  panelABasePaperItemID: number;
+  panelARawContextItemID: number;
+  panelAMessageText: string;
+  requestConversationKey: number;
+  requestItemID: number;
+  addTextStoredForA: boolean;
+  addTextStoredForB: boolean;
+  paperBMessageRowsBefore: number;
+  paperBMessageRowsAfter: number;
+};
+
 export type WorkflowTestApi = {
   reset: () => Promise<void>;
+  enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {
     title: string;
     pdfTitle: string;
@@ -332,6 +448,19 @@ export type WorkflowTestApi = {
     paperBAppendMarker: string;
     runId: string;
   }) => Promise<WorkflowTestStaleAgentTraceIsolationResult>;
+  exerciseCrossPaperHistoryReturnIsolation: (input: {
+    panelAId: string;
+    panelBId: string;
+    paperAItemId: number;
+    paperAAttachmentItemId: number;
+    paperBItemId: number;
+    paperAMarker: string;
+    paperBMarker: string;
+    promptMarker: string;
+    selectedText: string;
+    activation?: "pointer" | "keyboard" | "history-row";
+    delaySelection?: boolean;
+  }) => Promise<WorkflowTestCrossPaperHistoryIsolationResult>;
   createStandaloneAttachmentFixture: (input: {
     title: string;
     filename: string;
@@ -347,6 +476,37 @@ export type WorkflowTestApi = {
     noteHtml: string;
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  exerciseNativePlanReview: typeof import("./nativePlanReviewReplay").exerciseNativePlanReview;
+  exerciseNativeQuestionReview: (
+    panelId: string,
+  ) => ReturnType<
+    typeof import("./nativePlanReviewReplay").exerciseNativeQuestionReview
+  >;
+  exercisePlanHistoryReplay: (input: {
+    panelId: string;
+    historyTurns: number;
+  }) => Promise<
+    Awaited<
+      ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
+    >
+  >;
+  exerciseStreamingReplay: (input: {
+    panelId: string;
+    historyTurns: number;
+    chunks: number;
+  }) => Promise<import("./streamingReplay").StreamingReplayResult>;
+  exerciseBackgroundAgentPublication: (input: {
+    panelId: string;
+    paperBItemId: number;
+    invalidateConversation?: boolean;
+  }) => Promise<{
+    sourceConversationKey: number;
+    otherConversationKey: number;
+    persistedConversationKeys: number[];
+    exactMarkdown: boolean;
+    outboxStatus?: string;
+    otherPanelContainsDocument: boolean;
+  }>;
   renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   startNewPanelConversation: (
     panelId: string,
@@ -358,10 +518,35 @@ export type WorkflowTestApi = {
   exerciseDuplicatePanelSetup: (
     panelId: string,
   ) => Promise<WorkflowTestDuplicatePanelSetupDiagnostics>;
+  exerciseRebuiltPanelPlanApproval: (panelId: string) => Promise<{
+    sendsAfterApproval: number;
+    queuedAfterApproval: number;
+    sendsAfterDispose: number;
+  }>;
+  /** Approve a reviewable plan the way the review card does and start its execution. */
+  approvePlanForExecution: (input: {
+    planId: string;
+    revision: number;
+    expectedDigest?: string;
+  }) => Promise<{
+    executionId: string;
+    planDigest: string;
+    activeTaskId?: string;
+    provider: "original" | "codex" | "claude";
+  }>;
+  /** Flight 0: the research quality report and run timings for one execution. */
+  researchFlightReport: (input: { executionId: string }) => Promise<{
+    report: import("../../agent/research/flightReport").ResearchFlightReport;
+    rendered: string;
+  }>;
   exercisePanelDraftStateRefresh: (
     panelId: string,
     text: string,
   ) => Promise<WorkflowTestDraftRefreshDiagnostics>;
+  selectPanelModelEntry: (
+    panelId: string,
+    entryId: string,
+  ) => Promise<WorkflowTestDiagnostics>;
   exerciseWebChatPdfToggleWorkflow: (
     panelId: string,
     mirrorPanelId?: string,
@@ -401,6 +586,10 @@ export type WorkflowTestApi = {
     panelId: string,
     input: { width: number; fontScale: number },
   ) => Promise<WorkflowTestRuntimeGeometry>;
+  measurePanelFooterLayout: (
+    panelId: string,
+    input: { width: number; statusText: string },
+  ) => Promise<WorkflowTestFooterLayout>;
   selectNoteEditorText: (panelId: string, text: string) => Promise<void>;
   ask: (panelId: string, text: string) => Promise<SendQuestionOptions>;
   renderAssistantForPanel: (
@@ -410,6 +599,28 @@ export type WorkflowTestApi = {
       quoteCitations?: QuoteCitation[];
     },
   ) => Promise<WorkflowTestAssistantRenderResult>;
+  renderDocumentForPanel: (
+    panelId: string,
+    document: import("../../agent/documents/types").PlanDocument,
+    openLargerView: boolean,
+  ) => boolean;
+  renderToolResultForPanel: (
+    panelId: string,
+    result: import("../../agent/types").AgentToolResult,
+    options?: {
+      priorResults?: import("../../agent/types").AgentToolResult[];
+      documentId?: string;
+      userText?: string;
+      actionContract?: import("../../agent/types").AgentActionContract;
+    },
+  ) => HTMLElement | null;
+  renderPendingActionForPanel: (
+    panelId: string,
+    pending: {
+      requestId: string;
+      action: import("../../agent/types").AgentPendingAction;
+    },
+  ) => Promise<import("../../agent/types").AgentConfirmationResolution>;
   exerciseTargetedQuoteRefresh: (
     panelId: string,
   ) => Promise<WorkflowTestTargetedQuoteRefreshResult>;
@@ -420,6 +631,8 @@ export type WorkflowTestApi = {
   clickStandaloneTab: (
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  toggleStandaloneSidebar: () => Promise<WorkflowTestStandaloneDiagnostics>;
+  hoverStandaloneSidebarToggle: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneSystemToggle: (
     system: RuntimeConversationSystem,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
@@ -432,6 +645,8 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestRuntimeGeometry>;
   exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  startNewStandaloneConversation: () => Promise<WorkflowTestStandaloneDiagnostics>;
+  clickStandaloneReasoningOption: (label: string) => Promise<void>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (
     text: string,
@@ -448,6 +663,18 @@ export type WorkflowTestApi = {
     height: number,
   ) => Promise<{ innerWidth: number; innerHeight: number }>;
   captureStandaloneScreenshot: (filePath: string) => Promise<string>;
+  observeCitationNavigationFocus: (
+    button: HTMLElement,
+    options?: {
+      forceViewerFallbackForItemId?: number;
+      linkTargetItemId?: number;
+    },
+  ) => Promise<{
+    started: boolean;
+    finished: boolean;
+    focusRequests: number;
+    diagnostics: string[];
+  }>;
   notifyStandaloneItemChanged: (
     itemId: number | null,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
@@ -461,6 +688,30 @@ export type WorkflowTestApi = {
   closeStandalone: () => Promise<void>;
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
+  configurePermissionCatalogs: (input?: { delayFirstCodex?: boolean }) => void;
+  resolveDelayedCodexPermissionCatalog: () => Promise<void>;
+  getPanelPermissionSurface: (
+    panelId: string,
+  ) => WorkflowTestPermissionSurfaceDiagnostics;
+  clickPanelPermissionToggle: (
+    panelId: string,
+  ) => Promise<WorkflowTestPermissionSurfaceDiagnostics>;
+  clickPanelPermissionOption: (
+    panelId: string,
+    permissionId: string,
+  ) => Promise<WorkflowTestPermissionSurfaceDiagnostics>;
+  getPanelConfirmationDialog: (
+    panelId: string,
+  ) => WorkflowTestConfirmationDialogDiagnostics;
+  respondToPanelConfirmationDialog: (
+    panelId: string,
+    confirmed: boolean,
+  ) => Promise<WorkflowTestPermissionSurfaceDiagnostics>;
+  getStandalonePermissionSurface: () => WorkflowTestPermissionSurfaceDiagnostics;
+  clickStandalonePermissionToggle: () => Promise<WorkflowTestPermissionSurfaceDiagnostics>;
+  clickStandalonePermissionOption: (
+    permissionId: string,
+  ) => Promise<WorkflowTestPermissionSurfaceDiagnostics>;
   exerciseReaderSelectionTrackingRecovery: () => Promise<WorkflowTestReaderSelectionTrackingDiagnostics>;
   exerciseReaderPopupActiveTabRouting: (input: {
     firstPanelId: string;
@@ -504,6 +755,7 @@ export type WorkflowTestApi = {
     panelId: string,
     userText: string,
     assistantText: string,
+    assistant?: Partial<import("./types").Message>,
   ) => Promise<WorkflowTestSeededTurn>;
   deletePanelTurn: (
     panelId: string,

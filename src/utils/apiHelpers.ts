@@ -50,8 +50,32 @@ export function resolveOllamaNativeApiRoot(apiBase: string): string {
  * a future fallback (or a platform change) lands everywhere at once.
  */
 export function getAbortController(): typeof AbortController | undefined {
-  return (globalThis as unknown as { AbortController?: typeof AbortController })
-    .AbortController;
+  return (
+    (globalThis as unknown as { AbortController?: typeof AbortController })
+      .AbortController ||
+    (typeof ztoolkit !== "undefined"
+      ? (ztoolkit.getGlobal("AbortController") as
+          | typeof AbortController
+          | undefined)
+      : undefined) ||
+    (typeof Zotero !== "undefined"
+      ? (
+          Zotero.getMainWindow?.() as unknown as
+            | { AbortController?: typeof AbortController }
+            | undefined
+        )?.AbortController
+      : undefined)
+  );
+}
+
+/** Native request lifetimes require cancellation even in Gecko chrome scopes. */
+export function createAbortController(): AbortController {
+  const Controller = getAbortController();
+  if (!Controller)
+    throw new Error(
+      "AbortController is unavailable in this Zotero environment",
+    );
+  return new Controller();
 }
 
 // =============================================================================

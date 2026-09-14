@@ -97,6 +97,7 @@ function strictConversationSummaryRow(
     updatedAt: 200,
     title: null,
     providerSessionId: null,
+    providerPermissionState: null,
     scopedConversationKey: null,
     scopeType: null,
     scopeId: null,

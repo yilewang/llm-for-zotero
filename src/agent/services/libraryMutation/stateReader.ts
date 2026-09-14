@@ -13,6 +13,18 @@ import {
   targetItemIdsForLibraryMutation,
 } from "./handlerOperations";
 
+/** Match Zotero's save-error recovery: reload persisted data, then discard pending getter overrides. */
+async function reloadPersistedState(
+  object: Zotero.Item | Zotero.Collection | Zotero.Search | null,
+): Promise<void> {
+  const native = object as {
+    reload?: (dataTypes: undefined, reloadUnchanged: boolean) => Promise<void>;
+    _clearChanged?: () => void;
+  } | null;
+  await native?.reload?.(undefined, true);
+  native?._clearChanged?.();
+}
+
 function normalizeLibraryID(value: unknown): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
@@ -35,7 +47,7 @@ function readCollectionChildIds(
   }
 }
 
-function readSavedSearchState(savedSearchId: number) {
+async function readSavedSearchState(savedSearchId: number, reload: boolean) {
   const search = (
     Zotero as unknown as {
       Searches?: {
@@ -51,6 +63,7 @@ function readSavedSearchState(savedSearchId: number) {
     }
   ).Searches?.get?.(savedSearchId);
   if (!search) return { savedSearchId, exists: false } as const;
+  if (reload) await reloadPersistedState(search);
   let conditions: Array<Record<string, unknown>> = [];
   try {
     conditions = Object.entries(search.getConditions?.() || {})
@@ -256,6 +269,9 @@ export class MutationStateReader {
         states.push({ itemId, exists: false });
         continue;
       }
+      // A failed save can leave changed values in Zotero's object cache.
+      // Postconditions must describe persisted state, including reconciliation.
+      if (executionResult !== undefined) await reloadPersistedState(item);
       const state: MutationItemState = {
         itemId,
         exists: true,
@@ -423,34 +439,38 @@ export class MutationStateReader {
         }
       }
     }
-    const collections = [...collectionIds]
-      .sort((left, right) => left - right)
-      .map((collectionId) => {
-        const collection = this.zoteroGateway.getCollection(collectionId);
-        return collection
-          ? {
-              collectionId,
-              exists: true,
-              name: String(collection.name || ""),
-              parentCollectionId:
-                Number(collection.parentID) > 0
-                  ? Number(collection.parentID)
-                  : null,
-              deleted: Boolean(
-                (collection as Zotero.Collection & { deleted?: boolean })
-                  .deleted,
-              ),
-              directItemIds: readCollectionChildIds(
-                collection,
-                "getChildItems",
-              ),
-              childCollectionIds: readCollectionChildIds(
-                collection,
-                "getChildCollections",
-              ),
-            }
-          : { collectionId, exists: false };
-      });
+    const collections = await Promise.all(
+      [...collectionIds]
+        .sort((left, right) => left - right)
+        .map(async (collectionId) => {
+          const collection = this.zoteroGateway.getCollection(collectionId);
+          if (executionResult !== undefined)
+            await reloadPersistedState(collection);
+          return collection
+            ? {
+                collectionId,
+                exists: true,
+                name: String(collection.name || ""),
+                parentCollectionId:
+                  Number(collection.parentID) > 0
+                    ? Number(collection.parentID)
+                    : null,
+                deleted: Boolean(
+                  (collection as Zotero.Collection & { deleted?: boolean })
+                    .deleted,
+                ),
+                directItemIds: readCollectionChildIds(
+                  collection,
+                  "getChildItems",
+                ),
+                childCollectionIds: readCollectionChildIds(
+                  collection,
+                  "getChildCollections",
+                ),
+              }
+            : { collectionId, exists: false };
+        }),
+    );
 
     const savedSearchIds = new Set<number>();
     if (operation.type === "save_saved_search" && operation.savedSearchId) {
@@ -465,9 +485,11 @@ export class MutationStateReader {
     if (executionResult !== undefined) {
       createdIds.savedSearchIds.forEach((id) => savedSearchIds.add(id));
     }
-    const savedSearches = [...savedSearchIds]
-      .sort((left, right) => left - right)
-      .map(readSavedSearchState);
+    const savedSearches = await Promise.all(
+      [...savedSearchIds]
+        .sort((left, right) => left - right)
+        .map((id) => readSavedSearchState(id, executionResult !== undefined)),
+    );
 
     let libraryTags: LibraryMutationState["libraryTags"];
     if (operation.type === "update_library_tag") {

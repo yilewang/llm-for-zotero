@@ -5,14 +5,25 @@
  *
  * Uses Mozilla's Subprocess module (Gecko runtime).
  */
-import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
+import type {
+  AgentToolContext,
+  AgentToolEffect,
+  AgentWriteToolDefinition,
+} from "../../types";
+import {
+  ambiguousInvocationPlan,
+  prohibitedInvocationPlan,
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
+import type { ActionRiskSignal } from "../../authorization/types";
 import { getRuntimePlatformInfo } from "../../../utils/runtimePlatform";
 import {
   isLocalPathInsideOrEqual,
   parseNotesDirectoryWritePolicy,
 } from "../../../utils/notesDirectoryConfig";
 import { ok, fail, validateObject } from "../shared";
-import { executeExternalMutation } from "../../services/mutationCoordinator";
+import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { sha256Bytes } from "../../store/journalRecoveryBlobStore";
 import { fingerprintText } from "../../contracts/actionOperationEvidence";
 
@@ -20,7 +31,6 @@ type RunCommandInput = {
   command: string;
   cwd?: string;
   timeoutMs: number;
-  allowUnsafe?: boolean;
 };
 
 type ReversibleCommandWrite = {
@@ -255,10 +265,6 @@ async function executeCommand(params: {
   }
 }
 
-/** Patterns that indicate a command has destructive or privileged risk. */
-const DESTRUCTIVE_COMMANDS =
-  /(?:^|\||;|&&)\s*(?:(?:rm|rmdir|mv|rename|chmod|chown|sudo|mkfs|dd)\b|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|git\s+(?:push|reset|checkout|switch|clean|rebase|filter-branch|rm|branch\s+-D|tag\s+-d)\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
-
 /** Downloading code and handing it directly to a shell should never auto-run. */
 const NETWORK_TO_SHELL_PATTERN =
   /(?:(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh)\b|(?:sh|bash|zsh)\b[\s\S]*<\s*\(\s*(?:curl|wget)\b|(?:sh|bash|zsh)\b[\s\S]*(?:\$\(\s*(?:curl|wget)\b|`\s*(?:curl|wget)\b))/i;
@@ -266,6 +272,12 @@ const NETWORK_TO_SHELL_PATTERN =
 /** macOS/system automation commands can mutate external app or OS state. */
 const SYSTEM_AUTOMATION_PATTERN =
   /(?:^|\||;|&&)\s*(?:(?:osascript|launchctl)\b|defaults\s+(?:write|delete|import|rename)\b)/i;
+
+const PACKAGE_SYSTEM_MODIFICATION_PATTERN =
+  /(?:^|\||;|&&)\s*(?:(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
+
+const RECOGNIZED_STATE_CHANGE_COMMANDS =
+  /(?:^|\||;|&&)\s*(?:(?:touch|mkdir|cp|mv|rm|rmdir|chmod|chown|tee)\b|(?:copy|move|del|erase|ren|rename|md|mkdir|rd|rmdir)\b|git\s+(?:add|commit|push|reset|checkout|switch|clean|rebase|merge|cherry-pick|revert|rm|branch|tag)\b|git\s+diff\b[^\n;&|]*--output(?:=|\s)|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
 
 /** Append redirects are always an overwrite/append risk. */
 const APPEND_REDIRECT_PATTERN =
@@ -386,8 +398,436 @@ function isAbsolutePath(value: string): boolean {
 }
 
 function resolveCommandPath(path: string, cwd: string | undefined): string {
-  if (!cwd || isAbsolutePath(path) || path.startsWith("~")) return path;
-  return `${cwd.replace(/[\\/]+$/g, "")}/${path}`;
+  const normalize = (value: string): string => {
+    const slash = value.replace(/\\/g, "/");
+    const drive = slash.match(/^([A-Za-z]:)(?:\/|$)/)?.[1];
+    const unc = slash.startsWith("//");
+    const absolute = slash.startsWith("/") || Boolean(drive);
+    const prefix = drive ? `${drive}/` : unc ? "//" : absolute ? "/" : "";
+    const body = drive
+      ? slash.slice(drive.length + 1)
+      : slash.replace(/^\/+/, "");
+    const segments: string[] = [];
+    for (const segment of body.split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        if (segments.length && segments.at(-1) !== "..") segments.pop();
+        else if (!absolute) segments.push(segment);
+        continue;
+      }
+      segments.push(segment);
+    }
+    return `${prefix}${segments.join("/")}` || (absolute ? prefix : ".");
+  };
+  if (path.startsWith("~")) return path;
+  if (isAbsolutePath(path)) return normalize(path);
+  return normalize(cwd ? `${cwd.replace(/[\\/]+$/g, "")}/${path}` : path);
+}
+
+function splitPipeline(command: string): string[] | null {
+  if (/\$\(|`|\$\{|\$[A-Za-z_][A-Za-z0-9_]*|%[^%\s]+%|![^!\s]+!/.test(command))
+    return null;
+  const stages: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const character of command) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      if (quote === character) quote = null;
+      else if (!quote) quote = character;
+      current += character;
+      continue;
+    }
+    if (!quote && character === "|") {
+      if (!current.trim()) return null;
+      stages.push(current.trim());
+      current = "";
+      continue;
+    }
+    if (
+      !quote &&
+      (character === ";" || character === "&" || character === "\n")
+    ) {
+      return null;
+    }
+    current += character;
+  }
+  if (quote || escaped || !current.trim()) return null;
+  stages.push(current.trim());
+  return stages;
+}
+
+function optionAllowed(
+  value: string,
+  exact: ReadonlySet<string>,
+  prefixes: readonly string[] = [],
+): boolean {
+  return (
+    !value.startsWith("-") ||
+    exact.has(value) ||
+    prefixes.some((prefix) => value.startsWith(prefix))
+  );
+}
+
+function isRecognizedReadOnlyStage(stage: string): boolean {
+  if (/[<>]/.test(stage)) return false;
+  const words = parseSimpleShellWords(stage);
+  if (!words?.length) return false;
+  if (/[\\/]/.test(words[0])) return false;
+  const program = words[0].toLowerCase().replace(/\.exe$/, "");
+  const args = words.slice(1);
+  if (program === "pwd" || program === "echo" || program === "printf") {
+    return args.every((arg) => !arg.startsWith("-") || program !== "pwd");
+  }
+  if (program === "wc") {
+    const flags = new Set([
+      "-l",
+      "-w",
+      "-c",
+      "-m",
+      "-L",
+      "--lines",
+      "--words",
+      "--bytes",
+      "--chars",
+      "--max-line-length",
+    ]);
+    return args.every((arg) => optionAllowed(arg, flags));
+  }
+  if (program === "rg") {
+    const flags = new Set([
+      "-n",
+      "--line-number",
+      "-i",
+      "--ignore-case",
+      "-F",
+      "--fixed-strings",
+      "-w",
+      "--word-regexp",
+      "-l",
+      "--files-with-matches",
+      "-L",
+      "--files-without-match",
+      "-c",
+      "--count",
+      "--count-matches",
+      "--json",
+      "--heading",
+      "--no-heading",
+      "--hidden",
+      "--files",
+      "--stats",
+      "--version",
+      "--help",
+      "--no-ignore",
+      "--follow",
+      "-A",
+      "-B",
+      "-C",
+      "-m",
+      "-g",
+      "--glob",
+      "--type",
+      "--type-not",
+      "--max-count",
+      "--context",
+    ]);
+    return args.every((arg) =>
+      optionAllowed(arg, flags, [
+        "--glob=",
+        "--type=",
+        "--type-not=",
+        "--max-count=",
+        "--context=",
+      ]),
+    );
+  }
+  if (program === "git" && args[0] === "diff") {
+    const flags = new Set([
+      "--cached",
+      "--staged",
+      "--stat",
+      "--shortstat",
+      "--name-only",
+      "--name-status",
+      "--check",
+      "--summary",
+      "--no-color",
+      "--color",
+      "--word-diff",
+      "-w",
+      "--ignore-all-space",
+      "--ignore-space-change",
+      "--no-ext-diff",
+    ]);
+    return args
+      .slice(1)
+      .every((arg) =>
+        optionAllowed(arg, flags, ["--color=", "--word-diff=", "--unified="]),
+      );
+  }
+  const commonFlags: Record<string, ReadonlySet<string>> = {
+    cat: new Set([
+      "-A",
+      "-b",
+      "-e",
+      "-E",
+      "-n",
+      "-s",
+      "-t",
+      "-T",
+      "-u",
+      "-v",
+      "--show-all",
+      "--number-nonblank",
+      "--show-ends",
+      "--number",
+      "--squeeze-blank",
+      "--show-tabs",
+      "--show-nonprinting",
+    ]),
+    head: new Set(["-q", "-v", "-n", "-c", "--quiet", "--verbose"]),
+    tail: new Set(["-q", "-v", "-n", "-c", "--quiet", "--verbose"]),
+    ls: new Set([
+      "-a",
+      "-A",
+      "-d",
+      "-F",
+      "-h",
+      "-i",
+      "-k",
+      "-l",
+      "-n",
+      "-o",
+      "-p",
+      "-r",
+      "-R",
+      "-s",
+      "-S",
+      "-t",
+      "-U",
+      "-1",
+      "--all",
+      "--almost-all",
+      "--directory",
+      "--human-readable",
+      "--inode",
+      "--recursive",
+      "--reverse",
+      "--size",
+    ]),
+    stat: new Set(["-f", "-L", "-t", "--dereference", "--terse"]),
+    file: new Set(["-b", "-i", "-L", "--brief", "--mime", "--dereference"]),
+    du: new Set([
+      "-a",
+      "-h",
+      "-k",
+      "-s",
+      "--all",
+      "--human-readable",
+      "--summarize",
+    ]),
+    df: new Set(["-h", "-k", "-P", "-T", "--human-readable"]),
+  };
+  if (program in commonFlags) {
+    const prefixes =
+      program === "head" || program === "tail"
+        ? ["--lines=", "--bytes="]
+        : program === "ls"
+          ? ["--color=", "--sort=", "--time=", "--format="]
+          : program === "stat"
+            ? ["--format=", "--printf="]
+            : [];
+    return args.every((arg) =>
+      optionAllowed(arg, commonFlags[program], prefixes),
+    );
+  }
+  if (program === "find") {
+    const flags = new Set([
+      "-H",
+      "-L",
+      "-P",
+      "-and",
+      "-or",
+      "-not",
+      "-name",
+      "-iname",
+      "-path",
+      "-ipath",
+      "-type",
+      "-maxdepth",
+      "-mindepth",
+      "-size",
+      "-mtime",
+      "-mmin",
+      "-newer",
+      "-empty",
+      "-readable",
+      "-writable",
+      "-executable",
+      "-print",
+      "-print0",
+      "-printf",
+      "-ls",
+      "-true",
+      "-false",
+    ]);
+    return args.every(
+      (arg) =>
+        !arg.startsWith("-") || flags.has(arg) || arg === "!" || arg === "(",
+    );
+  }
+  const platform = getRuntimePlatformInfo().platform;
+  return (
+    platform === "windows" &&
+    ["dir", "type", "findstr", "where"].includes(program)
+  );
+}
+
+function resolvedCommandTargets(
+  input: Pick<RunCommandInput, "command" | "cwd">,
+): string[] {
+  const targets = parseCommandWriteTargets(input.command).map((path) =>
+    resolveCommandPath(path, input.cwd),
+  );
+  return [...new Set([...(input.cwd ? [input.cwd] : []), ...targets])];
+}
+
+function targetsProtectedBoundary(targets: string[], command: string): boolean {
+  if (
+    /\b(?:rm|rmdir)\s+(?:-[^\s]+\s+)*(?:\/|~|\$HOME|%USERPROFILE%)(?=[\s"']|$)/i.test(
+      command,
+    )
+  ) {
+    return true;
+  }
+  return targets.some((target) => {
+    const normalized = target.replace(/\\/g, "/").replace(/\/+$/g, "");
+    return (
+      normalized === "" ||
+      normalized === "/" ||
+      normalized === "~" ||
+      /^[A-Za-z]:$/.test(normalized) ||
+      ["/System", "/usr", "/bin", "/sbin", "/etc"].some(
+        (root) => normalized === root || normalized.startsWith(`${root}/`),
+      )
+    );
+  });
+}
+
+function commandRiskSignals(command: string): ActionRiskSignal[] {
+  const signals: ActionRiskSignal[] = [];
+  if (/\b(?:sudo|doas|runas)\b/i.test(command)) {
+    signals.push("privilege_escalation");
+  }
+  if (
+    PACKAGE_SYSTEM_MODIFICATION_PATTERN.test(command) ||
+    SYSTEM_AUTOMATION_PATTERN.test(command)
+  ) {
+    signals.push("package_system_modification");
+  }
+  if (isNetworkToShellCommand(command)) signals.push("download_to_shell");
+  if (
+    /\b(?:rm|rmdir)\b[^\n]*(?:-r|-rf|-fr)\b|(?:^|[;&|])\s*(?:rd|rmdir)\s+\/s\b/i.test(
+      command,
+    )
+  ) {
+    signals.push("broad_delete");
+  }
+  if (
+    /originalAgentPermissionMode|agentLibraryWriteMode|authorization|grantStore/i.test(
+      command,
+    )
+  ) {
+    signals.push("authorization_tampering");
+  }
+  return signals;
+}
+
+export async function classifyRunCommandInvocation(
+  input: Pick<RunCommandInput, "command" | "cwd">,
+) {
+  const command = input.command.trim();
+  const targets = resolvedCommandTargets(input);
+  const riskSignals = commandRiskSignals(command);
+  const stateChange =
+    RECOGNIZED_STATE_CHANGE_COMMANDS.test(command) ||
+    SYSTEM_AUTOMATION_PATTERN.test(command) ||
+    APPEND_REDIRECT_PATTERN.test(command) ||
+    Boolean(parseRedirectTarget(command));
+  if (
+    riskSignals.includes("authorization_tampering") ||
+    (stateChange && targetsProtectedBoundary(targets, command))
+  ) {
+    return prohibitedInvocationPlan({
+      mechanism: "shell",
+      domains: ["local_execution", "filesystem"],
+      effects: ["modify"],
+      targets,
+      riskSignals: [
+        ...riskSignals,
+        ...(targetsProtectedBoundary(targets, command)
+          ? (["protected_target"] as const)
+          : []),
+      ],
+      reason: "The command crosses an enforced local integrity boundary.",
+    });
+  }
+  if (stateChange) {
+    const reversibleWrite = parseReversibleCommandWrite(command);
+    const outputPath = reversibleWrite
+      ? await resolveReversibleOutputPath(reversibleWrite, input.cwd)
+      : undefined;
+    const exists = outputPath ? await pathExists(outputPath) : null;
+    const effects = /\b(?:rm|rmdir)\b/i.test(command)
+      ? (["delete"] as const)
+      : exists === false
+        ? (["create"] as const)
+        : (["modify"] as const);
+    return stateChangeInvocationPlan({
+      mechanism: "shell",
+      assurance: "statically_recognized",
+      domains: ["local_execution", "filesystem", "network"],
+      effects: [...effects],
+      targets,
+      riskSignals,
+      reversibility: reversibleWrite && exists === false ? "partial" : "none",
+      reason:
+        reversibleWrite && exists === false
+          ? "The recognized new output can be removed, but other shell effects are not proven reversible."
+          : "The command contains a recognized state-changing form whose complete inverse cannot be proven.",
+    });
+  }
+  const stages = splitPipeline(command);
+  if (stages?.every(isRecognizedReadOnlyStage)) {
+    return readOnlyInvocationPlan({
+      mechanism: "shell",
+      assurance: "statically_recognized",
+      domains: ["local_execution", "filesystem"],
+      targets,
+      reason:
+        "Every pipeline stage matches the audited read-only command grammar.",
+    });
+  }
+  return ambiguousInvocationPlan({
+    mechanism: "shell",
+    domains: ["local_execution", "filesystem", "network"],
+    effects: ["read", "create", "modify", "delete", "egress"],
+    targets,
+    riskSignals,
+    reason:
+      "The shell form contains an interpreter, expansion, executable, or flag outside the audited read-only grammar.",
+  });
 }
 
 function isNullRedirectTarget(path: string): boolean {
@@ -463,7 +903,8 @@ function parseCommandWriteTargets(command: string): string[] {
 
   const words = parseSimpleShellWords(command.trim());
   if (words?.length) {
-    const [program, ...args] = words;
+    const [rawProgram, ...args] = words;
+    const program = rawProgram.toLowerCase().replace(/\.exe$/, "");
     if (
       (program === "cp" || program === "mv") &&
       args.length >= 2 &&
@@ -472,6 +913,14 @@ function parseCommandWriteTargets(command: string): string[] {
       const positional = args.filter((arg) => !arg.startsWith("-"));
       const target = positional[positional.length - 1];
       if (target) targets.push(target);
+    }
+    if (
+      ["rm", "rmdir", "touch", "mkdir", "md", "rd", "del"].includes(program)
+    ) {
+      targets.push(...args.filter((arg) => !arg.startsWith("-")));
+    }
+    if (["chmod", "chown"].includes(program)) {
+      targets.push(...args.slice(1).filter((arg) => !arg.startsWith("-")));
     }
   }
 
@@ -556,49 +1005,8 @@ function parseReversibleCommandWrite(
   return null;
 }
 
-function isDestructiveCommand(command: string): boolean {
-  return DESTRUCTIVE_COMMANDS.test(command.trim());
-}
-
 function isNetworkToShellCommand(command: string): boolean {
   return NETWORK_TO_SHELL_PATTERN.test(command.trim());
-}
-
-function isSystemAutomationCommand(command: string): boolean {
-  return SYSTEM_AUTOMATION_PATTERN.test(command.trim());
-}
-
-async function getRunCommandConfirmationReason(
-  input: Pick<RunCommandInput, "command" | "cwd">,
-): Promise<string | null> {
-  const command = input.command.trim();
-  if (isNetworkToShellCommand(command)) {
-    return "Command downloads code and passes it directly to a shell";
-  }
-  if (isSystemAutomationCommand(command)) {
-    return "Command may automate apps or modify operating system state";
-  }
-  if (isDestructiveCommand(command)) {
-    return "Command may delete, move, install, change permissions, mutate git history/remotes, or modify system state";
-  }
-  if (APPEND_REDIRECT_PATTERN.test(command)) {
-    return "Command appends to a file and needs confirmation";
-  }
-  const redirectWrite = parseRedirectTarget(command);
-  if (redirectWrite) {
-    const targetPath = resolveCommandPath(redirectWrite.path, input.cwd);
-    const exists = await pathExists(targetPath);
-    if (exists === false) return null;
-    return "Command may overwrite a redirect target and needs confirmation";
-  }
-  const reversibleWrite = parseReversibleCommandWrite(command);
-  if (reversibleWrite) {
-    const targetPath = resolveCommandPath(reversibleWrite.path, input.cwd);
-    const exists = await pathExists(targetPath);
-    if (exists === false) return null;
-    return "Command may overwrite or mutate an existing path and needs confirmation";
-  }
-  return null;
 }
 
 export function createRunCommandTool(): AgentWriteToolDefinition<
@@ -648,14 +1056,16 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
     guidance: {
       matches: (request) =>
-        /\b(run|execute|script|python|bash|shell|terminal|command|analyze|analysis|plot|calculate|compute|Rscript)\b/i.test(
-          request.userText || "",
+        Boolean(
+          request.classifiedIntent?.actionIntents.some(
+            (action) => action.capability === "command.execute",
+          ),
         ),
       instruction:
         "Use run_command to execute shell commands for data analysis, running scripts, or invoking external tools. " +
@@ -715,36 +1125,19 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       });
     },
 
-    async shouldRequireConfirmation(input, _context) {
-      if (getNoteWriteBypassRefusal(input, _context)) return false;
-      return Boolean(await getRunCommandConfirmationReason(input));
-    },
-
-    async planMutation(input, context) {
+    async planInvocation(input, context) {
       if (getNoteWriteBypassRefusal(input, context)) {
-        return { effect: "none", reversibility: "full" };
-      }
-      const reversibleWrite = parseReversibleCommandWrite(input.command);
-      if (reversibleWrite) {
-        const outputPath = resolveCommandPath(reversibleWrite.path, input.cwd);
-        const exists = await pathExists(outputPath);
-        return {
-          effect: "write",
-          reversibility: exists === false ? "partial" : "none",
+        return prohibitedInvocationPlan({
+          mechanism: "shell",
+          domains: ["filesystem", "local_execution"],
+          effects: ["modify"],
+          targets: resolvedCommandTargets(input),
+          riskSignals: [],
           reason:
-            exists === false
-              ? "The declared new output can be removed, but other command effects cannot be proven reversible."
-              : "The command may affect paths or external state that have no complete declarative inverse.",
-        };
+            "The command attempts to bypass the validated note-writing path.",
+        });
       }
-      const confirmationReason = await getRunCommandConfirmationReason(input);
-      return {
-        effect: "write",
-        reversibility: "none",
-        reason:
-          confirmationReason ||
-          "Shell commands receive mutable local-machine access, so side effects cannot be proven absent or given a complete declarative inverse.",
-      };
+      return classifyRunCommandInvocation(input);
     },
 
     createPendingAction(input) {
@@ -776,10 +1169,6 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       };
     },
 
-    applyConfirmation(input) {
-      return ok({ ...input, allowUnsafe: true });
-    },
-
     async execute(input, context) {
       const reversibleWrite = parseReversibleCommandWrite(input.command);
       const noteWriteRefusal = getNoteWriteBypassRefusal(input, context);
@@ -794,18 +1183,6 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           effect: "none",
         };
       }
-      const confirmationReason = await getRunCommandConfirmationReason(input);
-      if (confirmationReason && !input.allowUnsafe) {
-        return {
-          content: {
-            exitCode: -1,
-            stdout: "",
-            stderr: confirmationReason,
-            command: input.command,
-          },
-          effect: "none",
-        };
-      }
       let outputPath: string | undefined;
       const run = () =>
         executeCommand({
@@ -813,6 +1190,34 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           cwd: input.cwd,
           timeoutMs: input.timeoutMs,
         });
+      const formatResult = (
+        commandResult: Awaited<ReturnType<typeof executeCommand>>,
+        effect: AgentToolEffect,
+      ) => {
+        const maxLen = 8000;
+        const stdout =
+          commandResult.stdout.length > maxLen
+            ? commandResult.stdout.slice(0, maxLen) +
+              `\n... [truncated, ${commandResult.stdout.length} chars total]`
+            : commandResult.stdout;
+        const stderr =
+          commandResult.stderr.length > maxLen
+            ? commandResult.stderr.slice(0, maxLen) +
+              `\n... [truncated, ${commandResult.stderr.length} chars total]`
+            : commandResult.stderr;
+        return {
+          content: {
+            exitCode: commandResult.exitCode,
+            stdout,
+            stderr,
+            command: input.command,
+          },
+          effect,
+        };
+      };
+      if (context.invocationPlan?.impact === "read_only") {
+        return formatResult(await run(), "none");
+      }
       let existedBeforeWrite: boolean | null = null;
       const result = await executeExternalMutation({
         context,
@@ -909,29 +1314,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           };
         },
       });
-      const commandResult = result.content;
-
-      const maxLen = 8000;
-      const stdout =
-        commandResult.stdout.length > maxLen
-          ? commandResult.stdout.slice(0, maxLen) +
-            `\n... [truncated, ${commandResult.stdout.length} chars total]`
-          : commandResult.stdout;
-      const stderr =
-        commandResult.stderr.length > maxLen
-          ? commandResult.stderr.slice(0, maxLen) +
-            `\n... [truncated, ${commandResult.stderr.length} chars total]`
-          : commandResult.stderr;
-
-      return {
-        content: {
-          exitCode: commandResult.exitCode,
-          stdout,
-          stderr,
-          command: input.command,
-        },
-        effect: result.effect,
-      };
+      return formatResult(result.content, result.effect);
     },
   };
 }

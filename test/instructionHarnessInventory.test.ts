@@ -14,9 +14,9 @@ import { estimateTextTokens } from "../src/utils/modelInputCap";
 
 const STOCK_SKILL_WORKFLOW_MARKERS: Record<string, string[]> = {
   "analyze-figures.md": [
-    "When MinerU cache is available",
-    "If figure extraction fails or returns no crops",
-    "Saving figure analysis to notes",
+    "shared semantic intent",
+    "When crop extraction fails",
+    "Requested persistence",
   ],
   "compare-papers.md": [
     "targeted first when the dimension is known",
@@ -26,7 +26,7 @@ const STOCK_SKILL_WORKFLOW_MARKERS: Record<string, string[]> = {
   "evidence-based-qa.md": [
     "read then retrieve, then answer",
     "Targeted retrieval",
-    "### Budget",
+    "Use the evidence frontier rather than a call count",
   ],
   "import-cited-reference.md": [
     "Identify what the user gave you",
@@ -39,19 +39,19 @@ const STOCK_SKILL_WORKFLOW_MARKERS: Record<string, string[]> = {
     "Zotero.Items.getAll",
   ],
   "literature-review.md": [
-    "Phase 1 — Paper Discovery",
-    "Phase 2 — Selective Deep Reading",
-    "Phase 3 — Synthesis and Writing",
+    "central ResearchPolicy owns capacity measurement",
+    "one durable paper understanding for every item",
+    "Finish with `submit_document`",
   ],
   "simple-paper-qa.md": [
-    "one read, then answer",
+    "Follow `paperEvidenceProgress`",
     "contentStatus:'no_pdf_attachment'",
     "contentStatus:'no_extractable_pdf_text'",
   ],
   "write-note.md": [
     "## Note template",
     "Checklist before writing the note",
-    "Worked example",
+    "host exports verified assets",
     "USER CUSTOMIZATIONS COME FIRST",
   ],
 };
@@ -64,6 +64,35 @@ function readSkill(filename: string): string {
 }
 
 describe("instruction harness inventory", function () {
+  it("requires a numerical grounding check across the shared research routes", function () {
+    for (const prompt of [
+      DEFAULT_SYSTEM_PROMPT,
+      AGENT_PERSONA_INSTRUCTIONS.join("\n"),
+    ]) {
+      assert.include(prompt, "reported values from your own calculations");
+      assert.include(prompt, "units and percentage conversions");
+      assert.include(prompt, "do not assume a chance baseline");
+      assert.include(
+        prompt,
+        "class counts, ceilings or causality from accuracy alone",
+      );
+      assert.include(
+        prompt,
+        "Label inferences and correct unsupported earlier claims",
+      );
+      assert.include(prompt, "Missing information stays unknown");
+      assert.include(prompt, "labeling a guess does not supply evidence");
+    }
+  });
+  it("keeps discovery selection distinct from explicit imports in the fixed persona", function () {
+    const prompt = AGENT_PERSONA_INSTRUCTIONS.join("\n");
+    assert.include(
+      prompt,
+      "literature_review to present discovery results (its selection card appears in safe mode or when the user asks to choose; discovery never imports on its own in any mode)",
+    );
+    assert.include(prompt, "library_import only for explicit import requests");
+    assert.notInclude(prompt, "only for imports, note saving");
+  });
   it("keeps the shared semantic contracts provider-neutral", function () {
     const contracts = [
       CORE_RESEARCH_CONTRACT,

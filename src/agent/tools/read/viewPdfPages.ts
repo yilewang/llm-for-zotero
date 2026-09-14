@@ -2,6 +2,7 @@ import type { AgentToolDefinition } from "../../types";
 import type { PdfPageService } from "../../services/pdfPageService";
 import { parsePageSelectionValue } from "../../services/pdfPageService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   fail,
   normalizePositiveInt,
@@ -11,7 +12,7 @@ import {
 } from "../shared";
 import {
   normalizeTarget,
-  inferPdfMode,
+  semanticPdfMode,
   setPreparedCache,
   setCapturedCache,
   buildCaptureFollowupMessage,
@@ -99,8 +100,8 @@ export function createViewPdfPagesTool(
           },
         },
       },
-      mutability: "read",
-      requiresConfirmation: true,
+      executionClass: "read",
+      requiresConfirmation: false,
     },
     presentation: {
       label: "View PDF Pages",
@@ -111,8 +112,6 @@ export function createViewPdfPagesTool(
           if (a?.question) return "Searching for relevant pages";
           return "Preparing PDF pages";
         },
-        onPending: "Waiting for your approval before sending document content",
-        onApproved: "Approval received - sending document content",
         onDenied: "PDF page viewing cancelled",
         onSuccess: ({ content }) => {
           const c = content as Record<string, unknown> | null;
@@ -125,7 +124,6 @@ export function createViewPdfPagesTool(
         },
       },
     },
-    shouldRequireConfirmation: async () => false,
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object");
@@ -228,7 +226,7 @@ export function createViewPdfPagesTool(
           attachmentId: input.target?.attachmentId,
           name: input.target?.name,
           question: input.question,
-          mode: inferPdfMode(input.question),
+          mode: semanticPdfMode(context.request),
           topK: 3,
         });
         pages = searchResult.pages.map((p) => p.pageIndex);
@@ -308,6 +306,13 @@ export function createViewPdfPagesTool(
       }
       return ok(input);
     },
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: ["zotero_library", "filesystem", "network"],
+        effects: ["read", "egress"],
+        reason:
+          "The host renders PDF pages and sends the reviewed images to the model.",
+      }),
     execute: async (input, context) => {
       // Capture active view
       if (input.capture) {
@@ -349,7 +354,7 @@ export function createViewPdfPagesTool(
           attachmentId: input.target?.attachmentId,
           name: input.target?.name,
           question: input.question,
-          mode: inferPdfMode(input.question),
+          mode: semanticPdfMode(context.request),
           topK: 3,
         });
         pages = searchResult.pages.map((p) => p.pageIndex);

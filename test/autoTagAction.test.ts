@@ -1,8 +1,9 @@
 import { assert } from "chai";
-import { autoTagAction } from "../src/agent/actions/autoTag";
 import type { ActionExecutionContext } from "../src/agent/actions";
-import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { autoTagAction } from "../src/agent/actions/autoTag";
+import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
+import { AgentToolRegistry } from "../src/agent/tools/registry";
 import type {
   AgentToolDefinition,
   AgentToolInputValidation,
@@ -23,16 +24,30 @@ function createStubTool<TInput extends Record<string, unknown>, TResult>(
     validate,
     execute: async (input, context) => {
       const content = await execute(input, context);
-      return spec.mutability === "write"
+      return spec.executionClass === "external_effect"
         ? { content, effect: "applied" as const }
         : content;
     },
-    ...(spec.mutability === "write"
+    ...(spec.executionClass === "external_effect"
       ? {
-          planMutation: async () => ({
-            effect: "write" as const,
-            reversibility: "full" as const,
-          }),
+          planInvocation: async () =>
+            stateChangeInvocationPlan({
+              domains: ["zotero_library"],
+              effects: ["modify"],
+              reversibility: "full",
+              reason: `Stub ${spec.name} mutates Zotero state.`,
+            }),
+          describeAction: async () => [
+            {
+              id: `stub:${spec.name}`,
+              proofDomain: "zotero_state" as const,
+              capability: "zotero.settings" as const,
+              operation: "settings_update" as const,
+              source: "zotero_native" as const,
+              requestedTargets: [],
+              destinationCollectionIds: [],
+            },
+          ],
         }
       : {}),
     ...extras,
@@ -113,7 +128,7 @@ function registerReviewApplyTagsTool(
       name: "apply_tags",
       description: "apply tags",
       inputSchema: { type: "object" },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
     validate(args) {
@@ -121,10 +136,26 @@ function registerReviewApplyTagsTool(
         args as { assignments: Array<{ itemId: number; tags: string[] }> },
       );
     },
-    planMutation: async () => ({
-      effect: "write",
-      reversibility: "full",
-    }),
+    planInvocation: async () =>
+      stateChangeInvocationPlan({
+        domains: ["zotero_library"],
+        effects: ["modify"],
+        reversibility: "full",
+        reason: "The tool applies tags to Zotero items.",
+      }),
+    describeAction: (input) => [
+      {
+        id: "apply-tags:test",
+        proofDomain: "zotero_state",
+        capability: "zotero.tags",
+        operation: "apply_tags",
+        source: "zotero_native",
+        requestedTargets: input.assignments.map(
+          (assignment) => `item:${assignment.itemId}`,
+        ),
+        destinationCollectionIds: [],
+      },
+    ],
     createPendingAction(input) {
       return {
         toolName: "apply_tags",
@@ -140,6 +171,16 @@ function registerReviewApplyTagsTool(
               id: `${assignment.itemId}`,
               label: `Paper ${assignment.itemId}`,
               value: assignment.tags,
+            })),
+          },
+          {
+            type: "select",
+            id: "pageSize",
+            label: "Items on this page",
+            value: "10",
+            options: [10, 20, 50].map((size) => ({
+              id: String(size),
+              label: String(size),
             })),
           },
         ],
@@ -189,7 +230,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -205,7 +246,7 @@ describe("autoTag action", function () {
       ),
     );
     const { ctx } = createActionContext(registry, {
-      confirmationMode: "auto_approve",
+      confirmationMode: "automatic",
       checkpoint: async (checkpoint) => {
         checkpoints.push(checkpoint);
       },
@@ -232,7 +273,7 @@ describe("autoTag action", function () {
       ctx,
     );
 
-    assert.isTrue(result.ok);
+    assert.isTrue(result.ok, JSON.stringify(result));
     assert.deepEqual(applied, [19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9]);
     assert.deepEqual(
       checkpoints.map((checkpoint) => ({
@@ -260,7 +301,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -296,7 +337,7 @@ describe("autoTag action", function () {
 
     const result = await autoTagAction.execute({ itemIds: [2, 3, 1] }, ctx);
 
-    assert.isTrue(result.ok);
+    assert.isTrue(result.ok, JSON.stringify(result));
     if (!result.ok) return;
     assert.deepEqual(
       (applyArgs?.assignments as Array<Record<string, unknown>>).map(
@@ -321,7 +362,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -389,7 +430,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -469,7 +510,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -534,7 +575,7 @@ describe("autoTag action", function () {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
-          mutability: "write",
+          executionClass: "external_effect",
           requiresConfirmation: false,
         },
         (args) => ok(args as Record<string, unknown>),
@@ -591,7 +632,7 @@ describe("autoTag action", function () {
         name: "apply_tags",
         description: "apply tags",
         inputSchema: { type: "object" },
-        mutability: "write",
+        executionClass: "external_effect",
         requiresConfirmation: true,
       },
       validate(args) {
@@ -602,12 +643,34 @@ describe("autoTag action", function () {
           },
         );
       },
+      describeAction: (input) => [
+        {
+          id: "apply-tags:manual-review",
+          proofDomain: "zotero_state",
+          capability: "zotero.tags",
+          operation: "apply_tags",
+          source: "zotero_native",
+          requestedTargets: input.assignments.map(
+            (assignment) => `item:${assignment.itemId}`,
+          ),
+          destinationCollectionIds: [],
+        },
+      ],
       createPendingAction(input) {
         return {
           toolName: "apply_tags",
           title: "Review tag additions",
           confirmLabel: "Apply",
           cancelLabel: "Cancel",
+          actions: [
+            { id: "previous", label: "Previous", approved: false },
+            { id: "confirm", label: "Apply", approved: true },
+            { id: "refresh", label: "Refresh", approved: false },
+            { id: "cancel", label: "Cancel", approved: false },
+            { id: "next", label: "Next", approved: false },
+          ],
+          defaultActionId: "confirm",
+          cancelActionId: "cancel",
           fields: [
             {
               type: "tag_assignment_table",
@@ -696,7 +759,7 @@ describe("autoTag action", function () {
 
     const result = await autoTagAction.execute({ scope: "all", limit: 2 }, ctx);
 
-    assert.isTrue(result.ok);
+    assert.isTrue(result.ok, JSON.stringify(result));
     if (!result.ok) return;
     assert.deepEqual(result.output, {
       targeted: 2,
@@ -712,7 +775,7 @@ describe("autoTag action", function () {
         name: "apply_tags",
         description: "apply tags",
         inputSchema: { type: "object" },
-        mutability: "write",
+        executionClass: "external_effect",
         requiresConfirmation: true,
       },
       validate(args) {
@@ -792,6 +855,58 @@ describe("autoTag action", function () {
       `expected an unavailable notice, saw: ${summaries.join(" | ")}`,
     );
     assert.include(unavailable || "", "Incorrect API key");
+  });
+
+  it("regenerates the current paper at the chosen tag count before any tags are applied", async function () {
+    const registry = new AgentToolRegistry();
+    const applied: Array<{ itemId: number; tags: string[] }> = [];
+    registerReviewApplyTagsTool(registry, (input) => {
+      applied.push(...input.assignments);
+    });
+    const reviews: string[][] = [];
+    const { ctx } = createActionContext(registry, {
+      zoteroGateway: {
+        listBibliographicItemTargets: async () => ({
+          items: [
+            makeBibliographicTarget(
+              7,
+              "Memory attention cortex neurons perception",
+            ),
+          ],
+          totalCount: 1,
+        }),
+        listLibraryTags: async () =>
+          ["memory", "attention", "cortex", "neurons", "perception"].map(
+            (name) => ({ name, type: 0 }),
+          ),
+        getEditableArticleMetadata: () => ({ fields: { abstractNote: "" } }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+      requestConfirmation: async (_requestId, action) => {
+        assert.lengthOf(applied, 0);
+        const field = action.fields.find(
+          (field) => field.type === "tag_assignment_table",
+        );
+        assert.exists(field);
+        if (field?.type !== "tag_assignment_table")
+          throw new Error("Missing tag editor");
+        reviews.push(field.rows[0].value as string[]);
+        return reviews.length === 1
+          ? {
+              approved: false,
+              actionId: "refresh",
+              data: { tagsPerPaper: "3" },
+            }
+          : { approved: true, actionId: "confirm", data: {} };
+      },
+    });
+    const result = await autoTagAction.execute({ scope: "all" }, ctx);
+    assert.isTrue(result.ok);
+    assert.deepEqual(
+      reviews.map((tags) => tags.length),
+      [5, 3],
+    );
+    assert.deepEqual(applied, [{ itemId: 7, tags: reviews[1] }]);
   });
 
   it("navigates to the next page without applying current-page tags", async function () {
@@ -924,7 +1039,7 @@ describe("autoTag action", function () {
         return {
           approved: true,
           actionId: "confirm",
-          data: confirmationCount === 1 ? { pageSize: 50 } : {},
+          data: confirmationCount === 1 ? { pageSize: "50" } : {},
         };
       },
     });
@@ -934,7 +1049,7 @@ describe("autoTag action", function () {
       ctx,
     );
 
-    assert.isTrue(result.ok);
+    assert.isTrue(result.ok, JSON.stringify(result));
     assert.deepEqual(executedPages, [
       Array.from({ length: 20 }, (_entry, index) => 60 - index),
       Array.from({ length: 40 }, (_entry, index) => 40 - index),

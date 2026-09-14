@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { conversationRepository } from "../src/core/conversations/repository";
 import {
   loadAllConversationHistory,
   loadConversationHistoryScope,
@@ -29,6 +30,33 @@ describe("historyLoader", function () {
 
   afterEach(function () {
     globalScope.Zotero = originalZotero;
+  });
+
+  it("reads an empty paper history without initializing a conversation", async function () {
+    const ensureCatalogEntry = conversationRepository.ensureCatalogEntry;
+    let initializationRequests = 0;
+    conversationRepository.ensureCatalogEntry = async () => {
+      initializationRequests += 1;
+      return null;
+    };
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: { queryAsync: async () => [] },
+    };
+    try {
+      assert.deepEqual(
+        await loadConversationHistoryScope({
+          mode: "paper",
+          libraryID: 1,
+          paperItemID: 35,
+          limit: 20,
+        }),
+        [],
+      );
+      assert.equal(initializationRequests, 0);
+    } finally {
+      conversationRepository.ensureCatalogEntry = ensureCatalogEntry;
+    }
   });
 
   it("loads normalized open-chat history rows including drafts", async function () {

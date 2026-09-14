@@ -1,14 +1,20 @@
+import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
-  canUseSkillClassifierModel,
   detectTurnIntent as detectTurnIntentResolved,
   parseClassifiedTurnIntent,
-  parseClassifierResponse,
-} from "../src/agent/model/skillClassifier";
+  parseSkillRouterResponse,
+  resolvePlanSkillRoutingReceipt,
+} from "../src/agent/model/semanticIntentService";
 import { resolveSkillRouting as resolveSkillRoutingResolved } from "../src/agent/skills/routing";
 import type { AgentSkill } from "../src/agent/skills/skillLoader";
 import type { AgentRuntimeRequestInput } from "../src/agent/types";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+
+const completeOutcome = (text: string) => ({
+  text,
+  completion: { status: "complete" as const },
+});
 
 function normalizeRequest(input: AgentRuntimeRequestInput) {
   return resolvedAgentRequest({
@@ -39,7 +45,7 @@ const SKILLS: AgentSkill[] = [
     id: "write-note",
     description: "Create or edit notes",
     version: 1,
-    patterns: [],
+
     contexts: ["any"],
     activation: "auto",
     instruction: "",
@@ -49,7 +55,7 @@ const SKILLS: AgentSkill[] = [
     id: "compare-papers",
     description: "Compare two papers",
     version: 1,
-    patterns: [],
+
     contexts: ["any"],
     activation: "auto",
     instruction: "",
@@ -59,7 +65,7 @@ const SKILLS: AgentSkill[] = [
     id: "analyze-figures",
     description: "Analyze figures",
     version: 1,
-    patterns: [],
+
     contexts: ["any"],
     activation: "auto",
     instruction: "",
@@ -67,348 +73,41 @@ const SKILLS: AgentSkill[] = [
   },
 ];
 
-describe("parseClassifierResponse", function () {
-  it("returns the listed skill IDs for a clean JSON response", function () {
-    const raw = '{"skillIds": ["write-note", "analyze-figures"]}';
-    const result = parseClassifierResponse(raw, SKILLS);
-    assert.deepEqual(result, ["write-note", "analyze-figures"]);
+describe("parseSkillRouterResponse", function () {
+  it("accepts exact evidence text without model-generated offsets", function () {
+    const parsed = parseSkillRouterResponse(
+      '{"schemaVersion":1,"taskKind":"read","requestedScopes":["paper-set"],"selections":[{"skillId":"compare-papers","requestedScope":"paper-set","evidenceText":"比较这两篇论文"}],"retrievalIntent":"summarize","wantedSections":[]}',
+    );
+    assert.equal(parsed?.selections[0]?.evidenceText, "比较这两篇论文");
   });
 
-  it("returns an empty array when the classifier says no skills apply", function () {
-    const raw = '{"skillIds": []}';
-    assert.deepEqual(parseClassifierResponse(raw, SKILLS), []);
-  });
-
-  it("tolerates surrounding prose or code fences", function () {
-    const raw =
-      'Sure, here is the classification:\n```json\n{"skillIds": ["compare-papers"]}\n```';
-    assert.deepEqual(parseClassifierResponse(raw, SKILLS), ["compare-papers"]);
-  });
-
-  it("drops IDs that aren't in the known skill set", function () {
-    const raw =
-      '{"skillIds": ["write-note", "made-up-skill", "analyze-figures"]}';
-    const result = parseClassifierResponse(raw, SKILLS);
-    assert.deepEqual(result, ["write-note", "analyze-figures"]);
-  });
-
-  it("returns null for completely malformed input (caller should fall back)", function () {
-    assert.isNull(parseClassifierResponse("not JSON at all", SKILLS));
-    assert.isNull(parseClassifierResponse("", SKILLS));
-    assert.isNull(parseClassifierResponse('{"wrongKey": []}', SKILLS));
+  it("rejects unknown schema versions and malformed occurrences", function () {
     assert.isNull(
-      parseClassifierResponse('{"skillIds": "not-an-array"}', SKILLS),
-    );
-  });
-
-  it("strips non-string entries from the skillIds array", function () {
-    const raw = '{"skillIds": ["write-note", 42, null, "compare-papers"]}';
-    assert.deepEqual(parseClassifierResponse(raw, SKILLS), [
-      "write-note",
-      "compare-papers",
-    ]);
-  });
-
-  it("does not route Codex app-server skill classification through the generic LLM client", function () {
-    assert.isFalse(
-      canUseSkillClassifierModel({
-        model: "gpt-5.4",
-        apiBase: "",
-        authMode: "codex_app_server",
-      }),
-    );
-    assert.isFalse(
-      canUseSkillClassifierModel({
-        model: "gpt-5.4",
-        apiBase: "",
-        authMode: "api_key",
-      }),
-    );
-  });
-});
-
-describe("parseClassifierResponse unmatched pseudo-skill", function () {
-  it("maps a lone unmatched to a positive empty match", function () {
-    assert.deepEqual(
-      parseClassifierResponse('{"skillIds": ["unmatched"]}', SKILLS),
-      [],
-    );
-  });
-
-  it("lets real picks win over a hedged unmatched", function () {
-    assert.deepEqual(
-      parseClassifierResponse(
-        '{"skillIds": ["unmatched", "write-note"]}',
-        SKILLS,
+      parseSkillRouterResponse(
+        '{"schemaVersion":2,"taskKind":"read","requestedScopes":[],"selections":[],"retrievalIntent":"none","wantedSections":[]}',
       ),
-      ["write-note"],
     );
-  });
-
-  it("collapses hallucinated-only IDs to an empty match", function () {
-    assert.deepEqual(
-      parseClassifierResponse('{"skillIds": ["bogus-only"]}', SKILLS),
-      [],
-    );
-  });
-});
-
-describe("parseClassifiedTurnIntent", function () {
-  it("parses a valid full intent object", function () {
-    const result = parseClassifiedTurnIntent(
-      '{"skillIds":[],"retrievalIntent":"summarize","paperTargetIntent":"all_visible","externalSearchIntent":"both","wantedSections":["methods"],"queryLanguage":"zh"}',
-    );
-
-    assert.deepEqual(result, {
-      retrievalIntent: "summarize",
-      paperTargetIntent: "all_visible",
-      externalSearchIntent: "both",
-      wantedSections: ["methods"],
-      queryLanguage: "zh",
-      writeDisposition: "none",
-      actionInterpretationSource: "classifier",
-      actionIntents: [],
-    });
-  });
-
-  it("keeps valid intent when paperTargetIntent is missing or malformed", function () {
-    for (const paperTargetIntent of [undefined, "both"]) {
-      const result = parseClassifiedTurnIntent(
-        JSON.stringify({
-          retrievalIntent: "summarize",
-          paperTargetIntent,
-          wantedSections: [],
-          actionIntents: [],
-        }),
-      );
-      assert.equal(result?.retrievalIntent, "summarize");
-      assert.isUndefined(result?.paperTargetIntent);
-    }
-  });
-
-  it("parses every bounded paperTargetIntent value", function () {
-    for (const paperTargetIntent of [
-      "active",
-      "added",
-      "all_visible",
-      "unspecified",
-    ] as const) {
-      const result = parseClassifiedTurnIntent(
-        JSON.stringify({
-          retrievalIntent: "none",
-          paperTargetIntent,
-          wantedSections: [],
-          actionIntents: [],
-        }),
-      );
-      assert.equal(result?.paperTargetIntent, paperTargetIntent);
-    }
-  });
-
-  it("returns null when retrievalIntent is missing or invalid", function () {
-    assert.isNull(parseClassifiedTurnIntent('{"skillIds":[]}'));
-    assert.isNull(parseClassifiedTurnIntent('{"retrievalIntent":"browse"}'));
-    assert.isNull(parseClassifiedTurnIntent("not json"));
-  });
-
-  it("rejects required-write classifications without typed obligations", function () {
     assert.isNull(
-      parseClassifiedTurnIntent(
-        '{"retrievalIntent":"none","wantedSections":[],"writeDisposition":"required","actionIntents":[]}',
+      parseSkillRouterResponse(
+        '{"schemaVersion":1,"taskKind":"read","requestedScopes":["single-paper"],"selections":[{"skillId":"x","requestedScope":"single-paper","evidenceText":"x","occurrence":-1}],"retrievalIntent":"none","wantedSections":[]}',
       ),
     );
   });
-
-  it("filters unknown wantedSections entries", function () {
-    const result = parseClassifiedTurnIntent(
-      '{"retrievalIntent":"enumerate","wantedSections":["methods","bogus"]}',
-    );
-
-    assert.deepEqual(result?.wantedSections, ["methods"]);
-  });
-
-  for (const externalSearchIntent of [
-    "none",
-    "web",
-    "literature",
-    "both",
-  ] as const) {
-    it(`parses external search intent ${externalSearchIntent}`, function () {
-      const result = parseClassifiedTurnIntent(
-        JSON.stringify({
-          retrievalIntent: "none",
-          externalSearchIntent,
-          wantedSections: [],
-          queryLanguage: "es",
-          actionIntents: [],
-        }),
-      );
-
-      assert.equal(result?.externalSearchIntent, externalSearchIntent);
-    });
-  }
-
-  it("omits a missing or invalid external search hint without losing other intent fields", function () {
-    const missing = parseClassifiedTurnIntent(
-      '{"retrievalIntent":"verify","wantedSections":["results"],"queryLanguage":"zh","actionIntents":[]}',
-    );
-    const invalid = parseClassifiedTurnIntent(
-      '{"retrievalIntent":"verify","externalSearchIntent":"browse","wantedSections":["results"],"queryLanguage":"zh","actionIntents":[]}',
-    );
-
-    for (const result of [missing, invalid]) {
-      assert.deepEqual(result, {
-        retrievalIntent: "verify",
-        wantedSections: ["results"],
-        queryLanguage: "zh",
-        writeDisposition: "none",
-        actionInterpretationSource: "classifier",
-        actionIntents: [],
-      });
-    }
-  });
 });
 
-describe("detectTurnIntent", function () {
-  it("falls back to regex skills with a null intent when no model config is available", async function () {
-    const result = await detectTurnIntent(
-      {
-        userText: "compare these papers",
-        model: "some-model",
-        apiBase: "",
-      } as any,
-      SKILLS,
-    );
-
-    assert.deepEqual(result, {
-      skillIds: [],
-      classifiedIntent: null,
-      degraded: false,
-      failureReason: "not_configured",
-    });
-  });
-
-  it("passes the profile to a provider-safe utility classifier call", async function () {
-    let captured: Record<string, unknown> = {};
-    const profileOverride = {
-      forModel: "gpt-5.4",
-      limits: { outputTokens: 2_000 },
-    };
-    const result = await detectTurnIntent(
-      {
-        userText: "compare these papers",
-        model: "gpt-5.4",
-        apiBase: "https://api.openai.com/v1",
-        apiKey: "key",
-        providerProtocol: "openai_chat_compat",
-        advanced: {
-          temperature: 0,
-          maxTokens: 4_000,
-          profileOverride,
-        },
-      } as any,
-      SKILLS,
-      {
-        llmCall: async (params) => {
-          captured = params as unknown as Record<string, unknown>;
-          return '{"skillIds":["unmatched"],"retrievalIntent":"none","externalSearchIntent":"none","wantedSections":[],"queryLanguage":"en"}';
-        },
-      },
-    );
-
-    assert.isFalse(result.degraded);
-    assert.deepEqual(captured.reasoning, {
-      provider: "openai",
-      level: "low",
-    });
-    assert.deepEqual(captured.profileOverride, profileOverride);
-    assert.include(
-      String(captured.prompt || ""),
-      '"externalSearchIntent": "none|web|literature|both"',
-    );
-    assert.include(
-      String(captured.prompt || ""),
-      "The tools are complementary, not mutually exclusive",
-    );
-    assert.include(
-      String(captured.prompt || ""),
-      '"use library_batch auto_tag" is apply_tags, not command_execute',
-    );
-  });
-
-  it("records unparseable classifier output as a distinct degradation reason", async function () {
-    const result = await detectTurnIntent(
-      {
-        userText: "compare these papers",
-        model: "gpt-5.4",
-        apiBase: "https://api.openai.com/v1",
-        apiKey: "key",
-        providerProtocol: "openai_chat_compat",
-      } as any,
-      SKILLS,
-      { llmCall: async () => "not JSON" },
-    );
-
-    assert.isTrue(result.degraded);
-    assert.equal(result.failureReason, "unparseable");
-  });
-
-  it("degrades to deterministic action parsing for required writes with no obligations", async function () {
-    const result = await detectTurnIntent(
-      {
-        userText: "create a Zotero note and export a markdown file",
-        model: "gpt-5.4",
-        apiBase: "https://api.openai.com/v1",
-        apiKey: "key",
-        providerProtocol: "openai_chat_compat",
-      } as any,
-      SKILLS,
-      {
-        llmCall: async () =>
-          '{"skillIds":["unmatched"],"retrievalIntent":"none","wantedSections":[],"writeDisposition":"required","actionIntents":[]}',
-      },
-    );
-
-    assert.isTrue(result.degraded);
-    assert.equal(result.failureReason, "unparseable");
-    assert.isNull(result.classifiedIntent);
-  });
-
-  it("rejects a classifier verb that contradicts an explicit tag removal", async function () {
-    const result = await detectTurnIntent(
-      {
-        userText: 'Remove exactly the tag "reviewed" from item 41.',
-        model: "gpt-5.4",
-        apiBase: "https://api.openai.com/v1",
-        apiKey: "key",
-        providerProtocol: "openai_chat_compat",
-      } as any,
-      SKILLS,
-      {
-        llmCall: async () =>
-          '{"skillIds":["unmatched"],"retrievalIntent":"none","wantedSections":[],"writeDisposition":"required","actionIntents":[{"operation":"set_item_tags","coverage":"one","targetKind":"papers","parameters":{"tags":["reviewed"]}}]}',
-      },
-    );
-
-    assert.isTrue(result.degraded);
-    assert.equal(result.failureReason, "unparseable");
-    assert.isNull(result.classifiedIntent);
-  });
-});
-
-describe("resolveSkillRouting classified summarize force", function () {
+describe("resolveSkillRouting classified context gate", function () {
   const LIBRARY_ANALYSIS_SKILL: AgentSkill = {
     id: "library-analysis",
     description: "Analyze your whole library or collection with statistics",
     version: 1,
-    patterns: [],
+
     contexts: ["library-corpus"],
     activation: "auto",
     instruction: "",
     source: "system",
   };
 
-  it("forces library-analysis for a classified summarize over a selected collection", function () {
+  it("accepts a classified library skill over a selected collection", function () {
     const resolution = resolveSkillRouting(
       {
         userText: "总结这个文件夹的研究主题",
@@ -416,13 +115,14 @@ describe("resolveSkillRouting classified summarize force", function () {
           { collectionId: 1, name: "C", libraryID: 1 },
         ],
         classifiedIntent: {
+          semantic: semanticFixture(),
           retrievalIntent: "summarize",
           wantedSections: [],
         },
         forcedSkillIds: [],
       } as any,
       [LIBRARY_ANALYSIS_SKILL],
-      [],
+      ["library-analysis"],
     );
 
     assert.include(resolution.matchedSkillIds, "library-analysis");
@@ -433,6 +133,7 @@ describe("resolveSkillRouting classified summarize force", function () {
       {
         userText: "总结这个文件夹的研究主题",
         classifiedIntent: {
+          semantic: semanticFixture(),
           retrievalIntent: "summarize",
           wantedSections: [],
         },
@@ -445,3 +146,244 @@ describe("resolveSkillRouting classified summarize force", function () {
     assert.notInclude(resolution.matchedSkillIds, "library-analysis");
   });
 });
+
+describe("shared semantic routing service", function () {
+  it("preserves a redacted transport failure detail for diagnosis without authorizing fallback", async function () {
+    const result = await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "private-fixture-key",
+        userText: "File my paper",
+      } as any,
+      [],
+      {
+        llmCall: async () => {
+          throw new Error(
+            "Response incomplete: output limit reached; private-fixture-key",
+          );
+        },
+      },
+    );
+    assert.isNull(result.classifiedIntent);
+    assert.include(result.failureDetail || "", "output limit reached");
+    assert.notInclude(result.failureDetail || "", "private-fixture-key");
+  });
+  it("recovers output exhaustion once within the utility budget", async function () {
+    const calls: any[] = [];
+    const result = await detectTurnIntent(
+      {
+        model: "deepseek-v4-flash",
+        apiBase: "https://api.deepseek.com",
+        apiKey: "fixture",
+        userText: "File this paper in Bayesian",
+        reasoning: { provider: "deepseek", level: "high" },
+      } as any,
+      [],
+      {
+        llmCall: async (params) => {
+          calls.push(params);
+          if (calls.length === 1)
+            return {
+              text: "partial",
+              completion: { status: "incomplete", reason: "output_limit" },
+            };
+          return completeOutcome(JSON.stringify(semanticResponseFixture()));
+        },
+      },
+    );
+    assert.isFalse(result.degraded);
+    assert.lengthOf(calls, 2);
+    for (const call of calls) {
+      assert.isAtMost(call.outputTokenLimit.tokens, 7000);
+      assert.notEqual(call.reasoning?.level, "high");
+    }
+    assert.equal(
+      calls[0].outputTokenLimit.tokens,
+      calls[1].outputTokenLimit.tokens,
+    );
+    assert.equal(result.attempts?.[0].reason, "output_limit");
+  });
+
+  it("cannot grant authority after two exhausted completions", async function () {
+    let calls = 0;
+    const result = await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "fixture",
+        userText: "Move this paper",
+      } as any,
+      [],
+      {
+        llmCall: async () => {
+          calls++;
+          return {
+            text: JSON.stringify(semanticResponseFixture()),
+            completion: { status: "incomplete", reason: "output_limit" },
+          };
+        },
+      },
+    );
+    assert.equal(calls, 2);
+    assert.isNull(result.classifiedIntent);
+    assert.isEmpty(result.skillIds);
+    assert.equal(result.failureReason, "output_limit");
+  });
+
+  it("interprets configured skill preferences in the same semantic call", async function () {
+    let prompt = "";
+    const preference =
+      "Store my file notes under /notes/academic and preserve Zotero memberships.";
+    await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "test",
+        userText: "Prepare my note",
+      } as any,
+      [{ ...SKILLS[0], instruction: preference }],
+      {
+        llmCall: async (params) => {
+          prompt = params.prompt;
+          return completeOutcome(JSON.stringify(semanticResponseFixture()));
+        },
+      },
+    );
+    assert.include(prompt, preference);
+  });
+  it("uses semantic evidence to activate a manual skill named in ordinary language", async function () {
+    const skill = { ...SKILLS[0], activation: "manual" as const };
+    const request = {
+      model: "test",
+      apiBase: "https://example.invalid",
+      apiKey: "test",
+      userText: "Please use the write-note skill",
+    };
+    const result = await detectTurnIntent(request as any, [skill], {
+      llmCall: async () =>
+        completeOutcome(
+          JSON.stringify(
+            semanticResponseFixture({
+              requestedScopes: ["none"],
+              selections: [
+                {
+                  skillId: skill.id,
+                  requestedScope: "none",
+                  evidenceText: "use the write-note skill",
+                },
+              ],
+            }),
+          ),
+        ),
+    });
+    assert.isFalse(result.degraded);
+    assert.deepEqual(result.skillIds, [skill.id]);
+    assert.deepEqual(
+      resolveSkillRouting(request as any, [skill], result.skillIds)
+        .matchedSkillIds,
+      [skill.id],
+    );
+  });
+  it("reports interpretation unavailable without a configured transport", async function () {
+    const result = await detectTurnIntent(
+      { model: "test", apiBase: "", userText: "create a note" } as any,
+      [],
+    );
+    assert.isNull(result.classifiedIntent);
+    assert.isTrue(result.degraded);
+    assert.equal(result.failureReason, "not_configured");
+  });
+  it("interprets once for actions and skills, including explicitly selected skills", async function () {
+    let calls = 0;
+    const result = await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "test",
+        userText: "Use my selected workflow",
+        forcedSkillIds: ["write-note"],
+      } as any,
+      SKILLS,
+      {
+        llmCall: async () => {
+          calls++;
+          return completeOutcome(JSON.stringify(semanticResponseFixture()));
+        },
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(result.routingReceipt?.skills[0].source, "explicit");
+    assert.equal(result.classifiedIntent?.semantic?.version, 1);
+  });
+  it("rejects fabricated skill evidence and cannot downgrade to a keyword route", async function () {
+    const result = await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "test",
+        userText: "Explain the paper",
+      } as any,
+      SKILLS,
+      {
+        llmCall: async () =>
+          completeOutcome(
+            JSON.stringify(
+              semanticResponseFixture({
+                selections: [
+                  {
+                    skillId: "write-note",
+                    requestedScope: "none",
+                    evidenceText: "Create a note",
+                  },
+                ],
+              }),
+            ),
+          ),
+      },
+    );
+    assert.isNull(result.classifiedIntent);
+    assert.isEmpty(result.skillIds);
+  });
+  it("preserves skill provenance and detects changed plan instructions", async function () {
+    const result = await detectTurnIntent(
+      {
+        model: "test",
+        apiBase: "https://example.invalid",
+        apiKey: "test",
+        userText: "Use my selected workflow",
+        forcedSkillIds: ["write-note"],
+      } as any,
+      SKILLS,
+      {
+        llmCall: async () =>
+          completeOutcome(JSON.stringify(semanticResponseFixture())),
+      },
+    );
+    const receipt = {
+      ...result.routingReceipt!,
+      skills: result.routingReceipt!.skills.map(
+        ({ id, version, instructionHash, source }) => ({
+          id,
+          version,
+          instructionHash,
+          source,
+        }),
+      ),
+    };
+    assert.deepEqual(
+      (await resolvePlanSkillRoutingReceipt(receipt, SKILLS)).skillIds,
+      ["write-note"],
+    );
+    assert.deepEqual(
+      (
+        await resolvePlanSkillRoutingReceipt(
+          receipt,
+          SKILLS.map((skill) => ({ ...skill, instruction: "Changed" })),
+        )
+      ).changedExplicitSkillIds,
+      ["write-note"],
+    );
+  });
+});
+import { semanticResponseFixture } from "./helpers/semanticIntent";

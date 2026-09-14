@@ -665,35 +665,51 @@
         data-pref-panel="agent"
         style="display: none; flex-direction: column; gap: 18px"
       >
-        <html:div style="display: flex; flex-direction: column; gap: 4px">
+        <html:div
+          id="__addonRef__-external-mcp-settings"
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px;
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 8px;
+            background: Field;
+          "
+        >
+          <html:span
+            style="font-weight: 700; font-size: 13px"
+            data-l10n-id="pref-external-mcp-title"
+            >External MCP clients</html:span
+          >
           <html:label
             style="
               display: inline-flex;
               align-items: center;
               gap: 8px;
-              font-weight: 600;
               font-size: 12px;
-              color: var(--fill-primary, inherit);
+              cursor: pointer;
             "
           >
-            <html:input
-              id="__addonRef__-enable-agent-mode"
-              type="checkbox"
-            ></html:input>
-            Enable Agent Mode (Beta)
+            <html:input type="checkbox" id="__addonRef__-external-mcp-writes" />
+            <html:span data-l10n-id="pref-external-mcp-writes"
+              >Allow writes from external MCP clients</html:span
+            >
           </html:label>
           <html:span
             style="
               font-size: 11px;
-              color: var(--fill-secondary, #888);
-              margin-top: 1px;
-              display: block;
+              color: var(--fill-secondary, #777);
+              line-height: 1.5;
             "
+            data-l10n-id="pref-external-mcp-description"
+            >Trust clients holding the MCP connection credential to use all
+            exposed Zotero write tools, including deletion and scripts. The
+            connected agent controls approval; Original Agent permission modes
+            do not apply. Zotero validates and verifies changes. Integrated
+            Codex and Claude Code use their own MCP enablement
+            settings.</html:span
           >
-            Shows the "Agent (beta)" toggle in the context bar, enabling the
-            agentic multi-step assistant. Off by default — enable only if you
-            want to experiment with the beta feature.
-          </html:span>
         </html:div>
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
@@ -795,7 +811,7 @@
         </html:div>
 
         <html:div
-          id="__addonRef__-tavily-card"
+          id="__addonRef__-original-agent-card"
           style="
             border: 1px solid var(--stroke-secondary, #c8c8c8);
             border-radius: 8px;
@@ -815,14 +831,14 @@
             "
           >
             <html:span style="font-weight: 700; font-size: 13px"
-              >Tavily Web Search</html:span
+              >Original Agent Mode</html:span
             >
           </html:div>
           <html:div
             style="
               display: flex;
               flex-direction: column;
-              gap: 12px;
+              gap: 14px;
               padding: 14px;
             "
           >
@@ -833,114 +849,277 @@
                 line-height: 1.5;
               "
             >
-              Adds current, general web search and focused page reading to the
-              in-plugin Agent. The key stays in your local Zotero preferences.
+              This panel configures the in-plugin Original Agent. Its library
+              permissions are independent from the permission controls for
+              Claude Code and Codex.
             </html:span>
-            <html:div style="display: flex; flex-direction: column; gap: 4px">
+
+            <html:div
+              style="
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                padding: 12px;
+                border: 1px solid var(--stroke-secondary, #c8c8c8);
+                border-radius: 8px;
+                background: color-mix(
+                  in srgb,
+                  Field 92%,
+                  var(--color-accent, #2563eb) 8%
+                );
+              "
+            >
               <html:label
-                for="__addonRef__-tavily-api-key"
                 style="
-                  display: block;
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 8px;
                   font-weight: 600;
                   font-size: 12px;
                   color: var(--fill-primary, inherit);
                 "
               >
-                API key
+                <html:input
+                  id="__addonRef__-enable-agent-mode"
+                  type="checkbox"
+                ></html:input>
+                Enable Agent Mode (Beta)
               </html:label>
+              <html:span
+                style="
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                  display: block;
+                "
+              >
+                Shows the "Agent (beta)" toggle in the context bar, enabling the
+                agentic multi-step assistant. Off by default — enable only if
+                you want to experiment with the beta feature.
+              </html:span>
+            </html:div>
+
+            <html:div
+              style="
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                padding: 12px;
+                border: 1px solid var(--stroke-secondary, #c8c8c8);
+                border-radius: 8px;
+                background: Field;
+              "
+            >
+              <html:label
+                for="__addonRef__-original-agent-permission-mode"
+                style="
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                "
+              >
+                Permission mode
+              </html:label>
+              <html:select
+                id="__addonRef__-original-agent-permission-mode"
+                style="
+                  width: 100%;
+                  min-width: 0;
+                  max-width: 100%;
+                  height: 28px;
+                  margin: 0;
+                  padding: 4px 8px;
+                  font-size: 12px;
+                  line-height: 18px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  box-sizing: border-box;
+                  background: Field;
+                  color: FieldText;
+                "
+              >
+                <html:option value="safe">Safe</html:option>
+                <html:option value="auto">Auto</html:option>
+                <html:option value="yolo">Yolo</html:option>
+              </html:select>
+              <html:span
+                id="__addonRef__-original-agent-permission-mode-description"
+                style="
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  line-height: 1.45;
+                  overflow-wrap: anywhere;
+                "
+              ></html:span>
+              <html:span
+                style="
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  line-height: 1.45;
+                  overflow-wrap: anywhere;
+                "
+              >
+                This setting controls every Original Agent action, including
+                Zotero changes, local files, commands, scripts, and network
+                tools. Claude Code and Codex keep their own independent native
+                permission profiles. Reversible Original Agent changes are
+                recorded and can be reverted from Agent history.
+              </html:span>
+            </html:div>
+
+            <html:div
+              id="__addonRef__-tavily-card"
+              style="
+                border: 1px solid var(--stroke-secondary, #c8c8c8);
+                border-radius: 8px;
+                overflow: hidden;
+                background: Field;
+              "
+            >
               <html:div
                 style="
                   display: flex;
                   align-items: center;
-                  gap: 8px;
-                  min-width: 0;
+                  justify-content: space-between;
+                  padding: 8px 12px;
+                  background: Field;
+                  color: FieldText;
+                  border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);
                 "
               >
-                <html:input
-                  id="__addonRef__-tavily-api-key"
-                  type="password"
-                  autocomplete="off"
-                  placeholder="tvly-…"
+                <html:span style="font-weight: 700; font-size: 12px"
+                  >Tavily Web Search</html:span
+                >
+              </html:div>
+              <html:div
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  gap: 12px;
+                  padding: 14px;
+                "
+              >
+                <html:span
                   style="
-                    width: 100%;
-                    min-width: 0;
-                    padding: 6px 10px;
-                    font-size: 13px;
-                    border: 1px solid var(--stroke-secondary, #c8c8c8);
-                    border-radius: 6px;
-                    box-sizing: border-box;
-                    background: Field;
-                    color: FieldText;
-                  "
-                ></html:input>
-                <html:button
-                  id="__addonRef__-tavily-test"
-                  type="button"
-                  style="
-                    padding: 4px 10px;
-                    font-size: 12px;
-                    font-weight: 500;
-                    white-space: nowrap;
-                    flex-shrink: 0;
-                    background: transparent;
-                    color: var(--color-accent, #2563eb);
-                    border: 1px solid var(--color-accent, #2563eb);
-                    border-radius: 5px;
-                    cursor: pointer;
+                    font-size: 11.5px;
+                    color: var(--fill-secondary, #888);
+                    line-height: 1.5;
                   "
                 >
-                  Test connection
-                </html:button>
+                  Adds current, general web search and focused page reading to
+                  the in-plugin Agent. The key stays in your local Zotero
+                  preferences.
+                </html:span>
+                <html:div
+                  style="display: flex; flex-direction: column; gap: 4px"
+                >
+                  <html:label
+                    for="__addonRef__-tavily-api-key"
+                    style="
+                      display: block;
+                      font-weight: 600;
+                      font-size: 12px;
+                      color: var(--fill-primary, inherit);
+                    "
+                  >
+                    API key
+                  </html:label>
+                  <html:div
+                    style="
+                      display: flex;
+                      align-items: center;
+                      gap: 8px;
+                      min-width: 0;
+                    "
+                  >
+                    <html:input
+                      id="__addonRef__-tavily-api-key"
+                      type="password"
+                      autocomplete="off"
+                      placeholder="tvly-…"
+                      style="
+                        width: 100%;
+                        min-width: 0;
+                        padding: 6px 10px;
+                        font-size: 13px;
+                        border: 1px solid var(--stroke-secondary, #c8c8c8);
+                        border-radius: 6px;
+                        box-sizing: border-box;
+                        background: Field;
+                        color: FieldText;
+                      "
+                    ></html:input>
+                    <html:button
+                      id="__addonRef__-tavily-test"
+                      type="button"
+                      style="
+                        padding: 4px 10px;
+                        font-size: 12px;
+                        font-weight: 500;
+                        white-space: nowrap;
+                        flex-shrink: 0;
+                        background: transparent;
+                        color: var(--color-accent, #2563eb);
+                        border: 1px solid var(--color-accent, #2563eb);
+                        border-radius: 5px;
+                        cursor: pointer;
+                      "
+                    >
+                      Test connection
+                    </html:button>
+                  </html:div>
+                  <html:a
+                    id="__addonRef__-tavily-key-link"
+                    href="https://app.tavily.com"
+                    style="
+                      width: fit-content;
+                      font-size: 11px;
+                      color: var(--color-accent, #2563eb);
+                      cursor: pointer;
+                    "
+                  >
+                    Get a free API key
+                  </html:a>
+                  <html:span
+                    id="__addonRef__-tavily-status"
+                    role="status"
+                    aria-live="polite"
+                    style="
+                      display: none;
+                      white-space: pre-line;
+                      font-size: 11px;
+                      color: var(--fill-secondary, #888);
+                      line-height: 1.45;
+                    "
+                  ></html:span>
+                </html:div>
+                <html:span
+                  style="
+                    font-size: 11px;
+                    color: var(--fill-secondary, #888);
+                    line-height: 1.5;
+                  "
+                >
+                  Basic search costs 1 Tavily credit; Advanced costs 2. Basic
+                  extraction costs 1 credit per 5 successful pages; Advanced
+                  costs 2 per 5. Tavily currently offers a free monthly credit
+                  allowance.
+                </html:span>
+                <html:span
+                  style="
+                    font-size: 11px;
+                    color: var(--fill-secondary, #888);
+                    line-height: 1.5;
+                  "
+                >
+                  Search queries and requested URLs are sent to Tavily and are
+                  handled under Tavily's privacy, retention, and search-index
+                  policies. When displayed, favicons are loaded from public URLs
+                  supplied by Tavily. Do not include credentials or sensitive
+                  private text in web queries.
+                </html:span>
               </html:div>
-              <html:a
-                id="__addonRef__-tavily-key-link"
-                href="https://app.tavily.com"
-                style="
-                  width: fit-content;
-                  font-size: 11px;
-                  color: var(--color-accent, #2563eb);
-                  cursor: pointer;
-                "
-              >
-                Get a free API key
-              </html:a>
-              <html:span
-                id="__addonRef__-tavily-status"
-                role="status"
-                aria-live="polite"
-                style="
-                  display: none;
-                  white-space: pre-line;
-                  font-size: 11px;
-                  color: var(--fill-secondary, #888);
-                  line-height: 1.45;
-                "
-              ></html:span>
             </html:div>
-            <html:span
-              style="
-                font-size: 11px;
-                color: var(--fill-secondary, #888);
-                line-height: 1.5;
-              "
-            >
-              Basic search costs 1 Tavily credit; Advanced costs 2. Basic
-              extraction costs 1 credit per 5 successful pages; Advanced costs 2
-              per 5. Tavily currently offers a free monthly credit allowance.
-            </html:span>
-            <html:span
-              style="
-                font-size: 11px;
-                color: var(--fill-secondary, #888);
-                line-height: 1.5;
-              "
-            >
-              Search queries and requested URLs are sent to Tavily and are
-              handled under Tavily's privacy, retention, and search-index
-              policies. When displayed, favicons are loaded from public URLs
-              supplied by Tavily. Do not include credentials or sensitive
-              private text in web queries.
-            </html:span>
           </html:div>
         </html:div>
 
@@ -1135,8 +1314,8 @@
               "
             >
               First-class Codex runtime integration. Run
-              <html:code>codex login</html:code> before enabling it; Zotero
-              keeps local tool approvals in its own confirmation cards.
+              <html:code>codex login</html:code> before enabling it. Codex
+              controls tool approval through its own permission profile.
             </html:span>
             <html:div
               style="
@@ -1310,6 +1489,45 @@
                       <html:option value="xhigh">XHigh</html:option>
                     </html:select>
                   </html:div>
+                  <html:div
+                    style="display: flex; flex-direction: column; gap: 4px"
+                  >
+                    <html:label
+                      for="__addonRef__-codex-app-server-permission-profile"
+                      style="font-weight: 600; font-size: 12px"
+                    >
+                      Codex permission profile
+                    </html:label>
+                    <html:select
+                      id="__addonRef__-codex-app-server-permission-profile"
+                      style="
+                        width: 100%;
+                        height: 28px;
+                        padding: 4px 8px;
+                        font-size: 12px;
+                      "
+                    />
+                    <html:span
+                      id="__addonRef__-codex-app-server-permission-status"
+                      role="status"
+                      aria-live="polite"
+                      style="
+                        font-size: 11px;
+                        color: var(--fill-secondary, #777);
+                        line-height: 1.4;
+                      "
+                    />
+                    <html:button
+                      id="__addonRef__-codex-app-server-permission-refresh"
+                      type="button"
+                      style="
+                        align-self: flex-start;
+                        padding: 2px 8px;
+                        font-size: 11px;
+                      "
+                      >Refresh</html:button
+                    >
+                  </html:div>
                 </html:div>
                 <html:span
                   style="
@@ -1446,9 +1664,11 @@
                     "
                   >
                     Lets native Codex and Claude Code use a curated local MCP
-                    server for Zotero library/PDF reading and guarded Zotero
-                    operations. Write and destructive tools still use Zotero
-                    confirmation or tool-specific safety checks.
+                    server for Zotero library/PDF reading and write operations.
+                    The calling runtime controls approval using its own
+                    permission settings. Zotero validates operations, records
+                    recovery data, and verifies changes without duplicate
+                    permission prompts.
                   </html:span>
                 </html:div>
                 <html:label
@@ -1518,114 +1738,6 @@
                   servers. Claude Code receives a scoped MCP server directly for
                   each turn. User-level Codex skills, plugins, and other MCP
                   setup remain owned by Codex.
-                </html:span>
-              </html:div>
-
-              <html:div
-                style="
-                  display: flex;
-                  flex-direction: column;
-                  gap: 8px;
-                  padding: 12px;
-                  border: 1px solid var(--stroke-secondary, #c8c8c8);
-                  border-radius: 8px;
-                  background: Field;
-                "
-              >
-                <html:div
-                  style="display: flex; flex-direction: column; gap: 4px"
-                >
-                  <html:span
-                    style="
-                      font-weight: 700;
-                      font-size: 12px;
-                      color: var(--fill-primary, inherit);
-                    "
-                    >Native Codex approvals</html:span
-                  >
-                  <html:span
-                    style="
-                      font-size: 11px;
-                      color: var(--fill-secondary, #777);
-                      line-height: 1.5;
-                    "
-                  >
-                    Lets Zotero surface native Codex command, file-change, and
-                    permission approval requests as per-request review cards.
-                    This does not grant shell or filesystem access by default.
-                  </html:span>
-                </html:div>
-                <html:label
-                  style="
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 8px;
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: var(--fill-primary, inherit);
-                  "
-                >
-                  <html:input
-                    id="__addonRef__-codex-app-server-native-approvals-enable"
-                    type="checkbox"
-                  ></html:input>
-                  Enable native Codex approval review cards
-                </html:label>
-                <html:div
-                  style="
-                    display: grid;
-                    grid-template-columns: minmax(180px, 260px) 1fr;
-                    gap: 8px 12px;
-                    align-items: center;
-                  "
-                >
-                  <html:label
-                    for="__addonRef__-codex-app-server-approvals-reviewer"
-                    style="
-                      font-size: 12px;
-                      font-weight: 600;
-                      color: var(--fill-primary, inherit);
-                    "
-                  >
-                    Reviewer
-                  </html:label>
-                  <html:select
-                    id="__addonRef__-codex-app-server-approvals-reviewer"
-                    style="
-                      width: 100%;
-                      max-width: 260px;
-                      height: 28px;
-                      margin: 0;
-                      padding: 4px 8px;
-                      font-size: 12px;
-                      line-height: 18px;
-                      border: 1px solid var(--stroke-secondary, #c8c8c8);
-                      border-radius: 6px;
-                      background: Field;
-                      color: FieldText;
-                      box-sizing: border-box;
-                    "
-                  >
-                    <html:option value="user">User</html:option>
-                    <html:option value="auto_review">Auto review</html:option>
-                  </html:select>
-                </html:div>
-                <html:span
-                  id="__addonRef__-codex-app-server-native-approvals-status"
-                  style="font-size: 11.5px; display: none"
-                ></html:span>
-                <html:span
-                  style="
-                    font-size: 11px;
-                    color: var(--fill-secondary, #777);
-                    line-height: 1.45;
-                    display: block;
-                  "
-                >
-                  User review shows every native request that reaches Zotero.
-                  Auto review only changes Codex app-server's reviewer
-                  parameter; Zotero MCP trust rules and confirmation behavior
-                  stay unchanged.
                 </html:span>
               </html:div>
             </html:div>
@@ -2130,7 +2242,7 @@
                     >
                       Choose a model reported by Claude Code. Select Customized
                       to enter an alias, exact model ID, or provider-specific
-                      value.
+                      value. Per-response output limit: Managed by runtime.
                     </html:span>
                     <html:div
                       id="__addonRef__-claude-code-custom-model-wrap"
@@ -2235,7 +2347,7 @@
                         color: var(--fill-primary, inherit);
                       "
                     >
-                      Permission Mode
+                      Claude Code permission mode
                     </html:label>
                     <html:select
                       id="__addonRef__-agent-permission-mode"
@@ -2254,24 +2366,28 @@
                         background: Field;
                         color: FieldText;
                       "
-                    >
-                      <html:option value="safe">safe</html:option>
-                      <html:option value="yolo">yolo</html:option>
-                    </html:select>
+                    />
                     <html:span
+                      id="__addonRef__-claude-code-permission-status"
+                      role="status"
+                      aria-live="polite"
                       style="
                         font-size: 11px;
                         color: var(--fill-secondary, #777);
                         line-height: 1.45;
                         overflow-wrap: anywhere;
                       "
+                    />
+                    <html:button
+                      id="__addonRef__-claude-code-permission-refresh"
+                      type="button"
+                      style="
+                        align-self: flex-start;
+                        padding: 2px 8px;
+                        font-size: 11px;
+                      "
+                      >Refresh</html:button
                     >
-                      <html:code>safe</html:code>
-                      is recommended.
-                      <html:code>yolo</html:code>
-                      changes bridge permissions only; Zotero safety checks
-                      still apply.
-                    </html:span>
                   </html:div>
 
                   <html:div

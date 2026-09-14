@@ -5,7 +5,14 @@ import { assert } from "chai";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-const FOOTER_ACTION_CLASSES = ["retry", "copy", "note", "fork", "delete"];
+const FOOTER_ACTION_CLASSES = [
+  "retry",
+  "copy",
+  "note",
+  "fork",
+  "delete",
+  "expand",
+];
 
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

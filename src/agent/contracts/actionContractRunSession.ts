@@ -1,10 +1,17 @@
+import { carryWorkflowProgress } from "./workflowContinuation";
+import type { ActionContractCheckpoint } from "./workflowCheckpoint";
+export {
+  readLatestActionContractCheckpoint,
+  type ActionContractCheckpoint,
+} from "./workflowCheckpoint";
+import { ActionReferenceResolutionError } from "./actionScope";
 import type {
   AgentEvent,
   AgentRuntimeRequest,
   ResolvedAgentRuntimeRequest,
 } from "../types";
 import {
-  evaluateActionContract,
+  evaluatePreparedActionContract,
   formatReceiptStatus,
 } from "./actionEvaluation";
 import type {
@@ -12,11 +19,6 @@ import type {
   AgentActionProgressLedger,
   AgentActionReceipt,
 } from "./types";
-
-export type ActionContractCheckpoint = {
-  contract: AgentActionContract;
-  progress: AgentActionProgressLedger;
-};
 
 export type ActionContractInitialization =
   | { kind: "ready" }
@@ -47,41 +49,6 @@ type ActionContractRunSessionParams = {
   emit: (event: AgentEvent) => Promise<void>;
 };
 
-function isExplicitResumeRequest(text: string): boolean {
-  return /^\s*(?:continue|resume|keep going|go on|pick up where you left off)\b/i.test(
-    text,
-  );
-}
-
-export function readLatestActionContractCheckpoint(
-  events: readonly AgentEvent[],
-): ActionContractCheckpoint | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (
-      event.type !== "provider_event" ||
-      event.providerType !== "agent_action_contract"
-    ) {
-      continue;
-    }
-    const contract = event.payload?.contract as AgentActionContract | undefined;
-    const progress = event.payload?.progress as
-      | AgentActionProgressLedger
-      | undefined;
-    if (
-      contract?.version === 2 &&
-      typeof contract.id === "string" &&
-      Array.isArray(contract.obligations) &&
-      progress?.version === 1 &&
-      progress.contractId === contract.id &&
-      Array.isArray(progress.obligations)
-    ) {
-      return { contract, progress };
-    }
-  }
-  return null;
-}
-
 export class ActionContractRunSession {
   private readonly request: ResolvedAgentRuntimeRequest;
   private readonly contracts: ActionContractCreationPort;
@@ -97,17 +64,55 @@ export class ActionContractRunSession {
   async initialize(params: {
     checkpoint: ActionContractCheckpoint | null;
   }): Promise<ActionContractInitialization> {
+    if (this.request.classifiedIntent?.semantic)
+      await this.emit({
+        type: "provider_event",
+        providerType: "agent_semantic_intent",
+        payload: {
+          intent: this.request.classifiedIntent,
+          clarificationHistory: this.request.clarificationHistory || [],
+        },
+      });
     try {
-      if (params.checkpoint && isExplicitResumeRequest(this.request.userText)) {
-        this.request.actionContract = params.checkpoint.contract;
-        this.request.actionProgress = params.checkpoint.progress;
+      if (this.request.planContext?.phase === "executing") {
+        // PlanExecutionRunSession has restored either the initial frozen
+        // contract or a separately approved research-derived contract. An
+        // absent contract is intentional and must not be inferred from the
+        // synthetic execution prompt.
+        if (
+          params.checkpoint &&
+          this.request.actionContract?.id === params.checkpoint.contract.id &&
+          params.checkpoint.progress.contractId ===
+            this.request.actionContract.id
+        )
+          this.request.actionProgress = params.checkpoint.progress;
       } else {
+        this.request.workflowCheckpoint ||= params.checkpoint || undefined;
+        this.request.actionPreparation = { state: "resolving", issues: [] };
         this.request.actionContract =
           (await this.contracts.createActionContract(this.request)) ||
           undefined;
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      if (error instanceof ActionReferenceResolutionError) {
+        this.request.actionContract = undefined;
+        this.request.actionPreparation = {
+          state: "needs_input",
+          issues: [reason],
+          sourceSelection: error.sourceSelection,
+        };
+        await this.emit({
+          type: "provider_event",
+          providerType: "agent_action_preparation",
+          payload: this.request.actionPreparation,
+        });
+        return { kind: "ready" };
+      }
+      this.request.actionPreparation = {
+        state: "unavailable",
+        issues: [reason],
+      };
       await this.emit({
         type: "provider_event",
         providerType: "agent_action_contract",
@@ -119,11 +124,26 @@ export class ActionContractRunSession {
       };
     }
 
+    this.request.actionPreparation = { state: "ready", issues: [] };
     const contract = this.request.actionContract;
     if (contract) {
       if (this.request.actionProgress?.contractId !== contract.id) {
         this.request.actionProgress =
           this.contracts.createActionProgress(contract);
+      }
+      if (this.request.planContext?.phase !== "executing") {
+        try {
+          await carryWorkflowProgress(
+            this.request,
+            contract,
+            this.request.actionProgress!,
+          );
+        } catch (error) {
+          return {
+            kind: "failed",
+            userMessage: `Prior workflow evidence could not be reused: ${String(error)}`,
+          };
+        }
       }
       await this.emitSnapshot();
     }
@@ -131,7 +151,12 @@ export class ActionContractRunSession {
   }
 
   async checkpoint(): Promise<void> {
-    if (!this.request.actionContract || !this.request.actionProgress) return;
+    const contract = this.request.actionContract;
+    if (!contract) return;
+    if (this.request.actionProgress?.contractId !== contract.id) {
+      this.request.actionProgress =
+        this.contracts.createActionProgress(contract);
+    }
     await this.emitSnapshot();
   }
 
@@ -146,14 +171,10 @@ export class ActionContractRunSession {
   async evaluateFinal(params: {
     canCorrect: boolean;
   }): Promise<ActionContractFinalDecision> {
-    const contract = this.request.actionContract;
-    if (!contract) return { kind: "accept" };
-
     const progress = this.request.actionProgress;
-    const evaluation = evaluateActionContract(
-      contract,
+    const evaluation = evaluatePreparedActionContract(
+      this.request,
       this.receipts,
-      progress,
     );
     if (progress && evaluation.state !== "failed") {
       progress.state = evaluation.state;

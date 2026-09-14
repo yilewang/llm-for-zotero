@@ -144,7 +144,7 @@ export function getSelectedClaudeReasoningMode(): ClaudeReasoningMode {
   return getClaudeReasoningModePref();
 }
 
-export function getClaudePermissionMode(): "safe" | "yolo" {
+export function getClaudePermissionMode(): import("../shared/claudePermissionMode").ClaudePermissionMode {
   return getClaudePermissionModePref();
 }
 

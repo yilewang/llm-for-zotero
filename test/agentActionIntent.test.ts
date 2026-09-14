@@ -1,122 +1,183 @@
 import { assert } from "chai";
 import {
-  ActionContractService,
-  type ActionContractGateway,
-} from "../src/agent/contracts/actionContract";
-import {
-  inferActionIntentsFromRequest,
+  detectTurnIntent,
   parseClassifiedTurnIntent,
-} from "../src/agent/model/skillClassifier";
-import type { AgentRuntimeRequestInput } from "../src/agent/types";
+} from "../src/agent/model/semanticIntentService";
+import { semanticResponseFixture } from "./helpers/semanticIntent";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
-function request(
-  input: Partial<AgentRuntimeRequestInput>,
-): ReturnType<typeof resolvedAgentRequest> {
-  return resolvedAgentRequest({
+const request = (userText: string) =>
+  resolvedAgentRequest({
     conversationKey: 1,
     mode: "agent",
     libraryID: 1,
-    userText: "",
-    ...input,
+    userText,
+    model: "test",
+    apiBase: "https://example.invalid",
+    apiKey: "test",
   });
-}
 
-describe("Agent action intent", function () {
-  it("fails closed when required intent has no valid obligations", async function () {
-    const service = new ActionContractService({} as ActionContractGateway);
-    let message = "";
-    try {
-      await service.createContract(
-        request({
-          conversationKey: 1,
-          mode: "agent",
-          model: "test",
-          userText: "Apply the requested mutation.",
-          classifiedIntent: {
-            retrievalIntent: "none",
-            wantedSections: [],
-            writeDisposition: "required",
-            actionInterpretationSource: "classifier",
-            actionIntents: [],
-          },
-        }),
-      );
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+describe("semantic action interpretation", function () {
+  it("rejects missing routing decisions and invalid section coverage instead of inventing defaults", function () {
+    for (const field of [
+      "paperTargetIntent",
+      "externalSearchIntent",
+      "deliverableIntent",
+      "wantedSections",
+    ]) {
+      const output = semanticResponseFixture();
+      delete output[field];
+      assert.isNull(parseClassifiedTurnIntent(JSON.stringify(output)), field);
     }
-    assert.include(message, "no valid typed obligations");
+    assert.isNull(
+      parseClassifiedTurnIntent(
+        JSON.stringify(
+          semanticResponseFixture({ wantedSections: ["unknown"] }),
+        ),
+      ),
+    );
   });
-
-  it("does not infer writes from questions, advice, hypotheticals, or negation", function () {
-    const prompts = [
-      "Which papers should I tag as reviewed?",
-      "If I add the tag reviewed, which papers would be candidates?",
-      "Please do not add or remove any tags; only explain the options.",
-      "How could I tag these papers later?",
-    ];
-    for (const userText of prompts) {
-      assert.deepEqual(
-        inferActionIntentsFromRequest(request({ userText })),
-        [],
-      );
+  it("does not manufacture fallback authority from imperative or multilingual wording", async function () {
+    for (const text of [
+      'Add the tag "reviewed".',
+      "请创建一条 Zotero 笔记。",
+      "Zoteroノートを作成してください。",
+      "Crea una nota de Zotero.",
+    ]) {
+      let calls = 0;
+      const result = await detectTurnIntent(request(text), [], {
+        llmCall: async () => {
+          calls++;
+          return { text: "malformed", completion: { status: "complete" } };
+        },
+      });
+      assert.isNull(result.classifiedIntent);
+      assert.isTrue(result.degraded);
+      assert.equal(calls, 2);
     }
   });
-
-  it("uses a successful classifier as the exact authoritative operation", function () {
-    const parsed = parseClassifiedTurnIntent(
-      JSON.stringify({
-        retrievalIntent: "none",
-        wantedSections: [],
+  for (const operation of ["apply_tags", "remove_tags", "set_item_tags"]) {
+    it(`retains the exact semantic ${operation} decision without a wording veto`, async function () {
+      const output = semanticResponseFixture({
         writeDisposition: "required",
         actionIntents: [
           {
-            operation: "remove_tags",
-            coverage: "all",
+            operation,
+            coverage: "some",
             targetKind: "papers",
             parameters: { tags: ["reviewed"] },
+            targetSelectors: [{ kind: "item_key", value: "WTI4KW3E" }],
           },
         ],
-      }),
+      });
+      for (const text of [
+        'Replace their tags with "reviewed".',
+        "Remove reviewed, preserving everything else.",
+        "请按照刚才的要求整理标签。",
+      ]) {
+        const result = await detectTurnIntent(request(text), [], {
+          llmCall: async () => ({
+            text: JSON.stringify(output),
+            completion: { status: "complete" },
+          }),
+        });
+        assert.deepEqual(
+          result.classifiedIntent?.actionIntents.map(
+            (action) => action.operation,
+          ),
+          [operation],
+        );
+      }
+    });
+  }
+  for (const params of [
+    { tags: ["reviewed", 7] },
+    { destinationCollectionId: "not-an-id" },
+    { unknownAuthority: true },
+  ]) {
+    it(`rejects malformed action parameters instead of silently dropping them: ${JSON.stringify(params)}`, function () {
+      const output = semanticResponseFixture({
+        writeDisposition: "required",
+        actionIntents: [
+          {
+            operation: "apply_tags",
+            coverage: "one",
+            targetKind: "papers",
+            parameters: params,
+          },
+        ],
+      });
+      assert.isNull(parseClassifiedTurnIntent(JSON.stringify(output)));
+    });
+  }
+  for (const constraints of [
+    { collectionMode: "replace" },
+    { readMode: "partial" },
+    { tagPrefix: 7 },
+    { preserveOtherTags: true },
+  ]) {
+    it(`rejects unsupported action constraints ${JSON.stringify(constraints)}`, function () {
+      assert.isNull(
+        parseClassifiedTurnIntent(
+          JSON.stringify(
+            semanticResponseFixture({
+              writeDisposition: "required",
+              actionIntents: [
+                {
+                  operation: "apply_tags",
+                  coverage: "one",
+                  targetKind: "items",
+                  constraints,
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+    });
+  }
+  it("keeps a document request whose required write has no library action, as no write", function () {
+    const parsed = parseClassifiedTurnIntent(
+      JSON.stringify(
+        semanticResponseFixture({
+          deliverableIntent: "document",
+          documentKind: "literature_review",
+          writeDisposition: "required",
+          actionIntents: [],
+        }),
+      ),
     );
-    assert.equal(parsed?.writeDisposition, "required");
-    assert.deepEqual(
-      parsed?.actionIntents.map((intent) => intent.operation),
-      ["remove_tags"],
+    assert.equal(parsed?.writeDisposition, "none");
+    assert.deepEqual(parsed?.actionIntents, []);
+    assert.isNull(
+      parseClassifiedTurnIntent(
+        JSON.stringify(
+          semanticResponseFixture({
+            deliverableIntent: "chat",
+            writeDisposition: "required",
+            actionIntents: [],
+          }),
+        ),
+      ),
+      "a chat answer that claims a required write still needs an action",
     );
   });
 
-  it("infers only high-confidence imperative operations on classifier failure", function () {
-    const add = inferActionIntentsFromRequest(
-      request({
-        userText: 'Add the tag "topic:drift" to every paper.',
-      }),
-    );
-    assert.equal(add[0]?.operation, "apply_tags");
-    assert.deepEqual(add[0]?.parameters?.tags, ["topic:drift"]);
-
-    const create = inferActionIntentsFromRequest(
-      request({
-        userText: 'Create collection "Methods".',
-      }),
-    );
-    assert.equal(create[0]?.operation, "create_collection");
-    assert.equal(create[0]?.parameters?.collectionName, "Methods");
-
-    const mixed = inferActionIntentsFromRequest(
-      request({
-        userText:
-          'Create a standalone Zotero note and independently export a Markdown file at "/tmp/acv2-vault/ACV2 Mixed.md".',
-      }),
-    );
-    assert.deepEqual(
-      mixed.map((intent) => intent.operation),
-      ["note_create", "file_write"],
-    );
-    assert.equal(
-      mixed.find((intent) => intent.operation === "file_write")?.parameters
-        ?.filePath,
-      "/tmp/acv2-vault/ACV2 Mixed.md",
+  it("rejects a no-write interpretation containing a mutation", function () {
+    assert.isNull(
+      parseClassifiedTurnIntent(
+        JSON.stringify(
+          semanticResponseFixture({
+            actionIntents: [
+              {
+                operation: "note_create",
+                coverage: "one",
+                targetKind: "items",
+              },
+            ],
+          }),
+        ),
+      ),
     );
   });
 });

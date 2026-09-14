@@ -2,6 +2,11 @@ import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { createCiteExportTool } from "../src/agent/tools/read/citeExport";
 import { createLibrarySettingsTool } from "../src/agent/tools/write/librarySettings";
+import {
+  PLAN_AUTHOR_DATE_STYLE_ID,
+  resolvePlanDocumentCitationPreference,
+} from "../src/agent/documents/citationPreference";
+import { navigatePlanDocumentCitationSource } from "../src/modules/contextPanel/planDocumentPresentation";
 
 /**
  * The most dangerous everyday gap in the census: asked for "the APA reference
@@ -96,6 +101,60 @@ describe("citations, export and settings", function () {
       assert.equal(freed, 1);
     });
 
+    it("formats multiple structured clusters without referencing unregistered previews", function () {
+      install({
+        Styles: {
+          get: () => ({
+            title: "APA 7th edition",
+            getCiteProc: (_locale: string, format: string) => ({
+              free: () => {
+                freed += 1;
+              },
+              updateItems: () => undefined,
+              previewCitationCluster: (
+                citation: { citationItems: Array<{ id: number }> },
+                citationsPre: Array<[string, number]>,
+              ) => {
+                // Zotero/citeproc cannot resolve IDs for citations that were
+                // merely previewed. This reproduces the live Plan finalizer
+                // crash if the gateway invents a prior-citation chain.
+                assert.deepEqual(citationsPre, []);
+                const id = citation.citationItems[0].id;
+                return format === "html"
+                  ? `<span>(Author ${id}, 2024)</span>`
+                  : `(Author ${id}, 2024)`;
+              },
+              makeBibliography: () => [
+                { entry_ids: [[1], [2]] },
+                format === "html"
+                  ? ["<div>Reference 1</div>", "<div>Reference 2</div>"]
+                  : ["Reference 1", "Reference 2"],
+              ],
+            }),
+          }),
+        },
+      });
+      const g = new ZoteroGateway();
+      const result = g.formatStructuredCitations({
+        clusters: [
+          { citationId: "C1", items: [{ itemId: 1 }] },
+          { citationId: "C2", items: [{ itemId: 2 }] },
+        ],
+        styleId: "apa-style-id",
+        locale: "en-US",
+      });
+
+      assert.deepEqual(
+        result.clusters.map((cluster) => cluster.text),
+        ["(Author 1, 2024)", "(Author 2, 2024)"],
+      );
+      assert.deepEqual(
+        result.bibliographyEntries.map((entry) => entry.itemId),
+        [1, 2],
+      );
+      assert.equal(freed, 2);
+    });
+
     it("refuses rather than approximating an uninstalled style", function () {
       const g = gateway({ 1: citable(1) });
       assert.throws(
@@ -127,6 +186,101 @@ describe("citations, export and settings", function () {
       const tool = createCiteExportTool(gateway());
       assert.isFalse(tool.validate({ action: "bibliography" }).ok);
       assert.isTrue(tool.validate({ action: "bibliography", itemIds: [1] }).ok);
+    });
+
+    it("falls back from a note-style Quick Copy preference to concise author-date citations", function () {
+      install({
+        Styles: {
+          get: (id: string) =>
+            id === "chicago-note"
+              ? { class: "note", categories: "note" }
+              : id === PLAN_AUTHOR_DATE_STYLE_ID
+                ? { class: "in-text", categories: "author-date" }
+                : null,
+          getVisible: () => [
+            { styleID: PLAN_AUTHOR_DATE_STYLE_ID, title: "APA 7th edition" },
+          ],
+        },
+        Prefs: {
+          get: (key: string) =>
+            key === "export.quickCopy.setting"
+              ? "bibliography=chicago-note"
+              : key === "export.quickCopy.locale"
+                ? "en-US"
+                : undefined,
+        },
+      });
+      const result = resolvePlanDocumentCitationPreference(new ZoteroGateway());
+      assert.equal(result.styleId, PLAN_AUTHOR_DATE_STYLE_ID);
+      assert.equal(result.styleTitle, "APA 7th edition");
+    });
+
+    it("keeps an author-date Quick Copy preference for Plan documents", function () {
+      install({
+        Styles: {
+          get: (id: string) =>
+            id === "custom-author-date"
+              ? { class: "in-text", categories: "author-date" }
+              : null,
+          getVisible: () => [
+            { styleID: "custom-author-date", title: "Custom author-date" },
+          ],
+        },
+        Prefs: {
+          get: (key: string) =>
+            key === "export.quickCopy.setting"
+              ? "bibliography=custom-author-date"
+              : undefined,
+        },
+      });
+      const result = resolvePlanDocumentCitationPreference(new ZoteroGateway());
+      assert.equal(result.styleId, "custom-author-date");
+    });
+
+    it("navigates an inline Plan citation through Zotero's library pane", async function () {
+      let selected: number[] = [];
+      let selectedTab = "";
+      let focused = 0;
+      install({
+        getMainWindow: () => ({
+          focus: () => {
+            focused++;
+          },
+        }),
+        Items: {
+          getByLibraryAndKey: (libraryID: number, itemKey: string) =>
+            libraryID === 1 && itemKey === "ITEMKEY" ? { id: 42 } : null,
+        },
+        Libraries: { userLibraryID: 1, get: () => undefined },
+        Tabs: {
+          select: (tabID: string) => {
+            selectedTab = tabID;
+          },
+        },
+        getActiveZoteroPane: () => ({
+          selectItems: async (itemIDs: number[]) => {
+            selected = itemIDs;
+            return true;
+          },
+        }),
+      });
+      const opened = await navigatePlanDocumentCitationSource({
+        libraryID: 1,
+        itemKey: "ITEMKEY",
+        evidenceRefs: ["EV1"],
+      });
+      assert.isTrue(opened);
+      assert.equal(selectedTab, "zotero-pane");
+      assert.deepEqual(selected, [42]);
+      assert.equal(focused, 1);
+      assert.isFalse(
+        await navigatePlanDocumentCitationSource({
+          libraryID: 1,
+          itemKey: "MISSING",
+          evidenceRefs: [],
+        }),
+      );
+      assert.equal(focused, 1, "failed navigation does not move focus");
     });
   });
 
@@ -181,7 +335,7 @@ describe("citations, export and settings", function () {
       assert.equal(result.value, false);
     });
 
-    it("only asks for confirmation when writing", function () {
+    it("plans reads and writes from the concrete setting operation", async function () {
       const tool = createLibrarySettingsTool(gateway());
       const list = tool.validate({ action: "list" });
       const set = tool.validate({
@@ -191,11 +345,13 @@ describe("citations, export and settings", function () {
       });
       assert.isTrue(list.ok && set.ok);
       if (!list.ok || !set.ok) return;
-      assert.isFalse(
-        tool.shouldRequireConfirmation?.(list.value, {} as never) as boolean,
+      assert.equal(
+        (await tool.planInvocation?.(list.value, {} as never))?.impact,
+        "read_only",
       );
-      assert.isTrue(
-        tool.shouldRequireConfirmation?.(set.value, {} as never) as boolean,
+      assert.equal(
+        (await tool.planInvocation?.(set.value, {} as never))?.impact,
+        "state_change",
       );
     });
   });

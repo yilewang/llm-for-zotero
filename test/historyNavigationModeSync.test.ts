@@ -162,6 +162,27 @@ describe("historyNavigationModeSync", function () {
     assert.isNull(getLastUsedPaperConversationKey(7, 42));
   });
 
+  it("does not restore a stale snapshot over a newer navigation", function () {
+    activeConversationModeByLibrary.set(7, "global");
+    const snapshot = primeHistoryNavigationMode({
+      system: "upstream",
+      libraryID: 7,
+      mode: "paper",
+      conversationKey: 2201,
+      paperItemID: 42,
+    });
+
+    activeConversationModeByLibrary.set(7, "paper");
+    activePaperConversationByPaper.set(buildPaperStateKey(7, 42), 3301);
+    snapshot.restore();
+
+    assert.equal(activeConversationModeByLibrary.get(7), "paper");
+    assert.equal(
+      activePaperConversationByPaper.get(buildPaperStateKey(7, 42)),
+      3301,
+    );
+  });
+
   it("updates Claude and Codex runtime-specific mode state", function () {
     const claudePaperKey = getClaudePaperConversationKeyRange().start + 1;
     const claudeSnapshot = primeHistoryNavigationMode({
@@ -248,5 +269,29 @@ describe("historyNavigationModeSync", function () {
     assert.isAtLeast(switchCall, switchStart);
     assert.isBelow(primeCall, selectCall);
     assert.isBelow(primeCall, switchCall);
+  });
+
+  it("terminates the source controller after cross-paper Zotero selection", function () {
+    const source = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/setupHandlers/controllers/historyLifecycleController.ts",
+      ),
+      "utf8",
+    );
+    const switchStart = source.indexOf("const switchToHistoryEntry = async");
+    const crossPaperStart = source.indexOf(
+      'if (navigationDecision === "select-target-paper")',
+      switchStart,
+    );
+    const samePaperStart = source.indexOf(
+      "if (!isPanelOperationLeaseCurrent(sourceLease))",
+      crossPaperStart,
+    );
+    const crossPaperBranch = source.slice(crossPaperStart, samePaperStart);
+
+    assert.include(crossPaperBranch, "loaded = true");
+    assert.include(crossPaperBranch, "return true");
+    assert.notInclude(crossPaperBranch, "switchPaperConversation(");
   });
 });

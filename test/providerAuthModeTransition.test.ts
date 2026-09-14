@@ -30,8 +30,7 @@ function standardGroup(): ModelProviderGroup {
         id: "first-row",
         model: "first-model",
         temperature: 0.4,
-        maxTokens: 2048,
-        maxTokensExplicit: true,
+        outputTokenLimit: { mode: "custom", tokens: 2048 },
         inputTokenCap: 32_000,
         inputMode: "text_only",
         providerProtocol: "responses_api",
@@ -44,7 +43,7 @@ function standardGroup(): ModelProviderGroup {
         id: "second-row",
         model: "second-model",
         temperature: 0.5,
-        maxTokens: 4096,
+        outputTokenLimit: { mode: "auto" },
       },
     ],
   };
@@ -87,7 +86,7 @@ describe("provider auth-mode transitions", function () {
             "id",
             "model",
             "temperature",
-            "maxTokens",
+            "outputTokenLimit",
           ]);
         } else {
           assert.deepEqual(Object.keys(next.models[0]).sort(), ["id", "model"]);
@@ -182,7 +181,7 @@ describe("provider auth-mode transitions", function () {
       assert.equal(next.authMode, "api_key");
       if (next.authMode !== "api_key") assert.fail("expected API provider");
       assert.equal(next.models[0].temperature, 0.3);
-      assert.equal(next.models[0].maxTokens, 4096);
+      assert.deepEqual(next.models[0].outputTokenLimit, { mode: "auto" });
       assert.isUndefined(next.models[0].inputTokenCap);
       assert.isUndefined(next.models[0].profileOverride);
     }

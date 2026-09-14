@@ -18,6 +18,7 @@ import {
   scrollToSelectedTextInReader,
   verifyCompleteQuoteInLivePdfJs,
   verifyQuoteLocationForAttachment,
+  warmPageTextCache,
   warmPageTextCacheForAttachment,
   warmQuoteLocationCacheForAttachment,
   waitForFindControllerPageMatchesForTests,
@@ -515,7 +516,51 @@ describe("livePdfSelectionLocator", function () {
     }
   });
 
-  it("locates an exact MinerU inline-math quote through unique PDF prose", async function () {
+  it("strictly verifies the LwF quote through joined and split PDF.js scripts", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => null);
+    const quote =
+      "In Learning without Forgetting (LwF) [30], the model is copied before task $t$ is learned. The copied model produces fixed logits $z^{\\text{old}}$ on the new-task data, and the updated model produces $z^{\\text{new}}$.";
+
+    try {
+      for (const [index, sourceMath] of [
+        ["zold", "znew"],
+        ["z old", "z new"],
+      ].entries()) {
+        const pdfText = `In Learning without Forgetting (LwF) [30], the model is copied before task t is learned. The copied model produces fixed logits ${sourceMath[0]} on the new-task data, and the updated model produces ${sourceMath[1]}.`;
+        const reader = {
+          _item: { id: 6190 + index },
+          itemID: 6190 + index,
+          _window: {
+            PDFViewerApplication: {
+              pdfDocument: {
+                numPages: 1,
+                fingerprints: [`lwf-${index}`],
+                getPage: async () => ({
+                  getTextContent: async () => ({ items: [{ str: pdfText }] }),
+                }),
+              },
+            },
+          },
+        };
+
+        const result = await verifyCompleteQuoteInLivePdfJs(
+          reader,
+          6190 + index,
+          quote,
+        );
+        assert.equal(result.status, "matched", JSON.stringify(result));
+        if (result.status === "matched") {
+          assert.equal(result.certificate.pageIndex, 0);
+          assert.equal(result.certificate.sourceMatchKind, "normalized-span");
+        }
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps an incompletely extracted MinerU inline-math locator unresolved", async function () {
     clearPageTextCache();
     const restore = installPdfWorkerStub(async () => null);
     const quote =
@@ -549,7 +594,7 @@ describe("livePdfSelectionLocator", function () {
 
     try {
       const strict = await verifyCompleteQuoteInLivePdfJs(reader, 6127, quote);
-      assert.equal(strict.status, "absent");
+      assert.equal(strict.status, "literal-not-found");
 
       const located = await verifyCompleteQuoteInLivePdfJs(
         reader,
@@ -557,12 +602,7 @@ describe("livePdfSelectionLocator", function () {
         quote,
         { allowInlineMathLocator: true },
       );
-      assert.equal(located.status, "matched");
-      if (located.status !== "matched") return;
-      assert.equal(located.certificate.pageIndex, 1);
-      assert.equal(located.certificate.sourceMatchText, pdfText);
-      assert.equal(located.certificate.sourceMatchKind, "normalized-span");
-      assert.equal(located.certificate.sourceMatchPageOccurrence, 0);
+      assert.equal(located.status, "literal-not-found");
     } finally {
       restore();
     }
@@ -601,7 +641,7 @@ describe("livePdfSelectionLocator", function () {
         { allowInlineMathLocator: true },
       );
 
-      assert.equal(result.status, "absent");
+      assert.equal(result.status, "literal-not-found");
     } finally {
       restore();
     }
@@ -648,7 +688,7 @@ describe("livePdfSelectionLocator", function () {
     }
   });
 
-  it("rejects malformed, display, and prose-poor math locator quotes", async function () {
+  it("returns literal misses for malformed, display, and prose-poor math locators", async function () {
     clearPageTextCache();
     const restore = installPdfWorkerStub(async () => null);
     const reader = {
@@ -681,14 +721,14 @@ describe("livePdfSelectionLocator", function () {
           quote,
           { allowInlineMathLocator: true },
         );
-        assert.equal(result.status, "absent", quote);
+        assert.equal(result.status, "literal-not-found", quote);
       }
     } finally {
       restore();
     }
   });
 
-  it("returns absent when complete PDF.js text rejects a strong fabricated quote", async function () {
+  it("returns a literal miss when PDF.js rejects a fabricated quote", async function () {
     clearPageTextCache();
     const restore = installPdfWorkerStub(async () => null);
     const reader = {
@@ -720,7 +760,7 @@ describe("livePdfSelectionLocator", function () {
         "The measured population response remained stable across every fabricated recording session.",
       );
 
-      assert.equal(result.status, "absent");
+      assert.equal(result.status, "literal-not-found");
     } finally {
       restore();
     }
@@ -916,6 +956,61 @@ describe("citation page cache warming", function () {
     }
   });
 
+  it("does not join another attachment's pending reader work just because its PDF bytes match", async function () {
+    const quote = "Stable readout persists across recording sessions.";
+    const restore = installPdfWorkerStub(async () => ({ text: quote }));
+    let releaseOldReader!: () => void;
+    const oldReaderWait = new Promise<void>((resolve) => {
+      releaseOldReader = resolve;
+    });
+    let reportOldRead!: () => void;
+    const oldReadStarted = new Promise<void>((resolve) => {
+      reportOldRead = resolve;
+    });
+    const reader = (itemID: number, paused: boolean) => ({
+      itemID,
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: {
+            numPages: 1,
+            fingerprints: ["same-pdf-different-attachment"],
+            getPage: async () => {
+              if (paused) {
+                reportOldRead();
+                await oldReaderWait;
+              }
+              return {
+                getTextContent: async () => ({ items: [{ str: quote }] }),
+              };
+            },
+          },
+          pdfViewer: { pageLabels: ["1"] },
+        },
+      },
+    });
+    let first: ReturnType<typeof warmPageTextCache> | undefined;
+    let second: ReturnType<typeof warmPageTextCache> | undefined;
+    try {
+      first = warmPageTextCache(reader(3098, true));
+      await oldReadStarted;
+      let resolved = false;
+      second = warmPageTextCache(reader(3099, false));
+      void second.then(() => {
+        resolved = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.isTrue(
+        resolved,
+        "the new attachment must not await a closed or suspended reader for another item",
+      );
+      assert.equal((await second)?.pages[0].text, quote);
+    } finally {
+      releaseOldReader();
+      await Promise.all([first, second]);
+      restore();
+    }
+  });
+
   it("dedupes repeated attachment warm calls while a PDFWorker read is pending", async function () {
     clearPageTextCache();
     let release!: () => void;
@@ -987,6 +1082,72 @@ describe("citation page cache warming", function () {
       restore();
     }
   });
+
+  for (const entryPoint of ["attachment verification", "reader navigation"]) {
+    it(`promotes a paused background text task for foreground ${entryPoint}`, async function () {
+      clearPageTextCache();
+      const quote = "Stable readout persists across recording sessions.";
+      let calls = 0;
+      const restore = installPdfWorkerStub(async () => {
+        calls++;
+        return { text: quote, pageChars: [quote.length] };
+      });
+      const originalNow = Date.now;
+      let now = 1000;
+      Date.now = () => (now += 9);
+      let releaseIdle!: () => void;
+      const idle = new Promise<void>((resolve) => {
+        releaseIdle = resolve;
+      });
+      let reportYield!: () => void;
+      const yielded = new Promise<void>((resolve) => {
+        reportYield = resolve;
+      });
+      let background:
+        | ReturnType<typeof warmPageTextCacheForAttachment>
+        | undefined;
+      let foreground: Promise<unknown> | undefined;
+      try {
+        background = warmPageTextCacheForAttachment(7501, {
+          yieldToMain: async () => {
+            reportYield();
+            await idle;
+          },
+        });
+        await yielded;
+        // Real navigation preempts the idle validation task. It must not await
+        // that task's idle-only continuation: idle cannot resume until this click ends.
+        let resolved = false;
+        foreground =
+          entryPoint === "attachment verification"
+            ? verifyQuoteLocationForAttachment(7501, quote).then((result) => {
+                assert.equal(result.status, "resolved");
+              })
+            : warmPageTextCache({ itemID: 7501 }).then((result) => {
+                assert.equal(result?.pages[0].text, quote);
+              });
+        void foreground.then(() => {
+          resolved = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.isTrue(
+          resolved,
+          "foreground verification must finish without releasing the background idle gate",
+        );
+        await foreground;
+        assert.equal(
+          calls,
+          1,
+          "promote the existing work rather than extract the same PDF twice",
+        );
+      } finally {
+        releaseIdle();
+        await Promise.all([background, foreground]);
+        Date.now = originalNow;
+        restore();
+      }
+    });
+  }
 
   it("evicts least-recently-used page-text entries beyond the entry limit", async function () {
     clearPageTextCache();
@@ -1839,7 +2000,54 @@ describe("page-native scrollToExactQuoteInReader", function () {
     }
   });
 
-  it("uses a normalized inline-math certificate as a literal PDF locator", async function () {
+  it("jumps to the real LwF text-item layout when the period is fused to the next sentence", async function () {
+    const quote =
+      "In Learning without Forgetting (LwF) [30], the model is copied before task $t$ is learned. The copied model produces fixed logits $z^{\\text{old}}$ on the new-task data, and the updated model produces $z^{\\text{new}}$.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [
+        [
+          { str: "In" },
+          { str: " " },
+          { str: "Learning without Forgetting" },
+          { str: " " },
+          { str: "(LwF) [" },
+          { str: " " },
+          { str: "30" },
+          { str: "], the model is copied before task" },
+          { str: " " },
+          { str: "t" },
+          { str: " " },
+          { str: "is learned. The", hasEOL: true },
+          { str: "copied model produces fixed logits" },
+          { str: " " },
+          { str: "z" },
+          { str: "old" },
+          { str: " " },
+          {
+            str: "on the new-task data, and the updated model produces",
+          },
+          { str: "", hasEOL: true },
+          { str: "z" },
+          { str: "new" },
+          {
+            str: ".We adapt LwF to our single-head task-incremental setting.",
+            hasEOL: true,
+          },
+        ],
+      ],
+      targetPageIndex: 0,
+    });
+
+    const jump = await scrollToExactQuoteInReader(fixture.reader, quote, {
+      expectedPageIndex: 0,
+    });
+
+    assert.isTrue(jump.matched, JSON.stringify(jump));
+    assert.include(jump.queryUsed || "", "fixed logits zold");
+    assert.match(jump.queryUsed || "", /produces znew\.$/);
+  });
+
+  it("does not certify a PDF locator that lost meaningful inline-math atoms", async function () {
     clearPageTextCache();
     const restore = installPdfWorkerStub(async () => null);
     const quote =
@@ -1861,29 +2069,7 @@ describe("page-native scrollToExactQuoteInReader", function () {
         quote,
         { allowInlineMathLocator: true },
       );
-      assert.equal(
-        verification.status,
-        "matched",
-        JSON.stringify(verification),
-      );
-      if (verification.status !== "matched") return;
-      assert.equal(verification.certificate.sourceMatchKind, "normalized-span");
-
-      const jump = await scrollToExactQuoteInReader(
-        fixture.reader,
-        verification.certificate.sourceMatchText,
-        {
-          expectedPageIndex: verification.certificate.pageIndex,
-          sourceFingerprint: `pdfjs:${verification.certificate.documentFingerprint}`,
-          sourceMatchPageOccurrence:
-            verification.certificate.sourceMatchPageOccurrence,
-          verifiedFullSpan: false,
-        },
-      );
-
-      assert.isTrue(jump.matched, JSON.stringify(jump));
-      assert.equal(jump.queryUsed, pdfText);
-      assert.equal(jump.highlightCoverage, 1);
+      assert.equal(verification.status, "literal-not-found");
     } finally {
       restore();
     }

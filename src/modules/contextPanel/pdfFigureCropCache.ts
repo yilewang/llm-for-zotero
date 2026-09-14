@@ -6,7 +6,7 @@ import type {
 } from "./pdfFigureGeometry";
 
 export const PDF_FIGURE_CROP_CACHE_VERSION = 2;
-export const PDF_FIGURE_CROP_ALGORITHM_VERSION = 10;
+export const PDF_FIGURE_CROP_ALGORITHM_VERSION = 12;
 export const PDF_FIGURE_CROP_DIR = "figure_crops";
 export const PDF_FIGURE_CROP_METADATA_FILE = "figure_geometry.json";
 export const PDF_FIGURE_CROP_STANDALONE_ROOT_DIR =

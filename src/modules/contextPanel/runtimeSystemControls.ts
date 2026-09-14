@@ -35,7 +35,6 @@ export type RuntimeSystemControlsStateInput = {
   activeSystem: ConversationSystem;
   codexEnabled: boolean;
   claudeEnabled: boolean;
-  hidden?: boolean;
   busy?: boolean;
 };
 
@@ -74,13 +73,12 @@ export function resolveRuntimeSystemToggleTarget(
 export function resolveRuntimeSystemControlsState(
   input: RuntimeSystemControlsStateInput,
 ): RuntimeSystemControlState {
-  const hidden = input.hidden === true;
   const busy = input.busy === true;
   const buttons = {} as RuntimeSystemControlState["buttons"];
   let groupVisible = false;
 
   for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
-    const visible = !hidden && isRuntimeSystemEnabled(system, input);
+    const visible = isRuntimeSystemEnabled(system, input);
     const active = visible && input.activeSystem === system;
     groupVisible ||= visible;
     buttons[system] = {

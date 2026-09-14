@@ -1,3 +1,4 @@
+import { resolveProviderPresetId } from "../src/utils/providerPresets";
 import { assert } from "chai";
 import type { DiscoveredModel } from "../src/modelCapabilities";
 import {
@@ -8,7 +9,6 @@ import {
   resolveModelEntryMode,
   resolveProviderModelFetchStatus,
   runAfterSelectChangeDispatch,
-  resolveProviderPickerPresetId,
   sortModelOptions,
 } from "../src/utils/providerModelPicker";
 
@@ -20,7 +20,7 @@ describe("providerModelPicker", function () {
   describe("eligibility", function () {
     it("enables fetch-and-select for API-key groups on preset provider bases", function () {
       assert.equal(
-        resolveProviderPickerPresetId({
+        resolveProviderPresetId({
           authMode: "api_key",
           apiBase: "https://generativelanguage.googleapis.com/v1beta",
         }),

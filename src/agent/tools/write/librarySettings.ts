@@ -10,8 +10,12 @@
  * library.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../../authorization/invocationPlan";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { executeExternalMutation } from "../../services/mutationCoordinator";
+import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { ok, fail, validateObject } from "../shared";
 
 type LibrarySettingsInput = {
@@ -65,7 +69,7 @@ export function createLibrarySettingsTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -120,34 +124,28 @@ export function createLibrarySettingsTool(
       return ok<LibrarySettingsInput>({ action });
     },
 
-    // The registry applies the global safe/auto/yolo policy to concrete
-    // writes. This hook only keeps reads and already-satisfied sets out of the
-    // confirmation path when their mutation plan reports no effect.
-    shouldRequireConfirmation(input) {
-      if (input.action !== "set") return false;
-      const current = zoteroGateway
-        .listSettings()
-        .find((entry) => entry.key === input.key);
-      return !current || !Object.is(current.value, input.value);
-    },
-
-    planMutation(input) {
+    planInvocation(input) {
       if (input.action !== "set") {
-        return { effect: "none", reversibility: "full" };
+        return readOnlyInvocationPlan({
+          reason:
+            "Listing allowlisted library settings reads preference state only.",
+        });
       }
       const current = zoteroGateway
         .listSettings()
         .find((entry) => entry.key === input.key);
       if (current && Object.is(current.value, input.value)) {
-        return { effect: "none", reversibility: "full" };
+        return readOnlyInvocationPlan({
+          reason: "The requested setting already has the supplied value.",
+        });
       }
-      return {
-        effect: "write",
+      return stateChangeInvocationPlan({
+        targets: [String(input.key)],
         reversibility: current ? "full" : "none",
         reason: current
           ? "The previous allowlisted preference value is journalled before the update."
           : "The previous value could not be read, so the setting cannot be restored automatically.",
-      };
+      });
     },
 
     createPendingAction(input) {

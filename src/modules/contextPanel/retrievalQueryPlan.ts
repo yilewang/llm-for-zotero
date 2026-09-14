@@ -16,12 +16,6 @@ import {
   parseDocumentReferences,
   type QueryReference,
 } from "../../shared/documentReferences";
-import {
-  excludesEnglishFullRead,
-  hasJapaneseFullReadNegation,
-  hasKoreanFullReadNegation,
-  isAffirmativeFullReadCommandAt,
-} from "../../shared/fullReadIntentPolarity";
 
 export type DocumentReadIntent = "targeted" | "full-once";
 
@@ -35,6 +29,16 @@ export type RetrievalQueryPlan = {
   notes: string[];
   readIntent: DocumentReadIntent;
   references: QueryReference[];
+  retrievalPurpose?:
+    | "factual"
+    | "conceptual"
+    | "methodological"
+    | "comparative"
+    | "citation"
+    | "visual"
+    | "general";
+  quoteAnchorPolicy?: "none" | "verified";
+  fullReadTargets?: import("../../shared/fullReadTargetResolver").FullReadTargetSelection;
 };
 
 export type DocumentQueryPlan = RetrievalQueryPlan;
@@ -147,9 +151,7 @@ export function buildRetrievalQueryPlan(params: {
     semanticQuery: buildSemanticQuery(effectiveQueries),
     variantLimitHit: normalized.variantLimitHit,
     notes,
-    readIntent:
-      params.readIntent ||
-      (detectExplicitFullReadIntent(originalQuery) ? "full-once" : "targeted"),
+    readIntent: params.readIntent || "targeted",
     references,
   };
 }
@@ -192,317 +194,13 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
 function isValidPlannerOutput(
   value: Record<string, unknown> | null,
 ): value is Record<string, unknown> & {
-  readIntent: DocumentReadIntent;
   variants: unknown[];
 } {
   return Boolean(
     value &&
-    (value.readIntent === "targeted" || value.readIntent === "full-once") &&
     Array.isArray(value.variants) &&
     value.variants.every((variant) => typeof variant === "string"),
   );
-}
-
-function isLikelyExactLookupQuery(query: string): boolean {
-  const lower = query.toLocaleLowerCase();
-  if (/\b10\.\d{4,9}\/[-._;()/:a-z0-9]+\b/i.test(query)) return true;
-  if (/\b(?:doi|pmid|pmcid|isbn|issn|arxiv|citation key)\b/.test(lower)) {
-    return true;
-  }
-  if (
-    /\b(?:exact phrase|literal phrase|verbatim|exact quote|quote exactly)\b/.test(
-      lower,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(?:title|author)\b/.test(lower) &&
-    /\b(?:find|lookup|look up|search|open|locate)\b/.test(lower)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Conservative local fallback for explicit full-reading commands.
- * The model planner remains the primary multilingual classifier when configured.
- */
-function selectorTreatsDocumentAsContainer(selector: string): boolean {
-  const trimmed = selector.trim();
-  if (
-    /\b(?:about|across|for|from|in|of|throughout)\s+(?:(?:the|this|that)\s*)?$/i.test(
-      trimmed,
-    )
-  ) {
-    return true;
-  }
-  return /\b(?:analysis|argument|assessment|comparison|critique|description|discussion|explanation|interpretation|list|overview|review|summary)\b[^;.!?。！？；\n]{0,48}\b(?:about|across|for|from|in|of|throughout)\s+(?:(?:a|an|the|this|that)\s+[\p{L}\p{N}'’ -]+|[\p{L}][\p{L}-]*['’]s)$/iu.test(
-    trimmed,
-  );
-}
-
-function hasCompoundNounAfterDocument(value: string): boolean {
-  if (/^\s*['’]s\b/u.test(value)) return true;
-  const firstWord = value.match(/^\s*([\p{L}\p{N}_-]+)/u)?.[1] || "";
-  if (!firstWord) return false;
-  if (
-    /^(?:after|again|and|before|beforehand|by|called|cover|first|focusing|focussing|for|from|in|next|now|of|once|please|then|titled|to|when|while|with)$/i.test(
-      firstWord,
-    )
-  ) {
-    return false;
-  }
-  return !/ly$/i.test(firstWord);
-}
-
-function hasEnglishFullDocumentModifierIntent(normalized: string): boolean {
-  const commandPattern =
-    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b[^;.!?。！？；\n]{0,64}?\b(?:the\s+)?(entire|whole|complete|full)\b/gi;
-  for (const match of normalized.matchAll(commandPattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    if (excludesEnglishFullRead(match[0])) continue;
-    const tail = normalized
-      .slice((match.index || 0) + match[0].length)
-      .split(/[;.!?。！？；\n]/, 1)[0]
-      .slice(0, 80);
-    const documentMatch = tail.match(
-      /\b(?:papers?|articles?|documents?|texts?|pdfs?)\b/i,
-    );
-    if (!documentMatch || documentMatch.index === undefined) continue;
-    if (
-      match[1]?.toLocaleLowerCase() === "full" &&
-      /^texts?$/i.test(documentMatch[0])
-    ) {
-      // "Full text" selects document evidence. It does not by itself ask to
-      // process every chunk of the document.
-      continue;
-    }
-    const selector = tail.slice(0, documentMatch.index);
-    if (selectorTreatsDocumentAsContainer(selector)) continue;
-    const afterDocument = tail.slice(
-      documentMatch.index + documentMatch[0].length,
-    );
-    if (hasCompoundNounAfterDocument(afterDocument)) continue;
-    return true;
-  }
-  return false;
-}
-
-function hasEnglishDocumentSuffixIntent(normalized: string): boolean {
-  const commandPattern =
-    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b([^;.!?。！？；\n]{0,96}?)\b(papers?|articles?|documents?|texts?|pdfs?)\b/gi;
-  for (const match of normalized.matchAll(commandPattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    if (excludesEnglishFullRead(match[1] || "")) continue;
-    if (selectorTreatsDocumentAsContainer(match[1] || "")) continue;
-    const afterDocument = normalized
-      .slice((match.index || 0) + match[0].length)
-      .split(/[;.!?。！？；\n]/, 1)[0]
-      .slice(0, 64);
-    const completeness = afterDocument.match(
-      /\b(?:in\s+(?:its\s+)?entirety|in\s+full|completely|fully|cover\s+to\s+cover|from\s+start\s+to\s+finish)\b/i,
-    );
-    if (!completeness || completeness.index === undefined) continue;
-    const beforeCompleteness = afterDocument.slice(0, completeness.index);
-    if (/^\s*['’]s\b/u.test(beforeCompleteness)) continue;
-    const isNumberedPaperList =
-      /^\s*(?:numbers?\s+)?\d{1,2}(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+)\d{1,2})+\s*$/i.test(
-        beforeCompleteness,
-      );
-    if (
-      beforeCompleteness.trim() &&
-      !/^\s*(?:by|called|from|titled)\b/i.test(beforeCompleteness) &&
-      !isNumberedPaperList
-    ) {
-      continue;
-    }
-    return true;
-  }
-  return false;
-}
-
-function hasEnglishEveryDocumentUnitIntent(normalized: string): boolean {
-  const pattern =
-    /\b(?:read|use|analy[sz]e|review|process)\b[^;.!?。！？；\n]{0,48}\bevery\s+(?:section|page)\b([^;.!?。！？；\n]*)/gi;
-  for (const match of normalized.matchAll(pattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    if (excludesEnglishFullRead(match[0])) continue;
-    const scope = (match[1] || "").trim();
-    if (!scope) return true;
-    if (
-      /^of\s+(?:(?:a|the|this|that)\s+)?(?:paper|article|document|pdf)\b/i.test(
-        scope,
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasEnglishLeadingCompletenessIntent(normalized: string): boolean {
-  const leading = normalized.match(
-    /\b(?:completely|fully)\s+(?:read|use|analy[sz]e|review|process)\b[^;.!?。！？；\n]{0,48}\b(?:it|papers?|articles?|documents?|pdfs?)\b/i,
-  );
-  if (
-    leading &&
-    isAffirmativeFullReadCommandAt(normalized, leading.index || 0)
-  ) {
-    return !excludesEnglishFullRead(leading[0]);
-  }
-  const pronoun = normalized.match(
-    /\bread\s+it\s+(?:completely|fully|cover\s+to\s+cover|from\s+start\s+to\s+finish)\b/i,
-  );
-  return Boolean(
-    pronoun && isAffirmativeFullReadCommandAt(normalized, pronoun.index || 0),
-  );
-}
-
-function hasChineseFullDocumentIntent(normalized: string): boolean {
-  const pattern =
-    /(?:通读[^。！？；\n]{0,32}?(?:(?:整篇|完整|全部)(?:的)?)?(?:论文|文章|文档|全文)|(?:完整|全部)阅读[^。！？；\n]{0,32}?(?:论文|文章|文档|全文)|阅读(?:完整|全部)(?:的)?[^。！？；\n]{0,32}?(?:论文|文章|文档)|阅读(?:这|该|当前)?(?:篇)?(?:论文|文章|文档)(?:的)?(?:完整|全部)(?:内容|全文)|阅读(?:完整|全部)?全文|阅读全文|分析全文|使用全文|发送全文)/gu;
-  for (const match of normalized.matchAll(pattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    const tail = normalized.slice((match.index || 0) + match[0].length);
-    if (/^(?:的)?(?:摘要|结论|方法|讨论|引言|结果|部分|章节)/u.test(tail)) {
-      continue;
-    }
-    return true;
-  }
-  const startToFinishPattern =
-    /(?:从头到尾[^。！？；\n]{0,16}?(?:阅读|通读)|(?:阅读|通读)[^。！？；\n]{0,16}?从头到尾)/gu;
-  for (const match of normalized.matchAll(startToFinishPattern)) {
-    if (isAffirmativeFullReadCommandAt(normalized, match.index || 0)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasJapaneseFullDocumentIntent(normalized: string): boolean {
-  const pattern =
-    /(?:全文|(?:論文|記事|文書)[^。！？；\n]{0,16}(?:全文|全体))([^。！？；\n]{0,20}?)(?:読む|読んで|分析)/gu;
-  for (const match of normalized.matchAll(pattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    const clause = normalized.slice(
-      match.index || 0,
-      (match.index || 0) + match[0].length + 32,
-    );
-    if (hasJapaneseFullReadNegation(clause)) continue;
-    if (/(?:要約|概要|抄録|結論|方法|議論|序論|結果)/u.test(match[1] || "")) {
-      continue;
-    }
-    return true;
-  }
-  const startToFinishPattern =
-    /(?:最初から最後まで[^。！？\n]{0,12}(?:読む|読んで)|(?:読む|読んで)[^。！？\n]{0,12}最初から最後まで)/gu;
-  for (const match of normalized.matchAll(startToFinishPattern)) {
-    const clause = normalized.slice(
-      match.index || 0,
-      (match.index || 0) + match[0].length + 32,
-    );
-    if (
-      isAffirmativeFullReadCommandAt(normalized, match.index || 0) &&
-      !hasJapaneseFullReadNegation(clause)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasKoreanFullDocumentIntent(normalized: string): boolean {
-  const pattern =
-    /(?:전문|(?:논문|문서|기사)[^.!?\n]{0,16}(?:전문|전체))([^.!?\n]{0,20}?)(?:읽|분석)/gu;
-  for (const match of normalized.matchAll(pattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    if (/(?:요약|초록|결론|방법|토론|서론|결과)/u.test(match[1] || "")) {
-      continue;
-    }
-    const clause = normalized.slice(
-      match.index || 0,
-      (match.index || 0) + match[0].length + 24,
-    );
-    if (hasKoreanFullReadNegation(clause)) continue;
-    return true;
-  }
-  const startToFinishPattern =
-    /(?:처음부터\s*끝까지[^.!?\n]{0,12}읽|읽[^.!?\n]{0,12}처음부터\s*끝까지)/gu;
-  for (const match of normalized.matchAll(startToFinishPattern)) {
-    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
-    const clause = normalized.slice(
-      match.index || 0,
-      (match.index || 0) + match[0].length + 16,
-    );
-    if (hasKoreanFullReadNegation(clause)) continue;
-    return true;
-  }
-  return false;
-}
-
-export function detectExplicitFullReadIntent(query: string): boolean {
-  const normalized = normalizeQueryText(query).toLocaleLowerCase();
-  if (!normalized) return false;
-  return (
-    hasEnglishFullDocumentModifierIntent(normalized) ||
-    hasEnglishDocumentSuffixIntent(normalized) ||
-    hasEnglishEveryDocumentUnitIntent(normalized) ||
-    hasEnglishLeadingCompletenessIntent(normalized) ||
-    hasChineseFullDocumentIntent(normalized) ||
-    hasJapaneseFullDocumentIntent(normalized) ||
-    hasKoreanFullDocumentIntent(normalized)
-  );
-}
-
-export type PaperEvidenceSource =
-  | "metadata"
-  | "document_text"
-  | "rendered_pages";
-
-export type PaperReadCoverage = "overview" | "targeted" | "exhaustive";
-
-export type PaperReadIntent = Readonly<{
-  source: PaperEvidenceSource;
-  coverage: PaperReadCoverage;
-}>;
-
-/**
- * Keep the requested evidence source independent from how comprehensively the
- * document should be processed. In particular, "full text" means document
- * evidence, not an exhaustive read.
- */
-export function classifyPaperReadIntent(query: string): PaperReadIntent {
-  const normalized = normalizeQueryText(query).toLocaleLowerCase();
-  const source: PaperEvidenceSource =
-    /\b(?:rendered?\s+(?:pdf\s+)?pages?|page\s+(?:layout|image|render|screenshot)|(?:layout|image|render|screenshot)\s+of\s+(?:pdf\s+)?pages?|pdf\s+(?:layout|render|screenshot))\b/i.test(
-      normalized,
-    )
-      ? "rendered_pages"
-      : /\b(?:metadata|bibliographic|catalog)\b/i.test(normalized) &&
-          !/\b(?:pdf|full[-\s]?text|paper\s+text|document\s+text)\b/i.test(
-            normalized,
-          )
-        ? "metadata"
-        : "document_text";
-  const coverage: PaperReadCoverage = detectExplicitFullReadIntent(normalized)
-    ? "exhaustive"
-    : /\b(?:summari[sz]e|summary|overview|main\s+(?:message|points?)|key\s+points?)\b/i.test(
-          normalized,
-        )
-      ? "overview"
-      : "targeted";
-  return { source, coverage };
-}
-
-export function reconcilePlannerReadIntent(
-  query: string,
-  plannedIntent: DocumentReadIntent,
-): DocumentReadIntent {
-  return plannedIntent === "full-once" && detectExplicitFullReadIntent(query)
-    ? "full-once"
-    : "targeted";
 }
 
 export function shouldAutoGenerateQueryVariants(params: {
@@ -511,7 +209,7 @@ export function shouldAutoGenerateQueryVariants(params: {
 }): boolean {
   const query = normalizeQueryText(params.query);
   if (!params.hasRetrievalContext || query.length < 4) return false;
-  return !isLikelyExactLookupQuery(query);
+  return !/^10\.\d{4,9}\/\S+$/i.test(query);
 }
 
 // Kept as a compatibility export for retrieval and focused runtime tests;
@@ -618,11 +316,9 @@ export function buildRetrievalPlannerPrompt(params: {
     .slice(0, 3);
   return [
     "Plan document retrieval for a user's Zotero papers.",
-    'Return strict JSON only in this shape: {"readIntent":"targeted|full-once","variants":["..."]}.',
+    'Return strict JSON only in this shape: {"variants":["..."]}.',
     "Generate search probes, not an answer.",
     "Preserve the user's intent.",
-    'Use readIntent "full-once" only when the user explicitly asks to read, use, analyze, or send the complete document.',
-    "Keep readIntent targeted when complete, entire, or whole describes an explanation, mechanism, argument, figure, table, section, or other requested answer rather than the document itself.",
     "Generate variants in the language used by the supplied document samples, including translation when query and source languages differ.",
     "If the user query language differs from the document samples' language, include at least one probe in each language.",
     "Include common acronyms, notation variants, and technical equivalents when useful.",
@@ -640,6 +336,7 @@ export function buildRetrievalPlannerPrompt(params: {
 export async function generateRetrievalQueryPlanWithModel(params: {
   query: string;
   hasRetrievalContext: boolean;
+  readIntent?: DocumentReadIntent;
   model?: string;
   apiBase?: string;
   apiKey?: string;
@@ -651,7 +348,10 @@ export async function generateRetrievalQueryPlanWithModel(params: {
   sourceSamples?: string[];
   llmCall?: LLMCallWithTimeoutParams["llmCall"];
 }): Promise<RetrievalQueryPlan> {
-  const fallback = buildRetrievalQueryPlan({ query: params.query });
+  const fallback = buildRetrievalQueryPlan({
+    query: params.query,
+    readIntent: params.readIntent,
+  });
   if (!shouldAutoGenerateQueryVariants(params)) return fallback;
   if (!params.apiBase && !params.apiKey) return fallback;
 
@@ -700,10 +400,7 @@ export async function generateRetrievalQueryPlanWithModel(params: {
       throw new Error("The retrieval planner returned malformed output");
     }
     const variants = Array.isArray(parsed?.variants) ? parsed.variants : [];
-    const readIntent = reconcilePlannerReadIntent(
-      params.query,
-      parsed.readIntent,
-    );
+    const readIntent = params.readIntent;
     return buildRetrievalQueryPlan({
       query: params.query,
       queryVariants: variants,
@@ -715,6 +412,7 @@ export async function generateRetrievalQueryPlanWithModel(params: {
   } catch {
     return buildRetrievalQueryPlan({
       query: params.query,
+      readIntent: params.readIntent,
       notes: ["Query variant planning failed; used the original query only."],
     });
   }
@@ -731,6 +429,7 @@ export async function resolveRetrievalQueryPlan(params: {
   queryVariants?: unknown[];
   queryPlan?: RetrievalQueryPlan;
   hasRetrievalContext: boolean;
+  readIntent?: DocumentReadIntent;
   model?: string;
   apiBase?: string;
   apiKey?: string;
@@ -747,12 +446,14 @@ export async function resolveRetrievalQueryPlan(params: {
     return buildRetrievalQueryPlan({
       query: params.query,
       queryVariants: params.queryVariants,
+      readIntent: params.readIntent,
       notes: ["Query variants were provided by the caller."],
     });
   }
   return generateRetrievalQueryPlanWithModel({
     query: params.query,
     hasRetrievalContext: params.hasRetrievalContext,
+    readIntent: params.readIntent,
     model: params.model,
     apiBase: params.apiBase,
     apiKey: params.apiKey,

@@ -201,6 +201,11 @@ describe("PdfPageService source-PDF figure runtime", function () {
       figureCacheDir: "/tmp/mineru-paper",
       mineruCacheDir: "/tmp/mineru-paper",
       query: "Figure 1",
+      selection: {
+        labels: ["Figure 1"],
+        kind: "figures",
+        includeSupplementary: false,
+      },
       dpi: 216,
       ...overrides,
     } as never);
@@ -229,6 +234,14 @@ describe("PdfPageService source-PDF figure runtime", function () {
     await extractWithService();
 
     assert.equal(capturedCall?.command, `${runtimeRoot}/bin/python3`);
+    assert.notInclude(capturedCall!.arguments, "--query");
+    const selectionArg = capturedCall!.arguments.indexOf("--selection");
+    assert.isAtLeast(selectionArg, 0);
+    assert.deepEqual(JSON.parse(capturedCall!.arguments[selectionArg + 1]), {
+      labels: ["Figure 1"],
+      kind: "figures",
+      includeSupplementary: false,
+    });
     const popplerArg = capturedCall?.arguments.indexOf("--poppler-bin") ?? -1;
     assert.isAtLeast(popplerArg, 0);
     assert.equal(capturedCall?.arguments[popplerArg + 1], `${runtimeRoot}/bin`);

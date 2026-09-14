@@ -8,6 +8,42 @@ import {
 import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
 
 describe("quoteRenderPlan", function () {
+  it("renders a displayed source subspan followed by its standalone anchor only once", function () {
+    const visible =
+      "Hypothesis: stable readout can coexist with representational drift.";
+    const citation = buildQuoteCitation({
+      id: "Q_live_adjacent",
+      quoteText: `SYNTHETIC TEST PAPER. ${visible}`,
+      citationLabel: "(Fixture, 2024)",
+      contextItemId: 3921,
+      itemId: 3920,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+    })!;
+    for (const separator of ["\n", "\n\n"]) {
+      const markdown = `> ${visible}${separator}[[quote:${citation.id}]]\n\nFollowing discussion.`;
+      const plan = buildQuoteRenderPlan({
+        markdown,
+        quoteCitations: [citation],
+      });
+      assert.lengthOf(plan.occurrences, 1);
+      assert.equal(plan.occurrences[0].displayText, visible);
+      assert.notInclude(plan.displayMarkdown, visible);
+      assert.include(plan.displayMarkdown, "Following discussion.");
+      assert.include(
+        buildQuoteExpandedMarkdown({ markdown, quoteCitations: [citation] }),
+        `> ${visible}`,
+      );
+    }
+    const other = "> This independent quotation is not in that source.";
+    const unrelated = buildQuoteRenderPlan({
+      markdown: `${other}\n[[quote:${citation.id}]]`,
+      quoteCitations: [citation],
+    });
+    assert.include(unrelated.displayMarkdown, other);
+    assert.equal(unrelated.occurrences[0].displayText, citation.quoteText);
+  });
+
   it("converts legacy markdown blockquotes with adjacent citation labels into render occurrences", function () {
     const markdown = [
       "The old assistant answer said:",

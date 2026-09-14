@@ -14,7 +14,10 @@ describe("bundled model capability registry parity", function () {
 
   it("uses the checked-in JSON as the bundled runtime registry", function () {
     assert.deepEqual(BUNDLED_MODEL_CAPABILITY_REGISTRY, bundledRegistryJson);
-    assert.equal(BUNDLED_MODEL_CAPABILITY_REGISTRY.revision, 3);
+    assert.equal(
+      BUNDLED_MODEL_CAPABILITY_REGISTRY.revision,
+      bundledRegistryJson.revision,
+    );
   });
 
   it("preserves every migrated legacy input-limit pattern", function () {

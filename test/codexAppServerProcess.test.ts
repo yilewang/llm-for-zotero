@@ -162,6 +162,287 @@ function createChunkReader(values: string[]) {
 }
 
 describe("codexAppServerProcess", function () {
+  it("reports a native question interruption as cancellation to the chat lifecycle", async function () {
+    const proc = createProcess();
+    let failure: unknown;
+    try {
+      await waitForCodexAppServerTurnCompletion({
+        proc,
+        threadId: "question-thread",
+        startTurn: async () => {
+          (proc as any).handleMessage({
+            method: "turn/completed",
+            params: {
+              threadId: "question-thread",
+              turn: { id: "question-turn", status: "interrupted" },
+            },
+          });
+          return "question-turn";
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal((failure as Error)?.name, "AbortError");
+  });
+  it("cancels native questions when AbortController is available only through the Zotero toolkit", async function () {
+    const globals = globalThis as any;
+    const NativeAbortController = globals.AbortController;
+    const previousToolkit = globals.ztoolkit;
+    const proc = createProcess();
+    let signal: AbortSignal | undefined;
+    try {
+      globals.AbortController = undefined;
+      globals.ztoolkit = {
+        getGlobal: (name: string) =>
+          name === "AbortController" ? NativeAbortController : undefined,
+      };
+      const remove = proc.onRequest(
+        "item/tool/requestUserInput",
+        (_params, _id, requestSignal) => {
+          signal = requestSignal;
+          return new Promise(() => {});
+        },
+      );
+      (proc as any).handleMessage({
+        id: "host-question",
+        method: "item/tool/requestUserInput",
+        params: { threadId: "thread", turnId: "turn" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.exists(signal);
+      assert.isFalse(signal!.aborted);
+      remove();
+      assert.isTrue(signal!.aborted);
+    } finally {
+      globals.AbortController = NativeAbortController;
+      globals.ztoolkit = previousToolkit;
+      proc.destroy();
+    }
+  });
+  it("settles a lost connection after pending proposal persistence finishes", async function () {
+    const proc = createProcess();
+    let persisted = false;
+    const turn = waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "thread",
+      turnId: "turn",
+      timeoutMs: 40,
+      onPlanCompleted: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        persisted = true;
+      },
+    });
+    (proc as any).handleMessage({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: { id: "proposal", type: "plan", text: "Draft" },
+      },
+    });
+    proc.destroy();
+    let error: unknown;
+    try {
+      await turn;
+    } catch (caught) {
+      error = caught;
+    }
+    assert.isTrue(persisted);
+    assert.match(String(error), /connection closed/);
+  });
+  it("resolves string request IDs before their question handler starts and ignores duplicate replies", async function () {
+    const writes: unknown[] = [];
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (line: string) => {
+          writes.push(JSON.parse(line));
+        },
+      },
+      kill: () => {},
+    });
+    const emit = (message: unknown) => (proc as any).handleMessage(message);
+    let calls = 0;
+    let wasAborted = false;
+    proc.onRequest("item/tool/requestUserInput", (_params, _id, signal) => {
+      calls += 1;
+      wasAborted = signal.aborted;
+      return { answers: {} };
+    });
+    const request = {
+      id: "native-question",
+      method: "item/tool/requestUserInput",
+      params: { threadId: "thread", turnId: "turn" },
+    };
+    emit(request);
+    emit({
+      method: "serverRequest/resolved",
+      params: { threadId: "thread", requestId: request.id },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit(request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls, 1);
+    assert.isTrue(wasAborted);
+    assert.isEmpty(writes);
+    proc.destroy();
+  });
+  it("keeps unrelated resolution from closing a question and cancels it when its handler is removed", async function () {
+    const proc = createProcess();
+    let signal: AbortSignal | undefined;
+    const remove = proc.onRequest(
+      "item/tool/requestUserInput",
+      (_params, _id, requestSignal) => {
+        signal = requestSignal;
+        return new Promise(() => {});
+      },
+    );
+    const emit = (message: unknown) => (proc as any).handleMessage(message);
+    emit({
+      id: 9,
+      method: "item/tool/requestUserInput",
+      params: { threadId: "thread", turnId: "turn" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({
+      method: "serverRequest/resolved",
+      params: { threadId: "other-thread", requestId: 9 },
+    });
+    assert.isFalse(signal?.aborted);
+    remove();
+    assert.isTrue(signal?.aborted);
+  });
+  it("answers a duplicated pending server question only once and does not time it out while the user is deciding", async function () {
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (text: string) => {
+          writes.push(text);
+        },
+      },
+      kill: () => {},
+    });
+    let answer!: (value: unknown) => void;
+    let calls = 0;
+    proc.onRequest("item/tool/requestUserInput", () => {
+      calls += 1;
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    });
+    const emit = (message: unknown) => (proc as any).handleMessage(message);
+    const completion = waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "thread",
+      turnId: "turn",
+      timeoutMs: 10,
+    });
+    const request = {
+      id: 91,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        itemId: "question",
+        questions: [],
+      },
+    };
+    emit(request);
+    emit(request);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    answer({ answers: { scope: { answers: ["Current collection"] } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({
+      method: "turn/completed",
+      params: { threadId: "thread", turn: { id: "turn", status: "completed" } },
+    });
+    await completion;
+    assert.equal(calls, 1);
+    assert.lengthOf(
+      writes.filter((line) => JSON.parse(line).id === 91),
+      1,
+    );
+  });
+  it("captures a native proposal before turn/start responds and awaits its persistence", async function () {
+    const proc = createProcess();
+    const emit = (method: string, params: unknown) =>
+      (proc as any).handleMessage({ method, params });
+    const previews: string[] = [];
+    const proposals: string[] = [];
+    let persisted = false;
+    const answer = await waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "native-thread",
+      timeoutMs: 100,
+      startTurn: async () => {
+        emit("item/plan/delta", {
+          threadId: "wrong-thread",
+          turnId: "native-turn",
+          itemId: "plan",
+          delta: "Wrong",
+        });
+        emit("item/plan/delta", {
+          threadId: "native-thread",
+          turnId: "native-turn",
+          itemId: "plan",
+          delta: "Draft preview",
+        });
+        emit("item/completed", {
+          threadId: "native-thread",
+          turnId: "native-turn",
+          item: { id: "plan", type: "plan", text: "# Authoritative proposal" },
+        });
+        emit("turn/completed", {
+          threadId: "native-thread",
+          turn: { id: "native-turn", status: "completed" },
+        });
+        return "native-turn";
+      },
+      onPlanDelta: (event) => {
+        previews.push(event.delta);
+      },
+      onPlanCompleted: async (event) => {
+        proposals.push(event.text);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        persisted = true;
+      },
+    });
+    assert.deepEqual(previews, ["Draft preview"]);
+    assert.deepEqual(proposals, ["# Authoritative proposal"]);
+    assert.isTrue(persisted);
+    assert.equal(answer, "# Authoritative proposal");
+  });
+
+  it("does not turn checklist completion into a completed native proposal", async function () {
+    const proc = createProcess();
+    let proposals = 0;
+    const result = waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "thread",
+      turnId: "turn",
+      timeoutMs: 100,
+      onPlanCompleted: () => {
+        proposals += 1;
+      },
+    });
+    (proc as any).handleMessage({
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        plan: [{ step: "Explore", status: "completed" }],
+      },
+    });
+    (proc as any).handleMessage({
+      method: "turn/completed",
+      params: {
+        threadId: "thread",
+        turn: { id: "turn", status: "completed" },
+      },
+    });
+    await result;
+    assert.equal(proposals, 0);
+  });
   it("merges inherited no-proxy entries with the required loopback bypass", function () {
     assert.equal(mergeCodexNoProxyValues(), "localhost,127.0.0.1,::1");
     assert.equal(

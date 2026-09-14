@@ -30,7 +30,7 @@ describe("agent adapters honour model profile overrides", function () {
       name: "read_paper",
       description: "read paper",
       inputSchema: { type: "object" },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
   ];
@@ -103,7 +103,7 @@ describe("agent adapters honour model profile overrides", function () {
   ) {
     return {
       temperature: 0.3,
-      maxTokens: 4096,
+      outputTokenLimit: { mode: "auto" as const },
       profileOverride: { forModel, extraBody },
     };
   }
@@ -111,8 +111,7 @@ describe("agent adapters honour model profile overrides", function () {
   function advancedWithExplicitOutputLimit() {
     return {
       temperature: 0.3,
-      maxTokens: 200_000,
-      maxTokensExplicit: true,
+      outputTokenLimit: { mode: "custom" as const, tokens: 200_000 },
       profileOverride: {
         forModel: "claude-haiku-4-5",
         limits: { outputTokens: 100_000 },
@@ -202,7 +201,7 @@ describe("agent adapters honour model profile overrides", function () {
     assert.equal(body.read().top_k, 40);
   });
 
-  it("openai_chat_compat preserves explicit output above detected limits", async function () {
+  it("openai_chat_compat clamps Custom output to detected limits", async function () {
     const body = captureBody({
       sse: [
         `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`,
@@ -219,10 +218,10 @@ describe("agent adapters honour model profile overrides", function () {
       tools,
     });
 
-    assert.equal(body.read().max_tokens, 200_000);
+    assert.equal(body.read().max_tokens, 100_000);
   });
 
-  it("responses_api preserves explicit output above detected limits", async function () {
+  it("responses_api clamps Custom output to detected limits", async function () {
     const body = captureBody({
       json: { output: [{ content: [{ type: "output_text", text: "hi" }] }] },
     });
@@ -238,10 +237,10 @@ describe("agent adapters honour model profile overrides", function () {
       tools,
     });
 
-    assert.equal(body.read().max_output_tokens, 200_000);
+    assert.equal(body.read().max_output_tokens, 100_000);
   });
 
-  it("anthropic_messages preserves explicit output above detected limits", async function () {
+  it("anthropic_messages clamps Custom output to detected limits", async function () {
     const body = captureBody({
       json: {
         content: [{ type: "text", text: "hi" }],
@@ -260,7 +259,7 @@ describe("agent adapters honour model profile overrides", function () {
       tools,
     });
 
-    assert.equal(body.read().max_tokens, 200_000);
+    assert.equal(body.read().max_tokens, 100_000);
   });
 
   it("ollama_native sends the user's extra parameters", async function () {
@@ -280,6 +279,35 @@ describe("agent adapters honour model profile overrides", function () {
     });
 
     assert.equal(body.read().top_k, 40);
+    assert.equal(
+      (body.read().options as Record<string, unknown>).num_predict,
+      -1,
+    );
+  });
+
+  it("ollama_native treats a length done_reason as incomplete", async function () {
+    captureBody({
+      ndjson: [
+        '{"message":{"content":"Partial answer"},"done":true,"done_reason":"length"}\n',
+      ],
+    });
+
+    const step = await new OllamaNativeAgentAdapter().runStep({
+      request: makeRequest({
+        model: "qwen3:8b",
+        apiBase: "http://localhost:11434",
+        providerProtocol: "ollama_native",
+        advanced: advancedWith({}, "qwen3:8b"),
+      }),
+      messages: [{ role: "user", content: "Summarize" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "incomplete");
+    if (step.kind === "incomplete") {
+      assert.equal(step.reason, "output_limit");
+      assert.equal(step.text, "Partial answer");
+    }
   });
 
   it("ollama_native merges user options.* without dropping its own", async function () {
@@ -412,7 +440,7 @@ describe("agent adapters honour model profile overrides", function () {
         reasoning: { provider: "kimi", level: "ultra" },
         advanced: {
           temperature: 0.3,
-          maxTokens: 4096,
+          outputTokenLimit: { mode: "auto" },
           profileOverride: {
             forModel: "kimi-k3",
             reasoning: {
@@ -467,7 +495,10 @@ describe("agent adapters honour model profile overrides", function () {
         apiBase: "http://localhost:11434",
         providerProtocol: "ollama_native",
         reasoning: { provider: "local", level: "minimal" },
-        advanced: { temperature: 0.3, maxTokens: 4096 },
+        advanced: {
+          temperature: 0.3,
+          outputTokenLimit: { mode: "auto" },
+        },
       }),
       messages: [{ role: "user", content: "Summarize" }],
       tools,
@@ -512,7 +543,7 @@ describe("agent adapters honour model profile overrides", function () {
         reasoning: { provider: "local", level: "minimal" },
         advanced: {
           temperature: 0.3,
-          maxTokens: 4096,
+          outputTokenLimit: { mode: "auto" },
           profileOverride: {
             forModel: "gemma4",
             reasoning: {

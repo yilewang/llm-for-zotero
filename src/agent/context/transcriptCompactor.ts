@@ -85,6 +85,16 @@ function parseToolContent(message: AgentToolMessage): unknown {
   }
 }
 
+function existingToolResultHandle(content: unknown): string | undefined {
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return undefined;
+  }
+  const handle = (content as Record<string, unknown>).toolResultHandle;
+  return typeof handle === "string" && handle.startsWith("trh_")
+    ? handle
+    : undefined;
+}
+
 function buildToolCallArgumentDigestById(
   messages: AgentModelMessage[],
 ): Map<string, string> {
@@ -253,10 +263,13 @@ export function buildAgentSemanticCheckpoint(params: {
     if (!handleRecordsByCall.has(key)) handleRecordsByCall.set(key, record);
   }
   const handleRecords = Array.from(handleRecordsByCall.values());
-  const toolHandleLines = handleRecords.map(
-    (record) =>
-      `- ${record.toolName} (${record.toolCallId}) handle=${record.handle}`,
-  );
+  const toolHandleLines = [...generated.toolHandleLines];
+  for (const record of handleRecords) {
+    const prefix = `- ${record.toolName} (${record.toolCallId})`;
+    if (!toolHandleLines.some((line) => line.startsWith(prefix))) {
+      toolHandleLines.push(`${prefix} handle=${record.handle}`);
+    }
+  }
   return {
     checkpoint: buildSummaryMessage(
       messages,
@@ -281,19 +294,22 @@ function buildDroppedToolHandleRecords(params: {
   const toolHandleLines: string[] = [];
   for (const message of params.messages) {
     if (message.role !== "tool") continue;
+    const content = parseToolContent(message);
     const record = createAgentToolResultHandleRecord({
       conversationKey: params.conversationKey,
       toolName: message.name,
       toolCallId: message.tool_call_id,
       inputDigest: params.argumentDigestById.get(message.tool_call_id),
       resourceSignature: params.resourceSignature,
-      content: parseToolContent(message),
+      content,
     });
-    if (!record) continue;
-    handleRecords.push(record);
-    toolHandleLines.push(
-      `- ${message.name} (${message.tool_call_id}) handle=${record.handle}`,
-    );
+    if (record) handleRecords.push(record);
+    const handle = existingToolResultHandle(content) || record?.handle;
+    if (handle) {
+      toolHandleLines.push(
+        `- ${message.name} (${message.tool_call_id}) handle=${handle}`,
+      );
+    }
   }
   return { handleRecords, toolHandleLines };
 }

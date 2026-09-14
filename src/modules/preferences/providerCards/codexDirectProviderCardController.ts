@@ -193,6 +193,14 @@ export function createCodexDirectProviderCardController(args: {
     title: t("Model names"),
     addTitle: t("Add model"),
   });
+  section.appendChild(
+    el(
+      args.doc,
+      "span",
+      args.helperStyle,
+      t("Per-response output limit: Managed by runtime"),
+    ),
+  );
   const syncAddButton = () => {
     addButton.disabled = args.group.models.some((row) => !row.model.trim());
     addButton.style.opacity = addButton.disabled ? "0.45" : "1";

@@ -80,7 +80,7 @@ describe("conversationHistoryController", function () {
     assert.equal(normalizeHistoryPaperItemID("not-a-number"), 0);
   });
 
-  it("resolves child attachment and note history targets to their parent paper", function () {
+  it("resolves child attachment history to its paper and keeps note history on its note", function () {
     const parent = {
       id: 42,
       isRegularItem: () => true,
@@ -120,7 +120,7 @@ describe("conversationHistoryController", function () {
       resolveHistoryEntryPaperBaseItem({ paperItemID: 100 }, (id) =>
         items.get(id),
       ),
-      parent,
+      note,
     );
   });
 

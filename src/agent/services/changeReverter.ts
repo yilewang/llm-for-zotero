@@ -1,3 +1,4 @@
+import { canonicalNoteHtml, noteHtmlMatches } from "../../utils/noteHtml";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
@@ -22,7 +23,7 @@ import {
   sha256Text,
   type RecoveryPayload,
 } from "../store/journalRecoveryBlobStore";
-import { withActiveJournalAction } from "./mutationCoordinator";
+import { withActiveJournalAction } from "./externalMutationCoordinator";
 import {
   atomizeMutationOperationFromHandler,
   isRegisteredLibraryMutationOperation,
@@ -423,6 +424,16 @@ async function currentStepPostcondition(params: {
   ) {
     const noteId = Number((expected as { noteId?: unknown }).noteId);
     const item = params.service.getGateway().getItem(noteId);
+    if (Object.prototype.hasOwnProperty.call(expected, "canonicalChecksum")) {
+      if (!item || item.deleted)
+        throw new Error("The original note is unavailable");
+      await item.reload(["note"], true);
+      return {
+        kind: "note_html",
+        noteId,
+        canonicalChecksum: await sha256Text(canonicalNoteHtml(item.getNote())),
+      };
+    }
     const html = item?.getNote?.() || "";
     const current: Record<string, unknown> = {
       kind: "note_html",
@@ -1456,7 +1467,9 @@ async function nonLibraryInverseIsSatisfied(params: {
   const { materialized, service } = params;
   if (materialized.kind === "note_html") {
     const item = service.getGateway().getItem(materialized.noteId);
-    return item?.getNote?.() === materialized.html;
+    if (!item) return false;
+    await item.reload(["note"], true);
+    return noteHtmlMatches(item.getNote(), materialized.html);
   }
   if (materialized.kind === "file_delete") {
     return (await readFileBytes(materialized.path)) === null;

@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { describe, it } from "mocha";
 import { readFileSync } from "node:fs";
 import { t } from "../src/utils/i18n";
+import { getOriginalPermissionOptions } from "../src/shared/permissionOptions";
 
 describe("bridge settings UI behavior", function () {
   it("persists bridge URL only on commit events", function () {
@@ -73,7 +74,7 @@ describe("bridge settings UI behavior", function () {
     }
   });
 
-  it("translates the library write mode copy around its literal mode names", function () {
+  it("translates the Original Agent permission instructions precisely", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: { locale?: string };
     };
@@ -81,21 +82,23 @@ describe("bridge settings UI behavior", function () {
     globalWithZotero.Zotero = { locale: "zh-CN" };
 
     try {
-      assert.equal(t("Library Write Mode"), "文献库写入模式");
+      assert.equal(t("Original Agent Mode"), "原生 Agent 模式");
+      assert.equal(t("Permission mode"), "权限模式");
       assert.equal(
         t(
-          "reviews every library change before it happens, and batch jobs pause on each page.",
+          "Requested actions run without review. Existing-note edits are applied and then shown as a diff. The agent asks only for genuine ambiguity in the request or for dangerous shell commands.",
         ),
-        "会在每次更改文献库之前进行审核，批处理任务会在每一页暂停。",
+        "请求的操作无需审核即可执行。对现有笔记的编辑会先应用，再以差异形式展示。仅在请求确有歧义或涉及危险的 shell 命令时，Agent 才会询问。",
       );
+      // Reading the English text from the option catalog keeps the Chinese
+      // string from silently falling back to English when the copy changes.
+      const yolo = getOriginalPermissionOptions().find(
+        (option) => option.selectionKey === "original:yolo",
+      )!;
       assert.equal(
-        t(
-          "lets the agent apply changes on its own judgement, including whole-library batch jobs — every run is still recorded and can be reverted from the agent history. This is separate from the Claude Code permission mode, which governs the bridge only.",
-        ),
-        "允许 Agent 自主判断并应用更改，包括整个文献库的批处理任务——每次运行仍会被记录，并可从 Agent 历史记录中撤销。此模式与 Claude Code 权限模式相互独立；后者仅控制桥接服务。",
+        t(yolo.description),
+        "Agent 自行判断并执行，不再询问，且可以执行超出字面请求的操作。明确的禁止事项、受保护条目、数据库、计划完整性检查、仅限对话的记忆，以及导入已发现论文前的论文选择卡片仍然生效。同样适用于 Claude Code 或 Codex 调用的插件工具。",
       );
-      assert.equal(t("safe"), "安全");
-      assert.equal(t("yolo"), "全自动");
     } finally {
       if (previousZotero) {
         globalWithZotero.Zotero = previousZotero;
@@ -103,5 +106,28 @@ describe("bridge settings UI behavior", function () {
         delete globalWithZotero.Zotero;
       }
     }
+  });
+
+  it("groups Original Agent controls and Tavily in one card", function () {
+    const preferences = readFileSync("addon/content/preferences.xhtml", "utf8");
+    const originalAgentCardStart = preferences.indexOf(
+      'id="__addonRef__-original-agent-card"',
+    );
+    const originalAgentCardEnd = preferences.indexOf(
+      'id="__addonRef__-codex-app-server-card"',
+    );
+    const originalAgentCard = preferences.slice(
+      originalAgentCardStart,
+      originalAgentCardEnd,
+    );
+
+    assert.isAtLeast(originalAgentCardStart, 0);
+    assert.isAbove(originalAgentCardEnd, originalAgentCardStart);
+    assert.include(originalAgentCard, 'id="__addonRef__-enable-agent-mode"');
+    assert.include(
+      originalAgentCard,
+      'id="__addonRef__-original-agent-permission-mode"',
+    );
+    assert.include(originalAgentCard, 'id="__addonRef__-tavily-card"');
   });
 });

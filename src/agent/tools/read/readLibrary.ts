@@ -13,6 +13,7 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 
 type ReadLibraryInput = {
   itemIds?: number[];
@@ -121,7 +122,7 @@ export function createReadLibraryTool(
           maxAnnotations: { type: "number" },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
     presentation: {
@@ -192,6 +193,12 @@ export function createReadLibraryTool(
         maxAnnotations: normalizePositiveInt(args.maxAnnotations),
       });
     },
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: ["zotero_library"],
+        reason:
+          "The library reader exposes Zotero item state without mutating it.",
+      }),
     execute: async (input, context) => {
       const read = await readService.readItems({
         request: context.request,

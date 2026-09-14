@@ -85,6 +85,67 @@ describe("agent transcript compactor", function () {
       result.handleRecords[0].handle,
     );
   });
+
+  it("keeps an existing unsuppressed paper-evidence handle in the checkpoint", function () {
+    const messages: AgentModelMessage[] = [
+      { role: "user", content: "old paper question" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "old-paper-call",
+            name: "paper_read",
+            arguments: { mode: "targeted", query: "method" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "old-paper-call",
+        name: "paper_read",
+        content: JSON.stringify({
+          toolResultHandle: "trh_original_paper_evidence",
+          paperEvidenceReferences: [
+            {
+              sourceToolCallId: "old-paper-call",
+              occurrenceId: "paper-occurrence:one",
+              quoteCitationIds: ["quote-one"],
+              toolResultHandle: "trh_original_paper_evidence",
+            },
+          ],
+          results: [{ text: "Exact stored evidence." }],
+        }),
+      },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: "current request" },
+      { role: "assistant", content: "current answer" },
+    ];
+    const baseBudget = buildAgentContextBudgetState({
+      messages,
+      model: "claude-haiku-4-5",
+      inputTokenCap: 32_000,
+      forceCompact: true,
+    });
+    const result = compactAgentTranscript({
+      messages,
+      budget: {
+        ...baseBudget,
+        recentTailTokens: 1,
+        summaryTokens: 160,
+        policy: { ...baseBudget.policy, minRecentMessages: 2 },
+      },
+      force: true,
+      conversationKey: 9,
+      resourceSignature: "scope-a",
+    });
+
+    assert.isTrue(result.compacted);
+    assert.include(
+      String(result.summaryMessage?.content),
+      "trh_original_paper_evidence",
+    );
+  });
 });
 
 describe("CJK summary budget", function () {

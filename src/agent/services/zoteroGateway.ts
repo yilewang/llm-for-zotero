@@ -22,6 +22,8 @@ import {
 } from "../../modules/contextPanel/contextResolution";
 import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel/paperAttribution";
 import { invalidateCachedContextText } from "../../modules/contextPanel/pdfContext";
+import { pdfTextCache } from "../../modules/contextPanel/state";
+import { joinLocalPath } from "../../utils/localPath";
 import { ensureMineruCacheDirForAttachment } from "../../modules/contextPanel/mineruSync";
 import {
   persistVerifiedNoteHtml,
@@ -110,6 +112,8 @@ export type LibraryItemTargetAttachment = {
     | "unavailable";
   /** If MinerU has parsed this PDF, the cache directory path containing markdown + images. */
   mineruCacheDir?: string;
+  /** Size of the readable text the host already holds for this PDF, when measurable without extraction. */
+  readableTextChars?: number;
 };
 
 export type LibraryItemTarget = {
@@ -167,7 +171,7 @@ export type BatchTagItemResult = {
 export type BatchMoveItemResult = {
   itemId: number;
   title: string;
-  status: "moved" | "skipped" | "missing";
+  status: "moved" | "added" | "skipped" | "missing";
   targetCollectionId?: number;
   targetCollectionName?: string;
   reason?: string;
@@ -1229,7 +1233,62 @@ const FULLTEXT_INDEX_STATE_MAP: Record<
   4: "queued",
 };
 
+/**
+ * Cheap, extraction-free size of the text the host can read for a PDF: the
+ * cached extraction when present, otherwise Zotero's full-text cache file or
+ * the MinerU markdown on disk. Undefined when nothing measurable exists.
+ */
+async function measureReadableTextChars(
+  attachment: Zotero.Item,
+  mineruCacheDir: string | undefined,
+): Promise<number | undefined> {
+  const cached = pdfTextCache.get(attachment.id);
+  if (cached?.fullLength) return cached.fullLength;
+  const stat = async (path: string) => {
+    try {
+      const io = (globalThis as unknown as { IOUtils?: any }).IOUtils;
+      const info = await io?.stat?.(path);
+      const size = Number(info?.size);
+      return Number.isFinite(size) && size > 0 ? size : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    const fulltext = (
+      Zotero as unknown as {
+        Fulltext?: { getItemCacheFile?: (item: Zotero.Item) => nsIFile };
+      }
+    ).Fulltext;
+    const cacheFile = fulltext?.getItemCacheFile?.(attachment);
+    if (
+      cacheFile &&
+      (typeof cacheFile.exists !== "function" || cacheFile.exists())
+    ) {
+      const size = Number((cacheFile as { fileSize?: number }).fileSize);
+      if (Number.isFinite(size) && size > 0) return size;
+      if (cacheFile.path) {
+        const measured = await stat(cacheFile.path);
+        if (measured) return measured;
+      }
+    }
+  } catch {
+    // Fall through to MinerU.
+  }
+  if (mineruCacheDir?.trim()) {
+    const measured = await stat(
+      joinLocalPath(mineruCacheDir.trim(), "full.md"),
+    );
+    if (measured) return measured;
+  }
+  return undefined;
+}
+
 export class ZoteroGateway {
+  getItemByLibraryAndKey(libraryID: number, key: string): Zotero.Item | null {
+    return Zotero.Items.getByLibraryAndKey(libraryID, key) || null;
+  }
+
   getItem(itemId: number | undefined): Zotero.Item | null {
     if (!Number.isFinite(itemId) || !itemId || itemId <= 0) return null;
     return Zotero.Items.get(Math.floor(itemId)) || null;
@@ -1467,12 +1526,17 @@ export class ZoteroGateway {
           ztoolkit.log("LLM: MinerU cache check failed", err);
         }
       }
+      const readableTextChars =
+        contentType === "application/pdf"
+          ? await measureReadableTextChars(att, mineruCacheDir)
+          : undefined;
       results.push({
         contextItemId: att.id,
         title: resolveAnyAttachmentTitle(att, i, allAtts.length),
         contentType,
         indexingState,
         mineruCacheDir,
+        ...(readableTextChars !== undefined ? { readableTextChars } : {}),
       });
     }
     return results;
@@ -1871,7 +1935,10 @@ export class ZoteroGateway {
       throw new Error("No active library available for browsing collections");
     }
     const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    const paperIds = new Set(orderedGatewayPaperIds(snapshot));
+    // Collection membership is bibliographic, not conditional on a PDF.
+    const paperIds = new Set(
+      orderedIndexIds(snapshot, (item) => item.kind === "regular"),
+    );
     const nodes = new Map<number, CollectionBrowseNode>();
     for (const collection of snapshot.collectionById.values()) {
       if (collection.deleted) continue;
@@ -3010,6 +3077,7 @@ export class ZoteroGateway {
 
   async listStandaloneNotes(params: {
     libraryID: number;
+    collectionId?: number;
     limit?: number;
   }): Promise<{ notes: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
@@ -3019,7 +3087,10 @@ export class ZoteroGateway {
     const snapshot = await libraryIndexService.getSnapshot(libraryID);
     const ids = orderedIndexIds(
       snapshot,
-      (item) => item.kind === "standalone-note",
+      (item) =>
+        item.kind === "standalone-note" &&
+        (!params.collectionId ||
+          item.collectionIds.includes(params.collectionId)),
     );
     return {
       notes: buildItemTargetsForIds(this, pageIds(ids, params.limit)),
@@ -3163,6 +3234,7 @@ export class ZoteroGateway {
 
   async searchAllNotes(params: {
     libraryID: number;
+    collectionId?: number;
     query: string;
     limit?: number;
   }): Promise<
@@ -3184,12 +3256,17 @@ export class ZoteroGateway {
       search.addCondition("itemType", "is", "note");
       search.addCondition("quicksearch-everything", "contains", query);
       const noteIds: number[] = await search.search();
-      return this._buildNoteResults(noteIds, normalizedLimit);
+      return this._buildNoteResults(
+        noteIds,
+        normalizedLimit,
+        params.collectionId,
+      );
     } catch (_error) {
       void _error;
       // Fallback: in-memory scan across all items and child notes
       return this._searchAllNotesInMemory({
         libraryID,
+        collectionId: params.collectionId,
         query,
         limit: normalizedLimit,
       });
@@ -3199,6 +3276,7 @@ export class ZoteroGateway {
   private _buildNoteResults(
     noteIds: number[],
     limit: number,
+    collectionId?: number,
   ): Array<
     LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
   > {
@@ -3209,6 +3287,11 @@ export class ZoteroGateway {
       if (results.length >= limit) break;
       const noteItem = this.getItem(noteId);
       if (!noteItem?.isNote?.()) continue;
+      const owner = noteItem.parentID
+        ? this.getItem(noteItem.parentID)
+        : noteItem;
+      const collectionIds = owner?.getCollections() || [];
+      if (collectionId && !collectionIds.includes(collectionId)) continue;
       const rawTitle = normalizeText(
         (noteItem as any).getNoteTitle?.() ||
           noteItem.getDisplayTitle?.() ||
@@ -3227,7 +3310,7 @@ export class ZoteroGateway {
           title,
           attachments: [],
           tags: getItemTags(noteItem),
-          collectionIds: [],
+          collectionIds,
           noteKind: "item",
           parentItemId: noteItem.parentID as number,
           parentItemTitle: parentTitle,
@@ -3242,6 +3325,7 @@ export class ZoteroGateway {
 
   private async _searchAllNotesInMemory(params: {
     libraryID: number;
+    collectionId?: number;
     query: string;
     limit: number;
   }): Promise<
@@ -3259,6 +3343,11 @@ export class ZoteroGateway {
       const indexed = snapshot.itemById.get(itemId);
       const item = this.getItem(itemId);
       if (!indexed || indexed.deleted || !item) continue;
+      if (
+        params.collectionId &&
+        !indexed.collectionIds.includes(params.collectionId)
+      )
+        continue;
       if (indexed.kind === "standalone-note") {
         const html = item.getNote?.() || "";
         const text = normalizeNoteSourceText(html);
@@ -3300,7 +3389,7 @@ export class ZoteroGateway {
           title,
           attachments: [],
           tags: getItemTags(noteItem),
-          collectionIds: [],
+          collectionIds: [...indexed.collectionIds],
           noteKind: "item",
           parentItemId: item.id,
           parentItemTitle: parentTitle,
@@ -3650,6 +3739,7 @@ export class ZoteroGateway {
   }): Promise<{
     selectedCount: number;
     movedCount: number;
+    addedCount: number;
     skippedCount: number;
     collections: CollectionSummary[];
     items: BatchMoveItemResult[];
@@ -3719,6 +3809,7 @@ export class ZoteroGateway {
       return {
         selectedCount: sets.length,
         movedCount: outcome.changedCount,
+        addedCount: 0,
         skippedCount: outcome.items.length - outcome.changedCount,
         collections: Array.from(collectionMap.values()),
         items: outcome.items,
@@ -3727,7 +3818,7 @@ export class ZoteroGateway {
     }
 
     const results: BatchMoveItemResult[] = [];
-    let movedCount = 0;
+    let addedCount = 0;
     for (const assignment of normalizedAssignments) {
       const collection = collectionMap.get(assignment.targetCollectionId);
       if (!collection) {
@@ -3787,19 +3878,20 @@ export class ZoteroGateway {
       }
       item.addToCollection(collection.collectionId);
       await item.saveTx();
-      movedCount += 1;
+      addedCount += 1;
       results.push({
         itemId: item.id,
         title,
-        status: "moved",
+        status: "added",
         targetCollectionId: collection.collectionId,
         targetCollectionName: collection.path || collection.name,
       });
     }
     return {
       selectedCount: normalizedAssignments.length,
-      movedCount,
-      skippedCount: results.length - movedCount,
+      movedCount: 0,
+      addedCount,
+      skippedCount: results.length - addedCount,
       collections: Array.from(collectionMap.values()),
       items: results,
     };
@@ -3811,6 +3903,7 @@ export class ZoteroGateway {
   }): Promise<{
     selectedCount: number;
     movedCount: number;
+    addedCount: number;
     skippedCount: number;
     collection: CollectionSummary;
     items: BatchMoveItemResult[];
@@ -3828,6 +3921,7 @@ export class ZoteroGateway {
     return {
       selectedCount: result.selectedCount,
       movedCount: result.movedCount,
+      addedCount: result.addedCount,
       skippedCount: result.skippedCount,
       collection,
       items: result.items,
@@ -5038,6 +5132,166 @@ export class ZoteroGateway {
     } finally {
       engine.free?.();
     }
+  }
+
+  /**
+   * Formats document citation clusters and keeps bibliography entries paired
+   * with their Zotero items. Unlike formatBibliography(), this preserves the
+   * structure needed for source navigation and multi-surface serialization.
+   */
+  formatStructuredCitations(params: {
+    clusters: Array<{
+      citationId: string;
+      items: Array<{ itemId: number; pageIndex?: number }>;
+    }>;
+    styleId?: string;
+    locale?: string;
+  }): {
+    styleId: string;
+    styleTitle: string;
+    locale: string;
+    clusters: Array<{ citationId: string; text: string; html: string }>;
+    bibliographyEntries: Array<{
+      itemId: number;
+      text: string;
+      html: string;
+    }>;
+  } {
+    const Styles = (
+      Zotero as unknown as {
+        Styles?: { get?: (id: string) => unknown };
+      }
+    ).Styles;
+    if (!Styles?.get) {
+      throw new Error("Zotero's citation style registry is unavailable");
+    }
+    const styleId =
+      params.styleId ||
+      String(
+        (
+          Zotero as unknown as {
+            Prefs?: { get?: (key: string) => unknown };
+          }
+        ).Prefs?.get?.("export.quickCopy.setting") || "",
+      ).replace(/^bibliography(?:\/[^/]*)?=/, "") ||
+      "http://www.zotero.org/styles/apa";
+    const locale = params.locale || "en-US";
+    const style = Styles.get(styleId) as {
+      title?: string;
+      getCiteProc?: (
+        locale: string,
+        format: string,
+        options?: { cache?: boolean },
+      ) => {
+        free?: () => void;
+        updateItems?: (ids: number[]) => void;
+        previewCitationCluster?: (
+          citation: unknown,
+          citationsPre: Array<[string, number]>,
+          citationsPost: Array<[string, number]>,
+          format: string,
+        ) => string;
+        makeBibliography?: () =>
+          | [{ entry_ids?: Array<Array<string | number>> }, string[]]
+          | false;
+      };
+    };
+    if (!style?.getCiteProc) {
+      throw new Error(`Citation style "${styleId}" is not installed`);
+    }
+    const itemIds = Array.from(
+      new Set(
+        params.clusters.flatMap((cluster) =>
+          cluster.items.map((item) => Number(item.itemId)),
+        ),
+      ),
+    ).filter((itemId) => Number.isInteger(itemId) && itemId > 0);
+    if (!itemIds.length) {
+      throw new Error("A structured citation bundle requires citable items");
+    }
+    const format = (outputFormat: "text" | "html") => {
+      const engine = style.getCiteProc!(locale, outputFormat, { cache: true });
+      try {
+        engine.updateItems?.(itemIds);
+        const clusters = params.clusters.map((cluster) => {
+          const output =
+            engine.previewCitationCluster?.(
+              {
+                citationID: cluster.citationId,
+                citationItems: cluster.items.map((item) => ({
+                  id: item.itemId,
+                  ...(typeof item.pageIndex === "number"
+                    ? { locator: String(item.pageIndex + 1), label: "page" }
+                    : {}),
+                })),
+                properties: { noteIndex: 0 },
+              },
+              // previewCitationCluster() does not register the previewed
+              // citation in citeproc's citation registry. Passing an earlier
+              // preview as citationsPre therefore makes Zotero look up a
+              // citation that does not exist and crashes on citationItems.
+              // Document clusters are serialized independently, so preview
+              // each one without synthetic prior/post citation IDs.
+              [],
+              [],
+              outputFormat,
+            ) || "";
+          return { citationId: cluster.citationId, output };
+        });
+        const bibliography = engine.makeBibliography?.();
+        if (!bibliography) {
+          throw new Error(
+            `Citation style "${styleId}" did not produce a bibliography`,
+          );
+        }
+        const [metadata, entries] = bibliography;
+        const entryIds = metadata.entry_ids || [];
+        const bibliographyEntries = entries.map((output, index) => ({
+          itemId: Number(entryIds[index]?.[0] || 0),
+          output,
+        }));
+        if (
+          bibliographyEntries.length !== itemIds.length ||
+          bibliographyEntries.some((entry) => !entry.itemId)
+        ) {
+          throw new Error(
+            "Zotero's citation engine returned an unresolvable bibliography",
+          );
+        }
+        return { clusters, bibliographyEntries };
+      } finally {
+        engine.free?.();
+      }
+    };
+    const textOutput = format("text");
+    const htmlOutput = format("html");
+    const htmlClusters = new Map(
+      htmlOutput.clusters.map((cluster) => [
+        cluster.citationId,
+        cluster.output,
+      ]),
+    );
+    const htmlEntries = new Map(
+      htmlOutput.bibliographyEntries.map((entry) => [
+        entry.itemId,
+        entry.output,
+      ]),
+    );
+    return {
+      styleId,
+      styleTitle: normalizeText(style.title) || styleId,
+      locale,
+      clusters: textOutput.clusters.map((cluster) => ({
+        citationId: cluster.citationId,
+        text: cluster.output,
+        html: htmlClusters.get(cluster.citationId) || cluster.output,
+      })),
+      bibliographyEntries: textOutput.bibliographyEntries.map((entry) => ({
+        itemId: entry.itemId,
+        text: entry.output,
+        html: htmlEntries.get(entry.itemId) || entry.output,
+      })),
+    };
   }
 
   async deleteCollection(params: {
@@ -6515,7 +6769,9 @@ export class ZoteroGateway {
                 setIdentifier(id: Record<string, string>): void;
                 getTranslators(): Promise<unknown[]>;
                 setTranslator(t: unknown): void;
-                translate(opts?: { libraryID?: number }): Promise<unknown[]>;
+                translate(opts?: {
+                  libraryID?: number | false;
+                }): Promise<unknown[]>;
               };
             };
           }
@@ -6535,7 +6791,41 @@ export class ZoteroGateway {
           continue;
         }
         translate.setTranslator(translators);
-        const items = await translate.translate({ libraryID: targetLibraryID });
+        // Search inherits Zotero's Web translator, which does not forward
+        // saveOptions and automatically selects its newly saved item. Resolve
+        // metadata first, then let the native ItemSaver persist the complete
+        // translator payload without changing the user's conversation context.
+        const translatedItems = await translate.translate({ libraryID: false });
+        const ItemSaver = (
+          Zotero as unknown as {
+            Translate: {
+              ItemSaver: {
+                new (options: {
+                  libraryID: number;
+                  collections: number[] | null;
+                  attachmentMode: number;
+                  forceTagType: number;
+                  saveOptions: { skipSelect: boolean };
+                }): {
+                  saveItems(
+                    items: unknown[],
+                    onAttachment: () => void,
+                  ): Promise<unknown[]>;
+                };
+                ATTACHMENT_MODE_DOWNLOAD: number;
+              };
+            };
+          }
+        ).Translate.ItemSaver;
+        const items = translatedItems?.length
+          ? await new ItemSaver({
+              libraryID: targetLibraryID,
+              collections: targetCollection ? [targetCollection.id] : null,
+              attachmentMode: ItemSaver.ATTACHMENT_MODE_DOWNLOAD,
+              forceTagType: 1,
+              saveOptions: { skipSelect: true },
+            }).saveItems(translatedItems, () => {})
+          : [];
         if (items && items.length > 0) {
           const importedRegularItemIds = items
             .map((item) =>
@@ -6549,19 +6839,6 @@ export class ZoteroGateway {
               const importedItem = this.getItem(itemId);
               return Boolean(importedItem?.isRegularItem?.());
             });
-          if (targetCollection) {
-            for (const itemId of importedRegularItemIds) {
-              const importedItem = this.getItem(itemId);
-              if (
-                !importedItem ||
-                importedItem.inCollection?.(targetCollection.id)
-              ) {
-                continue;
-              }
-              importedItem.addToCollection(targetCollection.id);
-              await importedItem.saveTx();
-            }
-          }
           itemIds.push(...importedRegularItemIds);
           // Previously `|| items.length`, which reported success when the
           // translator returned something but nothing survived the

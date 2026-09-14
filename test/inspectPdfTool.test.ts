@@ -222,7 +222,7 @@ describe("read_attachment tool", function () {
     modelName: "gpt-5.4",
   };
 
-  it("requires confirmation before sending an attached file to the model", async function () {
+  it("does not require confirmation before sending an attached file to the model", function () {
     const tool = createReadAttachmentTool({} as never, {} as never);
 
     const validated = tool.validate({
@@ -231,18 +231,39 @@ describe("read_attachment tool", function () {
     assert.isTrue(validated.ok);
     if (!validated.ok) return;
 
-    const shouldConfirm = await tool.shouldRequireConfirmation?.(
-      validated.value,
-      baseContext,
-    );
-    assert.isTrue(shouldConfirm);
+    assert.isFalse(tool.spec.requiresConfirmation);
+    assert.isUndefined(tool.shouldRequireConfirmation);
+  });
+
+  it("still builds a review card when the host forces confirmation", async function () {
+    // read_attachment never asks on its own, but the controller falls back to
+    // createPendingAction whenever a caller forces a review, so the card the
+    // user would see there has to stay correct.
+    const tool = createReadAttachmentTool({} as never, {} as never);
+    const validated = tool.validate({ attachFile: true });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
     const pending = await tool.createPendingAction?.(
       validated.value,
       baseContext,
     );
     assert.exists(pending);
     assert.equal(pending?.toolName, "read_attachment");
+    assert.equal(pending?.title, "notes.txt");
     assert.equal(pending?.confirmLabel, "Send to model");
+    assert.equal(pending?.cancelLabel, "Cancel");
+    const review = pending?.fields?.[0];
+    assert.equal(review?.type, "review_table");
+    assert.deepEqual(
+      review?.type === "review_table"
+        ? review.rows.map((row) => [row.key, row.after])
+        : [],
+      [
+        ["file", "notes.txt"],
+        ["mimeType", "text/plain"],
+      ],
+    );
   });
 
   it("reads markdown child attachments with parent-aware source metadata", async function () {

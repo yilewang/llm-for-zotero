@@ -1,5 +1,10 @@
 import { config } from "../../package.json";
 import { joinLocalPath } from "./localPath";
+import {
+  CODEX_APPROVE_PERMISSION_STATE,
+  CODEX_ASK_PERMISSION_STATE,
+  serializeCodexPermissionState,
+} from "../codexAppServer/permissionState";
 
 declare const Services:
   | {
@@ -15,6 +20,15 @@ const PREF_MINERU_CONTENT_MD_CLEANUP = `${config.prefsPrefix}.migrationMineruCon
 const PREF_MINERU_MANIFEST_BUILD = `${config.prefsPrefix}.migrationMineruManifestBuildDone`;
 const PREF_NICKNAME_MIGRATION = `${config.prefsPrefix}.migrationNicknameAutoSetDone`;
 const PREF_ATTACHMENTS_VAULT_RELATIVE = `${config.prefsPrefix}.migrationAttachmentsVaultRelativeDone`;
+const PREF_CLAUDE_PERMISSION_MODE = `${config.prefsPrefix}.claudeCodePermissionMode`;
+const PREF_CLAUDE_PERMISSION_MODE_MIGRATION = `${config.prefsPrefix}.claudeCodePermissionModeMigrationDone`;
+const PREF_LEGACY_AGENT_PERMISSION_MODE = `${config.prefsPrefix}.agentPermissionMode`;
+const PREF_LEGACY_ORIGINAL_AGENT_PERMISSION_MODE = `${config.prefsPrefix}.agentLibraryWriteMode`;
+const PREF_ORIGINAL_AGENT_PERMISSION_MODE = `${config.prefsPrefix}.originalAgentPermissionMode`;
+const PREF_ORIGINAL_AGENT_PERMISSION_MODE_MIGRATION = `${config.prefsPrefix}.originalAgentPermissionModeMigrationDone`;
+const PREF_CODEX_PERMISSION_STATE = `${config.prefsPrefix}.codexAppServerPermissionState`;
+const PREF_CODEX_PERMISSION_STATE_MIGRATION = `${config.prefsPrefix}.codexAppServerPermissionStateMigrationDone`;
+const PREF_CODEX_APPROVALS_REVIEWER = `${config.prefsPrefix}.codexAppServerApprovalsReviewer`;
 
 const MIGRATABLE_PREF_KEYS = [
   "enable",
@@ -257,8 +271,66 @@ function migrateAttachmentsVaultRelative(): void {
   Zotero.Prefs.set(PREF_ATTACHMENTS_VAULT_RELATIVE, true, true);
 }
 
+export function migrateClaudePermissionMode(): void {
+  if (Zotero.Prefs.get(PREF_CLAUDE_PERMISSION_MODE_MIGRATION, true)) return;
+
+  if (!hasUserPref(PREF_CLAUDE_PERMISSION_MODE)) {
+    const legacyValue = hasUserPref(PREF_LEGACY_AGENT_PERMISSION_MODE)
+      ? Zotero.Prefs.get(PREF_LEGACY_AGENT_PERMISSION_MODE, true)
+      : undefined;
+    Zotero.Prefs.set(
+      PREF_CLAUDE_PERMISSION_MODE,
+      legacyValue === "yolo" ? "bypassPermissions" : "default",
+      true,
+    );
+  }
+
+  Zotero.Prefs.set(PREF_CLAUDE_PERMISSION_MODE_MIGRATION, true, true);
+}
+
+export function migrateOriginalAgentPermissionMode(): void {
+  if (Zotero.Prefs.get(PREF_ORIGINAL_AGENT_PERMISSION_MODE_MIGRATION, true)) {
+    return;
+  }
+  if (!hasUserPref(PREF_ORIGINAL_AGENT_PERMISSION_MODE)) {
+    const legacyValue = hasUserPref(PREF_LEGACY_ORIGINAL_AGENT_PERMISSION_MODE)
+      ? Zotero.Prefs.get(PREF_LEGACY_ORIGINAL_AGENT_PERMISSION_MODE, true)
+      : undefined;
+    const migrated =
+      legacyValue === "safe" || legacyValue === "auto" || legacyValue === "yolo"
+        ? legacyValue
+        : "auto";
+    Zotero.Prefs.set(PREF_ORIGINAL_AGENT_PERMISSION_MODE, migrated, true);
+  }
+  Zotero.Prefs.set(PREF_ORIGINAL_AGENT_PERMISSION_MODE_MIGRATION, true, true);
+}
+
+export function migrateCodexPermissionState(): void {
+  if (Zotero.Prefs.get(PREF_CODEX_PERMISSION_STATE_MIGRATION, true)) return;
+
+  if (!hasUserPref(PREF_CODEX_PERMISSION_STATE)) {
+    if (hasUserPref(PREF_CODEX_APPROVALS_REVIEWER)) {
+      const reviewer = Zotero.Prefs.get(PREF_CODEX_APPROVALS_REVIEWER, true);
+      Zotero.Prefs.set(
+        PREF_CODEX_PERMISSION_STATE,
+        serializeCodexPermissionState(
+          reviewer === "auto_review"
+            ? CODEX_APPROVE_PERMISSION_STATE
+            : CODEX_ASK_PERMISSION_STATE,
+        ),
+        true,
+      );
+    }
+  }
+
+  Zotero.Prefs.set(PREF_CODEX_PERMISSION_STATE_MIGRATION, true, true);
+}
+
 export function runStartupPreferenceMigrations(): void {
   migrateLegacyPrefs();
+  migrateOriginalAgentPermissionMode();
+  migrateClaudePermissionMode();
+  migrateCodexPermissionState();
   migrateNickname();
   migrateAttachmentsVaultRelative();
 }

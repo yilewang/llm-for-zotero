@@ -1,10 +1,8 @@
 /**
  * Agent Skills — file-driven guidance instructions.
  *
- * Each skill is a native Agent Skill `SKILL.md` file with frontmatter match
- * patterns and a body instruction. When a user's message matches a skill's patterns, the
- * instruction is injected into the agent's current-turn guidance alongside
- * tool context.
+ * Each skill is a native Agent Skill `SKILL.md` file with a semantic
+ * description, deterministic context requirements, and a body instruction.
  *
  * Built-in skills are bundled at compile time and copied to the user's
  * data directory on first run. The user folder is the sole source of
@@ -13,8 +11,10 @@
  * Users can create, edit, or delete skills by managing:
  *   {Zotero profile runtime root}/.agents/skills/<skill-id>/SKILL.md
  */
-import { matchesSkill, parseSkill } from "./skillLoader";
+import { parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
+import { getAllSkills } from "./catalog";
+export { getAllSkills, setUserSkills } from "./catalog";
 import type { SkillRoutingRequest } from "./contextEligibility";
 import libraryAnalysisRaw from "./library-analysis.md";
 import comparePapersRaw from "./compare-papers.md";
@@ -26,7 +26,7 @@ import literatureReviewRaw from "./literature-review.md";
 import importCitedReferenceRaw from "./import-cited-reference.md";
 import { resolveSkillRouting } from "./routing";
 
-export { matchesSkill, parseSkill } from "./skillLoader";
+export { getSkillRoutingDiagnostics, parseSkill } from "./skillLoader";
 export {
   getSkillContextEligibility,
   isSkillContextEligible,
@@ -47,6 +47,13 @@ export {
   resolveSkillDirectiveText,
   prependNativeSkillMention,
 } from "./routing";
+export type {
+  PlanSkillRoutingReceipt,
+  SkillRequestedScope,
+  SkillRouterResponseV1,
+  SkillRoutingReceipt,
+  ValidatedSkillActivation,
+} from "./routingTypes";
 export type {
   SkillRoutingResolution,
   SkillDirectiveTextResolution,
@@ -85,28 +92,6 @@ export function getBuiltinSkillInstruction(
 }
 
 /**
- * Skills loaded from the user's data directory.
- * This is the sole source of truth — the agent reads only from here.
- */
-let skills: AgentSkill[] = [];
-
-/**
- * Replace the current set of skills.
- * Called once at plugin startup after scanning the user skills directory.
- */
-export function setUserSkills(loaded: AgentSkill[]): void {
-  skills = loaded;
-}
-
-/**
- * Returns all skills loaded from the user folder.
- * This is the primary accessor used by messageBuilder and trace events.
- */
-export function getAllSkills(): AgentSkill[] {
-  return skills;
-}
-
-/**
  * Returns the IDs of all skills that should activate for the given request.
  * Called once per user turn (NOT per model inference inside the agent loop).
  * The result is (a) fed into messageBuilder to filter which skill
@@ -115,10 +100,8 @@ export function getAllSkills(): AgentSkill[] {
  *
  * Sources of activation, unioned:
  *   1. `forcedSkillIds` — explicit user selection from the slash menu.
- *   2. Runtime-context rules — e.g. notes-directory nickname mentioned.
- *   3. Either (a) the LLM classifier output passed in via `classifiedIds`,
- *      or (b) regex `match:` patterns as the fallback when no classifier
- *      result is available.
+ *   2. Validated semantic router output passed in via `classifiedIds`.
+ * Missing router output intentionally activates no automatic skills.
  */
 export function getMatchedSkillIds(
   request: SkillRoutingRequest &

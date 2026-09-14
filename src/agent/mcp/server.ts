@@ -1,3 +1,6 @@
+import { areExternalMcpWritesEnabled } from "./prefs";
+import { createJournalId } from "../store/changeJournal";
+import { createAbortController } from "../../utils/apiHelpers";
 /**
  * MCP (Model Context Protocol) server for the llm-for-zotero plugin.
  *
@@ -18,6 +21,7 @@ import type { ReasoningConfig } from "../../shared/llm";
 import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
+import type { AgentActionReceipt } from "../contracts/types";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
   areConversationWritesFrozen,
@@ -26,8 +30,6 @@ import {
   withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
 import type {
-  AgentConfirmationResolution,
-  AgentPendingAction,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
   AgentToolArtifact,
@@ -58,6 +60,16 @@ import {
   type McpToolDefinition,
   type McpToolsListResult,
 } from "./protocol";
+import { loadPlanArtifact, loadPlanExecutionLedger } from "../plans/store";
+import { loadLatestResearchMutationApprovalGrant } from "../research/store";
+import { validateResearchMutationGrant } from "../research/mutationApproval";
+import { extractVerifiedReadSources } from "../plans/readEvidence";
+import type {
+  TrustedReadObservation,
+  VerifiedReadSource,
+} from "../plans/types";
+import { createTrustedReadObservations } from "../plans/readObservation";
+import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 
 export const ZOTERO_MCP_SERVER_NAME = "llm_for_zotero";
 export const ZOTERO_MCP_ENDPOINT_PATH = "/llm-for-zotero/mcp";
@@ -76,15 +88,27 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   "paper_read",
   "literature_search",
 ] as const;
+export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
+  "request_user_input",
+  "update_plan",
+  "prepare_plan_execution",
+  "amend_plan",
+  "task_update",
+  "research_update",
+  "approve_research_expansion",
+  "approve_research_mutation",
+  "submit_document",
+] as const;
 export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
+  "amend_plan",
+  "approve_research_expansion",
+  "approve_research_mutation",
   "library_update",
   "collection_update",
   "note_write",
   "library_import",
   "library_delete",
   "attachment_update",
-  "run_command",
-  "file_io",
   "zotero_script",
   "undo_last_action",
   "revert_changes",
@@ -99,6 +123,12 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
  * silently diverged before.
  */
 export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
+  literature_review:
+    "Ranked discovery review uses the Original Agent's conversation-scoped candidate store and interactive review channel; external MCP clients receive scholarly search results directly.",
+  run_command:
+    "External runtimes must use their native command tool so their selected permission profile and sandbox remain authoritative.",
+  file_io:
+    "External runtimes must use their native filesystem tools so their selected permission profile and sandbox remain authoritative.",
   // Runs unattended for minutes and reports only at the end. The MCP
   // transport has no progress channel and no way to drive the per-page
   // review the in-plugin surface offers, so an external backend would see a
@@ -111,9 +141,11 @@ export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
   tool_result_read:
     "tool_result_read is gated on an in-plugin metadata flag that the MCP path does not set.",
 };
-const CURATED_READ_TOOL_NAMES = new Set<string>(
-  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
-);
+const CURATED_READ_TOOL_NAMES = new Set<string>([
+  ...ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+  ...ZOTERO_MCP_PLAN_TOOL_NAMES,
+]);
+const CURATED_PLAN_TOOL_NAMES = new Set<string>(ZOTERO_MCP_PLAN_TOOL_NAMES);
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
@@ -138,7 +170,8 @@ const MCP_SCOPE_ARG_NAMES = new Set([
   "activeContextItemId",
   "activeContextItemID",
 ]);
-const CODEX_MCP_TOOL_APPROVAL_MODE = "approve";
+const CODEX_MCP_READ_APPROVAL_MODE = "approve";
+const CODEX_MCP_EFFECT_APPROVAL_MODE = "auto";
 const MCP_READ_DEDUPE_TTL_MS = 2 * 60 * 1000;
 const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
   "library_search",
@@ -161,13 +194,20 @@ const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
   "zotero_script",
 ]);
 const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set(["literature_search"]);
-const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
-  "run_command",
-  "file_io",
-  "zotero_script",
-]);
 
 type ZoteroMcpScopeMetadata = {
+  publishHostEvent?: (event: import("../types").AgentEvent) => Promise<void>;
+  requestInteraction?: (
+    action: import("../types").AgentPendingAction,
+  ) => Promise<import("../types").AgentConfirmationResolution>;
+  actionProgress?: AgentRuntimeRequest["actionProgress"];
+  clarificationHistory?: AgentRuntimeRequest["clarificationHistory"];
+  runtimeAuthority?: "claude" | "codex";
+  /** Host lifecycle signal; never supplied by MCP tool arguments. */
+  signal?: AbortSignal;
+  /** Durable provider run that owns direct document artifacts. */
+  runId?: string;
+  sourceMessageTimestamp?: number;
   profileSignature?: string;
   conversationKey?: number;
   instanceID?: string;
@@ -187,6 +227,15 @@ type ZoteroMcpScopeMetadata = {
   model?: string;
   codexPath?: string;
   reasoning?: ReasoningConfig;
+  planContext?: AgentRuntimeRequest["planContext"];
+  actionContract?: AgentRuntimeRequest["actionContract"];
+  classifiedIntent?: AgentRuntimeRequest["classifiedIntent"];
+  actionPreparation?: AgentRuntimeRequest["actionPreparation"];
+  semanticProvider?: AgentRuntimeRequest["semanticProvider"];
+  documentOutcomePolicy?: AgentRuntimeRequest["documentOutcomePolicy"];
+  documentReadObservations?: AgentRuntimeRequest["documentReadObservations"];
+  documentArtifactObservations?: AgentRuntimeRequest["documentArtifactObservations"];
+  skillRoutingReceipt?: AgentRuntimeRequest["skillRoutingReceipt"];
   exhaustiveReadBackend?: Extract<
     ExhaustiveReadBackend,
     "codex_responses" | "unavailable"
@@ -262,21 +311,31 @@ type McpHttpResponse = {
 
 const scopedZoteroMcpScopes = new Map<
   string,
-  { createdAt: number; expiresAt: number; scope: ZoteroMcpActiveScope }
+  {
+    createdAt: number;
+    expiresAt: number;
+    scope: ZoteroMcpActiveScope;
+    controller: AbortController;
+  }
 >();
 const conversationScopeTokens = new Map<
   string,
   { token: string; instanceID?: string }
 >();
-let activeZoteroMcpScope: ZoteroMcpActiveScope | null = null;
 let registeredMcpDeps: McpServerDeps | null = null;
 const mcpReadDedupeCache = new Map<
   string,
-  { expiresAt: number; result: McpToolCallResult }
+  {
+    expiresAt: number;
+    result: McpToolCallResult;
+    observations: readonly TrustedReadObservation[];
+  }
 >();
 
 export type ZoteroMcpToolActivityEvent = {
   requestId: string;
+  runId?: string;
+  conversationGeneration?: number;
   phase: "started" | "completed";
   toolName: string;
   toolLabel?: string;
@@ -285,11 +344,15 @@ export type ZoteroMcpToolActivityEvent = {
   ok?: boolean;
   error?: string;
   artifacts?: AgentToolArtifact[];
+  actionReceipts?: AgentActionReceipt[];
+  mutability?: "read" | "write";
   profileSignature?: string;
   conversationKey?: number;
   libraryID?: number;
   kind?: "global" | "paper";
   quoteCitations?: QuoteCitation[];
+  verifiedReadSources?: VerifiedReadSource[];
+  readObservations?: readonly TrustedReadObservation[];
   timestamp: number;
 };
 
@@ -298,22 +361,6 @@ type ZoteroMcpToolActivityObserver = (
 ) => void;
 
 const zoteroMcpToolActivityObservers = new Set<ZoteroMcpToolActivityObserver>();
-
-export type ZoteroMcpConfirmationRequest = {
-  requestId: string;
-  action: AgentPendingAction;
-  toolName: string;
-  scope: ZoteroMcpActiveScope | null;
-};
-
-type ZoteroMcpConfirmationHandler = (
-  request: ZoteroMcpConfirmationRequest,
-) => AgentConfirmationResolution | Promise<AgentConfirmationResolution>;
-
-const zoteroMcpConfirmationHandlers = new Set<{
-  scope: ZoteroMcpActiveScope;
-  handler: ZoteroMcpConfirmationHandler;
-}>();
 
 export function addZoteroMcpToolActivityObserver(
   observer: ZoteroMcpToolActivityObserver,
@@ -344,17 +391,6 @@ function logZoteroMcp(message: string, details?: unknown): void {
   } catch {
     /* diagnostics must not affect MCP execution */
   }
-}
-
-export function addZoteroMcpConfirmationHandler(
-  scope: ZoteroMcpActiveScope,
-  handler: ZoteroMcpConfirmationHandler,
-): () => void {
-  const entry = { scope: normalizeActiveScope(scope), handler };
-  zoteroMcpConfirmationHandlers.add(entry);
-  return () => {
-    zoteroMcpConfirmationHandlers.delete(entry);
-  };
 }
 
 function getZoteroPrefs(): {
@@ -445,11 +481,17 @@ export function getZoteroMcpDirectPdfToolNames(): string[] {
 
 function getZoteroMcpToolApprovalOverrides(
   toolNames = getZoteroMcpAllowedToolNames(),
-): Record<string, { approval_mode: typeof CODEX_MCP_TOOL_APPROVAL_MODE }> {
+): Record<string, { approval_mode: "approve" | "auto" }> {
   return Object.fromEntries(
     toolNames.map((name) => [
       name,
-      { approval_mode: CODEX_MCP_TOOL_APPROVAL_MODE },
+      {
+        approval_mode: CURATED_PLAN_TOOL_NAMES.has(name)
+          ? CODEX_MCP_EFFECT_APPROVAL_MODE
+          : CURATED_READ_TOOL_NAMES.has(name)
+            ? CODEX_MCP_READ_APPROVAL_MODE
+            : CODEX_MCP_EFFECT_APPROVAL_MODE,
+      },
     ]),
   );
 }
@@ -487,7 +529,7 @@ export function buildZoteroMcpConfigValue(
     url: getZoteroMcpServerUrl(),
     ...(!enabled ? { enabled: false } : {}),
     ...(enabled && params.required ? { required: true } : {}),
-    default_tools_approval_mode: CODEX_MCP_TOOL_APPROVAL_MODE,
+    default_tools_approval_mode: CODEX_MCP_EFFECT_APPROVAL_MODE,
     tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
     http_headers: {
       [ZOTERO_MCP_AUTH_HEADER]: `Bearer ${token}`,
@@ -712,6 +754,14 @@ function normalizeActiveScope(
     );
   }
   const metadata: ZoteroMcpScopeMetadata = {
+    runtimeAuthority:
+      scope.runtimeAuthority === "claude" || scope.runtimeAuthority === "codex"
+        ? scope.runtimeAuthority
+        : undefined,
+    runId: normalizeText(scope.runId, 256),
+    sourceMessageTimestamp: Number.isFinite(scope.sourceMessageTimestamp)
+      ? Math.floor(Number(scope.sourceMessageTimestamp))
+      : undefined,
     profileSignature: normalizeText(scope.profileSignature, 128),
     conversationKey,
     instanceID: normalizeText(scope.instanceID, 128),
@@ -734,10 +784,28 @@ function normalizeActiveScope(
     activeNoteParentItemId: normalizePositiveInt(scope.activeNoteParentItemId),
     libraryName: normalizeText(scope.libraryName),
     title: normalizeText(scope.title),
-    userText: normalizeText(scope.userText, 4000),
+    userText: typeof scope.userText === "string" ? scope.userText : "",
     model: normalizeText(scope.model, 256),
     codexPath: normalizeText(scope.codexPath, 4096),
     reasoning: normalizeReasoningConfig(scope.reasoning),
+    signal: scope.signal,
+    planContext: scope.planContext,
+    requestInteraction: scope.requestInteraction,
+    publishHostEvent: scope.publishHostEvent,
+    actionProgress: scope.actionProgress,
+    clarificationHistory: scope.clarificationHistory,
+    actionContract: scope.actionContract,
+    classifiedIntent: scope.classifiedIntent || scope.actionContract?.intent,
+    actionPreparation: scope.actionPreparation,
+    semanticProvider: scope.semanticProvider,
+    documentOutcomePolicy: scope.documentOutcomePolicy,
+    documentReadObservations: scope.documentReadObservations
+      ? cloneTrustedReadObservations(scope.documentReadObservations)
+      : undefined,
+    documentArtifactObservations: scope.documentArtifactObservations
+      ? cloneToolArtifacts(scope.documentArtifactObservations)
+      : undefined,
+    skillRoutingReceipt: scope.skillRoutingReceipt,
     exhaustiveReadBackend:
       scope.exhaustiveReadBackend === "codex_responses"
         ? "codex_responses"
@@ -770,8 +838,7 @@ function pruneExpiredScopedMcpScopes(): void {
   const now = Date.now();
   for (const [token, entry] of scopedZoteroMcpScopes) {
     if (entry.expiresAt <= now) {
-      scopedZoteroMcpScopes.delete(token);
-      clearMcpReadDedupeCacheForScopeToken(token);
+      releaseScopedMcpScope(token);
     }
   }
 }
@@ -779,25 +846,62 @@ function pruneExpiredScopedMcpScopes(): void {
 export function registerScopedZoteroMcpScope(
   scope: ZoteroMcpActiveScope,
   options: { ttlMs?: number; token?: string } = {},
-): { token: string; clear: () => void } {
+): {
+  token: string;
+  clear: () => void;
+  getState: () => ZoteroMcpActiveScope | null;
+} {
   pruneExpiredScopedMcpScopes();
   const token = normalizeText(options.token, 256) || generateToken();
   const ttlMs =
     Number.isFinite(options.ttlMs) && Number(options.ttlMs) > 0
       ? Math.floor(Number(options.ttlMs))
       : SCOPED_MCP_SCOPE_TTL_MS;
-  scopedZoteroMcpScopes.set(token, {
+  releaseScopedMcpScope(token);
+  const controller = createAbortController();
+  const entry = {
     createdAt: Date.now(),
     expiresAt: Date.now() + ttlMs,
-    scope: normalizeActiveScope(scope),
-  });
+    controller,
+    scope: normalizeActiveScope({ ...scope, signal: controller.signal }),
+  };
+  scopedZoteroMcpScopes.set(token, entry);
   return {
     token,
+    getState: () => {
+      pruneExpiredScopedMcpScopes();
+      return scopedZoteroMcpScopes.get(token) === entry ? entry.scope : null;
+    },
     clear: () => {
-      scopedZoteroMcpScopes.delete(token);
-      clearMcpReadDedupeCacheForScopeToken(token);
+      if (scopedZoteroMcpScopes.get(token) === entry)
+        releaseScopedMcpScope(token);
     },
   };
+}
+
+function releaseScopedMcpScope(token: string): void {
+  scopedZoteroMcpScopes.get(token)?.controller.abort();
+  scopedZoteroMcpScopes.delete(token);
+  clearMcpReadDedupeCacheForScopeToken(token);
+}
+
+/** Refreshes the mutable per-turn authority carried by an already-issued
+ * scope token. The token remains stable while the provider reports its run ID
+ * and while verified read attestations accumulate between MCP calls. */
+export function updateScopedZoteroMcpScope(
+  token: string,
+  update: Partial<ZoteroMcpScopeMetadata>,
+): boolean {
+  const normalizedToken = normalizeText(token, 256);
+  if (!normalizedToken) return false;
+  pruneExpiredScopedMcpScopes();
+  const entry = scopedZoteroMcpScopes.get(normalizedToken);
+  if (!entry) return false;
+  entry.scope = normalizeActiveScope({
+    ...entry.scope,
+    ...update,
+  } as ZoteroMcpActiveScope);
+  return true;
 }
 
 /**
@@ -864,8 +968,7 @@ export function releaseConversationScopeToken(params: {
       const legacyEntry = conversationScopeTokens.get(legacyKey);
       if (legacyEntry) {
         conversationScopeTokens.delete(legacyKey);
-        scopedZoteroMcpScopes.delete(legacyEntry.token);
-        clearMcpReadDedupeCacheForScopeToken(legacyEntry.token);
+        releaseScopedMcpScope(legacyEntry.token);
       }
     }
     return;
@@ -875,22 +978,7 @@ export function releaseConversationScopeToken(params: {
   // conversation. Legacy callers may still release legacy tokens by key.
   if (instanceID && entry.instanceID !== instanceID) return;
   conversationScopeTokens.delete(key);
-  scopedZoteroMcpScopes.delete(entry.token);
-  clearMcpReadDedupeCacheForScopeToken(entry.token);
-}
-
-export function setActiveZoteroMcpScope(
-  scope: ZoteroMcpActiveScope,
-): () => void {
-  const normalized = normalizeActiveScope(scope);
-  activeZoteroMcpScope = normalized;
-  return () => {
-    if (activeZoteroMcpScope === normalized) activeZoteroMcpScope = null;
-  };
-}
-
-export function getActiveZoteroMcpScope(): ZoteroMcpActiveScope | null {
-  return activeZoteroMcpScope ? { ...activeZoteroMcpScope } : null;
+  releaseScopedMcpScope(entry.token);
 }
 
 function getHeader(
@@ -938,6 +1026,9 @@ function clearMcpReadDedupeCacheForScopeToken(scopeToken: string): void {
 function buildMcpReadDedupeKey(params: {
   toolName: string;
   toolArgs: unknown;
+  libraryID: number;
+  activeItemId?: number;
+  activeContextItemId?: number;
   headers?: Record<string, string>;
 }): string | null {
   if (!MCP_READ_DEDUPE_TOOL_NAMES.has(params.toolName)) return null;
@@ -945,7 +1036,14 @@ function buildMcpReadDedupeKey(params: {
   if (!scopeToken) return null;
   pruneExpiredScopedMcpScopes();
   if (!scopedZoteroMcpScopes.has(scopeToken)) return null;
-  return `${mcpReadDedupeScopePrefix(scopeToken)}${params.toolName}:${stableStringify(params.toolArgs || {})}`;
+  return `${mcpReadDedupeScopePrefix(scopeToken)}${params.toolName}:${stableStringify(
+    {
+      libraryID: params.libraryID,
+      activeItemId: params.activeItemId,
+      activeContextItemId: params.activeContextItemId,
+      arguments: params.toolArgs || {},
+    },
+  )}`;
 }
 
 function cloneMcpResultWithDuplicateMarker(
@@ -979,12 +1077,38 @@ function cloneMcpResultWithDuplicateMarker(
   };
 }
 
-function getCachedMcpReadResult(key: string | null): McpToolCallResult | null {
+function cloneTrustedReadObservations(
+  observations: readonly TrustedReadObservation[],
+): TrustedReadObservation[] {
+  return observations.map((observation) => ({
+    ...observation,
+    capabilities: [...observation.capabilities],
+  }));
+}
+
+function cloneToolArtifacts(
+  artifacts: readonly AgentToolArtifact[],
+): AgentToolArtifact[] {
+  return artifacts.map((artifact) => ({
+    ...artifact,
+    paperContext: artifact.paperContext
+      ? { ...artifact.paperContext }
+      : undefined,
+  }));
+}
+
+function getCachedMcpReadResult(key: string | null): {
+  result: McpToolCallResult;
+  observations: readonly TrustedReadObservation[];
+} | null {
   if (!key) return null;
   pruneExpiredMcpReadDedupeCache();
   const cached = mcpReadDedupeCache.get(key);
   if (!cached) return null;
-  return cloneMcpResultWithDuplicateMarker(cached.result);
+  return {
+    result: cloneMcpResultWithDuplicateMarker(cached.result),
+    observations: cloneTrustedReadObservations(cached.observations),
+  };
 }
 
 function collectPaperIdentities(value: unknown): Array<{
@@ -1174,12 +1298,14 @@ function getRawPdfNativeFilesystemViolation(params: {
 function rememberMcpReadResult(
   key: string | null,
   result: McpToolCallResult,
+  observations: readonly TrustedReadObservation[],
 ): void {
   if (!key || result.isError) return;
   pruneExpiredMcpReadDedupeCache();
   mcpReadDedupeCache.set(key, {
     expiresAt: Date.now() + MCP_READ_DEDUPE_TTL_MS,
     result,
+    observations: cloneTrustedReadObservations(observations),
   });
 }
 
@@ -1187,7 +1313,7 @@ function clearMcpReadDedupeCacheAfterToolResult(
   tool: ToolSpec,
   result: McpToolCallResult,
 ): void {
-  if (tool.mutability !== "write" || result.isError) return;
+  if (tool.executionClass !== "external_effect" || result.isError) return;
   mcpReadDedupeCache.clear();
 }
 
@@ -1219,17 +1345,18 @@ function formatToolTitle(name: string): string {
 
 function isMcpExposedTool(tool: ToolSpec): boolean {
   if (tool.exposure === "internal") return false;
-  if (tool.mutability === "read") return CURATED_READ_TOOL_NAMES.has(tool.name);
-  if (tool.mutability === "write")
+  if (tool.executionClass !== "external_effect")
+    return CURATED_READ_TOOL_NAMES.has(tool.name);
+  if (tool.executionClass === "external_effect")
     return CURATED_WRITE_TOOL_NAMES.has(tool.name);
   return false;
 }
 
 function getMcpToolAnnotations(
   toolName: string,
-  mutability: ToolSpec["mutability"],
+  executionClass: ToolSpec["executionClass"],
 ): McpToolDefinition["annotations"] {
-  if (mutability === "read") return READ_ONLY_TOOL_ANNOTATIONS;
+  if (executionClass !== "external_effect") return READ_ONLY_TOOL_ANNOTATIONS;
   return DESTRUCTIVE_WRITE_TOOL_NAMES.has(toolName)
     ? DESTRUCTIVE_WRITE_TOOL_ANNOTATIONS
     : WRITE_TOOL_ANNOTATIONS;
@@ -1244,6 +1371,23 @@ function isMcpToolVisibleInScope(
   scope: ZoteroMcpActiveScope | null,
 ): boolean {
   if (!isMcpExposedTool(tool)) return false;
+  if (tool.name === "request_user_input")
+    return Boolean(
+      scope?.classifiedIntent?.semantic && scope.requestInteraction,
+    );
+  if (CURATED_PLAN_TOOL_NAMES.has(tool.name)) {
+    if (tool.name === "submit_document") {
+      return scope?.documentOutcomePolicy?.required === true;
+    }
+    const phase = scope?.planContext?.phase;
+    if (tool.name === "update_plan")
+      return phase === "planning" && !scope?.planContext?.nativePlanning;
+    if (tool.name === "prepare_plan_execution")
+      return (
+        phase === "planning" && Boolean(scope?.planContext?.nativePlanning)
+      );
+    if (phase !== "executing") return false;
+  }
   if (!hasRawPdfScope(scope)) return true;
   return getZoteroMcpDirectPdfToolNames().includes(tool.name);
 }
@@ -1255,13 +1399,17 @@ function handleToolsList(
   const tools: McpToolDefinition[] = toolRegistry
     .listTools()
     .filter((tool) => isMcpToolVisibleInScope(tool, scope))
-    .map(({ name, description, inputSchema, mutability }) => ({
-      name,
-      title: formatToolTitle(name),
-      description: decorateMcpToolDescription(name, description, mutability),
-      inputSchema: decorateMcpToolSchema(inputSchema),
-      annotations: getMcpToolAnnotations(name, mutability),
-    }));
+    .map(({ name, description, inputSchema, executionClass }) => {
+      const mutability =
+        executionClass === "external_effect" ? "write" : "read";
+      return {
+        name,
+        title: formatToolTitle(name),
+        description: decorateMcpToolDescription(name, description, mutability),
+        inputSchema: decorateMcpToolSchema(inputSchema),
+        annotations: getMcpToolAnnotations(name, executionClass),
+      };
+    });
   return { tools };
 }
 
@@ -1310,20 +1458,85 @@ function extractMcpScopeArgs(rawArgs: unknown): {
   };
 }
 
+type ResolvedMcpCallScope = {
+  scopeArgs: ReturnType<typeof extractMcpScopeArgs>;
+  scope: ZoteroMcpActiveScope | null;
+  libraryID: number;
+  activeItemId?: number;
+  activeContextItemId?: number;
+};
+
+function resolveLibraryRetrieveScopeID(
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+): number | undefined {
+  if (toolName !== "library_retrieve") return undefined;
+  const retrievalScope = normalizeRecord(toolArgs.scope);
+  return normalizePositiveInt(
+    retrievalScope.libraryID ?? retrievalScope.libraryId,
+  );
+}
+
+function resolveMcpCallScope(params: {
+  toolName: string;
+  rawArgs: unknown;
+  headers?: Record<string, string>;
+}): ResolvedMcpCallScope {
+  const scopeArgs = extractMcpScopeArgs(params.rawArgs);
+  const scope = resolveScopedMcpScope(params.headers);
+  const retrievalLibraryID = resolveLibraryRetrieveScopeID(
+    params.toolName,
+    scopeArgs.toolArgs,
+  );
+  if (
+    scopeArgs.libraryID &&
+    retrievalLibraryID &&
+    scopeArgs.libraryID !== retrievalLibraryID
+  ) {
+    throw new Error(
+      `Conflicting Zotero library IDs: top-level libraryID=${scopeArgs.libraryID} but library_retrieve scope.libraryID=${retrievalLibraryID}.`,
+    );
+  }
+  return {
+    scopeArgs,
+    scope,
+    libraryID:
+      scopeArgs.libraryID ||
+      retrievalLibraryID ||
+      normalizePositiveInt(scope?.libraryID) ||
+      resolveActiveLibraryID() ||
+      0,
+    activeItemId:
+      scopeArgs.activeItemId ||
+      scope?.activeItemId ||
+      scope?.paperItemID ||
+      undefined,
+    activeContextItemId:
+      scopeArgs.activeContextItemId || scope?.activeContextItemId || undefined,
+  };
+}
+
 function decorateMcpToolDescription(
   toolName: string,
   description: string,
-  mutability: ToolSpec["mutability"],
+  mutability: "read" | "write",
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly online search: workflow:'answer' returns scholarly results for source-cited answers, while workflow:'review' opens Zotero import/review-card workflows. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID to use the exact turn-scoped chat library when a scope header is present, or the library currently selected in Zotero for a standalone MCP client. Omit activeItemId and activeContextItemId to use the current turn-scoped chat item when available. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly online search: workflow:'answer' returns scholarly results for source-cited answers, while workflow:'review' opens Zotero import/review-card workflows. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
-      ? "Write-mode zotero_script pauses in Zotero and shows the user the script source for approval before it runs. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
+      ? "The calling agent owns approval for zotero_script. Zotero applies its facade, integrity, and recovery checks. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
       : mutability === "write"
-        ? "Write operations pause in Zotero for user review before execution. For Zotero note requests, call note_write instead of returning note-ready text in chat."
+        ? "The calling agent owns write approval through its native runtime permission profile or external client settings; Original Agent permission modes do not apply. Standalone writes require the external MCP write setting. Zotero validates and verifies operations before reporting success. For Zotero note requests, call note_write instead of returning note-ready text in chat."
         : "";
-  return [description, scopeGuidance, writeGuidance]
+  return [
+    description,
+    scopeGuidance,
+    writeGuidance,
+    toolName === "undo_last_action" || toolName === "revert_changes"
+      ? "Standalone clients must supply explicit actionId/actionIds from write receipts; there is no shared external conversation history for relative undo."
+      : "",
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -1345,7 +1558,7 @@ function decorateMcpToolSchema(inputSchema: object): object {
       libraryID: {
         type: "number",
         description:
-          "Optional Zotero library ID. Omit to use the active library for the current Codex Zotero chat.",
+          "Optional Zotero library ID. Omit to use the exact turn-scoped chat library when available, otherwise the library currently selected in Zotero.",
       },
       activeItemId: {
         type: "number",
@@ -1420,36 +1633,17 @@ function resolveScopedMcpScope(
   headers: Record<string, string> | undefined,
 ): ZoteroMcpActiveScope | null {
   const token = getHeader(headers, ZOTERO_MCP_SCOPE_HEADER).trim();
-  if (!token) {
-    if (hasRawPdfScope(activeZoteroMcpScope)) {
-      throw new Error(
-        "Raw PDF MCP access requires the exact current-turn scope token.",
-      );
-    }
-    return activeZoteroMcpScope;
-  }
+  if (!token) return null;
   pruneExpiredScopedMcpScopes();
   const entry = scopedZoteroMcpScopes.get(token);
   if (entry) {
     // A valid token identifies one conversation, and every turn of that
-    // conversation re-registers its own scope under the token. The process-wide
-    // active scope may belong to an overlapping turn from another conversation
-    // on the same profile and must never replace it.
+    // conversation re-registers its own scope under the token.
     return entry.scope;
   }
   throw new Error(
     "Zotero MCP scope token is invalid or expired. Start a new Codex turn from Zotero so tools bind to the current profile and library.",
   );
-}
-
-function resolveMcpToolActivityScope(
-  headers: Record<string, string> | undefined,
-): ZoteroMcpActiveScope | null {
-  try {
-    return resolveScopedMcpScope(headers);
-  } catch {
-    return null;
-  }
 }
 
 function formatMcpToolActivityRequestId(
@@ -1480,11 +1674,17 @@ function buildMcpToolActivityEvent(params: {
   error?: string;
   quoteCitations?: QuoteCitation[];
   artifacts?: AgentToolArtifact[];
-  headers?: Record<string, string>;
+  actionReceipts?: AgentActionReceipt[];
+  verifiedReadSources?: VerifiedReadSource[];
+  readObservations?: readonly TrustedReadObservation[];
+  mutability?: "read" | "write";
+  scope: ZoteroMcpActiveScope | null;
+  libraryID: number;
 }): ZoteroMcpToolActivityEvent {
-  const scope = resolveMcpToolActivityScope(params.headers);
   return {
     requestId: formatMcpToolActivityRequestId(params.id),
+    runId: params.scope?.runId,
+    conversationGeneration: params.scope?.conversationGeneration,
     phase: params.phase,
     toolName: params.toolName,
     toolLabel: params.toolLabel,
@@ -1493,74 +1693,25 @@ function buildMcpToolActivityEvent(params: {
     ok: params.ok,
     error: params.error,
     artifacts: params.artifacts,
+    actionReceipts: params.actionReceipts,
+    mutability: params.mutability,
     quoteCitations: params.quoteCitations,
-    profileSignature: scope?.profileSignature,
-    conversationKey: scope?.conversationKey,
-    libraryID: scope?.libraryID,
-    kind: scope?.kind,
+    verifiedReadSources: params.verifiedReadSources,
+    readObservations: params.readObservations,
+    profileSignature: params.scope?.profileSignature,
+    conversationKey: params.scope?.conversationKey,
+    libraryID: params.libraryID || undefined,
+    kind: params.scope?.kind,
     timestamp: Date.now(),
   };
 }
 
-function scopesMatchForConfirmation(
-  handlerScope: ZoteroMcpActiveScope,
-  requestScope: ZoteroMcpActiveScope | null,
-): boolean {
-  if (!requestScope) return false;
-  if (
-    handlerScope.profileSignature &&
-    requestScope.profileSignature &&
-    handlerScope.profileSignature !== requestScope.profileSignature
-  ) {
-    return false;
-  }
-  if (
-    handlerScope.instanceID &&
-    requestScope.instanceID &&
-    handlerScope.instanceID !== requestScope.instanceID
-  ) {
-    return false;
-  }
-  if (
-    handlerScope.conversationGeneration !== undefined &&
-    requestScope.conversationGeneration !== undefined &&
-    handlerScope.conversationGeneration !== requestScope.conversationGeneration
-  ) {
-    return false;
-  }
-  if (
-    handlerScope.conversationKey &&
-    requestScope.conversationKey &&
-    handlerScope.conversationKey !== requestScope.conversationKey
-  ) {
-    return false;
-  }
-  return Boolean(handlerScope.profileSignature || handlerScope.conversationKey);
-}
-
-function findZoteroMcpConfirmationHandler(
-  scope: ZoteroMcpActiveScope | null,
-): ZoteroMcpConfirmationHandler | null {
-  for (const entry of Array.from(zoteroMcpConfirmationHandlers).reverse()) {
-    if (scopesMatchForConfirmation(entry.scope, scope)) return entry.handler;
-  }
-  return null;
-}
-
 function createToolContext(
   rawArgs: unknown,
-  headers?: Record<string, string>,
+  callScope: ResolvedMcpCallScope,
   zoteroGateway?: ZoteroGateway,
 ): AgentToolContext {
-  const scopeArgs = extractMcpScopeArgs(rawArgs);
-  const scope = resolveScopedMcpScope(headers);
-  const activeItemId =
-    scopeArgs.activeItemId ||
-    scope?.activeItemId ||
-    scope?.paperItemID ||
-    undefined;
-  const activeContextItemId =
-    scopeArgs.activeContextItemId || scope?.activeContextItemId || undefined;
+  const { scope, libraryID, activeItemId, activeContextItemId } = callScope;
   const itemLookupId = activeItemId || activeContextItemId;
   const item = itemLookupId
     ? (
@@ -1597,15 +1748,9 @@ function createToolContext(
     conversationKey: scope?.conversationKey || 0,
     conversationGeneration: scope?.conversationGeneration,
     mode: "agent" as const,
-    userText:
-      normalizeText(
-        normalizeRecord(rawArgs).question || normalizeRecord(rawArgs).text,
-        4000,
-      ) ||
-      scope?.userText ||
-      "",
+    userText: scope?.userText || "",
     activeItemId,
-    libraryID: scopeArgs.libraryID || scope?.libraryID || 0,
+    libraryID,
     conversationKind: scope?.kind,
     model: scope?.model,
     apiBase: scope?.codexPath,
@@ -1618,8 +1763,22 @@ function createToolContext(
         ? ("codex_responses" as const)
         : undefined,
     reasoning: scope?.reasoning,
+    planContext: scope?.planContext,
+    actionProgress: scope?.actionProgress,
+    clarificationHistory: scope?.clarificationHistory,
+    actionContract: scope?.actionContract,
+    classifiedIntent: scope?.classifiedIntent || scope?.actionContract?.intent,
+    actionPreparation: scope?.actionPreparation,
+    semanticProvider: scope?.semanticProvider,
+    documentOutcomePolicy: scope?.documentOutcomePolicy,
+    documentReadObservations: scope?.documentReadObservations,
+    documentArtifactObservations: scope?.documentArtifactObservations,
+    skillRoutingReceipt: scope?.skillRoutingReceipt,
     exhaustiveReadBackend,
     activeNoteContext,
+    metadata: {
+      sourceMessageTimestamp: scope?.sourceMessageTimestamp,
+    },
   };
   const request: AgentRuntimeRequest = scope?.turnPaperScope
     ? {
@@ -1658,12 +1817,55 @@ function createToolContext(
       );
   return {
     request,
+    authorization: {
+      kind: "external_runtime",
+      standalone: !scope?.runtimeAuthority,
+    },
+    signal: scope?.signal,
+    runId: scope?.runId || createJournalId("mcp-run"),
     item,
     currentAnswerText: "",
     modelName: scope?.model || "external-mcp",
     modelProviderLabel:
       exhaustiveReadBackend === "codex_responses" ? "Codex" : "External MCP",
   };
+}
+
+async function restorePlanExecutionContext(
+  context: AgentToolContext,
+  toolRegistry: AgentToolRegistry,
+): Promise<void> {
+  const plan = context.request.planContext;
+  if (plan?.phase !== "executing") return;
+  const ledger = await loadPlanExecutionLedger(plan.executionId);
+  if (
+    !ledger ||
+    ledger.planId !== plan.planId ||
+    ledger.revision !== plan.revision ||
+    ledger.planDigest !== plan.approvedDigest ||
+    ledger.conversationKey !== context.request.conversationKey
+  ) {
+    throw new Error(
+      "The MCP plan execution no longer matches its saved ledger",
+    );
+  }
+  // A scoped token lasts for the provider turn, while each successful tool may
+  // advance the durable task. Never use the dispatch-time active task hint.
+  context.request.planContext = { ...plan, activeTaskId: ledger.activeTaskId };
+  if (context.request.actionContract) return;
+  const artifact = await loadPlanArtifact(plan.planId, plan.revision);
+  if (
+    !artifact ||
+    artifact.digest !== plan.approvedDigest ||
+    artifact.contract?.effects?.libraryMutation.approval !== "after_research"
+  ) {
+    return;
+  }
+  const grant = await loadLatestResearchMutationApprovalGrant(plan.executionId);
+  if (!grant || grant.status !== "approved") return;
+  const contract = await validateResearchMutationGrant({ grant, artifact });
+  context.request.actionContract = contract;
+  context.request.actionProgress = toolRegistry.createActionProgress(contract);
 }
 
 function formatToolResult(
@@ -1678,6 +1880,10 @@ function formatToolResult(
           {
             ok: result.ok,
             result: result.content,
+            effect: result.effect,
+            ...(result.actionReceipts.length
+              ? { actionReceipts: result.actionReceipts }
+              : {}),
             artifacts: result.artifacts,
           },
           null,
@@ -1687,6 +1893,79 @@ function formatToolResult(
     ],
     ...(result.ok ? {} : { isError: true }),
   };
+}
+
+function rememberDocumentReadObservations(
+  headers: Record<string, string> | undefined,
+  observations: readonly TrustedReadObservation[],
+): void {
+  if (!observations.length) return;
+  const scope = resolveScopedMcpScope(headers);
+  if (!scope?.documentOutcomePolicy?.required) return;
+  const merged = new Map(
+    (scope.documentReadObservations || []).map((entry) => [
+      entry.observationId,
+      entry,
+    ]),
+  );
+  for (const observation of observations) {
+    merged.set(observation.observationId, observation);
+  }
+  scope.documentReadObservations = cloneTrustedReadObservations([
+    ...merged.values(),
+  ]);
+}
+
+function rememberDocumentArtifacts(
+  headers: Record<string, string> | undefined,
+  artifacts: readonly AgentToolArtifact[],
+): void {
+  if (!artifacts.length) return;
+  const scope = resolveScopedMcpScope(headers);
+  if (!scope?.documentOutcomePolicy?.required) return;
+  const merged = new Map(
+    (scope.documentArtifactObservations || []).map((artifact) => [
+      artifact.storedPath,
+      artifact,
+    ]),
+  );
+  for (const artifact of artifacts) merged.set(artifact.storedPath, artifact);
+  scope.documentArtifactObservations = cloneToolArtifacts([...merged.values()]);
+}
+
+function appendDocumentEvidenceRefs(
+  result: McpToolCallResult,
+  observations: readonly TrustedReadObservation[],
+): McpToolCallResult {
+  if (!observations.length || !result.content.length) return result;
+  const content = result.content.map((part, index) => {
+    if (index !== 0 || part.type !== "text") return part;
+    try {
+      const parsed = JSON.parse(part.text) as Record<string, unknown>;
+      return {
+        ...part,
+        text: JSON.stringify(
+          {
+            ...parsed,
+            documentEvidenceRefs: observations.map((observation) => ({
+              evidenceRef: observation.observationId,
+              libraryID: observation.libraryID,
+              itemKey: observation.itemKey,
+              capabilities: observation.capabilities,
+              attachmentItemKey: observation.attachmentItemKey,
+              pageIndex: observation.pageIndex,
+              sourceFingerprint: observation.sourceFingerprint,
+            })),
+          },
+          null,
+          2,
+        ),
+      };
+    } catch {
+      return part;
+    }
+  });
+  return { ...result, content };
 }
 
 function extractArtifactsFromMcpToolCallResult(
@@ -1730,77 +2009,6 @@ function extractToolCallErrorText(
   return undefined;
 }
 
-async function requestZoteroMcpConfirmation(params: {
-  execution: Extract<PreparedToolExecution, { kind: "confirmation" }>;
-  headers?: Record<string, string>;
-  isExecutionAllowed?: () => boolean;
-}): Promise<McpToolCallResult> {
-  const scope = resolveScopedMcpScope(params.headers);
-  const handler = findZoteroMcpConfirmationHandler(scope);
-  if (!handler) {
-    logZoteroMcp("Zotero MCP confirmation unavailable", {
-      requestId: params.execution.requestId,
-      toolName: params.execution.action.toolName,
-      conversationKey: scope?.conversationKey,
-      profileSignature: scope?.profileSignature,
-    });
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            "Zotero MCP confirmation UI is unavailable for this Codex turn. " +
-            "Start a new Codex turn from Zotero and try again.",
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  logZoteroMcp("Zotero MCP confirmation requested", {
-    requestId: params.execution.requestId,
-    toolName: params.execution.action.toolName,
-    conversationKey: scope?.conversationKey,
-    profileSignature: scope?.profileSignature,
-  });
-  const resolution = await handler({
-    requestId: params.execution.requestId,
-    action: params.execution.action,
-    toolName: params.execution.action.toolName,
-    scope: scope ? { ...scope } : null,
-  });
-  logZoteroMcp("Zotero MCP confirmation resolved", {
-    requestId: params.execution.requestId,
-    toolName: params.execution.action.toolName,
-    approved: resolution.approved,
-    actionId: resolution.actionId,
-  });
-  let execution: ReturnType<typeof params.execution.deny>;
-  if (!resolution.approved) {
-    execution = params.execution.deny(resolution.data);
-  } else if (params.isExecutionAllowed && !params.isExecutionAllowed()) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            ok: false,
-            error:
-              "Conversation lifecycle changed before this tool could execute.",
-          }),
-        },
-      ],
-      isError: true,
-    };
-  } else {
-    // The registry's confirmation executor already performs the final
-    // lifecycle check inside its per-conversation write lock.  Do not wrap
-    // it in a second lock here: that would await itself indefinitely.
-    execution = await params.execution.execute(resolution.data);
-  }
-  return formatToolResult(execution);
-}
-
 async function handleToolsCall(
   params: McpToolCallParams,
   deps: McpServerDeps,
@@ -1809,7 +2017,12 @@ async function handleToolsCall(
 ): Promise<McpToolCallResult> {
   const { name, arguments: rawArgs } = params;
 
-  const scopeArgs = extractMcpScopeArgs(rawArgs);
+  const callScope = resolveMcpCallScope({
+    toolName: name,
+    rawArgs,
+    headers,
+  });
+  const { scopeArgs, scope } = callScope;
   const toolLabel = getMcpToolPresentationLabel(deps, name);
   emitZoteroMcpToolActivity(
     buildMcpToolActivityEvent({
@@ -1818,7 +2031,8 @@ async function handleToolsCall(
       toolName: name,
       toolLabel,
       args: scopeArgs.toolArgs,
-      headers,
+      scope,
+      libraryID: callScope.libraryID,
     }),
   );
 
@@ -1827,6 +2041,9 @@ async function handleToolsCall(
     error?: string;
     quoteCitations?: QuoteCitation[];
     artifacts?: AgentToolArtifact[];
+    actionReceipts?: AgentActionReceipt[];
+    verifiedReadSources?: VerifiedReadSource[];
+    readObservations?: readonly TrustedReadObservation[];
   }) => {
     emitZoteroMcpToolActivity(
       buildMcpToolActivityEvent({
@@ -1838,8 +2055,14 @@ async function handleToolsCall(
         ok: result.ok,
         error: result.error,
         artifacts: result.artifacts,
+        actionReceipts: result.actionReceipts,
+        verifiedReadSources: result.verifiedReadSources,
+        readObservations: result.readObservations,
+        mutability:
+          tool?.spec.executionClass === "external_effect" ? "write" : "read",
         quoteCitations: result.quoteCitations,
-        headers,
+        scope,
+        libraryID: callScope.libraryID,
       }),
     );
   };
@@ -1858,13 +2081,25 @@ async function handleToolsCall(
     };
   }
 
-  const scope = resolveScopedMcpScope(headers);
   const scopeConversationKey = scope?.conversationKey || 0;
   const scopeGeneration = scopeConversationKey
     ? Number.isFinite(scope?.conversationGeneration)
       ? Number(scope?.conversationGeneration)
       : getConversationWriteGeneration(scopeConversationKey)
     : 0;
+  if (
+    tool.spec.executionClass === "external_effect" &&
+    !scope?.runtimeAuthority &&
+    !areExternalMcpWritesEnabled()
+  ) {
+    const error =
+      'Standalone MCP writes are disabled. Enable "Allow writes from external MCP clients" in Zotero preferences to delegate approval to the connected client.';
+    completeActivity({ ok: false, error });
+    return {
+      content: [{ type: "text", text: JSON.stringify({ ok: false, error }) }],
+      isError: true,
+    };
+  }
   const nativeFilesystemViolation = getRawPdfNativeFilesystemViolation({
     toolName: name,
     scope,
@@ -1908,42 +2143,122 @@ async function handleToolsCall(
 
   try {
     const readDedupeKey =
-      tool.spec.mutability === "read"
+      tool.spec.executionClass === "read"
         ? buildMcpReadDedupeKey({
             toolName: name,
             toolArgs: scopeArgs.toolArgs,
+            libraryID: callScope.libraryID,
+            activeItemId: callScope.activeItemId,
+            activeContextItemId: callScope.activeContextItemId,
             headers,
           })
         : null;
     const cachedReadResult = getCachedMcpReadResult(readDedupeKey);
     if (cachedReadResult) {
+      rememberDocumentReadObservations(headers, cachedReadResult.observations);
+      rememberDocumentArtifacts(
+        headers,
+        extractArtifactsFromMcpToolCallResult(cachedReadResult.result) || [],
+      );
       completeActivity({
         ok: true,
-        quoteCitations: extractQuoteCitationsFromToolContent(cachedReadResult),
-        artifacts: extractArtifactsFromMcpToolCallResult(cachedReadResult),
+        quoteCitations: extractQuoteCitationsFromToolContent(
+          cachedReadResult.result,
+        ),
+        artifacts: extractArtifactsFromMcpToolCallResult(
+          cachedReadResult.result,
+        ),
+        verifiedReadSources: cachedReadResult.observations.map(
+          ({
+            libraryID,
+            itemKey,
+            attachmentItemKey,
+            pageIndex,
+            sourceFingerprint,
+          }) => ({
+            libraryID,
+            itemKey,
+            attachmentItemKey,
+            pageIndex,
+            sourceFingerprint,
+          }),
+        ),
+        readObservations: cachedReadResult.observations,
       });
-      return cachedReadResult;
+      return cachedReadResult.result;
     }
 
-    const prepared = await deps.toolRegistry.prepareExecution(
+    const toolContext = createToolContext(
+      rawArgs,
+      callScope,
+      deps.zoteroGateway,
+    );
+    toolContext.checkpointActionProgress = async () => {
+      const request = toolContext.request;
+      if (!scope?.publishHostEvent)
+        throw new Error(
+          "The provider turn cannot persist its execution authority.",
+        );
+      if (
+        request.actionContract &&
+        request.actionProgress?.contractId !== request.actionContract.id
+      )
+        request.actionProgress = deps.toolRegistry.createActionProgress(
+          request.actionContract,
+        );
+      if (scope) {
+        scope.classifiedIntent = request.classifiedIntent;
+        scope.actionContract = request.actionContract;
+        scope.actionPreparation = request.actionPreparation;
+        scope.actionProgress = request.actionProgress;
+        scope.clarificationHistory = request.clarificationHistory;
+        if (request.classifiedIntent?.semantic)
+          await scope.publishHostEvent?.({
+            type: "provider_event",
+            providerType: "agent_semantic_intent",
+            payload: {
+              intent: request.classifiedIntent,
+              clarificationHistory: request.clarificationHistory || [],
+            },
+          });
+        if (request.actionPreparation)
+          await scope.publishHostEvent?.({
+            type: "provider_event",
+            providerType: "agent_action_preparation",
+            payload: request.actionPreparation,
+          });
+        if (request.actionContract && request.actionProgress)
+          await scope.publishHostEvent?.({
+            type: "provider_event",
+            providerType: "agent_action_contract",
+            payload: {
+              contract: request.actionContract,
+              progress: request.actionProgress,
+            },
+          });
+      }
+    };
+    await restorePlanExecutionContext(toolContext, deps.toolRegistry);
+    let prepared = await deps.toolRegistry.prepareExecution(
       {
         id: `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         name,
         arguments: scopeArgs.toolArgs,
       },
-      createToolContext(rawArgs, headers, deps.zoteroGateway),
+      toolContext,
       {
-        forceConfirmation:
-          tool.spec.mutability === "write" &&
-          !MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY.has(name),
+        callerKind: "mcp",
         isExecutionAllowed: () => {
           return (
-            !scopeConversationKey ||
-            (!areConversationWritesFrozen(scopeConversationKey) &&
-              isConversationWriteGenerationCurrent(
-                scopeConversationKey,
-                scopeGeneration,
-              ))
+            (Boolean(scope?.runtimeAuthority) ||
+              tool.spec.executionClass !== "external_effect" ||
+              areExternalMcpWritesEnabled()) &&
+            (!scopeConversationKey ||
+              (!areConversationWritesFrozen(scopeConversationKey) &&
+                isConversationWriteGenerationCurrent(
+                  scopeConversationKey,
+                  scopeGeneration,
+                )))
           );
         },
         executeWithLock: (task) => {
@@ -1954,30 +2269,41 @@ async function handleToolsCall(
       },
     );
 
-    if (prepared.kind === "confirmation") {
-      const result = await requestZoteroMcpConfirmation({
-        execution: prepared,
-        headers,
-        isExecutionAllowed: () => {
-          return (
-            !scopeConversationKey ||
-            (!areConversationWritesFrozen(scopeConversationKey) &&
-              isConversationWriteGenerationCurrent(
-                scopeConversationKey,
-                scopeGeneration,
-              ))
-          );
-        },
-      });
-      completeActivity({
-        ok: !result.isError,
-        error: extractToolCallErrorText(result),
-        artifacts: extractArtifactsFromMcpToolCallResult(result),
-      });
-      clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
-      return result;
+    while (prepared.kind === "confirmation") {
+      if (!scope?.requestInteraction) {
+        const error =
+          "The native turn has no host interaction channel for this review. No action was applied.";
+        completeActivity({ ok: false, error });
+        return { content: [{ type: "text", text: error }], isError: true };
+      }
+      const resolution = await scope.requestInteraction(prepared.action);
+      prepared = resolution.approved
+        ? await prepared.execute(resolution)
+        : { kind: "result", execution: prepared.deny(resolution.data) };
     }
-    const result = formatToolResult(prepared.execution);
+    if (scope) {
+      scope.classifiedIntent = toolContext.request.classifiedIntent;
+      scope.actionContract = toolContext.request.actionContract;
+      scope.actionPreparation = toolContext.request.actionPreparation;
+      scope.actionProgress = toolContext.request.actionProgress;
+      scope.clarificationHistory = toolContext.request.clarificationHistory;
+    }
+    let result = formatToolResult(prepared.execution);
+    const readObservations =
+      tool.spec.executionClass === "read" && !result.isError
+        ? await createTrustedReadObservations({
+            toolName: name,
+            callId: prepared.execution.result.callId,
+            input: prepared.execution.input,
+            result: prepared.execution.result.content,
+          })
+        : [];
+    rememberDocumentReadObservations(headers, readObservations);
+    rememberDocumentArtifacts(
+      headers,
+      prepared.execution.result.artifacts || [],
+    );
+    result = appendDocumentEvidenceRefs(result, readObservations);
     completeActivity({
       ok: !result.isError,
       error: extractToolCallErrorText(result),
@@ -1985,9 +2311,26 @@ async function handleToolsCall(
         prepared.execution.result.content,
       ),
       artifacts: prepared.execution.result.artifacts,
+      actionReceipts: prepared.execution.result.actionReceipts,
+      verifiedReadSources: readObservations.map(
+        ({
+          libraryID,
+          itemKey,
+          attachmentItemKey,
+          pageIndex,
+          sourceFingerprint,
+        }) => ({
+          libraryID,
+          itemKey,
+          attachmentItemKey,
+          pageIndex,
+          sourceFingerprint,
+        }),
+      ),
+      readObservations,
     });
     clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
-    rememberMcpReadResult(readDedupeKey, result);
+    rememberMcpReadResult(readDedupeKey, result, readObservations);
     return result;
   } catch (error) {
     completeActivity({
@@ -2162,9 +2505,9 @@ export async function invokeRegisteredZoteroMcpEndpoint(
  * Removes the MCP endpoint from Zotero's server (call on plugin shutdown).
  */
 export function unregisterMcpServer(): void {
-  scopedZoteroMcpScopes.clear();
+  for (const token of scopedZoteroMcpScopes.keys())
+    releaseScopedMcpScope(token);
   mcpReadDedupeCache.clear();
-  zoteroMcpConfirmationHandlers.clear();
   registeredMcpDeps = null;
   delete Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];
 }

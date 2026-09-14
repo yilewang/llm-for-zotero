@@ -203,7 +203,7 @@ describe("local model reasoning", function () {
 
     it("leaves hosted providers untouched", function () {
       const payload = buildReasoningPayload(
-        { provider: "deepseek", level: "high" },
+        { provider: "deepseek", level: "default" },
         false,
         "deepseek-reasoner",
         "https://api.deepseek.com/v1",

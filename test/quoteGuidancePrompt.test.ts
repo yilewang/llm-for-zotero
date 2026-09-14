@@ -1,3 +1,8 @@
+import {
+  actionFixture,
+  classifiedFixture,
+  semanticFixture,
+} from "./helpers/semanticIntent";
 import { readFileSync } from "node:fs";
 import { assert } from "chai";
 import { buildZoteroEnvironmentManifest } from "../src/codexAppServer/nativeClient";
@@ -9,6 +14,7 @@ import {
 import { buildAgentStableResourceContextBlock } from "../src/agent/context/resourceContextPlan";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../src/agent/model/agentPersona";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
+import { createUpdatePlanTool } from "../src/agent/tools/plan/updatePlan";
 import {
   buildGenericSourceQuoteCitationGuidance,
   buildPaperQuoteCitationGuidance,
@@ -105,6 +111,31 @@ describe("quote guidance prompts", function () {
     clearAgentEvidenceCache();
   });
 
+  it("does not turn an available full-text resource into a required read for semantic filing", async function () {
+    const messages = await buildAgentInitialMessages(
+      request({
+        userText: "File this paper in Bayesian",
+        classifiedIntent: actionFixture("move_to_collection", undefined, {
+          reading: { source: "metadata", coverage: "overview" },
+        }),
+        fullTextPaperContexts: [
+          {
+            itemId: 10,
+            contextItemId: 12,
+            libraryID: 1,
+            title: "Available paper",
+            mineruCacheDir: "/tmp/cache",
+          },
+        ],
+      }),
+      [],
+      [],
+    );
+    assert.notInclude(
+      messages.map((message) => message.content).join("\n"),
+      "your very first action MUST be",
+    );
+  });
   it("preserves the proven evidence wording inside one canonical contract", function () {
     assert.include(PAPER_CITATION_CONTRACT, BALANCED_EVIDENCE_GUIDANCE);
     assert.equal(fingerprintText(PAPER_CITATION_CONTRACT), "fnv1a32-61855269");
@@ -126,6 +157,51 @@ describe("quote guidance prompts", function () {
 
     assertCanonicalCitationContract(text);
     assert.equal(countOccurrences(text, BALANCED_EVIDENCE_GUIDANCE), 1);
+  });
+
+  it("uses readable paper mentions across chat, planning, and native instructions while preserving citation rules", async function () {
+    const planSchema = createUpdatePlanTool().spec.inputSchema;
+    assert.include(
+      (planSchema.properties as any).explanation.description,
+      "User-visible explanation rendered directly in the plan card",
+    );
+    const messages = await buildAgentInitialMessages(request(), [], []);
+    const manifest = buildZoteroEnvironmentManifest({
+      scope: {
+        conversationKey: 1,
+        libraryID: 1,
+        kind: "paper",
+        paperItemID: 11,
+        activeItemId: 11,
+        activeContextItemId: 12,
+        paperTitle: "Prompt Paper",
+      },
+      mcpEnabled: true,
+      mcpReady: true,
+    });
+    for (const prompt of [
+      DEFAULT_SYSTEM_PROMPT,
+      AGENT_PERSONA_INSTRUCTIONS.join("\n"),
+      messages.map((message) => message.content).join("\n"),
+      manifest,
+    ]) {
+      for (const instruction of [
+        "user-facing text (plans, steps, progress, answers)",
+        "(creator, year)",
+        "Disambiguate with a short title, then available version/library",
+        "Missing creator: use title; missing year: n.d.",
+        "call indistinguishable records duplicates",
+        "Never invent metadata",
+        "Keep exact Zotero keys and numeric IDs in structured target fields/internal records",
+        "User-visible tool fields, including plan explanations and step descriptions, follow this display rule too",
+        "Do not repeat raw IDs from user input or tool results as visible paper labels",
+        "display them only on explicit user request for technical identifiers",
+        "Preserve verified-quote sourceLabel strings and formal document CSL citations",
+      ]) {
+        assert.include(prompt, instruction);
+      }
+      assertCanonicalCitationContract(prompt);
+    }
   });
 
   it("includes the canonical contract once in Codex native MCP instructions", function () {
@@ -222,7 +298,7 @@ describe("quote guidance prompts", function () {
     }
   });
 
-  it("injects figure guidance only for figure intent or the matched figure skill", async function () {
+  it("injects figure task guidance only for semantic figure intent", async function () {
     const paperContext: PaperContextRef = {
       ...paper(),
       title: "Figure Paper",
@@ -246,6 +322,9 @@ describe("quote guidance prompts", function () {
     const intentMatched = await buildAgentInitialMessages(
       request({
         userText: "Explain Figure 1.",
+        classifiedIntent: classifiedFixture({
+          semantic: semanticFixture({ visualMode: "figure" }),
+        }),
         selectedPaperContexts: [paperContext],
         fullTextPaperContexts: [],
       }),
@@ -258,7 +337,7 @@ describe("quote guidance prompts", function () {
       ["analyze-figures"],
     );
 
-    for (const messages of [unmatched, conceptualGraphQuestion]) {
+    for (const messages of [unmatched, conceptualGraphQuestion, matched]) {
       const unmatchedText = messages
         .map((message) => message.content)
         .join("\n");
@@ -266,7 +345,7 @@ describe("quote guidance prompts", function () {
       assert.notInclude(unmatchedText, "For figure workflows");
       assert.notInclude(unmatchedText, "paper_read({ mode:'figures'");
     }
-    for (const messages of [intentMatched, matched]) {
+    for (const messages of [intentMatched]) {
       const matchedText = messages.map((message) => message.content).join("\n");
       assert.include(matchedText, "paper_read({ mode:'figures'");
       assert.include(matchedText, "precise PDF crops");
@@ -277,7 +356,7 @@ describe("quote guidance prompts", function () {
   it("describes image support generically without naming model vendors", function () {
     const text = readSkill("../src/agent/skills/analyze-figures.md");
 
-    assert.include(text, "Visual models");
+    assert.include(text, "A model without image capability");
     for (const modelName of ["GPT-4o", "Codex", "Claude", "Gemini"]) {
       assert.notInclude(text, modelName);
     }

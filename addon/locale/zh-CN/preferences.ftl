@@ -8,3 +8,7 @@ pref-test-button = 测试连接
 pref-test-running = 测试中...
 pref-test-success = 连接成功
 pref-test-failed = 失败
+
+pref-external-mcp-title = 外部 MCP 客户端
+pref-external-mcp-writes = 允许外部 MCP 客户端执行写入操作
+pref-external-mcp-description = 信任持有 MCP 连接凭据的客户端调用所有已开放的 Zotero 写入工具，包括删除和脚本。审批由连接的智能体管理，不受 Original Agent 权限模式影响。Zotero 负责校验操作并验证修改结果。内置 Codex 和 Claude Code 使用各自的 MCP 启用设置。

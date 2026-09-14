@@ -2,16 +2,19 @@ import { assert } from "chai";
 import {
   appendMessage,
   loadConversation,
+  updateLatestAssistantMessage,
   updateLatestUserMessage,
 } from "../src/utils/chatStore";
 import {
   appendClaudeMessage,
   loadClaudeConversation,
+  updateLatestClaudeAssistantMessage,
   updateLatestClaudeUserMessage,
 } from "../src/claudeCode/store";
 import {
   appendCodexMessage,
   loadCodexConversation,
+  updateLatestCodexAssistantMessage,
   updateLatestCodexUserMessage,
 } from "../src/codexAppServer/store";
 import {
@@ -150,6 +153,31 @@ describe("selected text context message stores", function () {
     }
   });
 
+  it("persists document outcome IDs in every assistant message store", async function () {
+    const queries = installRecordingDb();
+    const message = {
+      role: "assistant" as const,
+      text: "Document completed and verified.",
+      timestamp: 150,
+      documentId: "document-123",
+    };
+
+    await appendMessage(42, message);
+    await appendClaudeMessage(CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+    await appendCodexMessage(CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+
+    for (const table of [
+      "llm_for_zotero_chat_messages",
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]) {
+      const insert = findQuery(queries, `INSERT INTO ${table}`);
+      assert.include(insert.sql, "document_id");
+      assert.equal(insert.sql.match(/\?/g)?.length || 0, insert.params.length);
+      assert.include(insert.params, "document-123");
+    }
+  });
+
   it("loads canonical JSON as the source of truth in every store", async function () {
     installRecordingDb((sql) => {
       if (!sql.includes("ORDER BY timestamp ASC")) return undefined;
@@ -215,6 +243,63 @@ describe("selected text context message stores", function () {
         storedCollectionContext,
       ]);
       assert.deepEqual(messages[0]?.selectedTagContexts, [storedTagContext]);
+    }
+  });
+
+  it("loads document outcome IDs from every message store", async function () {
+    installRecordingDb((sql) => {
+      if (!sql.includes("ORDER BY timestamp ASC")) return undefined;
+      return [
+        {
+          role: "assistant",
+          text: "Document completed and verified.",
+          timestamp: 150,
+          documentId: "document-123",
+        },
+      ];
+    });
+
+    const standard = await loadConversation(42, 200);
+    const claude = await loadClaudeConversation(
+      CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      200,
+    );
+    const codex = await loadCodexConversation(
+      CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      200,
+    );
+
+    for (const messages of [standard, claude, codex]) {
+      assert.equal(messages[0]?.documentId, "document-123");
+    }
+  });
+
+  it("updates document outcome IDs in every assistant message store", async function () {
+    const queries = installRecordingDb();
+    const update = {
+      text: "Document completed and verified.",
+      timestamp: 200,
+      documentId: "document-456",
+    };
+
+    await updateLatestAssistantMessage(42, update);
+    await updateLatestClaudeAssistantMessage(
+      CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      update,
+    );
+    await updateLatestCodexAssistantMessage(
+      CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      update,
+    );
+
+    for (const table of [
+      "llm_for_zotero_chat_messages",
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]) {
+      const query = findQuery(queries, `UPDATE ${table}`);
+      assert.include(query.sql, "document_id = ?");
+      assert.include(query.params, "document-456");
     }
   });
 

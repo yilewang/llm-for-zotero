@@ -3,6 +3,8 @@ import { config } from "../package.json";
 import {
   buildModelProviderGroupsFromLegacySlots,
   buildProviderCatalogIdentity,
+  consumeOutputTokenAutoMigrationNotice,
+  createProviderModelEntry,
   deriveProviderLabel,
   getLastUsedModelEntryId,
   getModelProviderGroups,
@@ -96,7 +98,7 @@ describe("modelProviders", function () {
     assert.equal(deriveProviderLabel("", 3), "Provider 3");
   });
 
-  it("migrates legacy slots into grouped providers while preserving per-model advanced params", function () {
+  it("migrates legacy slots into grouped providers while resetting output limits to Auto", function () {
     const legacySlots: LegacyModelSlot[] = [
       {
         key: "primary",
@@ -138,13 +140,21 @@ describe("modelProviders", function () {
     assert.equal(result.groups[0].models[0].model, "gpt-4o-mini");
     assert.equal(result.groups[0].models[1].model, "gpt-4o");
     assert.equal(result.groups[0].models[1].temperature, 0.1);
-    assert.equal(result.groups[0].models[1].maxTokens, 2048);
+    assert.deepEqual(result.groups[0].models[1].outputTokenLimit, {
+      mode: "auto",
+    });
     assert.equal(result.groups[0].models[1].inputTokenCap, 64000);
     assert.equal(result.groups[1].apiBase, "");
     assert.equal(result.groups[1].models[0].model, "local-model");
     assert.isString(result.legacyToEntryId.primary);
     assert.isString(result.legacyToEntryId.secondary);
     assert.isString(result.legacyToEntryId.tertiary);
+  });
+
+  it("defaults newly created model profiles to Auto", function () {
+    assert.deepEqual(createProviderModelEntry("gpt-5.4").outputTokenLimit, {
+      mode: "auto",
+    });
   });
 
   it("keeps duplicate model names and disambiguates runtime display labels within a provider", function () {
@@ -159,14 +169,14 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "gpt-4o-mini",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
             inputTokenCap: 128000,
           },
           {
             id: "model-2",
             model: "gpt-4o-mini",
             temperature: 0.2,
-            maxTokens: 2048,
+            outputTokenLimit: { mode: "custom", tokens: 2048 },
             inputTokenCap: 64000,
           },
         ],
@@ -189,7 +199,7 @@ describe("modelProviders", function () {
     assert.equal(entries[0].providerProtocol, "responses_api");
   });
 
-  it("round-trips explicit max-token provenance through provider storage", function () {
+  it("round-trips Auto and Custom output policies through provider storage", function () {
     setModelProviderGroups([
       {
         id: "ollama",
@@ -202,27 +212,25 @@ describe("modelProviders", function () {
             id: "explicit",
             model: "qwen3:8b",
             temperature: 0.3,
-            maxTokens: 4096,
-            maxTokensExplicit: true,
+            outputTokenLimit: { mode: "custom", tokens: 4096 },
           },
           {
             id: "default",
             model: "gemma3:4b",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
           {
             id: "legacy-custom",
             model: "future-model",
             temperature: 0.3,
-            maxTokens: 250000,
+            outputTokenLimit: { mode: "custom", tokens: 250000 },
           },
           {
             id: "known-high-explicit",
             model: "claude-haiku-4-5",
             temperature: 0.3,
-            maxTokens: 200000,
-            maxTokensExplicit: true,
+            outputTokenLimit: { mode: "custom", tokens: 200000 },
           },
         ],
       },
@@ -230,12 +238,114 @@ describe("modelProviders", function () {
 
     const entries = getRuntimeModelEntries();
 
-    assert.isTrue(entries[0].advanced.maxTokensExplicit);
-    assert.isUndefined(entries[1].advanced.maxTokensExplicit);
-    assert.equal(entries[2].advanced.maxTokens, 250000);
-    assert.isTrue(entries[2].advanced.maxTokensExplicit);
-    assert.equal(entries[3].advanced.maxTokens, 200000);
-    assert.isTrue(entries[3].advanced.maxTokensExplicit);
+    assert.deepEqual(entries[0].advanced.outputTokenLimit, {
+      mode: "custom",
+      tokens: 4096,
+    });
+    assert.deepEqual(entries[1].advanced.outputTokenLimit, { mode: "auto" });
+    assert.deepEqual(entries[2].advanced.outputTokenLimit, {
+      mode: "custom",
+      tokens: 250000,
+    });
+    assert.deepEqual(entries[3].advanced.outputTokenLimit, {
+      mode: "custom",
+      tokens: 200000,
+    });
+  });
+
+  it("resets inherited and deliberately edited legacy caps to Auto", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+      get: (key: string, global?: boolean) => unknown;
+    };
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "provider",
+          apiBase: "https://api.anthropic.com/v1",
+          apiKey: "test",
+          authMode: "api_key",
+          providerProtocol: "anthropic_messages",
+          models: [
+            {
+              id: "inherited",
+              model: "claude-sonnet-4-6",
+              temperature: 0.3,
+              maxTokens: 4096,
+            },
+            {
+              id: "explicit",
+              model: "claude-haiku-4-5",
+              temperature: 0.3,
+              maxTokens: 4096,
+              maxTokensExplicit: true,
+            },
+          ],
+        },
+      ]),
+      true,
+    );
+    prefs.set(
+      `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+      8,
+      true,
+    );
+
+    const entries = getRuntimeModelEntries();
+
+    assert.deepEqual(entries[0].advanced.outputTokenLimit, { mode: "auto" });
+    assert.deepEqual(entries[1].advanced.outputTokenLimit, { mode: "auto" });
+    assert.equal(
+      prefs.get(
+        `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`,
+        true,
+      ),
+      9,
+    );
+    assert.isTrue(consumeOutputTokenAutoMigrationNotice());
+    assert.isFalse(consumeOutputTokenAutoMigrationNotice());
+
+    const storedAfterFirstMigration = prefs.get(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      true,
+    );
+    getRuntimeModelEntries();
+    assert.equal(
+      prefs.get(`${config.prefsPrefix}.modelProviderGroups`, true),
+      storedAfterFirstMigration,
+    );
+  });
+
+  it("does not mark the Auto migration complete when saving profiles fails", function () {
+    const prefs = globalThis.Zotero.Prefs as {
+      set: (key: string, value: unknown, global?: boolean) => void;
+      get: (key: string, global?: boolean) => unknown;
+    };
+    const groupsKey = `${config.prefsPrefix}.modelProviderGroups`;
+    const versionKey = `${config.prefsPrefix}.modelProviderGroupsMigrationVersion`;
+    prefs.set(
+      groupsKey,
+      JSON.stringify([
+        {
+          id: "provider",
+          apiBase: "https://api.openai.com/v1",
+          apiKey: "test",
+          authMode: "api_key",
+          models: [{ id: "model", model: "gpt-5.4", maxTokens: 2048 }],
+        },
+      ]),
+      true,
+    );
+    prefs.set(versionKey, 8, true);
+    const originalSet = prefs.set.bind(prefs);
+    prefs.set = (key, value, global) => {
+      if (key === groupsKey) throw new Error("profile save failed");
+      originalSet(key, value, global);
+    };
+
+    assert.throws(() => getModelProviderGroups(), "profile save failed");
+    assert.equal(prefs.get(versionKey, true), 8);
   });
 
   it("notifies open consumers after provider settings change", function () {
@@ -414,7 +524,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "claude-sonnet-4-5",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
         ],
       },
@@ -441,7 +551,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "gpt-5.4",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
         ],
       },
@@ -468,7 +578,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "chat-compatible-model",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
             providerProtocol: "openai_chat_compat",
           },
         ],
@@ -495,7 +605,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "kimi-k2.6",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
         ],
       },
@@ -521,7 +631,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "kimi-k2.6",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
             providerProtocol: "responses_api",
           },
         ],
@@ -547,7 +657,7 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "gpt-4o-mini",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
         ],
       },
@@ -577,14 +687,14 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "gpt-5.5",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
             inputMode: "text_only",
           },
           {
             id: "model-2",
             model: "local-text-only",
             temperature: 0.3,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
             inputMode: "vision_allowed",
           },
         ],
@@ -647,7 +757,7 @@ describe("modelProviders", function () {
     assert.isUndefined(entries[2].advanced.inputMode);
   });
 
-  it("preserves large DeepSeek V4 output token settings", function () {
+  it("preserves a newly saved large DeepSeek V4 Custom output limit", function () {
     const groups: ModelProviderGroup[] = [
       {
         id: "provider-1",
@@ -660,22 +770,20 @@ describe("modelProviders", function () {
             id: "model-1",
             model: "deepseek-v4-pro",
             temperature: 0.3,
-            maxTokens: 384000,
+            outputTokenLimit: { mode: "custom", tokens: 384000 },
           },
         ],
       },
     ];
 
     setModelProviderGroups(groups);
-    (
-      globalThis.Zotero.Prefs as {
-        set: (key: string, value: unknown, global?: boolean) => void;
-      }
-    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
     const entries = getRuntimeModelEntries();
 
     assert.lengthOf(entries, 1);
-    assert.equal(entries[0].advanced.maxTokens, 384000);
+    assert.deepEqual(entries[0].advanced.outputTokenLimit, {
+      mode: "custom",
+      tokens: 384000,
+    });
   });
 
   it("normalizes missing authMode to api_key for stored groups", function () {
@@ -1006,7 +1114,7 @@ describe("modelProviders", function () {
     assert.equal(entries[1].catalogAvailability, "available");
     assert.equal(entries[1].providerLabel, "Codex Direct (Legacy)");
     assert.equal(entries[1].advanced.temperature, 0.3);
-    assert.equal(entries[1].advanced.maxTokens, 4096);
+    assert.deepEqual(entries[1].advanced.outputTokenLimit, { mode: "auto" });
     assert.isUndefined(entries[1].advanced.inputTokenCap);
     assert.notInclude(
       entries.map((entry) => entry.model),
@@ -1244,7 +1352,7 @@ describe("modelProviders", function () {
             id: "model-entry-1",
             model: "gemini-2.5-pro",
             temperature: 0.7,
-            maxTokens: 4096,
+            outputTokenLimit: { mode: "auto" },
           },
         ],
       };

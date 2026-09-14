@@ -4,11 +4,8 @@ import {
   buildRetrievalQueryPlan,
   callLLMWithTimeout,
   generateRetrievalProbeReformulation,
-  classifyPaperReadIntent,
-  detectExplicitFullReadIntent,
   RETRIEVAL_QUERY_PLAN_TIMEOUT_MS,
   RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT,
-  reconcilePlannerReadIntent,
   resolveRetrievalQueryPlan,
   shouldAutoGenerateQueryVariants,
 } from "../src/modules/contextPanel/retrievalQueryPlan";
@@ -41,14 +38,14 @@ describe("retrievalQueryPlan", function () {
     assert.include(plan.semanticQuery, plan.originalQuery);
   });
 
-  it("skips automatic planning for exact lookup-style queries", function () {
+  it("skips automatic planning only for literal DOI syntax", function () {
     assert.isFalse(
       shouldAutoGenerateQueryVariants({
-        query: "find DOI 10.1101/2024.01.01.123456",
+        query: "10.1101/2024.01.01.123456",
         hasRetrievalContext: true,
       }),
     );
-    assert.isFalse(
+    assert.isTrue(
       shouldAutoGenerateQueryVariants({
         query: "find the exact quote 'calcium imaging'",
         hasRetrievalContext: true,
@@ -86,258 +83,36 @@ describe("retrievalQueryPlan", function () {
     assert.include(plan.notes.join("\n"), "No query variants were used");
   });
 
-  it("recognizes explicit full-reading intent without treating ordinary summaries as full reads", function () {
-    assert.isFalse(
-      detectExplicitFullReadIntent("Read the full text before answering."),
-    );
-    assert.isTrue(
-      detectExplicitFullReadIntent("Read the complete second selected paper."),
-    );
-    assert.isTrue(detectExplicitFullReadIntent("Read the entire Lee paper."));
-    assert.isTrue(detectExplicitFullReadIntent("Read the full paper."));
-    assert.isTrue(detectExplicitFullReadIntent("Read the full article."));
-    assert.isTrue(
-      detectExplicitFullReadIntent(
-        "Do not read the abstract; read the full paper.",
-      ),
-    );
-    assert.isTrue(
-      detectExplicitFullReadIntent("Read all selected papers in full."),
-    );
-    assert.isTrue(
-      detectExplicitFullReadIntent(
-        "Read the second of the selected papers in full.",
-      ),
-    );
-    assert.isTrue(
-      detectExplicitFullReadIntent("Read both selected papers cover to cover."),
-    );
-    for (const query of [
-      "Fully read the paper.",
-      "Completely read the article.",
-      "Read the full paper first, then answer.",
-      "Read the full paper now.",
-      "Read the complete paper while focusing on methods.",
-      "Read the first two selected papers in full.",
-      "Read selected papers 1 and 2 in full.",
-      "Read it cover to cover.",
-      "Read it from start to finish.",
-      "Read the entire Analysis of Neural Drift paper.",
-      "Read the whole Review of Representational Drift article.",
-      "Read the full Methods for Longitudinal Imaging paper.",
-      "Read the entire Introduction to Machine Learning text.",
-      "Read the complete Critique of Pure Reason text.",
-    ]) {
-      assert.isTrue(detectExplicitFullReadIntent(query), query);
-    }
-    assert.isTrue(
-      detectExplicitFullReadIntent("请先通读整篇论文，再回答问题。"),
-    );
-    for (const query of [
-      "不要通读第一篇论文。请通读第二篇论文。",
-      "不要通读第一篇论文，但请通读第二篇论文。",
-      "不要从头到尾阅读第一篇论文，但要从头到尾阅读第二篇论文。",
-    ]) {
-      assert.isTrue(detectExplicitFullReadIntent(query), query);
-    }
-    for (const query of [
-      "请阅读完整论文。",
-      "请阅读完整文章。",
-      "请阅读完整文档。",
-      "请阅读全部论文。",
-      "请阅读这篇论文的完整内容。",
-    ]) {
-      assert.isTrue(detectExplicitFullReadIntent(query), query);
-    }
-    assert.isFalse(detectExplicitFullReadIntent("Summarize this paper."));
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Use the actual PDF/full text to explain the method.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Provide a complete explanation of Figure 2.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Analyze the entire mechanism described in this paragraph.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Provide a complete explanation of Figure 2 in the paper.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Review the whole argument critically in the paper.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Provide a complete and accurate explanation of Figure 2 in the paper.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Review a complete critical analysis of the paper.",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent("Read the entire paper's Methods section."),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Read the complete article's Figure 2 caption.",
-      ),
-    );
-    for (const query of [
-      "Provide a complete critique of the paper.",
-      "Provide a complete list of limitations in the paper.",
-      "Read the complete paper's abstract.",
-      "Read the full article's conclusion.",
-      "Analyze the entire paper's introduction.",
-    ]) {
-      assert.isFalse(detectExplicitFullReadIntent(query), query);
-    }
-    assert.isFalse(
-      detectExplicitFullReadIntent("Explain every section of Figure 2."),
-    );
-    for (const query of [
-      "Analyze every section of the Methods.",
-      "Review every page of the appendix.",
-      "Read every section of the supplementary analysis.",
-      "Analyze every section of the results.",
-      "Analyze full text classification in this paper.",
-      "Review the full-text retrieval method in this paper.",
-      "Analyze the full text search approach used by the paper.",
-      "Provide a complete text classification analysis of the paper.",
-      "Review the complete document retrieval pipeline.",
-      "Analyze the full PDF parsing method.",
-      "Review the entire article selection process.",
-      "Analyze the full paper recommendation method.",
-      "Provide a complete explanation of the Lee paper.",
-      "Read the whole argument in the Smith paper.",
-      "Review a complete critical analysis of Lee's article.",
-      "Do not read the full paper; summarize the abstract.",
-      "Rather than read the full paper, summarize the abstract.",
-      "Do anything but read the full paper.",
-      "Read anything except the full paper.",
-      "You do not need to read the paper in full.",
-    ]) {
-      assert.isFalse(detectExplicitFullReadIntent(query), query);
-    }
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "Walk me through the experiment from start to finish.",
-      ),
-    );
-    assert.isFalse(detectExplicitFullReadIntent("请从头到尾解释这个机制。"));
-    assert.isFalse(
-      detectExplicitFullReadIntent(
-        "このメカニズムを最初から最後まで説明して。",
-      ),
-    );
-    assert.isFalse(
-      detectExplicitFullReadIntent("이 메커니즘을 처음부터 끝까지 설명해 줘."),
-    );
-    for (const query of [
-      "不要从头到尾阅读这篇论文。",
-      "无需从头到尾阅读这篇论文。",
-      "不必从头到尾阅读这篇论文。",
-      "不用从头到尾阅读这篇论文。",
-      "请勿从头到尾阅读这篇论文。",
-      "别从头到尾阅读这篇论文。",
-      "别通读整篇论文。",
-      "不需要阅读全文。",
-      "无须阅读全文。",
-      "没必要通读整篇论文。",
-      "我没有必要阅读全文，只要摘要。",
-      "我不想阅读全文，只要摘要。",
-      "不能通读整篇论文，只看摘要。",
-      "이 논문을 처음부터 끝까지 읽지 마세요.",
-      "이 논문을 처음부터 끝까지 읽지 않아도 됩니다.",
-      "이 논문을 전문으로 읽지 말고 초록만 요약해 주세요.",
-      "이 논문 전체를 읽지 말고 초록만 요약해 주세요.",
-      "이 논문 전체를 읽으면 안 됩니다.",
-      "이 논문 전체를 읽을 필요가 없습니다.",
-      "この論文の全文を読むな。",
-      "この論文の全文を読む必要はありません。",
-      "全文を読むのは避けてください。",
-      "全文を読まずに要約してください。",
-      "이 논문 전문을 읽는 것은 피하세요.",
-      "전문을 읽을 필요가 전혀 없습니다.",
-      "전문을 읽어선 안 돼요.",
-      "전문을 읽고 싶지 않습니다.",
-      "この論文の全文を読んではいけません。",
-      "この論文の全文を読むべきではありません。",
-      "全文を読んでほしくない。",
-    ]) {
-      assert.isFalse(detectExplicitFullReadIntent(query), query);
-    }
-    for (const query of [
-      "图2如何概括整篇论文的论点？",
-      "論文全体の主張を要約して。",
-      "전체 논문의 주장을 요약해 줘.",
-      "请阅读完整的论文摘要。",
-      "请阅读完整的论文结论。",
-      "请完整阅读论文的方法部分。",
-      "この論文の全文要約を読んでください。",
-      "논문의 전체 초록을 읽어 주세요.",
-    ]) {
-      assert.isFalse(detectExplicitFullReadIntent(query), query);
-    }
-    assert.equal(
-      buildRetrievalQueryPlan({ query: "请阅读完整全文" }).readIntent,
-      "full-once",
-    );
+  it("query expansion cannot override the shared reading decision", async function () {
+    const plan = await resolveRetrievalQueryPlan({
+      query: "read the whole paper",
+      hasRetrievalContext: true,
+      readIntent: "targeted",
+      apiBase: "https://example.test/v1",
+      model: "test",
+      llmCall: async () => ({
+        text: JSON.stringify({
+          readIntent: "full-once",
+          variants: ["paper methods"],
+        }),
+        completion: { status: "complete" as const },
+      }),
+    });
+    assert.equal(plan.readIntent, "targeted");
+    assert.deepEqual(plan.variants, ["paper methods"]);
   });
 
-  it("classifies paper evidence source independently from read coverage", function () {
-    assert.deepEqual(
-      classifyPaperReadIntent(
-        "Use the actual PDF/full text to explain the method.",
-      ),
-      { source: "document_text", coverage: "targeted" },
-    );
-    assert.deepEqual(classifyPaperReadIntent("Summarize the actual PDF."), {
-      source: "document_text",
-      coverage: "overview",
-    });
-    assert.deepEqual(classifyPaperReadIntent("Read the entire actual PDF."), {
-      source: "document_text",
-      coverage: "exhaustive",
-    });
-    assert.deepEqual(classifyPaperReadIntent("Inspect the layout of page 5."), {
-      source: "rendered_pages",
-      coverage: "targeted",
-    });
-  });
-
-  it("does not let model planning promote a non-explicit request to a full read", function () {
+  it("takes full reading only from its structured input", function () {
     assert.equal(
-      reconcilePlannerReadIntent(
-        "Rather than read the full paper, summarize the abstract.",
-        "full-once",
-      ),
+      buildRetrievalQueryPlan({ query: "Read every page" }).readIntent,
       "targeted",
     );
     assert.equal(
-      reconcilePlannerReadIntent(
-        "Provide a complete explanation of the Lee paper.",
-        "full-once",
-      ),
-      "targeted",
-    );
-    assert.equal(
-      reconcilePlannerReadIntent("Read the complete Lee paper.", "full-once"),
+      buildRetrievalQueryPlan({
+        query: "Read every page",
+        readIntent: "full-once",
+      }).readIntent,
       "full-once",
-    );
-    assert.equal(
-      reconcilePlannerReadIntent("Read the complete Lee paper.", "targeted"),
-      "targeted",
     );
   });
 });
@@ -397,7 +172,10 @@ describe("probe reformulation", function () {
       },
       llmCall: async (params) => {
         captured = params as unknown as Record<string, unknown>;
-        return '{"readIntent":"targeted","variants":["developmental representational drift"]}';
+        return {
+          text: '{"readIntent":"targeted","variants":["developmental representational drift"]}',
+          completion: { status: "complete" as const },
+        };
       },
     });
 
@@ -406,7 +184,10 @@ describe("probe reformulation", function () {
       provider: "openai",
       level: "low",
     });
-    assert.equal(captured.maxTokens, 1_284);
+    assert.deepEqual(captured.outputTokenLimit, {
+      mode: "custom",
+      tokens: 1_284,
+    });
     assert.deepEqual(captured.profileOverride, {
       forModel: "gpt-5.4",
       limits: { outputTokens: 2_000 },
@@ -426,9 +207,13 @@ describe("probe reformulation", function () {
         calls += 1;
         // A budget-truncated first response is exactly what the second
         // attempt exists for; treating it as terminal wastes the retry.
-        return calls === 1
-          ? "   "
-          : '{"readIntent":"targeted","variants":["developmental representational drift"]}';
+        return {
+          text:
+            calls === 1
+              ? "   "
+              : '{"readIntent":"targeted","variants":["developmental representational drift"]}',
+          completion: { status: "complete" as const },
+        };
       },
     });
 
@@ -473,7 +258,7 @@ describe("callLLMWithTimeout runtime safety", function () {
           apiBase: "https://example.invalid",
           apiKey: "k",
           timeoutMs: 40,
-          llmCall: () => new Promise<string>(() => {}),
+          llmCall: () => new Promise<never>(() => {}),
         });
       } catch {
         timedOut = true;
@@ -495,11 +280,14 @@ describe("callLLMWithTimeout runtime safety", function () {
       timeoutMs: 5000,
       llmCall: async (params: { signal?: AbortSignal }) => {
         receivedSignal = params.signal;
-        return "ok";
+        return {
+          text: "ok",
+          completion: { status: "complete" as const },
+        };
       },
     });
 
-    assert.equal(result, "ok");
+    assert.equal(result.text, "ok");
     assert.isOk(receivedSignal);
   });
 });

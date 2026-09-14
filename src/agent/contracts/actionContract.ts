@@ -1,3 +1,9 @@
+import { actionDependencies } from "./workflowDependencies";
+import { validatedWorkflowReuse } from "./workflowContinuation";
+import {
+  validWorkflowDependencies,
+  workflowDependencyIssue,
+} from "./workflowDependencies";
 import type {
   AgentActionContract,
   AgentActionEvidence,
@@ -20,10 +26,15 @@ import {
   type PreparedActionExecution,
 } from "./actionOperationEvidence";
 import {
+  ActionReferenceResolutionError,
   listCurrentLibraryTargetIds,
   listScopeTargetIds,
+  resolveCreatedDestinations,
   resolveScope,
+  resolveDescriptiveTargets,
 } from "./actionScope";
+import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
+import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
@@ -38,11 +49,32 @@ export {
 } from "./actionOperationEvidence";
 
 export type ScopeValidationFailure = {
+  code:
+    | "workflow_dependency"
+    | "missing_typed_proposal"
+    | "different_operation"
+    | "different_parameters"
+    | "closed_obligation"
+    | "hard_constraint"
+    | "protected_target"
+    | "stale_scope"
+    | "fixed_selection"
+    | "added_target"
+    | "incomplete_batch"
+    | "scope_mismatch";
   message: string;
   expectedCount: number;
   proposedCount: number;
   rejectedTargets: string[];
   missingTargets: string[];
+  amendableObligation?: {
+    obligationId: string;
+    libraryID: number;
+    boundaryKind: "collection" | "library";
+    previousTargetIds: number[];
+    currentTargetIds: number[];
+    addedTargetIds: number[];
+  };
 };
 
 function createContractId(request: AgentRuntimeRequest): string {
@@ -79,7 +111,9 @@ function parametersMatch(
     const proposed = actualValue[key as keyof AgentActionParameters];
     return Array.isArray(value)
       ? Array.isArray(proposed) && sameArrayValues(value, proposed)
-      : proposed === value;
+      : value && typeof value === "object"
+        ? canonicalJsonEqual(value, proposed)
+        : proposed === value;
   });
 }
 
@@ -89,9 +123,13 @@ function matchingObligations(
 ): AgentActionObligation[] {
   return contract.obligations.filter(
     (obligation) =>
+      !obligation.destinationCreation &&
       obligation.operation === proposal.operation &&
       obligation.proofDomain === proposal.proofDomain &&
-      parametersMatch(obligation.parameters, proposal.parameters),
+      parametersMatch(obligation.parameters, proposal.parameters) &&
+      (obligation.operation !== "move_to_collection" ||
+        obligation.parameters?.sourceCollectionId ===
+          proposal.parameters?.sourceCollectionId),
   );
 }
 
@@ -187,10 +225,13 @@ function assignedSourceCollectionObligations(
 function narrowReceiptToBoundary(
   receipt: AgentActionReceipt,
   obligation: AgentActionObligation,
+  addedTargetIds: readonly number[] = [],
 ): AgentActionReceipt {
   if (!obligation.targetBoundary) return receipt;
   const allowed = new Set(
-    obligation.targetBoundary.frozenTargetIds.map(itemTarget),
+    [...obligation.targetBoundary.frozenTargetIds, ...addedTargetIds].map(
+      itemTarget,
+    ),
   );
   const narrow = (targets: string[]) =>
     targets.filter((target) => allowed.has(target));
@@ -211,13 +252,32 @@ function failure(
   missingTargets: string[] = contract.obligations.map(
     (obligation) => obligation.operation,
   ),
+  code: ScopeValidationFailure["code"] = "scope_mismatch",
+  amendableObligation?: ScopeValidationFailure["amendableObligation"],
 ): ScopeValidationFailure {
   return {
+    code,
     message,
     expectedCount: contract.obligations.length,
     proposedCount: prepared.proposals.length,
     rejectedTargets,
     missingTargets,
+    amendableObligation,
+  };
+}
+
+function numericItemTargets(targets: readonly string[]): number[] {
+  return targets
+    .map((target) => Number(target.match(/^item:(\d+)$/)?.[1]))
+    .filter((itemId) => Number.isInteger(itemId) && itemId > 0);
+}
+
+function targetDelta(previous: readonly number[], current: readonly number[]) {
+  const oldSet = new Set(previous);
+  const currentSet = new Set(current);
+  return {
+    added: current.filter((itemId) => !oldSet.has(itemId)),
+    removed: previous.filter((itemId) => !currentSet.has(itemId)),
   };
 }
 
@@ -286,16 +346,120 @@ function fileEvidence(
       reason: `File readback hash ${actualHash} did not match ${expectedHash}.`,
     };
   }
+  if (proposal.expectedFiles?.length) {
+    const files = Array.isArray(record.exportedFiles)
+      ? (record.exportedFiles as Record<string, unknown>[])
+      : [];
+    for (const expected of proposal.expectedFiles) {
+      const actual = files.find((file) => file.filePath === expected.path);
+      if (
+        !actual ||
+        actual.exists !== true ||
+        actual.contentHash !== expected.contentHash ||
+        actual.bytesWritten !== expected.byteLength
+      )
+        return {
+          verified: false,
+          target,
+          reason: `Export member ${expected.path} was not verified against the authorized bytes.`,
+        };
+    }
+  }
   return { verified: true, target, evidenceRef: `sha256:${actualHash}` };
 }
 
 export class ActionContractService {
-  constructor(private readonly gateway: ActionContractGateway) {}
+  constructor(
+    private readonly gateway: ActionContractGateway,
+    private readonly references?: import("./semanticReferences").SemanticReferenceResolver,
+  ) {}
 
   async createContract(
     request: AgentRuntimeRequest,
+    options: { mode?: OriginalAgentPermissionMode } = {},
   ): Promise<AgentActionContract> {
-    const intents = request.classifiedIntent?.actionIntents || [];
+    if (!request.classifiedIntent?.semantic)
+      throw new Error(
+        "A semantic interpretation is required before constructing an action contract.",
+      );
+    const judgment =
+      (options.mode ?? getOriginalAgentPermissionMode()) === "yolo";
+    const semantic = request.classifiedIntent.semantic;
+    const assumptions: string[] = [...(semantic.assumptions || [])];
+    if (semantic.questions.length) {
+      if (!judgment)
+        throw new ActionReferenceResolutionError(semantic.questions.join("\n"));
+      assumptions.push(
+        ...semantic.questions.map(
+          (question) => `Unresolved: ${question} The agent decides.`,
+        ),
+      );
+    }
+    const skipped = new Map<number, import("./types").AgentActionOperation>();
+    const attempt = async <T>(
+      index: number,
+      operation: import("./types").AgentActionOperation,
+      run: () => Promise<T>,
+    ): Promise<T | null> => {
+      try {
+        return await run();
+      } catch (error) {
+        if (!judgment || !(error instanceof ActionReferenceResolutionError))
+          throw error;
+        // Judgment authority resolves ambiguity, never the user's own
+        // prohibitions: a constraint violation stays a pre-turn refusal.
+        if (error.cause === "hard_constraint") throw error;
+        skipped.set(index, operation);
+        assumptions.push(
+          `The requested ${operation.replace(/_/g, " ")} could not be resolved (${error.message}) so the agent will choose its target.`,
+        );
+        return null;
+      }
+    };
+    if (
+      !validWorkflowDependencies(
+        request.classifiedIntent.actionIntents,
+        request.classifiedIntent.semantic.materialOutputs,
+      )
+    )
+      throw new Error(
+        "The semantic workflow contains unresolved or cyclic dependencies.",
+      );
+    const reuse = validatedWorkflowReuse(request);
+    const intents: import("../types").AgentActionIntent[] = [];
+    for (const [
+      index,
+      intent,
+    ] of request.classifiedIntent.actionIntents.entries()) {
+      const resolvedIntent = reuse?.reuse.actions.some(
+        (link) => link.actionIndex === index,
+      )
+        ? intent
+        : await attempt(index, intent.operation, () =>
+            resolveDescriptiveTargets(
+              this.gateway,
+              request,
+              intent,
+              this.references,
+            ),
+          );
+      // Keep index alignment for dependsOn and destinationFrom; skipped
+      // entries produce no obligations below.
+      intents.push(resolvedIntent ?? intent);
+    }
+    if (
+      request.classifiedIntent.semantic.reading.coverage === "exhaustive" &&
+      !intents.some((intent) => intent.operation === "read_full")
+    ) {
+      intents.push({
+        operation: "read_full",
+        capability: "zotero.read",
+        proofDomain: "zotero_state",
+        coverage: "all",
+        targetKind: "papers",
+        constraints: { readMode: "full" },
+      });
+    }
     const writeDisposition =
       request.classifiedIntent?.writeDisposition ||
       (intents.length ? "required" : "none");
@@ -313,21 +477,135 @@ export class ActionContractService {
       );
     }
     const contractId = createContractId(request);
+    const reusedActions = new Map(
+      (reuse?.reuse.actions || []).map((link) => [
+        link.actionIndex,
+        reuse!.checkpoint.contract.obligations.filter(
+          (obligation, position) =>
+            (obligation.sourceActionIndex ?? position) ===
+            link.previousActionIndex,
+        ),
+      ]),
+    );
+    const collectionCreations = new Map<number, AgentActionObligation[]>();
+    for (const [index, intent] of intents.entries()) {
+      if (skipped.has(index)) continue;
+      if (intent.operation !== "create_collection") continue;
+      const created =
+        reusedActions.get(index) ||
+        (await attempt(index, intent.operation, () =>
+          resolveScope(this.gateway, request, intent, [], this.references),
+        ));
+      if (!created) continue;
+      collectionCreations.set(
+        index,
+        created.map((obligation, offset) => ({
+          ...obligation,
+          id: `${contractId}:creation:${index}:${offset}`,
+          sourceActionIndex: index,
+        })),
+      );
+    }
     const resolved: AgentActionObligation[] = [];
-    for (const intent of intents) {
-      resolved.push(...(await resolveScope(this.gateway, request, intent)));
+    for (const [index, intent] of intents.entries()) {
+      if (skipped.has(index)) continue;
+      const obligations =
+        collectionCreations.get(index) ||
+        reusedActions.get(index) ||
+        (await attempt(index, intent.operation, () =>
+          resolveScope(
+            this.gateway,
+            request,
+            intent,
+            [...collectionCreations.values()].flat(),
+            this.references,
+            index,
+          ),
+        ));
+      if (!obligations) continue;
+      const dependencies = actionDependencies(intent).filter(
+        (dependency) => !skipped.has(dependency),
+      );
+      resolved.push(
+        ...obligations.map((obligation) => ({
+          ...obligation,
+          dependsOn: dependencies.length ? dependencies : undefined,
+          contentFrom: intent.contentFrom,
+          sourceActionIndex: index,
+        })),
+      );
+    }
+    if (reuse)
+      for (const obligation of resolved) {
+        if (!obligation.destinationCreation) continue;
+        const oldId = obligation.destinationCreation.obligationId;
+        const old = reuse.checkpoint.contract.obligations.find(
+          (entry) => entry.id === oldId,
+        );
+        const link = reuse.reuse.actions.find(
+          (entry) => entry.previousActionIndex === old?.sourceActionIndex,
+        );
+        const creation = link
+          ? collectionCreations.get(link.actionIndex)?.[0]
+          : undefined;
+        if (old && !creation)
+          throw new Error(
+            "The reused destination creation has no current workflow owner.",
+          );
+        if (creation)
+          obligation.destinationCreation = {
+            ...obligation.destinationCreation,
+            obligationId: creation.id,
+          };
+      }
+    // The contract's own copy of the intent is what material production reads,
+    // so a skipped action must not remain a prerequisite or an evidence source
+    // there: the output falls back to the papers already in turn context.
+    const frozenIntent: import("../types").ClassifiedTurnIntent = JSON.parse(
+      JSON.stringify(request.classifiedIntent),
+    );
+    for (const output of frozenIntent.semantic?.materialOutputs || []) {
+      const sourceActionIndexes = output.sourceActionIndexes.filter(
+        (index) => !skipped.has(index),
+      );
+      const afterActions = output.afterActions.filter(
+        (index) => !skipped.has(index),
+      );
+      if (
+        sourceActionIndexes.length === output.sourceActionIndexes.length &&
+        afterActions.length === output.afterActions.length
+      )
+        continue;
+      output.sourceActionIndexes = sourceActionIndexes;
+      output.afterActions = afterActions;
+      assumptions.push(
+        `Material "${output.id}" will draw on the papers in context because its requested source could not be resolved.`,
+      );
     }
     return {
-      version: 2,
+      version: 4,
       id: contractId,
+      intent: frozenIntent,
+      hardConstraints: JSON.parse(
+        JSON.stringify(request.classifiedIntent.semantic.constraints),
+      ),
       writeDisposition,
       interpretationSource:
-        request.classifiedIntent?.actionInterpretationSource ||
-        "deterministic_fallback",
+        request.classifiedIntent?.actionInterpretationSource || "semantic",
       obligations: resolved.map((obligation, index) => ({
         ...obligation,
-        id: `${contractId}:obligation:${index}`,
+        id: obligation.id.startsWith(`${contractId}:creation:`)
+          ? obligation.id
+          : `${contractId}:obligation:${index}`,
       })),
+      ...(assumptions.length ? { assumptions } : {}),
+      ...(skipped.size
+        ? {
+            skippedActions: [...skipped.entries()]
+              .sort(([left], [right]) => left - right)
+              .map(([actionIndex, operation]) => ({ actionIndex, operation })),
+          }
+        : {}),
     };
   }
 
@@ -342,13 +620,16 @@ export class ActionContractService {
         status: "open",
         verifiedTargetIds: [],
         unresolvedTargetIds:
-          obligation.targetBoundary && obligation.scopeRole !== "destination"
+          obligation.targetBoundary &&
+          (obligation.scopeRole !== "destination" ||
+            obligation.destinationCreation)
             ? obligation.targetBoundary.frozenTargetIds.map(itemTarget)
             : [],
         journalStepIds: [],
         failureReasons: [],
       })),
       appliedReceiptKeys: [],
+      authorizationGrants: [],
       updatedAt: Date.now(),
     };
   }
@@ -411,12 +692,21 @@ export class ActionContractService {
     progress.updatedAt = Date.now();
   }
 
+  resolveWorkflowContract(
+    contract: AgentActionContract | undefined,
+    progress?: AgentActionProgressLedger,
+  ) {
+    return contract
+      ? resolveCreatedDestinations(this.gateway, contract, progress)
+      : undefined;
+  }
+
   async prepare(
     tool: AgentToolDefinition<any, any>,
     input: unknown,
     context?: AgentToolContext,
   ): Promise<PreparedActionExecution> {
-    return await prepareActionExecution(tool, input, this.gateway, context);
+    return await prepareActionExecution(tool, input, context);
   }
 
   async validateScope(
@@ -429,8 +719,13 @@ export class ActionContractService {
     } = {},
   ): Promise<ScopeValidationFailure | null> {
     if (!contract) return null;
+    contract = resolveCreatedDestinations(
+      this.gateway,
+      contract,
+      options.progress,
+    );
     if (
-      prepared.mutability === "write" &&
+      prepared.executionClass === "external_effect" &&
       !prepared.proposals.length &&
       (!prepared.hasExplicitAdapter || options.concreteWrite)
     ) {
@@ -438,42 +733,45 @@ export class ActionContractService {
         "Write-capable invocation rejected: the tool did not produce a typed action proposal.",
         contract,
         prepared,
+        undefined,
+        undefined,
+        "missing_typed_proposal",
       );
     }
     if (!prepared.proposals.length) return null;
-    const hasWriteProposal = prepared.proposals.some(
-      (proposal) => proposal.operation !== "read_full",
-    );
-    if (hasWriteProposal && contract.writeDisposition !== "required") {
-      return failure(
-        contract.writeDisposition === "uncertain"
-          ? "Write blocked because the user intent is uncertain and requires clarification."
-          : "Write blocked because this request authorizes no mutations.",
-        contract,
-        prepared,
-      );
-    }
     if (!contract.obligations.length) {
       return failure(
-        "Write blocked because the required-write contract contains no valid obligations.",
+        "The semantic intent contains no authorized action obligations.",
         contract,
         prepared,
+        undefined,
+        undefined,
+        "different_operation",
       );
     }
 
     for (const proposal of prepared.proposals) {
       const matches = matchingObligations(contract, proposal);
       if (!matches.length) {
+        const sameOperation = contract.obligations.filter(
+          (obligation) =>
+            obligation.operation === proposal.operation &&
+            obligation.proofDomain === proposal.proofDomain,
+        );
         return failure(
-          `Action ${proposal.operation} in ${proposal.proofDomain} does not match any authorized obligation.`,
+          sameOperation.length
+            ? `Action ${proposal.operation} has different parameters from the resolved request. Expected one of ${JSON.stringify(sameOperation.map((obligation) => obligation.parameters || {}))}; received ${JSON.stringify(proposal.parameters || {})}. Resolve this discrepancy before execution.`
+            : `Action ${proposal.operation} in ${proposal.proofDomain} does not match any authorized obligation.`,
           contract,
           prepared,
           proposal.requestedTargets.length
             ? proposal.requestedTargets
             : [proposal.operation],
+          undefined,
+          sameOperation.length ? "different_parameters" : "different_operation",
         );
       }
-      const openMatches = matches.filter((obligation) =>
+      let openMatches = matches.filter((obligation) =>
         obligationIsUnresolved(options.progress, obligation.id),
       );
       if (!openMatches.length) {
@@ -491,8 +789,30 @@ export class ActionContractService {
           prepared,
           proposal.requestedTargets,
           [],
+          "closed_obligation",
         );
       }
+      const dependencies = openMatches.map((obligation) => ({
+        obligation,
+        issue: workflowDependencyIssue(
+          contract!,
+          obligation,
+          proposal,
+          options.progress,
+        ),
+      }));
+      openMatches = dependencies
+        .filter((entry) => !entry.issue)
+        .map((entry) => entry.obligation);
+      if (!openMatches.length)
+        return failure(
+          dependencies.map((entry) => entry.issue).join(" "),
+          contract,
+          prepared,
+          proposal.requestedTargets,
+          [],
+          "workflow_dependency",
+        );
       for (const obligation of openMatches) {
         if (isSourceCollectionItemObligation(obligation)) continue;
         const prefix = obligation.constraints?.tagPrefix;
@@ -506,6 +826,7 @@ export class ActionContractService {
               .filter((tag) => !tag.startsWith(prefix))
               .map((tag) => `tag:${tag}`),
             [],
+            "hard_constraint",
           );
         }
       }
@@ -553,6 +874,63 @@ export class ActionContractService {
           (target) => !authorizedUnion.has(target),
         );
         if (rejected.length) {
+          const currentByObligation = await Promise.all(
+            assignedSourceCollections.map(async (obligation) => {
+              const scope = obligation.scope!;
+              const currentTargets = await listScopeTargetIds(this.gateway, {
+                libraryID: scope.libraryID,
+                collectionId: scope.collectionId,
+                collectionPath: scope.collectionPath,
+                targetKind: obligation.targetKind,
+                includeDescendants: scope.includeDescendants,
+              });
+              return { obligation, currentTargets };
+            }),
+          );
+          const amendable = currentByObligation.find(
+            ({ obligation, currentTargets }) => {
+              const boundary = obligation.targetBoundary!;
+              const delta = targetDelta(
+                boundary.frozenTargetIds,
+                currentTargets,
+              );
+              const rejectedIds = numericItemTargets(rejected);
+              const requestedIds = numericItemTargets(requestedItems);
+              const requiredIds = [
+                ...unresolvedBoundaryItemIds(obligation, options.progress),
+                ...delta.added,
+              ];
+              return (
+                delta.added.length > 0 &&
+                delta.removed.length === 0 &&
+                rejectedIds.every((itemId) => delta.added.includes(itemId)) &&
+                requiredIds.every((itemId) => requestedIds.includes(itemId))
+              );
+            },
+          );
+          if (amendable) {
+            const boundary = amendable.obligation.targetBoundary!;
+            const delta = targetDelta(
+              boundary.frozenTargetIds,
+              amendable.currentTargets,
+            );
+            return failure(
+              "Action scope includes newly added targets from the approved source.",
+              contract,
+              prepared,
+              rejected,
+              [],
+              "added_target",
+              {
+                obligationId: amendable.obligation.id,
+                libraryID: boundary.libraryID,
+                boundaryKind: boundary.kind as "collection" | "library",
+                previousTargetIds: [...boundary.frozenTargetIds],
+                currentTargetIds: amendable.currentTargets,
+                addedTargetIds: delta.added,
+              },
+            );
+          }
           return failure(
             "Action scope rejected: proposed targets fall outside the assigned source-collection union.",
             contract,
@@ -571,18 +949,15 @@ export class ActionContractService {
             targetKind: obligation.targetKind,
             includeDescendants: scope.includeDescendants,
           });
-          if (
-            !sameArrayValues(
-              currentTargets.map(String),
-              boundary.frozenTargetIds.map(String),
-            )
-          ) {
+          const delta = targetDelta(boundary.frozenTargetIds, currentTargets);
+          if (delta.added.length || delta.removed.length) {
             return failure(
               "Frozen target scope changed after planning; refresh and retry before mutating.",
               contract,
               prepared,
               [],
               boundary.frozenTargetIds.map(itemTarget),
+              "stale_scope",
             );
           }
         }
@@ -590,40 +965,7 @@ export class ActionContractService {
       for (const obligation of openMatches.filter(
         (entry) => !isSourceCollectionItemObligation(entry),
       )) {
-        if (!obligation.targetBoundary) continue;
         const scope = obligation.scope;
-        const boundary = obligation.targetBoundary;
-        const currentTargets =
-          boundary.kind === "collection" && scope
-            ? await listScopeTargetIds(this.gateway, {
-                libraryID: scope.libraryID,
-                collectionId: scope.collectionId,
-                collectionPath: scope.collectionPath,
-                targetKind: obligation.targetKind,
-                includeDescendants: scope.includeDescendants,
-              })
-            : boundary.kind === "library"
-              ? await listCurrentLibraryTargetIds(this.gateway, {
-                  libraryID: boundary.libraryID,
-                  targetKind: obligation.targetKind,
-                })
-              : boundary.frozenTargetIds.filter((itemId) =>
-                  Boolean(this.gateway.getItem(itemId)),
-                );
-        if (
-          !sameArrayValues(
-            currentTargets.map(String),
-            boundary.frozenTargetIds.map(String),
-          )
-        ) {
-          return failure(
-            "Frozen target scope changed after planning; refresh and retry before mutating.",
-            contract,
-            prepared,
-            [],
-            boundary.frozenTargetIds.map(itemTarget),
-          );
-        }
         if (obligation.scopeRole === "destination" && scope) {
           if (!proposal.destinationCollectionIds.includes(scope.collectionId)) {
             return failure(
@@ -634,12 +976,87 @@ export class ActionContractService {
               [`collection:${scope.collectionId}`],
             );
           }
-          continue;
         }
+        if (!obligation.targetBoundary) continue;
+        const boundary = obligation.targetBoundary;
         const expected = new Set(boundary.frozenTargetIds.map(itemTarget));
         const rejected = proposal.requestedTargets.filter(
           (target) => target.startsWith("item:") && !expected.has(target),
         );
+        if (boundary.kind === "selection" && rejected.length) {
+          return failure(
+            "Action scope rejected: an exact selected target set is fixed.",
+            contract,
+            prepared,
+            rejected,
+            [],
+            "fixed_selection",
+          );
+        }
+        const currentTargets =
+          scope &&
+          obligation.scopeRole !== "destination" &&
+          (boundary.kind === "collection" || boundary.kind === "selection")
+            ? (
+                await listScopeTargetIds(this.gateway, {
+                  libraryID: scope.libraryID,
+                  collectionId: scope.collectionId,
+                  collectionPath: scope.collectionPath,
+                  targetKind: obligation.targetKind,
+                  includeDescendants: scope.includeDescendants,
+                })
+              ).filter(
+                (id) =>
+                  boundary.kind === "collection" ||
+                  boundary.frozenTargetIds.includes(id),
+              )
+            : boundary.kind === "library"
+              ? await listCurrentLibraryTargetIds(this.gateway, {
+                  libraryID: boundary.libraryID,
+                  targetKind: obligation.targetKind,
+                })
+              : boundary.frozenTargetIds.filter((itemId) =>
+                  Boolean(this.gateway.getItem(itemId)),
+                );
+        const delta = targetDelta(boundary.frozenTargetIds, currentTargets);
+        if (delta.added.length || delta.removed.length) {
+          const requestedIds = numericItemTargets(proposal.requestedTargets);
+          const proposalCoversCurrent = [
+            ...unresolvedBoundaryItemIds(obligation, options.progress),
+            ...delta.added,
+          ].every((itemId) => requestedIds.includes(itemId));
+          if (
+            boundary.kind !== "selection" &&
+            delta.added.length > 0 &&
+            delta.removed.length === 0 &&
+            proposalCoversCurrent
+          ) {
+            return failure(
+              "Action scope includes newly added targets from the approved source.",
+              contract,
+              prepared,
+              delta.added.map(itemTarget),
+              [],
+              "added_target",
+              {
+                obligationId: obligation.id,
+                libraryID: boundary.libraryID,
+                boundaryKind: boundary.kind,
+                previousTargetIds: [...boundary.frozenTargetIds],
+                currentTargetIds: currentTargets,
+                addedTargetIds: delta.added,
+              },
+            );
+          }
+          return failure(
+            "Frozen target scope changed after planning; refresh and retry before mutating.",
+            contract,
+            prepared,
+            [],
+            boundary.frozenTargetIds.map(itemTarget),
+            "stale_scope",
+          );
+        }
         if (rejected.length) {
           return failure(
             "Action scope rejected: proposed targets fall outside the frozen boundary.",
@@ -647,6 +1064,9 @@ export class ActionContractService {
             prepared,
             rejected,
             [],
+            boundary.kind === "selection"
+              ? "fixed_selection"
+              : "scope_mismatch",
           );
         }
       }
@@ -662,6 +1082,9 @@ export class ActionContractService {
         progressStatus === "cancelled" ||
         !obligation.targetBoundary ||
         obligation.scopeRole === "destination" ||
+        !prepared.proposals.some((proposal) =>
+          matchingObligations(contract, proposal).includes(obligation),
+        ) ||
         options.allowPartialCoverage
       ) {
         continue;
@@ -692,6 +1115,7 @@ export class ActionContractService {
           prepared,
           [],
           missing,
+          "incomplete_batch",
         );
       }
     }
@@ -710,7 +1134,13 @@ export class ActionContractService {
       actionEvidence?: AgentActionEvidence[];
     },
     progress?: AgentActionProgressLedger,
+    amendment?: Readonly<{
+      obligationId: string;
+      addedTargetIds: readonly number[];
+    }>,
   ): AgentActionReceipt[] {
+    if (contract)
+      contract = resolveCreatedDestinations(this.gateway, contract, progress);
     return prepared.proposals.flatMap((proposal) => {
       let obligations: Array<AgentActionObligation | undefined>;
       if (!contract) {
@@ -739,7 +1169,13 @@ export class ActionContractService {
         (obligation) => {
           const receipt = this.finalizeProposal(proposal, obligation, params);
           return obligation && isSourceCollectionItemObligation(obligation)
-            ? narrowReceiptToBoundary(receipt, obligation)
+            ? narrowReceiptToBoundary(
+                receipt,
+                obligation,
+                amendment?.obligationId === obligation.id
+                  ? amendment.addedTargetIds
+                  : [],
+              )
             : receipt;
         },
       );
@@ -785,10 +1221,18 @@ export class ActionContractService {
       };
     }
     if (!params.ok) {
+      const noteState = (
+        innermostToolResult(params.content)?.noteChange as
+          | { state?: string }
+          | undefined
+      )?.state;
       return {
         ...base,
         verification: "unverified",
-        status: "failed",
+        status:
+          noteState === "unverified" || noteState === "mismatch"
+            ? "unverified"
+            : "failed",
         appliedTargets: [],
         alreadySatisfiedTargets: [],
       };
@@ -814,11 +1258,25 @@ export class ActionContractService {
             ? "already_satisfied"
             : "applied"
           : "unverified",
-        requestedTargets: [proof.target],
+        requestedTargets: proposal.expectedFiles?.map(
+          (file) => `file:${file.path}`,
+        ) || [proof.target],
         appliedTargets:
-          proof.verified && params.effect !== "none" ? [proof.target] : [],
+          proof.verified && params.effect !== "none"
+            ? proposal.requestedTargets
+            : [],
         alreadySatisfiedTargets:
-          proof.verified && params.effect === "none" ? [proof.target] : [],
+          proof.verified && params.effect === "none"
+            ? proposal.requestedTargets
+            : [],
+        verifiedFacts: proof.verified
+          ? [
+              ...base.verifiedFacts,
+              ...(proposal.expectedFiles || []).map(
+                (file) => `${file.path}:sha256:${file.contentHash}`,
+              ),
+            ]
+          : base.verifiedFacts,
         reasons: [...base.reasons, ...(proof.reason ? [proof.reason] : [])],
       };
     }
@@ -841,16 +1299,29 @@ export class ActionContractService {
         params.content,
         this.gateway,
       );
+      // The obligation concerns the parent paper; the created note is its
+      // output. Native verification above has already checked that exact
+      // parent relationship and the stored content before crediting coverage.
+      const coveredTargets =
+        proposal.operation === "note_create" &&
+        proposal.parameters?.targetItemId
+          ? [itemTarget(proposal.parameters.targetItemId)]
+          : verification.targets;
       return verification.targets
         ? {
             ...base,
             verification: "verified",
             status: params.effect === "none" ? "already_satisfied" : "applied",
-            requestedTargets: verification.targets,
-            appliedTargets:
-              params.effect === "none" ? [] : verification.targets,
+            requestedTargets: coveredTargets!,
+            verifiedFacts: [
+              ...base.verifiedFacts,
+              ...(proposal.operation === "note_create"
+                ? verification.targets.map((target) => `created_note:${target}`)
+                : []),
+            ],
+            appliedTargets: params.effect === "none" ? [] : coveredTargets!,
             alreadySatisfiedTargets:
-              params.effect === "none" ? verification.targets : [],
+              params.effect === "none" ? coveredTargets! : [],
           }
         : {
             ...base,

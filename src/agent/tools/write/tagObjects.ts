@@ -59,7 +59,7 @@ export function createUpdateLibraryTagTool(
           libraryID: { type: "number" },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -152,7 +152,7 @@ export function createUpdateLibraryTagTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {
@@ -200,7 +200,7 @@ export function createSetItemTagsTool(
           },
         },
       },
-      mutability: "write",
+      executionClass: "external_effect",
       requiresConfirmation: true,
     },
 
@@ -226,9 +226,19 @@ export function createSetItemTagsTool(
       }
       const assignments: SetItemTagsOperation["assignments"] = [];
       for (const raw of args.assignments) {
-        if (!validateObject<Record<string, unknown>>(raw)) continue;
+        if (!validateObject<Record<string, unknown>>(raw))
+          return fail(
+            "Every assignment must contain an itemId and tags array.",
+          );
         const itemId = normalizePositiveInt(raw.itemId);
-        if (!itemId || !Array.isArray(raw.tags)) continue;
+        if (
+          !itemId ||
+          !Array.isArray(raw.tags) ||
+          raw.tags.some((tag) => typeof tag !== "string")
+        )
+          return fail(
+            "Every assignment must have a valid itemId and an array of tag strings; no targets were changed.",
+          );
         assignments.push({
           itemId,
           tags: raw.tags
@@ -276,7 +286,7 @@ export function createSetItemTagsTool(
       return ok(input);
     },
 
-    planMutation: (input, context) =>
+    planInvocation: (input, context) =>
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {

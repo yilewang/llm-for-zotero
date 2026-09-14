@@ -1,42 +1,46 @@
-import { AgentRuntime } from "./runtime";
-import { createBuiltInToolRegistry } from "./tools";
-import { ZoteroGateway } from "./services/zoteroGateway";
-import { PdfService } from "./services/pdfService";
-import { PdfPageService } from "./services/pdfPageService";
-import { RetrievalService } from "./services/retrievalService";
-import { initAgentTraceStore, getAgentRunTrace } from "./store/traceStore";
-import { initConversationMemoryStore } from "./store/conversationMemory";
-import { initAgentTranscriptStore } from "./store/transcriptStore";
-import { initAgentToolResultHandleStore } from "./store/toolResultHandles";
-import { initAgentEvidenceStore } from "./context/cacheManagement";
-import { initAgentCoverageStore } from "./context/coverageLedger";
-import { createAgentModelAdapter } from "./model/factory";
-import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
-import { createLibraryBatchTool } from "./tools/write/libraryBatch";
-import {
-  initAgentBatchJobStore,
-  sweepInterruptedBatchJobs,
-} from "./store/batchJobStore";
-import { initAgentChangeJournal } from "./store/changeJournal";
-import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
-import type {
-  AgentConfirmationResolution,
-  AgentEvent,
-  AgentRuntimeRequestInput,
-  AgentToolDefinition,
-} from "./types";
+import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
 import {
   getConversationSystemPref,
   isClaudeCodeModeEnabled,
 } from "../claudeCode/prefs";
-import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
 import {
   getClaudeBridgeRuntime,
   resetClaudeBridgeRuntime,
 } from "../claudeCode/runtime";
 import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
+import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
+import { undoNoteChange } from "./actions/undoNoteChange";
+import { initAgentEvidenceStore } from "./context/cacheManagement";
+import { initAgentCoverageStore } from "./context/coverageLedger";
 import { setLibraryOverviewGateway } from "./context/libraryOverview";
+import { initPlanDocumentStore } from "./documents/store";
+import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
+import { createAgentModelAdapter } from "./model/factory";
+import { initAgentPlanStore } from "./plans/store";
+import { initResearchStore } from "./research/store";
+import { AgentRuntime } from "./runtime";
+import { PdfPageService } from "./services/pdfPageService";
+import { PdfService } from "./services/pdfService";
+import { RetrievalService } from "./services/retrievalService";
+import { ZoteroGateway } from "./services/zoteroGateway";
+import {
+  initAgentBatchJobStore,
+  sweepInterruptedBatchJobs,
+} from "./store/batchJobStore";
+import { initAgentChangeJournal } from "./store/changeJournal";
+import { initConversationMemoryStore } from "./store/conversationMemory";
+import { initAgentToolResultHandleStore } from "./store/toolResultHandles";
+import { getAgentRunTrace, initAgentTraceStore } from "./store/traceStore";
+import { initAgentTranscriptStore } from "./store/transcriptStore";
+import { createBuiltInToolRegistry } from "./tools";
+import { createLibraryBatchTool } from "./tools/write/libraryBatch";
+import type {
+  AgentConfirmationResolution,
+  AgentEvent,
+  AgentRuntimeRequestInput,
+  AgentToolDefinition,
+} from "./types";
 
 let runtime: AgentRuntime | null = null;
 let runtimeInitTask: Promise<AgentRuntime> | null = null;
@@ -86,6 +90,12 @@ async function createAgentSubsystemRuntime(
   await initAgentEvidenceStore();
   assertAgentInitCurrent(generation);
   await initAgentCoverageStore();
+  assertAgentInitCurrent(generation);
+  await initAgentPlanStore();
+  assertAgentInitCurrent(generation);
+  await initResearchStore();
+  assertAgentInitCurrent(generation);
+  await initPlanDocumentStore();
   assertAgentInitCurrent(generation);
 
   const zoteroGateway = new ZoteroGateway();
@@ -193,6 +203,11 @@ export function getSharedZoteroGateway(): ZoteroGateway {
 
 export function getAgentApi() {
   return {
+    undoNoteChange: (card: import("./types").AgentNoteChangeResultCard) => {
+      if (!_toolRegistry || !_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
+      return undoNoteChange(_toolRegistry, _zoteroGateway, card);
+    },
     // ── Core turn API ──────────────────────────────────────────────────────
     runTurn: (
       request: AgentRuntimeRequestInput,
@@ -237,7 +252,11 @@ export function getAgentApi() {
     /**
      * Register a custom tool with the agent.  The tool is available immediately
      * for all subsequent `runTurn` calls.  Registering a tool whose name
-     * matches an existing built-in tool replaces that built-in.
+     * matches an existing built-in tool replaces that built-in after validation.
+     * This synchronous call throws before registration when a model-visible
+     * input schema lacks an object root or uses root-level `oneOf`, `allOf`, or
+     * `anyOf`. Put alternatives inside properties and enforce cross-field rules
+     * in the tool's `validate()` function.
      *
      * See `src/agent/extensionApi.ts` for the full set of types and helpers
      * available to third-party tool authors.
@@ -252,7 +271,7 @@ export function getAgentApi() {
      *     name: "my_custom_tool",
      *     description: "Does something custom",
      *     inputSchema: { type: "object", properties: { query: { type: "string" } } },
-     *     mutability: "read",
+     *     executionClass: "read",
      *     requiresConfirmation: false,
      *   },
      *   validate: (args) => {
@@ -265,7 +284,7 @@ export function getAgentApi() {
      */
     registerTool: <TInput, TResult>(
       tool: AgentToolDefinition<TInput, TResult>,
-    ) => getAgentRuntime().registerTool(tool),
+    ): void => getAgentRuntime().registerTool(tool),
 
     /**
      * Remove a previously registered tool by name.  Returns `true` if the
@@ -312,7 +331,7 @@ export function getAgentApi() {
      *   saveNote: true,
      * }, {
      *   libraryID: Zotero.Libraries.userLibraryID,
-     *   confirmationMode: "auto_approve",
+     *   confirmationMode: "automatic",
      *   onProgress: (event) => console.log(event),
      *   requestConfirmation: async (_id, _action) => ({ approved: true }),
      * });
@@ -355,7 +374,12 @@ export function getAgentApi() {
         confirmationMode: opts.confirmationMode ?? "native_ui",
         onProgress: opts.onProgress ?? (() => {}),
         requestConfirmation:
-          opts.requestConfirmation ?? (async () => ({ approved: true })),
+          opts.requestConfirmation ??
+          (async () => {
+            throw new Error(
+              "This action requires review, but no confirmation surface is available.",
+            );
+          }),
         llm: opts.llm,
         requestContext: opts.requestContext,
         signal: opts.signal,

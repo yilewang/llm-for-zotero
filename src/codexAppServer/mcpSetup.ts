@@ -5,6 +5,7 @@ import {
   getZoteroMcpServerName,
   getZoteroMcpServerUrl,
   invokeRegisteredZoteroMcpEndpoint,
+  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../agent/mcp/server";
@@ -15,6 +16,8 @@ import {
   resolveCodexAppServerBinaryPath,
   type CodexAppServerProcess,
 } from "../utils/codexAppServerProcess";
+import { resolveCodexPermissionExecution } from "./permissionProfiles";
+import { resolveCodexNativeRuntimeCwd } from "./runtimeCwd";
 
 const DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const MCP_PREFLIGHT_SUCCESS_TTL_MS = 5 * 60 * 1000;
@@ -58,6 +61,9 @@ type SetupParams = {
   scopeToken?: string;
   required?: boolean;
   rawPdfMode?: boolean;
+  permissionExecution?: Awaited<
+    ReturnType<typeof resolveCodexPermissionExecution>
+  >;
 };
 
 type PreflightCacheEntry =
@@ -524,6 +530,10 @@ export async function probeCodexZoteroMcpThroughAppServer(
   params: SetupParams = {},
 ): Promise<void> {
   const proc = await resolveProcess(params);
+  const cwd = resolveCodexNativeRuntimeCwd();
+  const permissionExecution =
+    params.permissionExecution ??
+    (await resolveCodexPermissionExecution({ proc, cwd }));
   codexMcpProbeSequence += 1;
   const profileSignature = `connection_probe_${Date.now().toString(36)}_${codexMcpProbeSequence}`;
   const threadConfig = buildCodexZoteroMcpThreadConfig({
@@ -534,8 +544,8 @@ export async function probeCodexZoteroMcpThroughAppServer(
   try {
     const threadResult = await proc.sendRequest("thread/start", {
       ephemeral: true,
-      approvalPolicy: "never",
-      sandbox: "read-only",
+      ...permissionExecution.thread,
+      ...(cwd ? { cwd } : {}),
       config: threadConfig.config,
     });
     threadId = extractCodexAppServerThreadId(threadResult);
@@ -678,7 +688,7 @@ export function buildClaudeZoteroMcpAllowedToolNames(
   return (
     rawPdfMode
       ? getZoteroMcpDirectPdfToolNames()
-      : getZoteroMcpAllowedToolNames()
+      : [...ZOTERO_MCP_SAFE_READ_TOOL_NAMES]
   ).map((toolName) => `mcp__${serverName}__${toolName}`);
 }
 

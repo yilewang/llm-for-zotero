@@ -430,45 +430,57 @@ describe("workflow: startup chat restoration", function () {
     );
   });
 
-  it("preserves the active library conversation after navigating into a paper and back", async function () {
+  it("preserves a standalone note's own conversation after navigating into a paper and back", async function () {
     const standaloneNote = await api.createStandaloneNoteFixture({
-      noteHtml: "<p>Workflow library navigation note.</p>",
+      noteHtml: "<p>Workflow note navigation note.</p>",
     });
     const paper = await api.createPaperWithPdfFixture({
-      title: "Workflow Library Navigation Paper",
-      pdfTitle: "Workflow Library Navigation PDF",
+      title: "Workflow Note Navigation Paper",
+      pdfTitle: "Workflow Note Navigation PDF",
     });
     fixtures.push(standaloneNote, paper);
 
     const startupPanel = await api.renderStartupPanelForItem(
       standaloneNote.noteItemId,
     );
-    const marker = "workflow active library conversation marker";
-    const activeLibrary = await api.seedPanelStoredUserMessage(
+    const marker = "workflow active note conversation marker";
+    const activeNote = await api.seedPanelStoredUserMessage(
       startupPanel.panelId,
       marker,
     );
+    // A note never borrows the library or a parent paper: it chats in its
+    // own individual-item conversation keyed to the note.
     assert.equal(
-      activeLibrary.conversationKind,
-      "global",
-      diagnosticsMessage(activeLibrary),
+      activeNote.conversationKind,
+      "paper",
+      diagnosticsMessage(activeNote),
+    );
+    assert.equal(
+      activeNote.noteId,
+      standaloneNote.noteItemId,
+      diagnosticsMessage(activeNote),
     );
 
     await api.renderStartupPanelForItem(paper.parentItemId);
     const returnedPanel = await api.renderStartupPanelForItem(
       standaloneNote.noteItemId,
     );
-    const returnedLibrary = await api.getDiagnostics(returnedPanel.panelId);
+    const returnedNote = await api.getDiagnostics(returnedPanel.panelId);
 
     assert.equal(
-      returnedLibrary.conversationKey,
-      activeLibrary.conversationKey,
-      diagnosticsMessage(returnedLibrary),
+      returnedNote.conversationKey,
+      activeNote.conversationKey,
+      diagnosticsMessage(returnedNote),
+    );
+    assert.equal(
+      returnedNote.noteId,
+      standaloneNote.noteItemId,
+      diagnosticsMessage(returnedNote),
     );
     assert.include(
-      returnedLibrary.messageText || "",
+      returnedNote.messageText || "",
       marker,
-      diagnosticsMessage(returnedLibrary),
+      diagnosticsMessage(returnedNote),
     );
   });
 
@@ -502,7 +514,7 @@ describe("workflow: startup chat restoration", function () {
     );
   });
 
-  it("labels standalone item-note windows as ordinary paper chat", async function () {
+  it("titles standalone item-note windows with the note itself, not its parent paper", async function () {
     const fixture = await api.createItemNoteFixture({
       title: "Workflow Standalone Item Note Parent",
       pdfTitle: "Workflow Standalone Item Note PDF",
@@ -516,15 +528,20 @@ describe("workflow: startup chat restoration", function () {
       "paper",
       diagnosticsMessage(diagnostics),
     );
-    assert.equal(diagnostics.paperTabText, "Paper chat");
+    assert.equal(
+      diagnostics.conversationKind,
+      "paper",
+      diagnosticsMessage(diagnostics),
+    );
+    assert.equal(diagnostics.paperTabText, "Note chat");
     assert.equal(
       diagnostics.titleText,
-      "Workflow Standalone Item Note Parent",
+      "Workflow item note title",
       diagnosticsMessage(diagnostics),
     );
   });
 
-  it("labels standalone standalone-note windows as ordinary library chat", async function () {
+  it("titles standalone standalone-note windows with the note itself, not library chat", async function () {
     const fixture = await api.createStandaloneNoteFixture({
       noteHtml: "<p>Workflow standalone note title</p><p>Body.</p>",
     });
@@ -533,13 +550,18 @@ describe("workflow: startup chat restoration", function () {
     const diagnostics = await api.openStandaloneForItem(fixture.noteItemId);
     assert.equal(
       diagnostics.activeTab,
-      "open",
+      "paper",
       diagnosticsMessage(diagnostics),
     );
-    assert.equal(diagnostics.openTabText, "Library chat");
+    assert.equal(
+      diagnostics.conversationKind,
+      "paper",
+      diagnosticsMessage(diagnostics),
+    );
+    assert.equal(diagnostics.paperTabText, "Note chat");
     assert.equal(
       diagnostics.titleText,
-      "Library chat",
+      "Workflow standalone note title",
       diagnosticsMessage(diagnostics),
     );
   });

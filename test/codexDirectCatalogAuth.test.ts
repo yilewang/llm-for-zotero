@@ -36,11 +36,11 @@ function catalogResponse(model = "gpt-codex"): Response {
           visibility: "list",
           priority: 10,
           context_window: 200000,
-          default_reasoning_level: "medium",
+          default_reasoning_level: "ultra",
           supported_reasoning_levels: [
             { effort: "low", description: "Faster" },
             { effort: "medium", description: "Balanced" },
-            { effort: "ultra", description: "Hidden in direct mode" },
+            { effort: "ultra", description: "Automatic task delegation" },
           ],
         },
       ],
@@ -117,7 +117,7 @@ describe("Codex Direct auth and catalog", function () {
     assert.equal(models[2].supportedReasoningEfforts[0].value, "low");
   });
 
-  it("uses the fixed catalog endpoint and filters Ultra from direct choices", async function () {
+  it("uses the fixed catalog endpoint and preserves all advertised reasoning choices", async function () {
     let requestedUrl = "";
     const snapshot = await loadCodexDirectCatalog({
       authPath: TEST_AUTH_PATH,
@@ -131,9 +131,14 @@ describe("Codex Direct auth and catalog", function () {
     assert.equal(requestedUrl, CODEX_DIRECT_MODELS_URL);
     assert.equal(snapshot.models[0].contextWindow, 200000);
     assert.deepEqual(getCodexDirectReasoningChoices("GPT-CODEX"), [
-      { value: "auto", label: "Auto (Medium)" },
+      { value: "auto", label: "Auto (Ultra)" },
       { value: "low", label: "Low", description: "Faster" },
       { value: "medium", label: "Medium", description: "Balanced" },
+      {
+        value: "ultra",
+        label: "Ultra",
+        description: "Automatic task delegation",
+      },
     ]);
     assert.throws(
       () => assertCodexDirectModelAvailable("saved-missing"),

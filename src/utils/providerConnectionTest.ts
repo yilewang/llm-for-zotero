@@ -27,6 +27,8 @@ import {
   waitForCodexAppServerTurnCompletion,
 } from "./codexAppServerProcess";
 import { probeCodexZoteroMcpThroughAppServer } from "../codexAppServer/mcpSetup";
+import { resolveCodexPermissionExecution } from "../codexAppServer/permissionProfiles";
+import { resolveCodexNativeRuntimeCwd } from "../codexAppServer/runtimeCwd";
 import {
   CODEX_DIRECT_RESPONSES_URL,
   fetchWithCodexAuth,
@@ -310,10 +312,16 @@ export async function runCodexAppServerConnectionTest(params: {
     processOptions,
   );
   try {
+    const cwd = resolveCodexNativeRuntimeCwd();
+    const permissionExecution = await resolveCodexPermissionExecution({
+      proc,
+      cwd,
+    });
     let mcpConnected = false;
     if (params.testZoteroMcp) {
       await probeCodexZoteroMcpThroughAppServer({
         proc,
+        permissionExecution,
       });
       mcpConnected = true;
     }
@@ -323,7 +331,8 @@ export async function runCodexAppServerConnectionTest(params: {
         const threadResp = await proc.sendRequest("thread/start", {
           model: params.modelName || undefined,
           ephemeral: true,
-          approvalPolicy: "never",
+          ...permissionExecution.thread,
+          ...(cwd ? { cwd } : {}),
         });
         const threadId = extractCodexAppServerThreadId(threadResp);
         if (!threadId) {
@@ -333,6 +342,7 @@ export async function runCodexAppServerConnectionTest(params: {
         const turnResp = await proc.sendRequest("turn/start", {
           threadId,
           input: [{ type: "text", text: "Say OK" }],
+          ...permissionExecution.turn,
         });
         const turnId = extractCodexAppServerTurnId(turnResp);
         if (!turnId) {

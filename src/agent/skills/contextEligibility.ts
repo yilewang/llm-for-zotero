@@ -1,6 +1,6 @@
 import type { SelectedTextSource } from "../../shared/types";
 import type { AgentRuntimeRequest } from "../types";
-import type { AgentSkill } from "./skillLoader";
+import type { AgentSkill, SkillContextKind } from "./skillLoader";
 
 export type SkillRoutingRequest = Pick<
   AgentRuntimeRequest,
@@ -10,6 +10,9 @@ export type SkillRoutingRequest = Pick<
   | "selectedTexts"
   | "turnPaperScope"
   | "classifiedIntent"
+  | "conversationKind"
+  | "screenshots"
+  | "attachments"
 >;
 
 export type SkillRequestContext = {
@@ -18,22 +21,13 @@ export type SkillRequestContext = {
   hasPaperSet: boolean;
   hasLibraryCorpus: boolean;
   hasNoteContext: boolean;
-  corpusTargetedByText: boolean;
-  singlePaperTargetedByText: boolean;
+  hasVisualInput: boolean;
+  availableContexts: SkillContextKind[];
 };
 
 export type SkillContextEligibility =
   | { eligible: true }
   | { eligible: false; reason: string };
-
-const CORPUS_TARGET_PATTERN =
-  /\b(?:this|the|current|selected)\s+(?:collection|tag)\b|\bmy\s+library\b|\b(?:whole|entire)\s+library\b|\ball\s+(?:papers?|items?|articles?|studies)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:papers?|articles?|studies|findings?|research|literature|collection|tag|library)\b|\b(?:these|selected)\s+(?:papers?|articles?|studies)\b/i;
-
-const LIBRARY_CORPUS_INTENT_PATTERN =
-  /\b(?:library|collection|tag|all papers?|all items?|my papers?|whole|entire)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:research|papers?|articles?|studies|findings?|literature)\b/i;
-
-const SINGLE_PAPER_TARGET_PATTERN =
-  /\b(?:this|the|current|selected)\s+(?:paper|article|study|document)\b/i;
 
 function addPaperKey(
   keys: Set<string>,
@@ -62,23 +56,30 @@ export function resolveSkillRequestContext(
   request: SkillRoutingRequest,
 ): SkillRequestContext {
   const paperKeys = new Set<string>();
-  for (const entry of request.turnPaperScope.papers) {
+  for (const entry of request.turnPaperScope?.papers || []) {
     addPaperKey(paperKeys, entry.paper);
   }
 
-  const userText = request.userText || "";
   const uniquePaperCount = paperKeys.size;
-  const corpusTargetedByText = CORPUS_TARGET_PATTERN.test(userText);
-  const singlePaperTargetedByText = SINGLE_PAPER_TARGET_PATTERN.test(userText);
   const hasLibraryCorpus = Boolean(
-    request.turnPaperScope.collections.length ||
-    request.turnPaperScope.tags.length ||
-    LIBRARY_CORPUS_INTENT_PATTERN.test(userText),
+    request.conversationKind === "global" ||
+    request.turnPaperScope?.collections.length ||
+    request.turnPaperScope?.tags.length,
   );
   const hasNoteContext = Boolean(
     request.activeNoteContext ||
     hasNoteTextSelection(request.selectedTextSources),
   );
+  const hasVisualInput = Boolean(
+    request.screenshots?.length ||
+    request.attachments?.some((attachment) => attachment.category === "image"),
+  );
+  const availableContexts: SkillContextKind[] = [];
+  if (uniquePaperCount === 1) availableContexts.push("single-paper");
+  if (uniquePaperCount >= 2) availableContexts.push("paper-set");
+  if (hasLibraryCorpus) availableContexts.push("library-corpus");
+  if (hasNoteContext) availableContexts.push("note");
+  if (hasVisualInput) availableContexts.push("visual-input");
 
   return {
     uniquePaperCount,
@@ -86,21 +87,33 @@ export function resolveSkillRequestContext(
     hasPaperSet: uniquePaperCount >= 2,
     hasLibraryCorpus,
     hasNoteContext,
-    corpusTargetedByText,
-    singlePaperTargetedByText,
+    hasVisualInput,
+    availableContexts,
   };
 }
 
 export function getSkillContextEligibility(
-  _skill: AgentSkill,
-  _request: SkillRoutingRequest,
+  skill: AgentSkill,
+  request: SkillRoutingRequest,
 ): SkillContextEligibility {
-  return { eligible: true };
+  if (skill.contexts.includes("any")) return { eligible: true };
+  const available = new Set(
+    resolveSkillRequestContext(request).availableContexts,
+  );
+  if (skill.contexts.some((context) => available.has(context))) {
+    return { eligible: true };
+  }
+  return {
+    eligible: false,
+    reason: `Requires ${skill.contexts.join(" or ")}; available context is ${
+      available.size ? Array.from(available).join(", ") : "none"
+    }`,
+  };
 }
 
 export function isSkillContextEligible(
-  _skill: AgentSkill,
-  _request: SkillRoutingRequest,
+  skill: AgentSkill,
+  request: SkillRoutingRequest,
 ): boolean {
-  return true;
+  return getSkillContextEligibility(skill, request).eligible;
 }

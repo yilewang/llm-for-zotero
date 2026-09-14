@@ -81,6 +81,11 @@ export async function resolveNormalChatFigureInputs(params: {
     const extractionService = new PdfFigureExtractionService(pageService);
     const result = await extractionService.extractFigures({
       input: { query: params.query },
+      selection: {
+        labels: figureReferences.map((reference) => `Figure ${reference.id}`),
+        kind: "figures",
+        includeSupplementary: false,
+      },
       context: {
         request: {
           conversationKey: 0,

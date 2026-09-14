@@ -1,3 +1,13 @@
+import {
+  createNoteConversationItem,
+  getNoteConversation,
+} from "../src/modules/contextPanel/noteEditing/conversationItem";
+import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
+import {
+  selectedPaperContextCache,
+  initializedConversationComposeContextKeys,
+} from "../src/modules/contextPanel/state";
+import { clearAllRefContextState } from "../src/modules/contextPanel/contexts/paperContextState";
 import { assert } from "chai";
 import {
   createHistoryLifecycleController,
@@ -6,6 +16,7 @@ import {
 import { createGlobalPortalItem } from "../src/modules/contextPanel/portalScope";
 import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
 import {
+  activePaperConversationByPaper,
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
@@ -290,7 +301,7 @@ function createControllerHarness(
     isClaudeConversationSystem: () => system === "claude_code",
     isCodexConversationSystem: () => system === "codex",
     isRuntimeConversationSystem: () => system !== "upstream",
-    isNoteSession: () => false,
+    isNoteSession: () => Boolean(currentItem?.isNote?.()),
     isGlobalMode: () => mode === "global",
     isPaperMode: () => mode === "paper",
     isWebChatMode: () => false,
@@ -325,7 +336,10 @@ function createControllerHarness(
     clearSelectedFileState: () => undefined,
     clearSelectedTextState: () => undefined,
     clearDraftInputState: () => undefined,
-    clearTransientComposeStateForItem: () => undefined,
+    clearTransientComposeStateForItem: (key) => {
+      initializedConversationComposeContextKeys.delete(key);
+      clearAllRefContextState(key);
+    },
     scheduleAttachmentGc: () => undefined,
     notifyConversationHistoryChanged: () => undefined,
     renderWebChatHistoryMenu: async () => undefined,
@@ -349,6 +363,7 @@ function createControllerHarness(
   return {
     controller: createHistoryLifecycleController(deps),
     item: currentItem,
+    getCurrentItem: () => currentItem!,
     historyUndo: historyUndo as unknown as FakeElement,
     historyUndoText: historyUndoText as unknown as FakeElement,
     topToast: topToast as unknown as FakeElement,
@@ -430,6 +445,88 @@ describe("historyLifecycleController fork behavior", function () {
       globalScope.ztoolkit = originalZtoolkit;
     } else {
       delete globalScope.ztoolkit;
+    }
+  });
+
+  it("starts and restores note conversations through the history lifecycle without carrying context or adopting library chat", async function () {
+    const note = {
+      id: 4070,
+      libraryID: LIBRARY_ID,
+      isNote: () => true,
+      isAttachment: () => false,
+      getNoteTitle: () => "Note",
+      getField: () => "",
+    } as unknown as Zotero.Item;
+    const oldKey = note.id;
+    const newKey = 1500000701;
+    const oldEntry = makeCatalogEntry({
+      conversationKey: oldKey,
+      kind: "paper",
+      paperItemID: note.id,
+      userTurnCount: 1,
+    });
+    const newEntry = makeCatalogEntry({
+      conversationKey: newKey,
+      kind: "paper",
+      paperItemID: note.id,
+      userTurnCount: 0,
+    });
+    newEntry.title = "";
+    const originalList = conversationRepository.listCatalogEntries;
+    const originalTouch = conversationRepository.touchEmptyCatalogActivity;
+    conversationRepository.getCatalogEntry = async (params) =>
+      params.conversationKey === oldKey ? oldEntry : newEntry;
+    conversationRepository.ensureCatalogEntry = async (params) =>
+      params.conversationKey === oldKey ? oldEntry : newEntry;
+    conversationRepository.listCatalogEntries = async () => [newEntry];
+    conversationRepository.loadMessages = async () => [];
+    conversationRepository.touchEmptyCatalogActivity = async () => undefined;
+    chatHistory.set(oldKey, [makeMessage("user", "Old note conversation", 1)]);
+    chatHistory.set(newKey, []);
+    loadedConversationKeys.add(oldKey);
+    loadedConversationKeys.add(newKey);
+    selectedPaperContextCache.set(oldKey, [
+      { itemId: 10, contextItemId: 11, title: "Old reference" },
+    ]);
+    const harness = createControllerHarness({
+      item: createNoteConversationItem(note, "upstream", oldKey),
+      basePaperItem: note,
+      mode: "paper",
+    });
+    try {
+      assert.isTrue(
+        await harness.controller.createAndSwitchPaperConversation(true),
+      );
+      assert.equal(getConversationKey(harness.getCurrentItem()), newKey);
+      assert.isUndefined(
+        selectedPaperContextCache.get(harness.getCurrentItem().id),
+      );
+      assert.isFalse(
+        await harness.controller.switchGlobalConversation(
+          SOURCE_CONVERSATION_KEY,
+        ),
+      );
+      assert.equal(getConversationKey(harness.getCurrentItem()), newKey);
+      assert.isTrue(await harness.controller.switchPaperConversation(oldKey));
+      assert.equal(getConversationKey(harness.getCurrentItem()), oldKey);
+      assert.isDefined(
+        getNoteConversation(harness.getCurrentItem()),
+        "returning to the default note chat must retain a stable surface binding",
+      );
+      assert.equal(
+        selectedPaperContextCache.get(harness.getCurrentItem().id)?.[0].title,
+        "Old reference",
+      );
+    } finally {
+      conversationRepository.listCatalogEntries = originalList;
+      conversationRepository.touchEmptyCatalogActivity = originalTouch;
+      activePaperConversationByPaper.delete(`${LIBRARY_ID}:${note.id}`);
+      for (const key of [oldKey, newKey]) {
+        chatHistory.delete(key);
+        loadedConversationKeys.delete(key);
+        selectedPaperContextCache.delete(key);
+        initializedConversationComposeContextKeys.delete(key);
+      }
     }
   });
 

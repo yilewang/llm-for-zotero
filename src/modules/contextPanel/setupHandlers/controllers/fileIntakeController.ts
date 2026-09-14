@@ -11,6 +11,10 @@ type StatusLevel = "ready" | "warning" | "error";
 type FileIntakeControllerDeps = {
   body: Element;
   getItem: () => Zotero.Item | null;
+  captureOwnership?: (
+    item: Zotero.Item,
+    operation: string,
+  ) => (() => boolean) | null;
   getCurrentModel: () => string;
   getCurrentPdfSupport: () => PdfSupport;
   isScreenshotUnsupportedModel: (modelName: string) => boolean;
@@ -186,6 +190,10 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
   const processIncomingFiles = async (incomingFiles: File[]) => {
     const item = deps.getItem();
     if (!item || !incomingFiles.length) return;
+    const ownership = deps.captureOwnership
+      ? deps.captureOwnership(item, "file-intake")
+      : () => true;
+    if (!ownership) return;
     const imageUnsupported = deps.isScreenshotUnsupportedModel(
       deps.getCurrentModel(),
     );
@@ -231,6 +239,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
           const optimizedDataUrl = panelWindow
             ? await deps.optimizeImageDataUrl(panelWindow, dataUrl)
             : dataUrl;
+          if (!ownership()) return;
           nextImages.push(optimizedDataUrl);
           addedCount += 1;
         } catch (err) {
@@ -247,6 +256,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       ) {
         try {
           textContent = await readFileAsText(deps.body, normalizedFile);
+          if (!ownership()) return;
         } catch (err) {
           ztoolkit.log("LLM: Failed to read text upload", err);
         }
@@ -256,10 +266,12 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       let contentHash: string | undefined;
       try {
         const buffer = await readFileAsArrayBuffer(deps.body, normalizedFile);
+        if (!ownership()) return;
         const persisted = await deps.persistAttachmentBlob(
           fileName,
           new Uint8Array(buffer),
         );
+        if (!ownership()) return;
         storedPath = persisted.storedPath;
         contentHash = persisted.contentHash;
       } catch (err) {
@@ -297,6 +309,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       }
     }
 
+    if (!ownership()) return;
     if (nextImages.length) {
       deps.selectedImageCache.set(item.id, nextImages);
     }

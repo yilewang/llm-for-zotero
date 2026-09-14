@@ -128,14 +128,18 @@ describe("chatStore note contexts", function () {
       role: "assistant",
       text: "Here is the answer",
       timestamp: 100,
+      completionStatus: "incomplete",
+      completionReason: "output_limit",
       contextTokens: 1234,
       contextWindow: 200000,
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 35);
-    assert.equal(insert.params[33], 1234);
-    assert.equal(insert.params[34], 200000);
+    assert.lengthOf(insert.params, 38);
+    assert.equal(insert.params[29], "incomplete");
+    assert.equal(insert.params[30], "output_limit");
+    assert.equal(insert.params[35], 1234);
+    assert.equal(insert.params[36], 200000);
   });
 
   it("persists forced skill ids when appending a user message", async function () {
@@ -182,6 +186,37 @@ describe("chatStore note contexts", function () {
     const messages = await loadConversation(42, 20);
 
     assert.deepEqual(messages[0]?.forcedSkillIds, ["write-note"]);
+  });
+
+  it("restores an incomplete response marker after conversation reload", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_chat_messages") &&
+            sql.includes("ORDER BY timestamp ASC")
+          ) {
+            return [
+              {
+                role: "assistant",
+                text: "Partial answer",
+                timestamp: 100,
+                completionStatus: "incomplete",
+                completionReason: "output_limit",
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const messages = await loadConversation(42, 20);
+
+    assert.equal(messages[0]?.completionStatus, "incomplete");
+    assert.equal(messages[0]?.completionReason, "output_limit");
+    assert.equal(messages[0]?.text, "Partial answer");
   });
 
   it("loads persisted PDF identities without constructing paths", async function () {

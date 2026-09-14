@@ -26,6 +26,9 @@ describe("ZoteroGateway current note edits", function () {
         noteHtml = html;
       },
       saveTx: async () => {},
+      reload: async () => {
+        noteHtml = savedHtml;
+      },
     };
 
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {

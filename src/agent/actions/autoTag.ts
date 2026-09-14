@@ -1,3 +1,4 @@
+import { innermostToolResult } from "../contracts/toolResultEnvelope";
 import type {
   AgentAction,
   ActionExecutionContext,
@@ -391,10 +392,7 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
         break;
       }
 
-      const mutateContent = mutateResult.content as Record<string, unknown>;
-      const resultObj = mutateContent.result as
-        | Record<string, unknown>
-        | undefined;
+      const resultObj = innermostToolResult(mutateResult.content);
       const taggedCount =
         mutateResult.ok && resultObj ? Number(resultObj.updatedCount || 0) : 0;
       const mutateError = readToolResultError(mutateResult);

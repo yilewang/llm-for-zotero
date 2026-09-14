@@ -166,13 +166,15 @@ describe("quote card UI contract", function () {
     assert.include(css, "background: var(--llm-quote-card-surface)");
   });
 
-  it("defines noninteractive amber styling for not-source quote cards", function () {
+  it("separates neutral unresolved styling from amber not-source cards", function () {
     const css = source("addon/content/zoteroPane.css");
 
     assert.include(css, '.llm-quote-card[data-quote-status="not-source"]');
-    assert.include(css, '.llm-quote-card[data-quote-status="unverified"]');
+    assert.include(css, '.llm-quote-card[data-quote-status="unresolved"]');
     assert.include(css, "--llm-quote-card-rail: #f59e0b");
+    assert.include(css, "--llm-quote-card-rail: var(--fill-tertiary)");
     assert.include(css, "font-style: normal");
+    assert.include(css, '[data-quote-interactive="false"]');
     assert.include(css, "cursor: default");
     assert.include(
       css,
@@ -203,7 +205,11 @@ describe("quote card UI contract", function () {
     );
 
     assert.include(renderSource, "wrapper.dataset.quoteStatus = status");
-    assert.include(renderSource, 'const interactive = status === "verified"');
+    assert.include(
+      renderSource,
+      'const interactive = params.interactive ?? status === "verified"',
+    );
+    assert.include(renderSource, "wrapper.dataset.quoteInteractive");
     assert.include(
       renderSource,
       'wrapper.dataset.expanded = interactive ? "false" : "true"',
@@ -211,7 +217,7 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "if (!interactive) {");
     assert.include(
       renderSource,
-      'type QuoteCardStatus = "verified" | "unverified" | "not-source"',
+      'type QuoteCardStatus = "verified" | "unresolved" | "not-source"',
     );
     assert.notInclude(
       renderSource,
@@ -589,7 +595,7 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "wrapper.dataset.quoteOccurrenceId");
   });
 
-  it("starts a cited legacy quote occurrence verified and clickable", function () {
+  it("starts a cited legacy quote occurrence unresolved and clickable", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
@@ -605,11 +611,15 @@ describe("quote card UI contract", function () {
 
     assert.isAtLeast(untrustedStart, 0);
     assert.isAbove(untrustedEnd, untrustedStart);
-    assert.include(untrustedBranch, 'status: "verified"');
-    assert.notInclude(untrustedBranch, 'status: "unverified"');
+    assert.include(untrustedBranch, 'status: "unresolved"');
+    assert.include(untrustedBranch, "interactive: true");
+    assert.include(
+      renderSource,
+      "Source match incomplete; click to search the paper.",
+    );
   });
 
-  it("starts a cited legacy fallback blockquote verified and clickable", function () {
+  it("starts a cited legacy fallback blockquote unresolved and clickable", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
@@ -625,7 +635,11 @@ describe("quote card UI contract", function () {
     assert.isAtLeast(fallbackStart, 0);
     assert.isAbove(fallbackEnd, fallbackStart);
     assert.include(renderSource, 'const status = params.status || "verified"');
-    assert.notInclude(fallbackRenderer, 'status: "unverified"');
+    assert.include(fallbackRenderer, 'status: "unresolved"');
+    assert.include(
+      fallbackRenderer,
+      "interactive: Boolean(params.citationContent || params.citationLabel)",
+    );
     assert.notInclude(fallbackRenderer, 'status: "not-source"');
   });
 

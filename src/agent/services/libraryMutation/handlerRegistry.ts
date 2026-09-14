@@ -1,5 +1,7 @@
 import type { LibraryMutationOperation } from "./contracts";
 import { canonicalJsonEqual } from "./canonicalJson";
+import { renderMarkdownForNote } from "../../../utils/markdown";
+import { stripNoteHtml } from "../../../utils/noteText";
 import {
   defineHandler,
   type LibraryMutationHandlerRegistry,
@@ -24,6 +26,7 @@ export const libraryMutationHandlers = {
     targetItemIds: (operation) => (operation.itemId ? [operation.itemId] : []),
     actionParameters: (operation) => ({
       metadataFields: Object.keys(operation.metadata),
+      metadataValues: operation.metadata,
     }),
     stateSections: ["items"],
     replay: "state-aware",
@@ -180,7 +183,8 @@ export const libraryMutationHandlers = {
           ? operation.assignments.map((assignment) => assignment.itemId)
           : operation.itemIds || [],
       ).size,
-    affectedCount: (_operation, result) => resultCount(result, "movedCount"),
+    affectedCount: (_operation, result) =>
+      resultCount(result, "movedCount") + resultCount(result, "addedCount"),
     atomize: (operation) =>
       operation.assignments?.length
         ? onePer(operation, operation.assignments, (assignment) => ({
@@ -228,7 +232,11 @@ export const libraryMutationHandlers = {
     }),
     stateSections: ["collections"],
     deferredInverse: () => true,
-    createdCollectionIds: (result) => resultId(result, "collectionId"),
+    createdCollectionIds: (result) =>
+      resultId(
+        (result as { collection?: unknown } | null)?.collection,
+        "collectionId",
+      ),
     executionDomain: "collection-search-structure",
     postconditionSatisfied: (operation, state) =>
       Boolean(
@@ -345,7 +353,7 @@ export const libraryMutationHandlers = {
     targetScope: "none",
     actionParameters: (operation) => ({
       savedSearchId: operation.savedSearchId,
-      permanent: operation.permanent,
+      permanent: operation.permanent === true,
     }),
     additionalActionTargets: (operation) => [
       `saved-search:${operation.savedSearchId}`,
@@ -628,7 +636,7 @@ export const libraryMutationHandlers = {
     actionParameters: (operation) => ({
       collectionId: operation.collectionId,
       deleteItems: operation.deleteItems,
-      permanent: operation.permanent,
+      permanent: operation.permanent === true,
     }),
     additionalActionTargets: (operation) => [
       `collection:${operation.collectionId}`,
@@ -663,7 +671,7 @@ export const libraryMutationHandlers = {
     actionParameters: (operation) => ({
       noteMode: "create",
       targetItemId: operation.targetItemId,
-      expectedText: operation.content,
+      expectedText: stripNoteHtml(renderMarkdownForNote(operation.content)),
     }),
     stateSections: ["items"],
     deferredInverse: () => true,
@@ -716,6 +724,7 @@ export const libraryMutationHandlers = {
   }),
   trash_items: defineHandler("trash_items", {
     actionCapability: "zotero.trash",
+    actionParameters: () => ({ permanent: false }),
     targetScope: "items",
     targetItemIds: (operation) => operation.itemIds,
     stateSections: ["items"],

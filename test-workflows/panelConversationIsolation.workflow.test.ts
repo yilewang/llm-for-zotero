@@ -125,4 +125,123 @@ describe("workflow: cross-paper conversation isolation", function () {
       diagnosticsMessage(result),
     );
   });
+
+  for (const scenario of [
+    {
+      name: "pointer history search",
+      activation: "pointer" as const,
+      repetitions: 5,
+    },
+    {
+      name: "delayed keyboard history search",
+      activation: "keyboard" as const,
+      delaySelection: true,
+      repetitions: 5,
+    },
+    {
+      name: "ordinary history row",
+      activation: "history-row" as const,
+      repetitions: 1,
+    },
+  ]) {
+    it(`never mounts paper B into reader A after ${scenario.name}`, async function () {
+      const selectedText = `workflow reader A selected text ${Date.now()}`;
+      const paperA = await api.createPaperWithPdfFixture({
+        title: `Workflow History Isolation Paper A ${scenario.name}`,
+        pdfTitle: "Workflow History Isolation PDF A",
+        pages: [selectedText],
+      });
+      const paperB = await api.createPaperWithPdfFixture({
+        title: `Workflow History Isolation Paper B ${scenario.name}`,
+        pdfTitle: "Workflow History Isolation PDF B",
+        pages: ["paper B must never appear in reader A"],
+      });
+      fixtures.push(paperA, paperB);
+      const panelA = await api.renderPanelForItem(paperA.pdfAttachmentId);
+      const panelB = await api.renderPanelForItem(paperB.pdfAttachmentId);
+      for (
+        let repetition = 1;
+        repetition <= scenario.repetitions;
+        repetition += 1
+      ) {
+        const markerSuffix = `${Date.now()}-${repetition}`;
+        const paperAMarker = `paper-a-history-marker-${markerSuffix}`;
+        const paperBMarker = `paper-b-history-marker-${markerSuffix}`;
+        const promptMarker = `paper-a-send-marker-${markerSuffix}`;
+
+        const result = await api.exerciseCrossPaperHistoryReturnIsolation({
+          panelAId: panelA.panelId,
+          panelBId: panelB.panelId,
+          paperAItemId: paperA.parentItemId,
+          paperAAttachmentItemId: paperA.pdfAttachmentId,
+          paperBItemId: paperB.parentItemId,
+          paperAMarker,
+          paperBMarker,
+          promptMarker,
+          selectedText,
+          activation: scenario.activation,
+          delaySelection: scenario.delaySelection,
+        });
+
+        assert.notEqual(
+          result.paperAConversationKey,
+          result.paperBConversationKey,
+          diagnosticsMessage(result),
+        );
+        if (scenario.activation !== "history-row") {
+          assert.equal(
+            result.selectedLibraryItemID,
+            paperB.parentItemId,
+            diagnosticsMessage(result),
+          );
+        }
+        assert.isFalse(
+          result.foreignMutationObserved,
+          diagnosticsMessage(result),
+        );
+        assert.equal(
+          result.panelAConversationKey,
+          result.paperAConversationKey,
+          diagnosticsMessage(result),
+        );
+        assert.equal(
+          result.panelABasePaperItemID,
+          paperA.parentItemId,
+          diagnosticsMessage(result),
+        );
+        assert.equal(
+          result.panelARawContextItemID,
+          paperA.pdfAttachmentId,
+          diagnosticsMessage(result),
+        );
+        assert.include(
+          result.panelAMessageText,
+          paperAMarker,
+          diagnosticsMessage(result),
+        );
+        assert.notInclude(
+          result.panelAMessageText,
+          paperBMarker,
+          diagnosticsMessage(result),
+        );
+        assert.equal(
+          result.requestConversationKey,
+          result.paperAConversationKey,
+          diagnosticsMessage(result),
+        );
+        assert.equal(
+          result.requestItemID,
+          paperA.parentItemId,
+          diagnosticsMessage(result),
+        );
+        assert.isTrue(result.addTextStoredForA, diagnosticsMessage(result));
+        assert.isFalse(result.addTextStoredForB, diagnosticsMessage(result));
+        assert.equal(
+          result.paperBMessageRowsAfter,
+          result.paperBMessageRowsBefore,
+          diagnosticsMessage(result),
+        );
+      }
+    });
+  }
 });

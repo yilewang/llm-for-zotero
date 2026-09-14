@@ -372,14 +372,29 @@ describe("user skill bootstrap upgrades", function () {
 
     const canonicalWriteNote = files[writeNotePath];
     assert.notInclude(canonicalWriteNote, "OLD MANAGED CONTENT");
-    assert.include(canonicalWriteNote, "USER CUSTOMIZATIONS COME FIRST.");
+    assert.include(
+      canonicalWriteNote,
+      "USER CUSTOMIZATIONS COME FIRST among formatting defaults.",
+    );
     assert.include(canonicalWriteNote, "## Your customizations");
     assert.include(
       canonicalWriteNote,
       "Path pattern: `{papertitle}/{papertitle}.md`",
     );
-    // Tracks the shipped write-note version; bumped to 9 when the skill's
-    // "folder means filesystem" guidance was corrected for issue #374.
-    assert.equal(parseSkill(canonicalWriteNote).version, 9);
+    // Version 10 consumes semantic destinations and host-managed exports.
+    assert.equal(parseSkill(canonicalWriteNote).version, 10);
+  });
+
+  it("migrates declarative supersession without replacing legacy match metadata", function () {
+    const old = BUILTIN_SKILL_FILES["evidence-based-qa.md"]
+      .replace("version: 7", "version: 6\nmatch: legacy fixture only")
+      .replace("supersedes: simple-paper-qa\n", "");
+    const patched = patchSkillFrontmatter(
+      old,
+      BUILTIN_SKILL_FILES["evidence-based-qa.md"],
+    );
+    assert.isString(patched);
+    assert.include(patched as string, "supersedes: simple-paper-qa");
+    assert.include(patched as string, "match:");
   });
 });

@@ -9,6 +9,7 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
+import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   normalizeTarget,
   normalizeTargets,
@@ -98,7 +99,7 @@ export function createSearchPaperTool(
           },
         },
       },
-      mutability: "read",
+      executionClass: "read",
       requiresConfirmation: false,
     },
     presentation: {
@@ -144,6 +145,12 @@ export function createSearchPaperTool(
       }
       return ok(input);
     },
+    planInvocation: () =>
+      readOnlyInvocationPlan({
+        domains: ["zotero_library", "filesystem"],
+        reason:
+          "Paper search reads indexed passages through host-owned retrieval services.",
+      }),
     execute: async (input, context) => {
       const papers = resolveDefaultTargets(
         input.target,
@@ -176,6 +183,7 @@ export function createSearchPaperTool(
 
       return {
         results: await retrievalService.retrieveEvidence({
+          intent: context.request.classifiedIntent,
           papers,
           question: input.question || context.request.userText,
           queryVariants: input.queryVariants,
