@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import type { PaperContextRef } from "../../shared/types";
 import type {
   ResolvedAttachmentItemMetadata,
@@ -246,7 +247,7 @@ function readAttachment(item: Zotero.Item): ResolvedAttachmentMetadata {
     getFilename?: () => string;
   };
   const filename =
-    normalizeText(attachment.attachmentFilename) ||
+    normalizeText(readAttachmentFilename(attachment)) ||
     normalizeText(attachment.getFilename?.());
   const contentType = normalizeText(attachment.attachmentContentType);
   const parentItemId = normalizePositiveInt(item.parentID);

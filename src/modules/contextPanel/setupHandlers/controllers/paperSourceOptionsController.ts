@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../../../utils/attachmentFilename";
 import type { PaperContentSourceMode } from "../../types";
 import type { PdfSupport } from "../../../../providers";
 import { resolveContextAttachmentSupport } from "../../contextAttachmentSupport";
@@ -136,12 +137,7 @@ export function resolveMineruSourceOptionState(input: {
 const translateDefault = (text: string): string => text;
 
 function getAttachmentFilename(attachment: Zotero.Item): string {
-  return sanitizeText(
-    String(
-      (attachment as unknown as { attachmentFilename?: unknown })
-        .attachmentFilename || "",
-    ),
-  ).trim();
+  return sanitizeText(String(readAttachmentFilename(attachment) || "")).trim();
 }
 
 function getAttachmentCardTitle(attachment: Zotero.Item): string {

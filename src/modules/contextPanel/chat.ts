@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import {
   readNativeQuestions,
   buildNativeQuestionAction,
@@ -10218,9 +10219,7 @@ function normalizeAttachmentResourceText(value: unknown): string {
 }
 
 function getAttachmentFilename(item: Zotero.Item | null | undefined): string {
-  return normalizeAttachmentResourceText(
-    (item as unknown as { attachmentFilename?: unknown })?.attachmentFilename,
-  );
+  return normalizeAttachmentResourceText(readAttachmentFilename(item));
 }
 
 function getAttachmentContentType(

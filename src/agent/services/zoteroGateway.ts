@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import {
   libraryIndexService,
   normalizeLibraryIndexText,
@@ -634,10 +635,7 @@ function getPdfChildAttachments(item: Zotero.Item): Zotero.Item[] {
   if (!item?.isRegularItem?.()) return out;
   for (const attachmentId of item.getAttachments()) {
     const attachment = Zotero.Items.get(attachmentId) || null;
-    const filename = normalizeText(
-      (attachment as (Zotero.Item & { attachmentFilename?: string }) | null)
-        ?.attachmentFilename,
-    );
+    const filename = normalizeText(readAttachmentFilename(attachment));
     if (
       attachment &&
       attachment.isAttachment?.() &&
@@ -668,10 +666,7 @@ function resolveAttachmentTitle(
 ): string {
   const title = normalizeText(attachment.getField?.("title"));
   if (title) return title;
-  const filename = normalizeText(
-    (attachment as unknown as { attachmentFilename?: string })
-      .attachmentFilename,
-  );
+  const filename = normalizeText(readAttachmentFilename(attachment));
   if (filename) return filename;
   return total > 1 ? `PDF ${index + 1}` : "PDF";
 }
@@ -683,10 +678,7 @@ function resolveAnyAttachmentTitle(
 ): string {
   const title = normalizeText(attachment.getField?.("title"));
   if (title) return title;
-  const filename = normalizeText(
-    (attachment as unknown as { attachmentFilename?: string })
-      .attachmentFilename,
-  );
+  const filename = normalizeText(readAttachmentFilename(attachment));
   if (filename) return filename;
   const contentType = normalizeText(attachment.attachmentContentType);
   if (contentType) {
@@ -3127,7 +3119,7 @@ export class ZoteroGateway {
     const item = this.getItem(params.attachmentId);
     if (!item || !item.isAttachment?.()) return null;
     const filename = normalizeText(
-      (item as any).attachmentFilename || item.getField?.("title") || "",
+      readAttachmentFilename(item) || item.getField?.("title") || "",
     );
     const hasFile = !!(item as any).hasFile;
     const rawLinkMode = (item as any).attachmentLinkMode;
@@ -5927,7 +5919,7 @@ export class ZoteroGateway {
       };
     }
     const title = String(
-      (item as unknown as { attachmentFilename?: string }).attachmentFilename ||
+      readAttachmentFilename(item) ||
         item.getField?.("title") ||
         `Attachment ${params.attachmentId}`,
     );
@@ -5986,7 +5978,7 @@ export class ZoteroGateway {
         },
       ) => Promise<boolean | -1 | -2>;
     };
-    const previousName = String(attachment.attachmentFilename || "");
+    const previousName = String(readAttachmentFilename(attachment) || "");
 
     // A linked URL has no file, so "rename" can only mean the title. Handled
     // explicitly rather than by silently falling through, which is what made
@@ -6054,7 +6046,7 @@ export class ZoteroGateway {
       // `unique` may have appended a suffix, so report what the file is
       // actually called rather than what was requested.
       const actualName = String(
-        attachment.attachmentFilename || params.newName,
+        readAttachmentFilename(attachment) || params.newName,
       );
       return {
         attachmentId: params.attachmentId,
@@ -6401,7 +6393,7 @@ export class ZoteroGateway {
         const itemId = Number(attachmentItem.id);
         const title = String(
           attachmentItem.getField?.("title") ||
-            (attachmentItem as any).attachmentFilename ||
+            readAttachmentFilename(attachmentItem) ||
             filePath.split(/[\\/]/).pop() ||
             filePath,
         );

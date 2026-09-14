@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import {
   callEmbeddings,
   EmbeddingUnsupportedError,
@@ -277,12 +278,7 @@ async function readZoteroFulltextCache(item: Zotero.Item): Promise<string> {
 }
 
 function getAttachmentFilename(item: Zotero.Item): string {
-  return sanitizePdfText(
-    String(
-      (item as unknown as { attachmentFilename?: unknown })
-        .attachmentFilename || "",
-    ),
-  );
+  return sanitizePdfText(String(readAttachmentFilename(item) || ""));
 }
 
 function getAttachmentContentType(item: Zotero.Item): string {

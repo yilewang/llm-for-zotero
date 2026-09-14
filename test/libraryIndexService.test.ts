@@ -206,6 +206,42 @@ describe("LibraryIndexService", function () {
     };
   }
 
+  it("keeps cold indexing available when a linked attachment has a foreign path", async function () {
+    const fixture = installFixture({
+      topLevel: [
+        { id: 1, attachments: [11, 12], fields: { title: "Parent paper" } },
+      ],
+      children: [
+        {
+          id: 11,
+          kind: "attachment",
+          parentID: 1,
+          filename: "paper.pdf",
+          contentType: "application/pdf",
+        },
+        {
+          id: 12,
+          kind: "attachment",
+          parentID: 1,
+          contentType: "application/octet-stream",
+        },
+      ],
+    });
+    Object.defineProperties(fixture.itemById.get(12)!, {
+      attachmentFilename: {
+        get() {
+          throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+        },
+      },
+      attachmentPath: { value: "F:\\legacy\\paper.PDF" },
+    });
+    const snapshot = await service().getSnapshot(1);
+    assert.deepEqual(snapshot.topLevelItemOrder, [1]);
+    assert.deepEqual(snapshot.pdfAttachmentIdsByItemId.get(1), [11, 12]);
+    assert.lengthOf(snapshot.childAttachmentIdsByItemId.get(1), 2);
+    assert.equal(snapshot.attachmentById.get(12)?.filename, "paper.PDF");
+  });
+
   it("counts metadata-only regular items in collection browsing without counting notes or attachments", async function () {
     installFixture({
       topLevel: [

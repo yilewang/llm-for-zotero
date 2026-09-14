@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import type {
   ChatMessage,
   ChatParams,
@@ -326,10 +327,7 @@ function buildPaperRefFromRegularItem(
   const citationKey = readItemField(target, "citationKey") || undefined;
   const attachmentTitle =
     readItemField(attachment, "title") ||
-    sanitizeUnknownText(
-      (attachment as unknown as { attachmentFilename?: unknown })
-        .attachmentFilename,
-    ) ||
+    sanitizeUnknownText(readAttachmentFilename(attachment)) ||
     undefined;
   return {
     itemId: target.id,

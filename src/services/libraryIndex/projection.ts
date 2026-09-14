@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import { resolveContextAttachmentSupportFromMetadata } from "../../modules/contextPanel/contextAttachmentSupport";
 import { isMineruSyncPackageTitle } from "../../modules/contextPanel/mineruSync";
 import type {
@@ -208,10 +209,7 @@ function attachmentRecord(
   index: number,
   total: number,
 ): LibraryIndexAttachment {
-  const filename = text(
-    (attachment as Zotero.Item & { attachmentFilename?: unknown })
-      .attachmentFilename,
-  );
+  const filename = text(readAttachmentFilename(attachment));
   const contentType = text(attachment.attachmentContentType);
   const rawTitle = field(attachment, "title");
   const fallback = contentType

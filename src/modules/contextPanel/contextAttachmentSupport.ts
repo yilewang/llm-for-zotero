@@ -1,3 +1,4 @@
+import { readAttachmentFilename } from "../../utils/attachmentFilename";
 import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
 import type { ContextAttachmentSupport } from "./contextAttachmentTypes";
 export type {
@@ -13,9 +14,7 @@ function normalizeMetadataText(value: unknown): string {
 
 function getAttachmentFilename(item: Zotero.Item | null | undefined): string {
   if (!item?.isAttachment?.()) return "";
-  return normalizeMetadataText(
-    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename,
-  );
+  return normalizeMetadataText(readAttachmentFilename(item));
 }
 
 function getAttachmentContentType(
