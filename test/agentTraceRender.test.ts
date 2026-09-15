@@ -1074,6 +1074,49 @@ describe("agentTrace render", function () {
     }
   });
 
+  it("hides internal Claude runtime rebuild statuses across adapter rewordings", function () {
+    const statusTexts = [
+      "Checking the request against the attached context.",
+      "Initializing Claude session",
+      "Rebuilding Claude session after runtime change",
+      "Session signature mismatch detected. Retrying with a fresh Claude session.",
+      // Current adapter wording (cc-llm4zotero-adapter "Reform Claude session
+      // continuity").
+      "Claude runtime changed. Rebuilding runtime and resuming the existing Claude session.",
+      // Legacy adapter wording, kept in case an older bridge is still running.
+      "Claude runtime changed. Rebuilding this conversation on the new runtime while keeping local context.",
+      // The adapter has reworded this status once already; any future
+      // rewording with the same prefix must stay hidden too.
+      "Claude runtime changed. Recreating the runtime for this conversation.",
+      "Reading the methods section",
+    ];
+    const events: AgentRunEventRecord[] = statusTexts.map((text, index) => ({
+      runId: "claude-runtime-status",
+      seq: index + 1,
+      eventType: "status",
+      payload: { type: "status", text },
+      createdAt: index + 1,
+    }));
+    for (const streaming of [true, false]) {
+      const trace = renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 1,
+          runMode: "agent",
+          streaming,
+        },
+        events,
+      }) as unknown as FakeElement;
+      const visible = collectFakeText(trace);
+      for (const internal of statusTexts.slice(0, -1)) {
+        assert.notInclude(visible, internal);
+      }
+      assert.include(visible, "Reading the methods section");
+    }
+  });
+
   it("uses the established Plan button shape and centered label for Resume execution", function () {
     const trace = renderAgentTrace({
       doc: fakeDocument,

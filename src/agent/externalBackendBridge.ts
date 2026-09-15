@@ -40,6 +40,7 @@ import type { AgentRuntime } from "./runtime";
 import {
   addZoteroMcpToolActivityObserver,
   registerScopedZoteroMcpScope,
+  resolveConversationScopeToken,
   updateScopedZoteroMcpScope,
   type ZoteroMcpActiveScope,
   type ZoteroMcpToolActivityEvent,
@@ -1349,6 +1350,34 @@ function resolveFallbackLibraryId(
     selectedTagLibraryId ||
     userLibraryId
   );
+}
+
+/**
+ * Resolves the scope header token for a bridge turn.
+ *
+ * The adapter binds the MCP scope header when it creates the hot runtime and
+ * keeps sending it on resume, so a token that only lives for one turn changes
+ * the runtime's MCP config signature every turn and forces a full runtime
+ * rebuild.  A conversation-stable token lets every turn re-register its own
+ * scope under the same header value while the runtime stays hot.
+ */
+export function resolveClaudeBridgeMcpScopeToken(
+  request: Pick<AgentRuntimeRequest, "conversationKey" | "metadata">,
+  profileSignature: string,
+): string {
+  const requestMetadata =
+    request.metadata && typeof request.metadata === "object"
+      ? (request.metadata as Record<string, unknown>)
+      : {};
+  const instanceID =
+    typeof requestMetadata.conversationInstanceID === "string"
+      ? requestMetadata.conversationInstanceID.trim()
+      : "";
+  return resolveConversationScopeToken({
+    profileSignature,
+    conversationKey: request.conversationKey,
+    ...(instanceID ? { instanceID } : {}),
+  });
 }
 
 function buildClaudeZoteroMcpScope(
@@ -3378,7 +3407,12 @@ export function createExternalBackendBridgeRuntime(options: {
                 coreRuntime.resolveConfirmation(requestId, false);
               }
             };
-            const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
+            const scopedMcp = registerScopedZoteroMcpScope(mcpScope, {
+              token: resolveClaudeBridgeMcpScopeToken(
+                params.request,
+                profileSignature,
+              ),
+            });
             scopedMcpToken = scopedMcp.token;
             currentMcpScope = scopedMcp.getState;
             clearScopedMcpScope = scopedMcp.clear;

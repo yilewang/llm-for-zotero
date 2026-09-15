@@ -4163,8 +4163,9 @@ function isHiddenClaudeStartupStatus(text: string): boolean {
     text === "Rebuilding Claude session after runtime change" ||
     text ===
       "Session signature mismatch detected. Retrying with a fresh Claude session." ||
-    text ===
-      "Claude runtime changed. Rebuilding this conversation on the new runtime while keeping local context." ||
+    // The adapter reworded this status once already; match the prefix so any
+    // future rewording stays hidden instead of leaking into the trace.
+    /^Claude runtime changed\./i.test(text) ||
     /^Claude bridge URL:/i.test(text) ||
     text === "Claude bridge URL is empty. Falling back to local runtime."
   );

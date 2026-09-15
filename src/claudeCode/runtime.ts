@@ -15,6 +15,7 @@ import {
   type AgentRuntimeLike,
   type ExternalBridgeSessionInfo,
 } from "../agent/externalBackendBridge";
+import { releaseConversationScopeToken } from "../agent/mcp/server";
 import {
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -352,6 +353,23 @@ export async function invalidateClaudeConversationSessionWithinWriteLock(
     params.conversationKey,
     expectedInstanceID || undefined,
   );
+  // The bridge runtime binds the MCP scope header for the whole conversation,
+  // so its stable token dies with the session it scoped.  The profile is
+  // always available in Zotero, but keep bootstrap and test callers from
+  // failing before the application is ready.
+  let invalidationProfileSignature = "";
+  try {
+    invalidationProfileSignature = getClaudeProfileSignature();
+  } catch {
+    // Covered by the empty-string default above.
+  }
+  releaseConversationScopeToken({
+    ...(invalidationProfileSignature
+      ? { profileSignature: invalidationProfileSignature }
+      : {}),
+    conversationKey: params.conversationKey,
+    instanceID: expectedInstanceID || undefined,
+  });
   await clearClaudeConversationSessionMetadata(
     params.conversationKey,
     expectedProviderSessionId || undefined,
