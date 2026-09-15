@@ -20,7 +20,7 @@ import type {
 } from "./mineruBatchProcessor";
 import { getMineruItemDir } from "../services/mineru/mineruCache";
 import {
-  getMineruStatus,
+  getItemStatus,
   onProcessingStatusChange,
   type MineruStatus,
 } from "./mineruProcessingStatus";
@@ -53,6 +53,7 @@ import {
   buildMineruFilenameMatcher,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
+import { registerMineruManagerSelectionTarget } from "./mineruManagerNavigation";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -147,6 +148,37 @@ export function shouldShowMineruManagerItem(
   _item: MineruManagerVisibilityInput,
 ): boolean {
   return true;
+}
+
+export function resolveMineruManagerDisplayStatus(
+  availability: MineruItemEntry["availability"],
+  runtimeStatus: MineruStatus | undefined,
+): MineruStatus {
+  if (runtimeStatus === "processing") return "processing";
+  if (availability !== "missing") return "cached";
+  if (runtimeStatus === "failed") return "failed";
+  if (runtimeStatus === "cached") return "cached";
+  return "idle";
+}
+
+export type MineruCenteredScrollInput = {
+  scrollTop: number;
+  clientHeight: number;
+  scrollHeight: number;
+  containerTop: number;
+  targetTop: number;
+  targetHeight: number;
+};
+
+export function calculateMineruCenteredScrollTop(
+  input: MineruCenteredScrollInput,
+): number {
+  const targetTopInContent =
+    input.targetTop - input.containerTop + input.scrollTop;
+  const desiredTop =
+    targetTopInContent - (input.clientHeight - input.targetHeight) / 2;
+  const maxScrollTop = Math.max(0, input.scrollHeight - input.clientHeight);
+  return Math.min(maxScrollTop, Math.max(0, desiredTop));
 }
 
 export type MineruManagerSearchInput = Pick<
@@ -323,6 +355,7 @@ export async function registerMineruManagerScript(
   let itemSearchQuery = "";
   let itemSearchInput: HTMLInputElement | null = null;
   let itemSearchCount: HTMLSpanElement | null = null;
+  let navigationHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Sorting
   let sortKey: SortKey = "dateAdded";
@@ -364,6 +397,141 @@ export async function registerMineruManagerScript(
     return allItems.filter(shouldShowMineruManagerItem);
   }
 
+  function runAfterMineruLayout(callback: () => void): void {
+    if (typeof win.requestAnimationFrame !== "function") {
+      win.setTimeout(callback, 0);
+      return;
+    }
+    win.requestAnimationFrame(() => {
+      win.requestAnimationFrame(callback);
+    });
+  }
+
+  function focusExternalSelection(
+    attachmentId: number | undefined,
+    parentItemId: number | undefined,
+  ): void {
+    if (!itemsList) return;
+    const selectedRow =
+      attachmentId === undefined
+        ? null
+        : (doc.querySelector(
+            `[data-attachment-id="${attachmentId}"]`,
+          ) as HTMLElement | null);
+    const parentRow =
+      parentItemId === undefined
+        ? null
+        : (doc.querySelector(
+            `[data-parent-id="${parentItemId}"]`,
+          ) as HTMLElement | null);
+    const targetRow = selectedRow || parentRow;
+    if (!targetRow) return;
+
+    const containerRect = itemsList.getBoundingClientRect();
+    const targetRect = targetRow.getBoundingClientRect();
+    itemsList.scrollTop = calculateMineruCenteredScrollTop({
+      scrollTop: itemsList.scrollTop,
+      clientHeight: itemsList.clientHeight,
+      scrollHeight: itemsList.scrollHeight,
+      containerTop: containerRect.top,
+      targetTop: targetRect.top,
+      targetHeight: targetRect.height,
+    });
+
+    if (navigationHighlightTimer) clearTimeout(navigationHighlightTimer);
+    const previousBoxShadow = targetRow.style.boxShadow;
+    const previousTransition = targetRow.style.transition;
+    targetRow.style.transition = "box-shadow 120ms ease-out";
+    targetRow.style.boxShadow = "inset 0 0 0 2px var(--color-accent, #2563eb)";
+    navigationHighlightTimer = setTimeout(() => {
+      navigationHighlightTimer = null;
+      if (!targetRow.isConnected) return;
+      targetRow.style.boxShadow = previousBoxShadow;
+      targetRow.style.transition = previousTransition;
+    }, 1400);
+  }
+
+  type PreparedExternalSelection = {
+    firstSelectedId: number | undefined;
+    firstParentItemId: number | undefined;
+    filtersChanged: boolean;
+  };
+
+  function prepareExternalAttachmentSelection(
+    attachmentIds: readonly number[],
+  ): PreparedExternalSelection {
+    const requestedIds = new Set(attachmentIds);
+    const availableItems = getManagerVisibleSourceItems();
+    const filtersChanged =
+      activeCollectionId !== "all" ||
+      tagScope !== "all" ||
+      selectedTags.size > 0 ||
+      itemSearchQuery.trim().length > 0;
+
+    // A direct item-tree action should always reveal the requested PDFs, even
+    // if the manager was previously narrowed to another folder/tag/search.
+    activeCollectionId = "all";
+    tagScope = "all";
+    selectedTags.clear();
+    itemSearchQuery = "";
+    if (itemSearchInput) itemSearchInput.value = "";
+
+    selectedIds.clear();
+    for (const item of availableItems) {
+      if (requestedIds.has(item.attachmentId)) {
+        selectedIds.add(item.attachmentId);
+      }
+    }
+    lastClickedId = selectedIds.values().next().value ?? null;
+
+    // Make every selected PDF row visible, including single-PDF parent groups
+    // that are collapsed by default.
+    for (const group of groupByParent(availableItems)) {
+      if (group.children.some((child) => selectedIds.has(child.attachmentId))) {
+        collapsedParents.delete(group.parentItemId);
+      }
+    }
+
+    const firstSelectedId = selectedIds.values().next().value;
+    const firstEntry =
+      firstSelectedId === undefined
+        ? undefined
+        : availableItems.find((item) => item.attachmentId === firstSelectedId);
+    return {
+      firstSelectedId,
+      firstParentItemId: firstEntry?.parentItemId,
+      filtersChanged,
+    };
+  }
+
+  function focusPreparedExternalSelection(
+    selection: PreparedExternalSelection,
+  ): void {
+    const mineruTab = doc.querySelector(
+      '[data-pref-tab="mineru"]',
+    ) as HTMLElement | null;
+    mineruTab?.click();
+
+    // Gecko can report stale layout while the preferences tab and list are
+    // switching/rendering. Wait for two paints, then scroll the MinerU list
+    // itself rather than relying on scrollIntoView choosing the right ancestor.
+    runAfterMineruLayout(() => {
+      focusExternalSelection(
+        selection.firstSelectedId,
+        selection.firstParentItemId,
+      );
+    });
+  }
+
+  function applyExternalAttachmentSelection(
+    attachmentIds: readonly number[],
+  ): void {
+    const selection = prepareExternalAttachmentSelection(attachmentIds);
+    if (selection.filtersChanged) renderSidebar();
+    renderItemsList();
+    focusPreparedExternalSelection(selection);
+  }
+
   function pruneSelectedIdsToVisibleItems(): void {
     const visibleIds = new Set(
       getManagerVisibleSourceItems().map((item) => item.attachmentId),
@@ -377,7 +545,10 @@ export async function registerMineruManagerScript(
   }
 
   function getAvailabilityDisplayStatus(item: MineruItemEntry): MineruStatus {
-    return isMineruAvailable(item) ? "cached" : "idle";
+    return resolveMineruManagerDisplayStatus(
+      item.availability,
+      getItemStatus(item.attachmentId)?.status,
+    );
   }
 
   function setDotDisplayStatus(
@@ -417,10 +588,10 @@ export async function registerMineruManagerScript(
     entry.cached = availability.status !== "missing";
     const dot = dotElements.get(attachmentId);
     if (dot) {
-      setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
+      setDotDisplayStatus(dot, getAvailabilityDisplayStatus(entry));
       dot.title = getAvailabilityTooltip(entry);
     }
-    void updateParentDotForAttachment(attachmentId);
+    updateParentDotForAttachment(attachmentId);
   }
 
   function resolveTagColor(name: string): string | null {
@@ -1713,28 +1884,10 @@ export async function registerMineruManagerScript(
     );
   }
 
-  async function getResolvedParentDisplayStatus(
-    group: MineruParentGroup,
-  ): Promise<MineruStatus> {
-    const childStatuses = await Promise.all(
-      group.children.map(async (child) => ({
-        availability: child.availability,
-        excluded: child.excluded,
-        status: await getMineruStatus(child.attachmentId),
-      })),
-    );
-    return getMineruParentDisplayStatus(childStatuses);
-  }
-
-  async function updateParentDot(
-    parentId: number,
-    group: MineruParentGroup,
-  ): Promise<void> {
+  function updateParentDot(parentId: number, group: MineruParentGroup): void {
     const parentDot = parentDotElements.get(parentId);
     if (!parentDot) return;
-    const status = await getResolvedParentDisplayStatus(group);
-    if (parentDotElements.get(parentId) !== parentDot) return;
-    setDotDisplayStatus(parentDot, status);
+    setDotDisplayStatus(parentDot, getInitialParentDisplayStatus(group));
   }
 
   function findRenderedGroupForAttachment(
@@ -1756,20 +1909,13 @@ export async function registerMineruManagerScript(
 
   function updateParentDotForAttachment(attachmentId: number): void {
     const group = findRenderedGroupForAttachment(attachmentId);
-    if (group) void updateParentDot(group.parentItemId, group);
+    if (group) updateParentDot(group.parentItemId, group);
   }
 
   function refreshRenderedParentDots(): void {
     for (const group of getVisibleGroups()) {
-      void updateParentDot(group.parentItemId, group);
+      updateParentDot(group.parentItemId, group);
     }
-  }
-
-  async function refreshAttachmentDot(
-    attachmentId: number,
-    dot: HTMLSpanElement,
-  ): Promise<void> {
-    setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
   }
 
   function getSkippedLabel(item: MineruItemEntry): string {
@@ -1820,10 +1966,6 @@ export async function registerMineruManagerScript(
     dot.title = getAvailabilityTooltip(item);
     dotElements.set(item.attachmentId, dot);
     row.appendChild(dot);
-
-    void (async () => {
-      await refreshAttachmentDot(item.attachmentId, dot);
-    })();
 
     const titleSpan = doc.createElement("span");
     titleSpan.style.cssText =
@@ -1996,7 +2138,6 @@ export async function registerMineruManagerScript(
       });
       setDotDisplayStatus(parentDot, getInitialParentDisplayStatus(group));
       parentDotElements.set(group.parentItemId, parentDot);
-      void updateParentDot(group.parentItemId, group);
       parentRow.appendChild(parentDot);
       parentRow.appendChild(chev);
 
@@ -2103,14 +2244,6 @@ export async function registerMineruManagerScript(
           if (selectedIds.has(child.attachmentId))
             childRow.style.background =
               "color-mix(in srgb, var(--color-accent, #2563eb) 12%, transparent)";
-
-          const childDot = dotElements.get(child.attachmentId);
-          if (childDot) {
-            void (async () => {
-              await refreshAttachmentDot(child.attachmentId, childDot);
-              void updateParentDot(group.parentItemId, group);
-            })();
-          }
 
           if (hasSelection) {
             const isSelected = selectedIds.has(child.attachmentId);
@@ -2746,16 +2879,19 @@ export async function registerMineruManagerScript(
   });
 
   const unsubscribeProcessingStatus = onProcessingStatusChange(() => {
-    void (async () => {
-      for (const [attachmentId, dot] of dotElements.entries()) {
-        await refreshAttachmentDot(attachmentId, dot);
-      }
-      refreshRenderedParentDots();
-    })();
+    for (const [attachmentId, dot] of dotElements.entries()) {
+      const entry = allItems.find((item) => item.attachmentId === attachmentId);
+      if (entry) setDotDisplayStatus(dot, getAvailabilityDisplayStatus(entry));
+    }
+    refreshRenderedParentDots();
   });
 
   win.addEventListener("unload", () => {
     stopActiveResize?.();
+    if (navigationHighlightTimer) {
+      clearTimeout(navigationHighlightTimer);
+      navigationHighlightTimer = null;
+    }
     unsubscribe();
     unsubscribeAutoWatch();
     unsubscribeProcessingStatus();
@@ -2774,15 +2910,39 @@ export async function registerMineruManagerScript(
     }
   });
 
+  let managerReady = false;
+  let pendingInitialExternalAttachmentIds: number[] | null = null;
+  const unregisterManagerSelectionTarget = registerMineruManagerSelectionTarget(
+    (attachmentIds) => {
+      if (!managerReady) {
+        pendingInitialExternalAttachmentIds = [...attachmentIds];
+        return true;
+      }
+      applyExternalAttachmentSelection(attachmentIds);
+      return true;
+    },
+  );
+  win.addEventListener("unload", unregisterManagerSelectionTarget, {
+    once: true,
+  });
+
   await loadData();
   // Default: collapse single-PDF items, expand multi-PDF items
   const initGroups = groupByParent(allItems);
   for (const g of initGroups) {
     if (g.children.length === 1) collapsedParents.add(g.parentItemId);
   }
+  const initialExternalSelection = pendingInitialExternalAttachmentIds
+    ? prepareExternalAttachmentSelection(pendingInitialExternalAttachmentIds)
+    : null;
+  pendingInitialExternalAttachmentIds = null;
   renderSidebar();
   renderColumnHeaders();
   renderItemSearchBar();
   renderItemsList();
   syncUIFromState(getMineruBatchState());
+  managerReady = true;
+  if (initialExternalSelection) {
+    focusPreparedExternalSelection(initialExternalSelection);
+  }
 }

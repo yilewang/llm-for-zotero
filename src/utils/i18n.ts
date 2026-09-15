@@ -67,6 +67,7 @@ const zhCN: Record<string, string> = {
   "No context to clear": "没有可清除的上下文",
   "Add Items as Context to LLM-for-Zotero":
     "将条目作为上下文添加到 LLM-for-Zotero",
+  "Open MinerU Manager": "打开 MinerU 管理器",
   "No supported default attachment found": "未找到支持的默认附件",
   Rename: "重命名",
   "Rename chat": "重命名对话",

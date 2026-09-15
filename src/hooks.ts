@@ -435,6 +435,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     openStandaloneChat: (options) => {
       openStandaloneChat({ initialItem: options?.initialItem || null });
     },
+    openMineruManager: () => {
+      Zotero.Utilities.Internal.openPreferences(PREFERENCES_PANE_ID);
+    },
   });
 
   // Keyboard shortcut: Ctrl/Cmd+Shift+L

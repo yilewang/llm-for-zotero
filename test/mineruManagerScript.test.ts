@@ -1,8 +1,10 @@
 import { assert } from "chai";
 import {
+  calculateMineruCenteredScrollTop,
   filterMineruItemsForSearch,
   getMineruManagerActionLabels,
   getMineruParentDisplayStatus,
+  resolveMineruManagerDisplayStatus,
   shouldShowMineruManagerItem,
   type MineruParentStatusChild,
 } from "../src/modules/mineruManagerScript";
@@ -47,6 +49,75 @@ function item(
 }
 
 describe("mineruManagerScript", function () {
+  describe("resolveMineruManagerDisplayStatus", function () {
+    it("preserves runtime processing and failure without re-reading cache state", function () {
+      assert.equal(
+        resolveMineruManagerDisplayStatus("missing", "processing"),
+        "processing",
+      );
+      assert.equal(
+        resolveMineruManagerDisplayStatus("missing", "failed"),
+        "failed",
+      );
+    });
+
+    it("lets known MinerU availability win over stale failed runtime state", function () {
+      assert.equal(
+        resolveMineruManagerDisplayStatus("local", "failed"),
+        "cached",
+      );
+      assert.equal(
+        resolveMineruManagerDisplayStatus("synced", undefined),
+        "cached",
+      );
+      assert.equal(
+        resolveMineruManagerDisplayStatus("missing", undefined),
+        "idle",
+      );
+    });
+  });
+
+  describe("calculateMineruCenteredScrollTop", function () {
+    it("centers a navigation target inside the MinerU list", function () {
+      assert.equal(
+        calculateMineruCenteredScrollTop({
+          scrollTop: 200,
+          clientHeight: 400,
+          scrollHeight: 2000,
+          containerTop: 100,
+          targetTop: 900,
+          targetHeight: 30,
+        }),
+        815,
+      );
+    });
+
+    it("clamps navigation scrolling to the list boundaries", function () {
+      assert.equal(
+        calculateMineruCenteredScrollTop({
+          scrollTop: 0,
+          clientHeight: 400,
+          scrollHeight: 1800,
+          containerTop: 100,
+          targetTop: 110,
+          targetHeight: 20,
+        }),
+        0,
+      );
+      assert.equal(
+        calculateMineruCenteredScrollTop({
+          scrollTop: 1500,
+          clientHeight: 400,
+          scrollHeight: 1800,
+          containerTop: 100,
+          targetTop: 450,
+          targetHeight: 40,
+        }),
+        1400,
+      );
+    });
+  });
+
   describe("filterMineruItemsForSearch", function () {
     const items = [
       item(1, {
