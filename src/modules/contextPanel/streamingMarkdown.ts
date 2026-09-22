@@ -7,7 +7,7 @@ import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSch
 const streams = new WeakMap<
   HTMLElement,
   {
-    source: string;
+    source: string | undefined;
     committed: string;
     tail: HTMLElement;
     pending: string;
@@ -22,13 +22,11 @@ export function renderStreamingMarkdownInto(
   onResize: () => void,
 ): void {
   let state = streams.get(target);
-  if (!state || !source.startsWith(state.source)) {
+  if (!state || !source.startsWith(state.source ?? "")) {
     state?.scheduler.cancel();
-    target.replaceChildren();
     const tail = doc.createElement("div");
-    target.appendChild(tail);
     const next = {
-      source: "",
+      source: undefined as string | undefined,
       committed: "",
       tail,
       pending: "",
@@ -38,34 +36,46 @@ export function renderStreamingMarkdownInto(
       getWindow: () => doc.defaultView,
       run: () => {
         if (!target.isConnected || streams.get(target) !== next) return;
-        withChatContentScrollGuard(target, () => {
-          // The plugin sandbox has no global performance object. Use the
-          // clock belonging to the window whose frame we are rendering.
-          const now = () => doc.defaultView?.performance.now() ?? Date.now();
-          const started = now();
-          const remainder = next.pending.slice(next.committed.length);
-          const tokens = marked.lexer(remainder);
-          // Retain the last two tokens: blank lines can still extend a list/table.
-          const stable = tokens.slice(0, -2);
-          for (const token of stable) {
-            if (now() - started >= 8) {
-              next.scheduler.schedule();
-              return;
-            }
-            const block = doc.createElement("div");
-            block.style.display = "contents";
-            renderRenderedMarkdownInto(block, token.raw, doc, {
-              onAsyncContentRendered: onResize,
-            });
-            target.insertBefore(block, next.tail);
-            next.committed += token.raw;
+        // Prepare off-DOM so a budget yield never exposes committed blocks
+        // alongside the previous tail, or clears a restarted stream early.
+        const now = () => doc.defaultView?.performance.now() ?? Date.now();
+        const started = now();
+        let committed = next.committed;
+        const blocks: HTMLElement[] = [];
+        const tokens = marked.lexer(next.pending.slice(committed.length));
+        // Retain the last two tokens: blank lines can still extend a list/table.
+        const stable = tokens.slice(0, -2);
+        for (const token of stable) {
+          if (now() - started >= 8 && blocks.length) {
+            next.scheduler.schedule();
+            break;
           }
-          renderRenderedMarkdownInto(
-            next.tail,
-            next.pending.slice(next.committed.length),
-            doc,
-            { onAsyncContentRendered: onResize, deferEnrichment: true },
-          );
+          const block = doc.createElement("div");
+          block.style.display = "contents";
+          renderRenderedMarkdownInto(block, token.raw, doc, {
+            onAsyncContentRendered: onResize,
+          });
+          blocks.push(block);
+          committed += token.raw;
+        }
+        const tail = doc.createElement("div");
+        renderRenderedMarkdownInto(
+          tail,
+          next.pending.slice(committed.length),
+          doc,
+          {
+            onAsyncContentRendered: onResize,
+            deferEnrichment: true,
+          },
+        );
+        withChatContentScrollGuard(target, () => {
+          if (next.tail.parentElement === target) {
+            next.tail.replaceWith(...blocks, tail);
+          } else {
+            target.replaceChildren(...blocks, tail);
+          }
+          next.committed = committed;
+          next.tail = tail;
           onResize();
         });
       },

@@ -390,7 +390,11 @@ function appendAgentActivityDisclosure(params: {
   details.addEventListener("toggle", () => {
     agentActivityExpandedCache.set(message, {
       open: details.open,
-      wasWorking: message.streaming === true,
+      // Native toggle events are queued. The message may already be complete
+      // before this running view is repainted; keep the last rendered phase so
+      // that its delayed opening cannot masquerade as a user's completed-view
+      // expansion and bypass the one-time collapse on completion.
+      wasWorking: view.streaming === true,
     });
   });
   wrap.appendChild(details);
@@ -6470,7 +6474,8 @@ export function renderAgentTrace({
       message,
       userMessage,
       events,
-      forceOpen: true,
+      // Loading a saved trace must not override the reader's disclosure state.
+      // A live run already opens by default through message.streaming.
     });
     return wrap;
   }

@@ -462,6 +462,14 @@ export type WorkflowTestApi = {
     deliver(conversationKey: number): Promise<void>;
     dispose(): void;
   };
+  mountAgentActivityTrace(message: import("./types").Message): {
+    root: HTMLElement;
+    render(
+      events: import("../../agent/types").AgentRunEventRecord[],
+      options?: { rebuild?: boolean; streaming?: boolean },
+    ): void;
+    dispose(): void;
+  };
   reset: () => Promise<void>;
   enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {
@@ -542,6 +550,12 @@ export type WorkflowTestApi = {
     chunks: number;
     runMode?: "agent" | "chat";
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
+  createCodexStreamingScrollReplay: (
+    panelId: string,
+    options?: { tightList?: boolean },
+  ) => ReturnType<
+    typeof import("./codexStreamingScrollReplay").createCodexStreamingScrollReplay
+  >;
   exerciseChatRenderingLifecycle: (
     panelId: string,
   ) => ReturnType<

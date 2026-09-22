@@ -44,6 +44,7 @@ import {
   PREFERENCES_PANE_ID,
 } from "./constants";
 import { bindChatScrollLifecycle } from "./chatScrollLifecycle";
+import { bindChatLatestButton } from "./chatLatestButton";
 import {
   createConversationTurnNavigator,
   disposeConversationTurnNavigator,
@@ -175,6 +176,7 @@ import {
   getConversationKey,
   ensureConversationLoaded,
   persistChatScrollSnapshot,
+  requestChatScrollFollowBottom,
   disposeChatRendering,
   withScrollGuard,
   copyTextToClipboard,
@@ -1366,8 +1368,8 @@ export function setupHandlers(
       .then(() => undefined);
   };
   let resetComposePreviewUI = () => {};
-  let updateModelButton = () => {};
-  let updateReasoningButton = () => {};
+  let updateModelButton: (onlyIfChanged?: boolean) => void = () => {};
+  let updateReasoningButton: (onlyIfChanged?: boolean) => void = () => {};
   let getSelectedModelInfo: () => {
     selectedEntryId: string;
     selectedEntry: RuntimeModelEntry | null;
@@ -2057,6 +2059,21 @@ export function setupHandlers(
         noteQuoteValidationUserActivity,
       )
     : () => {};
+
+  const latestButton =
+    body.querySelector<HTMLButtonElement>("#llm-chat-latest");
+  if (chatBox && latestButton) {
+    panelLifecycle.add(
+      bindChatLatestButton({
+        button: latestButton,
+        chatBox,
+        getConversationKey: () => (item ? getConversationKey(item) : null),
+        onJumpToLatest: () => {
+          if (item) requestChatScrollFollowBottom(body, item, chatBox);
+        },
+      }),
+    );
+  }
 
   // Capture scroll before click/focus interactions that may trigger a panel
   // re-render, so restore uses the most recent user position.
@@ -4400,21 +4417,7 @@ export function setupHandlers(
     });
   };
 
-  // Helper to update image preview UI
-  const updateImagePreview = () => {
-    if (
-      !item ||
-      !imagePreview ||
-      !previewStrip ||
-      !previewExpanded ||
-      !previewSelected ||
-      !previewSelectedImg ||
-      !previewMeta ||
-      !screenshotBtn
-    )
-      return;
-    const ownerDoc = body.ownerDocument;
-    if (!ownerDoc) return;
+  const getSelectedScreenshotSupport = () => {
     const selectedProfile = getSelectedProfile();
     const currentModel = (
       selectedProfile?.model ||
@@ -4431,6 +4434,26 @@ export function setupHandlers(
       selectedProfile?.apiBase,
       inputMode,
     );
+    return { currentModel, screenshotUnsupported };
+  };
+
+  // Helper to update image preview UI
+  const updateImagePreview = () => {
+    if (
+      !item ||
+      !imagePreview ||
+      !previewStrip ||
+      !previewExpanded ||
+      !previewSelected ||
+      !previewSelectedImg ||
+      !previewMeta ||
+      !screenshotBtn
+    )
+      return;
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc) return;
+    const { currentModel, screenshotUnsupported } =
+      getSelectedScreenshotSupport();
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
@@ -4937,16 +4960,35 @@ export function setupHandlers(
     };
   };
 
-  updateModelButton = () => {
+  updateModelButton = (onlyIfChanged = false) => {
     if (!item || !modelBtn) return;
-    withScrollGuard(chatBox, conversationKey, () => {
-      const { choices, currentModel, currentModelDisplay, currentModelHint } =
-        getSelectedModelInfo();
-      const hasSecondary = choices.length > 1;
-      modelBtn.dataset.modelLabel = `${currentModelDisplay || currentModel || "default"}`;
-      modelBtn.dataset.modelHint = hasSecondary
+    const { choices, currentModel, currentModelDisplay, currentModelHint } =
+      getSelectedModelInfo();
+    const modelLabel = `${currentModelDisplay || currentModel || "default"}`;
+    const modelHint =
+      choices.length > 1
         ? currentModelHint
         : currentModelHint || "Only one model is configured";
+    // A model can keep its name while its image-input capability changes in
+    // settings. Keep that real change eligible for the preview refresh too.
+    const { screenshotUnsupported } = getSelectedScreenshotSupport();
+    const imageCount = selectedImageCache.get(item.id)?.length || 0;
+    const screenshotStateChanged =
+      screenshotBtn &&
+      (screenshotBtn.disabled !==
+        (screenshotUnsupported || imageCount >= MAX_SELECTED_IMAGES) ||
+        (screenshotUnsupported && imageCount > 0));
+    if (
+      onlyIfChanged &&
+      !screenshotStateChanged &&
+      modelBtn.dataset.modelLabel === modelLabel &&
+      modelBtn.dataset.modelHint === modelHint &&
+      modelBtn.disabled === !item
+    )
+      return;
+    withScrollGuard(chatBox, conversationKey, () => {
+      modelBtn.dataset.modelLabel = modelLabel;
+      modelBtn.dataset.modelHint = modelHint;
       modelBtn.disabled = !item;
       scheduleResponsiveLayoutSync();
       updateImagePreviewPreservingScroll();
@@ -5868,63 +5910,80 @@ export function setupHandlers(
       leaveWebChatMode({ restoreConversation: false });
   }
 
-  updateReasoningButton = () => {
+  updateReasoningButton = (onlyIfChanged = false) => {
     if (!item || !reasoningBtn) return;
-    withScrollGuard(chatBox, conversationKey, () => {
-      // [webchat] Hide reasoning dropdown — users control thinking mode on chatgpt.com
-      if (isWebChatMode()) {
+    // [webchat] Hide reasoning dropdown — users control thinking mode on chatgpt.com
+    if (isWebChatMode()) {
+      if (onlyIfChanged && reasoningBtn.style.display === "none") return;
+      withScrollGuard(chatBox, conversationKey, () => {
         reasoningBtn.style.display = "none";
         scheduleResponsiveLayoutSync();
-        return;
-      }
-      reasoningBtn.style.display = "";
+      });
+      return;
+    }
 
-      const {
-        provider,
-        currentModel,
-        options,
-        enabledLevels,
-        selectedLevel,
-        activeThinking,
-      } = getReasoningState();
-      const directSelection =
-        codexDirectController?.resolveReasoningSelection() || {
-          mode: "auto",
-          choices: [] as CodexReasoningChoice[],
-        };
-      const available =
-        directSelection.choices.length > 0 || enabledLevels.length > 0;
-      const resolvedReasoningLabel = isClaudeConversationSystem()
+    const {
+      provider,
+      currentModel,
+      options,
+      enabledLevels,
+      selectedLevel,
+      activeThinking,
+    } = getReasoningState();
+    const directSelection =
+      codexDirectController?.resolveReasoningSelection() || {
+        mode: "auto",
+        choices: [] as CodexReasoningChoice[],
+      };
+    const available =
+      directSelection.choices.length > 0 || enabledLevels.length > 0;
+    const resolvedReasoningLabel = isClaudeConversationSystem()
+      ? (() => {
+          return getClaudeReasoningDisplayLabel(
+            getClaudeReasoningDisplayMode(),
+          );
+        })()
+      : isCodexConversationSystem()
         ? (() => {
-            return getClaudeReasoningDisplayLabel(
-              getClaudeReasoningDisplayMode(),
+            const mode = getCodexReasoningModePref();
+            return (
+              getCodexReasoningChoices().find(
+                (choice) => choice.value.toLowerCase() === mode.toLowerCase(),
+              )?.label || "Auto"
             );
           })()
-        : isCodexConversationSystem()
-          ? (() => {
-              const mode = getCodexReasoningModePref();
-              return (
-                getCodexReasoningChoices().find(
-                  (choice) => choice.value.toLowerCase() === mode.toLowerCase(),
-                )?.label || "Auto"
-              );
-            })()
-          : directSelection.choices.length
-            ? directSelection.choices.find(
-                (choice) =>
-                  choice.value.toLowerCase() ===
-                  directSelection.mode.toLowerCase(),
-              )?.label || "Auto"
-            : available
-              ? getReasoningLevelDisplayLabel(
-                  selectedLevel as LLMReasoningLevel,
-                  provider,
-                  currentModel,
-                  options,
-                )
-              : "Not supported";
-      const active = available && activeThinking;
-      const reasoningLabel = resolvedReasoningLabel;
+        : directSelection.choices.length
+          ? directSelection.choices.find(
+              (choice) =>
+                choice.value.toLowerCase() ===
+                directSelection.mode.toLowerCase(),
+            )?.label || "Auto"
+          : available
+            ? getReasoningLevelDisplayLabel(
+                selectedLevel as LLMReasoningLevel,
+                provider,
+                currentModel,
+                options,
+              )
+            : "Not supported";
+    const active = Boolean(available && activeThinking);
+    const reasoningLabel = resolvedReasoningLabel;
+    const reasoningHint =
+      reasoningBtn.dataset.reasoningAdjustment ||
+      "Click to adjust reasoning level";
+    if (
+      onlyIfChanged &&
+      reasoningBtn.style.display === "" &&
+      reasoningBtn.disabled === !item &&
+      reasoningBtn.classList.contains("llm-reasoning-btn-unavailable") ===
+        !available &&
+      reasoningBtn.classList.contains("llm-reasoning-btn-active") === active &&
+      reasoningBtn.dataset.reasoningLabel === reasoningLabel &&
+      reasoningBtn.dataset.reasoningHint === reasoningHint
+    )
+      return;
+    withScrollGuard(chatBox, conversationKey, () => {
+      reasoningBtn.style.display = "";
       reasoningBtn.disabled = !item;
       reasoningBtn.classList.toggle(
         "llm-reasoning-btn-unavailable",
@@ -5934,9 +5993,6 @@ export function setupHandlers(
       reasoningBtn.style.background = "";
       reasoningBtn.style.borderColor = "";
       reasoningBtn.style.color = "";
-      const reasoningHint =
-        reasoningBtn.dataset.reasoningAdjustment ||
-        "Click to adjust reasoning level";
       reasoningBtn.dataset.reasoningLabel = reasoningLabel;
       reasoningBtn.dataset.reasoningHint = reasoningHint;
       scheduleResponsiveLayoutSync();
@@ -6176,9 +6232,9 @@ export function setupHandlers(
   (body as any).__llmApplyResolvedClaudeEffort =
     applyClaudeResolvedReasoningDisplay;
 
-  const syncModelFromPrefs = () => {
-    updateModelButton();
-    updateReasoningButton();
+  const syncModelFromPrefs = (onlyIfChanged = false) => {
+    updateModelButton(onlyIfChanged);
+    updateReasoningButton(onlyIfChanged);
     if (isFloatingMenuOpen(modelMenu)) {
       rebuildModelMenu();
     }
@@ -6398,18 +6454,23 @@ export function setupHandlers(
     void refreshGlobalHistoryHeader();
   }
 
-  // Preferences can change outside this panel (e.g., settings window).
-  // Re-sync model label when the user comes back (pointerenter).
-  // NOTE: We intentionally do NOT sync on "focusin" because focusin fires
-  // on every internal focus change (e.g. clicking the input box).
-  // syncModelFromPrefs → updateModelButton → applyResponsiveActionButtonsLayout
-  // mutates DOM → changes flex layout → resizes .llm-messages → shifts scroll
-  // position.  pointerenter is sufficient and fires before interaction.
+  // Preferences can change outside this panel. Returning from the paper only
+  // needs to reconcile changed model/reasoning controls: rebuilding unchanged
+  // previews and remeasuring the draft transiently resizes the chat viewport.
+  // In particular, do not apply a stored scroll snapshot on an unchanged hover.
+  // Conversation/context mutations already request their own panel-state sync.
   body.addEventListener("pointerenter", () => {
-    withScrollGuard(chatBox, conversationKey, () => {
-      syncModelFromPrefs();
-      syncConversationPanelState();
-    });
+    syncModelFromPrefs(true);
+    // Another view of this conversation can edit the shared draft. Restore
+    // that change without remeasuring an unchanged composer on every visit.
+    if (item && inputBox && !inlineEditTarget) {
+      const cache = isWebChatModeActive()
+        ? webChatDraftInputCache
+        : draftInputCache;
+      if (inputBox.value !== (cache.get(getConversationKey(item)) || "")) {
+        runWithChatScrollGuard(restoreDraftInputForCurrentConversation);
+      }
+    }
   });
   const ResizeObserverCtor = body.ownerDocument?.defaultView?.ResizeObserver;
   if (ResizeObserverCtor && panelRoot && modelBtn) {

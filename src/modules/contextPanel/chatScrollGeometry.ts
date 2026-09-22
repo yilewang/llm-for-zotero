@@ -81,6 +81,7 @@ function buildQuoteAnchor(
   viewport: DOMRect,
 ): ChatScrollAnchor | null {
   const quoteCard = closestElement(element, ".llm-quote-card") || element;
+  if (!hasLayoutBox(quoteCard)) return null;
   const quoteCitationId = datasetValue(quoteCard, "quoteCitationId");
   const citationSyncKey =
     datasetValue(element, "citationSyncKey") ||
@@ -131,10 +132,27 @@ function scoreVisibleAnchor(element: Element, viewport: DOMRect): number {
 }
 
 function answerBlocks(wrapper: Element): Element[] {
-  const answer = queryElements(wrapper, ".llm-assistant-answer")[0];
-  return answer
-    ? queryElements(answer, "p, pre, table, li, h1, h2, h3, h4, h5, h6")
-    : [];
+  // Native agent text can be interleaved with tools inside the activity trace.
+  // Its wrapper stays put while content above the paragraph grows, so anchoring
+  // only the wrapper cannot keep that paragraph still during output.
+  const textSections = queryElements(
+    wrapper,
+    ".llm-assistant-answer, .llm-agent-inline-text, .llm-agent-process-message-markdown",
+  );
+  return textSections
+    .flatMap((section) =>
+      queryElements(section, "p, pre, table, li, h1, h2, h3, h4, h5, h6"),
+    )
+    .filter(
+      (block) =>
+        // Appending a blank line can turn a tight list's li into li > p.
+        // Count the readable paragraph once so this does not renumber every
+        // later anchor, especially when list items share the same text.
+        block.tagName.toLowerCase() !== "li" ||
+        !Array.from(block.children).some(
+          (child) => child.tagName.toLowerCase() === "p",
+        ),
+    );
 }
 
 function blockText(element: Element): string {
@@ -174,6 +192,29 @@ function isEmptyRect(rect: DOMRect): boolean {
   return rect.top === rect.bottom && rect.width === 0;
 }
 
+function hasLayoutBox(element: Element): boolean {
+  // Gecko can retain nonzero descendant rects inside a closed details element.
+  // Those cached boxes are not usable reading anchors; only its summary shows.
+  for (
+    let parent: Element | null = element;
+    parent;
+    parent = parent.parentElement
+  ) {
+    if ((parent as HTMLElement).hidden) return false;
+    if (
+      parent.tagName?.toLowerCase() === "details" &&
+      !(parent as HTMLDetailsElement).open
+    ) {
+      const summary = Array.from(parent.children).find(
+        (child) => child.tagName.toLowerCase() === "summary",
+      );
+      if (!summary?.contains(element)) return false;
+    }
+  }
+  const rect = getElementRect(element);
+  return Boolean(rect && !isEmptyRect(rect));
+}
+
 /**
  * Messages and answer blocks form a vertical flow. Locate the visible run
  * with binary search so scrolling long histories or long answers does not
@@ -187,7 +228,9 @@ function findVisibleFlowElements(
   const measuredRects = new Map<number, DOMRect | null>();
   const rectAt = (index: number): DOMRect | null => {
     if (measuredRects.has(index)) return measuredRects.get(index) || null;
-    const rect = getElementRect(wrappers[index]);
+    const rect = hasLayoutBox(wrappers[index])
+      ? getElementRect(wrappers[index])
+      : null;
     const usable = rect && !isEmptyRect(rect) ? rect : null;
     measuredRects.set(index, usable);
     return usable;
@@ -266,14 +309,19 @@ export function findBestVisibleChatAnchor(
       bestQuote = { element: quoteCard, anchor, score };
     }
   }
-  if (bestQuote) return bestQuote.anchor;
-
   // A wrapper's top does not move when its thinking section collapses. Anchor
   // the answer block itself so the paragraph being read keeps its offset.
+  let bestContent = bestQuote;
   for (const wrapper of visibleWrappers) {
     const anchor = findVisibleAnswerAnchor(wrapper, viewport);
-    if (anchor) return anchor;
+    if (!anchor) continue;
+    const score = Math.abs(anchor.viewportOffsetTop);
+    // A citation barely visible at the bottom must not pull the paragraph at
+    // the reading edge along when output above that citation grows.
+    if (!bestContent || score < bestContent.score)
+      bestContent = { element: wrapper, anchor, score };
   }
+  if (bestContent) return bestContent.anchor;
 
   let bestMessage: { anchor: ChatScrollAnchor; score: number } | null = null;
   for (const candidate of visibleWrappers) {
@@ -357,13 +405,14 @@ function findQuoteElementForAnchor(
               datasetValue(element, "citationSyncKey") ===
               anchor.citationSyncKey,
           ));
-    if (sameQuote) return card;
+    if (sameQuote && hasLayoutBox(card)) return card;
   }
   if (anchor.quoteCitationId) {
     for (const root of roots) {
       const match = queryElements(root, ".llm-quote-card").find(
         (element) =>
-          datasetValue(element, "quoteCitationId") === anchor.quoteCitationId,
+          datasetValue(element, "quoteCitationId") === anchor.quoteCitationId &&
+          hasLayoutBox(element),
       );
       if (match) return match;
     }
@@ -372,7 +421,8 @@ function findQuoteElementForAnchor(
     for (const root of roots) {
       const match = queryElements(root, "[data-citation-sync-key]").find(
         (element) =>
-          datasetValue(element, "citationSyncKey") === anchor.citationSyncKey,
+          datasetValue(element, "citationSyncKey") === anchor.citationSyncKey &&
+          hasLayoutBox(element),
       );
       if (match) return closestElement(match, ".llm-quote-card") || match;
     }
@@ -393,15 +443,19 @@ export function findElementForAnchor(
     const indexed = blocks[anchor.blockOrdinal ?? -1];
     if (
       indexed &&
+      hasLayoutBox(indexed) &&
       (!anchor.blockText || blockText(indexed).startsWith(anchor.blockText))
     )
       return indexed;
     return (
       blocks.find(
         (block) =>
-          anchor.blockText && blockText(block).startsWith(anchor.blockText),
+          anchor.blockText &&
+          blockText(block).startsWith(anchor.blockText) &&
+          hasLayoutBox(block),
       ) || null
     );
   }
-  return findMessageWrapperForAnchor(chatBox, anchor);
+  const wrapper = findMessageWrapperForAnchor(chatBox, anchor);
+  return wrapper && hasLayoutBox(wrapper) ? wrapper : null;
 }

@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { createCoalescedFrameScheduler } from "../src/modules/contextPanel/setupHandlers/controllers/uiSchedulingController";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 
 describe("workflow: conversation scroll isolation", function () {
@@ -15,7 +16,18 @@ describe("workflow: conversation scroll isolation", function () {
       `[data-workflow-panel-id="${panelId}"]`,
     )!;
   const nextFrame = () =>
-    new Promise<void>((resolve) => win.requestAnimationFrame(() => resolve()));
+    new Promise<void>((resolve) => {
+      // A background Zotero window can suspend native frames indefinitely.
+      // Use the same bounded frame fallback as the panel work being verified.
+      const scheduler = createCoalescedFrameScheduler({
+        getWindow: () => win,
+        run: () => {
+          scheduler.dispose();
+          resolve();
+        },
+      });
+      scheduler.schedule();
+    });
   async function scrollTo(target: HTMLDivElement, top: number) {
     const owner = target.ownerDocument.defaultView!;
     target.dispatchEvent(new owner.WheelEvent("wheel", { deltaY: -100 }));

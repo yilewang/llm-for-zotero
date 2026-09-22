@@ -1,5 +1,6 @@
 import type { AgentActionSummaryResultCard } from "../../../agent/types";
 import { createDocumentCardLayout } from "../documentCard";
+import { bindActionSummaryDisclosureScroll } from "./actionSummaryDisclosureScroll";
 import type { ActionCardEntry } from "./actionCardModel";
 import {
   navigationTargetOf,
@@ -163,6 +164,7 @@ export function renderActionSummaryCard(
       toggle.textContent = expanded ? "Hide actions" : "Show actions";
     };
     setExpanded(false);
+    bindActionSummaryDisclosureScroll(toggle);
     toggle.addEventListener("click", () => setExpanded(list.hidden));
     actions.appendChild(toggle);
   }
@@ -183,6 +185,7 @@ export function renderActionSummaryCard(
     details.className = "llm-agent-action-row";
     const summary = doc.createElement("summary");
     summary.appendChild(renderRowLine(doc, entry, true));
+    bindActionSummaryDisclosureScroll(summary);
     const body = doc.createElement("div");
     body.className = "llm-agent-process-stage-body llm-agent-action-row-body";
     details.append(summary, body);

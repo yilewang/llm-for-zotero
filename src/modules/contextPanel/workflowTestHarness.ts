@@ -13,6 +13,7 @@ import {
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
+import { createCodexStreamingScrollReplay } from "./codexStreamingScrollReplay";
 import {
   createChatTurnPromptProbes,
   exerciseChatRenderingLifecycle,
@@ -5465,6 +5466,42 @@ export function installWorkflowTestHarness(targetAddon: {
         continuation: continuation.text,
       };
     },
+    mountAgentActivityTrace: (message) => {
+      assertWorkflowTestEnabled();
+      const doc = Zotero.getMainWindow().document;
+      const root = doc.createElement("div");
+      root.dataset.llmWorkflowTest = "true";
+      let trace: HTMLElement | null = null;
+      const render: ReturnType<
+        WorkflowTestApi["mountAgentActivityTrace"]
+      >["render"] = (events, options = {}) => {
+        if (options.streaming !== undefined)
+          message.streaming = options.streaming;
+        const next = renderAgentTrace({
+          doc,
+          message,
+          events,
+          onTraceMissing: events.length ? undefined : () => {},
+          previous: options.rebuild ? undefined : trace || undefined,
+        });
+        if (!next) throw new Error("Workflow activity trace was not rendered");
+        if (next !== trace) {
+          if (trace) disposeAgentTrace(trace);
+          root.replaceChildren(next);
+          trace = next;
+        }
+      };
+      render([]);
+      doc.documentElement.appendChild(root);
+      return {
+        root,
+        render,
+        dispose: () => {
+          if (trace) disposeAgentTrace(trace);
+          root.remove();
+        },
+      };
+    },
     mountPublicationTrace: (documentId, text) => {
       const doc = Zotero.getMainWindow().document;
       const root = renderAgentTrace({
@@ -5541,6 +5578,17 @@ export function installWorkflowTestHarness(targetAddon: {
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
       exerciseStreamingReplay(getPanel(input.panelId), input),
+    createCodexStreamingScrollReplay: (panelId, options) => {
+      assertWorkflowTestEnabled();
+      const panel = getPanel(panelId);
+      return createCodexStreamingScrollReplay(
+        {
+          body: panel.body,
+          item: activeContextPanels.get(panel.body)?.() || panel.item,
+        },
+        options,
+      );
+    },
     exerciseChatRenderingLifecycle: (panelId) =>
       exerciseChatRenderingLifecycle(getPanel(panelId)),
     exerciseCompletedChatTurnRefresh: (panelId) =>
