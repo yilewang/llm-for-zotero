@@ -11,6 +11,7 @@ import {
   snapshotTestGlobals,
   type TestGlobalSnapshot,
 } from "./helpers/retrievalCorpus";
+import { withImageRetrieval } from "./helpers/retrievalMocks";
 
 type OutlineSection = {
   sectionId: string;
@@ -162,7 +163,7 @@ describe("paper_read outline mode and section ids", function () {
   ): AgentToolDefinition<never, unknown> {
     return createPaperReadTool(
       { ensurePaperContext: async () => emptySectionContext } as never,
-      { retrieveEvidence: async () => [] } as never,
+      withImageRetrieval({ retrieveEvidence: async () => [] }) as never,
       {} as never,
       {
         listPaperContexts: () => papers,
@@ -329,7 +330,7 @@ describe("paper_read outline mode and section ids", function () {
     const sectionId = await kinematicSectionId();
     const tool = createPaperReadTool(
       { ensurePaperContext: async () => ctx } as never,
-      { retrieveEvidence: async () => [] } as never,
+      withImageRetrieval({ retrieveEvidence: async () => [] }) as never,
       {} as never,
       {
         listPaperContexts: () => [paper],

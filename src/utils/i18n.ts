@@ -1052,6 +1052,45 @@ const zhCN: Record<string, string> = {
   "Estimated cost": "预估费用",
   "No embedding provider is available yet; configure one below.":
     "尚无可用的嵌入模型服务商，请在下方配置。",
+  "Supports image input": "支持图像输入",
+  "Restore auto": "恢复自动",
+  "(Auto: the API declares image support)": "（自动：API 声明支持图像）",
+  "(Auto: the API declares no image support)": "（自动：API 声明不支持图像）",
+  "(Auto: Test confirmed image input works)": "（自动：Test 已确认接受图像）",
+  "(Auto: Test showed image input is rejected)":
+    "（自动：Test 显示不接受图像）",
+  "(Auto: not detected yet — click Test)": "（自动：未检测，点 Test 检测）",
+  "Request format": "请求格式",
+  "Auto ({format})": "自动（{format}）",
+  "OpenAI-compatible (SiliconFlow, etc.)": "OpenAI 兼容（硅基流动等）",
+  "Alibaba Cloud DashScope (native)": "阿里云 DashScope 原生",
+  "vLLM (messages)": "vLLM（messages）",
+  "API URL example: {url}": "API URL 示例：{url}",
+  "Advanced (batching and concurrency)": "高级（分批与并发）",
+  "Max inputs per request": "每批最多条数",
+  "Max images per request": "每批最多图片数",
+  "Concurrent requests": "并发请求数",
+  "Restore defaults": "恢复默认",
+  "Capped at the endpoint limit of {limit}": "已按上限 {limit} 使用",
+  "✓ Text and image embeddings both work (dimension {dimension})":
+    "✓ 文本和图像嵌入均可用（维度 {dimension}）",
+  "✓ Text works; the API declares no image input":
+    "✓ 文本可用；API 声明不支持图像输入",
+  "✓ Text works; this model does not accept image input":
+    "✓ 文本可用；该模型不接受图像输入",
+  "✗ Text and image vectors differ in dimension ({text} vs {image})":
+    "✗ 文本和图像向量维度不一致（{text} vs {image}）",
+  "✗ Image input failed (turn it off or use a VL model): {error}":
+    "✗ 图像输入失败（请关闭图像输入或换用 VL 模型）：{error}",
+  "✗ Image check failed; auto result not updated: {error}":
+    "✗ 图像检测失败，自动结果未更新：{error}",
+  "Retrieval results": "检索结果",
+  "Text chunks returned per paper": "每篇论文返回的文字块数",
+  "Images returned per paper": "每篇论文返回的图片数",
+  "Outstanding image threshold (% of the lowest hit-chunk similarity)":
+    "图片突出阈值（相对命中文字最低相似度的百分比）",
+  "An image whose similarity reaches this percentage of the lowest hit-chunk similarity is returned even without a page or figure-label match. 0 turns this off.":
+    "图片相似度达到命中文字最低相似度的这个百分比时，即使没有页码或图号互证也会返回。填 0 关闭。",
 
   // MinerU preference filters
   "Sync existing MinerU caches now": "立即同步已有 MinerU 缓存",

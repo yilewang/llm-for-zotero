@@ -16,6 +16,7 @@ import {
   resolveDefaultTargets,
 } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
+import { buildRetrievedImageDelivery } from "./retrievedImages";
 
 type SearchPaperInput = {
   target?: PdfTarget;
@@ -24,6 +25,7 @@ type SearchPaperInput = {
   queryVariants?: string[];
   topK?: number;
   perPaperTopK?: number;
+  includeImages?: boolean;
 };
 
 const MAX_TARGETS = 10;
@@ -39,7 +41,8 @@ export function createSearchPaperTool(
       description:
         "Search for specific evidence within papers using a question. " +
         "Returns the most relevant passages ranked by relevance. " +
-        "Supports up to 10 papers per call. Automatically indexes PDFs if needed. For ordinary summaries, section reads, and targeted paper Q&A, use paper_read; use search_paper only for targeted evidence search that paper_read did not already answer.",
+        "Supports up to 10 papers per call. Automatically indexes PDFs if needed. For ordinary summaries, section reads, and targeted paper Q&A, use paper_read; use search_paper only for targeted evidence search that paper_read did not already answer. " +
+        "When image embedding is enabled, results may also include relevant figures from the papers as images.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -91,11 +94,18 @@ export function createSearchPaperTool(
           },
           topK: {
             type: "number",
-            description: "Max total results to return (default 6).",
+            description:
+              "Max total results to return (default 6, or the per-paper setting when larger).",
           },
           perPaperTopK: {
             type: "number",
-            description: "Max results per paper (default 4).",
+            description:
+              "Max results per paper (default from the user's retrieval setting, 4 unless changed).",
+          },
+          includeImages: {
+            type: "boolean",
+            description:
+              "When image embedding is enabled, relevant figures from the papers are returned by default; pass false when the question does not concern figures.",
           },
         },
       },
@@ -139,6 +149,10 @@ export function createSearchPaperTool(
           : undefined,
         topK: normalizePositiveInt(args.topK),
         perPaperTopK: normalizePositiveInt(args.perPaperTopK),
+        includeImages:
+          typeof args.includeImages === "boolean"
+            ? args.includeImages
+            : undefined,
       };
       if (input.targets && input.targets.length > MAX_TARGETS) {
         return fail(`targets supports at most ${MAX_TARGETS} papers`);
@@ -181,8 +195,8 @@ export function createSearchPaperTool(
         }
       }
 
-      return {
-        results: await retrievalService.retrieveEvidence({
+      const { results, images } =
+        await retrievalService.retrieveEvidenceWithImages({
           intent: context.request.classifiedIntent,
           papers,
           question: input.question || context.request.userText,
@@ -195,7 +209,14 @@ export function createSearchPaperTool(
           profileOverride: context.request.advanced?.profileOverride,
           topK: input.topK,
           perPaperTopK: input.perPaperTopK,
-        }),
+          includeImages: input.includeImages,
+        });
+      if (!images.length) return { results };
+      const delivery = await buildRetrievedImageDelivery(images);
+      if (!delivery.entries.length) return { results };
+      return {
+        content: { results, images: delivery.entries },
+        artifacts: delivery.artifacts,
       };
     },
   };

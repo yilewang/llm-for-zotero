@@ -1,6 +1,5 @@
 export const CHUNK_TARGET_LENGTH = 2000;
 export const CHUNK_OVERLAP = 200;
-export const EMBEDDING_BATCH_SIZE = 16;
 export const RRF_K = 60;
 export const RETRIEVAL_TOP_K_PER_PAPER = 24;
 export const RETRIEVAL_MMR_LAMBDA = 0.7;

@@ -1,6 +1,7 @@
 import { appLogger } from "../../core/logging";
 import {
   callEmbeddings,
+  embedItems,
   EmbeddingUnsupportedError,
   getResolvedEmbeddingConfig,
   getEmbeddingUnavailableReason,
@@ -15,11 +16,13 @@ import {
 } from "../retrieval/embeddingCache";
 import {
   CHUNK_OVERLAP,
-  EMBEDDING_BATCH_SIZE,
   CHUNK_TARGET_LENGTH,
   RETRIEVAL_TOP_K_PER_PAPER,
   RRF_K,
 } from "../retrieval/constants";
+import { cosineSimilarity } from "../retrieval/similarity";
+import { computeSectionPageSpans } from "../retrieval/imageSelection";
+import { imageIndex } from "./imageIndex";
 import {
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
@@ -615,7 +618,20 @@ async function cachePDFText(
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
-      pdfTextCache.set(item.id, {
+      // MinerU chunks carry only their section's first page; image matching
+      // needs the whole span the section covers.
+      const chunkPageSpans =
+        sourceType === "mineru" &&
+        manifest &&
+        !manifest.noSections &&
+        manifest.sections.length > 0
+          ? computeSectionPageSpans(
+              chunkMeta,
+              manifest.sections,
+              manifest.totalPages,
+            )
+          : undefined;
+      const context: PdfContext = {
         title,
         chunks,
         chunkMeta,
@@ -625,7 +641,12 @@ async function cachePDFText(
         fullLength: pdfText.length,
 
         sourceType,
-      });
+        ...(chunkPageSpans ? { chunkPageSpans } : {}),
+      };
+      pdfTextCache.set(item.id, context);
+      // Images are extracted alongside the chunks while image embedding is
+      // on; nothing waits for it here.
+      if (pdfItem) imageIndex.startExtraction(context, pdfItem.id);
     } else {
       pdfTextCache.set(item.id, {
         title,
@@ -1780,32 +1801,6 @@ export function scoreChunkBM25(
   return score;
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (!a.length || !b.length || a.length !== b.length) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    const av = a[i];
-    const bv = b[i];
-    dot += av * bv;
-    normA += av * av;
-    normB += bv * bv;
-  }
-  if (!normA || !normB) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-async function embedTexts(texts: string[]): Promise<number[][]> {
-  const all: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchEmbeddings = await callEmbeddings(batch);
-    all.push(...batchEmbeddings);
-  }
-  return all;
-}
-
 async function ensureEmbeddings(
   pdfContext: PdfContext,
   itemId?: number,
@@ -1868,9 +1863,41 @@ async function ensureEmbeddings(
       }
     }
 
-    // Layer 3: API call
+    // Layer 3: API call. Images that still lack vectors go in the same
+    // embedItems call as the chunks; an image failure never costs the text.
     try {
-      return await embedTexts(pdfContext.chunks);
+      const pendingImages =
+        itemId != null
+          ? await imageIndex
+              .pendingImageInputs(pdfContext, itemId)
+              .catch(() => [])
+          : [];
+      if (itemId != null && pendingImages.length) {
+        try {
+          const vectors = await embedItems([
+            ...pdfContext.chunks.map((text) => ({
+              kind: "text" as const,
+              text,
+            })),
+            ...pendingImages.map((entry) => entry.item),
+          ]);
+          await imageIndex.storeImageVectors(
+            pdfContext,
+            itemId,
+            pendingImages,
+            vectors.slice(chunkCount),
+          );
+          return vectors.slice(0, chunkCount);
+        } catch (jointError) {
+          appLogger.warn(
+            "[Semantic Search] Joint text+image embedding failed; retrying text only:",
+            jointError,
+          );
+          imageIndex.markFailure(pdfContext);
+        }
+      }
+      // The client batches by the configured limits (16 per request by default).
+      return await callEmbeddings(pdfContext.chunks);
     } catch (err) {
       if (err instanceof EmbeddingUnsupportedError) {
         appLogger.info(
@@ -1918,6 +1945,14 @@ async function ensureEmbeddings(
     pdfContext.embeddingFailureKey = embeddingAttemptKey;
   }
   return false;
+}
+
+/** Retrieval entry point for image vectors; rebuilds a missing index. */
+export function ensurePaperImageVectors(
+  pdfContext: PdfContext,
+  itemId: number,
+) {
+  return imageIndex.ensureImageVectors(pdfContext, itemId);
 }
 
 /**

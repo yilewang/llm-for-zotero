@@ -100,6 +100,7 @@ import {
 } from "./helpers/agentRuntimeMockDb";
 import { createTestActionContractService } from "./helpers/actionContractService";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
+import { withImageRetrieval } from "./helpers/retrievalMocks";
 
 function registerZeroEffectLibraryUpdate(registry: AgentToolRegistry): void {
   registry.register({
@@ -949,7 +950,7 @@ describe("AgentRuntime", function () {
               };
             },
           } as never,
-          {
+          withImageRetrieval({
             retrieveEvidence: async () => [
               {
                 paperContext,
@@ -959,7 +960,7 @@ describe("AgentRuntime", function () {
                 sourceLabel: "Issue 393 paper",
               },
             ],
-          } as never,
+          }) as never,
           {} as never,
           {
             resolvePaperContextTarget: () => paperContext,
