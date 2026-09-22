@@ -244,7 +244,14 @@ function restoreChatScrollAnchor(
   if (!viewport || !targetRect) return false;
   const currentOffset = targetRect.top - viewport.top;
   const delta = currentOffset - anchor.viewportOffsetTop;
-  writeChatScrollTop(chatBox, chatBox.scrollTop + delta);
+  // At Windows display scaling, the compositor can finish a wheel gesture a
+  // fraction of a CSS pixel after its last scroll event. Do not turn that
+  // harmless difference into an integer scroll write that moves the text.
+  if (Math.abs(delta) <= 1) return true;
+  // Gecko truncates fractional scrollTop writes even when layout has subpixel
+  // coordinates (e.g. Windows display scaling). Round once so repeated guards
+  // do not keep biasing the restored reading position upwards.
+  writeChatScrollTop(chatBox, Math.round(chatBox.scrollTop + delta));
   return true;
 }
 

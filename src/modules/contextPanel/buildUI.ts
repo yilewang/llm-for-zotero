@@ -26,6 +26,7 @@ import {
 import { getConversationKey } from "./conversationIdentity";
 import { createRuntimeSystemControls } from "./runtimeSystemControls";
 import { buildContextUsagePresentation } from "./textUtils";
+import { createChatLatestButton } from "./chatLatestButton";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -312,7 +313,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const chatBox = createElement(doc, "div", "llm-messages", {
     id: "llm-chat-box",
   });
-  chatShell.append(chatBox);
+  chatShell.append(chatBox, createChatLatestButton(doc));
   if (isStandaloneBody) {
     const chatResizeHandle = createElement(
       doc,

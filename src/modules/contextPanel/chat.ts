@@ -12249,8 +12249,11 @@ export function refreshConversationPanels(
       if (includeChat) {
         refreshChat(body, item, chatOptions);
       }
-      if (includePanelState) {
-        syncPanelState?.();
+      if (includePanelState && syncPanelState) {
+        // Panel-state refreshes can run on a later frame, outside the event's
+        // scroll guard. Resizing the composer and rebuilding previews must
+        // preserve this viewport's reading position too, including mirrors.
+        withScrollGuard(chatBox, conversationKey, syncPanelState);
       }
     };
     updatePanel();

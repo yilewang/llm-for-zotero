@@ -3027,6 +3027,94 @@
   user-select: text;
 }
 
+.llm-chat-latest {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 50%;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+.llm-chat-latest[hidden] {
+  display: none;
+}
+
+.llm-chat-latest:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.llm-chat-latest:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.llm-chat-latest-arrow {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.llm-chat-latest-dots {
+  display: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.llm-chat-latest[data-pending="true"] .llm-chat-latest-dots {
+  display: flex;
+}
+
+.llm-chat-latest[data-pending="true"] .llm-chat-latest-arrow {
+  display: none;
+}
+
+.llm-chat-latest-dots > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: llm-chat-latest-pulse 1.2s ease-in-out infinite;
+}
+
+.llm-chat-latest-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.llm-chat-latest-dots > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes llm-chat-latest-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-chat-latest-dots > span {
+    animation: none;
+  }
+}
+
 /* Conversation turn navigator */
 .llm-chat-shell.llm-turn-navigator-visible .llm-messages {
   padding-left: 25px;
@@ -9437,11 +9525,13 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-action-link .llm-citation-icon {
-  width: 0;
-  min-width: 0;
+  /* Reserve the jump glyph's space so hovering a chip cannot wrap its row. */
+  width: 14px;
+  min-width: 14px;
   overflow: hidden;
   margin-left: -2px;
-  transition: width 100ms;
+  opacity: 0;
+  transition: opacity 100ms;
 }
 
 .llm-agent-action-link:hover .llm-paper-context-chip-label,
@@ -9452,8 +9542,7 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-action-link:hover .llm-citation-icon {
-  width: 14px;
-  min-width: 14px;
+  opacity: 1;
   color: var(--color-accent);
 }
 

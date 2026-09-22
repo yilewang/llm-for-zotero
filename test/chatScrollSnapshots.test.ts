@@ -91,6 +91,13 @@ class FakeElement {
     return child;
   }
 
+  contains(element: FakeElement | null): boolean {
+    for (let current = element; current; current = current.parentElement) {
+      if (current === this) return true;
+    }
+    return false;
+  }
+
   addEventListener(type: string, listener: EventListener): void {
     const listeners = this.listeners.get(type) || new Set<EventListener>();
     listeners.add(listener);
@@ -185,7 +192,7 @@ function matchesSelector(element: FakeElement, selector: string): boolean {
     );
     return Boolean(element.dataset[key]);
   }
-  if (/^[a-z]+$/i.test(selector))
+  if (/^[a-z][a-z0-9]*$/i.test(selector))
     return element.tagName.toLowerCase() === selector.toLowerCase();
   // Like the DOM, an unparseable selector is a SyntaxError, not a miss.
   throw new SyntaxError(`'${selector}' is not a valid selector`);
@@ -401,6 +408,202 @@ describe("chat scroll snapshots", function () {
     paragraph.offsetTop += 21;
     element.scrollHeight += 21;
     reconcileChatScroll(1, box);
+    assert.equal(paragraph.getBoundingClientRect().top, 10);
+  });
+
+  for (const inlineCitation of [false, true]) {
+    it(`does not pull the reading paragraph toward a growing ${inlineCitation ? "citation" : "quote card"} at the bottom edge`, function () {
+      clearChatScrollSnapshotsForTests();
+      const element = makeChatBox({
+        scrollTop: 500,
+        scrollHeight: 2000,
+        clientHeight: 300,
+      });
+      const wrapper = appendElement(element, "llm-message-wrapper", {
+        offsetTop: 0,
+        offsetHeight: 2000,
+        dataset: { messageRole: "assistant", messageTimestamp: "1" },
+      });
+      const answer = appendElement(wrapper, "llm-assistant-answer", {
+        offsetTop: 0,
+        offsetHeight: 2000,
+      });
+      const paragraph = appendElement(answer, "", {
+        offsetTop: 500,
+        offsetHeight: 120,
+      });
+      paragraph.tagName = "P";
+      const citation = appendElement(
+        answer,
+        inlineCitation ? "llm-citation-button" : "llm-quote-card",
+        {
+          offsetTop: 790,
+          offsetHeight: 40,
+          dataset: inlineCitation
+            ? { citationSyncKey: "source-1" }
+            : { quoteCitationId: "quote-1" },
+        },
+      );
+      const box = element as unknown as HTMLDivElement;
+      initializeChatScrollViewport(1, box);
+      withScrollGuard(box, 1, () => {
+        // Only content below the paragraph grows; its own position is unchanged.
+        citation.offsetTop += 100;
+        element.scrollHeight += 100;
+      });
+      assert.equal(paragraph.getBoundingClientRect().top, 0);
+      assert.equal(box.scrollTop, 500);
+      assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+    });
+  }
+
+  it("restores the visible answer instead of its identical collapsed activity text", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 2000,
+      clientHeight: 300,
+    });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 2000,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const trace = appendElement(wrapper, "llm-agent-inline-text", {
+      offsetTop: 0,
+      offsetHeight: 1000,
+    });
+    const oldParagraph = appendElement(trace, "", {
+      offsetTop: 500,
+      offsetHeight: 100,
+    });
+    oldParagraph.tagName = "P";
+    Object.assign(oldParagraph, { textContent: "The paragraph being read." });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    let replacement: FakeElement;
+    withScrollGuard(box, 1, () => {
+      oldParagraph.getBoundingClientRect = () => ({
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+      });
+      const answer = appendElement(wrapper, "llm-assistant-answer", {
+        offsetTop: 0,
+        offsetHeight: 1500,
+      });
+      replacement = appendElement(answer, "", {
+        offsetTop: 650,
+        offsetHeight: 100,
+      });
+      replacement.tagName = "P";
+      Object.assign(replacement, { textContent: "The paragraph being read." });
+    });
+    assert.equal(replacement!.getBoundingClientRect().top, 0);
+    assert.equal(box.scrollTop, 650);
+  });
+
+  for (const inSummary of [false, true]) {
+    it(`anchors ${inSummary ? "a visible summary quote" : "the visible paragraph instead of a cached quote rect"} in closed details`, function () {
+      clearChatScrollSnapshotsForTests();
+      const element = makeChatBox({
+        scrollTop: 500,
+        scrollHeight: 2000,
+        clientHeight: 300,
+      });
+      const wrapper = appendElement(element, "llm-message-wrapper", {
+        offsetTop: 0,
+        offsetHeight: 2000,
+        dataset: { messageRole: "assistant", messageTimestamp: "1" },
+      });
+      const details = appendElement(wrapper, "", {
+        offsetTop: 500,
+        offsetHeight: 40,
+      });
+      Object.assign(details, { tagName: "DETAILS", open: false });
+      const summary = appendElement(details, "", {
+        offsetTop: 500,
+        offsetHeight: 40,
+      });
+      summary.tagName = "SUMMARY";
+      const quote = appendElement(
+        inSummary ? summary : details,
+        "llm-quote-card",
+        {
+          offsetTop: 501,
+          offsetHeight: 30,
+          dataset: { quoteCitationId: "quote-1" },
+        },
+      );
+      const answer = appendElement(wrapper, "llm-assistant-answer", {
+        offsetTop: 510,
+        offsetHeight: 1490,
+      });
+      const paragraph = appendElement(answer, "", {
+        offsetTop: 510,
+        offsetHeight: 100,
+      });
+      Object.assign(paragraph, {
+        tagName: "P",
+        textContent: "The visible paragraph.",
+      });
+      // Gecko can retain these positive rects even for closed details content.
+      assert.equal(quote.getBoundingClientRect().height, 30);
+      const box = element as unknown as HTMLDivElement;
+      persistChatScrollSnapshotForConversationKey(1, box);
+      const anchor = getChatScrollSnapshot(1, box)?.anchor;
+      assert.equal(anchor?.kind, inSummary ? "quote" : "answerBlock");
+      assert.equal(anchor?.viewportOffsetTop, inSummary ? 1 : 10);
+      if (inSummary) assert.equal(anchor?.quoteCitationId, "quote-1");
+      else assert.equal(anchor?.blockText, "The visible paragraph.");
+    });
+  }
+
+  it("ignores compositor subpixel drift while still restoring real content movement", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 500, scrollHeight: 2000 });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 2000,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const answer = appendElement(wrapper, "llm-assistant-answer", {
+      offsetTop: 0,
+      offsetHeight: 2000,
+    });
+    const paragraph = appendElement(answer, "", {
+      offsetTop: 510,
+      offsetHeight: 100,
+    });
+    paragraph.tagName = "P";
+    const box = element as unknown as HTMLDivElement;
+    persistChatScrollSnapshotForConversationKey(1, box);
+    const snapshot = getChatScrollSnapshot(1, box)!;
+    assert.equal(snapshot.anchor?.viewportOffsetTop, 10);
+    let scrollTop = element.scrollTop;
+    let scrollWrites = 0;
+    Object.defineProperty(element, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollWrites += 1;
+        scrollTop = value;
+      },
+    });
+
+    for (const delta of [2 / 3, -2 / 3]) {
+      paragraph.offsetTop = 510 + delta;
+      applyChatScrollSnapshot(box, snapshot);
+      assert.equal(scrollWrites, 0, `${delta} px must not write scrollTop`);
+      assert.equal(element.scrollTop, 500);
+    }
+
+    paragraph.offsetTop = 520;
+    applyChatScrollSnapshot(box, snapshot);
+    assert.equal(scrollWrites, 1);
+    assert.equal(element.scrollTop, 510);
     assert.equal(paragraph.getBoundingClientRect().top, 10);
   });
 

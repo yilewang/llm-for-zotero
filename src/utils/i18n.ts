@@ -35,6 +35,8 @@ const zhCN: Record<string, string> = {
   "Query with attached content": "包含附件内容的问题",
   "Empty query": "空问题",
   "Answer in progress": "回答生成中",
+  "Jump to latest message": "回到最新消息",
+  "Response in progress. Jump to latest message": "正在输出，点击回到最新消息",
   "Generated image response": "生成的图片回答",
   "Interrupted response": "回答已中断",
   "No answer yet": "尚无回答",
