@@ -40,6 +40,8 @@ declare namespace _ZoteroTypes {
       "originalAgentPermissionMode": string;
       "originalAgentPermissionModeMigrationDone": boolean;
       "tavilyApiKey": string;
+      "webAccessProvider": string;
+      "anysearchApiKey": string;
       "conversationSystem": string;
       "enableCodexAppServerMode": boolean;
       "codexAppServerModel": string;

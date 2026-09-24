@@ -1062,59 +1062,121 @@
 
               <html:div id="__addonRef__-tavily-card" class="llm-pref-section">
                 <html:span class="llm-pref-section-title">Web search</html:span>
-                <html:span class="llm-pref-hint">
-                  Adds current, general web search and focused page reading to
-                  the in-plugin Agent. The key stays in your local Zotero
-                  preferences.
-                </html:span>
                 <html:div class="llm-pref-field">
-                  <html:label for="__addonRef__-tavily-api-key"
-                    >API key</html:label
+                  <html:label for="__addonRef__-web-access-provider"
+                    >Web search provider</html:label
                   >
                   <html:div class="llm-pref-control">
-                    <html:div class="llm-pref-line">
+                    <html:select
+                      id="__addonRef__-web-access-provider"
+                      class="llm-pref-input"
+                    >
+                      <html:option value="tavily">Tavily</html:option>
+                      <html:option value="anysearch">AnySearch</html:option>
+                    </html:select>
+                  </html:div>
+                </html:div>
+                <html:div id="__addonRef__-anysearch-settings" hidden="hidden">
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-anysearch-api-key"
+                      >AnySearch API key (optional)</html:label
+                    >
+                    <html:div class="llm-pref-control">
                       <html:input
-                        id="__addonRef__-tavily-api-key"
+                        id="__addonRef__-anysearch-api-key"
                         class="llm-pref-input"
                         type="password"
                         autocomplete="off"
-                        placeholder="tvly-…"
                       ></html:input>
                       <html:button
-                        id="__addonRef__-tavily-test"
-                        class="llm-pref-button llm-pref-button--accent"
+                        id="__addonRef__-anysearch-test"
+                        class="llm-pref-button"
                         type="button"
+                        >Test search (sends a public query)</html:button
                       >
-                        Test connection
-                      </html:button>
+                      <html:span
+                        id="__addonRef__-anysearch-status"
+                        class="llm-pref-hint"
+                        role="status"
+                        aria-live="polite"
+                        style="white-space: pre-line"
+                      ></html:span>
+                      <html:span class="llm-pref-hint">
+                        Leave the key blank for anonymous AnySearch access.
+                        Saving these settings does not make a request. Quotas
+                        and access are controlled by the service.
+                      </html:span>
+                      <html:span class="llm-pref-hint">
+                        AnySearch receives search queries and requested public
+                        URLs. Keys stay in local Zotero preferences. Do not send
+                        credentials or private library text. No automatic retry
+                        or provider fallback is performed.
+                      </html:span>
+                      <html:span class="llm-pref-hint">
+                        General search and bounded page extraction only. No
+                        depth, topic, date/domain filters, query-focused
+                        extraction, or PDF/Office/media extraction. Usage
+                        credits are not reported.
+                      </html:span>
                     </html:div>
-                    <html:a
-                      id="__addonRef__-tavily-key-link"
-                      class="llm-pref-link"
-                      href="https://app.tavily.com"
+                  </html:div>
+                </html:div>
+                <html:div id="__addonRef__-tavily-settings">
+                  <html:span class="llm-pref-hint">
+                    Adds current, general web search and focused page reading to
+                    the in-plugin Agent. The key stays in your local Zotero
+                    preferences.
+                  </html:span>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-tavily-api-key"
+                      >API key</html:label
                     >
-                      Get a free API key
-                    </html:a>
-                    <html:span
-                      id="__addonRef__-tavily-status"
-                      class="llm-pref-hint"
-                      role="status"
-                      aria-live="polite"
-                      style="display: none; white-space: pre-line"
-                    ></html:span>
-                    <html:span class="llm-pref-hint">
-                      Basic search costs 1 Tavily credit; Advanced costs 2.
-                      Basic extraction costs 1 credit per 5 successful pages;
-                      Advanced costs 2 per 5. Tavily currently offers a free
-                      monthly credit allowance.
-                    </html:span>
-                    <html:span class="llm-pref-hint">
-                      Search queries and requested URLs are sent to Tavily and
-                      are handled under Tavily's privacy, retention, and
-                      search-index policies. When displayed, favicons are loaded
-                      from public URLs supplied by Tavily. Do not include
-                      credentials or sensitive private text in web queries.
-                    </html:span>
+                    <html:div class="llm-pref-control">
+                      <html:div class="llm-pref-line">
+                        <html:input
+                          id="__addonRef__-tavily-api-key"
+                          class="llm-pref-input"
+                          type="password"
+                          autocomplete="off"
+                          placeholder="tvly-…"
+                        ></html:input>
+                        <html:button
+                          id="__addonRef__-tavily-test"
+                          class="llm-pref-button llm-pref-button--accent"
+                          type="button"
+                        >
+                          Test connection
+                        </html:button>
+                      </html:div>
+                      <html:a
+                        id="__addonRef__-tavily-key-link"
+                        class="llm-pref-link"
+                        href="https://app.tavily.com"
+                      >
+                        Get a free API key
+                      </html:a>
+                      <html:span
+                        id="__addonRef__-tavily-status"
+                        class="llm-pref-hint"
+                        role="status"
+                        aria-live="polite"
+                        style="display: none; white-space: pre-line"
+                      ></html:span>
+                      <html:span class="llm-pref-hint">
+                        Basic search costs 1 Tavily credit; Advanced costs 2.
+                        Basic extraction costs 1 credit per 5 successful pages;
+                        Advanced costs 2 per 5. Tavily currently offers a free
+                        monthly credit allowance.
+                      </html:span>
+                      <html:span class="llm-pref-hint">
+                        Search queries and requested URLs are sent to Tavily and
+                        are handled under Tavily's privacy, retention, and
+                        search-index policies. When displayed, favicons are
+                        loaded from public URLs supplied by Tavily. Do not
+                        include credentials or sensitive private text in web
+                        queries.
+                      </html:span>
+                    </html:div>
                   </html:div>
                 </html:div>
               </html:div>

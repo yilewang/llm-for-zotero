@@ -12,6 +12,7 @@ import type {
 } from "../../../webAccess/types";
 import { registerWebSearchSources } from "../../../webAccess/runSources";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
+import { getWebAccessProvider } from "../../../webAccess/prefs";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { fail, ok, validateObject } from "../shared";
 import {
@@ -23,8 +24,8 @@ import {
 
 export type WebSearchInput = {
   query: string;
-  depth: WebAccessDepth;
-  topic: WebSearchTopic;
+  depth?: WebAccessDepth;
+  topic?: WebSearchTopic;
   maxResults: number;
   timeRange?: WebSearchTimeRange;
   startDate?: string;
@@ -105,6 +106,28 @@ export function validateWebSearchInput(
   if (!query) return fail("query is required");
   if (query.length > 2_000)
     return fail("query must be 2,000 characters or less");
+  if (getWebAccessProvider() === "anysearch") {
+    if (
+      Object.keys(args).some(
+        (key) =>
+          !["query", "maxResults"].includes(key) && args[key] !== undefined,
+      )
+    ) {
+      return fail(
+        "AnySearch supports only query and maxResults; Tavily-only fields and vertical filters are not supported.",
+      );
+    }
+    const maxResults = args.maxResults ?? 5;
+    if (
+      typeof maxResults !== "number" ||
+      !Number.isInteger(maxResults) ||
+      maxResults < 1 ||
+      maxResults > 10
+    ) {
+      return fail("maxResults must be an integer from 1 to 10");
+    }
+    return ok({ query, maxResults });
+  }
   if (args.depth !== "basic" && args.depth !== "advanced") {
     return fail("depth must be one of: basic, advanced");
   }
@@ -191,7 +214,7 @@ function buildSearchTraceDetails(
 export function createWebSearchTool(
   providerFactory: WebAccessProviderFactory = createConfiguredWebAccessProvider,
 ): AgentToolDefinition<WebSearchInput, WebSearchToolResult> {
-  return {
+  const tool: AgentToolDefinition<WebSearchInput, WebSearchToolResult> = {
     spec: {
       name: "web_search",
       description:
@@ -252,6 +275,7 @@ export function createWebSearchTool(
         const input = validateWebSearchInput(args);
         const result = content as Partial<WebSearchToolResult> | undefined;
         if (!input.ok || !result) return null;
+        if (result.provider === "anysearch") return "Searched web · AnySearch";
         return `Searched web · Depth: ${input.value.depth}`;
       },
       summaries: {
@@ -281,8 +305,12 @@ export function createWebSearchTool(
       if (!context.runId) {
         throw new Error("web_search requires an active local agent run.");
       }
+      // Revalidate against the current saved provider if preferences changed
+      // after the model received its schema. Never drop unsupported fields.
+      const validated = validateWebSearchInput(input);
+      if (!validated.ok) throw new Error(validated.error);
       const result = await providerFactory().search({
-        ...input,
+        ...validated.value,
         signal: context.signal,
       });
       const results = registerWebSearchSources(context.runId, result.results);
@@ -292,6 +320,34 @@ export function createWebSearchTool(
         citation: webCitationInstruction(
           results.map((source) => source.sourceId),
         ),
+      };
+    },
+  };
+  return {
+    ...tool,
+    get spec() {
+      if (getWebAccessProvider() !== "anysearch") return tool.spec;
+      return {
+        ...tool.spec,
+        description:
+          "Search the public web with AnySearch. Supports query and result count only, not depth, topic, date/domain filters or vertical selection. Use literature_search for scholarly discovery and web_read for page text.",
+        inputSchema: {
+          type: "object",
+          required: ["query"],
+          additionalProperties: false,
+          properties: {
+            query: { type: "string", minLength: 1, maxLength: 2000 },
+            maxResults: { type: "integer", minimum: 1, maximum: 10 },
+          },
+        },
+      };
+    },
+    get guidance() {
+      if (getWebAccessProvider() !== "anysearch") return tool.guidance;
+      return {
+        matches: matchesWebSearchGuidance,
+        instruction:
+          "Use web_search for current or general public evidence. AnySearch accepts query and maxResults only; do not invent depth, topic, date/domain filters or vertical options. Use web_read with searched URLs only when snippets are insufficient. Every final-answer paragraph using web information must end with the hidden source marker described in the result, using only returned sourceId values. Do not add a references footer.",
       };
     },
   };

@@ -1,18 +1,28 @@
 import type { AgentRuntimeRequest } from "../../types";
-import { getTavilyApiKey, hasTavilyApiKey } from "../../../webAccess/prefs";
+import {
+  getTavilyApiKey,
+  hasTavilyApiKey,
+  getAnysearchApiKey,
+  getWebAccessProvider,
+} from "../../../webAccess/prefs";
 import type { WebAccessProvider } from "../../../webAccess/types";
 import { TavilyClient } from "../../../webAccess/tavilyClient";
+import { AnysearchClient } from "../../../webAccess/anysearchClient";
 
 export type WebAccessProviderFactory = () => WebAccessProvider;
 
 export function createConfiguredWebAccessProvider(): WebAccessProvider {
+  if (getWebAccessProvider() === "anysearch") {
+    return new AnysearchClient(getAnysearchApiKey());
+  }
   return new TavilyClient(getTavilyApiKey());
 }
 
 export function isWebAccessToolAvailable(
   request: AgentRuntimeRequest,
 ): boolean {
-  if (!hasTavilyApiKey()) return false;
+  if (getWebAccessProvider() !== "anysearch" && !hasTavilyApiKey())
+    return false;
   if (
     request.authMode === "codex_app_server" ||
     request.authMode === "webchat"

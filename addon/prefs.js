@@ -33,6 +33,8 @@ pref("claudeCodePermissionModeMigrationDone", false);
 pref("originalAgentPermissionMode", "auto");
 pref("originalAgentPermissionModeMigrationDone", false);
 pref("tavilyApiKey", "");
+pref("webAccessProvider", "tavily");
+pref("anysearchApiKey", "");
 pref("conversationSystem", "upstream");
 pref("enableCodexAppServerMode", false);
 pref("codexAppServerModel", "gpt-5.4");

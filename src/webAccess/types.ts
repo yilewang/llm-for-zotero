@@ -8,6 +8,7 @@ export type WebAccessErrorCode =
   | "validation"
   | "service"
   | "network"
+  | "timeout"
   | "cancelled"
   | "unsafe_url";
 
@@ -26,6 +27,8 @@ export type WebSourceRecord = {
   content?: string;
   score?: number;
   publishedDate?: string;
+  /** Local output limit was applied; does not imply server-side completeness. */
+  truncated?: boolean;
 };
 
 export type WebSourceDisplay = Pick<
@@ -48,8 +51,8 @@ export type WebAccessUsage = {
 
 export type WebSearchRequest = {
   query: string;
-  depth: WebAccessDepth;
-  topic: WebSearchTopic;
+  depth?: WebAccessDepth;
+  topic?: WebSearchTopic;
   maxResults: number;
   timeRange?: WebSearchTimeRange;
   startDate?: string;
@@ -62,18 +65,18 @@ export type WebSearchRequest = {
 export type WebSearchResponse = {
   provider: string;
   query: string;
-  depth: WebAccessDepth;
-  topic: WebSearchTopic;
+  depth?: WebAccessDepth;
+  topic?: WebSearchTopic;
   results: WebSourceRecord[];
-  usage: WebAccessUsage;
+  usage?: WebAccessUsage;
   requestId?: string;
 };
 
 export type WebReadRequest = {
   urls: string[];
-  query: string;
-  depth: WebAccessDepth;
-  chunksPerSource: number;
+  query?: string;
+  depth?: WebAccessDepth;
+  chunksPerSource?: number;
   signal?: AbortSignal;
 };
 
@@ -84,11 +87,12 @@ export type WebReadFailure = {
 
 export type WebReadResponse = {
   provider: string;
-  query: string;
-  depth: WebAccessDepth;
+  query?: string;
+  depth?: WebAccessDepth;
   pages: WebSourceRecord[];
   failedResults: WebReadFailure[];
-  usage: WebAccessUsage;
+  usage?: WebAccessUsage;
+  requestIds?: string[];
   requestId?: string;
 };
 

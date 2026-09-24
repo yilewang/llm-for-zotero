@@ -1,0 +1,81 @@
+{
+  "schema": "anysearch-native-validation-public/1",
+  "scope": "preferences-test-search-only",
+  "started_at_utc": "2026-09-24T10:10:56.545Z",
+  "runner_finished_at_utc": "2026-09-24T10:11:00.805Z",
+  "runtime": {
+    "application": "Zotero",
+    "version": "10.0.3",
+    "platform": "Windows x64"
+  },
+  "plugin": {
+    "name": "llm-for-zotero",
+    "version": "3.9.9",
+    "base_commit": "4d20b41442c89dfe047fce7d2627928763be558a",
+    "revision_kind": "local patch on the stated base; source hashes identify tested implementation",
+    "production_source_sha256": {
+      "src/webAccess/anysearchClient.ts": "9c8cf2c18e31f7454c8cb6e08d012a58cdc8d54b65ad246055561ca882b8e958",
+      "src/modules/preferences/webAccessPanel.ts": "684e11ba1282597fa0c843d46c05bec60f00cdb5c3d3545229885a2ffedc8407"
+    },
+    "installed_test_bundle_sha256": "0657b2dfe64fbb6de77c9b4d696346d3f852117f47890872b58a6093735859d3"
+  },
+  "entry": "Preferences > llm-for-zotero > Agent > Web search > Test search",
+  "profile": "fresh isolated profile and data directory; no personal library or credentials",
+  "settings": {
+    "provider": "anysearch",
+    "key_present": false,
+    "provider_persisted": true,
+    "empty_key_persisted": true,
+    "closed_and_reopened": true,
+    "limitation": "preference-store/reopen proof, not process-restart durability"
+  },
+  "button_invocations": 1,
+  "native_request": {
+    "countKind": "exact-endpoint-Zotero.HTTP.request-dispatches-not-wire",
+    "dispatchCount": 1,
+    "request": {
+      "method": "POST",
+      "url": "https://api.anysearch.com/v1/search",
+      "body": {
+        "query": "Zotero reference management",
+        "max_results": 3
+      }
+    },
+    "authorizationPresent": false,
+    "nativeObserverInvocations": 1,
+    "loadAnonymousVerified": true,
+    "cookieIsolation": "native-user-context",
+    "nativeUserContextVerified": true,
+    "returnedHTTPStatus": 200,
+    "businessCode": 0,
+    "requestId": "d363dc89-9a7b-42dc-9173-7627a790d277",
+    "restoreState": "restored"
+  },
+  "ui_result_count": 3,
+  "ui_request_id": "d363dc89-9a7b-42dc-9173-7627a790d277",
+  "ui_results": [
+    {
+      "title": "Zotero",
+      "url": "https://www.zotero.org/"
+    },
+    {
+      "title": "Zotero Reference Manager - Library Research Guides at Georgia ...",
+      "url": "https://libguides.ggc.edu/Zotero_Reference_Manager"
+    },
+    {
+      "title": "Zotero - Reference Management Software - LibGuides at Navitas",
+      "url": "https://libguides.navitas.com/reference-management/zotero"
+    }
+  ],
+  "test_result": {
+    "passed": 1,
+    "failed": 0
+  },
+  "model_calls": 0,
+  "limitations": [
+    "Observed Zotero.HTTP.request dispatches, not network-packet counts.",
+    "No model-driven Agent conversation or live citation-delivery verification.",
+    "No live web_read extraction or valid-key service verification.",
+    "No upstream merge, published-release inclusion or sponsor acceptance implied."
+  ]
+}
