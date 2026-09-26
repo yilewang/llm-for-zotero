@@ -32,6 +32,13 @@ export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
   "file_io",
   "run_command",
 ] as const;
+// PDF turns use Codex's native file/shell access. Planning tools are exposed
+// only in their applicable scope, so the allowed catalog is not a required set.
+export const REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES = [
+  "library_search",
+  "library_read",
+  "paper_read",
+] as const;
 export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
   "library_read",
