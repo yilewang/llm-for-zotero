@@ -365,6 +365,12 @@ export class TavilyClient implements WebAccessProvider {
   }
 
   async search(request: WebSearchRequest): Promise<WebSearchResponse> {
+    if (!request.depth || !request.topic) {
+      throw new WebAccessError(
+        "Tavily requires depth and topic.",
+        "validation",
+      );
+    }
     const body = await this.request(
       "POST",
       TAVILY_SEARCH_URL,
@@ -414,6 +420,12 @@ export class TavilyClient implements WebAccessProvider {
   }
 
   async read(request: WebReadRequest): Promise<WebReadResponse> {
+    if (!request.query || !request.depth || !request.chunksPerSource) {
+      throw new WebAccessError(
+        "Tavily requires query, depth, and chunksPerSource.",
+        "validation",
+      );
+    }
     const urls = request.urls.map(normalizePublicWebUrl);
     const body = await this.request(
       "POST",

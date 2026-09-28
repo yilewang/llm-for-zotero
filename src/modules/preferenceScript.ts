@@ -291,7 +291,12 @@ import {
   getClaudeUserHomeDir,
 } from "../claudeCode/projectSkills";
 import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
-import { getTavilyApiKey, setTavilyApiKey } from "../webAccess/prefs";
+import {
+  getTavilyApiKey,
+  setTavilyApiKey,
+  getWebAccessProvider,
+} from "../webAccess/prefs";
+import { registerWebAccessPreferences } from "./preferences/webAccessPanel";
 import { TavilyClient } from "../webAccess/tavilyClient";
 import {
   getDefaultClaudeManagedInstructionBlock,
@@ -3117,6 +3122,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  registerWebAccessPreferences(doc);
+
   if (tavilyApiKeyInput) {
     tavilyApiKeyInput.value = getTavilyApiKey();
     const commitTavilyKey = () => {
@@ -3451,6 +3458,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       originalOn
         ? [
             selectedOptionLabel(originalAgentPermissionModeSelect),
+            getWebAccessProvider() === "anysearch" ||
             tavilyApiKeyInput?.value.trim()
               ? t("Web search on")
               : t("Web search off"),

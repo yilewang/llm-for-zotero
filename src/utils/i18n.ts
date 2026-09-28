@@ -13,6 +13,37 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Web search provider": "网页搜索服务",
+  "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
+  "Test search (sends a public query)": "测试搜索（发送公开查询）",
+  "Select AnySearch before testing.": "请先选择 AnySearch 再测试。",
+  "AnySearch results": "AnySearch 结果",
+  "AnySearch test search failed.": "AnySearch 测试搜索失败。",
+  "AnySearch quota exhausted. No credentials were adopted and no retry was made.":
+    "AnySearch 额度已耗尽。未采用任何返回的凭据，也未重试。",
+  "AnySearch rate limit reached. Try again later.":
+    "AnySearch 请求已被限流，请稍后重试。",
+  "AnySearch rejected authentication or access. Check the configured key and permissions.":
+    "AnySearch 拒绝了身份验证或访问。请检查配置的密钥和权限。",
+  "AnySearch request failed.": "AnySearch 请求失败。",
+  "AnySearch request failed or returned an invalid response.":
+    "AnySearch 请求失败或返回了无效响应。",
+  "AnySearch request timed out.": "AnySearch 请求超时。",
+  "AnySearch request was cancelled.": "AnySearch 请求已取消。",
+  "AnySearch returned an invalid response.": "AnySearch 返回了无效响应。",
+  "AnySearch rejected the request parameters.": "AnySearch 拒绝了请求参数。",
+  "AnySearch returned incomplete result fields.":
+    "AnySearch 返回的结果字段不完整。",
+  "AnySearch returned an invalid business status.":
+    "AnySearch 返回了无效业务状态。",
+  "AnySearch returned an invalid results list.":
+    "AnySearch 返回了无效结果列表。",
+  "Leave the key blank for anonymous AnySearch access. Saving these settings does not make a request. Quotas and access are controlled by the service.":
+    "密钥留空即可匿名访问 AnySearch。保存设置不会发起请求。额度和访问权限由服务端控制。",
+  "AnySearch receives search queries and requested public URLs. Keys stay in local Zotero preferences. Do not send credentials or private library text. No automatic retry or provider fallback is performed.":
+    "AnySearch 会接收搜索词和请求的公开网址。密钥保存在本地 Zotero 偏好设置中。请勿发送凭据或私密文献库文本。不会自动重试或回退到其他服务。",
+  "General search and bounded page extraction only. No depth, topic, date/domain filters, query-focused extraction, or PDF/Office/media extraction. Usage credits are not reported.":
+    "仅支持通用搜索和有数量限制的网页正文提取。不支持深度、主题、日期或域名过滤、按问题聚焦提取以及 PDF、Office 或媒体提取。不报告积分用量。",
   // ── Shortcut actions ────────────────────────────────────────────────────
   Summarize: "摘要",
   "Key Points": "要点",

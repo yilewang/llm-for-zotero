@@ -362,27 +362,54 @@ as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
 ## General Web Search
 
-Agent Mode can search the current public web with [Tavily](https://www.tavily.com/) and read the most relevant returned pages when search-result snippets are not enough.
+Agent Mode can search the current public web with Tavily or AnySearch and read returned pages when search-result snippets are not enough.
 Use it for current facts, official documentation, news, finance, product information, and other general-web evidence.
 Scholarly discovery remains separate: the agent uses CrossRef and Semantic Scholar for research literature, and it can combine both kinds of search when a question needs academic and general-web sources.
 
-To enable general web search:
+To enable general web search with Tavily (the default):
 
 1. Get a Tavily API key from [app.tavily.com](https://app.tavily.com/).
 2. Open `Preferences` -> `llm-for-zotero` -> **Agent**.
-3. In **Tavily Web Search**, paste the API key and click **Test connection**.
+3. In **Web search**, select **Tavily**, paste the API key and click **Test connection**.
 4. Enable Agent Mode and ask it to search or verify something online.
 
 There is no separate enable switch.
-The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when a Tavily key is configured.
+The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when Tavily has a key or AnySearch is selected.
 They are not added to WebChat, Codex App Server, or Claude Code conversations, which use their own runtimes and tool sets.
 
-The agent chooses basic or advanced search and page-reading depth from the request, or follows an explicit request such as _"use advanced web search."_
+With Tavily, the agent chooses basic or advanced search and page-reading depth from the request, or follows an explicit request such as _"use advanced web search."_
 It can narrow searches by topic, date, or domain, and answers include clickable source indicators for the pages actually used.
 
 Basic search costs 1 Tavily credit and advanced search costs 2.
 Page extraction also consumes Tavily credits, and Tavily currently offers a free monthly allowance.
 The API key stays in local Zotero preferences, but search queries and requested URLs are sent to Tavily, so do not include credentials or sensitive private text in web queries.
+
+### AnySearch
+
+In **Preferences → llm-for-zotero → Agent → Web search**, select
+**AnySearch**. Leave **AnySearch API key (optional)** blank for anonymous
+access, or enter an existing key. Saving preferences does not make a request.
+The provider selection is persisted; selecting AnySearch does not reuse a
+Tavily key. No environment-variable key fallback is used.
+**Test search (sends a public query)** explicitly sends a fixed public query
+without invoking a model and displays result count, titles, URLs and the
+request ID when available. It consumes service quota; it is not an Agent
+conversation or proof of the Agent tool/citation path.
+
+AnySearch supports general search with `query` and `maxResults` (1–10),
+and `web_read` with one to five URLs returned by search in the same run.
+Extraction uses at most two concurrent requests and returns bounded page text,
+not query-focused passages. Depth, topic, date/domain filters, chunk controls
+and vertical/source selection are not supported and are rejected rather than
+silently ignored. PDF, Office and media-binary extraction are not supported.
+Search queries and requested URLs are sent to AnySearch; do not include
+credentials or private library content.
+
+Anonymous quotas and permissions are server-controlled. An exhausted quota
+produces an error; the integration does not adopt credentials from responses,
+automatically retry, switch providers, or report fictional credit usage.
+See [AnySearch maintenance and validation notes](ANYSEARCH.md) for the
+supported contract, tests, limitations and outstanding live acceptance checks.
 
 ## Codex Setup (ChatGPT Plus Subscribers)
 
