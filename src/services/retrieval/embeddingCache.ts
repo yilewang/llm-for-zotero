@@ -71,7 +71,7 @@ function getBaseDir(): string {
   throw new Error("Cannot resolve data directory for embedding cache");
 }
 
-function getCacheDir(): string {
+export function getCacheDir(): string {
   return joinLocalPath(getBaseDir(), EMBEDDING_CACHE_DIR);
 }
 
@@ -79,7 +79,15 @@ function getCachePath(itemId: number): string {
   return joinLocalPath(getCacheDir(), `${itemId}.json`);
 }
 
-async function ensureDir(path: string): Promise<void> {
+export function getImageCacheDir(itemId: number): string {
+  return joinLocalPath(getCacheDir(), "images", `${itemId}`);
+}
+
+export function getImageVectorsPath(itemId: number): string {
+  return joinLocalPath(getCacheDir(), `${itemId}.images.json`);
+}
+
+export async function ensureDir(path: string): Promise<void> {
   const io = getIOUtils();
   if (io?.makeDirectory) {
     await io.makeDirectory(path, {
@@ -94,7 +102,7 @@ async function ensureDir(path: string): Promise<void> {
   }
 }
 
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
+export async function readFileBytes(path: string): Promise<Uint8Array | null> {
   const io = getIOUtils();
   if (io?.read) {
     try {
@@ -120,7 +128,10 @@ async function readFileBytes(path: string): Promise<Uint8Array | null> {
   return null;
 }
 
-async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+export async function writeFileBytes(
+  path: string,
+  bytes: Uint8Array,
+): Promise<void> {
   const io = getIOUtils();
   if (io?.write) {
     await io.write(path, bytes);
@@ -132,7 +143,7 @@ async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function removePath(path: string): Promise<void> {
+export async function removePath(path: string): Promise<void> {
   const io = getIOUtils();
   if (io?.remove) {
     try {
@@ -269,6 +280,8 @@ export async function saveCachedEmbeddings(
 export async function clearEmbeddingCache(itemId?: number): Promise<void> {
   if (itemId != null) {
     await removePath(getCachePath(itemId));
+    await removePath(getImageVectorsPath(itemId));
+    await removePath(getImageCacheDir(itemId));
   } else {
     await removePath(getCacheDir());
   }

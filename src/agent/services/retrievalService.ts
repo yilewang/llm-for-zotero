@@ -1,12 +1,31 @@
-import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
+import { appLogger } from "../../core/logging";
+import {
+  buildPaperRetrievalCandidates,
+  ensurePaperImageVectors,
+} from "../../services/paperContent/pdfContext";
 import type { RetrievalExplanation } from "../../services/paperContent/types";
+import {
+  MAX_IMAGES_PER_READ,
+  selectRetrievalImages,
+  type ImageSelectionReason,
+} from "../../services/retrieval/imageSelection";
+import {
+  getImageFilePath,
+  type EmbeddedImageRecord,
+} from "../../services/retrieval/imageStore";
 import {
   resolveRetrievalQueryPlan,
   type RetrievalQueryPlan,
 } from "../../services/retrieval/retrievalQueryPlan";
 import {
+  RETRIEVAL_DEFAULTS,
+  readRetrievalSettings,
+  type RetrievalSettings,
+} from "../../utils/embedding/settings";
+import {
   callEmbeddings,
   getResolvedEmbeddingConfig,
+  isImageEmbeddingEnabled,
   resolveSemanticSearchState,
   type ChatParams,
 } from "../../utils/llmClient";
@@ -39,6 +58,59 @@ type RetrievalResult = {
   pageEnd?: number;
   /** Why this chunk was retrieved: input ranks, section prior, structure rule. */
   why?: RetrievalExplanation;
+};
+
+export type RetrievalImageResult = {
+  paperContext: PaperContextRef;
+  citationLabel: string;
+  sourceLabel: string;
+  imageId: string;
+  /** 0-based. */
+  pageIndex: number;
+  label?: string;
+  caption?: string;
+  score: number;
+  why: ImageSelectionReason;
+  imagePath: string;
+  mimeType: string;
+  source: "embedded" | "vector" | "mineru";
+};
+
+type PaperSource = Awaited<ReturnType<PdfService["ensurePaperContext"]>>;
+
+export type RetrievalImageDeps = {
+  isImageEmbeddingEnabled: () => boolean;
+  readSettings: () => RetrievalSettings;
+  loadImageVectors: (
+    pdfContext: NonNullable<PaperSource>,
+    attachmentId: number,
+  ) => Promise<{ records: EmbeddedImageRecord[]; vectors: number[][] } | null>;
+  embedQuery: (text: string) => Promise<number[] | undefined>;
+  imagePath: (attachmentId: number, fileName: string) => string;
+};
+
+const DEFAULT_IMAGE_DEPS: RetrievalImageDeps = {
+  // Semantic search switched off means no query embedding, so no images.
+  isImageEmbeddingEnabled: () => {
+    try {
+      return resolveSemanticSearchState().enabled && isImageEmbeddingEnabled();
+    } catch {
+      return false;
+    }
+  },
+  readSettings: () => {
+    try {
+      return readRetrievalSettings();
+    } catch {
+      return RETRIEVAL_DEFAULTS;
+    }
+  },
+  loadImageVectors: ensurePaperImageVectors,
+  embedQuery: (text) =>
+    callEmbeddings([text])
+      .then((values) => values[0])
+      .catch(() => undefined),
+  imagePath: getImageFilePath,
 };
 
 function dedupePaperContexts(
@@ -106,15 +178,37 @@ export function buildEvidenceCacheKey(params: {
   ]);
 }
 
+type EvidenceCacheEntry = {
+  results: RetrievalResult[];
+  /** [chunkIndex, query–chunk similarity] for the image selection rules. */
+  embeddingScores: Array<[number, number]>;
+};
+
+type RetrievalParams = Parameters<RetrievalService["retrieveEvidence"]>[0];
+
+type RetrievalRun = {
+  results: RetrievalResult[];
+  /** Keyed by `${contextItemId}:${chunkIndex}`. */
+  embeddingScores: Map<string, number>;
+  pdfContexts: Map<number, PaperSource>;
+  semanticQuery: string;
+  queryEmbedding?: number[];
+};
+
+function chunkScoreKey(contextItemId: number, chunkIndex: number): string {
+  return `${contextItemId}:${chunkIndex}`;
+}
+
 export class RetrievalService {
   private readonly evidenceCache = new Map<
     EvidenceCacheKey,
-    RetrievalResult[]
+    EvidenceCacheEntry
   >();
 
   constructor(
     private readonly pdfService: PdfService,
     private readonly candidateBuilder = buildPaperRetrievalCandidates,
+    private readonly imageDeps: RetrievalImageDeps = DEFAULT_IMAGE_DEPS,
   ) {}
 
   async retrieveEvidence(params: {
@@ -136,18 +230,115 @@ export class RetrievalService {
     sectionIds?: string[];
     sectionIdsByPaper?: ReadonlyMap<number, readonly string[]>;
   }): Promise<RetrievalResult[]> {
+    return (await this.retrieveInternal(params)).results;
+  }
+
+  /**
+   * Text evidence as {@link retrieveEvidence} returns it, plus the paper
+   * images the hit chunks vouch for or that clearly stand out on their own.
+   */
+  async retrieveEvidenceWithImages(
+    params: RetrievalParams & { includeImages?: boolean },
+  ): Promise<{ results: RetrievalResult[]; images: RetrievalImageResult[] }> {
+    const run = await this.retrieveInternal(params);
+    const settings = this.imageDeps.readSettings();
+    if (
+      params.includeImages === false ||
+      settings.imageTopK <= 0 ||
+      !this.imageDeps.isImageEmbeddingEnabled()
+    ) {
+      return { results: run.results, images: [] };
+    }
+    let queryEmbedding = run.queryEmbedding;
+    const images: RetrievalImageResult[] = [];
+    for (const paperContext of dedupePaperContexts(params.papers)) {
+      const pdfContext = run.pdfContexts.get(paperContext.contextItemId);
+      if (!pdfContext) continue;
+      const index = await this.imageDeps
+        .loadImageVectors(pdfContext, paperContext.contextItemId)
+        .catch(() => null);
+      if (!index?.records.length) continue;
+      if (!queryEmbedding && run.semanticQuery.trim()) {
+        queryEmbedding = await this.imageDeps.embedQuery(run.semanticQuery);
+      }
+      if (!queryEmbedding) break;
+      const hitChunks = run.results
+        .filter(
+          (result) =>
+            result.paperContext.contextItemId === paperContext.contextItemId,
+        )
+        .map((result) => {
+          const span = pdfContext.chunkPageSpans?.[result.chunkIndex];
+          return {
+            text: result.text,
+            pageStart: span ? span.start : result.pageStart,
+            pageEnd: span ? span.end : result.pageEnd,
+            embeddingScore: run.embeddingScores.get(
+              chunkScoreKey(paperContext.contextItemId, result.chunkIndex),
+            ),
+          };
+        });
+      const picked = selectRetrievalImages({
+        images: index.records.map((record, position) => ({
+          ...record,
+          vector: index.vectors[position] || [],
+        })),
+        queryEmbedding,
+        hitChunks,
+        topK: settings.imageTopK,
+        outstandingPercent: settings.imageOutstandingPercent,
+        onDiagnostics: (details) =>
+          appLogger.debug("[Embedded images] Selection", {
+            contextItemId: paperContext.contextItemId,
+            hitChunkSimilarities: hitChunks.map(
+              (entry) => entry.embeddingScore,
+            ),
+            ...details,
+          }),
+      });
+      for (const { image, score, why } of picked) {
+        images.push({
+          paperContext,
+          citationLabel: formatPaperCitationLabel(paperContext),
+          sourceLabel: formatPaperSourceLabel(paperContext),
+          imageId: image.imageId,
+          pageIndex: image.pageIndex,
+          ...(image.label ? { label: image.label } : {}),
+          ...(image.caption ? { caption: image.caption } : {}),
+          score,
+          why,
+          imagePath: this.imageDeps.imagePath(
+            paperContext.contextItemId,
+            image.fileName,
+          ),
+          mimeType: image.mimeType,
+          source: image.source ?? "embedded",
+        });
+      }
+    }
+    images.sort((a, b) => b.score - a.score);
+    return {
+      results: run.results,
+      images: images.slice(0, MAX_IMAGES_PER_READ),
+    };
+  }
+
+  private async retrieveInternal(
+    params: RetrievalParams,
+  ): Promise<RetrievalRun> {
+    const embeddingScores = new Map<string, number>();
+    const pdfContexts = new Map<number, PaperSource>();
     const papers = dedupePaperContexts(params.papers);
-    if (!papers.length) return [];
+    if (!papers.length) {
+      return { results: [], embeddingScores, pdfContexts, semanticQuery: "" };
+    }
+    const settings = this.imageDeps.readSettings();
     const perPaperTopK = Number.isFinite(params.perPaperTopK)
       ? Math.max(1, Math.floor(params.perPaperTopK as number))
-      : 4;
+      : settings.textTopK;
     const topK = Number.isFinite(params.topK)
       ? Math.max(1, Math.floor(params.topK as number))
-      : 6;
-    const pdfContexts = new Map<
-      number,
-      Awaited<ReturnType<PdfService["ensurePaperContext"]>>
-    >();
+      : Math.max(6, settings.textTopK);
     for (const paperContext of papers) {
       pdfContexts.set(
         paperContext.contextItemId,
@@ -222,7 +413,13 @@ export class RetrievalService {
       });
       const cached = this.evidenceCache.get(cacheKey);
       if (cached) {
-        results.push(...cached);
+        results.push(...cached.results);
+        for (const [chunkIndex, score] of cached.embeddingScores) {
+          embeddingScores.set(
+            chunkScoreKey(paperContext.contextItemId, chunkIndex),
+            score,
+          );
+        }
         continue;
       }
       // Shared across this read's papers, and never spent for a cache hit.
@@ -273,7 +470,19 @@ export class RetrievalService {
         pageEnd: candidate.pageEnd,
         why: candidate.why,
       }));
-      this.evidenceCache.set(cacheKey, paperResults);
+      const paperScores: Array<[number, number]> = candidates.map(
+        (candidate) => [candidate.chunkIndex, candidate.embeddingScore],
+      );
+      for (const [chunkIndex, score] of paperScores) {
+        embeddingScores.set(
+          chunkScoreKey(paperContext.contextItemId, chunkIndex),
+          score,
+        );
+      }
+      this.evidenceCache.set(cacheKey, {
+        results: paperResults,
+        embeddingScores: paperScores,
+      });
       results.push(...paperResults);
     }
     // Evidence mode gives every paper's rank-1 chunk the same score, so the
@@ -285,7 +494,13 @@ export class RetrievalService {
         b.hybridScore - a.hybridScore ||
         a.chunkIndex - b.chunkIndex,
     );
-    return results.slice(0, topK);
+    return {
+      results: results.slice(0, topK),
+      embeddingScores,
+      pdfContexts,
+      semanticQuery: queryPlan.semanticQuery,
+      queryEmbedding: queryEmbedding ? await queryEmbedding : undefined,
+    };
   }
 
   clearEvidenceCache(): void {

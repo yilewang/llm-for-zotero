@@ -53,6 +53,9 @@ import {
   resolveDefaultTargets,
 } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
+import { buildArtifactFollowupMessage } from "../../model/toolArtifactDelivery";
+import { resolveRequestContentInputs } from "../../model/messageBuilder";
+import { buildRetrievedImageDelivery } from "./retrievedImages";
 import { createViewPdfPagesTool } from "./viewPdfPages";
 import {
   readDocumentsExhaustively,
@@ -94,6 +97,7 @@ type PaperReadInput = {
   neighborPages?: number;
   maxChars?: number;
   topK?: number;
+  includeImages?: boolean;
   visualInput?: unknown;
 };
 
@@ -1095,7 +1099,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page. When image embedding is enabled, targeted reads may also return relevant figures from the paper as images.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -1137,7 +1141,11 @@ export function createPaperReadTool(
               "Optional explicit paper targets. Provide target or targets, never both; omit both to use the current turn's paper scope.",
             items: PAPER_TARGET_SELECTOR_SCHEMA,
           },
-          query: { type: "string" },
+          query: {
+            type: "string",
+            description:
+              "Search text only: the concepts, terms or formula to find. Every word is matched against the paper's text and figures, so do not put instructions or requests in it.",
+          },
           figureLabels: {
             type: "array",
             items: { type: "string" },
@@ -1168,6 +1176,11 @@ export function createPaperReadTool(
           neighborPages: { type: "number" },
           maxChars: { type: "number" },
           topK: { type: "number" },
+          includeImages: {
+            type: "boolean",
+            description:
+              "Targeted reads only. When image embedding is enabled, relevant figures from the paper are returned by default; pass false when the question does not concern figures.",
+          },
         },
       },
       executionClass: "read",
@@ -1364,6 +1377,10 @@ export function createPaperReadTool(
         neighborPages: normalizePositiveInt(args.neighborPages),
         maxChars: normalizePositiveInt(args.maxChars),
         topK: normalizePositiveInt(args.topK),
+        includeImages:
+          typeof args.includeImages === "boolean"
+            ? args.includeImages
+            : undefined,
       };
       if (mode === "visual" || mode === "capture") {
         const visualValidation = visualTool.validate(targetForPageTool(input));
@@ -1421,7 +1438,7 @@ export function createPaperReadTool(
         reason:
           input.mode === "visual" || input.mode === "capture"
             ? "The host renders selected PDF pages and sends reviewed images to the model."
-            : "The host-owned paper reader returns metadata or extracted text without changing the source.",
+            : "The host-owned paper reader returns metadata or extracted text without changing the source; retrieval results may include figures from the paper.",
       }),
     async execute(input, context) {
       if (input.mode === "visual" || input.mode === "capture") {
@@ -1812,27 +1829,29 @@ export function createPaperReadTool(
       ]
         .filter(Boolean)
         .join("\n");
-      const results = await retrievalService.retrieveEvidence({
-        intent: context.request.classifiedIntent,
-        papers: targets,
-        question,
-        queryVariants: input.queryVariants,
-        model: context.request.model,
-        apiBase: context.request.apiBase,
-        apiKey: context.request.apiKey,
-        authMode: context.request.authMode,
-        providerProtocol: context.request.providerProtocol,
-        profileOverride: context.request.advanced?.profileOverride,
-        topK: input.topK,
-        perPaperTopK: input.topK,
-        sectionIdsByPaper,
-      });
+      const { results, images } =
+        await retrievalService.retrieveEvidenceWithImages({
+          includeImages: input.includeImages,
+          intent: context.request.classifiedIntent,
+          papers: targets,
+          question,
+          queryVariants: input.queryVariants,
+          model: context.request.model,
+          apiBase: context.request.apiBase,
+          apiKey: context.request.apiKey,
+          authMode: context.request.authMode,
+          providerProtocol: context.request.providerProtocol,
+          profileOverride: context.request.advanced?.profileOverride,
+          topK: input.topK,
+          perPaperTopK: input.topK,
+          sectionIdsByPaper,
+        });
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();
       for (const [key, outline] of outlineByPaper) {
         embeddedOutlines.set(key, buildEmbeddedOutline(outline));
       }
-      return {
+      const content = {
         mode,
         results,
         papers: buildTargetedPaperGroups(
@@ -1846,8 +1865,18 @@ export function createPaperReadTool(
           ? { warnings: sectionFilter.warnings }
           : {}),
       };
+      if (!images.length) return content;
+      const delivery = await buildRetrievedImageDelivery(images);
+      if (!delivery.entries.length) return content;
+      return {
+        content: { ...content, images: delivery.entries },
+        artifacts: delivery.artifacts,
+      };
     },
-    async buildFollowupMessage(result: AgentToolResult) {
+    async buildFollowupMessage(
+      result: AgentToolResult,
+      context: AgentToolContext,
+    ) {
       const content =
         result.content && typeof result.content === "object"
           ? (result.content as { capturedPageIndex?: unknown })
@@ -1855,7 +1884,13 @@ export function createPaperReadTool(
       if (content?.capturedPageIndex !== undefined) {
         return buildCaptureFollowupMessage(result);
       }
-      return null;
+      // Figure crops, retrieved images and rendered pages travel as artifacts.
+      // A tool-defined follow-up replaces the runtime's default delivery, so
+      // without this the model would get their captions but never the images.
+      return buildArtifactFollowupMessage(result, {
+        contentInputs: resolveRequestContentInputs(context.request),
+        modelName: context.request.model,
+      });
     },
   };
 }

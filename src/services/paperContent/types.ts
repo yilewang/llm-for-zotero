@@ -11,6 +11,17 @@ export type PdfContext = {
   embeddingPromise?: Promise<number[][] | null>;
   embeddingPromiseKey?: string;
   embeddingFailureKey?: string;
+  /** Embedded-image index state; present only while image embedding is on. */
+  imageIndex?: {
+    extraction?: Promise<
+      import("../retrieval/imageStore").EmbeddedImageRecord[] | null
+    >;
+    vectors?: number[][];
+    vectorsKey?: string;
+    failureKey?: string;
+  };
+  /** MinerU only: per-chunk page span derived from section pages. */
+  chunkPageSpans?: Array<{ start: number; end: number } | undefined>;
   sourceType?:
     | "mineru"
     | "zotero-worker"

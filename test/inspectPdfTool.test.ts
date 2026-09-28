@@ -8,6 +8,7 @@ import { createReadAttachmentTool } from "../src/agent/tools/read/readAttachment
 import { createViewPdfPagesTool } from "../src/agent/tools/read/viewPdfPages";
 import type { AgentToolContext, AgentToolResult } from "../src/agent/types";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { withImageRetrieval } from "./helpers/retrievalMocks";
 
 describe("search_paper tool", function () {
   const baseContext: AgentToolContext = {
@@ -28,7 +29,7 @@ describe("search_paper tool", function () {
 
   it("retrieves evidence across multiple paper contexts", async function () {
     const tool = createSearchPaperTool(
-      {
+      withImageRetrieval({
         retrieveEvidence: async ({
           papers,
         }: {
@@ -45,7 +46,7 @@ describe("search_paper tool", function () {
             score: 0.9 - index * 0.1,
             sourceLabel: `Paper ${paper.itemId}`,
           })),
-      } as never,
+      }) as never,
       {
         ensurePaperContext: async () => {},
       } as never,
@@ -81,7 +82,7 @@ describe("search_paper tool", function () {
 
   it("resolves evidence targets from explicit item and attachment IDs", async function () {
     const tool = createSearchPaperTool(
-      {
+      withImageRetrieval({
         retrieveEvidence: async ({
           papers,
         }: {
@@ -98,7 +99,7 @@ describe("search_paper tool", function () {
             score: 0.9 - index * 0.1,
             sourceLabel: `Paper ${paper.itemId}`,
           })),
-      } as never,
+      }) as never,
       {
         ensurePaperContext: async () => {},
       } as never,
@@ -142,9 +143,9 @@ describe("search_paper tool", function () {
 
   it("does not fall back to ambient paper context for invalid evidence targets", async function () {
     const tool = createSearchPaperTool(
-      {
+      withImageRetrieval({
         retrieveEvidence: async () => [],
-      } as never,
+      }) as never,
       {
         ensurePaperContext: async () => {},
       } as never,

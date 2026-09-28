@@ -31,6 +31,7 @@ import {
   readOnlyInvocationPlan,
   stateChangeInvocationPlan,
 } from "../src/agent/authorization/invocationPlan";
+import { withImageRetrieval } from "./helpers/retrievalMocks";
 
 type EndpointReply = [number, string, string];
 
@@ -2899,7 +2900,7 @@ describe("Zotero MCP server", function () {
             ensuredPaper = paperContext;
           },
         } as never,
-        {
+        withImageRetrieval({
           retrieveEvidence: async () => [
             {
               itemId: paper.itemId,
@@ -2908,7 +2909,7 @@ describe("Zotero MCP server", function () {
               text: "method evidence",
             },
           ],
-        } as never,
+        }) as never,
         {} as never,
         gateway,
       ),

@@ -27,6 +27,7 @@ import {
 } from "../src/services/pdf/pdfFigureCropCache";
 import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { withImageRetrieval } from "./helpers/retrievalMocks";
 
 function createPaperReadTool(
   ...args: Parameters<typeof createResolvedPaperReadTool>
@@ -553,7 +554,7 @@ describe("semantic tool surface", function () {
             ensuredPaper = paperContext;
           },
         } as never,
-        {
+        withImageRetrieval({
           retrieveEvidence: async () => [
             {
               itemId: activePaper.itemId,
@@ -562,7 +563,7 @@ describe("semantic tool surface", function () {
               text: "method evidence",
             },
           ],
-        } as never,
+        }) as never,
         {} as never,
         {
           listPaperContexts: () => [activePaper],
@@ -2484,7 +2485,7 @@ describe("semantic tool surface", function () {
       {
         ensurePaperContext: async () => ({ chunks: ["methods"] }),
       } as never,
-      {
+      withImageRetrieval({
         retrieveEvidence: async () => [
           {
             paperContext: firstPaper,
@@ -2509,7 +2510,7 @@ describe("semantic tool surface", function () {
             pageLabel: "8",
           },
         ],
-      } as never,
+      }) as never,
       {} as never,
       {
         resolvePaperContextTarget: ({ itemId }: { itemId?: number }) =>
@@ -3037,12 +3038,12 @@ describe("semantic tool surface", function () {
           );
         },
       } as never,
-      {
+      withImageRetrieval({
         retrieveEvidence: async () => {
           retrievalCalls += 1;
           return [];
         },
-      } as never,
+      }) as never,
       {
         readPageTexts: async ({ pages }: { pages: number[] }) => {
           requestedPages = pages;
@@ -3127,13 +3128,13 @@ describe("semantic tool surface", function () {
     const pageReadItemIds: number[] = [];
     const tool = createPaperReadTool(
       {} as never,
-      {
+      withImageRetrieval({
         retrieveEvidence: async () => {
           throw new Error(
             "semantic retrieval should not run for explicit pages",
           );
         },
-      } as never,
+      }) as never,
       {
         readPageTexts: async ({
           paperContext,
@@ -3216,7 +3217,7 @@ describe("semantic tool surface", function () {
       {
         ensurePaperContext: async () => ({ chunks: ["memory"] }),
       } as never,
-      {
+      withImageRetrieval({
         retrieveEvidence: async ({
           papers,
         }: {
@@ -3244,7 +3245,7 @@ describe("semantic tool surface", function () {
             },
           ];
         },
-      } as never,
+      }) as never,
       {} as never,
       {
         listPaperContexts: () => [paperContext, { ...paperContext }],
@@ -3286,7 +3287,7 @@ describe("semantic tool surface", function () {
       {
         ensurePaperContext: async () => ({ chunks: ["memory"] }),
       } as never,
-      {
+      withImageRetrieval({
         retrieveEvidence: async ({
           papers,
         }: {
@@ -3305,7 +3306,7 @@ describe("semantic tool surface", function () {
             },
           ];
         },
-      } as never,
+      }) as never,
       {} as never,
       {
         listPaperContexts: () => [],

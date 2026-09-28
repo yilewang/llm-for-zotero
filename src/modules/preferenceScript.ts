@@ -110,11 +110,29 @@ import {
   resolveCopilotAccessToken,
   fetchCopilotModelList,
   callEmbeddings,
+  embedItemsForCapabilityTest,
+  fetchEmbeddingModelCatalog,
   getAutoEmbeddingProviderSummary,
   resolveSemanticSearchState,
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "../services/paperContent/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
+import {
+  EMBEDDING_PREF_KEYS,
+  readMultimodalEmbeddingSettings,
+  resolveCandidateFormat,
+} from "../utils/embedding/settings";
+import {
+  parseDetectionRecord,
+  serializeDetectionRecord,
+} from "../utils/embedding/detectionRecord";
+import { runEmbeddingCapabilityTest } from "../utils/embedding/detection";
+import {
+  createEmbeddingMultimodalSection,
+  describeCapabilityTestOutcome,
+  drawEmbeddingTestImage,
+  type EmbeddingMultimodalSection,
+} from "./preferences/embeddingMultimodalSection";
 import {
   DEFAULT_COPILOT_API_BASE,
   transitionProviderAuthMode,
@@ -4799,6 +4817,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const provider = resolveEmbeddingProvider();
       const preset = EMBEDDING_PRESETS[provider];
       const isCustom = provider === "custom";
+      const getMultimodalSettings = () =>
+        readMultimodalEmbeddingSettings({
+          provider,
+          apiBase: readEmbPref("embeddingApiBase").trim().replace(/\/+$/, ""),
+          model: readEmbPref("embeddingModel").trim(),
+        });
+      let multimodalSection: EmbeddingMultimodalSection | null = null;
 
       const card = el(doc, "div", CARD_STYLE);
 
@@ -4876,6 +4901,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         apiBaseInput.value = readEmbPref("embeddingApiBase");
         apiBaseInput.addEventListener("change", () => {
           writeEmbPref("embeddingApiBase", apiBaseInput.value.trim());
+          multimodalSection?.refresh();
         });
         apiBaseWrap.appendChild(apiBaseInput);
         cardBody.appendChild(apiBaseWrap);
@@ -5030,6 +5056,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         modelInput.value = readEmbPref("embeddingModel");
         modelInput.addEventListener("change", () => {
           writeEmbPref("embeddingModel", modelInput.value.trim());
+          resetEmbeddingFailedFlags();
+          clearRetrievalCandidateCache();
+          multimodalSection?.refresh();
         });
         modelRow.appendChild(modelInput);
       }
@@ -5063,9 +5092,51 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         testStatus.textContent = t("Testing…");
         testStatus.style.color = "var(--fill-secondary, #888)";
         try {
-          await callEmbeddings(["test"]);
-          testStatus.textContent = t("✓ Connection successful");
-          testStatus.style.color = "green";
+          const before = getMultimodalSettings();
+          if (!isCustom || before.imagesPref === "off") {
+            await callEmbeddings(["test"]);
+            testStatus.textContent = t("✓ Connection successful");
+            testStatus.style.color = "green";
+            return;
+          }
+          const apiBase = readEmbPref("embeddingApiBase");
+          const { outcome, record } = await runEmbeddingCapabilityTest({
+            apiBase,
+            model: readEmbPref("embeddingModel"),
+            previousRecord: parseDetectionRecord(
+              readEmbPref(EMBEDDING_PREF_KEYS.capabilityDetection),
+            ),
+            imagesPref: before.imagesPref,
+            fetchModels: fetchEmbeddingModelCatalog,
+            resolveFormat: (ownedBy) =>
+              resolveCandidateFormat({
+                formatPref: before.formatPref,
+                apiBase,
+                ownedBy,
+              }).format,
+            embed: embedItemsForCapabilityTest,
+            testImageDataUrl: drawEmbeddingTestImage(doc),
+            now: () => Date.now(),
+          });
+          writeEmbPref(
+            EMBEDDING_PREF_KEYS.capabilityDetection,
+            serializeDetectionRecord(record),
+          );
+          const after = getMultimodalSettings();
+          if (
+            after.imagesEnabled !== before.imagesEnabled ||
+            after.format !== before.format
+          ) {
+            resetEmbeddingFailedFlags();
+            clearRetrievalCandidateCache();
+          }
+          multimodalSection?.refresh();
+          const view = describeCapabilityTestOutcome(
+            outcome,
+            before.imagesPref,
+          );
+          testStatus.textContent = view.text.slice(0, 120);
+          testStatus.style.color = view.ok ? "green" : "red";
         } catch (error) {
           testStatus.textContent = `✗ ${(error as Error).message}`.slice(
             0,
@@ -5081,6 +5152,24 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       modelWrap.appendChild(testStatus);
 
       cardBody.appendChild(modelWrap);
+
+      if (isCustom) {
+        multimodalSection = createEmbeddingMultimodalSection(doc, {
+          readPref: readEmbPref,
+          writePref: (key, value) => writeEmbPref(key, value),
+          getSettings: getMultimodalSettings,
+          onEffectiveChange: () => {
+            resetEmbeddingFailedFlags();
+            clearRetrievalCandidateCache();
+          },
+          styles: {
+            label: LABEL_STYLE,
+            input: INPUT_STYLE,
+            helper: HELPER_STYLE,
+          },
+        });
+        cardBody.appendChild(multimodalSection.element);
+      }
 
       card.appendChild(cardBody);
       semanticSearchMount.appendChild(card);

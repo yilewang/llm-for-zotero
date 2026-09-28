@@ -918,7 +918,7 @@ function getCatalogEndpoint(identity: ModelCatalogIdentity): string | null {
   }
 }
 
-function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
+export function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
   const rawModels =
     value &&
     typeof value === "object" &&
