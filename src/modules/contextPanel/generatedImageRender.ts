@@ -8,6 +8,7 @@ import { HTML_NS } from "../../utils/domHelpers";
 import { toFileUrl } from "../../utils/localPath";
 import { revealLocalPath } from "../../utils/revealLocalPath";
 import { copyTextToClipboard } from "./clipboard";
+import { PDF_LOCATION_ATTRIBUTES } from "./pdfPageLinks";
 import {
   isEmbeddableGeneratedImage,
   resolveGeneratedImageAsset,
@@ -456,6 +457,20 @@ export function renderAssistantGeneratedImagesInto(
       caption.className = "llm-assistant-generated-image-caption";
       caption.textContent = image.label;
       caption.title = image.label;
+      if (image.pdfLocation) {
+        // The chat's click handler opens the PDF at this page.
+        caption.classList.add("llm-pdf-page-caption");
+        caption.setAttribute(
+          PDF_LOCATION_ATTRIBUTES.contextItemId,
+          String(image.pdfLocation.contextItemId),
+        );
+        caption.setAttribute(
+          PDF_LOCATION_ATTRIBUTES.pageIndex,
+          String(image.pdfLocation.pageIndex),
+        );
+        caption.setAttribute("role", "link");
+        caption.title = `${image.label} — open page ${image.pdfLocation.pageIndex + 1} in the PDF`;
+      }
       figure.appendChild(caption);
     }
 

@@ -4,6 +4,7 @@ import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
 import type { getAgentApi } from "./agent";
 import type { WorkflowTestApi } from "./modules/contextPanel/workflowTestTypes";
+import { runPdfImageSpike } from "./services/pdf/embeddedImages/spike";
 
 class Addon {
   public data: {
@@ -30,6 +31,8 @@ class Addon {
   public api: {
     agent?: ReturnType<typeof getAgentApi>;
     workflowTest?: WorkflowTestApi;
+    /** Temporary pdf.js feasibility check; removed after verification. */
+    pdfImageSpike?: typeof runPdfImageSpike;
   };
 
   constructor() {
@@ -42,7 +45,7 @@ class Addon {
       dialogs: new Set(),
     };
     this.hooks = hooks;
-    this.api = {};
+    this.api = { pdfImageSpike: runPdfImageSpike };
   }
 }
 

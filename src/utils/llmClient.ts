@@ -59,8 +59,8 @@ export type {
   ModelTurnOutcome,
 } from "../shared/llm";
 import {
-  EMBEDDINGS_ENDPOINT,
   FILES_ENDPOINT,
+  getAbortController,
   resolveEndpoint,
   usesMaxCompletionTokens,
 } from "./apiHelpers";
@@ -125,6 +125,8 @@ import {
   flattenToDotPaths,
   toReasoningProvider,
   type ResolvedModelCapabilities,
+  parseDiscoveredModels,
+  type DiscoveredModel,
 } from "../modelCapabilities";
 import {
   CODEX_DIRECT_RESPONSES_URL,
@@ -144,6 +146,19 @@ import {
   resolveTransmittedOutputPolicy,
   type OutputRequestPolicy,
 } from "./outputTokenPolicy";
+import { embedItemsWithConfig } from "./embedding/client";
+import {
+  readEmbeddingBatchPrefs,
+  readMultimodalEmbeddingSettings,
+  resolveEmbeddingBatchLimits,
+  type MultimodalEmbeddingSettings,
+} from "./embedding/settings";
+import type {
+  EmbeddingBatchLimits,
+  EmbeddingRequestFormat,
+  MultimodalItem,
+} from "./embedding/types";
+import { optimizeImageDataUrl } from "./imageOptimization";
 
 // =============================================================================
 // Types
@@ -382,10 +397,6 @@ export function requireCompleteModelText(
   return outcome.text;
 }
 
-interface EmbeddingResponse {
-  data?: Array<{ index?: number; embedding?: number[] }>;
-}
-
 type NativePdfPart = {
   base64: string;
 };
@@ -497,6 +508,8 @@ export type ResolvedEmbeddingConfig = {
   providerKey: string;
   cacheKey: string;
   attemptKey: string;
+  /** Image support, request format and batch limits in force. */
+  multimodal: MultimodalEmbeddingSettings;
 };
 
 function normalizeEmbeddingApiBase(apiBase: string): string {
@@ -598,12 +611,26 @@ export function getResolvedEmbeddingConfig(): ResolvedEmbeddingConfig {
       providerKey: autoProviderKey,
       cacheKey: autoCacheKey,
       attemptKey: `${autoCacheKey}:auth=${fingerprintEmbeddingSecret(auto.apiKey)}`,
+      multimodal: readMultimodalEmbeddingSettings({
+        provider: auto.presetId,
+        apiBase: auto.apiBase,
+        model: autoModel,
+      }),
     };
   }
 
   const apiKey = resolveSeparateEmbeddingApiKey(embeddingProvider);
   const model = explicitEmbeddingModel || DEFAULT_EMBEDDING_MODEL;
-  const providerKey = `${embeddingProvider}:${embeddingApiBase}`;
+  const multimodal = readMultimodalEmbeddingSettings({
+    provider: embeddingProvider,
+    apiBase: embeddingApiBase,
+    model,
+  });
+  // Text through openai_compat is byte-identical to the legacy request, so
+  // only another format gets its own cache namespace.
+  const formatSuffix =
+    multimodal.format === "openai_compat" ? "" : `:fmt=${multimodal.format}`;
+  const providerKey = `${embeddingProvider}:${embeddingApiBase}${formatSuffix}`;
   const cacheKey = `${providerKey}:${model}`;
   return {
     apiBase: embeddingApiBase,
@@ -612,6 +639,7 @@ export function getResolvedEmbeddingConfig(): ResolvedEmbeddingConfig {
     providerKey,
     cacheKey,
     attemptKey: `${cacheKey}:auth=${fingerprintEmbeddingSecret(apiKey)}`,
+    multimodal,
   };
 }
 
@@ -4666,52 +4694,118 @@ export class EmbeddingUnsupportedError extends Error {
   }
 }
 
-export async function callEmbeddings(input: string[]): Promise<number[][]> {
-  const resolvedEmbedding = getResolvedEmbeddingConfig();
+const EMBEDDING_CATALOG_TIMEOUT_MS = 8000;
 
-  const apiBase = resolvedEmbedding.apiBase;
-  const apiKey = resolvedEmbedding.apiKey;
-  const embeddingModel = resolvedEmbedding.model;
+function defaultEmbeddingImageNormalizer(dataUrl: string): Promise<string> {
+  const win = Zotero.getMainWindow?.() as Window | undefined;
+  if (!win) return Promise.resolve(dataUrl);
+  return optimizeImageDataUrl(win, dataUrl, { mode: "embedding" });
+}
+
+function requireEmbeddingApiKey(resolved: ResolvedEmbeddingConfig): void {
   const embeddingProvider = (getPref("embeddingProvider") || "")
     .toString()
     .trim();
-
   // Custom providers (local/ollama) may not need an API key
-  if (!apiKey && embeddingProvider !== "custom") {
+  if (!resolved.apiKey && embeddingProvider !== "custom") {
     throw new Error(
       `Embedding provider "${embeddingProvider}" requires an API key. ` +
         "Set it in Settings → Customization → Semantic Search.",
     );
   }
+}
 
-  const payload = {
-    model: embeddingModel,
-    input,
-  };
+function sendEmbeddingItems(
+  items: MultimodalItem[],
+  resolved: ResolvedEmbeddingConfig,
+  request: {
+    format: EmbeddingRequestFormat;
+    limits: EmbeddingBatchLimits;
+    allowImages: boolean;
+  },
+): Promise<number[][]> {
+  return embedItemsWithConfig(
+    items,
+    {
+      apiBase: resolved.apiBase,
+      apiKey: resolved.apiKey,
+      model: resolved.model,
+      ...request,
+    },
+    {
+      fetchFn: getFetch(),
+      buildHeaders: (apiKey) => buildAuthHeaders(apiKey),
+      normalizeImage: defaultEmbeddingImageNormalizer,
+      createAbortController: () => {
+        const Ctor = getAbortController();
+        return Ctor ? new Ctor() : undefined;
+      },
+    },
+  );
+}
 
-  const url = resolveEndpoint(apiBase, EMBEDDINGS_ENDPOINT);
-  const res = await getFetch()(url, {
-    method: "POST",
-    headers: buildAuthHeaders(apiKey),
-    body: JSON.stringify(payload),
+/** Embeds text and images with the configured model; one vector per input. */
+export async function embedItems(items: MultimodalItem[]): Promise<number[][]> {
+  const resolved = getResolvedEmbeddingConfig();
+  requireEmbeddingApiKey(resolved);
+  const { multimodal } = resolved;
+  return sendEmbeddingItems(items, resolved, {
+    format: multimodal.format,
+    limits: multimodal.limits,
+    allowImages: multimodal.imagesEnabled,
   });
+}
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText} - ${text}`);
+export async function callEmbeddings(input: string[]): Promise<number[][]> {
+  return embedItems(input.map((text) => ({ kind: "text" as const, text })));
+}
+
+/**
+ * Settings-page Test only: probes a request format with images before image
+ * support is on, which is how auto-detection learns it.
+ */
+export async function embedItemsForCapabilityTest(
+  items: MultimodalItem[],
+  format: EmbeddingRequestFormat,
+): Promise<number[][]> {
+  const resolved = getResolvedEmbeddingConfig();
+  requireEmbeddingApiKey(resolved);
+  return sendEmbeddingItems(items, resolved, {
+    format,
+    limits: resolveEmbeddingBatchLimits(format, readEmbeddingBatchPrefs())
+      .limits,
+    allowImages: true,
+  });
+}
+
+/** GET {apiBase}/models for the embedding endpoint's capability declarations. */
+export async function fetchEmbeddingModelCatalog(): Promise<DiscoveredModel[]> {
+  const resolved = getResolvedEmbeddingConfig();
+  const url = resolveEndpoint(resolved.apiBase, "/v1/models");
+  const Ctor = getAbortController();
+  const controller = Ctor ? new Ctor() : undefined;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), EMBEDDING_CATALOG_TIMEOUT_MS)
+    : undefined;
+  try {
+    const res = await getFetch()(url, {
+      method: "GET",
+      headers: buildAuthHeaders(resolved.apiKey),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return parseDiscoveredModels(await res.json());
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
 
-  const data = (await res.json()) as EmbeddingResponse;
-  const embeddings = data?.data || [];
-  // Only sort by index when all items carry valid indices; otherwise
-  // preserve the original order to avoid misaligning embeddings with inputs.
-  const hasIndices =
-    embeddings.length > 0 &&
-    embeddings.every((item) => typeof item.index === "number");
-  const ordered = hasIndices
-    ? [...embeddings].sort((a, b) => a.index! - b.index!)
-    : embeddings;
-  return ordered.map((item) => item.embedding || []);
+export function isImageEmbeddingEnabled(): boolean {
+  try {
+    return getResolvedEmbeddingConfig().multimodal.imagesEnabled;
+  } catch {
+    return false;
+  }
 }
 
 /**

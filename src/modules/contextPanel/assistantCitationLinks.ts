@@ -1598,6 +1598,20 @@ async function openReaderForItem(
   return waitedReader;
 }
 
+/** Opens a PDF attachment in the reader, at a 0-based page when given. */
+export async function openPdfAttachmentAtPage(
+  contextItemId: number,
+  pageIndex?: number,
+): Promise<boolean> {
+  const reader = await openReaderForItem(
+    contextItemId,
+    pageIndex === undefined ? undefined : { pageIndex },
+  );
+  if (!reader) return false;
+  Zotero.getMainWindow()?.focus();
+  return true;
+}
+
 async function navigateReaderToPage(
   reader: any,
   pageIndex: number,

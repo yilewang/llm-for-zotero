@@ -1,4 +1,9 @@
+import { openPdfAttachmentAtPage } from "../../assistantCitationLinks";
 import { copyTextToClipboard, refreshConversationPanels } from "../../chat";
+import {
+  resolvePdfPageJump,
+  ZOTERO_PDF_PAGE_LINK_LOOKUPS,
+} from "../../pdfPageLinks";
 import { closeShortcutMenu, isShortcutMenuVisible } from "../../shortcuts";
 import { setPromptMenuTarget, setResponseMenuTarget } from "../../state";
 import {
@@ -268,6 +273,19 @@ export function attachFloatingMenuInteractionController(
           copyable?.setAttribute("data-copy-feedback", "copied");
           void copyTextToClipboard(body, source);
         }
+        return;
+      }
+
+      // Page links and image captions open the PDF in Zotero's reader here;
+      // their hrefs are inert fragments, so they must not reach launchURL.
+      const pageJump = resolvePdfPageJump(target, ZOTERO_PDF_PAGE_LINK_LOOKUPS);
+      if (pageJump) {
+        event.preventDefault();
+        event.stopPropagation();
+        void openPdfAttachmentAtPage(
+          pageJump.contextItemId,
+          pageJump.pageIndex,
+        );
         return;
       }
 

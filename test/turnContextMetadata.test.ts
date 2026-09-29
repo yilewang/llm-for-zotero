@@ -88,6 +88,76 @@ describe("Agent turn Zotero metadata context", function () {
     assert.notInclude(retryRender, "stored-key");
   });
 
+  function stubPaperWithAttachment(contentType: string) {
+    const parent = {
+      id: 7,
+      libraryID: 1,
+      key: "ITEMKEY",
+      itemType: "journalArticle",
+      isRegularItem: () => true,
+      isAttachment: () => false,
+      isNote: () => false,
+      getField: (fieldName: string) =>
+        fieldName === "title" ? "Paper Title" : "",
+      getDisplayTitle: () => "Paper Title",
+      getCreatorsJSON: () => [],
+    } as unknown as Zotero.Item;
+    const attachment = {
+      id: 70,
+      libraryID: 1,
+      key: "ATTKEY01",
+      itemType: "attachment",
+      parentID: 7,
+      attachmentContentType: contentType,
+      attachmentFilename: "paper.pdf",
+      isRegularItem: () => false,
+      isAttachment: () => true,
+      isNote: () => false,
+      getField: () => "",
+      getDisplayTitle: () => "Full Text",
+    } as unknown as Zotero.Item;
+    globalThis.Zotero = {
+      Items: {
+        get: (itemId: number) =>
+          itemId === 7 ? parent : itemId === 70 ? attachment : null,
+      },
+      Libraries: { userLibraryID: 1, get: () => ({}) },
+    } as unknown as typeof Zotero;
+    return resolveAgentRuntimeRequest({
+      conversationKey: 3,
+      mode: "agent",
+      userText: "Where is the formula?",
+      conversationKind: "paper",
+      libraryID: 1,
+      activeItemId: 7,
+      selectedPaperContexts: [
+        { itemId: 7, contextItemId: 70, title: "Paper Title" },
+      ],
+    });
+  }
+
+  it("gives a PDF paper a link the model can extend to a page", function () {
+    const rendered = buildVisibleTurnContextBlock(
+      stubPaperWithAttachment("application/pdf"),
+    );
+    assert.include(
+      rendered,
+      'pdfLink="zotero://open-pdf/library/items/ATTKEY01"',
+    );
+    assert.include(rendered, "?page=N");
+    assert.include(rendered, "0-based");
+    // Every page mention becomes a link.
+    assert.include(rendered, "Whenever the answer mentions a PDF page");
+  });
+
+  it("gives no PDF link to a paper whose content is not a PDF", function () {
+    const rendered = buildVisibleTurnContextBlock(
+      stubPaperWithAttachment("text/html"),
+    );
+    assert.notInclude(rendered, "pdfLink");
+    assert.notInclude(rendered, "?page=N");
+  });
+
   it("does not acquire ambient paper metadata for a collection scope", function () {
     let itemReads = 0;
     globalThis.Zotero = {

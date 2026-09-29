@@ -4980,6 +4980,15 @@
   text-overflow: ellipsis;
 }
 
+.llm-assistant-generated-image-caption.llm-pdf-page-caption {
+  cursor: pointer;
+}
+
+.llm-assistant-generated-image-caption.llm-pdf-page-caption:hover {
+  color: var(--color-accent, #2563eb);
+  text-decoration: underline;
+}
+
 .llm-agent-image-artifacts {
   width: calc(100% - 18px);
   max-width: 620px;

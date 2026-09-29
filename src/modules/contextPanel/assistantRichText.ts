@@ -17,6 +17,7 @@ import {
   decorateWebSourceIndicators,
   injectWebSourceAnchorTokens,
 } from "./webSourceIndicators";
+import { rewritePdfPageLinksForDisplay } from "./pdfPageLinks";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import {
   disposeStreamingMarkdown,
@@ -45,7 +46,7 @@ export function buildAssistantDisplayMarkdownForRender(
   const buildDisplay = message.streaming
     ? buildQuoteExpandedMarkdown
     : buildQuoteDisplayMarkdown;
-  return buildDisplay({
+  const displayMarkdown = buildDisplay({
     markdown: injectWebSourceAnchorTokens(
       stripWebSourceMarkersForDisplay(
         // The action-status block the runtime appends is written for the model
@@ -58,6 +59,9 @@ export function buildAssistantDisplayMarkdownForRender(
     quoteCitations: display.quoteCitations,
     allowLegacyInference: !hasWebSources,
   });
+  // Page links survive the panel's HTML parser only as fragments; the chat's
+  // click handler opens the page.
+  return rewritePdfPageLinksForDisplay(displayMarkdown);
 }
 
 export function decorateCompletedAssistantCitationLinks(

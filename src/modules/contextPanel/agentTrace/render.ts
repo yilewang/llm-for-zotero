@@ -4120,20 +4120,34 @@ function imageArtifactTooltip(artifact: ImageAgentToolArtifact): string {
   return parts.join(" · ");
 }
 
+function imageArtifactPdfLocation(
+  artifact: ImageAgentToolArtifact,
+): GeneratedChatImage["pdfLocation"] {
+  const contextItemId = Number(artifact.paperContext?.contextItemId);
+  const pageIndex = artifact.pageIndex;
+  if (!Number.isInteger(contextItemId) || contextItemId <= 0) return undefined;
+  if (pageIndex === undefined || pageIndex < 0) return undefined;
+  return { contextItemId, pageIndex };
+}
+
 function imageArtifactsToGeneratedImages(
   artifacts: unknown,
   keyPrefix: string,
 ): GeneratedChatImage[] {
-  return normalizeImageArtifacts(artifacts).map((artifact, index) => ({
-    id: `${keyPrefix}:${index}:${artifact.storedPath}${
-      artifact.contentHash ? `:${artifact.contentHash}` : ""
-    }`.slice(0, 200),
-    label: imageArtifactLabel(artifact),
-    path: artifact.storedPath,
-    ...(imageArtifactTooltip(artifact)
-      ? { revisedPrompt: imageArtifactTooltip(artifact) }
-      : {}),
-  }));
+  return normalizeImageArtifacts(artifacts).map((artifact, index) => {
+    const pdfLocation = imageArtifactPdfLocation(artifact);
+    return {
+      id: `${keyPrefix}:${index}:${artifact.storedPath}${
+        artifact.contentHash ? `:${artifact.contentHash}` : ""
+      }`.slice(0, 200),
+      label: imageArtifactLabel(artifact),
+      path: artifact.storedPath,
+      ...(imageArtifactTooltip(artifact)
+        ? { revisedPrompt: imageArtifactTooltip(artifact) }
+        : {}),
+      ...(pdfLocation ? { pdfLocation } : {}),
+    };
+  });
 }
 
 function appendImageArtifactGrid(

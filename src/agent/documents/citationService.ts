@@ -65,9 +65,23 @@ export function buildZoteroItemUri(libraryID: number, itemKey: string): string {
   return `zotero://select/${libraryPath(libraryID)}/items/${itemKey}`;
 }
 
+/** Opens the attachment's PDF in Zotero's reader, at a 0-based page if given. */
+export function buildZoteroOpenPdfUri(
+  libraryID: number,
+  attachmentItemKey: string,
+  pageIndex?: number,
+): string {
+  const base = `zotero://open-pdf/${libraryPath(libraryID)}/items/${attachmentItemKey}`;
+  return pageIndex === undefined ? base : `${base}?page=${pageIndex + 1}`;
+}
+
 export function buildPlanCitationSourceUri(source: PlanCitationSource): string {
   if (source.locator) {
-    return `zotero://open-pdf/${libraryPath(source.libraryID)}/items/${source.locator.attachmentItemKey}?page=${source.locator.pageIndex + 1}`;
+    return buildZoteroOpenPdfUri(
+      source.libraryID,
+      source.locator.attachmentItemKey,
+      source.locator.pageIndex,
+    );
   }
   return buildZoteroItemUri(source.libraryID, source.itemKey);
 }

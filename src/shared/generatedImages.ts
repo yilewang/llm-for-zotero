@@ -20,6 +20,21 @@ export function isRenderableGeneratedImageSrc(value: unknown): value is string {
   );
 }
 
+function cleanPdfLocation(value: unknown): GeneratedChatImage["pdfLocation"] {
+  if (!value || typeof value !== "object") return undefined;
+  const { contextItemId, pageIndex } = value as Record<string, unknown>;
+  if (!Number.isInteger(contextItemId) || (contextItemId as number) <= 0) {
+    return undefined;
+  }
+  if (!Number.isInteger(pageIndex) || (pageIndex as number) < 0) {
+    return undefined;
+  }
+  return {
+    contextItemId: contextItemId as number,
+    pageIndex: pageIndex as number,
+  };
+}
+
 export function normalizeGeneratedChatImages(
   value: unknown,
 ): GeneratedChatImage[] {
@@ -41,6 +56,7 @@ export function normalizeGeneratedChatImages(
     }
     if (!path && !src) continue;
     seen.add(id);
+    const pdfLocation = cleanPdfLocation(record.pdfLocation);
     images.push({
       id,
       ...(cleanGeneratedImageText(record.label, 240)
@@ -51,6 +67,7 @@ export function normalizeGeneratedChatImages(
       ...(cleanGeneratedImageText(record.revisedPrompt, 8000)
         ? { revisedPrompt: cleanGeneratedImageText(record.revisedPrompt, 8000) }
         : {}),
+      ...(pdfLocation ? { pdfLocation } : {}),
     });
   }
   return images;

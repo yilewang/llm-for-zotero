@@ -15,11 +15,13 @@ import {
 } from "../retrieval/embeddingCache";
 import {
   CHUNK_OVERLAP,
-  EMBEDDING_BATCH_SIZE,
   CHUNK_TARGET_LENGTH,
   RETRIEVAL_TOP_K_PER_PAPER,
   RRF_K,
 } from "../retrieval/constants";
+import { cosineSimilarity } from "../retrieval/similarity";
+import { computeSectionPageSpans } from "../retrieval/imageSelection";
+import { imageIndex } from "./imageIndex";
 import {
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
@@ -615,7 +617,20 @@ async function cachePDFText(
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
-      pdfTextCache.set(item.id, {
+      // MinerU chunks carry only their section's first page; image matching
+      // needs the whole span the section covers.
+      const chunkPageSpans =
+        sourceType === "mineru" &&
+        manifest &&
+        !manifest.noSections &&
+        manifest.sections.length > 0
+          ? computeSectionPageSpans(
+              chunkMeta,
+              manifest.sections,
+              manifest.totalPages,
+            )
+          : undefined;
+      const context: PdfContext = {
         title,
         chunks,
         chunkMeta,
@@ -625,7 +640,12 @@ async function cachePDFText(
         fullLength: pdfText.length,
 
         sourceType,
-      });
+        ...(chunkPageSpans ? { chunkPageSpans } : {}),
+      };
+      pdfTextCache.set(item.id, context);
+      // Images are extracted alongside the chunks while image embedding is
+      // on; nothing waits for it here.
+      if (pdfItem) imageIndex.startExtraction(context, pdfItem.id);
     } else {
       pdfTextCache.set(item.id, {
         title,
@@ -1780,32 +1800,6 @@ export function scoreChunkBM25(
   return score;
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (!a.length || !b.length || a.length !== b.length) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    const av = a[i];
-    const bv = b[i];
-    dot += av * bv;
-    normA += av * av;
-    normB += bv * bv;
-  }
-  if (!normA || !normB) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-async function embedTexts(texts: string[]): Promise<number[][]> {
-  const all: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchEmbeddings = await callEmbeddings(batch);
-    all.push(...batchEmbeddings);
-  }
-  return all;
-}
-
 async function ensureEmbeddings(
   pdfContext: PdfContext,
   itemId?: number,
@@ -1853,6 +1847,11 @@ async function ensureEmbeddings(
   const chunkHash = computeChunkHash(pdfContext.chunks);
   const chunkCount = pdfContext.chunks.length;
   const promise = (async () => {
+    // Image extraction and embedding run alongside the text; retrieval joins
+    // that run when it needs the image vectors.
+    if (itemId != null) {
+      void imageIndex.ensureImageVectors(pdfContext, itemId).catch(() => null);
+    }
     // Layer 2: Disk cache — check before calling the API
     if (itemId != null) {
       try {
@@ -1868,9 +1867,10 @@ async function ensureEmbeddings(
       }
     }
 
-    // Layer 3: API call
+    // Layer 3: API call, text only.
     try {
-      return await embedTexts(pdfContext.chunks);
+      // The client batches by the configured limits (16 per request by default).
+      return await callEmbeddings(pdfContext.chunks);
     } catch (err) {
       if (err instanceof EmbeddingUnsupportedError) {
         appLogger.info(
@@ -1918,6 +1918,14 @@ async function ensureEmbeddings(
     pdfContext.embeddingFailureKey = embeddingAttemptKey;
   }
   return false;
+}
+
+/** Retrieval entry point for image vectors; rebuilds a missing index. */
+export function ensurePaperImageVectors(
+  pdfContext: PdfContext,
+  itemId: number,
+) {
+  return imageIndex.ensureImageVectors(pdfContext, itemId);
 }
 
 /**

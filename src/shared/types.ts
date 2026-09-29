@@ -31,6 +31,8 @@ export type GeneratedChatImage = {
   path?: string;
   src?: string;
   revisedPrompt?: string;
+  /** Page the image came from; its caption opens the PDF there. */
+  pdfLocation?: { contextItemId: number; pageIndex: number };
 };
 
 export type PaperContentSourceMode =

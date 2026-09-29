@@ -261,13 +261,16 @@ export function renderTurnContextEnvelopeForModel(
   ]);
   if (libraryFields) lines.push(`Library scope: ${libraryFields}`);
 
+  let hasPdfLink = false;
   envelope.paperScope.papers.forEach((entry, index) => {
     const paper = entry.paper;
-    const projected = envelope.zoteroMetadataContext?.papers.find(
+    const paperMetadata = envelope.zoteroMetadataContext?.papers.find(
       (candidate) =>
         candidate.itemId === paper.itemId &&
         candidate.contextItemId === paper.contextItemId,
-    )?.metadata;
+    );
+    const projected = paperMetadata?.metadata;
+    if (paperMetadata?.pdfLink) hasPdfLink = true;
     const contentSource = projected?.contentSource;
     lines.push(
       `Paper ${index + 1}: ${renderFields([
@@ -292,6 +295,7 @@ export function renderTurnContextEnvelopeForModel(
         ["contentSourceFilename", contentSource?.filename],
         ["contentSourceType", contentSource?.contentType],
         ["contentSourceMode", paper.contentSourceMode],
+        ["pdfLink", paperMetadata?.pdfLink],
         [
           "metadataSource",
           projected?.source === "stored_fallback"
@@ -304,6 +308,11 @@ export function renderTurnContextEnvelopeForModel(
       lines.push(`Paper ${index + 1} metadata warning: ${warning.message}`);
     }
   });
+  if (hasPdfLink) {
+    lines.push(
+      "Whenever the answer mentions a PDF page, write it as a Markdown link to that paper's pdfLink with ?page=N appended, where N is the physical page: its 1-based position in the PDF file. Tool results' pageIndex, pageStart and pageEnd are 0-based, so N is that value plus 1; an image's page is already 1-based.",
+    );
+  }
 
   envelope.paperScope.collections.forEach((collection, index) => {
     lines.push(

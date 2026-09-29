@@ -175,6 +175,8 @@ export type ZoteroTurnPaperMetadata = Readonly<{
   itemId: number;
   contextItemId: number;
   metadata: ProjectedPaperMetadata;
+  /** zotero://open-pdf URI of the paper's PDF, when its content is a PDF. */
+  pdfLink?: string;
 }>;
 
 export type ZoteroTurnMetadataContext = Readonly<{

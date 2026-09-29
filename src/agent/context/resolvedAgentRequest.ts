@@ -9,7 +9,11 @@ import {
 import type { PaperContextRef } from "../../shared/types";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
 import { createZoteroTurnMetadataContext } from "../../services/zoteroMetadata/projections";
-import type { ZoteroTurnMetadataContext } from "../../services/zoteroMetadata/types";
+import type {
+  ResolvedPaperMetadataResolution,
+  ZoteroTurnMetadataContext,
+} from "../../services/zoteroMetadata/types";
+import { buildZoteroOpenPdfUri } from "../documents/citationService";
 import type { TurnPaperScope } from "./turnPaperScope";
 
 export type AgentRequestPaperContextResolver = (selector: {
@@ -26,6 +30,17 @@ export class InvalidTurnPaperScopeError extends Error {
   }
 }
 
+function pdfLinkFor(
+  resolution: ResolvedPaperMetadataResolution,
+): string | undefined {
+  if (resolution.status !== "resolved") return undefined;
+  const source = resolution.value.contentSource;
+  if (source?.contentType !== "application/pdf" || !source.identity.key) {
+    return undefined;
+  }
+  return buildZoteroOpenPdfUri(source.identity.libraryID, source.identity.key);
+}
+
 export function resolveZoteroTurnMetadataContext(
   scope: TurnPaperScope,
 ): ZoteroTurnMetadataContext {
@@ -35,19 +50,24 @@ export function resolveZoteroTurnMetadataContext(
     ...scope.selectedPassagePaperRefs.map(({ paper }) => paper),
   ];
   const seen = new Set<string>();
-  return createZoteroTurnMetadataContext(
-    refs
-      .filter((paper) => {
-        const key = `${paper.libraryID}:${paper.itemId}:${paper.contextItemId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((paper) => ({
-        ref: paper,
-        resolution: resolver.resolvePaperMetadata(paper),
-      })),
-  );
+  const entries = refs
+    .filter((paper) => {
+      const key = `${paper.libraryID}:${paper.itemId}:${paper.contextItemId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((paper) => ({
+      ref: paper,
+      resolution: resolver.resolvePaperMetadata(paper),
+    }));
+  const context = createZoteroTurnMetadataContext(entries);
+  return {
+    papers: context.papers.map((paper, index) => {
+      const pdfLink = pdfLinkFor(entries[index].resolution);
+      return pdfLink ? { ...paper, pdfLink } : paper;
+    }),
+  };
 }
 
 /**
