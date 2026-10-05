@@ -1,23 +1,21 @@
-import { createBlockStreamCoalescer } from "../../src/modules/contextPanel/blockStreamCoalescer";
-import { sanitizeText } from "../../src/utils/textSanitization";
-import type { BlockStreamFlushReason } from "../../src/modules/contextPanel/blockStreamCoalescer";
+import { createStreamingResponse } from "../../src/modules/contextPanel/streamingResponse";
+import type { Message } from "../../src/modules/contextPanel/types";
 import type { RenderFlightRun } from "../../src/agent/flightMetrics";
 
 /**
  * The rig behind the render flight numbers.
  *
- * `src/modules/contextPanel/streamingResponse.ts` is the owner of a streamed
- * turn, and it builds its coalescer with one option -- `onBlock` -- so it has
- * no seam through which a test can hold the 450 ms stall timer still. Adding
- * one would be a production change, which this phase does not make. So this rig
- * builds the coalescer the owner builds, with the owner's own options and the
- * owner's own two lines of `onBlock` body (append the block to the message,
- * then ask for one repaint), and injects only the timer seam the coalescer
- * already offers.
+ * Every run drives the real streaming-response owner
+ * (`src/modules/contextPanel/streamingResponse.ts`) exactly as the send and
+ * retry flows drive it: start, push each provider delta, flush "final". The
+ * rig injects only the owner's two seams a test needs: a refresh factory that
+ * counts scheduled repaints and paints nothing, and a stall timer the rig holds
+ * still or fires on demand.
  *
- * `test/renderFlightMetrics.test.ts` checks the rig against the real owner at
- * every delta size, so a drift between this copy and the owner fails a test
- * rather than quietly moving a baseline.
+ * The counts are read from the outside. A released block is a write to the
+ * message text, a delta is a push that grew the owner's streamed text, and a
+ * repaint is a call of the queued refresh, so `blocksReleased` and
+ * `refreshesScheduled` are measured independently of each other.
  */
 
 /** The fixed transcript length every run pushes, in characters. */
@@ -56,36 +54,52 @@ export type RenderFlightDriveOptions = {
   fireStallTimer?: boolean;
 };
 
+/**
+ * What released a block, as the rig sees it from outside the owner: a pushed
+ * delta that reached a boundary or the hard cap, the stall timer, or the final
+ * flush that ends the turn.
+ */
+export type RenderFlightReleaseCause = "delta" | "timer" | "final";
+
 export type RenderFlightDriveResult = {
   run: RenderFlightRun;
   /** What the message bubble holds once the turn ends. */
   text: string;
-  /** Why each block was released, in order. */
-  reasons: BlockStreamFlushReason[];
+  /** What released each block, in order. */
+  releasedBy: RenderFlightReleaseCause[];
 };
 
-/** Pushes one transcript through one coalescer and counts what it cost. */
+/** Pushes one transcript through the streaming-response owner and counts what it cost. */
 export function driveRenderFlight(
   options: RenderFlightDriveOptions,
 ): RenderFlightDriveResult {
   const transcript = options.transcript ?? buildRenderTranscript();
-  const message = { text: "" };
-  const reasons: BlockStreamFlushReason[] = [];
+  const releasedBy: RenderFlightReleaseCause[] = [];
+  let cause: RenderFlightReleaseCause = "delta";
+  let text = "";
   let refreshesScheduled = 0;
   let blocksReleased = 0;
   let stallTimer: (() => void) | null = null;
 
-  /** Stands in for the panel's frame-coalesced refresh; counts, paints nothing. */
-  const queueRefresh = () => {
-    refreshesScheduled += 1;
-  };
-
-  const coalescer = createBlockStreamCoalescer({
-    onBlock: (chunk, reason) => {
-      message.text += chunk;
-      queueRefresh();
+  /** The owner appends each released block with one write to the text. */
+  const message = {
+    role: "assistant",
+    get text() {
+      return text;
+    },
+    set text(next: string) {
+      text = next;
       blocksReleased += 1;
-      reasons.push(reason);
+      releasedBy.push(cause);
+    },
+  } as Message;
+
+  const streamingResponse = createStreamingResponse({
+    message,
+    refreshMessage: () => {},
+    /** Stands in for the panel's frame-coalesced refresh; counts, paints nothing. */
+    createQueuedRefresh: () => () => {
+      refreshesScheduled += 1;
     },
     setTimer: (callback) => {
       stallTimer = callback;
@@ -96,21 +110,30 @@ export function driveRenderFlight(
     },
   });
 
+  /** Disarms the armed stall timer and hands back its callback, if any. */
+  const takeStallTimer = (): (() => void) | null => {
+    const armed = stallTimer;
+    stallTimer = null;
+    return armed;
+  };
+
+  streamingResponse.start();
   let deltas = 0;
-  let charsPushed = 0;
   for (let at = 0; at < transcript.length; at += options.deltaChars) {
-    const delta = sanitizeText(transcript.slice(at, at + options.deltaChars));
-    if (!delta) continue;
-    deltas += 1;
-    charsPushed += delta.length;
-    coalescer.pushText(delta);
+    const streamedBefore = streamingResponse.getStreamedText().length;
+    cause = "delta";
+    streamingResponse.push(transcript.slice(at, at + options.deltaChars));
+    if (streamingResponse.getStreamedText().length > streamedBefore)
+      deltas += 1;
     if (options.fireStallTimer) {
-      const fire: (() => void) | null = stallTimer;
-      stallTimer = null;
+      const fire = takeStallTimer();
+      cause = "timer";
       fire?.();
     }
   }
-  coalescer.flushNow("final");
+  cause = "final";
+  streamingResponse.flush("final");
+  const charsPushed = streamingResponse.getStreamedText().length;
 
   return {
     run: {
@@ -122,8 +145,8 @@ export function driveRenderFlight(
       refreshesScheduled,
       stallTimerFires: Boolean(options.fireStallTimer),
     },
-    text: message.text,
-    reasons,
+    text,
+    releasedBy,
   };
 }
 
