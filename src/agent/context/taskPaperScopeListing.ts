@@ -3,20 +3,21 @@
  * as the agent's turn states them and a part declared over them freezes them.
  *
  * Computed from the turn's attached papers, folders and tags plus the library
- * index snapshot, with the same union `ZoteroGateway.resolveLibraryScopeItemIds`
- * gives retrieval: explicit papers first, then each collection's direct items
- * (subcollections are not expanded, exactly as retrieval does not), then each
- * tag's items; only live regular items; each paper once, in first-seen order.
+ * index snapshot, with the union `ZoteroGateway.resolveLibraryScopeItemIds`
+ * gives retrieval (`services/libraryIndex/paperScope`): explicit papers
+ * first, then each collection's direct items (subcollections are not
+ * expanded, exactly as retrieval does not), then each tag's items; only live
+ * regular items; each paper once, in first-seen order.
  * With nothing attached the whole library is listed, capped; the agent's set
  * of the whole library is not.
  *
  * Pure: reads only the snapshot object it is given.
  */
-import type {
-  LibraryIndexItem,
-  LibraryIndexSnapshot,
-} from "../../services/libraryIndex/contracts";
-import { normalizeLibraryIndexTagIdentity } from "../../services/libraryIndex/projection";
+import type { LibraryIndexSnapshot } from "../../services/libraryIndex/contracts";
+import {
+  isPaperScopeItem,
+  resolvePaperScope,
+} from "../../services/libraryIndex/paperScope";
 import { taskPaperKey } from "./taskPaperLedger";
 import type { TurnPaperScope } from "./turnPaperScope";
 
@@ -92,30 +93,14 @@ export type TaskPaperScopeSet = {
 export const TASK_PAPER_SCOPE_WHOLE_LIBRARY_CAP = 2000;
 export const TASK_PAPER_SCOPE_MAX_TAGS = 6;
 
-function isScopePaper(item: LibraryIndexItem | undefined): boolean {
-  return Boolean(item && item.kind === "regular" && !item.deleted);
-}
-
-// The three helpers below restate `services/zotero/internal/libraryIndex`
-// (the layer rules keep agent/context from importing it). The unit test that
-// compares this listing with `resolveLibraryScopeItemIds` guards the copy.
-
-function matchesAggregateTagScope(
-  item: LibraryIndexItem,
-  scope: "allTagged" | "untagged",
-  includeAutomatic: boolean,
-): boolean {
-  const tagged =
-    item.tags.length > 0 || (includeAutomatic && item.automaticTags.length > 0);
-  return scope === "allTagged" ? tagged : !tagged;
-}
-
 function liveRegularItemIds(snapshot: TaskPaperScopeSnapshot): number[] {
   return snapshot.topLevelItemOrder.filter((itemId) =>
-    isScopePaper(snapshot.itemById.get(itemId)),
+    isPaperScopeItem(snapshot.itemById.get(itemId)),
   );
 }
 
+// Restates `services/zotero/internal/libraryIndex` `indexItemHasGatewayPdf`
+// (the facade rule keeps agent/context from importing it).
 function hasPdfAttachment(
   snapshot: TaskPaperScopeSnapshot,
   itemId: number,
@@ -125,56 +110,20 @@ function hasPdfAttachment(
   );
 }
 
-function tagItemIds(
-  snapshot: TaskPaperScopeSnapshot,
-  tag: NonNullable<TaskPaperScopeContexts["tags"]>[number],
-): Iterable<number> {
-  const includeAutomatic = tag.includeAutomatic === true;
-  if (tag.scope === "allTagged" || tag.scope === "untagged") {
-    const scope = tag.scope;
-    return snapshot.topLevelItemOrder.filter((itemId) => {
-      const item = snapshot.itemById.get(itemId);
-      return Boolean(
-        item && matchesAggregateTagScope(item, scope, includeAutomatic),
-      );
-    });
-  }
-  const entry = snapshot.tagByNormalizedName.get(
-    normalizeLibraryIndexTagIdentity(tag.name || tag.normalizedName || ""),
-  );
-  if (!entry) return [];
-  return new Set([
-    ...entry.manualItemIds,
-    ...(includeAutomatic ? entry.automaticItemIds : []),
-  ]);
-}
-
 /** Item ids in the scope, in the order retrieval's union produces them. */
 export function resolveTaskPaperScopeItemIds(
   snapshot: TaskPaperScopeSnapshot,
   contexts: TaskPaperScopeContexts,
 ): number[] {
-  const libraryID = snapshot.libraryID;
-  const excluded = new Set(contexts.excludedItemIds || []);
-  const union = new Set<number>();
-  const add = (ids: Iterable<number>) => {
-    for (const id of ids) {
-      if (excluded.has(id)) continue;
-      if (isScopePaper(snapshot.itemById.get(id))) union.add(id);
-    }
-  };
-  // Zotero item ids are unique across libraries, so a paper from another
-  // library is simply absent from this snapshot.
-  add((contexts.papers || []).map((paper) => paper.itemId));
-  for (const context of contexts.collections || []) {
-    const collection = snapshot.collectionById.get(context.collectionId);
-    if (!collection || collection.libraryID !== libraryID) continue;
-    add(snapshot.directItemIdsByCollectionId.get(context.collectionId) || []);
-  }
-  for (const tag of contexts.tags || []) {
-    add(tagItemIds(snapshot, tag));
-  }
-  return [...union];
+  return resolvePaperScope(snapshot, {
+    libraryID: snapshot.libraryID,
+    itemIds: (contexts.papers || []).map((paper) => paper.itemId),
+    collectionIds: (contexts.collections || []).map(
+      (collection) => collection.collectionId,
+    ),
+    tagContexts: contexts.tags,
+    excludedItemIds: contexts.excludedItemIds,
+  }).itemIds;
 }
 
 /**

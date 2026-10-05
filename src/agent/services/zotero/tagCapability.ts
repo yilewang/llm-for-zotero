@@ -9,12 +9,12 @@
  * lookup gets exactly the behaviour it asked for.
  */
 
+import { indexItemMatchesAggregateTagScope } from "../../../services/libraryIndex/paperScope";
 import { libraryIndexService } from "../../../services/libraryIndexService";
 import type { TagContextRef } from "../../../shared/types";
 import type { BatchTagAssignment } from "../libraryMutation/valueTypes";
 import { resolveMatrixItem } from "./internal/itemResolution";
 import {
-  indexItemMatchesAggregateTagScope,
   indexItemMatchesType,
   orderedGatewayPaperIds,
   orderedIndexIds,

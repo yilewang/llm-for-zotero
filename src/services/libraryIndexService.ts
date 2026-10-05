@@ -6,6 +6,7 @@ import { patchMap, patchSet } from "./libraryIndex/readonlyCollections";
 import { SnapshotDraft } from "./libraryIndex/snapshotDraft";
 import { reconcileItems } from "./libraryIndex/itemReconciler";
 import { reconcileCollections } from "./libraryIndex/collectionReconciler";
+import { libraryIndexTagItemIds } from "./libraryIndex/paperScope";
 import type {
   LibraryIndexAttachment,
   LibraryIndexChildNote,
@@ -953,14 +954,7 @@ export class LibraryIndexService {
     name: string,
     includeAutomatic: boolean,
   ): Set<number> {
-    const tag = snapshot.tagByNormalizedName.get(
-      normalizeLibraryIndexTagIdentity(name),
-    );
-    if (!tag) return new Set();
-    return new Set([
-      ...tag.manualItemIds,
-      ...(includeAutomatic ? tag.automaticItemIds : []),
-    ]);
+    return libraryIndexTagItemIds(snapshot, name, includeAutomatic);
   }
 }
 
