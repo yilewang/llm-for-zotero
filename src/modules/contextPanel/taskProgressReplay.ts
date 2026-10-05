@@ -13,12 +13,12 @@ import { appendMessage } from "../../utils/chatStore";
 import { agentRunTraceCache } from "./agentState";
 import {
   buildAgentEngineDepsForTests,
-  buildCodexNativeTurnCallbacksForTests,
   ensureConversationLoaded,
   getConversationKey,
   refreshChat,
   refreshConversationPanels,
 } from "./chat";
+import { buildCodexNativeTurnCallbacksForTests } from "./codexNative/turnCallbacks";
 import { createCodexNativeActivityTraceController } from "./codexNativeTrace/controller";
 import { createActionCommandLifecycle } from "./setupHandlers/controllers/actionCommandLifecycle";
 import { runAgentActionWithLifecycle } from "./setupHandlers/controllers/actionExecutionRunner";

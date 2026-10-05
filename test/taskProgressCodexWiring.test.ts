@@ -5,7 +5,7 @@ import {
   getConversationWriteGeneration,
   tryBeginRequest,
 } from "../src/modules/contextPanel/state";
-import { buildCodexNativeTurnCallbacksForTests } from "../src/modules/contextPanel/chat";
+import { buildCodexNativeTurnCallbacksForTests } from "../src/modules/contextPanel/codexNative/turnCallbacks";
 import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import { readCodexPlanChecklist } from "../src/modules/contextPanel/taskProgress/codexPlan";
 import {

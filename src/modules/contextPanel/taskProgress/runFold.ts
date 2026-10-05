@@ -1,7 +1,7 @@
 /**
  * Which run events move Task progress, and how: one reading shared by the
- * live run (the agent engine's event handler) and the rebuild of a stored
- * conversation (`history.ts`).
+ * live run (the agent engine's event handler and the native Codex turn's
+ * callbacks) and the rebuild of a stored conversation (`history.ts`).
  *
  * The reading is pure. Each caller applies the effect with its own store
  * calls and keeps its own guards, because the two differ in what they hold:

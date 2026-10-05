@@ -80,30 +80,55 @@ describe("direct Agent ownership boundary", function () {
     );
   });
   it("supplies host execution context to every native Codex turn dispatch", function () {
-    const source = read("src/modules/contextPanel/chat.ts");
-    let count = 0;
-    const visit = (node: ts.Node) => {
-      if (
-        ts.isCallExpression(node) &&
-        node.expression.getText(source) === "runCodexAppServerNativeTurn"
-      ) {
-        count++;
-        const argument = node.arguments[0];
-        assert.isTrue(ts.isObjectLiteralExpression(argument));
-        const names = (argument as ts.ObjectLiteralExpression).properties.map(
-          (p) => p.name?.getText(source),
-        );
-        for (const field of ["executionRequest"]) assert.include(names, field);
-      }
-      ts.forEachChild(node, visit);
+    const callsTo = (source: ts.SourceFile, callee: string) => {
+      const found: ts.CallExpression[] = [];
+      const visit = (node: ts.Node) => {
+        if (
+          ts.isCallExpression(node) &&
+          node.expression.getText(source) === callee
+        )
+          found.push(node);
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      return found;
     };
-    visit(source);
-    assert.isAtLeast(count, 2);
+    const literalFields = (source: ts.SourceFile, node: ts.Expression) => {
+      assert.isTrue(ts.isObjectLiteralExpression(node));
+      return (node as ts.ObjectLiteralExpression).properties.map((p) =>
+        ts.isSpreadAssignment(p)
+          ? `...${p.expression.getText(source)}`
+          : p.name?.getText(source),
+      );
+    };
+    // The send and the retry flow each dispatch through the one panel
+    // helper, and each hands it the turn's execution request ...
+    const panel = read("src/modules/contextPanel/chat.ts");
+    const dispatches = callsTo(panel, "runCodexNativePanelTurn");
+    assert.isAtLeast(dispatches.length, 2);
+    for (const call of dispatches)
+      assert.include(
+        literalFields(panel, call.arguments[0]),
+        "executionRequest",
+      );
+    // ... no panel flow reaches the native turn around that helper ...
+    assert.isEmpty(callsTo(panel, "runCodexAppServerNativeTurn"));
+    // ... and the helper passes the flow's request on whole.
+    const helper = read(
+      "src/modules/contextPanel/codexNative/turnCallbacks.ts",
+    );
+    const nativeTurns = callsTo(helper, "runCodexAppServerNativeTurn");
+    assert.lengthOf(nativeTurns, 1);
+    assert.include(
+      literalFields(helper, nativeTurns[0].arguments[0]),
+      "...turn",
+    );
   });
   it("does not infer executable Plan effects from native provider step prose", function () {
     for (const path of [
       "src/agent/externalBackendBridge.ts",
       "src/modules/contextPanel/chat.ts",
+      "src/modules/contextPanel/codexNative/turnCallbacks.ts",
     ]) {
       const offenders: string[] = [];
       const visit = (node: ts.Node) => {
