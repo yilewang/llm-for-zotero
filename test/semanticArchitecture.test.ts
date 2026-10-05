@@ -117,9 +117,25 @@ describe("direct Agent ownership boundary", function () {
     // ... no panel flow reaches the native turn around that helper ...
     assert.isEmpty(callsTo(panel, "runCodexAppServerNativeTurn"));
     // ... and each flow closes its Task run through the one finish helper,
-    // never by completing the run inline.
-    assert.lengthOf(callsTo(panel, "finishCodexNativePanelTurn"), 2);
+    // never by completing the run inline. The retry flow reaches it through
+    // the assistant-turn owner's completion step.
+    const turnOwner = read("src/modules/contextPanel/assistantTurn.ts");
+    assert.lengthOf(callsTo(panel, "finishCodexNativePanelTurn"), 1);
+    assert.lengthOf(callsTo(turnOwner, "finishCodexNativePanelTurn"), 1);
     assert.isEmpty(callsTo(panel, "completeTaskRun"));
+    assert.isEmpty(callsTo(turnOwner, "completeTaskRun"));
+    const panelText = panel.getFullText();
+    const retryStart = panelText.indexOf(
+      "export async function retryLatestAssistantResponse(",
+    );
+    assert.isAtLeast(retryStart, 0);
+    assert.include(
+      panelText.slice(
+        retryStart,
+        panelText.indexOf("async function detachProviderForEdit(", retryStart),
+      ),
+      "assistantTurn.recordCompletion(",
+    );
     // ... and the helper passes the flow's request on whole.
     const helper = read(
       "src/modules/contextPanel/codexNative/turnCallbacks.ts",
