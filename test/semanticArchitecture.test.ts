@@ -106,18 +106,33 @@ describe("direct Agent ownership boundary", function () {
     const panel = read("src/modules/contextPanel/chat.ts");
     const dispatches = callsTo(panel, "runCodexNativePanelTurn");
     assert.isAtLeast(dispatches.length, 2);
-    for (const call of dispatches)
+    for (const call of dispatches) {
       assert.include(
         literalFields(panel, call.arguments[0]),
         "executionRequest",
       );
+      // Only a test hands the helper a stand-in for the native turn.
+      assert.lengthOf(call.arguments, 2);
+    }
     // ... no panel flow reaches the native turn around that helper ...
     assert.isEmpty(callsTo(panel, "runCodexAppServerNativeTurn"));
+    // ... and each flow closes its Task run through the one finish helper,
+    // never by completing the run inline.
+    assert.lengthOf(callsTo(panel, "finishCodexNativePanelTurn"), 2);
+    assert.isEmpty(callsTo(panel, "completeTaskRun"));
     // ... and the helper passes the flow's request on whole.
     const helper = read(
       "src/modules/contextPanel/codexNative/turnCallbacks.ts",
     );
-    const nativeTurns = callsTo(helper, "runCodexAppServerNativeTurn");
+    let nativeTurnDefault = "";
+    const findDefault = (node: ts.Node) => {
+      if (ts.isParameter(node) && node.name.getText(helper) === "runNativeTurn")
+        nativeTurnDefault = node.initializer?.getText(helper) || "";
+      ts.forEachChild(node, findDefault);
+    };
+    findDefault(helper);
+    assert.equal(nativeTurnDefault, "runCodexAppServerNativeTurn");
+    const nativeTurns = callsTo(helper, "runNativeTurn");
     assert.lengthOf(nativeTurns, 1);
     assert.include(
       literalFields(helper, nativeTurns[0].arguments[0]),

@@ -13,6 +13,7 @@ import {
 import {
   applyTaskPaperUpdate,
   beginTaskRun,
+  completeTaskRun,
   markTaskAnswering,
   setTaskChecklist,
   taskTurnIndexFor,
@@ -50,6 +51,7 @@ import { renderPendingActionCard } from "../agentTrace/render";
 import {
   createCodexNativeActivityTraceController,
   isCodexNativeAgentMessageItem,
+  type CodexNativeActivityTraceController,
 } from "../codexNativeTrace/controller";
 import { mergeQuoteCitations } from "../../../services/quotes/quoteCitations";
 import { getAgentApi } from "../../../agent/index";
@@ -635,8 +637,9 @@ export async function runCodexNativePanelTurn(
     keyof CodexNativeTurnCallbacks
   >,
   panel: Parameters<typeof buildCodexNativeTurnCallbacks>[0],
+  runNativeTurn: typeof runCodexAppServerNativeTurn = runCodexAppServerNativeTurn,
 ): Promise<ModelTurnOutcome> {
-  const result = await runCodexAppServerNativeTurn({
+  const result = await runNativeTurn({
     ...turn,
     ...buildCodexNativeTurnCallbacks(panel),
   });
@@ -648,4 +651,26 @@ export async function runCodexNativePanelTurn(
     text: result.text,
     completion: { status: "complete" as const },
   };
+}
+
+/**
+ * The turn's answer is final: close its trace and show ✓ on its Task
+ * progress run, with the papers the answer cites.
+ *
+ * Task progress follows the run the trace names. Until the trace persists,
+ * the message holds the native turn's journal run instead, which Task
+ * progress never saw.
+ */
+export function finishCodexNativePanelTurn(params: {
+  conversationKey: number;
+  assistantMessage: Message;
+  codexActivityTrace: CodexNativeActivityTraceController | null;
+}): void {
+  const trace = params.codexActivityTrace;
+  if (!trace) return;
+  trace.finish(params.assistantMessage.text);
+  completeTaskRun(params.conversationKey, {
+    runId: trace.runId,
+    quoteCitations: params.assistantMessage.quoteCitations,
+  });
 }

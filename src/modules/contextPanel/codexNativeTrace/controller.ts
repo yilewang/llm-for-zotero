@@ -745,6 +745,8 @@ export function createCodexNativeActivityTraceController(
   };
 
   return {
+    /** The turn's run: the message's, Task progress's, and the stored trace's. */
+    runId,
     persist: async (
       conversationKey: number,
       generation: number,

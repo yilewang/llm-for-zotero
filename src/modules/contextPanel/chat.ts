@@ -1,10 +1,12 @@
 import { appLogger } from "../../core/logging";
-import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
+import {
+  finishCodexNativePanelTurn,
+  runCodexNativePanelTurn,
+} from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
 export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
-import { completeTaskRun } from "./taskProgress/store";
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
@@ -6248,13 +6250,11 @@ export async function retryLatestAssistantResponse(
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
-    if (codexActivityTrace) {
-      completeTaskRun(conversationKey, {
-        runId: assistantMessage.agentRunId,
-        quoteCitations: assistantMessage.quoteCitations,
-      });
-    }
+    finishCodexNativePanelTurn({
+      conversationKey,
+      assistantMessage,
+      codexActivityTrace,
+    });
     await codexActivityTrace?.persist(conversationKey, conversationGeneration);
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
@@ -9169,13 +9169,11 @@ export async function sendQuestion(
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
-    if (codexActivityTrace) {
-      completeTaskRun(conversationKey, {
-        runId: assistantMessage.agentRunId,
-        quoteCitations: assistantMessage.quoteCitations,
-      });
-    }
+    finishCodexNativePanelTurn({
+      conversationKey,
+      assistantMessage,
+      codexActivityTrace,
+    });
     assistantMessage.runMode = isCodexNativeTurn
       ? "agent"
       : effectiveRuntimeMode;
