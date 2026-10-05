@@ -13,7 +13,7 @@ import {
   getActiveReaderForSelectedTab,
   getAllOpenReaders,
 } from "../../../services/pdf/zoteroReaderTabs";
-import { pdfTextCache } from "../../../services/paperContent/contextCache";
+import { paperTextStore } from "../../../services/paperContent/paperTextStore";
 import { formatPaperSourceLabel } from "../../../services/paperContent/paperAttribution";
 import {
   ensureNoteTextCached,
@@ -41,12 +41,12 @@ function quoteSourcePaperKey(paper: PaperContextRef): string {
 }
 
 function cachedQuoteSourceText(contextItemId: number): string {
-  const cached = pdfTextCache.get(contextItemId);
+  const cached = paperTextStore.peek(contextItemId);
   return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
 }
 
 function cachedQuoteSourceChunks(contextItemId: number): QuoteSourceText[] {
-  const cached = pdfTextCache.get(contextItemId);
+  const cached = paperTextStore.peek(contextItemId);
   if (!Array.isArray(cached?.chunks) || !cached.chunks.length) return [];
   const chunkMeta = Array.isArray(cached.chunkMeta) ? cached.chunkMeta : [];
   const out: QuoteSourceText[] = [];
@@ -109,12 +109,7 @@ async function ensureQuoteSourceTextCachedForPaper(
 
   // An empty cache entry means an earlier extraction attempt did not provide
   // searchable text. Retry here before the provenance finalizer gives up.
-  if (
-    !hasCachedQuoteSourceText(contextItemId) &&
-    pdfTextCache.has(contextItemId)
-  ) {
-    pdfTextCache.delete(contextItemId);
-  }
+  paperTextStore.discardEmptyEntry(contextItemId);
 
   try {
     if ((contextItem as any).isNote?.()) {

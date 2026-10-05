@@ -10,7 +10,6 @@ import {
 } from "../../utils/llmClient";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
-  clearEmbeddingCache,
   computeChunkHash,
   loadCachedEmbeddings,
   saveCachedEmbeddings,
@@ -46,10 +45,10 @@ import {
 import { readNoteSnapshot } from "../notes/noteSnapshot";
 import { readAttachmentBytes } from "../attachmentStorage";
 import {
-  notifyPdfContextLoaded,
-  pdfTextCache,
-  pdfTextLoadingTasks,
-} from "./contextCache";
+  paperTextStore,
+  sourceTypeForTextAttachment,
+  type PaperTextLoadOptions,
+} from "./paperTextStore";
 import {
   buildAndWriteManifest,
   buildManifest,
@@ -81,7 +80,6 @@ import {
 } from "./textAttachmentExtraction";
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
-import { invalidateRetrievalCandidates } from "../retrieval/cacheInvalidation";
 import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import {
   extractDocumentReferenceEvidence,
@@ -322,31 +320,6 @@ export function resolveTextAttachmentSourceMode(
   });
 }
 
-function sourceTypeForTextAttachment(
-  mode: TextAttachmentSourceMode,
-): PdfContext["sourceType"] {
-  return `attachment-${mode}` as PdfContext["sourceType"];
-}
-
-function cachedContextMatchesSourceMode(
-  cached: PdfContext,
-  sourceMode?: PaperContentSourceMode,
-): boolean {
-  if (!sourceMode) return true;
-  if (sourceMode === "pdf") return true;
-  if (sourceMode === "mineru") return cached.sourceType === "mineru";
-  if (sourceMode === "text") return cached.sourceType !== "mineru";
-  if (
-    sourceMode === "markdown" ||
-    sourceMode === "html" ||
-    sourceMode === "txt" ||
-    sourceMode === "docx"
-  ) {
-    return cached.sourceType === sourceTypeForTextAttachment(sourceMode);
-  }
-  return true;
-}
-
 async function cacheTextAttachment(
   item: Zotero.Item,
   sourceMode: TextAttachmentSourceMode,
@@ -358,7 +331,7 @@ async function cacheTextAttachment(
         item as unknown as { getFilePath?: () => string | undefined }
       ).getFilePath?.() || undefined;
     if (!filePath) {
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks: [],
         chunkMeta: [],
@@ -381,7 +354,7 @@ async function cacheTextAttachment(
         sourceTypeForTextAttachment(sourceMode),
       );
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks,
         chunkMeta,
@@ -392,7 +365,7 @@ async function cacheTextAttachment(
         sourceType: sourceTypeForTextAttachment(sourceMode),
       });
     } else {
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks: [],
         chunkMeta: [],
@@ -405,7 +378,7 @@ async function cacheTextAttachment(
     }
   } catch (error) {
     appLogger.warn("Error caching text attachment:", error);
-    pdfTextCache.set(item.id, {
+    paperTextStore.write(item.id, {
       title,
       chunks: [],
       chunkMeta: [],
@@ -425,7 +398,7 @@ async function cachePDFText(
     preferFulltextCache?: boolean;
   },
 ) {
-  if (pdfTextCache.has(item.id)) return;
+  if (paperTextStore.has(item.id)) return;
 
   try {
     const requestedTextAttachmentMode =
@@ -638,7 +611,7 @@ async function cachePDFText(
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks,
         chunkMeta,
@@ -650,7 +623,7 @@ async function cachePDFText(
         sourceType,
       });
     } else {
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks: [],
         chunkMeta: [],
@@ -662,7 +635,7 @@ async function cachePDFText(
     }
   } catch (e) {
     appLogger.warn("Error caching PDF:", formatErrorForLog(e), e);
-    pdfTextCache.set(item.id, {
+    paperTextStore.write(item.id, {
       title: "",
       chunks: [],
       chunkMeta: [],
@@ -674,54 +647,15 @@ async function cachePDFText(
   }
 }
 
-export async function ensurePDFTextCached(
+export function ensurePDFTextCached(
   item: Zotero.Item,
-  options?: {
-    sourceMode?: PaperContentSourceMode;
-    preferFulltextCache?: boolean;
-    /** Background index loads: fill the cache without firing the write-through hook. */
-    silentLoad?: boolean;
-  },
+  options?: PaperTextLoadOptions,
 ): Promise<void> {
-  const cached = pdfTextCache.get(item.id);
-  if (cached && cachedContextMatchesSourceMode(cached, options?.sourceMode)) {
-    return;
-  }
-  if (cached) {
-    pdfTextCache.delete(item.id);
-  }
-  const existingTask = pdfTextLoadingTasks.get(item.id);
-  if (existingTask) {
-    await existingTask;
-    const latest = pdfTextCache.get(item.id);
-    if (latest && cachedContextMatchesSourceMode(latest, options?.sourceMode)) {
-      return;
-    }
-    if (latest) {
-      pdfTextCache.delete(item.id);
-    }
-  }
-  if (pdfTextCache.has(item.id)) {
-    return;
-  }
-  const task = (async () => {
-    try {
-      await cachePDFText(item, options);
-      // Fresh loads with text only; cache hits and waits on an existing task return before this.
-      const loaded = pdfTextCache.get(item.id);
-      if (loaded && loaded.chunks.length && !options?.silentLoad) {
-        notifyPdfContextLoaded(item.id);
-      }
-    } finally {
-      pdfTextLoadingTasks.delete(item.id);
-    }
-  })();
-  pdfTextLoadingTasks.set(item.id, task);
-  await task;
+  return paperTextStore.load(item, options, cachePDFText);
 }
 
 async function cacheNoteText(item: Zotero.Item) {
-  if (pdfTextCache.has(item.id)) return;
+  if (paperTextStore.has(item.id)) return;
   try {
     const snapshot = readNoteSnapshot(item);
     const text = snapshot?.text || "";
@@ -732,7 +666,7 @@ async function cacheNoteText(item: Zotero.Item) {
       const chunks = splitIntoChunks(text, CHUNK_TARGET_LENGTH);
       const chunkMeta = buildChunkMetadata(chunks);
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks,
         chunkMeta,
@@ -742,7 +676,7 @@ async function cacheNoteText(item: Zotero.Item) {
         fullLength: text.length,
       });
     } else {
-      pdfTextCache.set(item.id, {
+      paperTextStore.write(item.id, {
         title,
         chunks: [],
         chunkMeta: [],
@@ -754,7 +688,7 @@ async function cacheNoteText(item: Zotero.Item) {
     }
   } catch (e) {
     appLogger.warn("Error caching note:", e);
-    pdfTextCache.set(item.id, {
+    paperTextStore.write(item.id, {
       title: "",
       chunks: [],
       chunkMeta: [],
@@ -766,22 +700,8 @@ async function cacheNoteText(item: Zotero.Item) {
   }
 }
 
-export async function ensureNoteTextCached(item: Zotero.Item): Promise<void> {
-  if (pdfTextCache.has(item.id)) return;
-  const existingTask = pdfTextLoadingTasks.get(item.id);
-  if (existingTask) {
-    await existingTask;
-    return;
-  }
-  const task = (async () => {
-    try {
-      await cacheNoteText(item);
-    } finally {
-      pdfTextLoadingTasks.delete(item.id);
-    }
-  })();
-  pdfTextLoadingTasks.set(item.id, task);
-  await task;
+export function ensureNoteTextCached(item: Zotero.Item): Promise<void> {
+  return paperTextStore.loadNote(item, cacheNoteText);
 }
 
 /**
@@ -790,35 +710,13 @@ export async function ensureNoteTextCached(item: Zotero.Item): Promise<void> {
  * so subsequent queries re-attempt embeddings with the new settings.
  */
 export function resetEmbeddingFailedFlags(): void {
-  pdfTextCache.forEach((ctx) => {
+  paperTextStore.forEach((ctx) => {
     ctx.embeddingFailureKey = undefined;
   });
 }
 
 export function invalidateCachedContextText(itemId: number): void {
-  if (!Number.isFinite(itemId) || itemId <= 0) return;
-  const normalizedItemId = Math.floor(itemId);
-  pdfTextCache.delete(normalizedItemId);
-  pdfTextLoadingTasks.delete(normalizedItemId);
-  // Clear retrieval candidate cache — cached candidates carry stale chunk
-  // text and scores after a MinerU refresh.  Lazy import to avoid circular
-  // dependency (multiContextPlanner imports from pdfContext).
-  invalidateRetrievalCandidates(normalizedItemId);
-  // Re-index the new text. Lazy import: indexer.ts imports this module.
-  void import("../libraryTextIndex/scheduler")
-    .then(({ libraryTextIndexScheduler }) =>
-      libraryTextIndexScheduler.enqueue([normalizedItemId], "textInvalidated"),
-    )
-    .catch((error) =>
-      appLogger.debug("LLM index: re-index enqueue failed", error),
-    );
-  // Clear embedding cache — chunks will change when MinerU content is refreshed,
-  // so cached embeddings are stale. Do NOT delete MinerU files themselves:
-  // this function is called right after writeMineruCacheFiles(), so deleting
-  // the MinerU directory would destroy the freshly written content.
-  void clearEmbeddingCache(normalizedItemId).catch((error) => {
-    appLogger.warn("Embedding cache invalidation failed:", error);
-  });
+  paperTextStore.invalidate(itemId);
 }
 
 // ── Markdown-aware chunking (MinerU only) ─────────────────────────────────────

@@ -8,7 +8,7 @@
  */
 
 import { joinLocalPath } from "../../../../utils/localPath";
-import { pdfTextCache } from "../../../../services/paperContent/contextCache";
+import { paperTextStore } from "../../../../services/paperContent/paperTextStore";
 import { getCollectionIDs } from "./collections";
 import { getItemTypeName, resolveRegularItem } from "./itemResolution";
 import { normalizeText } from "./normalize";
@@ -276,7 +276,7 @@ export async function measureReadableTextChars(
   attachment: Zotero.Item,
   mineruCacheDir: string | undefined,
 ): Promise<number | undefined> {
-  const cached = pdfTextCache.get(attachment.id);
+  const cached = paperTextStore.peek(attachment.id);
   if (cached?.fullLength) return cached.fullLength;
   const stat = async (path: string) => {
     try {

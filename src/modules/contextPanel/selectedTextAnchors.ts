@@ -12,7 +12,7 @@ import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
 } from "../../services/quotes/quoteTextSearch";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export const SELECTED_TEXT_ANCHOR_MAX_CHARS = 6_500;
@@ -191,7 +191,7 @@ async function resolveProvisionalAnchor(params: {
       // Locator-only fallback remains available.
     }
   }
-  const pdfContext = pdfTextCache.get(contextItemId);
+  const pdfContext = paperTextStore.peek(contextItemId);
   const pageCache = await warmPageTextCacheForAttachment(contextItemId).catch(
     () => null,
   );

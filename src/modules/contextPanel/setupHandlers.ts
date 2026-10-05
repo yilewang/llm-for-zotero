@@ -126,7 +126,7 @@ import {
   isAutoLockedGlobalConversation,
   getConversationWriteGeneration,
 } from "./state";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import {
   setStatus,
   buildQuestionWithSelectedTextContexts,
@@ -2479,8 +2479,8 @@ export function setupHandlers(
 
   const isPaperContextMineru = (paperContext: PaperContextRef): boolean => {
     if (mineruAvailableIds.has(paperContext.contextItemId)) return true;
-    // Check in-memory pdfTextCache (populated after ensurePDFTextCached)
-    const cached = pdfTextCache.get(paperContext.contextItemId);
+    // Check the in-memory paper text (populated after ensurePDFTextCached)
+    const cached = paperTextStore.peek(paperContext.contextItemId);
     if (cached?.sourceType === "mineru") {
       mineruAvailableIds.add(paperContext.contextItemId);
       return true;

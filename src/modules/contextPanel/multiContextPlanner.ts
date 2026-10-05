@@ -46,7 +46,7 @@ import {
   isSupportedContextAttachment,
 } from "../../services/paperContent/contextAttachmentSupport";
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
 import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
 import {
@@ -758,7 +758,7 @@ async function resolveCollectionScopePapers(params: {
       paperKey: buildPaperKey(candidate.paperContext),
       paperContext: candidate.paperContext,
       contextItem,
-      pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      pdfContext: contextItem ? paperTextStore.peek(contextItem.id) : undefined,
       isActive: false,
       pinKind: "none",
     });
@@ -1598,7 +1598,7 @@ async function resolvePlannerPaperEntries(params: {
       paperKey,
       paperContext,
       contextItem,
-      pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      pdfContext: contextItem ? paperTextStore.peek(contextItem.id) : undefined,
       isActive,
       pinKind,
     });

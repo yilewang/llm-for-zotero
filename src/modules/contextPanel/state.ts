@@ -15,10 +15,7 @@ import type {
   PaperContentSourceMode,
   GeneratedChatImage,
 } from "./types";
-import {
-  pdfTextCache,
-  pdfTextLoadingTasks,
-} from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { TTLMap } from "../../utils/ttlMap";
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import { clearAllTaskProgress, clearTaskProgress } from "./taskProgress/store";
@@ -625,8 +622,7 @@ export function clearAllState(): void {
   selectedReasoningCache.clear();
   selectedReasoningProviderCache.clear();
   selectedRuntimeModeCache.clear();
-  pdfTextCache.clear();
-  pdfTextLoadingTasks.clear();
+  paperTextStore.clear();
   shortcutTextCache.clear();
   activeContextPanels.clear();
   activeContextPanelRawItems.clear();

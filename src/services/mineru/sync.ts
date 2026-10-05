@@ -26,12 +26,7 @@ import {
   withMineruCacheWrite,
   type MineruCacheFile,
 } from "./mineruCache";
-import {
-  pdfTextCache,
-  pdfTextLoadingTasks,
-} from "../paperContent/contextCache";
-import { clearEmbeddingCache } from "../retrieval/embeddingCache";
-import { invalidateRetrievalCandidates } from "../retrieval/cacheInvalidation";
+import { paperTextStore } from "../paperContent/paperTextStore";
 
 export const MINERU_SYNC_PACKAGE_KIND = "llm-for-zotero/mineru-cache";
 export const MINERU_SYNC_PACKAGE_VERSION = 1;
@@ -1225,10 +1220,7 @@ async function writeRestoredSourceProvenance(params: {
 async function invalidateMineruRuntimeCache(
   attachmentId: number,
 ): Promise<void> {
-  pdfTextCache.delete(attachmentId);
-  pdfTextLoadingTasks.delete(attachmentId);
-  invalidateRetrievalCandidates(attachmentId);
-  void clearEmbeddingCache(attachmentId).catch(() => {});
+  paperTextStore.invalidateMineruRuntimeText(attachmentId);
 }
 
 function cloneMigrationResult(
@@ -1781,9 +1773,9 @@ export async function cleanupMineruArtifactsForRemovedAttachment(
   const localCacheExisted = await pathExists(
     getMineruItemDir(normalizedAttachmentId),
   );
-  const runtimeCacheExisted =
-    pdfTextCache.has(normalizedAttachmentId) ||
-    pdfTextLoadingTasks.has(normalizedAttachmentId);
+  const runtimeCacheExisted = paperTextStore.isCachedOrLoading(
+    normalizedAttachmentId,
+  );
   const sourceProvenance = await readMineruSourceProvenance(
     normalizedAttachmentId,
   );
