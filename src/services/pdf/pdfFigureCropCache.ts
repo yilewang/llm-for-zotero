@@ -1,4 +1,12 @@
 import { fnv1a32 } from "../../utils/fnv1a";
+import {
+  ensureDir,
+  getIOUtils,
+  getOSFile,
+  readFileBytes,
+  removePathQuietly,
+  writeFileBytes,
+} from "../../utils/geckoFs";
 import { joinLocalPath } from "../../utils/localPath";
 import type { PaperContextRef } from "../../shared/types";
 import type {
@@ -203,67 +211,6 @@ export function getPdfFigureCropCacheFreshness(
   return { ok: true };
 }
 
-function getIOUtils(): any {
-  return (globalThis as any).IOUtils;
-}
-
-function getOSFile(): any {
-  return (globalThis as any).OS?.File;
-}
-
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, { ignoreExisting: true });
-  }
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = getIOUtils();
-  if (io?.read) {
-    try {
-      const data = await io.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.read) {
-    try {
-      const data = await osFile.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, bytes);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, bytes);
-  }
-}
-
 export function getPdfFigureCropDirForCacheDir(cacheDir: string): string {
   return joinLocalPath(cacheDir, PDF_FIGURE_CROP_DIR);
 }
@@ -282,35 +229,7 @@ export function getPdfFigureCropCachePathForCacheDir(cacheDir: string): string {
 export async function removePdfFigureCropCacheDir(
   cacheDir: string,
 ): Promise<void> {
-  const path = getPdfFigureCropDirForCacheDir(cacheDir);
-  const io = getIOUtils();
-  if (io?.remove) {
-    try {
-      await io.remove(path, { recursive: true, ignoreAbsent: true });
-    } catch {
-      /* best-effort cache cleanup */
-    }
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.removeDir) {
-    try {
-      await osFile.removeDir(path, {
-        ignoreAbsent: true,
-        ignorePermissions: false,
-      });
-    } catch {
-      /* best-effort cache cleanup */
-    }
-    return;
-  }
-  if (osFile?.remove) {
-    try {
-      await osFile.remove(path, { ignoreAbsent: true });
-    } catch {
-      /* best-effort cache cleanup */
-    }
-  }
+  await removePathQuietly(getPdfFigureCropDirForCacheDir(cacheDir));
 }
 
 export function getPdfFigureCropPathForCacheDir(

@@ -2,6 +2,12 @@ import { appLogger } from "../../core/logging";
 import { unzipSync, zipSync } from "fflate";
 import { config, version as addonVersion } from "../../../package.json";
 import { joinLocalPath, getLocalParentPath } from "../../utils/localPath";
+import {
+  getIOUtils,
+  getOSFile,
+  pathExists,
+  writeFileBytes,
+} from "../../utils/geckoFs";
 import { isMineruSyncEnabled } from "../../utils/mineruConfig";
 import {
   buildAndWriteManifest,
@@ -160,39 +166,6 @@ export type MineruAttachmentCleanupResult = {
     | "no_artifacts";
 };
 
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-};
-
 type AttachmentImportApi = {
   importFromFile?: (options: {
     file: nsIFile | string;
@@ -229,14 +202,6 @@ type MineruPackageCandidate = {
   titleMatched: boolean;
 };
 
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
 async function ensureDir(path: string): Promise<void> {
   const io = getIOUtils();
   if (io?.makeDirectory) {
@@ -253,26 +218,6 @@ async function ensureDir(path: string): Promise<void> {
       ignoreExisting: true,
     });
   }
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 function coerceToUint8Array(
@@ -314,18 +259,6 @@ async function readFileBytes(path: string): Promise<Uint8Array | null> {
     }
   }
   return null;
-}
-
-async function writeFileBytes(path: string, data: Uint8Array): Promise<void> {
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, data);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, data);
-  }
 }
 
 function updateFnv1a(hash: number, byte: number): number {

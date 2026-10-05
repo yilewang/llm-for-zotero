@@ -8,6 +8,7 @@ import type {
   CodexAppServerHistoryItem,
   CodexAppServerUserInput,
 } from "./codexAppServerInput";
+import { pathExists } from "./geckoFs";
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
@@ -1955,26 +1956,6 @@ function uniquePaths(paths: string[]): string[] {
     out.push(normalized);
   }
   return out;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.exists) {
-    try {
-      return Boolean(await IOUtils.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.exists) {
-    try {
-      return Boolean(await OSFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 async function readSubprocessStdout(proc: any): Promise<string> {

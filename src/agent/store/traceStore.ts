@@ -1,6 +1,11 @@
 import { appLogger } from "../../core/logging";
 import { config } from "../../../package.json";
 import { getClaudeRuntimeRootDir } from "../../claudeCode/projectSkills";
+import {
+  ensureDirFromParent,
+  getIOUtils,
+  getOSFile,
+} from "../../utils/geckoFs";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
   getConversationKeyLedgerEntry,
@@ -66,32 +71,6 @@ const deletedRunIDsByConversation = new Map<
   { runIDs: string[]; generation: number }
 >();
 
-type IOUtilsLike = {
-  write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  remove?: (path: string) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-};
-
-type OSFileLike = {
-  writeAtomic?: (
-    path: string,
-    data: Uint8Array<ArrayBufferLike>,
-  ) => Promise<void>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  remove?: (path: string) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
 function isAgentTraceExportEnabled(): boolean {
   try {
     const raw = Zotero.Prefs.get(AGENT_TRACE_EXPORT_PREF_KEY, true);
@@ -101,28 +80,10 @@ function isAgentTraceExportEnabled(): boolean {
   }
 }
 
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
 async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
+  if (!(await ensureDirFromParent(path))) {
+    throw new Error("No directory API available for trace export");
   }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory API available for trace export");
 }
 
 async function writeUtf8File(path: string, content: string): Promise<void> {
