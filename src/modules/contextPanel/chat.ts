@@ -1,8 +1,5 @@
 import { appLogger } from "../../core/logging";
-import {
-  finishCodexNativePanelTurn,
-  runCodexNativePanelTurn,
-} from "./codexNative/turnCallbacks";
+import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
 export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
@@ -78,7 +75,6 @@ import {
   type CodexNativeConversationScope,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
-import { formatCodexZoteroMcpError } from "../../codexAppServer/mcpErrors";
 import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
@@ -98,8 +94,6 @@ import {
 import {
   appendContinuationText,
   callDirectChatTurnWithRecovery,
-  EMPTY_OUTPUT_LIMIT_MESSAGE,
-  resolveEmptyModelOutcomeMessage,
 } from "./directChatCompletion";
 import {
   getModelCapabilities,
@@ -147,16 +141,12 @@ import { resizeTextareaToContent } from "./textareaSizing";
 export { withScrollGuard } from "./chatScrollSnapshots";
 
 import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
-import { createStreamingResponse } from "./streamingResponse";
 import {
   createAssistantTurn,
   finalizeCancelledAssistantMessage,
 } from "./assistantTurn";
 import { toStoredAssistantRow } from "./storedAssistantRow";
-import {
-  getStreamInterruptionLabel,
-  resolveStreamInterruptionOutcome,
-} from "./streamInterruption";
+import { getStreamInterruptionLabel } from "./streamInterruption";
 import {
   restoreRetryUserSnapshot,
   takeRetryUserSnapshot,
@@ -220,7 +210,6 @@ import { withConversationWriteLock } from "../../shared/conversationWriteFence";
 import {
   createTurnUsageRecorder,
   type TurnUsageRecorder,
-  type UsageTurnFlushReason,
 } from "../../utils/usageTurnRecorder";
 import {
   chatHistory,
@@ -347,11 +336,6 @@ import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, disposeAgentTrace } from "./agentTrace/render";
-import {
-  createCodexNativeActivityTraceController,
-  noteExplicitCodexNativeSkillInvocations,
-  type CodexNativeActivityTraceController,
-} from "./codexNativeTrace/controller";
 import {
   conversationHasStreamingMessage,
   finalizeAssistantMessageQuoteCitations,
@@ -8494,19 +8478,40 @@ export async function sendQuestion(
   } = createPanelUpdateHelpers(body, item, conversationKey, ui);
   refreshChatSafely();
 
+  // Local usage ledger for this turn: one question, one row.
+  const usageRecorder = createTurnUsageRecorder({
+    conversationKey,
+    conversationGeneration,
+    runtime: isCodexNativeTurn ? "codex" : "chat",
+    model: effectiveRequestConfig.model,
+    provider: effectiveRequestConfig.modelProviderLabel,
+  });
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const assistantTurn = createAssistantTurn({
+    message: assistantMessage,
+    conversationKey,
+    conversationGeneration,
+    requestId: thisRequestId,
+    isCodexNativeTurn,
+    usageRecorder,
+    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
+    refreshChat: refreshChatSafely,
+    refreshCompletedTurn: () =>
+      refreshCompletedAssistantTurnSafely(assistantMessage),
+    setStatus: setStatusSafely,
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
+    resolveRetryHint: resolveMultimodalRetryHint,
+  });
   let assistantPersisted = false;
-  let codexActivityTrace: CodexNativeActivityTraceController | null = null;
   const persistAssistantOnce = async (
     status?: import("../../agent/types").AgentRunStatus,
   ) => {
     if (assistantPersisted) return;
     assistantPersisted = true;
     if (!shouldPersistTurn) return;
-    await codexActivityTrace?.persist(
-      conversationKey,
-      conversationGeneration,
-      status,
-    );
+    await assistantTurn.persistTrace(status);
     await persistConversationMessage(
       conversationKey,
       {
@@ -8524,24 +8529,13 @@ export async function sendQuestion(
       effectiveStorageSystem,
     );
   };
-  // Streaming flushes only mutate this assistant message, so re-render just
-  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
-  // not in the DOM yet.
-  const streamingResponse = createStreamingResponse({
-    message: assistantMessage,
-    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
-    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
-  });
-  const markCancelled = async () => {
-    streamingResponse.flush("cancel");
-    // Same reason as the retry flow: finish() never ran, so flush the trace's
-    // buffered commentary before persistAssistantOnce writes the turn.
-    codexActivityTrace?.flushBufferedProgress("cancel");
-    finalizeCancelledAssistantMessage(assistantMessage);
-    refreshChatSafely();
-    await persistAssistantOnce("cancelled");
-    setStatusSafely("Cancelled", "ready");
-  };
+  // The send repaints before it writes, and its once-guarded persist writes
+  // the cancelled trace together with the row.
+  const markCancelled = () =>
+    assistantTurn.cancel({
+      order: "refresh-first",
+      persist: persistAssistantOnce,
+    });
   const stopInactiveRequest = async () => {
     if (requestIsActive(conversationKey)) return false;
     if (isRequestOwner(conversationKey, thisRequestId)) {
@@ -8717,16 +8711,6 @@ export async function sendQuestion(
     return;
   }
 
-  // Local usage ledger for this turn: one question, one row.
-  const usageRecorder = createTurnUsageRecorder({
-    conversationKey,
-    conversationGeneration,
-    runtime: isCodexNativeTurn ? "codex" : "chat",
-    model: effectiveRequestConfig.model,
-    provider: effectiveRequestConfig.modelProviderLabel,
-  });
-  let usageFlushReason: UsageTurnFlushReason = "complete";
-
   try {
     const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
     // Apply auto-summary compression when the history grows long.
@@ -8821,15 +8805,9 @@ export async function sendQuestion(
 
     if (await stopInactiveRequest()) return;
 
-    const queueRefresh = streamingResponse.queueRefresh;
-    codexActivityTrace = isCodexNativeTurn
-      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
-      : null;
-    noteExplicitCodexNativeSkillInvocations(
-      codexActivityTrace,
-      opts.forcedSkillIds,
-    );
-    streamingResponse.start();
+    const queueRefresh = assistantTurn.queueRefresh;
+    assistantTurn.attachCodexTrace(opts.forcedSkillIds);
+    assistantTurn.start();
 
     if (await stopInactiveRequest()) return;
 
@@ -8883,7 +8861,7 @@ export async function sendQuestion(
 
     const handleReasoning = createStreamReasoningHandler({
       assistantMessage,
-      flushResponseStream: streamingResponse.flush,
+      flushResponseStream: assistantTurn.flush,
       queueRefresh,
     });
     const handleUsage = createStreamUsageHandler({
@@ -8953,7 +8931,7 @@ export async function sendQuestion(
     }
     // The request is going out: from here the provider bills whatever it
     // produces, including on abort, so the turn owes a usage row.
-    usageRecorder.markDispatched();
+    assistantTurn.dispatched();
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await runCodexNativePanelTurn(
           {
@@ -8990,10 +8968,10 @@ export async function sendQuestion(
             body,
             item,
             assistantMessage,
-            codexActivityTrace,
-            flushResponseStream: streamingResponse.flush,
+            codexActivityTrace: assistantTurn.codexTrace,
+            flushResponseStream: assistantTurn.flush,
             setStatusSafely,
-            handleDelta: streamingResponse.push,
+            handleDelta: assistantTurn.push,
             handleReasoning,
             handleUsage,
             conversationKey,
@@ -9006,62 +8984,37 @@ export async function sendQuestion(
             ...requestParams,
             systemMessages,
           },
-          onDelta: streamingResponse.push,
+          onDelta: assistantTurn.push,
           onReasoning: handleReasoning,
           onUsage: handleUsage,
         });
-    if (
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted)
-    ) {
-      usageFlushReason = "abort";
+    if (assistantTurn.wasCancelled()) {
+      assistantTurn.noteUsageOutcome("abort");
       await markCancelled();
       return;
     }
 
-    streamingResponse.flush("final");
-    const hasGeneratedOutput = normalizeGeneratedChatImages(
-      assistantMessage.generatedImages,
-    ).length;
-    const outputLimited =
-      modelOutcome.completion.status === "incomplete" &&
-      modelOutcome.completion.reason === "output_limit";
+    const emptyOutputText = assistantTurn.beginCompletion(modelOutcome);
+    // The send's own text policy: a reused agent placeholder can already hold
+    // text, so it is the fallback before the empty-output notice.
     assistantMessage.text =
       sanitizeText(modelOutcome.text) ||
       assistantMessage.text ||
-      (hasGeneratedOutput
-        ? ""
-        : outputLimited
-          ? EMPTY_OUTPUT_LIMIT_MESSAGE
-          : resolveEmptyModelOutcomeMessage(modelOutcome.completion));
-    assistantMessage.completionStatus = modelOutcome.completion.status;
-    assistantMessage.completionReason =
-      "reason" in modelOutcome.completion
-        ? modelOutcome.completion.reason
-        : undefined;
-    await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+      emptyOutputText;
+    await assistantTurn.recordCompletion(modelOutcome, {
       pairedUserMessage: userMessage,
       paperContexts: contextPlan.paperContexts,
       fullTextPaperContexts: contextPlan.fullTextPaperContexts,
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    finishCodexNativePanelTurn({
-      conversationKey,
-      assistantMessage,
-      codexActivityTrace,
-    });
     assistantMessage.runMode = isCodexNativeTurn
       ? "agent"
       : effectiveRuntimeMode;
     assistantMessage.agentRunId = agentRunId || assistantMessage.agentRunId;
-    assistantMessage.compactMarker = isCompactCommandText(question);
-    if (assistantMessage.compactMarker && !assistantMessage.text.trim()) {
-      assistantMessage.text = "Conversation compacted";
-    }
-    assistantMessage.interrupted = undefined;
-    assistantMessage.streaming = false;
-    refreshCompletedAssistantTurnSafely(assistantMessage);
+    assistantTurn.presentCompletion({
+      compactMarker: isCompactCommandText(question),
+    });
     await persistAssistantOnce();
     if (resolveConversationSystemForItem(item) === "claude_code") {
       const activeNoteSession = resolveActiveNoteSession(item);
@@ -9102,49 +9055,35 @@ export async function sendQuestion(
 
     setStatusSafely("Ready", "ready");
   } catch (err) {
-    const isCancelled =
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted) ||
-      (err as { name?: string }).name === "AbortError";
-    usageFlushReason = isCancelled ? "abort" : "error";
+    const isCancelled = assistantTurn.wasCancelled(err);
+    assistantTurn.noteUsageOutcome(isCancelled ? "abort" : "error");
     if (isCancelled) {
       await markCancelled();
       return;
     }
 
-    const technicalErrMsg = (err as Error).message || "Error";
-    const errMsg = isCodexNativeTurn
-      ? formatCodexZoteroMcpError(err, "Native conversation failed")
-      : technicalErrMsg;
-    const retryHint = resolveMultimodalRetryHint(errMsg, imageCount);
     // Preserve whatever streamed before the connection dropped instead of
     // discarding it. The streamed text includes the last, not-yet-flushed
     // chunk.
-    const partialText = sanitizeText(
-      streamingResponse.getStreamedText() || assistantMessage.text || "",
-    );
-    streamingResponse.dispose();
-    const outcome = resolveStreamInterruptionOutcome({
-      partialText,
-      errorMessage: errMsg,
-      retryHint,
+    const outcome = assistantTurn.readInterruption(err, {
+      codexLabel: "Native conversation failed",
+      imageCount,
     });
+    const errMsg = outcome.errorMessage;
+    const retryHint = outcome.retryHint;
     assistantMessage.text = outcome.text;
     assistantMessage.interrupted = outcome.interrupted;
     assistantMessage.streaming = false;
-    codexActivityTrace?.flushBufferedProgress("error");
+    assistantTurn.codexTrace?.flushBufferedProgress("error");
     refreshChatSafely();
     await persistAssistantOnce();
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");
   } finally {
-    // Same end of life as the retry flow: stop the trace controller before
-    // the request UI goes idle, so nothing it buffered can arrive later.
-    codexActivityTrace?.dispose();
-    // Every path through this flow -- completion, error, abort -- ends here,
-    // so this is where the one usage row for the turn is written. It never
-    // throws and is deliberately not awaited: usage must not delay the turn.
-    void usageRecorder.flush(usageFlushReason);
+    // Same end of life as the retry flow: stop the trace and write the one
+    // usage row (unawaited) before the request UI goes idle, so nothing the
+    // trace buffered can arrive later.
+    assistantTurn.end();
     if (
       clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
     ) {
