@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
@@ -4040,12 +4041,7 @@ async function extractFindControllerPageText(
 }
 
 function hashFindControllerQuery(query: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < query.length; index += 1) {
-    hash ^= query.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
+  return fnv1a32Raw(query).toString(36);
 }
 
 function findControllerQueryDiagnostic(query: string): string {

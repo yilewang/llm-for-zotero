@@ -1,5 +1,6 @@
 declare const Zotero: any;
 
+import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
 
@@ -188,12 +189,7 @@ export function generateConversationInstanceID(): string {
 
 export function buildProfileSignature(profileDir: string): string {
   const normalized = profileDir.trim().replace(/\\/g, "/");
-  let hash = 2166136261;
-  for (let i = 0; i < normalized.length; i += 1) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `profile-${(hash >>> 0).toString(16)}`;
+  return `profile-${fnv1a32Raw(normalized).toString(16)}`;
 }
 
 export function getCurrentProfileSignature(): string {

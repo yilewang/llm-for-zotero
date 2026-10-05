@@ -1,3 +1,5 @@
+import { fnv1a32Raw } from "../../../../utils/fnv1a";
+import { paperKey } from "../../../../shared/paperKey";
 import type {
   ChatAttachment,
   PaperContextRef,
@@ -74,12 +76,7 @@ function buildPinnedNoteKey(
 
 /** Simple FNV-1a hash for short, collision-resistant text fingerprints. */
 function hashText(text: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
+  return fnv1a32Raw(text).toString(36);
 }
 
 export function buildPinnedSelectedTextKey(
@@ -88,9 +85,7 @@ export function buildPinnedSelectedTextKey(
   const text = normalizeText(context.text);
   const source = normalizeTextSource(context.source);
   const paperContext = context.paperContext;
-  const paperKey = paperContext
-    ? `${Math.floor(paperContext.itemId)}:${Math.floor(paperContext.contextItemId)}`
-    : "-";
+  const paperPart = paperContext ? buildPinnedPaperKey(paperContext) : "-";
   const noteKey = buildPinnedNoteKey(context.noteContext);
   const contextItemId = Number.isFinite(context.contextItemId)
     ? Math.max(0, Math.floor(context.contextItemId!))
@@ -100,7 +95,7 @@ export function buildPinnedSelectedTextKey(
     : -1;
   // Use text hash instead of full text to keep keys short and stable
   const textHash = hashText(text);
-  return `${source}\u241f${noteKey}\u241f${paperKey}\u241f${contextItemId}\u241f${pageIndex}\u241f${textHash}`;
+  return `${source}\u241f${noteKey}\u241f${paperPart}\u241f${contextItemId}\u241f${pageIndex}\u241f${textHash}`;
 }
 
 export function buildPinnedImageKey(imageUrl: string): string {
@@ -119,7 +114,7 @@ export function buildPinnedFileKey(attachment: ChatAttachment): string {
 }
 
 export function buildPinnedPaperKey(paperContext: PaperContextRef): string {
-  return `${Math.floor(paperContext.itemId)}:${Math.floor(paperContext.contextItemId)}`;
+  return paperKey(paperContext);
 }
 
 export function isPinnedSelectedText(

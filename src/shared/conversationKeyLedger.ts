@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { classifyConversationKey } from "./conversationKeySpace";
 
@@ -79,12 +80,7 @@ function getCurrentProfileSignature(): string {
     .trim()
     .replace(/\\/g, "/");
   if (!profileDir) return "profile-default";
-  let hash = 2166136261;
-  for (let i = 0; i < profileDir.length; i += 1) {
-    hash ^= profileDir.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `profile-${(hash >>> 0).toString(16)}`;
+  return `profile-${fnv1a32Raw(profileDir).toString(16)}`;
 }
 
 function generateConversationInstanceID(): string {

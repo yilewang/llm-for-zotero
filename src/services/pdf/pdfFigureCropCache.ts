@@ -1,3 +1,4 @@
+import { fnv1a32 } from "../../utils/fnv1a";
 import { joinLocalPath } from "../../utils/localPath";
 import type { PaperContextRef } from "../../shared/types";
 import type {
@@ -117,12 +118,7 @@ export function getStandalonePdfFigureCropCacheDirForAttachmentId(
 }
 
 export function buildPdfFigureCropStableHash(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `fnv1a32-${fnv1a32(value)}`;
 }
 
 /** The manifest fields a figure crop actually depends on. */

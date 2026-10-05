@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
 import { config } from "../../package.json";
@@ -397,13 +398,7 @@ type BridgeScope = BridgeScopeSnapshot;
 type ClaudeMcpServersConfig = Record<string, Record<string, unknown>>;
 
 function hashProviderIdentityStack(stack: string[]): string {
-  let hash = 2166136261;
-  const input = stack.join("\n");
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a-${(hash >>> 0).toString(16)}`;
+  return `fnv1a-${fnv1a32Raw(stack.join("\n")).toString(16)}`;
 }
 
 async function buildClaudeProviderIdentityStack(): Promise<string[]> {

@@ -336,7 +336,7 @@ import {
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
 } from "../../services/paperContent/paperAttribution";
-import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../shared/paperKey";
 import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -5634,7 +5634,7 @@ function syncComposeContextForInlineEdit(
   }
   for (const paperContext of fullTextPaperContexts) {
     paperContextModeOverrides.set(
-      `${item.id}:${buildPaperKey(paperContext)}`,
+      ownerScopedPaperKey(item.id, paperContext),
       "full-next",
     );
   }

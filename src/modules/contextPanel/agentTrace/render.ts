@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../../utils/fnv1a";
 import type {
   AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
@@ -5157,12 +5158,7 @@ function readAgentTraceEventScan(
  */
 /** The answer text's length and FNV-1a hash, as one cache key. */
 function answerTextKey(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `${text.length}:${(hash >>> 0).toString(36)}`;
+  return `${text.length}:${fnv1a32Raw(text).toString(36)}`;
 }
 
 export function buildAgentTraceDisplayItems(

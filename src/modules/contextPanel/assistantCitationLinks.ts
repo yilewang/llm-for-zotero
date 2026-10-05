@@ -5,6 +5,7 @@ import { PARAGRAPH_CITATION_TOKEN_PATTERN } from "./quoteRenderPlan";
 import { appLogger } from "../../core/logging";
 import { setStatus } from "./textUtils";
 import { sanitizeText } from "../../utils/textSanitization";
+import { quoteComparisonKey } from "../../services/quotes/quoteKey";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -540,13 +541,6 @@ function getCitationBaseLabelForRefresh(textSpan: Element): string {
   const currentText = sanitizeText(textSpan.textContent || "").trim();
   if (!currentText) return "";
   return currentText.replace(/,\s*page\s+[^,)]*(\))$/i, "$1").trim();
-}
-
-function normalizeQuoteKey(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
 }
 
 function parseCitationContextItemIds(value: unknown): number[] {
@@ -4412,7 +4406,7 @@ function createCitationButton(params: {
   citationButtonNavigationModeCache.set(citationButton, navigationMode);
   citationButton.dataset.citationNavigationMode = navigationMode;
   citationButton.dataset.loading = "false";
-  citationButton.dataset.citationSyncKey = `${normalizeCitationLabel(baseSourceLabel)}\u241f${normalizeQuoteKey(params.quoteText)}`;
+  citationButton.dataset.citationSyncKey = `${normalizeCitationLabel(baseSourceLabel)}\u241f${quoteComparisonKey(params.quoteText)}`;
   citationButton.dataset.citationContextItemIds =
     buildCitationContextItemIdsDataset(params.candidates);
   const primaryContextItemId = parseCitationContextItemIds(

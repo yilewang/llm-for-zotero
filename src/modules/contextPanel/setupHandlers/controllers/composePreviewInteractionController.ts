@@ -18,7 +18,7 @@ import {
   isManagedBlobPath,
   removeAttachmentFile,
 } from "../../../../services/attachmentStorage";
-import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../../../shared/paperKey";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
   clearSelectedPaperState,
@@ -466,7 +466,7 @@ export function attachComposePreviewInteractionController(
       const removedPaper = selectedPapers[index];
       if (removedPaper) {
         paperContextModeOverrides.delete(
-          `${item.id}:${buildPaperKey(removedPaper)}`,
+          ownerScopedPaperKey(item.id, removedPaper),
         );
       }
       const nextPapers = selectedPapers.filter(

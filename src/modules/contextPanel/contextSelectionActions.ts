@@ -22,7 +22,7 @@ import type {
   PaperSearchAttachmentCandidate,
   PaperSearchGroupCandidate,
 } from "./paperSearch";
-import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../shared/paperKey";
 import {
   buildReferenceSelectorTagContextKey,
   normalizeReferenceSelectorTagIdentityName,
@@ -108,7 +108,7 @@ function clearPaperOverridesForItem(
   itemId: number,
   paper: PaperContextRef,
 ): void {
-  const overrideKey = `${itemId}:${buildPaperKey(paper)}`;
+  const overrideKey = ownerScopedPaperKey(itemId, paper);
   paperContextModeOverrides.delete(overrideKey);
   paperContentSourceOverrides.delete(overrideKey);
 }

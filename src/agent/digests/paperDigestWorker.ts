@@ -14,6 +14,7 @@
  * publishing are injected so the module stays testable and Gecko-safe (no
  * AbortController is created here; the turn's signal is passed through).
  */
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import { callUtilityLLM, type UtilityLLMParams } from "../../utils/utilityLLM";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 
@@ -466,12 +467,7 @@ export function buildDigestPrompt(params: {
 
 /** 32-bit FNV-1a over UTF-16 code units, as lowercase hex. */
 function fnv1a(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
+  return fnv1a32Raw(text).toString(16);
 }
 
 /**

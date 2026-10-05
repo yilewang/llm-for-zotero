@@ -1,3 +1,4 @@
+import { quoteKeyHash } from "../../services/quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export type CitationPageCacheEntry = {
@@ -19,22 +20,8 @@ function now(): number {
   return nowForTests ? nowForTests() : Date.now();
 }
 
-function normalizeQuoteTextForHash(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
 export function buildCitationQuoteHash(quoteText: string): string {
-  const normalized = normalizeQuoteTextForHash(quoteText);
-  if (!normalized) return "";
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return quoteKeyHash(quoteText);
 }
 
 function buildCitationPageCacheKey(

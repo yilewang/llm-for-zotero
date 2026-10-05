@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import type {
   AgentModelMessage,
   AgentToolMessage,
@@ -69,12 +70,7 @@ function stableStringify(value: unknown): string {
 
 function simpleDigest(value: unknown): string {
   const text = stableStringify(value);
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
+  return fnv1a32Raw(text).toString(16);
 }
 
 function parseToolContent(message: AgentToolMessage): unknown {

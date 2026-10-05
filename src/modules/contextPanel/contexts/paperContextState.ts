@@ -24,13 +24,13 @@ import {
   selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
 } from "../state";
-import { buildPaperKey } from "../../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../../shared/paperKey";
 import { normalizePaperContextRefs } from "../../../services/context/normalizers";
 import { sanitizeText } from "../../../utils/textSanitization";
 
 /** Builds the flat composite key for override maps. */
 function overrideKey(itemId: number, paperContext: PaperContextRef): string {
-  return `${itemId}:${buildPaperKey(paperContext)}`;
+  return ownerScopedPaperKey(itemId, paperContext);
 }
 
 // ── Send mode overrides ────────────────────────────────────────────────────

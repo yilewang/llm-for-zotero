@@ -1,3 +1,4 @@
+import { fnv1a32, fnv1a32Raw } from "../../utils/fnv1a";
 import {
   paragraphCitationIds,
   normalizeParagraphCitations,
@@ -921,12 +922,7 @@ export function sanitizeUntrustedSourceBackedQuoteBlocks(
 }
 
 function hashBase36(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36).padStart(7, "0").slice(0, 8);
+  return fnv1a32Raw(value).toString(36).padStart(7, "0").slice(0, 8);
 }
 
 export function buildQuoteCitationId(input: {
@@ -1269,12 +1265,7 @@ function buildLazyQuoteRepairCacheKey(
     citation.id,
     normalizeQuoteTextForMatch(displayedQuoteText),
   ].join("\u241f");
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `quote-repair-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `quote-repair-${fnv1a32(value)}`;
 }
 
 function rememberLazyQuoteRepair(key: string, citation: QuoteCitation): void {

@@ -1,3 +1,4 @@
+import { fnv1a32 } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { deleteMineruCheckpoint, hashMineruBytes } from "./mineruCheckpoint";
 import { MineruCancelledError } from "../../utils/mineruClient";
@@ -270,12 +271,7 @@ const MAX_CACHE_PATH_SEGMENT_LENGTH = 80;
 const MAX_CACHE_RELATIVE_PATH_LENGTH = 160;
 
 function stableHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return fnv1a32(value);
 }
 
 function splitFileName(fileName: string): { stem: string; ext: string } {

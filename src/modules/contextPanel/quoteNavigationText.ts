@@ -1,12 +1,6 @@
 import type { QuoteCitation } from "../../shared/types";
+import { quoteComparisonKey } from "../../services/quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
-
-function normalizeQuoteNavigationKey(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
 
 function normalizeQuoteCitationNavigationText(value: unknown): string {
   const raw = typeof value === "string" ? value : String(value ?? "");
@@ -33,7 +27,7 @@ function stripLeadingQuoteNavigationHeading(value: string): string {
 }
 
 function normalizeQuoteNavigationComparisonKey(value: string): string {
-  return normalizeQuoteNavigationKey(value)
+  return quoteComparisonKey(value)
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();

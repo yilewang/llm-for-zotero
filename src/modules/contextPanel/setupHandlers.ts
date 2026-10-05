@@ -258,6 +258,7 @@ import {
 } from "./slashMenuBehavior";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../shared/paperKey";
 import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
 import {
@@ -4765,7 +4766,7 @@ export function setupHandlers(
     let changed = false;
     if (removed.length) {
       for (const paper of removed) {
-        paperContextModeOverrides.delete(`${item.id}:${buildPaperKey(paper)}`);
+        paperContextModeOverrides.delete(ownerScopedPaperKey(item.id, paper));
       }
       const next = papers.filter((paper) => paper.itemId !== itemId);
       if (next.length) selectedPaperContextCache.set(item.id, next);
