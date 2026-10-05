@@ -130,7 +130,7 @@ import {
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
 import { enqueueConversationCleanupJob } from "../core/conversations/conversationCleanupJobs";
-import { evaluatePreparedActionContract } from "../agent/contracts/actionEvaluation";
+import { settleExternalTurn } from "../agent/execution/externalTurnSettlement";
 import { isCodexNativeItemType } from "./nativeActivityStages";
 
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
@@ -3801,37 +3801,33 @@ export async function runCodexAppServerNativeTurn(input: {
           candidate: CodexNativeTurnResult,
         ) =>
           candidate.turnId ? loadLatestDocumentForRun(candidate.turnId) : null;
+        // A document exists only when submit_document succeeded, keyed by
+        // the Codex turn id.
         const document = submittedDocument
           ? await loadSubmittedDocument(result)
           : null;
-        const actionEvaluation = evaluatePreparedActionContract(hostReceipts);
-        const verificationFailure = [
-          actionEvaluation.state !== "satisfied" &&
-          actionEvaluation.state !== "cancelled"
-            ? actionEvaluation.failure
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n");
-        if (verificationFailure) {
-          result = {
-            ...result,
-            text: verificationFailure,
-            verificationFailure,
-          };
+        const settlement = settleExternalTurn({
+          answerText: result.text,
+          answered: true,
+          document,
+          hostReceipts,
+        });
+        const verificationFailure = settlement.unverified;
+        if (verificationFailure !== undefined) {
           await publishHost({
             type: "provider_event",
             providerType: "agent_completion_unverified",
             payload: { failure: verificationFailure },
           });
         }
-        if (document) {
+        if (verificationFailure !== undefined || document) {
           result = {
             ...result,
-            text: verificationFailure
-              ? `${document.visibleMarkdown}\n\n${verificationFailure}`
-              : document.visibleMarkdown,
-            documentId: document.documentId,
+            text: settlement.text,
+            ...(verificationFailure !== undefined
+              ? { verificationFailure }
+              : {}),
+            ...(document ? { documentId: settlement.documentId } : {}),
           };
         }
         if (rawPdfMode && storedThreadId) {
@@ -3856,10 +3852,7 @@ export async function runCodexAppServerNativeTurn(input: {
             hooks: params.hooks,
           });
         }
-        await params.eventJournal.finish(
-          verificationFailure ? "failed" : "completed",
-          result.text,
-        );
+        await params.eventJournal.finish(settlement.status, result.text);
         return { ...result, agentRunId: params.eventJournal.runId };
       } catch (error) {
         scopedMcp?.clear();

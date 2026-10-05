@@ -50,23 +50,34 @@ describe("direct Agent ownership boundary", function () {
     assert.isEmpty(staleFallbacks);
   });
   it("checks verified action completion in both native provider owners", function () {
-    for (const path of [
-      "src/codexAppServer/nativeClient.ts",
-      "src/agent/externalBackendBridge.ts",
-    ]) {
+    const calls = (path: string, callee: string) => {
       const source = read(path);
       let found = false;
       const visit = (node: ts.Node) => {
         if (
           ts.isCallExpression(node) &&
-          node.expression.getText(source) === "evaluatePreparedActionContract"
+          node.expression.getText(source) === callee
         )
           found = true;
         ts.forEachChild(node, visit);
       };
       visit(source);
-      assert.isTrue(found, path);
+      return found;
+    };
+    // Each owner settles its turn through the one shared rule ...
+    for (const path of [
+      "src/codexAppServer/nativeClient.ts",
+      "src/agent/externalBackendBridge.ts",
+    ]) {
+      assert.isTrue(calls(path, "settleExternalTurn"), path);
     }
+    // ... and that rule is what verifies the turn's action contract.
+    assert.isTrue(
+      calls(
+        "src/agent/execution/externalTurnSettlement.ts",
+        "evaluatePreparedActionContract",
+      ),
+    );
   });
   it("supplies host execution context to every native Codex turn dispatch", function () {
     const source = read("src/modules/contextPanel/chat.ts");

@@ -8,6 +8,7 @@ import {
   sendAgentTurn,
 } from "../src/modules/contextPanel/agentMode/agentEngine";
 import type {
+  AgentEvent,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
 } from "../src/agent/types";
@@ -2180,6 +2181,82 @@ describe("agent engine final UI release", function () {
       assert.equal(record.runState, "completed");
       assert.equal(displayedTaskRunState(record), "completed_with_exceptions");
       assert.isTrue(record.planSeen);
+    });
+
+    it("cites a submitted document's sources live and skips a document that cites none", async function () {
+      const conversationKey = 708;
+      const citations: unknown[] = [];
+      const finalized = (
+        documentId: string,
+        citedSources: Array<Record<string, unknown>>,
+      ) =>
+        ({
+          type: "material_finalized",
+          materialRef: { documentId, documentVersion: 1, contentHash: "h" },
+          materialKind: "document",
+          citedSources,
+        }) as AgentEvent;
+      const deps = createDeps({
+        runtime: runtimeWith(async (params) => {
+          await params.onStart?.("run-doc");
+          await params.onEvent?.({
+            type: "paper_ledger_update",
+            callId: "c1",
+            delta: ledgerDelta("c1", [[3, "read", "Methods."]], "run-doc"),
+          });
+          await params.onEvent?.(finalized("empty", []));
+          citations.push(
+            getTaskProgress(conversationKey)!.ledger.papers["1:3"].turns[1]
+              .citations.length,
+          );
+          await params.onEvent?.(
+            finalized("review", [
+              {
+                citationId: "c1",
+                libraryID: 1,
+                itemKey: "PAPER003",
+                itemId: 3,
+                sectionLabel: "Discussion",
+              },
+            ]),
+          );
+          citations.push(
+            ...getTaskProgress(conversationKey)!.ledger.papers["1:3"].turns[1]
+              .citations,
+          );
+          await params.onEvent?.({ type: "final", text: "Reviewed." });
+          return {
+            kind: "completed",
+            runId: "run-doc",
+            text: "Reviewed.",
+            usedFallback: false,
+          };
+        }),
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.chatHistory.set(conversationKey, []);
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question: "Review the methods",
+        },
+        deps,
+      );
+      assert.deepEqual(citations, [
+        0,
+        {
+          citationId: "c1",
+          turnIndex: 1,
+          source: "document",
+          sectionLabel: "Discussion",
+        },
+      ]);
+      const record = getTaskProgress(conversationKey)!;
+      assert.equal(record.ledger.papers["1:3"].state, "cited");
+      assert.equal(record.runState, "completed");
     });
 
     it("waits on the user while a decision card is open, then works on", async function () {

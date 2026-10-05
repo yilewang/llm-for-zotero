@@ -20,6 +20,7 @@ import {
  */
 import type { AgentRuntime } from "../../../agent/runtime";
 import { ExecutionCheckpointFold } from "../../../agent/execution/checkpointEvents";
+import { taskProgressEffect } from "../taskProgress/runFold";
 import type {
   AgentEvent,
   AgentPendingAction,
@@ -326,6 +327,52 @@ export function createAgentTurnEventHandler(
       text: pairedUserMessage.text,
     });
   };
+  // What the event does to Task progress, read by the one fold the rebuild
+  // of a stored conversation shares, applied here as the event arrives.
+  const applyTaskProgress = (event: AgentEvent): void => {
+    const effect = taskProgressEffect(event);
+    if (!effect) return;
+    const runId = assistantMessage.agentRunId;
+    switch (effect.kind) {
+      case "paper_delta":
+        applyTaskPaperUpdate(conversationKey, effect.delta, runId);
+        return;
+      case "document_citations":
+        // The papers a submitted document cites, under their sections.
+        if (effect.citations?.length) {
+          applyTaskDocumentCitations(conversationKey, runId, effect.citations);
+        }
+        return;
+      case "outcomes": {
+        // The run's outcomes, as its ledger stands, are its Task progress steps.
+        const checkpoint = outcomeLedger.apply(effect.event);
+        if (runId && checkpoint) {
+          setTaskOutcomes(conversationKey, runId, checkpoint);
+        }
+        return;
+      }
+      case "answering":
+        markTaskAnswering(conversationKey, runId);
+        return;
+      case "waiting":
+        markTaskWaiting(conversationKey, runId, effect.waiting);
+        return;
+      case "final":
+        completeTaskRun(conversationKey, {
+          runId,
+          quoteCitations: selectUsedQuoteCitations({
+            text: assistantMessage.text,
+            quoteCitations: assistantMessage.quoteCitations,
+          }),
+          libraryID: runtimeRequest.libraryID,
+        });
+        return;
+      default:
+        // A Codex plan or a retired plan event never reaches this engine's
+        // Task progress: native Codex turns are wired in the chat panel.
+        return;
+    }
+  };
   return async (event: AgentEvent): Promise<void> => {
     ensureTaskRun();
     if (assistantMessage.agentRunId) {
@@ -511,7 +558,7 @@ export function createAgentTurnEventHandler(
         break;
       case "confirmation_required":
         // The run waits on the user's decision until the card resolves.
-        markTaskWaiting(conversationKey, assistantMessage.agentRunId, true);
+        applyTaskProgress(event);
         showInlineConfirmationCard(body, ui, event.requestId, event.action);
         queueRefresh();
         body.ownerDocument?.defaultView?.setTimeout(() => {
@@ -520,7 +567,7 @@ export function createAgentTurnEventHandler(
         setStatusSafely("Approval required", "sending");
         return;
       case "confirmation_resolved":
-        markTaskWaiting(conversationKey, assistantMessage.agentRunId, false);
+        applyTaskProgress(event);
         closeInlineConfirmationCard(body, ui, event.requestId);
         queueRefresh();
         setStatusSafely(
@@ -531,42 +578,22 @@ export function createAgentTurnEventHandler(
       case "message_delta": {
         // The answer is streaming: the row says so and an open overlay
         // collapses, back to the chat the answer arrives in.
-        markTaskAnswering(conversationKey, assistantMessage.agentRunId);
+        applyTaskProgress(event);
         messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
         return;
       }
       case "paper_ledger_update":
-        applyTaskPaperUpdate(
-          conversationKey,
-          event.delta,
-          assistantMessage.agentRunId,
-        );
+        applyTaskProgress(event);
         return;
       case "material_finalized":
-        // The papers a submitted document cites, under their sections.
-        if (event.citedSources?.length) {
-          applyTaskDocumentCitations(
-            conversationKey,
-            assistantMessage.agentRunId,
-            event.citedSources,
-          );
-        }
+        applyTaskProgress(event);
         // As before: the assistant refreshes after the event (the store
         // repaints the Task progress view on its own).
         break;
       case "execution_checkpoint":
-      case "execution_checkpoint_delta": {
-        // The run's outcomes, as its ledger stands, are its Task progress steps.
-        const checkpoint = outcomeLedger.apply(event);
-        if (assistantMessage.agentRunId && checkpoint) {
-          setTaskOutcomes(
-            conversationKey,
-            assistantMessage.agentRunId,
-            checkpoint,
-          );
-        }
+      case "execution_checkpoint_delta":
+        applyTaskProgress(event);
         break;
-      }
       case "message_rollback":
         if (typeof event.length === "number" && event.length > 0) {
           assistantMessage.pendingFinalText = (
@@ -638,14 +665,7 @@ export function createAgentTurnEventHandler(
         assistantMessage.pendingFinalText = assistantMessage.text;
         assistantMessage.waitingAnimationStartedAt = undefined;
         assistantMessage.streaming = false;
-        completeTaskRun(conversationKey, {
-          runId: assistantMessage.agentRunId,
-          quoteCitations: selectUsedQuoteCitations({
-            text: assistantMessage.text,
-            quoteCitations: assistantMessage.quoteCitations,
-          }),
-          libraryID: runtimeRequest.libraryID,
-        });
+        applyTaskProgress(event);
         break;
       default:
         break;
