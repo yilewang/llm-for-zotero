@@ -100,6 +100,7 @@ import type {
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestTargetedQuoteRefreshResult,
+  WorkflowTestChatTurnLifecycleState,
   WorkflowTestLiveChatTurn,
   WorkflowTestLiveWebChatTurn,
   WorkflowTestWebChatPdfChipState,
@@ -135,12 +136,19 @@ import {
   buildAgentEngineDepsForTests,
   ensureConversationLoaded,
   getConversationKey,
+  getSelectedReasoningForItem,
   hasAgentRunTraceForTests,
   refreshActiveConversationPanels,
   refreshChat,
+  retryLatestAssistantResponse,
   setAgentRunTraceLoaderForTests,
   updateContextUsageSnapshotFromProvider,
 } from "./chat";
+import {
+  getAdvancedModelParamsForEntry,
+  getSelectedModelEntry,
+} from "./prefHelpers";
+import { loadUsageEventsForConversation } from "../../utils/usageStore";
 import {
   applySelectedTextPreview,
   getSelectedTextContextEntries,
@@ -2701,6 +2709,132 @@ async function sendLiveChatTurn(
     probes.hidePromptMenu();
     setWorkflowTestSendInterceptor(previousInterceptor);
   }
+}
+
+/**
+ * Types `text` into the panel's composer and clicks Send, letting the send
+ * continue into the real `sendQuestion`. Resolves as soon as the send flow
+ * hands the request over; the caller drives the provider and waits for
+ * `sendSettledSequence` to pass `sendSettledSequenceBefore`.
+ */
+async function startPanelChatSend(
+  panelId: string,
+  text: string,
+  overrides: Pick<
+    SendQuestionOptions,
+    "forcedSkillIds" | "selectedTagContexts"
+  > = {},
+): Promise<{ conversationKey: number; sendSettledSequenceBefore: number }> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const input = panel.body.querySelector(
+    "#llm-input",
+  ) as HTMLTextAreaElement | null;
+  const sendBtn = panel.body.querySelector(
+    "#llm-send",
+  ) as HTMLButtonElement | null;
+  if (!input || !sendBtn) {
+    throw new Error("Workflow panel composer was not rendered");
+  }
+  const sendSettledSequenceBefore = getWorkflowTestSendSettledSequence();
+  const previousInterceptor = getWorkflowTestSendInterceptor();
+  lastSend = null;
+  try {
+    setWorkflowTestSendInterceptor((opts) => {
+      Object.assign(opts, overrides);
+      lastSend = opts;
+      return true;
+    });
+    input.value = text;
+    const eventCtor = panel.body.ownerDocument.defaultView?.Event ?? Event;
+    input.dispatchEvent(new eventCtor("input", { bubbles: true }));
+    sendBtn.click();
+    await waitForLastSend();
+  } finally {
+    setWorkflowTestSendInterceptor(previousInterceptor);
+  }
+  const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+  return {
+    conversationKey: getConversationKey(mountedItem),
+    sendSettledSequenceBefore,
+  };
+}
+
+/**
+ * Runs the real retry for the panel's latest turn with `entryId` (or the
+ * selected model entry), passing the same arguments the retry model menu
+ * passes for an upstream entry.
+ */
+async function retryLatestPanelResponse(
+  panelId: string,
+  entryId?: string,
+): Promise<unknown> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const item = activeContextPanels.get(panel.body)?.() || panel.item;
+  const entry = entryId ? getModelEntryById(entryId) : getSelectedModelEntry();
+  if (!entry) throw new Error("Workflow retry needs a model entry");
+  // The retry menu passes these arguments for upstream api_key entries only;
+  // Codex-auth entries take a different reasoning source.
+  const system =
+    (panel.body.querySelector("#llm-main") as HTMLElement | null)?.dataset
+      .conversationSystem || "upstream";
+  if (system !== "upstream" || entry.authMode === "codex_auth") {
+    throw new Error(
+      "Workflow retry helper supports upstream non-Codex-auth entries only",
+    );
+  }
+  return retryLatestAssistantResponse(
+    panel.body,
+    item,
+    entry.model,
+    entry.apiBase,
+    entry.apiKey,
+    entry.authMode,
+    entry.providerProtocol,
+    entry.entryId,
+    entry.providerLabel,
+    getSelectedReasoningForItem(
+      item.id,
+      entry.model,
+      entry.apiBase,
+      entry.providerProtocol,
+      entry.advanced?.profileOverride,
+    ),
+    getAdvancedModelParamsForEntry(entry.entryId),
+  );
+}
+
+async function readChatTurnLifecycle(
+  conversationKey: number,
+): Promise<WorkflowTestChatTurnLifecycleState> {
+  assertWorkflowTestEnabled();
+  const table = WORKFLOW_CONVERSATION_PERSISTENCE_TABLES.upstream.messages;
+  const columns = (
+    ((await Zotero.DB.queryAsync(`PRAGMA table_info(${table})`)) as
+      | Array<{ name?: unknown }>
+      | undefined) || []
+  )
+    .map((column) => String(column.name || ""))
+    .filter(Boolean);
+  const rows =
+    ((await Zotero.DB.queryAsync(
+      `SELECT ${columns.join(", ")} FROM ${table}
+       WHERE conversation_key = ?
+       ORDER BY id ASC`,
+      [conversationKey],
+    )) as Array<Record<string, unknown>> | undefined) || [];
+  return {
+    memory: JSON.parse(
+      JSON.stringify(chatHistory.get(conversationKey) || []),
+    ) as Array<Record<string, unknown>>,
+    storedRows: rows.map((row) =>
+      Object.fromEntries(columns.map((column) => [column, row[column]])),
+    ),
+    usageRows: await loadUsageEventsForConversation(conversationKey),
+    requestPending: isRequestPending(conversationKey),
+    sendSettledSequence: getWorkflowTestSendSettledSequence(),
+  };
 }
 
 async function renderAssistantForPanel(
@@ -5806,6 +5940,9 @@ export function installWorkflowTestHarness(targetAddon: {
     toggleWebChatPdfChip: toggleWebChatPdfChipForWorkflow,
     sendLiveWebChatTurn,
     sendLiveChatTurn,
+    startPanelChatSend,
+    retryLatestPanelResponse,
+    readChatTurnLifecycle,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
     clickPanelSystemTogglesRapidly,
