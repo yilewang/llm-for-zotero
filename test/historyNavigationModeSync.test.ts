@@ -2,27 +2,41 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert } from "chai";
-import { after, beforeEach, describe, it } from "mocha";
-import { getClaudePaperConversationKeyRange } from "../src/claudeCode/constants";
+import { after, afterEach, beforeEach, describe, it } from "mocha";
+import { config } from "../package.json";
+import {
+  getClaudeGlobalConversationKeyRange,
+  getClaudePaperConversationKeyRange,
+} from "../src/claudeCode/constants";
 import {
   getLastUsedClaudeConversationMode,
+  getLastUsedClaudeGlobalConversationKey,
   getLastUsedClaudePaperConversationKey,
+  setLastUsedClaudeConversationMode,
+  setLastUsedClaudeGlobalConversationKey,
 } from "../src/claudeCode/prefs";
 import {
   activeClaudeConversationModeByLibrary,
+  activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
   buildClaudeLibraryStateKey,
   buildClaudePaperStateKey,
 } from "../src/claudeCode/state";
-import { getCodexGlobalConversationKeyRange } from "../src/codexAppServer/constants";
+import {
+  getCodexGlobalConversationKeyRange,
+  getCodexPaperConversationKeyRange,
+} from "../src/codexAppServer/constants";
 import {
   getLastUsedCodexConversationMode,
   getLastUsedCodexGlobalConversationKey,
+  getLastUsedCodexPaperConversationKey,
 } from "../src/codexAppServer/prefs";
 import {
   activeCodexConversationModeByLibrary,
   activeCodexGlobalConversationByLibrary,
+  activeCodexPaperConversationByPaper,
   buildCodexLibraryStateKey,
+  buildCodexPaperStateKey,
 } from "../src/codexAppServer/state";
 import { buildDefaultUpstreamGlobalConversationKey } from "../src/modules/contextPanel/constants";
 import { primeHistoryNavigationMode } from "../src/modules/contextPanel/historyNavigationModeSync";
@@ -40,6 +54,11 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
 } from "../src/modules/contextPanel/state";
+import { flushPaperRestoreSelectionWrites } from "../src/shared/paperConversationRestore";
+import {
+  installPaperRestoreDb,
+  type PaperRestoreDb,
+} from "./helpers/paperRestoreDb";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -53,9 +72,11 @@ describe("historyNavigationModeSync", function () {
     activeGlobalConversationByLibrary.clear();
     activePaperConversationByPaper.clear();
     activeClaudeConversationModeByLibrary.clear();
+    activeClaudeGlobalConversationByLibrary.clear();
     activeClaudePaperConversationByPaper.clear();
     activeCodexConversationModeByLibrary.clear();
     activeCodexGlobalConversationByLibrary.clear();
+    activeCodexPaperConversationByPaper.clear();
     (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
       Profile: {
         dir: "/tmp/llm-for-zotero-history-navigation-test",
@@ -239,6 +260,209 @@ describe("historyNavigationModeSync", function () {
     assert.isFalse(activeCodexGlobalConversationByLibrary.has(codexLibraryKey));
     assert.isNull(getLastUsedCodexConversationMode(7));
     assert.isNull(getLastUsedCodexGlobalConversationKey(7));
+  });
+
+  it("restores the global entry before the mode entry (reverse priming order)", function () {
+    const conversationKey = buildDefaultUpstreamGlobalConversationKey(7);
+    const snapshot = primeHistoryNavigationMode({
+      system: "upstream",
+      libraryID: 7,
+      mode: "global",
+      conversationKey,
+    });
+    const writes: string[] = [];
+    const prefs = (
+      globalThis as typeof globalThis & {
+        Zotero: { Prefs: { set: (key: string, value: unknown) => void } };
+      }
+    ).Zotero.Prefs;
+    const originalSet = prefs.set;
+    prefs.set = (key: string, value: unknown) => {
+      writes.push(key);
+      originalSet(key, value);
+    };
+
+    snapshot.restore();
+
+    assert.deepEqual(writes, [
+      `${config.prefsPrefix}.lastUsedGlobalConversationMap`,
+      `${config.prefsPrefix}.lastUsedConversationModeMap`,
+    ]);
+  });
+
+  it("does not restore anything when only the mode changed after priming", function () {
+    const conversationKey = buildDefaultUpstreamGlobalConversationKey(7);
+    const snapshot = primeHistoryNavigationMode({
+      system: "upstream",
+      libraryID: 7,
+      mode: "global",
+      conversationKey,
+    });
+    activeConversationModeByLibrary.set(7, "paper");
+
+    snapshot.restore();
+
+    assert.equal(activeConversationModeByLibrary.get(7), "paper");
+    assert.equal(activeGlobalConversationByLibrary.get(7), conversationKey);
+    assert.equal(getLastUsedUpstreamConversationMode(7), "global");
+    assert.equal(getLastUsedUpstreamGlobalConversationKey(7), conversationKey);
+  });
+
+  it("primes nothing for an invalid library", function () {
+    const snapshot = primeHistoryNavigationMode({
+      system: "upstream",
+      libraryID: 0,
+      mode: "global",
+      conversationKey: buildDefaultUpstreamGlobalConversationKey(7),
+    });
+
+    assert.equal(activeConversationModeByLibrary.size, 0);
+    assert.equal(activeGlobalConversationByLibrary.size, 0);
+    assert.equal(prefStore.size, 0);
+    snapshot.restore();
+    assert.equal(prefStore.size, 0);
+  });
+
+  it("primes only the mode when the paper target is incomplete", function () {
+    const snapshot = primeHistoryNavigationMode({
+      system: "codex",
+      libraryID: 7,
+      mode: "paper",
+      conversationKey: getCodexPaperConversationKeyRange().start + 1,
+    });
+    const codexLibraryKey = buildCodexLibraryStateKey(7);
+
+    assert.equal(
+      activeCodexConversationModeByLibrary.get(codexLibraryKey),
+      "paper",
+    );
+    assert.equal(activeCodexPaperConversationByPaper.size, 0);
+    snapshot.restore();
+    assert.isFalse(activeCodexConversationModeByLibrary.has(codexLibraryKey));
+  });
+
+  it("treats any mode other than global as paper", function () {
+    primeHistoryNavigationMode({
+      system: "upstream",
+      libraryID: 7,
+      mode: "library" as unknown as "paper",
+    });
+
+    assert.equal(activeConversationModeByLibrary.get(7), "paper");
+    assert.equal(getLastUsedUpstreamConversationMode(7), "paper");
+  });
+
+  it("primes and restores Claude global and Codex paper state", function () {
+    const claudeLibraryKey = buildClaudeLibraryStateKey(7);
+    const previousClaudeKey = getClaudeGlobalConversationKeyRange().start + 3;
+    activeClaudeConversationModeByLibrary.set(claudeLibraryKey, "paper");
+    activeClaudeGlobalConversationByLibrary.set(
+      claudeLibraryKey,
+      previousClaudeKey,
+    );
+    setLastUsedClaudeConversationMode(7, "paper");
+    setLastUsedClaudeGlobalConversationKey(7, previousClaudeKey);
+    const claudeKey = getClaudeGlobalConversationKeyRange().start + 4;
+
+    const claudeSnapshot = primeHistoryNavigationMode({
+      system: "claude_code",
+      libraryID: 7,
+      mode: "global",
+      conversationKey: claudeKey,
+    });
+    assert.equal(
+      activeClaudeGlobalConversationByLibrary.get(claudeLibraryKey),
+      claudeKey,
+    );
+    assert.equal(getLastUsedClaudeGlobalConversationKey(7), claudeKey);
+    assert.equal(getLastUsedClaudeConversationMode(7), "global");
+    claudeSnapshot.restore();
+    assert.equal(
+      activeClaudeConversationModeByLibrary.get(claudeLibraryKey),
+      "paper",
+    );
+    assert.equal(
+      activeClaudeGlobalConversationByLibrary.get(claudeLibraryKey),
+      previousClaudeKey,
+    );
+    assert.equal(getLastUsedClaudeConversationMode(7), "paper");
+    assert.equal(getLastUsedClaudeGlobalConversationKey(7), previousClaudeKey);
+
+    const codexPaperKey = getCodexPaperConversationKeyRange().start + 1;
+    const codexSnapshot = primeHistoryNavigationMode({
+      system: "codex",
+      libraryID: 7,
+      mode: "paper",
+      conversationKey: codexPaperKey,
+      paperItemID: 42,
+    });
+    const codexPaperStateKey = buildCodexPaperStateKey(7, 42);
+    assert.equal(
+      activeCodexPaperConversationByPaper.get(codexPaperStateKey),
+      codexPaperKey,
+    );
+    assert.isNull(getLastUsedCodexPaperConversationKey(7, 42));
+    codexSnapshot.restore();
+    assert.isFalse(activeCodexPaperConversationByPaper.has(codexPaperStateKey));
+    assert.isNull(getLastUsedCodexConversationMode(7));
+  });
+
+  describe("with the paper restore service initialized", function () {
+    let restoreDb: PaperRestoreDb | null = null;
+
+    afterEach(async function () {
+      await restoreDb?.close();
+      restoreDb = null;
+    });
+
+    it("writes the paper restore target and restores the previous one", async function () {
+      restoreDb = await installPaperRestoreDb({
+        profileDir: "/tmp/llm-for-zotero-history-navigation-test",
+        prefStore,
+      });
+      restoreDb.addPaperConversation("upstream", 1101, 7, 42);
+      restoreDb.addPaperConversation("upstream", 2201, 7, 42);
+      await restoreDb.initializeAllRuntimes();
+      setLastUsedPaperConversationKey(7, 42, 1101);
+      await flushPaperRestoreSelectionWrites();
+
+      const snapshot = primeHistoryNavigationMode({
+        system: "upstream",
+        libraryID: 7,
+        mode: "paper",
+        conversationKey: 2201,
+        paperItemID: 42,
+      });
+      assert.equal(getLastUsedPaperConversationKey(7, 42), 2201);
+
+      snapshot.restore();
+      assert.equal(getLastUsedPaperConversationKey(7, 42), 1101);
+      assert.isFalse(
+        activePaperConversationByPaper.has(buildPaperStateKey(7, 42)),
+      );
+    });
+
+    it("forgets a primed paper restore target when none existed before", async function () {
+      restoreDb = await installPaperRestoreDb({
+        profileDir: "/tmp/llm-for-zotero-history-navigation-test",
+        prefStore,
+      });
+      const claudeKey = getClaudePaperConversationKeyRange().start + 1;
+      restoreDb.addPaperConversation("claude_code", claudeKey, 7, 42);
+      await restoreDb.initializeAllRuntimes();
+
+      const snapshot = primeHistoryNavigationMode({
+        system: "claude_code",
+        libraryID: 7,
+        mode: "paper",
+        conversationKey: claudeKey,
+        paperItemID: 42,
+      });
+      assert.equal(getLastUsedClaudePaperConversationKey(7, 42), claudeKey);
+
+      snapshot.restore();
+      assert.isNull(getLastUsedClaudePaperConversationKey(7, 42));
+    });
   });
 
   it("primes paper mode before selecting a searched paper in the sidebar", function () {

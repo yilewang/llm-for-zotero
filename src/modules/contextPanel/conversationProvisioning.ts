@@ -27,40 +27,10 @@ import {
   getConversationKey,
 } from "./conversationIdentity";
 import {
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
-} from "./state";
-import {
-  buildPaperStateKey,
-  getLastUsedPaperConversationKey,
-  getLastUsedUpstreamGlobalConversationKey,
-  setLastUsedPaperConversationKey,
-  setLastUsedUpstreamGlobalConversationKey,
-} from "./prefHelpers";
-import {
-  activeClaudeGlobalConversationByLibrary,
-  activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
-  buildClaudePaperStateKey,
-} from "../../claudeCode/state";
-import {
-  getLastUsedClaudeGlobalConversationKey,
-  getLastUsedClaudePaperConversationKey,
-  setLastUsedClaudeGlobalConversationKey,
-  setLastUsedClaudePaperConversationKey,
-} from "../../claudeCode/prefs";
-import {
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
-import {
-  getLastUsedCodexGlobalConversationKey,
-  getLastUsedCodexPaperConversationKey,
-  setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexPaperConversationKey,
-} from "../../codexAppServer/prefs";
+  isRemembered,
+  remember,
+  type SelectionScope,
+} from "./conversationSelection";
 import {
   resolveActiveNoteSession,
   resolveConversationBaseItem,
@@ -187,58 +157,20 @@ function isRememberedScopeKey(
   },
 ): boolean {
   if (scope.kind === "global") {
-    if (system === "upstream") {
-      return (
-        activeGlobalConversationByLibrary.get(scope.libraryID) ===
-          scope.conversationKey ||
-        getLastUsedUpstreamGlobalConversationKey(scope.libraryID) ===
-          scope.conversationKey
-      );
-    }
-    if (system === "claude_code") {
-      return (
-        activeClaudeGlobalConversationByLibrary.get(
-          buildClaudeLibraryStateKey(scope.libraryID),
-        ) === scope.conversationKey ||
-        getLastUsedClaudeGlobalConversationKey(scope.libraryID) ===
-          scope.conversationKey
-      );
-    }
-    return (
-      activeCodexGlobalConversationByLibrary.get(
-        buildCodexLibraryStateKey(scope.libraryID),
-      ) === scope.conversationKey ||
-      getLastUsedCodexGlobalConversationKey(scope.libraryID) ===
-        scope.conversationKey
+    return isRemembered(
+      { system, libraryID: scope.libraryID, kind: "global" },
+      scope.conversationKey,
     );
   }
   if (!scope.paperItemID) return false;
-  if (system === "upstream") {
-    return (
-      activePaperConversationByPaper.get(
-        buildPaperStateKey(scope.libraryID, scope.paperItemID),
-      ) === scope.conversationKey ||
-      getLastUsedPaperConversationKey(scope.libraryID, scope.paperItemID) ===
-        scope.conversationKey
-    );
-  }
-  if (system === "claude_code") {
-    return (
-      activeClaudePaperConversationByPaper.get(
-        buildClaudePaperStateKey(scope.libraryID, scope.paperItemID),
-      ) === scope.conversationKey ||
-      getLastUsedClaudePaperConversationKey(
-        scope.libraryID,
-        scope.paperItemID,
-      ) === scope.conversationKey
-    );
-  }
-  return (
-    activeCodexPaperConversationByPaper.get(
-      buildCodexPaperStateKey(scope.libraryID, scope.paperItemID),
-    ) === scope.conversationKey ||
-    getLastUsedCodexPaperConversationKey(scope.libraryID, scope.paperItemID) ===
-      scope.conversationKey
+  return isRemembered(
+    {
+      system,
+      libraryID: scope.libraryID,
+      kind: "paper",
+      paperItemID: scope.paperItemID,
+    },
+    scope.conversationKey,
   );
 }
 
@@ -599,64 +531,22 @@ function rememberProvisionedConversation(
   entry: ConversationCatalogEntry | null,
 ): boolean {
   if (!entry || !sameRuntimeScope(entry, scope)) return false;
-  if (entry.system === "upstream") {
-    if (scope.kind === "global") {
-      activeGlobalConversationByLibrary.set(
-        scope.libraryID,
-        entry.conversationKey,
-      );
-      setLastUsedUpstreamGlobalConversationKey(
-        scope.libraryID,
-        entry.conversationKey,
-      );
-    } else if (scope.paperItemID) {
-      activePaperConversationByPaper.set(
-        buildPaperStateKey(scope.libraryID, scope.paperItemID),
-        entry.conversationKey,
-      );
-      setLastUsedPaperConversationKey(
-        scope.libraryID,
-        scope.paperItemID,
-        entry.conversationKey,
-      );
-    }
-    return true;
-  }
-  if (entry.system === "claude_code") {
-    if (scope.kind === "global") {
-      const key = buildClaudeLibraryStateKey(scope.libraryID);
-      activeClaudeGlobalConversationByLibrary.set(key, entry.conversationKey);
-      setLastUsedClaudeGlobalConversationKey(
-        scope.libraryID,
-        entry.conversationKey,
-      );
-    } else if (scope.paperItemID) {
-      const key = buildClaudePaperStateKey(scope.libraryID, scope.paperItemID);
-      activeClaudePaperConversationByPaper.set(key, entry.conversationKey);
-      setLastUsedClaudePaperConversationKey(
-        scope.libraryID,
-        scope.paperItemID,
-        entry.conversationKey,
-      );
-    }
-    return true;
-  }
+  let selectionScope: SelectionScope | null = null;
   if (scope.kind === "global") {
-    const key = buildCodexLibraryStateKey(scope.libraryID);
-    activeCodexGlobalConversationByLibrary.set(key, entry.conversationKey);
-    setLastUsedCodexGlobalConversationKey(
-      scope.libraryID,
-      entry.conversationKey,
-    );
+    selectionScope = {
+      system: entry.system,
+      libraryID: scope.libraryID,
+      kind: "global",
+    };
   } else if (scope.paperItemID) {
-    const key = buildCodexPaperStateKey(scope.libraryID, scope.paperItemID);
-    activeCodexPaperConversationByPaper.set(key, entry.conversationKey);
-    setLastUsedCodexPaperConversationKey(
-      scope.libraryID,
-      scope.paperItemID,
-      entry.conversationKey,
-    );
+    selectionScope = {
+      system: entry.system,
+      libraryID: scope.libraryID,
+      kind: "paper",
+      paperItemID: scope.paperItemID,
+    };
   }
+  if (selectionScope) remember(selectionScope, entry.conversationKey);
   return true;
 }
 

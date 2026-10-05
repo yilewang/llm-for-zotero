@@ -1,11 +1,54 @@
 import { assert } from "chai";
-import { buildDefaultClaudePaperConversationKey } from "../src/claudeCode/constants";
-import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
+import {
+  buildDefaultClaudeGlobalConversationKey,
+  buildDefaultClaudePaperConversationKey,
+} from "../src/claudeCode/constants";
+import {
+  createClaudeGlobalPortalItem,
+  createClaudePaperPortalItem,
+} from "../src/claudeCode/portal";
+import {
+  getLastUsedClaudeGlobalConversationKey,
+  setLastUsedClaudeGlobalConversationKey,
+} from "../src/claudeCode/prefs";
+import {
+  activeClaudeGlobalConversationByLibrary,
+  activeClaudePaperConversationByPaper,
+  buildClaudeLibraryStateKey,
+  buildClaudePaperStateKey,
+} from "../src/claudeCode/state";
 import {
   buildDefaultCodexGlobalConversationKey,
   buildDefaultCodexPaperConversationKey,
 } from "../src/codexAppServer/constants";
-import { createCodexPaperPortalItem } from "../src/codexAppServer/portal";
+import {
+  createCodexGlobalPortalItem,
+  createCodexPaperPortalItem,
+} from "../src/codexAppServer/portal";
+import {
+  getLastUsedCodexGlobalConversationKey,
+  setLastUsedCodexGlobalConversationKey,
+} from "../src/codexAppServer/prefs";
+import {
+  activeCodexGlobalConversationByLibrary,
+  activeCodexPaperConversationByPaper,
+  buildCodexLibraryStateKey,
+  buildCodexPaperStateKey,
+} from "../src/codexAppServer/state";
+import { buildDefaultUpstreamGlobalConversationKey } from "../src/modules/contextPanel/constants";
+import {
+  createGlobalPortalItem,
+  createPaperPortalItem,
+} from "../src/modules/contextPanel/portalScope";
+import {
+  buildPaperStateKey,
+  getLastUsedUpstreamGlobalConversationKey,
+  setLastUsedUpstreamGlobalConversationKey,
+} from "../src/modules/contextPanel/prefHelpers";
+import {
+  activeGlobalConversationByLibrary,
+  activePaperConversationByPaper,
+} from "../src/modules/contextPanel/state";
 import {
   provisionConversationScopeForItem,
   provisionDefaultPaperConversation,
@@ -792,4 +835,277 @@ describe("conversation provisioning", function () {
       restore();
     }
   });
+});
+
+describe("conversation provisioning remembered selection", function () {
+  let originalZotero: typeof Zotero | undefined;
+  let prefStore: Map<string, unknown>;
+  let restoreDb: (() => void) | null = null;
+
+  type System = "upstream" | "claude_code" | "codex";
+
+  const clearMaps = () => {
+    activeGlobalConversationByLibrary.clear();
+    activePaperConversationByPaper.clear();
+    activeClaudeGlobalConversationByLibrary.clear();
+    activeClaudePaperConversationByPaper.clear();
+    activeCodexGlobalConversationByLibrary.clear();
+    activeCodexPaperConversationByPaper.clear();
+  };
+
+  const install = () => {
+    const harness = installProvisioningDb();
+    restoreDb = harness.restore;
+    prefStore = new Map<string, unknown>();
+    (
+      globalThis.Zotero as unknown as {
+        Prefs: {
+          get: (key: string) => unknown;
+          set: (key: string, value: unknown) => void;
+        };
+      }
+    ).Prefs = {
+      get: (key: string) => prefStore.get(key) ?? "",
+      set: (key: string, value: unknown) => {
+        prefStore.set(key, value);
+      },
+    };
+    return harness;
+  };
+
+  const paperItem = {
+    id: 3340,
+    libraryID: 1,
+    parentID: undefined,
+    isAttachment: () => false,
+    isRegularItem: () => true,
+  } as unknown as Zotero.Item;
+
+  const defaultGlobalKey = (system: System) =>
+    system === "claude_code"
+      ? buildDefaultClaudeGlobalConversationKey(1)
+      : system === "codex"
+        ? buildDefaultCodexGlobalConversationKey(1)
+        : buildDefaultUpstreamGlobalConversationKey(1);
+
+  const defaultPaperKey = (system: System) =>
+    system === "claude_code"
+      ? buildDefaultClaudePaperConversationKey(paperItem.id)
+      : system === "codex"
+        ? buildDefaultCodexPaperConversationKey(paperItem.id)
+        : paperItem.id;
+
+  const globalItem = (system: System, key: number) =>
+    (system === "claude_code"
+      ? createClaudeGlobalPortalItem(1, key)
+      : system === "codex"
+        ? createCodexGlobalPortalItem(1, key)
+        : createGlobalPortalItem(1, key)) as Zotero.Item;
+
+  const paperPortalItem = (system: System, key: number) =>
+    (system === "claude_code"
+      ? createClaudePaperPortalItem(paperItem, key)
+      : system === "codex"
+        ? createCodexPaperPortalItem(paperItem, key)
+        : createPaperPortalItem(paperItem, key, 1)) as Zotero.Item;
+
+  const globalActive = (system: System): number | undefined =>
+    system === "claude_code"
+      ? activeClaudeGlobalConversationByLibrary.get(
+          buildClaudeLibraryStateKey(1),
+        )
+      : system === "codex"
+        ? activeCodexGlobalConversationByLibrary.get(
+            buildCodexLibraryStateKey(1),
+          )
+        : activeGlobalConversationByLibrary.get(1);
+
+  const setGlobalActive = (system: System, key: number) => {
+    if (system === "claude_code") {
+      activeClaudeGlobalConversationByLibrary.set(
+        buildClaudeLibraryStateKey(1),
+        key,
+      );
+    } else if (system === "codex") {
+      activeCodexGlobalConversationByLibrary.set(
+        buildCodexLibraryStateKey(1),
+        key,
+      );
+    } else {
+      activeGlobalConversationByLibrary.set(1, key);
+    }
+  };
+
+  const globalPersisted = (system: System): number | null =>
+    system === "claude_code"
+      ? getLastUsedClaudeGlobalConversationKey(1)
+      : system === "codex"
+        ? getLastUsedCodexGlobalConversationKey(1)
+        : getLastUsedUpstreamGlobalConversationKey(1);
+
+  const setGlobalPersisted = (system: System, key: number) => {
+    if (system === "claude_code")
+      setLastUsedClaudeGlobalConversationKey(1, key);
+    else if (system === "codex") setLastUsedCodexGlobalConversationKey(1, key);
+    else setLastUsedUpstreamGlobalConversationKey(1, key);
+  };
+
+  const paperActive = (system: System): number | undefined =>
+    system === "claude_code"
+      ? activeClaudePaperConversationByPaper.get(
+          buildClaudePaperStateKey(1, paperItem.id),
+        )
+      : system === "codex"
+        ? activeCodexPaperConversationByPaper.get(
+            buildCodexPaperStateKey(1, paperItem.id),
+          )
+        : activePaperConversationByPaper.get(
+            buildPaperStateKey(1, paperItem.id),
+          );
+
+  const setPaperActive = (system: System, key: number) => {
+    if (system === "claude_code") {
+      activeClaudePaperConversationByPaper.set(
+        buildClaudePaperStateKey(1, paperItem.id),
+        key,
+      );
+    } else if (system === "codex") {
+      activeCodexPaperConversationByPaper.set(
+        buildCodexPaperStateKey(1, paperItem.id),
+        key,
+      );
+    } else {
+      activePaperConversationByPaper.set(
+        buildPaperStateKey(1, paperItem.id),
+        key,
+      );
+    }
+  };
+
+  before(function () {
+    originalZotero = globalThis.Zotero;
+  });
+
+  beforeEach(function () {
+    clearMaps();
+  });
+
+  afterEach(function () {
+    restoreDb?.();
+    restoreDb = null;
+    clearMaps();
+    (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
+      originalZotero;
+  });
+
+  for (const system of ["upstream", "claude_code", "codex"] as const) {
+    it(`remembers a provisioned ${system} global conversation in the map and pref`, async function () {
+      install();
+      const key = defaultGlobalKey(system);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item: globalItem(system, key),
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(globalActive(system), key);
+      assert.equal(globalPersisted(system), key);
+    });
+
+    it(`remembers a provisioned ${system} paper conversation in the map only before restore init`, async function () {
+      install();
+      globalThis.Zotero.Items.get = (id: number) =>
+        id === paperItem.id ? paperItem : null;
+      const key = defaultPaperKey(system);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item: paperPortalItem(system, key),
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(paperActive(system), key);
+    });
+
+    it(`rejects an unremembered non-default ${system} global key`, async function () {
+      const { queries } = install();
+      const key = defaultGlobalKey(system) + 5;
+      assert.isFalse(
+        await provisionConversationScopeForItem({
+          item: globalItem(system, key),
+          conversationSystem: system,
+        }),
+      );
+      assert.isUndefined(globalActive(system));
+      assert.isNull(globalPersisted(system));
+      assert.isFalse(
+        queries.some((query) =>
+          query.sql.includes("INSERT INTO llm_for_zotero"),
+        ),
+      );
+    });
+
+    it(`accepts a non-default ${system} global key remembered in the map`, async function () {
+      install();
+      const key = defaultGlobalKey(system) + 5;
+      setGlobalActive(system, key);
+      const item = globalItem(system, key);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item,
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(getConversationKey(item), key);
+      assert.equal(globalActive(system), key);
+      assert.equal(globalPersisted(system), key);
+    });
+
+    it(`accepts a non-default ${system} global key remembered in the pref`, async function () {
+      install();
+      const key = defaultGlobalKey(system) + 5;
+      setGlobalPersisted(system, key);
+      assert.equal(globalPersisted(system), key);
+      const item = globalItem(system, key);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item,
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(getConversationKey(item), key);
+      assert.equal(globalActive(system), key);
+      assert.equal(globalPersisted(system), key);
+    });
+
+    it(`rejects an unremembered non-default ${system} paper key`, async function () {
+      install();
+      globalThis.Zotero.Items.get = (id: number) =>
+        id === paperItem.id ? paperItem : null;
+      const key = defaultPaperKey(system) + 5;
+      assert.isFalse(
+        await provisionConversationScopeForItem({
+          item: paperPortalItem(system, key),
+          conversationSystem: system,
+        }),
+      );
+      assert.isUndefined(paperActive(system));
+    });
+
+    it(`accepts a non-default ${system} paper key remembered in the map`, async function () {
+      install();
+      globalThis.Zotero.Items.get = (id: number) =>
+        id === paperItem.id ? paperItem : null;
+      const key = defaultPaperKey(system) + 5;
+      setPaperActive(system, key);
+      const item = paperPortalItem(system, key);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item,
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(getConversationKey(item), key);
+      assert.equal(paperActive(system), key);
+    });
+  }
 });

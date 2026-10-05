@@ -11,18 +11,8 @@ import {
 import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
-import {
-  buildPaperStateKey,
-  getLastUsedUpstreamConversationMode,
-  getLastUsedUpstreamGlobalConversationKey,
-  getLastUsedPaperConversationKey,
-  getLockedGlobalConversationKey,
-} from "./prefHelpers";
-import {
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
-} from "./state";
+import { getLockedGlobalConversationKey } from "./prefHelpers";
+import { recall, recallMode } from "./conversationSelection";
 import type { ActiveNoteSession } from "./types";
 import type {
   GlobalPortalItem,
@@ -42,18 +32,8 @@ import {
 } from "../../claudeCode/portal";
 import {
   getConversationSystemPref,
-  getLastUsedClaudeConversationMode,
-  getLastUsedClaudeGlobalConversationKey,
-  getLastUsedClaudePaperConversationKey,
   isClaudeCodeModeEnabled,
 } from "../../claudeCode/prefs";
-import {
-  activeClaudeConversationModeByLibrary,
-  activeClaudeGlobalConversationByLibrary,
-  activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
-  buildClaudePaperStateKey,
-} from "../../claudeCode/state";
 import {
   buildDefaultCodexGlobalConversationKey,
   buildDefaultCodexPaperConversationKey,
@@ -65,19 +45,7 @@ import {
   isCodexPaperPortalItem,
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
-import {
-  getLastUsedCodexConversationMode,
-  getLastUsedCodexGlobalConversationKey,
-  getLastUsedCodexPaperConversationKey,
-  isCodexAppServerModeEnabled,
-} from "../../codexAppServer/prefs";
-import {
-  activeCodexConversationModeByLibrary,
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
+import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import {
   resolveNoteFocusSystemSwitch as resolveNoteFocusSystemSwitchPolicy,
   resolveNoteEditingParentItem,
@@ -344,26 +312,19 @@ function resolvePreferredConversationMode(
   libraryID: number,
   system: ConversationSystem,
 ): "global" | "paper" {
-  if (system === "claude_code") {
-    const rememberedMode =
-      activeClaudeConversationModeByLibrary.get(
-        buildClaudeLibraryStateKey(libraryID),
-      ) || getLastUsedClaudeConversationMode(libraryID);
+  if (system === "claude_code" || system === "codex") {
+    const rememberedMode = recallMode(system, libraryID, {
+      source: "active+persisted",
+    });
     return rememberedMode === "global" ? "global" : "paper";
   }
-  if (system === "codex") {
-    const rememberedMode =
-      activeCodexConversationModeByLibrary.get(
-        buildCodexLibraryStateKey(libraryID),
-      ) || getLastUsedCodexConversationMode(libraryID);
-    return rememberedMode === "global" ? "global" : "paper";
-  }
-  const rememberedMode =
-    activeConversationModeByLibrary.get(libraryID) ||
-    getLastUsedUpstreamConversationMode(libraryID);
+  const rememberedMode = recallMode("upstream", libraryID, {
+    source: "active+persisted",
+  });
   if (rememberedMode === "paper") {
     return "paper";
   }
+  // Upstream only: a locked library chat implies global mode by default.
   if (getLockedGlobalConversationKey(libraryID) !== null) {
     return "global";
   }
@@ -377,10 +338,7 @@ function resolveGlobalConversationKey(
   if (system === "claude_code") {
     return Math.floor(
       Number(
-        activeClaudeGlobalConversationByLibrary.get(
-          buildClaudeLibraryStateKey(libraryID),
-        ) ||
-          getLastUsedClaudeGlobalConversationKey(libraryID) ||
+        recall({ system, libraryID, kind: "global" }) ||
           buildDefaultClaudeGlobalConversationKey(libraryID),
       ),
     );
@@ -388,14 +346,13 @@ function resolveGlobalConversationKey(
   if (system === "codex") {
     return Math.floor(
       Number(
-        activeCodexGlobalConversationByLibrary.get(
-          buildCodexLibraryStateKey(libraryID),
-        ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
+        recall({ system, libraryID, kind: "global" }) ||
           buildDefaultCodexGlobalConversationKey(libraryID),
       ),
     );
   }
+  // Upstream only: the lock wins, then the remembered key filtered to the
+  // upstream global key band, with the sentinel base mapped to the default.
   const lockedKey = getLockedGlobalConversationKey(libraryID);
   if (lockedKey !== null) {
     return lockedKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -403,9 +360,7 @@ function resolveGlobalConversationKey(
       : lockedKey;
   }
   const activeKey = Number(
-    activeGlobalConversationByLibrary.get(libraryID) ||
-      getLastUsedUpstreamGlobalConversationKey(libraryID) ||
-      0,
+    recall({ system: "upstream", libraryID, kind: "global" }),
   );
   if (isUpstreamGlobalConversationKey(activeKey)) {
     return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -440,23 +395,12 @@ export function resolvePaperConversationKeyForBaseItem(
   const paperItemID = normalizePositiveInt(basePaperItem?.id) || 0;
   if (!libraryID || !paperItemID) return paperItemID;
   const rememberedPaperKey = Number(
-    system === "claude_code"
-      ? activeClaudePaperConversationByPaper.get(
-          buildClaudePaperStateKey(libraryID, paperItemID),
-        ) ||
-          getLastUsedClaudePaperConversationKey(libraryID, paperItemID) ||
-          buildDefaultClaudePaperConversationKey(paperItemID)
-      : system === "codex"
-        ? activeCodexPaperConversationByPaper.get(
-            buildCodexPaperStateKey(libraryID, paperItemID),
-          ) ||
-          getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
-          buildDefaultCodexPaperConversationKey(paperItemID)
-        : activePaperConversationByPaper.get(
-            buildPaperStateKey(libraryID, paperItemID),
-          ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          paperItemID,
+    recall({ system, libraryID, kind: "paper", paperItemID }) ||
+      (system === "claude_code"
+        ? buildDefaultClaudePaperConversationKey(paperItemID)
+        : system === "codex"
+          ? buildDefaultCodexPaperConversationKey(paperItemID)
+          : paperItemID),
   );
   return Number.isFinite(rememberedPaperKey) && rememberedPaperKey > 0
     ? Math.floor(rememberedPaperKey)
