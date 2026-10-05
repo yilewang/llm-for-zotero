@@ -414,6 +414,12 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  MENUS_CLOSED_BY_MODEL_MENU,
+  MENUS_CLOSED_BY_REASONING_MENU,
+  MENUS_CLOSED_BY_RETRY_MODEL_MENU,
+  createMenuRegistry,
+} from "./setupHandlers/controllers/menuRegistry";
 import { createActionLayoutController } from "./setupHandlers/controllers/actionLayoutController";
 import {
   getReasoningLevelDisplayLabel,
@@ -461,10 +467,6 @@ import {
   prunePinnedImageKeys,
   removePinnedFile,
   removePinnedImage,
-  removePinnedSelectedText,
-  togglePinnedFile,
-  togglePinnedImage,
-  togglePinnedSelectedText,
 } from "./setupHandlers/controllers/pinnedContextController";
 import {
   createFileIntakeController,
@@ -2163,6 +2165,7 @@ export function setupHandlers(
   // scroll changes.
 
   let retryMenuAnchor: HTMLButtonElement | null = null;
+  const menus = createMenuRegistry();
   const closeResponseMenu = () => {
     if (responseMenu) responseMenu.style.display = "none";
     setResponseMenuTarget(null);
@@ -2231,6 +2234,16 @@ export function setupHandlers(
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, false);
     retryMenuAnchor = null;
   };
+  menus.register("response", closeResponseMenu);
+  menus.register("prompt", closePromptMenu);
+  menus.register("export", closeExportMenu);
+  menus.register("historyRow", closeHistoryRowMenu);
+  menus.register("historyNew", closeHistoryNewMenu, isHistoryNewMenuOpen);
+  menus.register("history", closeHistoryMenu, isHistoryMenuOpen);
+  menus.register("slash", closeSlashMenu);
+  menus.register("model", closeModelMenu);
+  menus.register("reasoning", closeReasoningMenu);
+  menus.register("retryModel", closeRetryModelMenu);
 
   const handlerContext: SetupHandlersContext = {
     body,
@@ -6900,6 +6913,7 @@ export function setupHandlers(
     consumeActiveActionToken,
   } = actionCommandController;
   closeSlashMenu = closeActionSlashMenu;
+  menus.register("slash", closeSlashMenu);
   clearForcedSkill = clearForcedSkillFromActionController;
 
   if (inputSection && inputBox) {
@@ -7885,12 +7899,7 @@ export function setupHandlers(
   openModelMenu = () => {
     if (!modelMenu || !modelBtn) return;
     if ((modelBtn as HTMLButtonElement).disabled) return;
-    closeSlashMenu();
-    closeRetryModelMenu();
-    closeReasoningMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
+    menus.closeMany(MENUS_CLOSED_BY_MODEL_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
     } else if (isClaudeConversationSystem()) {
@@ -7917,15 +7926,11 @@ export function setupHandlers(
   closeModelMenu = () => {
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
   };
+  menus.register("model", closeModelMenu);
 
   openReasoningMenu = () => {
     if (!reasoningMenu || !reasoningBtn) return;
-    closeSlashMenu();
-    closeRetryModelMenu();
-    closeModelMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
+    menus.closeMany(MENUS_CLOSED_BY_REASONING_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
     } else if (codexDirectController?.getSelectedEntry()) {
@@ -7945,17 +7950,11 @@ export function setupHandlers(
   closeReasoningMenu = () => {
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
   };
+  menus.register("reasoning", closeReasoningMenu);
 
   const openRetryModelMenu = (anchor: HTMLButtonElement) => {
     if (!item || !retryModelMenu) return;
-    closeSlashMenu();
-    closeResponseMenu();
-    closeExportMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
-    closeModelMenu();
-    closeReasoningMenu();
+    menus.closeMany(MENUS_CLOSED_BY_RETRY_MODEL_MENU);
     rebuildRetryModelMenu();
     if (!retryModelMenu.childElementCount) {
       closeRetryModelMenu();

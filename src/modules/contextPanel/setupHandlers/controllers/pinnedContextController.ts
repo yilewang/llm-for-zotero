@@ -117,302 +117,119 @@ export function buildPinnedPaperKey(paperContext: PaperContextRef): string {
   return paperKey(paperContext);
 }
 
-export function isPinnedSelectedText(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  context: SelectedTextContext,
-): boolean {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return false;
-  return keys.has(buildPinnedSelectedTextKey(context));
-}
+type PinnedKeyStore = Map<number, Set<string>>;
 
-export function togglePinnedSelectedText(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  context: SelectedTextContext,
-): boolean {
-  const key = buildPinnedSelectedTextKey(context);
-  const keys = getPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (keys.has(key)) {
+/**
+ * The pin operations for one kind of context, keyed by `keyOf`. Every kind
+ * shares the same owner rules: `toggle` writes through the creating getter
+ * (owners <= 0 land under 0), while the read-only getter that `isPinned`,
+ * `remove`, `retain`, and `prune` use ignores owner 0. An empty key is never
+ * pinned or removed.
+ */
+function createPinnedKeySet<T>(keyOf: (value: T) => string) {
+  const isPinned = (
+    pinnedKeysByOwner: PinnedKeyStore,
+    ownerId: number,
+    value: T,
+  ): boolean => {
+    const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
+    if (!keys?.size) return false;
+    return keys.has(keyOf(value));
+  };
+
+  /** Returns the new pinned state. */
+  const toggle = (
+    pinnedKeysByOwner: PinnedKeyStore,
+    ownerId: number,
+    value: T,
+  ): boolean => {
+    const key = keyOf(value);
+    if (!key) return false;
+    const keys = getPinnedKeySet(pinnedKeysByOwner, ownerId);
+    if (keys.has(key)) {
+      keys.delete(key);
+      cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
+      return false;
+    }
+    keys.add(key);
+    return true;
+  };
+
+  const remove = (
+    pinnedKeysByOwner: PinnedKeyStore,
+    ownerId: number,
+    value: T,
+  ): void => {
+    const key = keyOf(value);
+    if (!key) return;
+    const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
+    if (!keys?.size) return;
     keys.delete(key);
     cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-    return false;
-  }
-  keys.add(key);
-  return true;
-}
+  };
 
-export function removePinnedSelectedText(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  context: SelectedTextContext,
-): void {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  keys.delete(buildPinnedSelectedTextKey(context));
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
-
-export function retainPinnedSelectedTextContexts(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  contexts: SelectedTextContext[],
-): SelectedTextContext[] {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size || !contexts.length) {
-    pinnedKeysByOwner.delete(normalizeOwnerId(ownerId));
-    return [];
-  }
-  const retained = contexts.filter((context) =>
-    keys.has(buildPinnedSelectedTextKey(context)),
-  );
-  prunePinnedSelectedTextKeys(pinnedKeysByOwner, ownerId, retained);
-  return retained;
-}
-
-export function prunePinnedSelectedTextKeys(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  contexts: SelectedTextContext[],
-): void {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  const validKeys = new Set(
-    contexts.map((context) => buildPinnedSelectedTextKey(context)),
-  );
-  for (const key of Array.from(keys)) {
-    if (!validKeys.has(key)) {
-      keys.delete(key);
+  const prune = (
+    pinnedKeysByOwner: PinnedKeyStore,
+    ownerId: number,
+    values: T[],
+  ): void => {
+    const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
+    if (!keys?.size) return;
+    const validKeys = new Set(values.map((value) => keyOf(value)));
+    for (const key of Array.from(keys)) {
+      if (!validKeys.has(key)) {
+        keys.delete(key);
+      }
     }
-  }
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
-
-export function isPinnedImage(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  imageUrl: string,
-): boolean {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return false;
-  return keys.has(buildPinnedImageKey(imageUrl));
-}
-
-export function togglePinnedImage(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  imageUrl: string,
-): boolean {
-  const key = buildPinnedImageKey(imageUrl);
-  if (!key) return false;
-  const keys = getPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (keys.has(key)) {
-    keys.delete(key);
     cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-    return false;
-  }
-  keys.add(key);
-  return true;
-}
+  };
 
-export function removePinnedImage(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  imageUrl: string,
-): void {
-  const key = buildPinnedImageKey(imageUrl);
-  if (!key) return;
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  keys.delete(key);
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
-
-export function retainPinnedImages(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  images: string[],
-): string[] {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size || !images.length) {
-    pinnedKeysByOwner.delete(normalizeOwnerId(ownerId));
-    return [];
-  }
-  const retained = images.filter((imageUrl) =>
-    keys.has(buildPinnedImageKey(imageUrl)),
-  );
-  prunePinnedImageKeys(pinnedKeysByOwner, ownerId, retained);
-  return retained;
-}
-
-export function prunePinnedImageKeys(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  images: string[],
-): void {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  const validKeys = new Set(
-    images.map((imageUrl) => buildPinnedImageKey(imageUrl)),
-  );
-  for (const key of Array.from(keys)) {
-    if (!validKeys.has(key)) {
-      keys.delete(key);
+  /** Keeps the pinned values (same objects) and prunes the other keys. */
+  const retain = (
+    pinnedKeysByOwner: PinnedKeyStore,
+    ownerId: number,
+    values: T[],
+  ): T[] => {
+    const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
+    if (!keys?.size || !values.length) {
+      pinnedKeysByOwner.delete(normalizeOwnerId(ownerId));
+      return [];
     }
-  }
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
+    const retained = values.filter((value) => keys.has(keyOf(value)));
+    prune(pinnedKeysByOwner, ownerId, retained);
+    return retained;
+  };
+
+  return { isPinned, toggle, remove, retain, prune };
 }
 
-export function isPinnedFile(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  attachment: ChatAttachment,
-): boolean {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return false;
-  return keys.has(buildPinnedFileKey(attachment));
-}
+const selectedTextPins = createPinnedKeySet(buildPinnedSelectedTextKey);
+export const isPinnedSelectedText = selectedTextPins.isPinned;
+export const togglePinnedSelectedText = selectedTextPins.toggle;
+export const removePinnedSelectedText = selectedTextPins.remove;
+export const retainPinnedSelectedTextContexts = selectedTextPins.retain;
+export const prunePinnedSelectedTextKeys = selectedTextPins.prune;
 
-export function togglePinnedFile(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  attachment: ChatAttachment,
-): boolean {
-  const key = buildPinnedFileKey(attachment);
-  if (!key) return false;
-  const keys = getPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (keys.has(key)) {
-    keys.delete(key);
-    cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-    return false;
-  }
-  keys.add(key);
-  return true;
-}
+const imagePins = createPinnedKeySet(buildPinnedImageKey);
+export const isPinnedImage = imagePins.isPinned;
+export const togglePinnedImage = imagePins.toggle;
+export const removePinnedImage = imagePins.remove;
+export const retainPinnedImages = imagePins.retain;
+export const prunePinnedImageKeys = imagePins.prune;
 
-export function removePinnedFile(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  attachment: ChatAttachment,
-): void {
-  const key = buildPinnedFileKey(attachment);
-  if (!key) return;
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  keys.delete(key);
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
+const filePins = createPinnedKeySet(buildPinnedFileKey);
+export const isPinnedFile = filePins.isPinned;
+export const togglePinnedFile = filePins.toggle;
+export const removePinnedFile = filePins.remove;
+export const retainPinnedFiles = filePins.retain;
+export const prunePinnedFileKeys = filePins.prune;
 
-export function retainPinnedFiles(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  attachments: ChatAttachment[],
-): ChatAttachment[] {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size || !attachments.length) {
-    pinnedKeysByOwner.delete(normalizeOwnerId(ownerId));
-    return [];
-  }
-  const retained = attachments.filter((attachment) =>
-    keys.has(buildPinnedFileKey(attachment)),
-  );
-  prunePinnedFileKeys(pinnedKeysByOwner, ownerId, retained);
-  return retained;
-}
-
-export function prunePinnedFileKeys(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  attachments: ChatAttachment[],
-): void {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  const validKeys = new Set(
-    attachments.map((attachment) => buildPinnedFileKey(attachment)),
-  );
-  for (const key of Array.from(keys)) {
-    if (!validKeys.has(key)) {
-      keys.delete(key);
-    }
-  }
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
-
-export function isPinnedPaper(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  paperContext: PaperContextRef,
-): boolean {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return false;
-  return keys.has(buildPinnedPaperKey(paperContext));
-}
-
-export function togglePinnedPaper(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  paperContext: PaperContextRef,
-): boolean {
-  const key = buildPinnedPaperKey(paperContext);
-  if (!key) return false;
-  const keys = getPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (keys.has(key)) {
-    keys.delete(key);
-    cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-    return false;
-  }
-  keys.add(key);
-  return true;
-}
-
-export function removePinnedPaper(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  paperContext: PaperContextRef,
-): void {
-  const key = buildPinnedPaperKey(paperContext);
-  if (!key) return;
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  keys.delete(key);
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
-
-export function retainPinnedPapers(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  paperContexts: PaperContextRef[],
-): PaperContextRef[] {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size || !paperContexts.length) {
-    pinnedKeysByOwner.delete(normalizeOwnerId(ownerId));
-    return [];
-  }
-  const retained = paperContexts.filter((paperContext) =>
-    keys.has(buildPinnedPaperKey(paperContext)),
-  );
-  prunePinnedPaperKeys(pinnedKeysByOwner, ownerId, retained);
-  return retained;
-}
-
-export function prunePinnedPaperKeys(
-  pinnedKeysByOwner: Map<number, Set<string>>,
-  ownerId: number,
-  paperContexts: PaperContextRef[],
-): void {
-  const keys = getReadonlyPinnedKeySet(pinnedKeysByOwner, ownerId);
-  if (!keys?.size) return;
-  const validKeys = new Set(
-    paperContexts.map((paperContext) => buildPinnedPaperKey(paperContext)),
-  );
-  for (const key of Array.from(keys)) {
-    if (!validKeys.has(key)) {
-      keys.delete(key);
-    }
-  }
-  cleanupPinnedOwnerIfEmpty(pinnedKeysByOwner, ownerId);
-}
+const paperPins = createPinnedKeySet(buildPinnedPaperKey);
+export const isPinnedPaper = paperPins.isPinned;
+export const togglePinnedPaper = paperPins.toggle;
+export const removePinnedPaper = paperPins.remove;
+export const retainPinnedPapers = paperPins.retain;
+export const prunePinnedPaperKeys = paperPins.prune;
 
 export function clearPinnedContextOwner(
   pinnedKeysByOwner: Map<number, Set<string>>,
