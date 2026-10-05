@@ -25,11 +25,7 @@ import {
 import {
   appendClaudeMessage,
   clearClaudeConversationSessionMetadata,
-  createClaudeGlobalConversation,
-  createClaudePaperConversation,
   deleteClaudeTurnMessages as deleteClaudeConversationTurnMessagesStore,
-  ensureClaudeGlobalConversation,
-  ensureClaudePaperConversation,
   getClaudeConversationSummary,
   listClaudeGlobalConversations,
   listClaudePaperConversations,
@@ -58,7 +54,6 @@ import {
   type ClaudeReasoningMode,
   type ClaudeRuntimeModel,
 } from "./constants";
-import { dbg } from "../utils/debugLogger";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
@@ -415,40 +410,6 @@ export async function listClaudeConversationsForScope(params: {
     : listClaudeGlobalConversations(params.libraryID, params.limit);
 }
 
-export async function ensureClaudeConversationForScope(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-}): Promise<ClaudeConversationSummary | null> {
-  const summary =
-    params.kind === "paper"
-      ? await ensureClaudePaperConversation(
-          params.libraryID,
-          params.paperItemID || 0,
-        )
-      : await ensureClaudeGlobalConversation(params.libraryID);
-  if (!summary) return null;
-  rememberClaudeConversationSelection(summary);
-  return summary;
-}
-
-export async function createClaudeConversationForScope(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-}): Promise<ClaudeConversationSummary | null> {
-  const summary =
-    params.kind === "paper"
-      ? await createClaudePaperConversation(
-          params.libraryID,
-          params.paperItemID || 0,
-        )
-      : await createClaudeGlobalConversation(params.libraryID);
-  if (!summary) return null;
-  rememberClaudeConversationSelection(summary);
-  return summary;
-}
-
 export async function loadClaudeConversationMessages(
   conversationKey: number,
 ): Promise<StoredChatMessage[]> {
@@ -717,47 +678,6 @@ export function resolveRememberedClaudeConversationKey(params: {
     getLastUsedClaudeGlobalConversationKey(params.libraryID) ||
     null
   );
-}
-
-export function syncClaudeConversationMetadata(params: {
-  conversationKey: number;
-  kind: ClaudeConversationKind;
-  libraryID: number;
-  paperItemID?: number;
-  title?: string;
-  scope?: ClaudeBridgeScope | null;
-  instanceID?: string;
-}): void {
-  rememberClaudeConversationSelection({
-    conversationKey: params.conversationKey,
-    kind: params.kind,
-    libraryID: params.libraryID,
-    paperItemID: params.paperItemID,
-  });
-  if (params.scope) {
-    rememberClaudeConversationScope(
-      params.conversationKey,
-      params.scope,
-      params.instanceID,
-    );
-  }
-  void upsertClaudeConversationSummary({
-    conversationKey: params.conversationKey,
-    instanceID: params.instanceID,
-    libraryID: params.libraryID,
-    kind: params.kind,
-    paperItemID: params.paperItemID,
-    title: params.title,
-    updatedAt: Date.now(),
-    scopeType: params.scope?.scopeType,
-    scopeId: params.scope?.scopeId,
-    scopeLabel: params.scope?.scopeLabel,
-  }).catch((error) => {
-    dbg("failed to sync claude conversation metadata", {
-      conversationKey: params.conversationKey,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
 }
 
 export function resolveClaudeSystemLabel(): string {

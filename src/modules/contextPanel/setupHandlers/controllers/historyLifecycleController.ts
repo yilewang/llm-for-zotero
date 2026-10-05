@@ -35,9 +35,6 @@ import {
   conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
   draftInputCache,
   inlineEditCleanup,
   setInlineEditCleanup,
@@ -83,25 +80,9 @@ import {
   setLastUsedClaudeGlobalConversationKey,
 } from "../../../../claudeCode/prefs";
 import {
-  activeClaudeGlobalConversationByLibrary,
-  buildClaudeLibraryStateKey,
-} from "../../../../claudeCode/state";
-import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
 } from "../../../../claudeCode/portal";
-import {
-  getLastUsedCodexGlobalConversationKey,
-  getLastUsedCodexPaperConversationKey,
-  setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexPaperConversationKey,
-} from "../../../../codexAppServer/prefs";
-import {
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../../../codexAppServer/state";
 import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
@@ -120,14 +101,10 @@ import {
   findTurnPairByTimestamps,
 } from "../../turnMessageUtils";
 import {
-  getLastUsedUpstreamGlobalConversationKey,
-  getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
-  setLastUsedUpstreamGlobalConversationKey,
-  setLastUsedPaperConversationKey,
   setLockedGlobalConversationKey,
-  buildPaperStateKey,
 } from "../../prefHelpers";
+import { recall, recallActive, remember } from "../../conversationSelection";
 import type { AgentRuntime } from "../../../../agent/runtime";
 import { clearActiveConversationForPendingDeletion } from "../../conversationDeletionActivation";
 import {
@@ -1945,11 +1922,11 @@ export function createHistoryLifecycleController(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeClaudeGlobalConversationByLibrary.get(
-              buildClaudeLibraryStateKey(libraryID),
-            ) ||
-              getLastUsedClaudeGlobalConversationKey(libraryID) ||
-              0,
+            recall({
+              system: "claude_code",
+              libraryID,
+              kind: "global",
+            }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -2032,11 +2009,7 @@ export function createHistoryLifecycleController(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) ||
-              getLastUsedCodexGlobalConversationKey(libraryID) ||
-              0,
+            recall({ system: "codex", libraryID, kind: "global" }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -2118,9 +2091,12 @@ export function createHistoryLifecycleController(
         if (isGlobalMode() && item && Number.isFinite(item.id) && item.id > 0) {
           activeGlobalKey = Math.floor(item.id);
         } else {
-          const remembered = Number(
-            activeGlobalConversationByLibrary.get(libraryID),
-          );
+          // Upstream reads the active map only here, not the pref.
+          const remembered = recallActive({
+            system: "upstream",
+            libraryID,
+            kind: "global",
+          });
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey =
               remembered === GLOBAL_CONVERSATION_KEY_BASE
@@ -2345,22 +2321,9 @@ export function createHistoryLifecycleController(
       void touchClaudeConversation(normalizedConversationKey, {
         updatedAt: Date.now(),
       });
-    } else if (system === "codex") {
-      activeCodexGlobalConversationByLibrary.set(
-        buildCodexLibraryStateKey(libraryID),
-        normalizedConversationKey,
-      );
-      setLastUsedCodexGlobalConversationKey(
-        libraryID,
-        normalizedConversationKey,
-      );
     } else {
-      activeGlobalConversationByLibrary.set(
-        libraryID,
-        normalizedConversationKey,
-      );
-      setLastUsedUpstreamGlobalConversationKey(
-        libraryID,
+      remember(
+        { system, libraryID, kind: "global" },
         normalizedConversationKey,
       );
     }
@@ -2471,22 +2434,7 @@ export function createHistoryLifecycleController(
           }) || 0,
         );
       }
-      if (system === "codex") {
-        return Number(
-          activeCodexPaperConversationByPaper.get(
-            buildCodexPaperStateKey(libraryID, paperItemID),
-          ) ||
-            getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
-            0,
-        );
-      }
-      return Number(
-        activePaperConversationByPaper.get(
-          buildPaperStateKey(libraryID, paperItemID),
-        ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
-      );
+      return Number(recall({ system, libraryID, kind: "paper", paperItemID }));
     };
 
     let targetSummary = await loadPaperCatalogEntry(requestedConversationKey);
@@ -2595,33 +2543,29 @@ export function createHistoryLifecycleController(
         updatedAt: Date.now(),
       });
     } else if (system === "codex") {
-      activeCodexPaperConversationByPaper.set(
-        buildCodexPaperStateKey(libraryID, paperItemID),
-        resolvedConversationKey,
-      );
-      setLastUsedCodexPaperConversationKey(
-        libraryID,
-        paperItemID,
+      remember(
+        { system: "codex", libraryID, kind: "paper", paperItemID },
         resolvedConversationKey,
       );
     } else {
-      activePaperConversationByPaper.set(
-        buildPaperStateKey(libraryID, paperItemID),
-        resolvedConversationKey,
-      );
+      const paperScope = {
+        system: "upstream",
+        libraryID,
+        kind: "paper",
+        paperItemID,
+      } as const;
       // Ephemeral webchat session rows (flagged in the catalog) are swept at
       // the next startup, so they must never become the paper's persisted
       // last-used conversation. Registering the key in the isolation set
       // here makes the guard inside setLastUsedPaperConversationKey hold for
       // later writers, including history-navigation priming.
       if (targetSummary.webchatSession === true) {
+        remember(paperScope, resolvedConversationKey, {
+          persist: false,
+        });
         webChatIsolatedConversationKeys.add(resolvedConversationKey);
       } else {
-        setLastUsedPaperConversationKey(
-          libraryID,
-          paperItemID,
-          resolvedConversationKey,
-        );
+        remember(paperScope, resolvedConversationKey);
       }
     }
     syncConversationIdentity();
@@ -3679,31 +3623,22 @@ export function createHistoryLifecycleController(
       return isConversationKeyForKind(targetSystem, "global", key) ? key : 0;
     };
     const currentCandidate = (() => {
+      // The active map only: a persisted pointer is not a current draft.
+      const activeKey = () =>
+        recallActive({ system, libraryID, kind: "global" });
       if (system === "claude_code") {
         return (
-          currentGlobalConversationKeyForSystem("claude_code") ||
-          Number(
-            activeClaudeGlobalConversationByLibrary.get(
-              buildClaudeLibraryStateKey(libraryID),
-            ) || 0,
-          )
+          currentGlobalConversationKeyForSystem("claude_code") || activeKey()
         );
       }
       if (system === "codex") {
-        return (
-          currentGlobalConversationKeyForSystem("codex") ||
-          Number(
-            activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) || 0,
-          )
-        );
+        return currentGlobalConversationKeyForSystem("codex") || activeKey();
       }
       return item &&
         isGlobalMode() &&
         isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
         ? getConversationKey(item)
-        : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
+        : activeKey();
     })();
     const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
       ? Math.floor(currentCandidate)
@@ -3758,24 +3693,11 @@ export function createHistoryLifecycleController(
         return false;
       }
     }
-    if (system === "claude_code") {
-      activeClaudeGlobalConversationByLibrary.set(
-        buildClaudeLibraryStateKey(libraryID),
-        targetConversationKey,
-      );
-    } else if (system === "codex") {
-      activeCodexGlobalConversationByLibrary.set(
-        buildCodexLibraryStateKey(libraryID),
-        targetConversationKey,
-      );
-      setLastUsedCodexGlobalConversationKey(libraryID, targetConversationKey);
-    } else {
-      activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
-      setLastUsedUpstreamGlobalConversationKey(
-        libraryID,
-        targetConversationKey,
-      );
-    }
+    // Claude Code remembers the new key in the active map only here; its
+    // pref is written when switchGlobalConversation commits the switch.
+    remember({ system, libraryID, kind: "global" }, targetConversationKey, {
+      persist: system !== "claude_code",
+    });
     if (forceFresh) {
       clearTransientComposeStateForItem(targetConversationKey);
     }
@@ -4290,18 +4212,12 @@ export function createHistoryLifecycleController(
         getLastUsedClaudeGlobalConversationKey(libraryID) ||
         0
       : isCodexConversationSystem()
-        ? activeCodexGlobalConversationByLibrary.get(
-            buildCodexLibraryStateKey(libraryID),
-          ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
-          0
+        ? recall({ system: "codex", libraryID, kind: "global" })
         : (() => {
             const lockedKey = getLockedGlobalConversationKey(libraryID);
             if (lockedKey !== null) return lockedKey;
             const activeKey = Number(
-              activeGlobalConversationByLibrary.get(libraryID) ||
-                getLastUsedUpstreamGlobalConversationKey(libraryID) ||
-                0,
+              recall({ system: "upstream", libraryID, kind: "global" }),
             );
             if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
             return activeKey === GLOBAL_CONVERSATION_KEY_BASE
