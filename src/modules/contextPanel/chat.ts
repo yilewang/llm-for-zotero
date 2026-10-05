@@ -148,6 +148,7 @@ export { withScrollGuard } from "./chatScrollSnapshots";
 
 import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
 import { createStreamingResponse } from "./streamingResponse";
+import { toStoredAssistantRow } from "./storedAssistantRow";
 import {
   getStreamInterruptionLabel,
   resolveStreamInterruptionOutcome,
@@ -5832,24 +5833,11 @@ export async function retryLatestAssistantResponse(
     await updateStoredLatestAssistantMessageByConversation(
       conversationKey,
       {
-        conversationGeneration,
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
         documentId: assistantMessage.documentId,
         planDocumentId: assistantMessage.planDocumentId,
-        interrupted: assistantMessage.interrupted,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
-        compactMarker: assistantMessage.compactMarker,
         contextTokens: latestContextSnapshot?.contextTokens,
         contextWindow: latestContextSnapshot?.contextWindow,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
       },
       effectiveStorageSystem,
     );
@@ -6276,26 +6264,13 @@ export async function retryLatestAssistantResponse(
     await updateStoredLatestAssistantMessageByConversation(
       conversationKey,
       {
-        conversationGeneration,
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
         documentId: assistantMessage.documentId,
         planDocumentId: assistantMessage.planDocumentId,
-        interrupted: assistantMessage.interrupted,
         completionStatus: assistantMessage.completionStatus,
         completionReason: assistantMessage.completionReason,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
-        compactMarker: assistantMessage.compactMarker,
         contextTokens: latestContextSnapshot?.contextTokens,
         contextWindow: latestContextSnapshot?.contextWindow,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
       },
       effectiveStorageSystem,
     );
@@ -6356,22 +6331,11 @@ export async function retryLatestAssistantResponse(
       await updateStoredLatestAssistantMessageByConversation(
         conversationKey,
         {
-          conversationGeneration,
-          text: assistantMessage.text,
-          timestamp: assistantMessage.timestamp,
-          runMode: assistantMessage.runMode,
-          agentRunId: assistantMessage.agentRunId,
-          interrupted: assistantMessage.interrupted,
-          modelName: assistantMessage.modelName,
-          modelEntryId: assistantMessage.modelEntryId,
-          modelProviderLabel: assistantMessage.modelProviderLabel,
-          reasoningSummary: assistantMessage.reasoningSummary,
-          reasoningDetails: assistantMessage.reasoningDetails,
-          compactMarker: assistantMessage.compactMarker,
+          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+          // The interrupted row keeps omitting documentId, planDocumentId,
+          // and the completion fields, as it always has.
           contextTokens: latestContextSnapshot?.contextTokens,
           contextWindow: latestContextSnapshot?.contextWindow,
-          quoteCitations: assistantMessage.quoteCitations,
-          generatedImages: assistantMessage.generatedImages,
         },
         effectiveStorageSystem,
       );
@@ -8620,29 +8584,16 @@ export async function sendQuestion(
     await persistConversationMessage(
       conversationKey,
       {
-        conversationGeneration,
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
         role: "assistant",
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
         documentId: assistantMessage.documentId,
         planDocumentId: assistantMessage.planDocumentId,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        interrupted: assistantMessage.interrupted,
         completionStatus: assistantMessage.completionStatus,
         completionReason: assistantMessage.completionReason,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
         webchatRunState: assistantMessage.webchatRunState,
         webchatCompletionReason: assistantMessage.webchatCompletionReason,
         webchatChatUrl: assistantMessage.webchatChatUrl,
         webchatChatId: assistantMessage.webchatChatId,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
-        compactMarker: assistantMessage.compactMarker,
       },
       effectiveStorageSystem,
     );
