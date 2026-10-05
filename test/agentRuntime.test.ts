@@ -73,6 +73,7 @@ import type {
   AgentModelCapabilities,
   AgentModelMessage,
   AgentModelStep,
+  AgentRuntimeOutcome,
   AgentRuntimeRequest,
 } from "../src/agent/types";
 import type {
@@ -190,6 +191,11 @@ class MockAdapter implements AgentModelAdapter {
     this.stepIndex += 1;
     return step;
   }
+}
+
+/** The message of a turn the runtime ended as failed; "" for any other. */
+function failedMessage(outcome: AgentRuntimeOutcome): string {
+  return outcome.kind === "failed" ? outcome.message : "";
 }
 
 describe("AgentRuntime", function () {
@@ -874,21 +880,18 @@ describe("AgentRuntime", function () {
           },
         }),
       });
-      try {
-        await runtime.runTurn({
-          request: {
-            conversationKey: 421,
-            libraryID: 1,
-            mode: "agent",
-            userText: "Write a report including Figure 1",
-            model: "gpt-5.4",
-            apiKey: "test",
-          },
-        });
-        assert.fail("expected test checkpoint");
-      } catch (error) {
-        assert.include(String(error), "test provenance checkpoint");
-      }
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 421,
+          libraryID: 1,
+          mode: "agent",
+          userText: "Write a report including Figure 1",
+          model: "gpt-5.4",
+          apiKey: "test",
+        },
+      });
+      assert.equal(outcome.kind, "failed", "expected test checkpoint");
+      assert.include(failedMessage(outcome), "test provenance checkpoint");
       assert.lengthOf(observed || [], 1);
       assert.deepInclude(observed![0], {
         itemKey: "PAPER001",
@@ -919,21 +922,17 @@ describe("AgentRuntime", function () {
         }),
       });
 
-      let failure = "";
-      try {
-        await runtime.runTurn({
-          request: {
-            conversationKey: 3,
-            libraryID: 1,
-            mode: "agent",
-            userText: "Explain this topic",
-          },
-        });
-      } catch (error) {
-        failure = String(error);
-      }
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 3,
+          libraryID: 1,
+          mode: "agent",
+          userText: "Explain this topic",
+        },
+      });
 
-      assert.match(failure, /provider interrupted/);
+      assert.deepInclude(outcome, { kind: "failed", interrupted: true });
+      assert.match(failedMessage(outcome), /provider interrupted/);
       const run = [...restoreDb.runs.values()].find(
         (entry) => Number(entry.conversationKey) === 3,
       );
@@ -2456,23 +2455,22 @@ describe("AgentRuntime", function () {
         }),
       });
 
-      let error: unknown;
-      try {
-        await runtime.runTurn({
-          request: {
-            conversationKey: 2,
-            mode: "agent",
-            userText: "Read safely",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-          },
-        });
-      } catch (caught) {
-        error = caught;
-      }
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 2,
+          mode: "agent",
+          userText: "Read safely",
+          model: "gpt-4o-mini",
+          apiBase: "https://api.openai.com/v1/chat/completions",
+          apiKey: "test",
+        },
+      });
 
-      assert.match(String(error), /transcript checkpoint storage failed/i);
+      assert.equal(outcome.kind, "failed");
+      assert.match(
+        failedMessage(outcome),
+        /transcript checkpoint storage failed/i,
+      );
       assert.equal(modelStep, 1);
       assert.equal(executionCount, 0);
       assert.equal(resetCount, 0);
@@ -5658,24 +5656,23 @@ describe("AgentRuntime", function () {
         }),
       });
 
-      let thrown: unknown;
-      try {
-        await runtime.runTurn({
-          request: {
-            conversationKey,
-            mode: "agent",
-            userText: "persist this before inference",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-          },
-        });
-      } catch (error) {
-        thrown = error;
-      }
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "persist this before inference",
+          model: "gpt-4o-mini",
+          apiBase: "https://api.openai.com/v1/chat/completions",
+          apiKey: "test",
+        },
+      });
 
-      assert.instanceOf(thrown, Error);
-      assert.equal((thrown as Error).message, "simulated process interruption");
+      assert.equal(outcome.kind, "failed");
+      assert.instanceOf(
+        outcome.kind === "failed" ? outcome.cause : undefined,
+        Error,
+      );
+      assert.equal(failedMessage(outcome), "simulated process interruption");
     } finally {
       installed();
     }
@@ -6003,21 +6000,22 @@ describe("AgentRuntime", function () {
         }),
       });
 
-      try {
-        await firstRuntime.runTurn({
-          request: {
-            conversationKey,
-            mode: "agent",
-            userText: "run the recovery command once",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-          },
-        });
-        assert.fail("expected the first run to be interrupted");
-      } catch (error) {
-        assert.equal((error as Error).message, "simulated restart");
-      }
+      const interrupted = await firstRuntime.runTurn({
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "run the recovery command once",
+          model: "gpt-4o-mini",
+          apiBase: "https://api.openai.com/v1/chat/completions",
+          apiKey: "test",
+        },
+      });
+      assert.equal(
+        interrupted.kind,
+        "failed",
+        "expected the first run to be interrupted",
+      );
+      assert.equal(failedMessage(interrupted), "simulated restart");
 
       const priorRun = [...installed.runs.values()][0];
       assert.equal(
@@ -6167,24 +6165,21 @@ describe("AgentRuntime", function () {
         }),
       });
 
-      try {
-        await interruptedRuntime.runTurn({
-          request: {
-            conversationKey,
-            mode: "agent",
-            userText: "run the recovery command to preserve this original goal",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-          },
-        });
-        assert.fail("expected interruption");
-      } catch (error) {
-        assert.equal(
-          (error as Error).message,
-          "simulated restart before final response",
-        );
-      }
+      const interrupted = await interruptedRuntime.runTurn({
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "run the recovery command to preserve this original goal",
+          model: "gpt-4o-mini",
+          apiBase: "https://api.openai.com/v1/chat/completions",
+          apiKey: "test",
+        },
+      });
+      assert.equal(interrupted.kind, "failed", "expected interruption");
+      assert.equal(
+        failedMessage(interrupted),
+        "simulated restart before final response",
+      );
 
       // Fault injection: retain the pre-inference user checkpoint but remove
       // the pair, matching a crash after the journal commit and before the

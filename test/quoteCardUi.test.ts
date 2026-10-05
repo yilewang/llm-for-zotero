@@ -746,9 +746,11 @@ describe("quote card UI contract", function () {
     );
     assert.include(agentSource, "pairedUserMessage: userMessage,");
     assert.include(agentSource, "pairedUserMessage: retryPair.userMessage,");
-    // Both turn paths route through the shared finalizer.
+    // Both turn paths settle through the shared settlement, whose answered
+    // outcome goes to the shared finalizer.
+    assert.equal(agentSource.match(/await settleAgentTurn\(\{/g)?.length, 2);
     assert.equal(
-      agentSource.match(/await finalizeAgentTurnOutcome\(\{/g)?.length,
+      agentSource.match(/=>\s*finalizeAgentTurnOutcome\(\{/g)?.length,
       2,
     );
   });

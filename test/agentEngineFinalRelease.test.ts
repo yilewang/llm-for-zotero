@@ -1,6 +1,17 @@
 import { assert } from "chai";
 
 import type { AgentRuntime } from "../src/agent/runtime";
+import { AgentRuntime as RealAgentRuntime } from "../src/agent/runtime";
+import { AgentToolRegistry } from "../src/agent/tools/registry";
+import type { AgentStepParams } from "../src/agent/model/adapter";
+import { clearAgentReadLedger } from "../src/agent/context/resourceContextPlan";
+import { clearAgentCoverageLedger } from "../src/agent/context/coverageLedger";
+import { clearAgentTranscriptStore } from "../src/agent/store/transcriptStore";
+import { clearAgentToolResultHandleStore } from "../src/agent/store/toolResultHandles";
+import {
+  installMockDb,
+  type InstalledMockDb,
+} from "./helpers/agentRuntimeMockDb";
 import type { AgentEngineDeps } from "../src/modules/contextPanel/agentMode/agentEngine";
 import {
   applyFinalQuoteCitations,
@@ -9,6 +20,7 @@ import {
 } from "../src/modules/contextPanel/agentMode/agentEngine";
 import type {
   AgentEvent,
+  AgentModelStep,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
 } from "../src/agent/types";
@@ -2381,4 +2393,550 @@ describe("agent engine reasoning repaints at run end", function () {
       );
     });
   }
+});
+
+/**
+ * How a turn the real runtime stopped or failed ends in the panel: the status
+ * row, the stored assistant row, Task progress, and the run row. A Stop and a
+ * provider error reach the panel the same way for a send and for a retry.
+ */
+describe("agent turn endings from the real runtime", function () {
+  const WAITING = "Waiting for the stopped run to finish";
+  let installed: InstalledMockDb;
+
+  beforeEach(function () {
+    clearAgentReadLedger();
+    clearAgentCoverageLedger();
+    clearAgentTranscriptStore();
+    clearAgentToolResultHandleStore();
+    installed = installMockDb();
+  });
+
+  afterEach(function () {
+    installed();
+    clearAllTaskProgress();
+  });
+
+  type Seen = {
+    statuses: Array<{ text: string; kind: string }>;
+    persisted: any[];
+    assistantWrites: any[];
+  };
+
+  function readNotesTool(
+    registry: AgentToolRegistry,
+    execute: () => Promise<unknown>,
+  ): AgentToolRegistry {
+    registry.register({
+      spec: {
+        name: "read_notes",
+        description: "Read notes",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: execute as never,
+    });
+    return registry;
+  }
+
+  const readStep = (id: string): AgentModelStep => ({
+    kind: "tool_calls",
+    calls: [{ id, name: "read_notes", arguments: {} }],
+    assistantMessage: {
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id, name: "read_notes", arguments: {} }],
+    },
+  });
+
+  const answerStep = (text: string): AgentModelStep => ({
+    kind: "final",
+    text,
+    assistantMessage: { role: "assistant", content: text },
+  });
+
+  function realRuntime(params: {
+    runStep: (params: AgentStepParams) => Promise<AgentModelStep>;
+    registry?: AgentToolRegistry;
+    stoppedRunWaitMs?: number;
+  }): AgentRuntime {
+    return new RealAgentRuntime({
+      registry: params.registry || new AgentToolRegistry(),
+      ...(params.stoppedRunWaitMs !== undefined
+        ? { stoppedRunWaitMs: params.stoppedRunWaitMs }
+        : {}),
+      adapterFactory: () => ({
+        getCapabilities: () => ({
+          streaming: true,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        supportsTools: () => true,
+        runStep: params.runStep,
+      }),
+    });
+  }
+
+  function panelDeps(runtime: AgentRuntime, seen: Seen): AgentEngineDeps {
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.createPanelUpdateHelpers = () => ({
+      refreshChatSafely: () => undefined,
+      refreshAssistantMessageSafely: () => undefined,
+      setStatusSafely: (text, kind) => {
+        seen.statuses.push({ text, kind });
+      },
+    });
+    deps.persistConversationMessage = async (_key, message) => {
+      seen.persisted.push(message);
+    };
+    deps.updateStoredLatestAssistantMessage = async (_key, update) => {
+      seen.assistantWrites.push(update);
+    };
+    const config = deps.resolveEffectiveRequestConfig;
+    deps.resolveEffectiveRequestConfig = (...args) => ({
+      ...config(...args),
+      apiBase: "",
+    });
+    return deps;
+  }
+
+  const newSeen = (): Seen => ({
+    statuses: [],
+    persisted: [],
+    assistantWrites: [],
+  });
+
+  const storedAssistant = (seen: Seen) =>
+    seen.persisted.filter((message) => message.role === "assistant").pop();
+
+  const onlyRun = (conversationKey: number) => {
+    const runs = [...installed.runs.values()].filter(
+      (run) => Number(run.conversationKey) === conversationKey,
+    );
+    assert.lengthOf(runs, 1, "the turn wrote one run row");
+    return runs[0];
+  };
+
+  async function send(
+    deps: AgentEngineDeps,
+    conversationKey: number,
+    question = "Read the notes",
+  ): Promise<any[]> {
+    const history: any[] = [];
+    deps.chatHistory.set(conversationKey, history);
+    await sendAgentTurn(
+      { body: {} as Element, item: fakeItem(conversationKey), question },
+      deps,
+    );
+    return history;
+  }
+
+  /** A stored turn to retry: the question and the answer it got. */
+  function retryable(deps: AgentEngineDeps, conversationKey: number) {
+    const userMessage = {
+      role: "user" as const,
+      text: "Read the notes",
+      timestamp: 100,
+      runMode: "agent" as const,
+    };
+    const assistantMessage: any = {
+      role: "assistant" as const,
+      text: "Preserved partial answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+      interrupted: true,
+    };
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    return assistantMessage;
+  }
+
+  async function retry(deps: AgentEngineDeps, conversationKey: number) {
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+  }
+
+  it("send: a Stop before the next step shows Cancelled and stores the cancelled answer", async function () {
+    const conversationKey = 9301;
+    const seen = newSeen();
+    const runtime = realRuntime({
+      registry: readNotesTool(new AgentToolRegistry(), async () => {
+        deps.currentAbortController(conversationKey)!.abort();
+        return { notes: [] };
+      }),
+      runStep: async () => readStep("c1"),
+    });
+    const deps = panelDeps(runtime, seen);
+    const history = await send(deps, conversationKey);
+
+    const run = onlyRun(conversationKey);
+    assert.equal(run.status, "cancelled");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Cancelled",
+      kind: "ready",
+    });
+    const stored = storedAssistant(seen);
+    assert.equal(stored.text, "[Cancelled]");
+    assert.equal(stored.agentRunId, run.runId);
+    assert.isUndefined(stored.interrupted);
+    assert.isFalse(Boolean(history.at(-1).streaming));
+    assert.equal(getTaskProgress(conversationKey)!.runState, "cancelled");
+  });
+
+  it("send: a Stop while the model step is in flight shows Cancelled", async function () {
+    const conversationKey = 9302;
+    const seen = newSeen();
+    const runtime = realRuntime({
+      runStep: async () => {
+        deps.currentAbortController(conversationKey)!.abort();
+        throw new Error("The request was aborted.");
+      },
+    });
+    const deps = panelDeps(runtime, seen);
+    await send(deps, conversationKey);
+
+    assert.equal(onlyRun(conversationKey).status, "cancelled");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Cancelled",
+      kind: "ready",
+    });
+    assert.equal(storedAssistant(seen).text, "[Cancelled]");
+    assert.equal(getTaskProgress(conversationKey)!.runState, "cancelled");
+  });
+
+  it("send: a provider error with nothing streamed stores the error text and shows it", async function () {
+    const conversationKey = 9303;
+    const seen = newSeen();
+    const deps = panelDeps(
+      realRuntime({
+        runStep: async () => {
+          throw new Error("provider down");
+        },
+      }),
+      seen,
+    );
+    await send(deps, conversationKey);
+
+    const run = onlyRun(conversationKey);
+    assert.equal(run.status, "failed");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Error: provider down",
+      kind: "error",
+    });
+    const stored = storedAssistant(seen);
+    assert.equal(stored.text, "Error: provider down");
+    assert.isFalse(Boolean(stored.interrupted));
+    assert.equal(stored.agentRunId, run.runId);
+    assert.equal(getTaskProgress(conversationKey)!.runState, "failed");
+  });
+
+  it("send: a provider error after streamed text keeps the text as an interrupted answer", async function () {
+    const conversationKey = 9304;
+    const seen = newSeen();
+    const deps = panelDeps(
+      realRuntime({
+        runStep: async (params) => {
+          await params.onTextDelta?.("Partial answer that streamed. ");
+          throw new Error("Error in input stream");
+        },
+      }),
+      seen,
+    );
+    await send(deps, conversationKey);
+
+    assert.equal(onlyRun(conversationKey).status, "failed");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Error: Error in input stream",
+      kind: "error",
+    });
+    const stored = storedAssistant(seen);
+    assert.equal(stored.text, "Partial answer that streamed. ");
+    assert.isTrue(stored.interrupted);
+    assert.equal(getTaskProgress(conversationKey)!.runState, "interrupted");
+  });
+
+  it("retry: a provider error with nothing streamed restores the previous answer", async function () {
+    const conversationKey = 9305;
+    const seen = newSeen();
+    const deps = panelDeps(
+      realRuntime({
+        runStep: async () => {
+          throw new Error("NetworkError when attempting to fetch resource.");
+        },
+      }),
+      seen,
+    );
+    const assistantMessage = retryable(deps, conversationKey);
+    await retry(deps, conversationKey);
+
+    assert.equal(onlyRun(conversationKey).status, "failed");
+    assert.equal(assistantMessage.text, "Preserved partial answer.");
+    assert.isTrue(assistantMessage.interrupted);
+    assert.isFalse(Boolean(assistantMessage.streaming));
+    assert.lengthOf(seen.assistantWrites, 0, "the stored answer is kept");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Error: NetworkError when attempting to fetch re",
+      kind: "error",
+    });
+  });
+
+  it("retry: a Stop before the next step shows Cancelled and stores the cancelled answer", async function () {
+    const conversationKey = 9306;
+    const seen = newSeen();
+    const runtime = realRuntime({
+      registry: readNotesTool(new AgentToolRegistry(), async () => {
+        deps.currentAbortController(conversationKey)!.abort();
+        return { notes: [] };
+      }),
+      runStep: async () => readStep("c1"),
+    });
+    const deps = panelDeps(runtime, seen);
+    const assistantMessage = retryable(deps, conversationKey);
+    await retry(deps, conversationKey);
+
+    const run = onlyRun(conversationKey);
+    assert.equal(run.status, "cancelled");
+    assert.equal(assistantMessage.text, "[Cancelled]");
+    assert.equal(assistantMessage.agentRunId, run.runId);
+    assert.lengthOf(seen.assistantWrites, 1);
+    assert.equal(seen.assistantWrites[0].text, "[Cancelled]");
+    assert.deepEqual(seen.statuses.at(-1), {
+      text: "Cancelled",
+      kind: "ready",
+    });
+    assert.equal(getTaskProgress(conversationKey)!.runState, "cancelled");
+  });
+
+  it("ends a failed run once, whether the runtime threw or returned the failure, even when storing the ending fails", async function () {
+    const thrown = new Error("provider down");
+    const seenBy: Record<string, unknown> = {};
+    for (const end of ["throws", "returns failed"] as const) {
+      const conversationKey = end === "throws" ? 9310 : 9311;
+      const statuses: string[] = [];
+      let persists = 0;
+      const deps = createDeps({
+        runtime: {
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          runTurn: async (params: any) => {
+            await params.onStart?.(`run-${end}`);
+            if (end === "throws") throw thrown;
+            return {
+              kind: "failed",
+              runId: `run-${end}`,
+              message: "provider down",
+              interrupted: true,
+              cause: thrown,
+            };
+          },
+        } as unknown as AgentRuntime,
+        pendingWrites: [],
+        idleRestores: [],
+        statuses,
+      });
+      deps.persistConversationMessage = async (_key, message) => {
+        if (message.role !== "assistant") return;
+        persists += 1;
+        throw new Error("db down");
+      };
+      deps.chatHistory.set(conversationKey, []);
+      let rejection: unknown;
+      try {
+        await sendAgentTurn(
+          {
+            body: {} as Element,
+            item: fakeItem(conversationKey),
+            question: "q",
+          },
+          deps,
+        );
+      } catch (error) {
+        rejection = error;
+      }
+      seenBy[end] = {
+        rejection: (rejection as Error | undefined)?.message,
+        persists,
+        lastStatus: statuses.at(-1),
+        runState: getTaskProgress(conversationKey)?.runState,
+      };
+    }
+    assert.deepEqual(seenBy["returns failed"], seenBy.throws);
+    assert.deepEqual(seenBy.throws, {
+      rejection: "db down",
+      persists: 1,
+      lastStatus: "Error: provider down",
+      runState: "failed",
+    });
+  });
+
+  it("leaves the send with the probe's error when a model without tools could not run the probe", async function () {
+    const thrown = new Error("probe failed");
+    for (const end of ["throws", "returns failed"] as const) {
+      const conversationKey = end === "throws" ? 9308 : 9309;
+      let fallbacks = 0;
+      const deps = createDeps({
+        runtime: {
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: false,
+            multimodal: false,
+          }),
+          runTurn: async () => {
+            if (end === "throws") throw thrown;
+            return {
+              kind: "failed",
+              runId: "probe-run",
+              message: "probe failed",
+              interrupted: true,
+              cause: thrown,
+            };
+          },
+        } as unknown as AgentRuntime,
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.sendChatFallback = async () => {
+        fallbacks += 1;
+      };
+      deps.chatHistory.set(conversationKey, []);
+      let rejection: unknown;
+      try {
+        await sendAgentTurn(
+          {
+            body: {} as Element,
+            item: fakeItem(conversationKey),
+            question: "q",
+          },
+          deps,
+        );
+      } catch (error) {
+        rejection = error;
+      }
+      assert.strictEqual(rejection, thrown, end);
+      assert.equal(fallbacks, 0, end);
+    }
+  });
+
+  it("says it waits for the stopped run before its own run starts, outside the run's trace", async function () {
+    const conversationKey = 9307;
+    const seen = newSeen();
+    let releasePrior!: () => void;
+    const priorHolds = new Promise<void>((resolve) => {
+      releasePrior = resolve;
+    });
+    let priorReading!: () => void;
+    const priorReads = new Promise<void>((resolve) => {
+      priorReading = resolve;
+    });
+    const runtime = realRuntime({
+      stoppedRunWaitMs: 20,
+      registry: readNotesTool(new AgentToolRegistry(), async () => {
+        priorReading();
+        await priorHolds;
+        return { notes: [] };
+      }),
+      runStep: async (params) =>
+        params.request.userText === "prior"
+          ? params.messages.some((message) => message.role === "tool")
+            ? answerStep("Prior done.")
+            : readStep("p1")
+          : answerStep("Done."),
+    });
+    const prior = runtime.runTurn({
+      request: {
+        conversationKey,
+        mode: "agent",
+        userText: "prior",
+        model: "deepseek-v4-pro",
+        apiBase: "",
+        apiKey: "test",
+      },
+    });
+    await priorReads;
+
+    const deps = panelDeps(runtime, seen);
+    const atWaiting: Array<string | undefined> = [];
+    const history: any[] = [];
+    const setStatus = deps.createPanelUpdateHelpers;
+    deps.createPanelUpdateHelpers = (...args) => {
+      const helpers = setStatus(...args);
+      return {
+        ...helpers,
+        setStatusSafely: (text, kind) => {
+          if (text === WAITING) atWaiting.push(history.at(-1)?.agentRunId);
+          helpers.setStatusSafely(text, kind);
+        },
+      };
+    };
+    deps.chatHistory.set(conversationKey, history);
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "continue",
+      },
+      deps,
+    );
+    releasePrior();
+    await prior;
+
+    assert.deepEqual(
+      atWaiting,
+      [undefined],
+      "the wait is shown once, before the turn's run has started",
+    );
+    assert.deepInclude(seen.statuses, { text: WAITING, kind: "sending" });
+    const assistant = history.at(-1);
+    assert.equal(assistant.text, "Done.");
+    const trace = deps.agentRunTraceCache.get(assistant.agentRunId) || [];
+    assert.isAbove(trace.length, 0);
+    assert.isFalse(
+      trace.some(
+        (entry: any) =>
+          entry.payload?.type === "status" && entry.payload.text === WAITING,
+      ),
+      "the wait is not one of the run's events",
+    );
+    assert.isFalse(
+      installed.events.some((row) => String(row.payloadJson).includes(WAITING)),
+      "the wait is not stored with any run",
+    );
+  });
 });

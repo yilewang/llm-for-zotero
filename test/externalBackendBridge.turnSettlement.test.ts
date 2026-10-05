@@ -122,6 +122,8 @@ type DbCall = { sql: string; params: unknown[] };
 
 type SettlementRun = {
   outcome: AgentRuntimeOutcome;
+  /** What the turn threw, when it threw. */
+  error?: unknown;
   liveEvents: AgentEvent[];
   dbCalls: DbCall[];
   documentLookups: unknown[];
@@ -140,6 +142,10 @@ async function runSettlementTurn(params: {
   failingCommand: boolean;
   documentStored: boolean;
   localPdfPath?: string;
+  /** The bridge streams this error line in place of the outcome. */
+  streamError?: string;
+  /** Pressed before the error line arrives. */
+  stop?: AbortController;
 }): Promise<SettlementRun> {
   const dbCalls: DbCall[] = [];
   const documentLookups: unknown[] = [];
@@ -311,6 +317,15 @@ async function runSettlementTurn(params: {
             });
             await new Promise((resolve) => setTimeout(resolve, 10));
           }
+          if (params.streamError !== undefined) {
+            params.stop?.abort();
+            controller.enqueue(
+              encoder.encode(
+                `${JSON.stringify({ type: "error", error: params.streamError })}\n`,
+              ),
+            );
+            return;
+          }
           controller.enqueue(
             encoder.encode(
               `${JSON.stringify({ type: "outcome", outcome: params.outcome })}\n`,
@@ -324,46 +339,53 @@ async function runSettlementTurn(params: {
     return new Response(stream, { status: 200 });
   }) as typeof fetch;
 
-  const outcome = await createRuntime().runTurn({
-    request: {
-      conversationKey: params.conversationKey,
-      mode: "agent",
-      userText: "Write the report and run the command.",
-      model: "claude-sonnet",
-      authMode: "api_key",
-      apiBase: "",
-      apiKey: "",
-      libraryID: 1,
-      ...(params.localPdfPath
-        ? {
-            pdfPaperContexts: [
-              {
-                itemId: 10,
-                contextItemId: 11,
-                title: "Selected PDF",
-                contentSourceMode: "pdf" as const,
-              },
-            ],
-            localDocuments: [
-              {
-                kind: "local_pdf" as const,
-                sourceKey: "zotero-pdf:10:11" as const,
-                itemId: 10,
-                contextItemId: 11,
-                title: "Selected PDF",
-                name: "selected.pdf",
-                mimeType: "application/pdf" as const,
-                absolutePath: params.localPdfPath,
-              },
-            ],
-          }
-        : {}),
-    },
-    onEvent: (event) => {
-      liveEvents.push(event);
-    },
-  });
-  return { outcome, liveEvents, dbCalls, documentLookups };
+  let outcome!: AgentRuntimeOutcome;
+  let error: unknown;
+  try {
+    outcome = await createRuntime().runTurn({
+      ...(params.stop ? { signal: params.stop.signal } : {}),
+      request: {
+        conversationKey: params.conversationKey,
+        mode: "agent",
+        userText: "Write the report and run the command.",
+        model: "claude-sonnet",
+        authMode: "api_key",
+        apiBase: "",
+        apiKey: "",
+        libraryID: 1,
+        ...(params.localPdfPath
+          ? {
+              pdfPaperContexts: [
+                {
+                  itemId: 10,
+                  contextItemId: 11,
+                  title: "Selected PDF",
+                  contentSourceMode: "pdf" as const,
+                },
+              ],
+              localDocuments: [
+                {
+                  kind: "local_pdf" as const,
+                  sourceKey: "zotero-pdf:10:11" as const,
+                  itemId: 10,
+                  contextItemId: 11,
+                  title: "Selected PDF",
+                  name: "selected.pdf",
+                  mimeType: "application/pdf" as const,
+                  absolutePath: params.localPdfPath,
+                },
+              ],
+            }
+          : {}),
+      },
+      onEvent: (event) => {
+        liveEvents.push(event);
+      },
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  return { outcome, error, liveEvents, dbCalls, documentLookups };
 }
 
 const finishCalls = (run: SettlementRun) =>
@@ -491,6 +513,7 @@ describe("Claude bridge turn settlement", function () {
       text: failure,
       documentId: undefined,
       usedFallback: false,
+      runStatus: "failed",
     });
     assert.property(run.outcome, "documentId");
     const persistedAt = persistedUnverifiedIndex(run);
@@ -520,6 +543,7 @@ describe("Claude bridge turn settlement", function () {
       text: expected,
       documentId: "bridge-document-1",
       usedFallback: false,
+      runStatus: "failed",
     });
     assert.deepEqual(finishCalls(run), [
       { status: "failed", text: expected, runId: RUN_ID },
@@ -547,6 +571,7 @@ describe("Claude bridge turn settlement", function () {
       text: failure,
       documentId: undefined,
       usedFallback: false,
+      runStatus: "failed",
     });
     assert.deepEqual(finishCalls(run), [
       { status: "failed", text: failure, runId: RUN_ID },
@@ -568,6 +593,88 @@ describe("Claude bridge turn settlement", function () {
     assert.include(text, "[raw_pdf_path:zotero-pdf:10:11]");
     assert.deepEqual(finishCalls(run), [
       { status: "completed", text, runId: RUN_ID },
+    ]);
+  });
+  const persistedEventTypes = (run: SettlementRun) =>
+    run.dbCalls
+      .filter(
+        (call) => /INSERT INTO/.test(call.sql) && call.params[0] === RUN_ID,
+      )
+      .map((call) => JSON.parse(String(call.params[3] || "{}")))
+      .filter((event) => event.type === "status" || event.type === "fallback")
+      .map((event) => ({ type: event.type, text: event.text ?? event.reason }));
+
+  const liveEndingEvents = (run: SettlementRun) =>
+    run.liveEvents
+      .filter((event) => event.type === "status" || event.type === "fallback")
+      .map((event) => ({
+        type: event.type,
+        text:
+          event.type === "status"
+            ? event.text
+            : event.type === "fallback"
+              ? event.reason
+              : "",
+      }));
+
+  const BRIDGE_FAILURE =
+    "External agent backend unavailable: bridge exploded. ";
+
+  it("reports a bridge stream error as a status and a fallback, stores failed twice, and returns the report as a failed outcome", async function () {
+    const run = await runSettlementTurn({
+      conversationKey: 9108,
+      outcome: completed(RAW_ANSWER),
+      failingCommand: false,
+      documentStored: false,
+      streamError: "bridge exploded",
+    });
+    assert.isUndefined(run.error, "the bridge returns the failure");
+    assert.equal(run.outcome.kind, "failed");
+    if (run.outcome.kind !== "failed") return;
+    const report = run.outcome.message;
+    assert.isTrue(report.startsWith(BRIDGE_FAILURE), report);
+    assert.deepInclude(run.outcome, {
+      runId: RUN_ID,
+      interrupted: false,
+    });
+    // The throwing public runTurn rethrows the report as before.
+    assert.instanceOf(run.outcome.cause, Error);
+    assert.equal((run.outcome.cause as Error).message, report);
+    const ending = [
+      { type: "status", text: report },
+      { type: "fallback", text: report },
+    ];
+    assert.deepEqual(liveEndingEvents(run), ending);
+    assert.deepEqual(persistedEventTypes(run), ending);
+    assert.deepEqual(finishCalls(run), [
+      { status: "failed", text: "bridge exploded", runId: RUN_ID },
+      { status: "failed", text: report, runId: RUN_ID },
+    ]);
+  });
+
+  it("stores cancelled and returns cancelled when the user stopped the turn before the bridge stream failed", async function () {
+    const stop = new AbortController();
+    const run = await runSettlementTurn({
+      conversationKey: 9109,
+      outcome: completed(RAW_ANSWER),
+      failingCommand: false,
+      documentStored: false,
+      streamError: "bridge exploded",
+      stop,
+    });
+    assert.isUndefined(run.error, "the bridge returns the cancellation");
+    assert.equal(run.outcome.kind, "cancelled");
+    if (run.outcome.kind !== "cancelled") return;
+    assert.equal(run.outcome.runId, RUN_ID);
+    const report = (run.outcome.cause as Error).message;
+    assert.isTrue(report.startsWith(BRIDGE_FAILURE), report);
+    assert.deepEqual(liveEndingEvents(run), [
+      { type: "status", text: report },
+      { type: "fallback", text: report },
+    ]);
+    assert.deepEqual(finishCalls(run), [
+      { status: "cancelled", text: "bridge exploded", runId: RUN_ID },
+      { status: "cancelled", text: report, runId: RUN_ID },
     ]);
   });
 });

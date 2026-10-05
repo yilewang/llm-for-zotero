@@ -44,9 +44,12 @@ import { createLibraryBatchTool } from "./tools/write/libraryBatch";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
+  AgentRuntimeOutcome,
   AgentRuntimeRequestInput,
+  AgentRuntimeUnansweredOutcome,
   AgentToolDefinition,
 } from "./types";
+import { unansweredTurnError } from "./execution/unansweredTurn";
 
 let runtime: AgentRuntime | null = null;
 let runtimeInitTask: Promise<AgentRuntime> | null = null;
@@ -230,13 +233,17 @@ export function getAgentApi() {
      * Runs one agent turn. `options.signal` is the caller's Stop: aborting it
      * ends the run as the panel's Stop button does (cancelled, resumable on
      * "continue"). Without it the turn runs to its own end, as before.
+     *
+     * Resolves to a completed or fallback outcome. A stopped turn rejects
+     * with what the stopped run threw, or `Error("Aborted")`; a failed turn
+     * rejects with the error that failed it.
      */
-    runTurn: (
+    runTurn: async (
       request: AgentRuntimeRequestInput,
       onEvent?: (event: AgentEvent) => void | Promise<void>,
       options?: { signal?: AbortSignal },
-    ) =>
-      getAgentRuntime().runTurn({
+    ): Promise<Exclude<AgentRuntimeOutcome, AgentRuntimeUnansweredOutcome>> => {
+      const outcome = await getAgentRuntime().runTurn({
         request:
           request.conversationGeneration === undefined
             ? {
@@ -247,8 +254,14 @@ export function getAgentApi() {
               }
             : request,
         onEvent,
+        // The wait for a stopped prior run reaches the caller as a status.
+        onWaiting: (text) => onEvent?.({ type: "status", text }),
         ...(options?.signal ? { signal: options.signal } : {}),
-      }),
+      });
+      if (outcome.kind === "cancelled" || outcome.kind === "failed")
+        throw unansweredTurnError(outcome);
+      return outcome;
+    },
     listTools: () => getAgentRuntime().listTools(),
     getToolDefinition: (name: string) =>
       getAgentRuntime().getToolDefinition(name),

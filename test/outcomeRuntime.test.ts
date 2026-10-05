@@ -2679,7 +2679,7 @@ describe("resuming a long job in runtime turns", function () {
       // The stopped run ends as the user stopped it, whatever the question
       // wrote meanwhile.
       assert.equal(stopStatus(stopped), "cancelled");
-      assert.equal((stopped.error as Error | undefined)?.message, "Aborted");
+      assert.equal(stopped.outcome?.kind, "cancelled", String(stopped.error));
       assert.equal(question.outcome?.kind, "completed");
       return {
         stopped,

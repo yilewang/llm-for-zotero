@@ -315,6 +315,17 @@ const FLUSH_BEFORE_DELIVERY: ReadonlySet<AgentEvent["type"]> = new Set<
  */
 const unsettledTurns = new Map<number, Promise<void>>();
 
+/**
+ * Thrown by a model step that found the caller's Stop before it started,
+ * after it ended the run as cancelled; the loop returns the cancelled
+ * outcome for it.
+ */
+class StoppedBeforeStep extends Error {
+  constructor(readonly text: string) {
+    super("Aborted");
+  }
+}
+
 /** Whether `settling` resolves within `ms`. */
 function settlesWithin(settling: Promise<void>, ms: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -512,6 +523,12 @@ export class AgentRuntime {
     request: AgentRuntimeRequestInput;
     onEvent?: (event: AgentEvent) => void | Promise<void>;
     onStart?: (runId: string) => void | Promise<void>;
+    /**
+     * Says what the turn waits for before its run starts: the run this
+     * conversation's last turn stopped, still finishing. Called before
+     * `onStart`, and not one of the run's events.
+     */
+    onWaiting?: (text: string) => void | Promise<void>;
     signal?: AbortSignal;
     /**
      * False when this run replays a question the local usage ledger already
@@ -591,6 +608,8 @@ export class AgentRuntime {
     // partway (its run row's write throwing) is not followed by a second.
     let runTerminating = false;
     let redactRunTerminalText = (value: string) => value;
+    // The answer text streamed so far, redacted, once the run streams.
+    let stoppedAnswerText = (): string => "";
     // The run's event stream, once it is open. An ending before then has no
     // stream to record its stop rule in.
     let emitRunEvent: ((event: AgentEvent) => Promise<void>) | undefined;
@@ -762,10 +781,7 @@ export class AgentRuntime {
         waitMs: this.stoppedRunWaitMs,
         announce: () =>
           writeAllowed()
-            ? params.onEvent?.({
-                type: "status",
-                text: "Waiting for the stopped run to finish",
-              })
+            ? params.onWaiting?.("Waiting for the stopped run to finish")
             : undefined,
       });
       const interruptedPriorRun =
@@ -802,6 +818,8 @@ export class AgentRuntime {
       // summaries, a table): already on screen, never rolled back, and the
       // start of whatever answer the turn ends with.
       let committedAnswerText = "";
+      stoppedAnswerText = () =>
+        turnPathRedactor.redactTerminalText(currentAnswerText);
       /** The visible answer after the committed text. */
       const uncommittedAnswerText = (): string =>
         committedAnswerText && currentAnswerText.startsWith(committedAnswerText)
@@ -1823,6 +1841,7 @@ export class AgentRuntime {
             ? { quoteCitations: finalQuoteCitations }
             : {}),
           usedFallback: false,
+          ...(status === "failed" ? { runStatus: "failed" as const } : {}),
         } as const;
       };
       const emitFinalStep = async (
@@ -1950,12 +1969,9 @@ export class AgentRuntime {
             ),
           );
           // The run is finished here, so the catch below no longer does it.
-          await terminateRun(
-            "cancelled",
-            turnPathRedactor.redactTerminalText(currentAnswerText),
-            "cancelled_before_step",
-          );
-          throw new Error("Aborted");
+          const stoppedText = stoppedAnswerText();
+          await terminateRun("cancelled", stoppedText, "cancelled_before_step");
+          throw new StoppedBeforeStep(stoppedText);
         }
         await emit({
           type: "status",
@@ -2684,6 +2700,12 @@ export class AgentRuntime {
               round === 1 ? "Running agent" : roundStatus(),
             );
           } catch (err) {
+            if (err instanceof StoppedBeforeStep)
+              return {
+                kind: "cancelled",
+                runId,
+                ...(err.text ? { text: err.text } : {}),
+              };
             if (err instanceof AgentPromptBudgetError) {
               return await completeRun(
                 err.message,
@@ -3185,25 +3207,42 @@ export class AgentRuntime {
         segment += 1;
       }
     } catch (error) {
-      if (webSourceRunId && !runTerminating) {
-        const message = redactRunTerminalText(
-          error instanceof Error ? error.message : String(error),
+      // An error before the run started, or while it was being ended, is
+      // not an ending of the run: it is thrown.
+      if (!webSourceRunId || runTerminating) throw error;
+      const message = redactRunTerminalText(
+        error instanceof Error ? error.message : String(error),
+      );
+      await recordUnfinishedPage?.().catch((failure) =>
+        logRuntimeWarning(
+          "LLM Agent: recording a stopped page's results failed",
+          failure,
+        ),
+      );
+      const stoppedText = stoppedAnswerText();
+      if (params.signal?.aborted) {
+        await terminateRun("cancelled", message, "cancelled_in_flight").catch(
+          () => undefined,
         );
-        await recordUnfinishedPage?.().catch((failure) =>
-          logRuntimeWarning(
-            "LLM Agent: recording a stopped page's results failed",
-            failure,
-          ),
-        );
-        await terminateRun(
-          params.signal?.aborted ? "cancelled" : "failed",
-          params.signal?.aborted ? message : INTERRUPTED_AGENT_RUN_MARKER,
-          params.signal?.aborted
-            ? "cancelled_in_flight"
-            : "interrupted_by_error",
-        ).catch(() => undefined);
+        return {
+          kind: "cancelled",
+          runId,
+          ...(stoppedText ? { text: stoppedText } : {}),
+          cause: error,
+        };
       }
-      throw error;
+      await terminateRun(
+        "failed",
+        INTERRUPTED_AGENT_RUN_MARKER,
+        "interrupted_by_error",
+      ).catch(() => undefined);
+      return {
+        kind: "failed",
+        runId,
+        message,
+        interrupted: true,
+        cause: error,
+      };
     } finally {
       // Every event row is written before the turn counts as settled. The
       // writer reports its own failures; closing it never throws.
