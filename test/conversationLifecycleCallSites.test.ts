@@ -224,4 +224,17 @@ describe("conversation lifecycle call sites", function () {
     );
     assert.include(reject, 't("Cannot delete while generating")');
   });
+
+  it("closing the standalone window releases its open message edit", function () {
+    const cleanup = sliceBetween(
+      standaloneSource,
+      "const cleanupWindow = () => {",
+      'newWin.addEventListener("load", initWindow',
+    );
+    assert.include(cleanup, "releaseInlineEdit(contentArea);");
+    assert.isBelow(
+      cleanup.indexOf("disposeSetupHandlers(contentArea);"),
+      cleanup.indexOf("releaseInlineEdit(contentArea);"),
+    );
+  });
 });

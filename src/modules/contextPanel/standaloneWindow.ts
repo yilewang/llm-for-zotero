@@ -191,6 +191,7 @@ import {
   setStandaloneSidebarState,
 } from "./standaloneSidebarView";
 import { installStandaloneSidebarFlyout } from "./standaloneSidebarFlyout";
+import { releaseInlineEdit } from "./inlineEditState";
 
 type StandaloneSessionState = {
   pending: boolean;
@@ -4070,6 +4071,10 @@ export function openStandaloneChat(options?: {
     const contentArea = root?.querySelector(".llm-standalone-content");
     if (contentArea) {
       disposeSetupHandlers(contentArea);
+      // The window is closing, so its content area is still connected here and
+      // the panel's own teardown keeps an open message edit; release it or the
+      // edit pins the whole window DOM in memory.
+      releaseInlineEdit(contentArea);
       clearPanelHostBinding(contentArea);
       void releaseClaudeRuntimeForBody(contentArea as Element);
       unregisterContextPanel(contentArea);
