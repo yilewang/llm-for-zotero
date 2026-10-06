@@ -2,10 +2,7 @@
  * File attachment context state — pure state operations with no DOM dependencies.
  */
 
-import {
-  selectedFileAttachmentCache,
-  selectedFilePreviewExpandedCache,
-} from "../state";
+import { composeContextStore } from "./composeContextStore";
 import {
   clearPinnedContextOwner,
   retainPinnedFiles,
@@ -15,8 +12,8 @@ export function clearSelectedFileState(
   pinnedFileKeys: Map<number, Set<string>>,
   itemId: number,
 ): void {
-  selectedFileAttachmentCache.delete(itemId);
-  selectedFilePreviewExpandedCache.delete(itemId);
+  composeContextStore.files.delete(itemId);
+  composeContextStore.filePreviewExpanded.delete(itemId);
   clearPinnedContextOwner(pinnedFileKeys, itemId);
 }
 
@@ -27,12 +24,12 @@ export function retainPinnedFileState(
   const retained = retainPinnedFiles(
     pinnedFileKeys,
     itemId,
-    selectedFileAttachmentCache.get(itemId) || [],
+    composeContextStore.files.list(itemId),
   );
   if (retained.length) {
-    selectedFileAttachmentCache.set(itemId, retained);
+    composeContextStore.files.set(itemId, retained);
     return;
   }
-  selectedFileAttachmentCache.delete(itemId);
-  selectedFilePreviewExpandedCache.delete(itemId);
+  composeContextStore.files.delete(itemId);
+  composeContextStore.filePreviewExpanded.delete(itemId);
 }

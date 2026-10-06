@@ -18,31 +18,13 @@ import {
   isManagedBlobPath,
   removeAttachmentFile,
 } from "../../../../services/attachmentStorage";
-import { ownerScopedPaperKey } from "../../../../shared/paperKey";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
   clearSelectedPaperState,
   isPaperContextFullTextMode,
   setPaperModeOverride,
 } from "../../contexts/paperContextState";
-import {
-  paperContextModeOverrides,
-  pinnedFileKeys,
-  pinnedImageKeys,
-  pinnedSelectedTextKeys,
-  selectedCollectionContextCache,
-  selectedFileAttachmentCache,
-  selectedFilePreviewExpandedCache,
-  selectedImageCache,
-  selectedImagePreviewActiveIndexCache,
-  selectedImagePreviewExpandedCache,
-  selectedOtherRefContextCache,
-  selectedPaperContextCache,
-  selectedPaperContextListExpandedCache,
-  selectedPaperPreviewExpandedCache,
-  selectedTagContextCache,
-  initializedConversationComposeContextKeys,
-} from "../../state";
+import { composeContextStore } from "../../contexts/composeContextStore";
 import type {
   PaperContentSourceMode,
   PaperContextRef,
@@ -142,13 +124,13 @@ export function attachComposePreviewInteractionController(
       setSelectedTextExpandedIndex(textContextKey, null);
       setNoteContextExpanded(textContextKey, null);
     }
-    selectedImagePreviewExpandedCache.set(itemId, false);
-    selectedPaperPreviewExpandedCache.set(itemId, false);
-    selectedFilePreviewExpandedCache.set(itemId, false);
+    composeContextStore.imagePreviewExpanded.set(itemId, false);
+    composeContextStore.paperPreviewExpanded.set(itemId, false);
+    composeContextStore.filePreviewExpanded.set(itemId, false);
   };
 
   const removeUnmanagedSelectedFileCopies = (itemId: number): void => {
-    const selectedFiles = selectedFileAttachmentCache.get(itemId) || [];
+    const selectedFiles = composeContextStore.files.list(itemId);
     for (const entry of selectedFiles) {
       if (!entry?.storedPath) continue;
       if (entry.contentHash || isManagedBlobPath(entry.storedPath)) continue;
@@ -183,21 +165,22 @@ export function attachComposePreviewInteractionController(
       event.stopPropagation();
       const item = getItem();
       if (!item) return;
-      const selectedImages = selectedImageCache.get(item.id) || [];
+      const selectedImages = composeContextStore.images.list(item.id);
       if (!selectedImages.length) return;
-      const expanded = selectedImagePreviewExpandedCache.get(item.id) === true;
+      const expanded =
+        composeContextStore.imagePreviewExpanded.get(item.id) === true;
       const nextExpanded = !expanded;
-      selectedImagePreviewExpandedCache.set(item.id, nextExpanded);
+      composeContextStore.imagePreviewExpanded.set(item.id, nextExpanded);
       if (nextExpanded) {
-        selectedImagePreviewActiveIndexCache.set(item.id, 0);
+        composeContextStore.imagePreviewActiveIndex.set(item.id, 0);
         const textContextKey = deps.getTextContextConversationKey();
         if (textContextKey) {
           setSelectedTextExpandedIndex(textContextKey, null);
           setNoteContextExpanded(textContextKey, null);
         }
-        selectedPaperPreviewExpandedCache.set(item.id, false);
-        selectedFilePreviewExpandedCache.set(item.id, false);
-        selectedImagePreviewExpandedCache.set(item.id, true);
+        composeContextStore.paperPreviewExpanded.set(item.id, false);
+        composeContextStore.filePreviewExpanded.set(item.id, false);
+        composeContextStore.imagePreviewExpanded.set(item.id, true);
       }
       deps.updatePaperPreviewPreservingScroll();
       deps.updateFilePreviewPreservingScroll();
@@ -224,14 +207,15 @@ export function attachComposePreviewInteractionController(
       event.stopPropagation();
       const item = getItem();
       if (!item) return;
-      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      const selectedFiles = composeContextStore.files.list(item.id);
       if (!selectedFiles.length) return;
-      const expanded = selectedFilePreviewExpandedCache.get(item.id) === true;
+      const expanded =
+        composeContextStore.filePreviewExpanded.get(item.id) === true;
       const nextExpanded = !expanded;
-      selectedFilePreviewExpandedCache.set(item.id, nextExpanded);
+      composeContextStore.filePreviewExpanded.set(item.id, nextExpanded);
       if (nextExpanded) {
         collapseOtherPreviewPanels(item.id);
-        selectedFilePreviewExpandedCache.set(item.id, true);
+        composeContextStore.filePreviewExpanded.set(item.id, true);
       }
       deps.updatePaperPreviewPreservingScroll();
       deps.updateSelectedTextPreviewPreservingScroll();
@@ -265,7 +249,7 @@ export function attachComposePreviewInteractionController(
       ) as HTMLDivElement | null;
       if (!row || !filePreviewList.contains(row)) return;
       const index = Number.parseInt(row.dataset.fileContextIndex || "", 10);
-      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      const selectedFiles = composeContextStore.files.list(item.id);
       if (
         !Number.isFinite(index) ||
         index < 0 ||
@@ -277,7 +261,11 @@ export function attachComposePreviewInteractionController(
       if (!targetFile) return;
       event.preventDefault();
       event.stopPropagation();
-      const nextPinned = togglePinnedFile(pinnedFileKeys, item.id, targetFile);
+      const nextPinned = togglePinnedFile(
+        composeContextStore.pinnedKeys.files,
+        item.id,
+        targetFile,
+      );
       deps.updateFilePreviewPreservingScroll();
       setStatus(
         nextPinned ? t("File pinned for next sends") : t("File unpinned"),
@@ -300,7 +288,7 @@ export function attachComposePreviewInteractionController(
         thumbItem.dataset.imageContextIndex || "",
         10,
       );
-      const selectedImages = selectedImageCache.get(item.id) || [];
+      const selectedImages = composeContextStore.images.list(item.id);
       if (
         !Number.isFinite(index) ||
         index < 0 ||
@@ -313,7 +301,7 @@ export function attachComposePreviewInteractionController(
       event.preventDefault();
       event.stopPropagation();
       const nextPinned = togglePinnedImage(
-        pinnedImageKeys,
+        composeContextStore.pinnedKeys.images,
         item.id,
         targetImage,
       );
@@ -358,7 +346,7 @@ export function attachComposePreviewInteractionController(
         togglePaperContextCollapseState({
           itemId: item.id,
           paperCount: selectedPapers.length + (autoLoadedPaperContext ? 1 : 0),
-          expandedByItem: selectedPaperContextListExpandedCache,
+          expandedByItem: composeContextStore.paperListExpanded,
         });
         deps.closePaperChipMenu();
         deps.updatePaperPreviewPreservingScroll();
@@ -375,14 +363,10 @@ export function attachComposePreviewInteractionController(
           otherClearBtn.dataset.otherRefIndex || "",
           10,
         );
-        const others = selectedOtherRefContextCache.get(item.id) || [];
+        const others = composeContextStore.otherRefs.list(item.id);
         if (Number.isFinite(index) && index >= 0 && index < others.length) {
           const next = others.filter((_, itemIndex) => itemIndex !== index);
-          if (next.length) {
-            selectedOtherRefContextCache.set(item.id, next);
-          } else {
-            selectedOtherRefContextCache.delete(item.id);
-          }
+          composeContextStore.otherRefs.replace(item.id, next);
           deps.updatePaperPreviewPreservingScroll();
           setStatus(`File context removed (${next.length})`, "ready");
         }
@@ -399,7 +383,7 @@ export function attachComposePreviewInteractionController(
           collectionClearBtn.dataset.collectionIndex || "",
           10,
         );
-        const collections = selectedCollectionContextCache.get(item.id) || [];
+        const collections = composeContextStore.collections.list(item.id);
         if (
           Number.isFinite(index) &&
           index >= 0 &&
@@ -408,12 +392,8 @@ export function attachComposePreviewInteractionController(
           const next = collections.filter(
             (_, itemIndex) => itemIndex !== index,
           );
-          if (next.length) {
-            selectedCollectionContextCache.set(item.id, next);
-          } else {
-            selectedCollectionContextCache.delete(item.id);
-          }
-          initializedConversationComposeContextKeys.add(item.id);
+          composeContextStore.collections.replace(item.id, next);
+          composeContextStore.initializedConversations.mark(item.id);
           deps.updatePaperPreviewPreservingScroll();
           setStatus(t("Collection context removed."), "ready");
         }
@@ -427,15 +407,11 @@ export function attachComposePreviewInteractionController(
         event.preventDefault();
         event.stopPropagation();
         const index = Number.parseInt(tagClearBtn.dataset.tagIndex || "", 10);
-        const tags = selectedTagContextCache.get(item.id) || [];
+        const tags = composeContextStore.tags.list(item.id);
         if (Number.isFinite(index) && index >= 0 && index < tags.length) {
           const next = tags.filter((_, itemIndex) => itemIndex !== index);
-          if (next.length) {
-            selectedTagContextCache.set(item.id, next);
-          } else {
-            selectedTagContextCache.delete(item.id);
-          }
-          initializedConversationComposeContextKeys.add(item.id);
+          composeContextStore.tags.replace(item.id, next);
+          composeContextStore.initializedConversations.mark(item.id);
           deps.updatePaperPreviewPreservingScroll();
           setStatus(t("Tag context removed."), "ready");
         }
@@ -465,19 +441,17 @@ export function attachComposePreviewInteractionController(
       }
       const removedPaper = selectedPapers[index];
       if (removedPaper) {
-        paperContextModeOverrides.delete(
-          ownerScopedPaperKey(item.id, removedPaper),
-        );
+        composeContextStore.paperSendModes.delete(item.id, removedPaper);
       }
       const nextPapers = selectedPapers.filter(
         (_, itemIndex) => itemIndex !== index,
       );
       if (nextPapers.length) {
-        selectedPaperContextCache.set(item.id, nextPapers);
+        composeContextStore.papers.set(item.id, nextPapers);
       } else {
         clearSelectedPaperState(item.id);
       }
-      initializedConversationComposeContextKeys.add(item.id);
+      composeContextStore.initializedConversations.mark(item.id);
       deps.updatePaperPreviewPreservingScroll();
       setStatus(`Paper context removed (${nextPapers.length})`, "ready");
       deps.closePaperChipMenu();
@@ -757,9 +731,9 @@ export function attachComposePreviewInteractionController(
         setNoteContextExpanded(textContextKey, nextExpanded);
         if (nextExpanded) {
           setSelectedTextExpandedIndex(textContextKey, null);
-          selectedImagePreviewExpandedCache.set(item.id, false);
-          selectedPaperPreviewExpandedCache.set(item.id, false);
-          selectedFilePreviewExpandedCache.set(item.id, false);
+          composeContextStore.imagePreviewExpanded.set(item.id, false);
+          composeContextStore.paperPreviewExpanded.set(item.id, false);
+          composeContextStore.filePreviewExpanded.set(item.id, false);
         }
         deps.updatePaperPreviewPreservingScroll();
         deps.updateFilePreviewPreservingScroll();
@@ -787,7 +761,7 @@ export function attachComposePreviewInteractionController(
           return;
         }
         removePinnedSelectedText(
-          pinnedSelectedTextKeys,
+          composeContextStore.pinnedKeys.selectedTexts,
           textContextKey,
           selectedContexts[index],
         );
@@ -852,9 +826,9 @@ export function attachComposePreviewInteractionController(
       setSelectedTextExpandedIndex(textContextKey, nextExpandedIndex);
       if (nextExpandedIndex !== null) {
         setNoteContextExpanded(textContextKey, null);
-        selectedImagePreviewExpandedCache.set(item.id, false);
-        selectedPaperPreviewExpandedCache.set(item.id, false);
-        selectedFilePreviewExpandedCache.set(item.id, false);
+        composeContextStore.imagePreviewExpanded.set(item.id, false);
+        composeContextStore.paperPreviewExpanded.set(item.id, false);
+        composeContextStore.filePreviewExpanded.set(item.id, false);
       }
       deps.updatePaperPreviewPreservingScroll();
       deps.updateFilePreviewPreservingScroll();
@@ -905,7 +879,7 @@ export function attachComposePreviewInteractionController(
       event.preventDefault();
       event.stopPropagation();
       const nextPinned = togglePinnedSelectedText(
-        pinnedSelectedTextKeys,
+        composeContextStore.pinnedKeys.selectedTexts,
         textContextKey,
         selectedContexts[index],
       );
@@ -965,10 +939,11 @@ export function attachComposePreviewInteractionController(
       ) >= 0;
     const notePinned = isNoteContextExpanded(textContextKey);
     const figurePinned =
-      selectedImagePreviewExpandedCache.get(item.id) === true;
+      composeContextStore.imagePreviewExpanded.get(item.id) === true;
     const paperPinned =
-      typeof selectedPaperPreviewExpandedCache.get(item.id) === "number";
-    const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
+      typeof composeContextStore.paperPreviewExpanded.get(item.id) === "number";
+    const filePinned =
+      composeContextStore.filePreviewExpanded.get(item.id) === true;
     if (
       !textPinned &&
       !notePinned &&
@@ -981,9 +956,9 @@ export function attachComposePreviewInteractionController(
 
     setSelectedTextExpandedIndex(textContextKey, null);
     setNoteContextExpanded(textContextKey, null);
-    selectedImagePreviewExpandedCache.set(item.id, false);
-    selectedPaperPreviewExpandedCache.set(item.id, false);
-    selectedFilePreviewExpandedCache.set(item.id, false);
+    composeContextStore.imagePreviewExpanded.set(item.id, false);
+    composeContextStore.paperPreviewExpanded.set(item.id, false);
+    composeContextStore.filePreviewExpanded.set(item.id, false);
     deps.updatePaperPreviewPreservingScroll();
     deps.updateFilePreviewPreservingScroll();
     deps.updateSelectedTextPreviewPreservingScroll();

@@ -219,14 +219,6 @@ import {
   webChatIsolatedConversationKeys,
   selectedReasoningCache,
   selectedReasoningProviderCache,
-  selectedImageCache,
-  selectedFileAttachmentCache,
-  selectedPaperContextCache,
-  selectedCollectionContextCache,
-  selectedTagContextCache,
-  initializedConversationComposeContextKeys,
-  paperContextModeOverrides,
-  paperContentSourceOverrides,
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelStateSync,
@@ -313,7 +305,7 @@ import {
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
 } from "../../services/paperContent/paperAttribution";
-import { ownerScopedPaperKey } from "../../shared/paperKey";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -2063,13 +2055,8 @@ export const deriveConversationComposeContextSnapshotForTests =
   deriveConversationComposeContextSnapshot;
 
 function clearPaperContinuationOverrides(itemId: number): void {
-  const prefix = `${itemId}:`;
-  for (const key of Array.from(paperContextModeOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContextModeOverrides.delete(key);
-  }
-  for (const key of Array.from(paperContentSourceOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContentSourceOverrides.delete(key);
-  }
+  composeContextStore.paperSendModes.clearOwner(itemId);
+  composeContextStore.paperSourceModes.clearOwner(itemId);
 }
 
 export function restoreConversationComposeContext(item: Zotero.Item): boolean {
@@ -2079,16 +2066,16 @@ export function restoreConversationComposeContext(item: Zotero.Item): boolean {
     conversationKey <= 0 ||
     itemId <= 0 ||
     !loadedConversationKeys.has(conversationKey) ||
-    initializedConversationComposeContextKeys.has(conversationKey)
+    composeContextStore.initializedConversations.has(conversationKey)
   ) {
     return false;
   }
   if (
-    selectedPaperContextCache.has(itemId) ||
-    selectedCollectionContextCache.has(itemId) ||
-    selectedTagContextCache.has(itemId)
+    composeContextStore.papers.has(itemId) ||
+    composeContextStore.collections.has(itemId) ||
+    composeContextStore.tags.has(itemId)
   ) {
-    initializedConversationComposeContextKeys.add(conversationKey);
+    composeContextStore.initializedConversations.mark(conversationKey);
     return false;
   }
 
@@ -2097,23 +2084,11 @@ export function restoreConversationComposeContext(item: Zotero.Item): boolean {
     chatHistory.get(conversationKey) || [],
     resolveAutoLoadedPaperContextForItem(item),
   );
-  if (snapshot.paperContexts.length) {
-    selectedPaperContextCache.set(itemId, snapshot.paperContexts);
-  } else {
-    selectedPaperContextCache.delete(itemId);
-  }
-  if (snapshot.collectionContexts.length) {
-    selectedCollectionContextCache.set(itemId, snapshot.collectionContexts);
-  } else {
-    selectedCollectionContextCache.delete(itemId);
-  }
-  if (snapshot.tagContexts.length) {
-    selectedTagContextCache.set(itemId, snapshot.tagContexts);
-  } else {
-    selectedTagContextCache.delete(itemId);
-  }
+  composeContextStore.papers.replace(itemId, snapshot.paperContexts);
+  composeContextStore.collections.replace(itemId, snapshot.collectionContexts);
+  composeContextStore.tags.replace(itemId, snapshot.tagContexts);
   clearPaperContinuationOverrides(itemId);
-  initializedConversationComposeContextKeys.add(conversationKey);
+  composeContextStore.initializedConversations.mark(conversationKey);
 
   for (const [body, getItem] of activeContextPanels) {
     const activeItem = getItem();
@@ -4945,18 +4920,10 @@ function syncComposeContextForInlineEdit(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  if (screenshotImages.length) {
-    selectedImageCache.set(item.id, screenshotImages);
-  } else {
-    selectedImageCache.delete(item.id);
-  }
+  composeContextStore.images.replace(item.id, screenshotImages);
 
   const fileAttachments = normalizeEditableAttachments(userMessage.attachments);
-  if (fileAttachments.length) {
-    selectedFileAttachmentCache.set(item.id, fileAttachments);
-  } else {
-    selectedFileAttachmentCache.delete(item.id);
-  }
+  composeContextStore.files.replace(item.id, fileAttachments);
 
   const { paperContexts, pdfPaperContexts, fullTextPaperContexts } =
     normalizeStoredPaperContextRoutes({
@@ -4980,37 +4947,19 @@ function syncComposeContextForInlineEdit(
           ),
       )
     : composePaperContexts;
-  if (selectedPaperContexts.length) {
-    selectedPaperContextCache.set(item.id, selectedPaperContexts);
-  } else {
-    selectedPaperContextCache.delete(item.id);
-  }
+  composeContextStore.papers.replace(item.id, selectedPaperContexts);
   const selectedCollectionContexts = normalizeCollectionContexts(
     userMessage.selectedCollectionContexts,
   );
-  if (selectedCollectionContexts.length) {
-    selectedCollectionContextCache.set(item.id, selectedCollectionContexts);
-  } else {
-    selectedCollectionContextCache.delete(item.id);
-  }
+  composeContextStore.collections.replace(item.id, selectedCollectionContexts);
   const selectedTagContexts = normalizeTagContexts(
     userMessage.selectedTagContexts,
   );
-  if (selectedTagContexts.length) {
-    selectedTagContextCache.set(item.id, selectedTagContexts);
-  } else {
-    selectedTagContextCache.delete(item.id);
-  }
+  composeContextStore.tags.replace(item.id, selectedTagContexts);
   // Clear existing mode overrides for this item, then set full-next for each full-text paper
-  const modePrefix = `${item.id}:`;
-  for (const key of Array.from(paperContextModeOverrides.keys())) {
-    if (key.startsWith(modePrefix)) paperContextModeOverrides.delete(key);
-  }
+  composeContextStore.paperSendModes.clearOwner(item.id);
   for (const paperContext of fullTextPaperContexts) {
-    paperContextModeOverrides.set(
-      ownerScopedPaperKey(item.id, paperContext),
-      "full-next",
-    );
+    composeContextStore.paperSendModes.set(item.id, paperContext, "full-next");
   }
   for (const paperContext of composePaperContexts) {
     clearPaperContentSourceOverride(item.id, paperContext);
@@ -5021,9 +4970,12 @@ function syncComposeContextForInlineEdit(
     );
   }
 
-  initializedConversationComposeContextKeys.add(conversationKey);
+  composeContextStore.initializedConversations.mark(conversationKey);
   activeContextPanelStateSync.get(body)?.();
 }
+
+export const syncComposeContextForInlineEditForTests =
+  syncComposeContextForInlineEdit;
 
 export async function editLatestUserMessageAndRetry(
   opts: import("./types").EditRetryOptions,

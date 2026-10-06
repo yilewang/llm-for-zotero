@@ -11,11 +11,7 @@ import {
   type ContextSelectionActionResult,
   type ContextSelectionStatusLevel,
 } from "../../contextSelectionActions";
-import {
-  selectedCollectionContextCache,
-  selectedOtherRefContextCache,
-  selectedTagContextCache,
-} from "../../state";
+import { composeContextStore } from "../../contexts/composeContextStore";
 import { getSelectedTextContextEntries } from "../../contextResolution";
 import { resolveContextAttachmentSupportFromMetadata } from "../../../../services/paperContent/contextAttachmentSupport";
 import { getContextSourceModeBadgeLabel } from "../../../../services/paperContent/contextSourceModes";
@@ -597,14 +593,14 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
       state: referenceSelectorState,
       group,
       attachment,
-      selectedCollections: selectedCollectionContextCache.get(item.id) || [],
-      selectedTags: selectedTagContextCache.get(item.id) || [],
+      selectedCollections: composeContextStore.collections.list(item.id),
+      selectedTags: composeContextStore.tags.list(item.id),
       autoLoadedPaperContext,
       selectedPapers: deps.getManualPaperContextsForItem(
         item.id,
         autoLoadedPaperContext,
       ),
-      selectedOtherRefs: selectedOtherRefContextCache.get(item.id) || [],
+      selectedOtherRefs: composeContextStore.otherRefs.list(item.id),
       selectedNoteContextItemIds,
     });
   };
@@ -944,9 +940,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   ): boolean => {
     const item = deps.getItem();
     if (!item || typeof scope !== "number" || scope <= 0) return false;
-    return (selectedCollectionContextCache.get(item.id) || []).some(
-      (collectionRef) => collectionRef.collectionId === scope,
-    );
+    return composeContextStore.collections
+      .list(item.id)
+      .some((collectionRef) => collectionRef.collectionId === scope);
   };
 
   const createPaperPickerFolderAction = (
@@ -1884,8 +1880,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
           if (!collection) return;
           let isCollectionSelected = false;
           if (item) {
-            const selectedCollections =
-              selectedCollectionContextCache.get(item.id) || [];
+            const selectedCollections = composeContextStore.collections.list(
+              item.id,
+            );
             isCollectionSelected = selectedCollections.some(
               (collectionRef) =>
                 collectionRef.collectionId === row.collectionId,

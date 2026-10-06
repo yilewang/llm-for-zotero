@@ -22,30 +22,11 @@ import type {
   PaperSearchAttachmentCandidate,
   PaperSearchGroupCandidate,
 } from "./paperSearch";
-import { ownerScopedPaperKey } from "../../shared/paperKey";
 import {
   buildReferenceSelectorTagContextKey,
   normalizeReferenceSelectorTagIdentityName,
 } from "./referenceSelector/model";
-import {
-  pinnedFileKeys,
-  pinnedImageKeys,
-  pinnedSelectedTextKeys,
-  selectedFileAttachmentCache,
-  selectedFilePreviewExpandedCache,
-  selectedImageCache,
-  selectedImagePreviewActiveIndexCache,
-  selectedImagePreviewExpandedCache,
-  selectedCollectionContextCache,
-  selectedOtherRefContextCache,
-  selectedPaperContextCache,
-  selectedPaperContextListExpandedCache,
-  selectedPaperPreviewExpandedCache,
-  paperContentSourceOverrides,
-  paperContextModeOverrides,
-  selectedTagContextCache,
-  initializedConversationComposeContextKeys,
-} from "./state";
+import { composeContextStore } from "./contexts/composeContextStore";
 import type {
   CollectionContextRef,
   OtherContextRef,
@@ -108,9 +89,8 @@ function clearPaperOverridesForItem(
   itemId: number,
   paper: PaperContextRef,
 ): void {
-  const overrideKey = ownerScopedPaperKey(itemId, paper);
-  paperContextModeOverrides.delete(overrideKey);
-  paperContentSourceOverrides.delete(overrideKey);
+  composeContextStore.paperSendModes.delete(itemId, paper);
+  composeContextStore.paperSourceModes.delete(itemId, paper);
 }
 
 export function upsertPaperContext(
@@ -148,10 +128,10 @@ export function upsertPaperContext(
       year: metadata.year || paper.year,
     },
   ];
-  selectedPaperContextCache.set(item.id, nextPapers);
-  initializedConversationComposeContextKeys.add(item.id);
+  composeContextStore.papers.set(item.id, nextPapers);
+  composeContextStore.initializedConversations.mark(item.id);
   setPaperModeOverride(item.id, nextPapers[nextPapers.length - 1], "full-next");
-  selectedPaperPreviewExpandedCache.set(item.id, false);
+  composeContextStore.paperPreviewExpanded.set(item.id, false);
   deps.updatePaperPreviewPreservingScroll();
   const addedPaper = nextPapers[nextPapers.length - 1];
   const mineruTag = deps.isPaperContextMineru(addedPaper)
@@ -301,12 +281,12 @@ export function hasUserAddedContextForItem(params: {
   if (!itemId) return false;
   const textContextKey = normalizePositiveItemId(params.textContextKey);
   return (
-    (selectedPaperContextCache.get(itemId) || []).length > 0 ||
-    (selectedOtherRefContextCache.get(itemId) || []).length > 0 ||
-    (selectedCollectionContextCache.get(itemId) || []).length > 0 ||
-    (selectedTagContextCache.get(itemId) || []).length > 0 ||
-    (selectedImageCache.get(itemId) || []).length > 0 ||
-    (selectedFileAttachmentCache.get(itemId) || []).length > 0 ||
+    composeContextStore.papers.list(itemId).length > 0 ||
+    composeContextStore.otherRefs.list(itemId).length > 0 ||
+    composeContextStore.collections.list(itemId).length > 0 ||
+    composeContextStore.tags.list(itemId).length > 0 ||
+    composeContextStore.images.list(itemId).length > 0 ||
+    composeContextStore.files.list(itemId).length > 0 ||
     (textContextKey
       ? getSelectedTextContextEntries(textContextKey).length > 0
       : false)
@@ -321,30 +301,30 @@ export function clearUserAddedContextForItem(params: {
   if (!itemId) return unchanged();
   const textContextKey = normalizePositiveItemId(params.textContextKey);
   const hadContext = hasUserAddedContextForItem({ itemId, textContextKey });
-  initializedConversationComposeContextKeys.add(itemId);
+  composeContextStore.initializedConversations.mark(itemId);
 
-  const removedPapers = selectedPaperContextCache.get(itemId) || [];
-  selectedPaperContextCache.delete(itemId);
-  selectedPaperContextListExpandedCache.delete(itemId);
-  selectedPaperPreviewExpandedCache.delete(itemId);
+  const removedPapers = composeContextStore.papers.list(itemId);
+  composeContextStore.papers.delete(itemId);
+  composeContextStore.paperListExpanded.delete(itemId);
+  composeContextStore.paperPreviewExpanded.delete(itemId);
   for (const paper of removedPapers) {
     clearPaperOverridesForItem(itemId, paper);
   }
-  selectedOtherRefContextCache.delete(itemId);
-  selectedCollectionContextCache.delete(itemId);
-  selectedTagContextCache.delete(itemId);
-  selectedImageCache.delete(itemId);
-  selectedImagePreviewExpandedCache.delete(itemId);
-  selectedImagePreviewActiveIndexCache.delete(itemId);
-  selectedFileAttachmentCache.delete(itemId);
-  selectedFilePreviewExpandedCache.delete(itemId);
-  pinnedImageKeys.delete(itemId);
-  pinnedFileKeys.delete(itemId);
+  composeContextStore.otherRefs.delete(itemId);
+  composeContextStore.collections.delete(itemId);
+  composeContextStore.tags.delete(itemId);
+  composeContextStore.images.delete(itemId);
+  composeContextStore.imagePreviewExpanded.delete(itemId);
+  composeContextStore.imagePreviewActiveIndex.delete(itemId);
+  composeContextStore.files.delete(itemId);
+  composeContextStore.filePreviewExpanded.delete(itemId);
+  composeContextStore.pinnedKeys.images.delete(itemId);
+  composeContextStore.pinnedKeys.files.delete(itemId);
   if (textContextKey) {
     setSelectedTextContextEntries(textContextKey, []);
     setSelectedTextExpandedIndex(textContextKey, null);
     setNoteContextExpanded(textContextKey, null);
-    pinnedSelectedTextKeys.delete(textContextKey);
+    composeContextStore.pinnedKeys.selectedTexts.delete(textContextKey);
   }
   return hadContext ? changed(t("Context cleared"), "ready") : unchanged();
 }
@@ -355,11 +335,11 @@ export function upsertOtherRefContext(
 ): ContextSelectionActionResult {
   const item = deps.item;
   if (!item) return unchanged();
-  const existing = selectedOtherRefContextCache.get(item.id) || [];
+  const existing = composeContextStore.otherRefs.list(item.id);
   if (existing.some((entry) => entry.contextItemId === ref.contextItemId)) {
     return unchanged(t("File already selected"), "warning");
   }
-  selectedOtherRefContextCache.set(item.id, [...existing, ref]);
+  composeContextStore.otherRefs.set(item.id, [...existing, ref]);
   deps.updatePaperPreviewPreservingScroll();
   return changed(
     `${ref.refKind === "figure" ? "Figure" : "File"} context added.`,
@@ -424,7 +404,7 @@ export function removeReferenceAttachmentContext(params: {
     filename: selectedAttachment.title,
   });
   if (attachmentSupport || kind === "pdf" || kind === "text") {
-    const existing = selectedPaperContextCache.get(item.id) || [];
+    const existing = composeContextStore.papers.list(item.id);
     const removedPapers = existing.filter(
       (paper) =>
         paper.itemId === selectedGroup.itemId &&
@@ -438,14 +418,13 @@ export function removeReferenceAttachmentContext(params: {
             paper.contextItemId === selectedAttachment.contextItemId
           ),
       );
-      if (next.length) selectedPaperContextCache.set(item.id, next);
-      else selectedPaperContextCache.delete(item.id);
+      composeContextStore.papers.replace(item.id, next);
       for (const paper of removedPapers) {
         clearPaperOverridesForItem(item.id, paper);
       }
-      selectedPaperPreviewExpandedCache.set(item.id, false);
+      composeContextStore.paperPreviewExpanded.set(item.id, false);
       deps.updatePaperPreviewPreservingScroll();
-      initializedConversationComposeContextKeys.add(item.id);
+      composeContextStore.initializedConversations.mark(item.id);
       removed = true;
     }
   } else if (kind === "note") {
@@ -466,13 +445,12 @@ export function removeReferenceAttachmentContext(params: {
       }
     }
   } else {
-    const existing = selectedOtherRefContextCache.get(item.id) || [];
+    const existing = composeContextStore.otherRefs.list(item.id);
     const next = existing.filter(
       (ref) => ref.contextItemId !== selectedAttachment.contextItemId,
     );
     if (next.length !== existing.length) {
-      if (next.length) selectedOtherRefContextCache.set(item.id, next);
-      else selectedOtherRefContextCache.delete(item.id);
+      composeContextStore.otherRefs.replace(item.id, next);
       deps.updatePaperPreviewPreservingScroll();
       removed = true;
     }
@@ -493,7 +471,7 @@ export function removeReferenceGroupContexts(params: {
   );
   let removed = false;
 
-  const existingPapers = selectedPaperContextCache.get(item.id) || [];
+  const existingPapers = composeContextStore.papers.list(item.id);
   const removedPapers = existingPapers.filter(
     (paper) =>
       paper.itemId === group.itemId || attachmentIds.has(paper.contextItemId),
@@ -506,24 +484,21 @@ export function removeReferenceGroupContexts(params: {
           attachmentIds.has(paper.contextItemId)
         ),
     );
-    if (nextPapers.length) selectedPaperContextCache.set(item.id, nextPapers);
-    else selectedPaperContextCache.delete(item.id);
+    composeContextStore.papers.replace(item.id, nextPapers);
     for (const paper of removedPapers) {
       clearPaperOverridesForItem(item.id, paper);
     }
-    selectedPaperPreviewExpandedCache.set(item.id, false);
-    initializedConversationComposeContextKeys.add(item.id);
+    composeContextStore.paperPreviewExpanded.set(item.id, false);
+    composeContextStore.initializedConversations.mark(item.id);
     removed = true;
   }
 
-  const existingOtherRefs = selectedOtherRefContextCache.get(item.id) || [];
+  const existingOtherRefs = composeContextStore.otherRefs.list(item.id);
   const nextOtherRefs = existingOtherRefs.filter(
     (ref) => !attachmentIds.has(ref.contextItemId),
   );
   if (nextOtherRefs.length !== existingOtherRefs.length) {
-    if (nextOtherRefs.length)
-      selectedOtherRefContextCache.set(item.id, nextOtherRefs);
-    else selectedOtherRefContextCache.delete(item.id);
+    composeContextStore.otherRefs.replace(item.id, nextOtherRefs);
     removed = true;
   }
 
@@ -556,20 +531,19 @@ export function toggleCollectionContext(params: {
   const { deps, ref } = params;
   const item = deps.item;
   if (!item) return unchanged();
-  const existing = selectedCollectionContextCache.get(item.id) || [];
+  const existing = composeContextStore.collections.list(item.id);
   const existingIndex = existing.findIndex(
     (entry) => entry.collectionId === ref.collectionId,
   );
   if (existingIndex >= 0) {
     const next = existing.filter((_, index) => index !== existingIndex);
-    if (next.length) selectedCollectionContextCache.set(item.id, next);
-    else selectedCollectionContextCache.delete(item.id);
-    initializedConversationComposeContextKeys.add(item.id);
+    composeContextStore.collections.replace(item.id, next);
+    composeContextStore.initializedConversations.mark(item.id);
     deps.updatePaperPreviewPreservingScroll();
     return changed(t("Collection context removed."), "ready");
   }
-  selectedCollectionContextCache.set(item.id, [...existing, ref]);
-  initializedConversationComposeContextKeys.add(item.id);
+  composeContextStore.collections.set(item.id, [...existing, ref]);
+  composeContextStore.initializedConversations.mark(item.id);
   deps.updatePaperPreviewPreservingScroll();
   return changed(t("Collection context added."), "ready");
 }
@@ -603,9 +577,9 @@ export function isTagContextSelected(params: {
   ref: TagContextRef;
 }): boolean {
   const key = buildReferenceSelectorTagContextKey(params.ref);
-  return (selectedTagContextCache.get(params.itemId) || []).some(
-    (entry) => buildReferenceSelectorTagContextKey(entry) === key,
-  );
+  return composeContextStore.tags
+    .list(params.itemId)
+    .some((entry) => buildReferenceSelectorTagContextKey(entry) === key);
 }
 
 export function toggleTagContext(params: {
@@ -618,21 +592,20 @@ export function toggleTagContext(params: {
   if (!item) return unchanged();
   const normalizedRef = normalizeTagContextRef(ref, libraryID);
   if (!normalizedRef) return unchanged();
-  const existing = selectedTagContextCache.get(item.id) || [];
+  const existing = composeContextStore.tags.list(item.id);
   const nextKey = buildReferenceSelectorTagContextKey(normalizedRef);
   const existingIndex = existing.findIndex(
     (entry) => buildReferenceSelectorTagContextKey(entry) === nextKey,
   );
   if (existingIndex >= 0) {
     const next = existing.filter((_, index) => index !== existingIndex);
-    if (next.length) selectedTagContextCache.set(item.id, next);
-    else selectedTagContextCache.delete(item.id);
-    initializedConversationComposeContextKeys.add(item.id);
+    composeContextStore.tags.replace(item.id, next);
+    composeContextStore.initializedConversations.mark(item.id);
     deps.updatePaperPreviewPreservingScroll();
     return changed(t("Tag context removed."), "ready");
   }
-  selectedTagContextCache.set(item.id, [...existing, normalizedRef]);
-  initializedConversationComposeContextKeys.add(item.id);
+  composeContextStore.tags.set(item.id, [...existing, normalizedRef]);
+  composeContextStore.initializedConversations.mark(item.id);
   deps.updatePaperPreviewPreservingScroll();
   return changed(t("Tag context added."), "ready");
 }

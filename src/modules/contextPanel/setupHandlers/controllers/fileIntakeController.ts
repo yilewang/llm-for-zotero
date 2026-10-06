@@ -24,12 +24,18 @@ type FileIntakeControllerDeps = {
     fileName: string,
     bytes: Uint8Array,
   ) => Promise<{ storedPath: string; contentHash: string }>;
+  /** The panel's compose-context image list (a store slot or a Map). */
   selectedImageCache: {
     get(key: number): string[] | undefined;
     set(key: number, value: string[]): unknown;
     delete(key: number): boolean;
   };
-  selectedFileAttachmentCache: Map<number, ChatAttachment[]>;
+  /** The panel's compose-context file list (a store slot or a Map). */
+  selectedFileAttachmentCache: {
+    get(key: number): ChatAttachment[] | undefined;
+    set(key: number, value: ChatAttachment[]): unknown;
+    delete(key: number): boolean;
+  };
   updateImagePreview: () => void;
   updateFilePreview: () => void;
   scheduleAttachmentGc: () => void;

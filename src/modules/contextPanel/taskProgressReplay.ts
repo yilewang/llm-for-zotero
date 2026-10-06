@@ -29,11 +29,8 @@ import {
   loadedConversationKeys,
   nextRequestId,
   tryBeginRequest,
-  initializedConversationComposeContextKeys,
-  selectedCollectionContextCache,
-  selectedPaperContextCache,
-  selectedTagContextCache,
 } from "./state";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { createStreamingResponse } from "./streamingResponse";
 import { waitForTaskProgressHydrationForTests } from "./taskProgress/history";
 import { flushTaskProgressPanels } from "./taskProgress/panel";
@@ -347,14 +344,14 @@ export async function setTaskProgressComposerContexts(
   },
 ): Promise<void> {
   const { body, item } = panel;
-  const set = <T>(cache: Map<number, T[]>, list: T[] | undefined) => {
-    if (list?.length) cache.set(item.id, [...list]);
-    else cache.delete(item.id);
-  };
-  set(selectedPaperContextCache, input.paperContexts);
-  set(selectedCollectionContextCache, input.collectionContexts);
-  set(selectedTagContextCache, input.tagContexts);
-  initializedConversationComposeContextKeys.add(item.id);
+  const copy = <T>(list: T[] | undefined) => (list ? [...list] : undefined);
+  composeContextStore.papers.replace(item.id, copy(input.paperContexts));
+  composeContextStore.collections.replace(
+    item.id,
+    copy(input.collectionContexts),
+  );
+  composeContextStore.tags.replace(item.id, copy(input.tagContexts));
+  composeContextStore.initializedConversations.mark(item.id);
   // The panel state too: the chips redraw, and Task progress follows them
   // through the same sync a chip added by hand goes through.
   refreshConversationPanels(body, item, { includePanelState: true });
@@ -366,15 +363,13 @@ export async function setTaskProgressComposerContexts(
 export function readTaskProgressComposerContexts(panel: Panel) {
   const id = panel.item.id;
   return {
-    paperItemIds: (selectedPaperContextCache.get(id) || []).map(
-      (paper) => paper.itemId,
-    ),
-    collections: (selectedCollectionContextCache.get(id) || []).map(
-      (collection) => ({
-        collectionId: collection.collectionId,
-        excludedItemIds: collection.excludedItemIds || [],
-      }),
-    ),
+    paperItemIds: composeContextStore.papers
+      .list(id)
+      .map((paper) => paper.itemId),
+    collections: composeContextStore.collections.list(id).map((collection) => ({
+      collectionId: collection.collectionId,
+      excludedItemIds: collection.excludedItemIds || [],
+    })),
     chipLabels: Array.from(
       panel.body.querySelectorAll(
         ".llm-collection-chip-title, .llm-tag-chip-title",
@@ -396,10 +391,10 @@ export async function reopenTaskProgressConversation(
   loadedConversationKeys.delete(key);
   // A restart starts with an empty context bar; the composer then sets it up
   // again from the conversation's history.
-  selectedPaperContextCache.delete(key);
-  selectedCollectionContextCache.delete(key);
-  selectedTagContextCache.delete(key);
-  initializedConversationComposeContextKeys.delete(key);
+  composeContextStore.papers.delete(key);
+  composeContextStore.collections.delete(key);
+  composeContextStore.tags.delete(key);
+  composeContextStore.initializedConversations.forget(key);
   await ensureConversationLoaded(item);
   refreshChat(body, item);
   flushTaskProgressPanels();

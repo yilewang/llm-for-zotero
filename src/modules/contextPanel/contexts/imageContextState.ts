@@ -2,11 +2,7 @@
  * Image/screenshot context state — pure state operations with no DOM dependencies.
  */
 
-import {
-  selectedImageCache,
-  selectedImagePreviewExpandedCache,
-  selectedImagePreviewActiveIndexCache,
-} from "../state";
+import { composeContextStore } from "./composeContextStore";
 import {
   clearPinnedContextOwner,
   retainPinnedImages,
@@ -16,9 +12,9 @@ export function clearSelectedImageState(
   pinnedImageKeys: Map<number, Set<string>>,
   itemId: number,
 ): void {
-  selectedImageCache.delete(itemId);
-  selectedImagePreviewExpandedCache.delete(itemId);
-  selectedImagePreviewActiveIndexCache.delete(itemId);
+  composeContextStore.images.delete(itemId);
+  composeContextStore.imagePreviewExpanded.delete(itemId);
+  composeContextStore.imagePreviewActiveIndex.delete(itemId);
   clearPinnedContextOwner(pinnedImageKeys, itemId);
 }
 
@@ -29,11 +25,12 @@ export function retainPinnedImageState(
   const retained = retainPinnedImages(
     pinnedImageKeys,
     itemId,
-    selectedImageCache.get(itemId) || [],
+    composeContextStore.images.list(itemId),
   );
   if (retained.length) {
-    selectedImageCache.set(itemId, retained);
-    const currentActiveIndex = selectedImagePreviewActiveIndexCache.get(itemId);
+    composeContextStore.images.set(itemId, retained);
+    const currentActiveIndex =
+      composeContextStore.imagePreviewActiveIndex.get(itemId);
     const normalizedActiveIndex =
       typeof currentActiveIndex === "number" &&
       Number.isFinite(currentActiveIndex)
@@ -42,10 +39,13 @@ export function retainPinnedImageState(
             Math.min(retained.length - 1, Math.floor(currentActiveIndex)),
           )
         : 0;
-    selectedImagePreviewActiveIndexCache.set(itemId, normalizedActiveIndex);
+    composeContextStore.imagePreviewActiveIndex.set(
+      itemId,
+      normalizedActiveIndex,
+    );
     return;
   }
-  selectedImageCache.delete(itemId);
-  selectedImagePreviewExpandedCache.delete(itemId);
-  selectedImagePreviewActiveIndexCache.delete(itemId);
+  composeContextStore.images.delete(itemId);
+  composeContextStore.imagePreviewExpanded.delete(itemId);
+  composeContextStore.imagePreviewActiveIndex.delete(itemId);
 }

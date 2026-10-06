@@ -297,6 +297,7 @@ import {
   clearSelectedTextState as clearSelectedTextState_,
   retainPinnedTextState as retainPinnedTextState_,
 } from "./contexts/textContextState";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { optimizeImageDataUrl } from "./screenshot";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
@@ -6739,8 +6740,8 @@ export function setupHandlers(
     },
     optimizeImageDataUrl,
     persistAttachmentBlob,
-    selectedImageCache,
-    selectedFileAttachmentCache,
+    selectedImageCache: composeContextStore.images,
+    selectedFileAttachmentCache: composeContextStore.files,
     updateImagePreview,
     updateFilePreview,
     scheduleAttachmentGc,

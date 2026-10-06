@@ -10,7 +10,12 @@ export type PaperContextCollapseState = {
 type PaperContextCollapseParams = {
   itemId: number;
   paperCount: number;
-  expandedByItem: Map<number, boolean>;
+  /** A Map or a compose-context store slot. */
+  expandedByItem: {
+    get(itemId: number): boolean | undefined;
+    set(itemId: number, expanded: boolean): unknown;
+    delete(itemId: number): unknown;
+  };
   threshold?: number;
 };
 
