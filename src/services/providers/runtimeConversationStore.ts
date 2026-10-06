@@ -27,7 +27,6 @@ import {
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getPaperContextOwnershipEvidenceFromRows,
   repairRegisteredConversationScope,
-  deleteRegisteredConversationScopeInTransaction,
   generateConversationInstanceID,
   getRegisteredConversationScope,
   initConversationRegistryStore,
@@ -64,8 +63,6 @@ import {
   ensureConversationKeyLedgerEntryInTransaction,
   getConversationKeyLedgerEntry,
   initConversationKeyLedgerStore,
-  rememberConversationKeyRetired,
-  retireConversationKeyInTransaction,
   updateConversationKeyLedgerConversationIDInTransaction,
   isConversationKeyLedgerStoreInitialized,
   withRetiredKeyErrorMapping,
@@ -1231,7 +1228,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     // post-commit refresh is best-effort, but it must never leave deleted text
     // searchable if that refresh is interrupted or the database is transiently
     // unavailable.
-    const searchIndexReady = await initConversationSearchIndexStore();
+    await initConversationSearchIndexStore();
     await Zotero.DB.executeTransaction(async () => {
       if (identity?.instanceID) {
         const witnessRows = (await Zotero.DB.queryAsync(
@@ -1872,27 +1869,6 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     };
   }
 
-  async function retireAllocationAfterCreateFailure(params: {
-    conversationKey: number;
-    instanceID: string;
-    conversationID: string;
-  }): Promise<void> {
-    await Zotero.DB.executeTransaction(async () => {
-      await deleteRegisteredConversationScopeInTransaction(
-        params.instanceID,
-        params.conversationKey,
-        params.conversationID,
-        system,
-      );
-      await retireConversationKeyInTransaction({
-        conversationKey: params.conversationKey,
-        instanceID: params.instanceID,
-        reason: "conversation-create-failed",
-      });
-    });
-    rememberConversationKeyRetired(params.conversationKey);
-  }
-
   async function createGlobalConversation(
     libraryID: number,
     options: { conversationKey?: number } = {},
@@ -2049,8 +2025,6 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     const latestModeByLibrary = new Set<number>();
     const latestGlobalByLibrary = new Set<number>();
     const latestPaperByState = new Set<string>();
-    const isUnavailable = async (key: number): Promise<boolean> =>
-      Boolean(await getConversationKeyLedgerEntry(key));
     const isRetired = async (key: number): Promise<boolean> =>
       Boolean((await getConversationKeyLedgerEntry(key))?.retiredAt);
     for (const row of rows) {
@@ -2084,10 +2058,8 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       );
       if (!targetConversationKey) continue;
       if (await isRetired(targetConversationKey)) {
-        targetConversationKey = null;
-      }
-      if (targetConversationKey === null) {
         // Fall through to the monotonic fallback below.
+        targetConversationKey = null;
       }
       if (
         targetConversationKey !== null &&
