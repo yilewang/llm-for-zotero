@@ -497,6 +497,7 @@ import { createWebChatHistoryController } from "./setupHandlers/controllers/webC
 import {
   createHistoryLifecycleController,
   disposePendingDeletionSubscriptionForBody,
+  disposeConversationCatalogSubscriptionForBody,
 } from "./setupHandlers/controllers/historyLifecycleController";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
@@ -8266,6 +8267,7 @@ export function setupHandlers(
     panelLifecycle.dispose();
     unregisterContextSurfaceActions();
     disposePendingDeletionSubscriptionForBody(body);
+    disposeConversationCatalogSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);
     if (setupHandlersCleanupByBody.get(body) === cleanupSetupHandlers) {
       setupHandlersCleanupByBody.delete(body);

@@ -122,6 +122,7 @@ import {
   type ConversationLocalRowDeletionIdentity,
   type ConversationLocalRowStore,
 } from "../shared/conversationStore/localRowDeletion";
+import { notifyConversationCatalogChanged } from "../core/conversations/conversationCatalogEvents";
 import { deleteUsageEventsForConversation } from "./usageStore";
 import {
   areConversationWritesFrozen,
@@ -2525,7 +2526,7 @@ export async function forkUpstreamConversationMessages(params: {
   throughAssistantTimestamp: number;
   timestampBase?: number;
 }): Promise<ForkConversationMessagesResult> {
-  return copyConversationMessagesThroughAssistantAnchor(
+  const result = await copyConversationMessagesThroughAssistantAnchor(
     {
       tableName: CHAT_MESSAGES_TABLE,
       copyColumns: CHAT_MESSAGE_COPY_COLUMNS,
@@ -2539,6 +2540,8 @@ export async function forkUpstreamConversationMessages(params: {
     },
     params,
   );
+  notifyConversationCatalogChanged("turns", params.targetConversationKey);
+  return result;
 }
 
 export async function appendMessage(
@@ -2725,6 +2728,7 @@ export async function appendMessage(
       }),
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 export type { UpdateLatestUserMessageOptions };
@@ -2912,6 +2916,7 @@ export async function updateLatestUserMessage(
   });
   if (!matched) return false;
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
   return true;
 }
 
@@ -3009,6 +3014,7 @@ export async function updateLatestAssistantMessage(
     await refreshUpstreamConversationCatalogSummary(normalizedKey);
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 export async function clearConversation(
@@ -3086,6 +3092,7 @@ export async function clearConversation(
     await onBeforeCommit?.();
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 export async function deleteTurnMessages(
@@ -3105,6 +3112,7 @@ export async function deleteTurnMessages(
     assistantMessageID,
     onBeforeCommit,
   );
+  notifyConversationCatalogChanged("turns", conversationKey);
 }
 
 export async function pruneConversation(
@@ -3148,6 +3156,7 @@ export async function pruneConversation(
     }
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 type GlobalConversationSummaryRow = {
@@ -3352,7 +3361,7 @@ export async function createPaperConversation(
   const normalizedPaperItemID = normalizePaperItemID(paperItemID);
   if (!normalizedLibraryID || !normalizedPaperItemID) return null;
   await initConversationKeyLedgerStore();
-  return await runChatStoreTransaction(async () => {
+  const created = await runChatStoreTransaction(async () => {
     const nextVersion = await findLowestMissingPaperSessionVersion(
       normalizedPaperItemID,
       options.webchatSession ? 2 : 1,
@@ -3451,6 +3460,10 @@ export async function createPaperConversation(
     );
     return await getPaperConversation(nextConversationKey);
   });
+  if (created) {
+    notifyConversationCatalogChanged("created", created.conversationKey);
+  }
+  return created;
 }
 
 export async function listPaperConversations(
@@ -3605,6 +3618,7 @@ export async function deletePaperConversation(
   // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
   // entry point can leave usage rows for a conversation the user deleted.
   await deleteUsageEventsForConversation(normalizedKey);
+  notifyConversationCatalogChanged("deleted", normalizedKey);
 }
 
 export async function touchEmptyPaperConversation(
@@ -3641,6 +3655,7 @@ export async function touchEmptyPaperConversation(
     ],
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 /**
@@ -3695,7 +3710,7 @@ export async function createGlobalConversation(
 
   await initConversationKeyLedgerStore();
   const createdAt = Date.now();
-  return await runChatStoreTransaction(async () => {
+  const createdKey = await runChatStoreTransaction(async () => {
     const preferredKey = normalizeConversationKey(options.conversationKey || 0);
     if (
       preferredKey &&
@@ -3779,6 +3794,8 @@ export async function createGlobalConversation(
     );
     return nextConversationKey;
   });
+  if (createdKey) notifyConversationCatalogChanged("created", createdKey);
+  return createdKey;
 }
 
 export async function listGlobalConversations(
@@ -3877,6 +3894,7 @@ export async function touchEmptyGlobalConversation(
     ],
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
 export async function getLatestEmptyGlobalConversation(
@@ -3964,6 +3982,7 @@ export async function touchGlobalConversationTitle(
     );
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("renamed", normalizedKey);
 }
 
 export async function setGlobalConversationTitle(
@@ -3982,6 +4001,7 @@ export async function setGlobalConversationTitle(
     [title, normalizedKey],
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("renamed", normalizedKey);
 }
 
 export async function touchPaperConversationTitle(
@@ -4013,6 +4033,7 @@ export async function touchPaperConversationTitle(
     );
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("renamed", normalizedKey);
 }
 
 export async function setPaperConversationTitle(
@@ -4031,6 +4052,7 @@ export async function setPaperConversationTitle(
     [title, normalizedKey],
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  notifyConversationCatalogChanged("renamed", normalizedKey);
 }
 
 export async function clearConversationTitle(
@@ -4067,6 +4089,7 @@ export async function clearConversationTitle(
   if (!identity?.inTransaction) {
     await refreshUpstreamConversationSearchIndex(normalizedKey);
   }
+  notifyConversationCatalogChanged("renamed", normalizedKey);
 }
 
 export async function deleteGlobalConversation(
@@ -4083,6 +4106,7 @@ export async function deleteGlobalConversation(
   // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
   // entry point can leave usage rows for a conversation the user deleted.
   await deleteUsageEventsForConversation(normalizedKey);
+  notifyConversationCatalogChanged("deleted", normalizedKey);
 }
 
 export async function preflightDeleteUpstreamConversationLocalRows(
@@ -4108,4 +4132,5 @@ export async function deleteUpstreamConversationLocalRows(
         : GLOBAL_CONVERSATIONS_TABLE,
     identity,
   );
+  notifyConversationCatalogChanged("deleted", conversationKey);
 }

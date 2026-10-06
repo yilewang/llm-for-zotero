@@ -77,6 +77,7 @@ import {
   initConversationSearchIndexStore,
 } from "../../shared/conversationSearchIndex";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
+import { notifyConversationCatalogChanged } from "../../core/conversations/conversationCatalogEvents";
 import { logConversationStoreWarning } from "../../shared/conversationStore/diagnostics";
 import {
   normalizeCatalogTimestamp,
@@ -936,6 +937,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       );
     });
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("renamed", normalizedKey);
   }
 
   async function clearConversationSessionMetadata(
@@ -1003,6 +1005,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     if (!identity?.inTransaction) {
       await refreshSearchIndex(normalizedKey);
     }
+    notifyConversationCatalogChanged("renamed", normalizedKey);
   }
 
   async function deleteConversation(conversationKey: number): Promise<void> {
@@ -1017,6 +1020,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
     // entry point can leave usage rows for a conversation the user deleted.
     await deleteUsageEventsForConversation(normalizedKey);
+    notifyConversationCatalogChanged("deleted", normalizedKey);
   }
 
   async function appendMessage(
@@ -1194,6 +1198,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         }),
     );
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("turns", normalizedKey);
   }
 
   async function clearConversation(
@@ -1282,6 +1287,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       await onBeforeCommit?.();
     });
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("turns", normalizedKey);
   }
 
   async function deleteTurnMessages(
@@ -1301,6 +1307,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       assistantMessageID,
       onBeforeCommit,
     );
+    notifyConversationCatalogChanged("turns", conversationKey);
   }
 
   async function pruneConversation(
@@ -1337,6 +1344,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       }
     });
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("turns", normalizedKey);
   }
 
   /**
@@ -1516,6 +1524,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     });
     if (!matched) return false;
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("turns", normalizedKey);
     return true;
   }
 
@@ -1618,6 +1627,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       await refreshCatalogSummary(normalizedKey);
     });
     await refreshSearchIndex(normalizedKey);
+    notifyConversationCatalogChanged("turns", normalizedKey);
   }
 
   async function upsertSummary(params: {
@@ -1775,6 +1785,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       if (registered) await syncCatalogInstanceID(registered);
       await refreshSearchIndex(conversationKey);
     }
+    notifyConversationCatalogChanged("turns", conversationKey);
     return true;
   }
 
@@ -1934,6 +1945,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     });
     await refreshSearchIndex(allocated.conversationKey);
     config.prefs.setLastAllocatedGlobal(allocated.conversationKey);
+    notifyConversationCatalogChanged("created", allocated.conversationKey);
     return getSummary(allocated.conversationKey);
   }
 
@@ -1971,6 +1983,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     });
     await refreshSearchIndex(allocated.conversationKey);
     config.prefs.setLastAllocatedPaper(allocated.conversationKey);
+    notifyConversationCatalogChanged("created", allocated.conversationKey);
     return getSummary(allocated.conversationKey);
   }
 
@@ -1993,6 +2006,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       () => tables.catalog,
       identity,
     );
+    notifyConversationCatalogChanged("deleted", conversationKey);
   }
 
   function remapLegacyConversationKey(
@@ -2771,7 +2785,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     timestampBase?: number;
   }): Promise<ForkConversationMessagesResult> {
     const fork = requireForkConfig();
-    return copyConversationMessagesThroughAssistantAnchor(
+    const result = await copyConversationMessagesThroughAssistantAnchor(
       {
         tableName: tables.messages,
         copyColumns: fork.copyColumns,
@@ -2786,6 +2800,8 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       },
       params,
     );
+    notifyConversationCatalogChanged("turns", params.targetConversationKey);
+    return result;
   }
 
   async function getLatestForkableAssistantTimestamp(

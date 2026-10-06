@@ -160,6 +160,7 @@ import {
 } from "../../sidebarChatModeToggle";
 import { installSidebarModeSwitch } from "../../sidebarModeSwitch";
 import { endInlineEdit } from "../../inlineEditState";
+import { subscribeConversationCatalogChanges } from "../../../../core/conversations/conversationCatalogEvents";
 import {
   canCommitPanelConversation,
   capturePanelOperationLease,
@@ -190,6 +191,7 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 type StatusLevel = "ready" | "warning" | "error";
 
 const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
+const catalogChangeSubscriptionsByBody = new WeakMap<Element, () => void>();
 
 // Conversations a surface gave up because a deletion was queued, keyed by
 // pending-deletion entry id. Kept on the body (not the controller) so a panel
@@ -204,6 +206,16 @@ export function disposePendingDeletionSubscriptionForBody(body: Element): void {
   if (unsubscribe) {
     unsubscribe();
     pendingDeletionSubscriptionsByBody.delete(body);
+  }
+}
+
+export function disposeConversationCatalogSubscriptionForBody(
+  body: Element,
+): void {
+  const unsubscribe = catalogChangeSubscriptionsByBody.get(body);
+  if (unsubscribe) {
+    unsubscribe();
+    catalogChangeSubscriptionsByBody.delete(body);
   }
 }
 
@@ -1639,7 +1651,11 @@ export function createHistoryLifecycleController(
     }, 200);
   }
 
+  // Counts this panel's history reloads, so a chat-list change this panel
+  // already reloaded for (typically its own write) is not reloaded twice.
+  let historyReloadsStarted = 0;
   const refreshGlobalHistoryHeader = async () => {
+    historyReloadsStarted += 1;
     if (!historyBar || !titleStatic || !item) {
       if (titleStatic) {
         titleStatic.style.display = body.closest(".llm-dedicated-chat-pane")
@@ -4118,6 +4134,41 @@ export function createHistoryLifecycleController(
   pendingDeletionSubscriptionsByBody.set(
     body,
     pendingDeletionStore.subscribe(onPendingDeletionEvent),
+  );
+
+  // A chat created, renamed, deleted or answered anywhere (the other chat
+  // surface, another sidebar panel, the agent API) reloads this panel's
+  // history header and menu, and through onConversationHistoryChanged the
+  // window's conversation list. One reload per panel per burst of changes;
+  // none when this panel has already reloaded since the change.
+  let catalogReloadTimer: number | null = null;
+  let reloadsAtLatestCatalogChange = 0;
+  const onConversationCatalogChanged = () => {
+    if (!body.isConnected) return;
+    reloadsAtLatestCatalogChange = historyReloadsStarted;
+    if (catalogReloadTimer !== null) return;
+    const win = body.ownerDocument?.defaultView;
+    if (!win) return;
+    catalogReloadTimer = win.setTimeout(() => {
+      catalogReloadTimer = null;
+      if (!body.isConnected) return;
+      if (historyReloadsStarted > reloadsAtLatestCatalogChange) return;
+      // The reload rebuilds an open history menu; someone typing in its
+      // search box keeps the focus.
+      const active = body.ownerDocument?.activeElement as Element | null;
+      const typingInSearch = Boolean(
+        active?.classList?.contains("llm-history-menu-search-input") &&
+        historyMenu?.contains(active),
+      );
+      void refreshGlobalHistoryHeader().then(() => {
+        if (typingInSearch) restoreHistorySearchInputFocus();
+      });
+    }, 0);
+  };
+  disposeConversationCatalogSubscriptionForBody(body);
+  catalogChangeSubscriptionsByBody.set(
+    body,
+    subscribeConversationCatalogChanges(onConversationCatalogChanged),
   );
   renderPendingDeletionToast();
   void pendingDeletionStore.sweepExpired("panel-init");

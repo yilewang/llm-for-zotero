@@ -1425,6 +1425,170 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   });
 
+  // ── T10 ──────────────────────────────────────────────────────────────────
+
+  /** The title the window's conversation list shows for `key`, or null. */
+  function windowListTitle(key: number): string | null {
+    const row = standaloneWin()?.document.querySelector(
+      `.llm-standalone-conv-item[data-conversation-key="${key}"]`,
+    );
+    return row
+      ? textOf(row.querySelector(".llm-standalone-conv-title") || row)
+      : null;
+  }
+
+  /** The title the sidebar's history menu holds for `key` (menu closed), or null. */
+  function sidebarHistoryTitle(key: number): string | null {
+    const row = sidebarBody()?.querySelector(
+      `#llm-history-menu .llm-history-item[data-conversation-key="${key}"]`,
+    );
+    return row
+      ? textOf(row.querySelector(".llm-history-item-title") || row)
+      : null;
+  }
+
+  async function confirmRenameDialog(doc: Document, title: string) {
+    let input: HTMLInputElement | null = null;
+    await until(
+      () => {
+        input = doc.querySelector<HTMLInputElement>(
+          ".llm-conversation-rename-input",
+        );
+        return Boolean(input);
+      },
+      () => "the rename dialog opens",
+    );
+    input!.value = title;
+    input!.dispatchEvent(
+      new (doc.defaultView as any).Event("input", { bubbles: true }),
+    );
+    doc
+      .querySelector<HTMLButtonElement>(
+        ".llm-conversation-rename-dialog .llm-modal-primary",
+      )!
+      .click();
+    await until(
+      () => !doc.querySelector(".llm-conversation-rename-dialog"),
+      () => "the rename dialog closes",
+    );
+  }
+
+  it("T10a: a chat created and renamed in the sidebar shows up in the window's list without a refresh", async function () {
+    const paper = await newFixture("Coexist T10a");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const seedKey = await completeSidebarTurn(
+      "Coexist T10a seed LIST-SEED",
+      "T10A-SEED-ANSWER",
+    );
+    await api.openStandaloneForItem(paper.parentItemId);
+    await ensureWindowShowsConversation(seedKey);
+
+    // A new chat in the sidebar, with one turn.
+    (sidebarBody()!.querySelector("#llm-history-new") as HTMLElement).click();
+    await until(
+      () =>
+        sidebarState().conversationKey > 0 &&
+        sidebarState().conversationKey !== seedKey,
+      () => `the sidebar starts a new chat: ${JSON.stringify(sidebarState())}`,
+    );
+    const newKey = await completeSidebarTurn(
+      "Coexist T10a new chat LIST-NEW",
+      "T10A-NEW-ANSWER",
+    );
+    assert.notEqual(newKey, seedKey);
+    await until(
+      () => windowListTitle(newKey) !== null,
+      () =>
+        `the window's list shows the sidebar's new chat ${newKey}: ${JSON.stringify(
+          Array.from(
+            standaloneWin()!.document.querySelectorAll(
+              ".llm-standalone-conv-item",
+            ),
+          ).map((row: any) => [row.dataset.conversationKey, textOf(row)]),
+        )}`,
+    );
+
+    // Rename it from the sidebar's history menu.
+    const TITLE = "Renamed in the sidebar T10A";
+    (
+      sidebarBody()!.querySelector("#llm-history-toggle") as HTMLElement
+    ).click();
+    let renameButton: HTMLElement | null = null;
+    await until(
+      () => {
+        renameButton =
+          sidebarBody()!.querySelector<HTMLElement>(
+            `#llm-history-menu .llm-history-item[data-conversation-key="${newKey}"] .llm-history-item-rename`,
+          ) || null;
+        return Boolean(renameButton);
+      },
+      () => "the sidebar's history row offers Rename",
+    );
+    renameButton!.click();
+    await confirmRenameDialog(mainWin().document, TITLE);
+    await until(
+      () => (windowListTitle(newKey) || "").includes(TITLE),
+      () => `the window's list shows the new title: ${windowListTitle(newKey)}`,
+    );
+  });
+
+  it("T10b: a chat created and renamed in the window shows up in the sidebar's history without a refresh", async function () {
+    const paper = await newFixture("Coexist T10b");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const seedKey = await completeSidebarTurn(
+      "Coexist T10b seed LIST-SEED",
+      "T10B-SEED-ANSWER",
+    );
+    await until(
+      () => sidebarHistoryTitle(seedKey) !== null,
+      () => "the sidebar's history holds its own chat",
+    );
+
+    await api.openStandaloneForItem(paper.parentItemId);
+    const fresh = await api.startNewStandaloneConversation();
+    assert.equal(fresh.conversationKind, "paper", JSON.stringify(fresh));
+    const QUESTION = "Coexist T10b window chat LIST-WINDOW";
+    typeAndSend(windowBody()!, QUESTION);
+    const stream = await provider.waitForStream(QUESTION);
+    stream.push("T10B-WINDOW-ANSWER");
+    stream.finish();
+    const windowKey = toKey(windowRoot()?.dataset.itemId);
+    assert.notEqual(windowKey, seedKey);
+    await waitForAnswer(windowKey, "T10B-WINDOW-ANSWER");
+    await until(
+      () => sidebarHistoryTitle(windowKey) !== null,
+      () =>
+        `the sidebar's history lists the window's new chat ${windowKey}: ${JSON.stringify(
+          Array.from(
+            sidebarBody()!.querySelectorAll(
+              "#llm-history-menu .llm-history-item",
+            ),
+          ).map((row: any) => [row.dataset.conversationKey, textOf(row)]),
+        )}`,
+    );
+
+    const TITLE = "Renamed in the window T10B";
+    const doc = standaloneWin()!.document;
+    doc
+      .querySelector<HTMLElement>(
+        `.llm-standalone-conv-item[data-conversation-key="${windowKey}"] .llm-standalone-conv-rename`,
+      )!
+      .click();
+    await confirmRenameDialog(doc, TITLE);
+    await until(
+      () => (sidebarHistoryTitle(windowKey) || "").includes(TITLE),
+      () =>
+        `the sidebar's history shows the new title: ${sidebarHistoryTitle(windowKey)}`,
+    );
+    assert.equal(
+      sidebarState().conversationKey,
+      seedKey,
+      "the sidebar stays on its own chat",
+    );
+  });
+
   // ── T8 ───────────────────────────────────────────────────────────────────
 
   /**
