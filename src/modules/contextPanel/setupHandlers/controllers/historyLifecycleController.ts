@@ -162,6 +162,11 @@ import { installSidebarModeSwitch } from "../../sidebarModeSwitch";
 import { endInlineEdit } from "../../inlineEditState";
 import { subscribeConversationCatalogChanges } from "../../../../core/conversations/conversationCatalogEvents";
 import {
+  createCatalogReloadScheduler,
+  isChatPanelBodyShown,
+  watchChatPanelShown,
+} from "../../historyCatalogReload";
+import {
   canCommitPanelConversation,
   capturePanelOperationLease,
   isPanelHostCompatibleWithPaper,
@@ -4140,19 +4145,19 @@ export function createHistoryLifecycleController(
   // surface, another sidebar panel, the agent API) reloads this panel's
   // history header and menu, and through onConversationHistoryChanged the
   // window's conversation list. One reload per panel per burst of changes;
-  // none when this panel has already reloaded since the change.
-  let catalogReloadTimer: number | null = null;
-  let reloadsAtLatestCatalogChange = 0;
-  const onConversationCatalogChanged = () => {
-    if (!body.isConnected) return;
-    reloadsAtLatestCatalogChange = historyReloadsStarted;
-    if (catalogReloadTimer !== null) return;
-    const win = body.ownerDocument?.defaultView;
-    if (!win) return;
-    catalogReloadTimer = win.setTimeout(() => {
-      catalogReloadTimer = null;
-      if (!body.isConnected) return;
-      if (historyReloadsStarted > reloadsAtLatestCatalogChange) return;
+  // none when this panel has already reloaded since the change. A panel
+  // nobody can see (a reader tab not selected, a collapsed pane, a minimized
+  // window) reloads once when it is shown again.
+  const catalogReload = createCatalogReloadScheduler({
+    defer: (run) => {
+      const win = body.ownerDocument?.defaultView;
+      if (win) win.setTimeout(run, 0);
+    },
+    isAlive: () => body.isConnected,
+    isShown: () => isChatPanelBodyShown(body),
+    watchShown: (onMaybeShown) => watchChatPanelShown(body, onMaybeShown),
+    reloadsStarted: () => historyReloadsStarted,
+    reload: () => {
       // The reload rebuilds an open history menu; someone typing in its
       // search box keeps the focus.
       const active = body.ownerDocument?.activeElement as Element | null;
@@ -4163,13 +4168,16 @@ export function createHistoryLifecycleController(
       void refreshGlobalHistoryHeader().then(() => {
         if (typingInSearch) restoreHistorySearchInputFocus();
       });
-    }, 0);
-  };
+    },
+  });
   disposeConversationCatalogSubscriptionForBody(body);
-  catalogChangeSubscriptionsByBody.set(
-    body,
-    subscribeConversationCatalogChanges(onConversationCatalogChanged),
+  const unsubscribeCatalogChanges = subscribeConversationCatalogChanges(
+    catalogReload.onCatalogChanged,
   );
+  catalogChangeSubscriptionsByBody.set(body, () => {
+    unsubscribeCatalogChanges();
+    catalogReload.dispose();
+  });
   renderPendingDeletionToast();
   void pendingDeletionStore.sweepExpired("panel-init");
 
