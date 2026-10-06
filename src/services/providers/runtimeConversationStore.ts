@@ -26,6 +26,12 @@ import {
   normalizePaperItemID,
 } from "../../shared/conversationStore/keyNormalization";
 import {
+  areConversationWritesFrozen,
+  isConversationWriteGenerationCurrent,
+  withConversationWriteLock,
+} from "../../shared/conversationWriteFence";
+import { deleteUsageEventsForConversation } from "../../utils/usageStore";
+import {
   resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
   type MessageConversationSelector,
 } from "../../shared/conversationStore/messageConversationSelector";
@@ -92,6 +98,11 @@ export type RuntimeStoreConfig = {
     sql: string;
     alias: "providerPermissionState";
   }>;
+  /**
+   * D4: extra catalog columns that clearing a conversation or its session
+   * metadata resets to NULL with the provider session (Codex only).
+   */
+  sessionResetColumns: readonly string[];
   keys: {
     allocatedRange(kind: RuntimeConversationKind): {
       start: number;
@@ -201,6 +212,13 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
   function summaryExtraSelectSql(indent: string): string {
     return config.summaryExtraColumns
       .map((column) => `\n${indent}${column.sql} AS ${column.alias},`)
+      .join("");
+  }
+
+  /** D4: the extra reset columns as SET lines after the provider session. */
+  function sessionResetSql(indent: string): string {
+    return config.sessionResetColumns
+      .map((column) => `\n${indent}${column} = NULL,`)
       .join("");
   }
 
@@ -705,6 +723,117 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     return Math.floor(maxConversationKey);
   }
 
+  async function touchConversationTitle(
+    conversationKey: number,
+    titleSeed: string,
+    expectedGeneration?: number,
+  ): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    const title = normalizeConversationTitleSeed(titleSeed);
+    if (!title) return;
+    await withConversationWriteLock(normalizedKey, async () => {
+      if (
+        areConversationWritesFrozen(normalizedKey) ||
+        (expectedGeneration !== undefined &&
+          !isConversationWriteGenerationCurrent(
+            normalizedKey,
+            expectedGeneration,
+          ))
+      )
+        return;
+      await Zotero.DB.queryAsync(
+        `UPDATE ${tables.catalog}
+     SET title = ?
+     WHERE conversation_key = ?
+       AND (title IS NULL OR TRIM(title) = '')`,
+        [title, normalizedKey],
+      );
+    });
+    await refreshSearchIndex(normalizedKey);
+  }
+
+  async function clearConversationSessionMetadata(
+    conversationKey: number,
+    expectedProviderSessionId?: string,
+    expectedInstanceID?: string,
+  ): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    const normalizedSessionId = String(expectedProviderSessionId || "").trim();
+    const sessionPredicate = normalizedSessionId
+      ? "AND provider_session_id = ?"
+      : "";
+    const instancePredicate = expectedInstanceID?.trim()
+      ? "AND conversation_instance_id = ?"
+      : "";
+    await Zotero.DB.queryAsync(
+      `UPDATE ${tables.catalog}
+     SET provider_session_id = NULL,${sessionResetSql("         ")}
+         scoped_conversation_key = NULL,
+         scope_type = NULL,
+         scope_id = NULL,
+         scope_label = NULL,
+         cwd = NULL,
+         updated_at = ?
+     WHERE conversation_key = ?
+       ${sessionPredicate}
+       ${instancePredicate}`,
+      [
+        Date.now(),
+        normalizedKey,
+        ...(normalizedSessionId ? [normalizedSessionId] : []),
+        ...(expectedInstanceID?.trim() ? [expectedInstanceID.trim()] : []),
+      ],
+    );
+    await refreshSearchIndex(normalizedKey);
+  }
+
+  async function setConversationTitle(
+    conversationKey: number,
+    titleSeed: string,
+    identity?: {
+      instanceID?: string;
+      conversationID?: string;
+      inTransaction?: boolean;
+    },
+  ): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    const identityClause = identity?.instanceID
+      ? `AND conversation_instance_id = ?`
+      : "";
+    const identityParams = identity?.instanceID ? [identity.instanceID] : [];
+    await Zotero.DB.queryAsync(
+      `UPDATE ${tables.catalog}
+     SET title = ?
+     WHERE conversation_key = ?
+       ${identityClause}`,
+      [
+        normalizeConversationTitleSeed(titleSeed) || null,
+        normalizedKey,
+        ...identityParams,
+      ],
+    );
+    if (!identity?.inTransaction) {
+      await refreshSearchIndex(normalizedKey);
+    }
+  }
+
+  async function deleteConversation(conversationKey: number): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${tables.catalog}
+     WHERE conversation_key = ?`,
+      [normalizedKey],
+    );
+    await deleteSearchIndex(normalizedKey);
+    // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
+    // entry point can leave usage rows for a conversation the user deleted.
+    await deleteUsageEventsForConversation(normalizedKey);
+  }
+
   return {
     isStoreConversationKey,
     isStoreConversationKeyForKind,
@@ -730,6 +859,10 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     listPaperConversations,
     listAllPaperConversationsByLibrary,
     getMaxConversationKey,
+    touchConversationTitle,
+    clearConversationSessionMetadata,
+    setConversationTitle,
+    deleteConversation,
   };
 }
 

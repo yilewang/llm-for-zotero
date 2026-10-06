@@ -105,11 +105,6 @@ import {
   initConversationForkLinksStore,
 } from "../shared/conversationForkLinks";
 import {
-  areConversationWritesFrozen,
-  isConversationWriteGenerationCurrent,
-  withConversationWriteLock,
-} from "../shared/conversationWriteFence";
-import {
   normalizeCatalogTimestamp,
   normalizeConversationKey,
   normalizeLibraryID,
@@ -118,10 +113,7 @@ import {
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
-import {
-  deleteUsageEventsForConversation,
-  deleteUsageEventsForConversationInTransaction,
-} from "../utils/usageStore";
+import { deleteUsageEventsForConversationInTransaction } from "../utils/usageStore";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 import {
   createRuntimeConversationStore,
@@ -165,6 +157,10 @@ const store = createRuntimeConversationStore({
   summaryExtraColumns: [
     { sql: "c.provider_permission_state", alias: "providerPermissionState" },
   ],
+  sessionResetColumns: [
+    "provider_permission_state",
+    "provider_session_path_state",
+  ],
   keys: {
     allocatedRange: getCodexAllocatedConversationKeyRange,
   },
@@ -180,7 +176,6 @@ const resolveCodexAppendIdentity = store.resolveAppendIdentity;
 const resolveRepairingMessageConversationSelector =
   store.resolveRepairingMessageConversationSelector;
 const refreshCodexConversationSearchIndex = store.refreshSearchIndex;
-const deleteCodexConversationSearchIndex = store.deleteSearchIndex;
 const backfillCodexConversationTimestamps =
   store.backfillConversationTimestamps;
 const refreshCodexConversationCatalogSummary = store.refreshCatalogSummary;
@@ -2419,118 +2414,27 @@ export async function createCodexPaperConversation(
 }
 
 export async function touchCodexConversationTitle(
-  conversationKey: number,
-  titleSeed: string,
-  expectedGeneration?: number,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const title = normalizeConversationTitleSeed(titleSeed);
-  if (!title) return;
-  await withConversationWriteLock(normalizedKey, async () => {
-    if (
-      areConversationWritesFrozen(normalizedKey) ||
-      (expectedGeneration !== undefined &&
-        !isConversationWriteGenerationCurrent(
-          normalizedKey,
-          expectedGeneration,
-        ))
-    )
-      return;
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-     SET title = ?
-     WHERE conversation_key = ?
-       AND (title IS NULL OR TRIM(title) = '')`,
-      [title, normalizedKey],
-    );
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.touchConversationTitle>
+) {
+  return store.touchConversationTitle(...args);
 }
 
 export async function clearCodexConversationSessionMetadata(
-  conversationKey: number,
-  expectedProviderSessionId?: string,
-  expectedInstanceID?: string,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const normalizedSessionId = String(expectedProviderSessionId || "").trim();
-  const sessionPredicate = normalizedSessionId
-    ? "AND provider_session_id = ?"
-    : "";
-  const instancePredicate = expectedInstanceID?.trim()
-    ? "AND conversation_instance_id = ?"
-    : "";
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-     SET provider_session_id = NULL,
-         provider_permission_state = NULL,
-         provider_session_path_state = NULL,
-         scoped_conversation_key = NULL,
-         scope_type = NULL,
-         scope_id = NULL,
-         scope_label = NULL,
-         cwd = NULL,
-         updated_at = ?
-     WHERE conversation_key = ?
-       ${sessionPredicate}
-       ${instancePredicate}`,
-    [
-      Date.now(),
-      normalizedKey,
-      ...(normalizedSessionId ? [normalizedSessionId] : []),
-      ...(expectedInstanceID?.trim() ? [expectedInstanceID.trim()] : []),
-    ],
-  );
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.clearConversationSessionMetadata>
+) {
+  return store.clearConversationSessionMetadata(...args);
 }
 
 export async function setCodexConversationTitle(
-  conversationKey: number,
-  titleSeed: string,
-  identity?: {
-    instanceID?: string;
-    conversationID?: string;
-    inTransaction?: boolean;
-  },
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const identityClause = identity?.instanceID
-    ? `AND conversation_instance_id = ?`
-    : "";
-  const identityParams = identity?.instanceID ? [identity.instanceID] : [];
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-     SET title = ?
-     WHERE conversation_key = ?
-       ${identityClause}`,
-    [
-      normalizeConversationTitleSeed(titleSeed) || null,
-      normalizedKey,
-      ...identityParams,
-    ],
-  );
-  if (!identity?.inTransaction) {
-    await refreshCodexConversationSearchIndex(normalizedKey);
-  }
+  ...args: Parameters<typeof store.setConversationTitle>
+) {
+  return store.setConversationTitle(...args);
 }
 
 export async function deleteCodexConversation(
-  conversationKey: number,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  await Zotero.DB.queryAsync(
-    `DELETE FROM ${CODEX_CONVERSATIONS_TABLE}
-     WHERE conversation_key = ?`,
-    [normalizedKey],
-  );
-  await deleteCodexConversationSearchIndex(normalizedKey);
-  // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
-  // entry point can leave usage rows for a conversation the user deleted.
-  await deleteUsageEventsForConversation(normalizedKey);
+  ...args: Parameters<typeof store.deleteConversation>
+) {
+  return store.deleteConversation(...args);
 }
 
 export async function preflightDeleteCodexConversationLocalRows(
