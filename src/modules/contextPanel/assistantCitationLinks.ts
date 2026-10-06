@@ -71,23 +71,17 @@ import {
   resolveQuoteEvidenceProvenance,
   type QuoteEvidenceProvenance,
 } from "./quoteEvidenceProvenance";
-import {
-  resolveVerifiedQuoteTarget,
-  type QuoteTargetCandidate,
-} from "./quoteCitationTargetResolver";
+import { type QuoteTargetCandidate } from "./quoteCitationTargetResolver";
 import {
   attemptCitationParagraphJump,
-  defaultQuoteNavigatorDeps,
   getPdfAttachments,
   getReaderItemId,
   getSinglePdfAttachment,
-  locateQuoteByOpeningCitationCandidates,
   navigateReaderToPage,
   navigateToQuote,
   openReaderForItem,
   rememberCachedCitationPage,
   resolveJumpedPageLabel,
-  verifyQuoteInCitationCandidate,
 } from "./quoteNavigator";
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
@@ -3435,86 +3429,41 @@ export async function navigateToTaskPaperPassage(params: {
 
     if (searchTexts.length) {
       report(t("Locating this passage…"), "sending");
-      let match: {
-        pageIndex: number;
-        pageLabel?: string;
-        quoteText: string;
-        sourceMatchText?: string;
-        sourceMatchPageOccurrence?: number;
-      } | null = null;
-      // The paper is known, so it is the one authoritative candidate: a
-      // passage that only partly aligns (clipped, TeX dropped) still counts.
-      const resolution = await resolveVerifiedQuoteTarget({
+      const outcome = await navigateToQuote({
+        // The paper is known, so it is the one authoritative candidate: a
+        // passage that only partly aligns (clipped, TeX dropped) still counts.
         candidates: [
           { contextItemId: pdfId, authoritative: true, labelRank: 0 },
         ],
         searchTexts,
-        verify: verifyQuoteInCitationCandidate,
+        displayCitationLabel: displayLabel,
+        // The background worker could not read the PDF: let the viewer, when
+        // the attachment is one a citation could open.
+        openableInViewer: (contextItemId) =>
+          Boolean(buildCandidateForContextItemId(contextItemId)),
+        policy: {
+          strategy: "verify-first",
+          jumpFallbackTexts: true,
+          rememberPage: false,
+        },
       });
-      if (resolution.status === "resolved") {
-        match = {
-          pageIndex: resolution.pageIndex,
-          quoteText: resolution.quoteText,
-          sourceMatchText: resolution.sourceMatchText,
-          sourceMatchPageOccurrence: resolution.sourceMatchPageOccurrence,
-        };
-      } else if (resolution.status === "unverifiable") {
-        // The background worker could not read the PDF: let the viewer.
-        const candidate = buildCandidateForContextItemId(pdfId);
-        if (candidate) {
-          const opened = await locateQuoteByOpeningCitationCandidates(
-            {
-              candidates: buildQuoteTargetCandidates([candidate], null),
-              searchTexts,
-            },
-            defaultQuoteNavigatorDeps,
-          );
-          match = opened.matches[0] || null;
-        }
+      if (outcome.kind === "open-failed") {
+        report(t("Could not open the paper."), "error");
+        return "failed";
       }
-      if (match) {
-        const reader = await openReaderForItem(pdfId, {
-          pageIndex: match.pageIndex,
-          pageLabel: match.pageLabel,
-        });
-        if (!reader) {
-          report(t("Could not open the paper."), "error");
-          return "failed";
-        }
-        const matchPageLabel =
-          getPageLabelForIndex(reader, match.pageIndex) ||
-          match.pageLabel ||
-          `${match.pageIndex + 1}`;
-        const paragraphJump = await attemptCitationParagraphJump({
-          reader,
-          contextItemId: pdfId,
-          displayCitationLabel: displayLabel,
-          quoteText: match.quoteText,
-          pageIndex: match.pageIndex,
-          pageLabel: matchPageLabel,
-          sourceMatchPageOccurrence: match.sourceMatchPageOccurrence,
-          verifiedSourceMatchText: match.sourceMatchText,
-          // Never `verifiedFullSpan`: it would switch off the page's
-          // largest-unique-partial-span fallback this passage may need.
-          fallbackQuoteTexts: searchTexts,
-        });
-        const jumpedLabel = resolveJumpedPageLabel(
-          reader,
-          paragraphJump,
-          matchPageLabel,
+      if (outcome.kind === "jumped") {
+        report(
+          formatStatus("Jumped to the passage (page {page})", {
+            page: outcome.pageLabel,
+          }),
+          "ready",
         );
-        if (paragraphJump.matched) {
-          report(
-            formatStatus("Jumped to the passage (page {page})", {
-              page: jumpedLabel,
-            }),
-            "ready",
-          );
-          return "jumped";
-        }
+        return "jumped";
+      }
+      if (outcome.kind === "page-only") {
         report(
           formatStatus("Opened page {page}; couldn't highlight this passage", {
-            page: jumpedLabel,
+            page: outcome.pageLabel,
           }),
           "warning",
         );

@@ -520,7 +520,7 @@ export const acceptsOpenedQuoteMatchForTests = acceptsOpenedQuoteMatch;
  * may have several candidates in range and only the winner should ever appear
  * on screen.
  */
-export async function verifyQuoteInCitationCandidate(
+async function verifyQuoteInCitationCandidate(
   candidate: QuoteTargetCandidate,
   quoteText: string,
 ): Promise<QuoteTargetVerification> {
@@ -571,7 +571,7 @@ const MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES = 3;
  * the worker could not, which is how this path behaved before verification
  * moved into the background.
  */
-export async function locateQuoteByOpeningCitationCandidates(
+async function locateQuoteByOpeningCitationCandidates(
   params: {
     candidates: readonly QuoteTargetCandidate[];
     searchTexts: readonly string[];
