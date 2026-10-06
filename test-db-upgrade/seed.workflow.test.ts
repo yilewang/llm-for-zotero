@@ -14,6 +14,7 @@ import {
   LIVE_MODEL_ENTRY_ID,
   approveCardsUntil,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   liveRuntimePrefs,
   persistenceSnapshot,
@@ -112,6 +113,8 @@ describe("DB upgrade seed (older build)", function () {
     await guarded("prepare", async () => {
       state.credentials = await resolveLiveAgentCredentials();
       assert.isOk(state.credentials, "live credentials must be configured");
+      // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+      await ensureOwnZoteroHttpServer();
       await api().reset();
       setPrefs(prefsFor("upstream"));
       const fixture = await api().createPaperWithPdfFixture({

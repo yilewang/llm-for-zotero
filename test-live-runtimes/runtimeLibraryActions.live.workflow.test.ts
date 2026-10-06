@@ -38,6 +38,7 @@ import {
   LIVE_SYSTEMS,
   approveCardsUntil,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   liveRuntimePrefs,
   persistenceSnapshot,
@@ -70,6 +71,11 @@ function notesInCollection(collectionId: number): any[] {
   "live R2: runtime library actions",
   function () {
     this.timeout(900_000);
+
+    // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+    before(async function () {
+      await ensureOwnZoteroHttpServer();
+    });
 
     for (const system of selectedSystems().filter(
       (entry) => entry !== "upstream",

@@ -25,6 +25,7 @@ import { resolveLiveAgentCredentials } from "../test-live-agent/liveAgentCredent
 import {
   LIVE_MODEL_ENTRY_ID,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   liveRuntimePrefs,
   persistenceSnapshot,
@@ -45,6 +46,11 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
   "live R1: runtime conversation history lifecycle",
   function () {
     this.timeout(900_000);
+
+    // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+    before(async function () {
+      await ensureOwnZoteroHttpServer();
+    });
 
     for (const system of selectedSystems()) {
       for (const kind of ["paper", "library"] as LiveKind[]) {

@@ -149,6 +149,47 @@ export async function withPrefs<T>(
   }
 }
 
+/**
+ * Makes sure this test Zotero answers on the HTTP port the plugin advertises.
+ *
+ * Every scaffold profile asks for the same port (23124). When another
+ * scaffold Zotero starts first, such as a test run in a different checkout,
+ * it owns that port and this instance starts with no HTTP server. Codex and
+ * Claude Code reach the Zotero MCP endpoint over HTTP, so their tool calls
+ * then land in the other instance, which rejects this instance's bearer
+ * token (HTTP 401: "authorization failed", "no Zotero tools").
+ *
+ * In that case this starts the server on a port the OS picks and points the
+ * plugin at it. Only this scaffold profile's prefs change; the user's own
+ * Zotero (port 23119) and Codex config are never touched.
+ */
+export async function ensureOwnZoteroHttpServer(): Promise<number> {
+  const listeningPort = (): number => {
+    try {
+      return Number(Zotero.Server.port) || 0;
+    } catch {
+      return 0; // Zotero.Server.port throws while no server is listening.
+    }
+  };
+  let port = listeningPort();
+  if (!port) {
+    await Zotero.Server.init(-1);
+    port = listeningPort();
+    if (!port) {
+      throw new Error(
+        "This test Zotero has no HTTP server, so Codex and Claude Code cannot reach its MCP endpoint",
+      );
+    }
+    Zotero.debug(
+      `[live tests] port ${Zotero.Prefs.get("httpServer.port")} belongs to another Zotero; this instance now listens on ${port}`,
+    );
+  }
+  if (Number(Zotero.Prefs.get("httpServer.port")) !== port) {
+    Zotero.Prefs.set("httpServer.port", port);
+  }
+  return port;
+}
+
 /** Errors thrown inside Zotero lose their message at the runner boundary. */
 export function describeError(error: unknown): string {
   const message = String((error as Error)?.message || error);

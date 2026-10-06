@@ -17,6 +17,7 @@ import { resolveLiveAgentCredentials } from "../test-live-agent/liveAgentCredent
 import {
   LIVE_MODEL_ENTRY_ID,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   persistenceSnapshot,
   readActivityDisclosures,
@@ -108,6 +109,8 @@ describe(`DB upgrade ${phase} (${reverse ? "older" : "newer"} build)`, function 
   }
 
   before(async function () {
+    // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+    await ensureOwnZoteroHttpServer();
     record = await readRecord();
     report.seedCommit = record.sourceCommit;
   });
