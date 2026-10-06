@@ -35,15 +35,10 @@ import {
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
   initConversationRegistryStore,
-  deleteRegisteredConversationScopeInTransaction,
   registerConversationScope,
   repairRegisteredConversationScope,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
-import {
-  deleteConversationSearchIndexRowInTransaction,
-  initConversationSearchIndexStore,
-} from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_INSTANCE_ID_MIGRATION_IDS,
   CONVERSATION_ID_TRANSITION_MIGRATION_ID,
@@ -64,25 +59,15 @@ import {
   initializeConversationKeyCounterInTransaction,
   initConversationKeyLedgerStore,
   refreshConversationKeyLedgerStore,
-  isConversationKeyLedgerStoreInitialized,
   installConversationKeyLedgerCatalogTriggers,
   installConversationKeyLedgerMessageTriggers,
-  retireConversationKeyInTransaction,
   seedConversationKeyLedgerFromCatalogs,
   reserveOrphanConversationMessageKeys,
   seedConversationKeyLedgerFromTombstones,
   retireOrphanedConversationLedgerEntries,
-  rememberConversationKeyRetired,
 } from "../shared/conversationKeyLedger";
 import { pendingDeletionStore } from "../core/conversations/pendingDeletionStore";
-import {
-  initRecentlyDeletedConversationTombstones,
-  persistConversationInstanceTombstoneInTransaction,
-} from "../core/conversations/recentlyDeletedConversations";
-import {
-  deleteConversationForkLinksForInstanceInTransaction,
-  initConversationForkLinksStore,
-} from "../shared/conversationForkLinks";
+import { initRecentlyDeletedConversationTombstones } from "../core/conversations/recentlyDeletedConversations";
 import {
   normalizeCatalogTimestamp,
   normalizeConversationKey,
@@ -91,8 +76,6 @@ import {
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
-import { deleteUsageEventsForConversationInTransaction } from "../utils/usageStore";
-import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 import {
   createRuntimeConversationStore,
   ensureColumn,
@@ -137,6 +120,8 @@ const store = createRuntimeConversationStore({
   hooks: {
     afterMessageWriteInTransaction: touchCodexConversationActivity,
   },
+  clearAgentConversationRowsInTransaction:
+    clearPersistedAgentConversationRowsInTransaction,
   upsertExtraColumns: [
     {
       column: "provider_permission_state",
@@ -167,8 +152,6 @@ const backfillCodexConversationTimestamps =
   store.backfillConversationTimestamps;
 const refreshCodexConversationCatalogSummary = store.refreshCatalogSummary;
 const getCodexMessagePaperContextRows = store.getMessagePaperContextRows;
-const repairRecoverableCodexCatalogMessageConversationIDs =
-  store.repairRecoverableCatalogMessageConversationIDs;
 const backfillCodexConversationIDs = store.backfillConversationIDs;
 const backfillCodexConversationInstanceIDs =
   store.backfillConversationInstanceIDs;
@@ -1492,172 +1475,13 @@ export async function deleteCodexConversation(
 }
 
 export async function preflightDeleteCodexConversationLocalRows(
-  conversationKey: number,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const repair =
-    await repairRecoverableCodexCatalogMessageConversationIDs(normalizedKey);
-  if (repair.refused > 0) {
-    throw new Error(
-      `Refused to delete Codex conversation ${normalizedKey}: ambiguous stale message ids found.`,
-    );
-  }
-  await resolveRepairingMessageConversationSelector(normalizedKey, {
-    destructive: true,
-  });
+  ...args: Parameters<typeof store.preflightDeleteConversationLocalRows>
+) {
+  return store.preflightDeleteConversationLocalRows(...args);
 }
 
 export async function deleteCodexConversationLocalRows(
-  conversationKey: number,
-  identity?: {
-    instanceID?: string;
-    conversationID?: string;
-    onBeforeCommit?: () => Promise<void>;
-    onCommit?: () => Promise<void>;
-  },
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  let ledgerAvailable = isConversationKeyLedgerStoreInitialized();
-  let ledgerEntry;
-  if (ledgerAvailable) {
-    try {
-      ledgerEntry = await getConversationKeyLedgerEntry(normalizedKey);
-    } catch (error) {
-      if (!/no such table|no table/i.test(String(error))) throw error;
-      ledgerAvailable = false;
-    }
-  }
-  if (ledgerAvailable && !ledgerEntry) {
-    throw new ConversationRetiredError(
-      normalizedKey,
-      identity?.instanceID || "",
-    );
-  }
-  if (
-    ledgerEntry?.retiredAt &&
-    identity?.instanceID !== ledgerEntry.instanceID
-  ) {
-    throw new ConversationRetiredError(
-      normalizedKey,
-      identity?.instanceID || "",
-    );
-  }
-  if (
-    ledgerEntry &&
-    identity?.instanceID &&
-    identity.instanceID !== ledgerEntry.instanceID
-  ) {
-    throw new Error(
-      `Refused to delete Codex conversation ${normalizedKey}: identity mismatch`,
-    );
-  }
-  const deletionIdentity = ledgerEntry
-    ? { ...(identity || {}), instanceID: ledgerEntry.instanceID }
-    : identity;
-  await preflightDeleteCodexConversationLocalRows(normalizedKey);
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
-  );
-  const catalogIdentityClause = deletionIdentity?.instanceID
-    ? `AND conversation_instance_id = ?`
-    : "";
-  const catalogIdentityParams = deletionIdentity?.instanceID
-    ? [deletionIdentity.instanceID]
-    : [];
-  const messageIdentityClause = deletionIdentity?.instanceID
-    ? `AND EXISTS (
-         SELECT 1
-         FROM ${CODEX_CONVERSATIONS_TABLE} c
-         WHERE c.conversation_key = ?
-           AND c.conversation_instance_id = ?
-       )`
-    : "";
-  const messageIdentityParams = deletionIdentity?.instanceID
-    ? [normalizedKey, deletionIdentity.instanceID]
-    : [];
-  await initConversationForkLinksStore();
-  await initConversationRegistryStore();
-  await initConversationSearchIndexStore();
-  await initRecentlyDeletedConversationTombstones();
-  await Zotero.DB.executeTransaction(async () => {
-    if (deletionIdentity?.instanceID) {
-      const witnessRows = (await Zotero.DB.queryAsync(
-        `SELECT 1 AS present
-         FROM ${CODEX_CONVERSATIONS_TABLE}
-         WHERE conversation_key = ?
-           ${catalogIdentityClause}
-         LIMIT 1`,
-        [normalizedKey, ...catalogIdentityParams],
-      )) as Array<{ present?: unknown }> | undefined;
-      if (!witnessRows?.length) {
-        throw new Error(
-          `Refused to delete Codex conversation ${normalizedKey}: catalog identity changed`,
-        );
-      }
-    }
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CODEX_MESSAGES_TABLE}
-       WHERE ${selector.whereSql}
-         ${messageIdentityClause}
-         ${deletionIdentity?.conversationID ? "AND conversation_id = ?" : ""}`,
-      deletionIdentity?.conversationID
-        ? [
-            ...selector.params,
-            ...messageIdentityParams,
-            deletionIdentity.conversationID,
-          ]
-        : [...selector.params, ...messageIdentityParams],
-    );
-    await clearPersistedAgentConversationRowsInTransaction(normalizedKey);
-    await clearOwnerAttachmentRefsInTransaction("conversation", normalizedKey);
-    // A deleted conversation leaves no usage rows behind: the local usage
-    // ledger is scoped to conversations the user can still see.
-    await deleteUsageEventsForConversationInTransaction(normalizedKey);
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CODEX_CONVERSATIONS_TABLE}
-       WHERE conversation_key = ?
-         ${catalogIdentityClause}`,
-      [normalizedKey, ...catalogIdentityParams],
-    );
-    await deleteConversationForkLinksForInstanceInTransaction({
-      conversationKey: normalizedKey,
-      conversationID: deletionIdentity?.conversationID,
-      system: "codex",
-    });
-    if (deletionIdentity?.instanceID) {
-      await deleteRegisteredConversationScopeInTransaction(
-        deletionIdentity.instanceID,
-        normalizedKey,
-        deletionIdentity.conversationID,
-        "codex",
-      );
-    }
-    if (deletionIdentity?.instanceID) {
-      await persistConversationInstanceTombstoneInTransaction({
-        conversationKey: normalizedKey,
-        instanceID: deletionIdentity.instanceID,
-        conversationID: deletionIdentity.conversationID,
-      });
-    }
-    await deleteConversationSearchIndexRowInTransaction({
-      system: "codex",
-      conversationKey: normalizedKey,
-    });
-    if (ledgerAvailable && deletionIdentity?.instanceID) {
-      await retireConversationKeyInTransaction({
-        conversationKey: normalizedKey,
-        instanceID: deletionIdentity.instanceID,
-      });
-    }
-    await deletionIdentity?.onBeforeCommit?.();
-    await deletionIdentity?.onCommit?.();
-  });
-  if (deletionIdentity?.instanceID) {
-    rememberConversationKeyRetired(normalizedKey);
-  }
+  ...args: Parameters<typeof store.deleteConversationLocalRows>
+) {
+  return store.deleteConversationLocalRows(...args);
 }

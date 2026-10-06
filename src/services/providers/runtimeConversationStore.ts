@@ -21,6 +21,7 @@ import {
   deleteRegisteredConversationScopeInTransaction,
   generateConversationInstanceID,
   getRegisteredConversationScope,
+  initConversationRegistryStore,
   registerConversationScope,
   syncCatalogInstanceID,
   type PaperContextJsonColumns,
@@ -57,7 +58,19 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
-import { deleteUsageEventsForConversation } from "../../utils/usageStore";
+import {
+  deleteUsageEventsForConversation,
+  deleteUsageEventsForConversationInTransaction,
+} from "../../utils/usageStore";
+import { clearOwnerAttachmentRefsInTransaction } from "../../utils/attachmentRefStore";
+import {
+  deleteConversationForkLinksForInstanceInTransaction,
+  initConversationForkLinksStore,
+} from "../../shared/conversationForkLinks";
+import {
+  initRecentlyDeletedConversationTombstones,
+  persistConversationInstanceTombstoneInTransaction,
+} from "../../core/conversations/recentlyDeletedConversations";
 import {
   resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
   type MessageConversationSelector,
@@ -130,6 +143,13 @@ export type RuntimeStoreConfig = {
     column: string;
     param: "providerPermissionState";
   }>;
+  /**
+   * Deletes the agent rows of a conversation inside the deletion transaction.
+   * Injected because the agent purge lives above this layer.
+   */
+  clearAgentConversationRowsInTransaction(
+    conversationKey: number,
+  ): Promise<void>;
   /** The profile signature recorded on every key the store issues. */
   profileSignature(): string;
   /**
@@ -1913,6 +1933,180 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     return getSummary(allocated.conversationKey);
   }
 
+  async function preflightDeleteConversationLocalRows(
+    conversationKey: number,
+  ): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    const repair =
+      await repairRecoverableCatalogMessageConversationIDs(normalizedKey);
+    if (repair.refused > 0) {
+      throw new Error(
+        `Refused to delete ${storeLabel} conversation ${normalizedKey}: ambiguous stale message ids found.`,
+      );
+    }
+    await resolveRepairingMessageConversationSelector(normalizedKey, {
+      destructive: true,
+    });
+  }
+
+  async function deleteConversationLocalRows(
+    conversationKey: number,
+    identity?: {
+      instanceID?: string;
+      conversationID?: string;
+      onBeforeCommit?: () => Promise<void>;
+      onCommit?: () => Promise<void>;
+    },
+  ): Promise<void> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    let ledgerAvailable = isConversationKeyLedgerStoreInitialized();
+    let ledgerEntry;
+    if (ledgerAvailable) {
+      try {
+        ledgerEntry = await getConversationKeyLedgerEntry(normalizedKey);
+      } catch (error) {
+        if (!/no such table|no table/i.test(String(error))) throw error;
+        ledgerAvailable = false;
+      }
+    }
+    if (ledgerAvailable && !ledgerEntry) {
+      throw new ConversationRetiredError(
+        normalizedKey,
+        identity?.instanceID || "",
+      );
+    }
+    if (
+      ledgerEntry?.retiredAt &&
+      identity?.instanceID !== ledgerEntry.instanceID
+    ) {
+      throw new ConversationRetiredError(
+        normalizedKey,
+        identity?.instanceID || "",
+      );
+    }
+    if (
+      ledgerEntry &&
+      identity?.instanceID &&
+      identity.instanceID !== ledgerEntry.instanceID
+    ) {
+      throw new Error(
+        `Refused to delete ${storeLabel} conversation ${normalizedKey}: identity mismatch`,
+      );
+    }
+    const deletionIdentity = ledgerEntry
+      ? { ...(identity || {}), instanceID: ledgerEntry.instanceID }
+      : identity;
+    await preflightDeleteConversationLocalRows(normalizedKey);
+    const selector = await resolveRepairingMessageConversationSelector(
+      normalizedKey,
+      {
+        destructive: true,
+      },
+    );
+    const catalogIdentityClause = deletionIdentity?.instanceID
+      ? `AND conversation_instance_id = ?`
+      : "";
+    const catalogIdentityParams = deletionIdentity?.instanceID
+      ? [deletionIdentity.instanceID]
+      : [];
+    const messageIdentityClause = deletionIdentity?.instanceID
+      ? `AND EXISTS (
+         SELECT 1
+         FROM ${tables.catalog} c
+         WHERE c.conversation_key = ?
+           AND c.conversation_instance_id = ?
+       )`
+      : "";
+    const messageIdentityParams = deletionIdentity?.instanceID
+      ? [normalizedKey, deletionIdentity.instanceID]
+      : [];
+    await initConversationForkLinksStore();
+    await initConversationRegistryStore();
+    await initConversationSearchIndexStore();
+    await initRecentlyDeletedConversationTombstones();
+    await Zotero.DB.executeTransaction(async () => {
+      if (deletionIdentity?.instanceID) {
+        const witnessRows = (await Zotero.DB.queryAsync(
+          `SELECT 1 AS present
+         FROM ${tables.catalog}
+         WHERE conversation_key = ?
+           ${catalogIdentityClause}
+         LIMIT 1`,
+          [normalizedKey, ...catalogIdentityParams],
+        )) as Array<{ present?: unknown }> | undefined;
+        if (!witnessRows?.length) {
+          throw new Error(
+            `Refused to delete ${storeLabel} conversation ${normalizedKey}: catalog identity changed`,
+          );
+        }
+      }
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${tables.messages}
+       WHERE ${selector.whereSql}
+         ${messageIdentityClause}
+         ${deletionIdentity?.conversationID ? "AND conversation_id = ?" : ""}`,
+        deletionIdentity?.conversationID
+          ? [
+              ...selector.params,
+              ...messageIdentityParams,
+              deletionIdentity.conversationID,
+            ]
+          : [...selector.params, ...messageIdentityParams],
+      );
+      await config.clearAgentConversationRowsInTransaction(normalizedKey);
+      await clearOwnerAttachmentRefsInTransaction(
+        "conversation",
+        normalizedKey,
+      );
+      // A deleted conversation leaves no usage rows behind: the local usage
+      // ledger is scoped to conversations the user can still see.
+      await deleteUsageEventsForConversationInTransaction(normalizedKey);
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${tables.catalog}
+       WHERE conversation_key = ?
+         ${catalogIdentityClause}`,
+        [normalizedKey, ...catalogIdentityParams],
+      );
+      await deleteConversationForkLinksForInstanceInTransaction({
+        conversationKey: normalizedKey,
+        conversationID: deletionIdentity?.conversationID,
+        system,
+      });
+      if (deletionIdentity?.instanceID) {
+        await deleteRegisteredConversationScopeInTransaction(
+          deletionIdentity.instanceID,
+          normalizedKey,
+          deletionIdentity.conversationID,
+          system,
+        );
+      }
+      if (deletionIdentity?.instanceID) {
+        await persistConversationInstanceTombstoneInTransaction({
+          conversationKey: normalizedKey,
+          instanceID: deletionIdentity.instanceID,
+          conversationID: deletionIdentity.conversationID,
+        });
+      }
+      await deleteConversationSearchIndexRowInTransaction({
+        system,
+        conversationKey: normalizedKey,
+      });
+      if (ledgerAvailable && deletionIdentity?.instanceID) {
+        await retireConversationKeyInTransaction({
+          conversationKey: normalizedKey,
+          instanceID: deletionIdentity.instanceID,
+        });
+      }
+      await deletionIdentity?.onBeforeCommit?.();
+      await deletionIdentity?.onCommit?.();
+    });
+    if (deletionIdentity?.instanceID) {
+      rememberConversationKeyRetired(normalizedKey);
+    }
+  }
+
   return {
     isStoreConversationKey,
     isStoreConversationKeyForKind,
@@ -1955,6 +2149,8 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     retireAllocationAfterCreateFailure,
     createGlobalConversation,
     createPaperConversation,
+    preflightDeleteConversationLocalRows,
+    deleteConversationLocalRows,
   };
 }
 
