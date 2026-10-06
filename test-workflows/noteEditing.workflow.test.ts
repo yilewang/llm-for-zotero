@@ -85,7 +85,6 @@ async function diagnosticsMessage(
             question: diagnostics.lastSend.question,
             conversationKey: diagnostics.lastSend.conversationKey,
             conversationKind: diagnostics.lastSend.conversationKind,
-            scopeType: diagnostics.lastSend.scopeType,
             selectedTexts: diagnostics.lastSend.selectedTexts,
             selectedTextSources: diagnostics.lastSend.selectedTextSources,
             selectedTextNoteContexts:
@@ -110,7 +109,6 @@ function assertNoteSendRouting(params: {
 }) {
   const { send, system, noteItemId, conversationKind } = params;
   assert.equal(send.conversationKind, conversationKind);
-  assert.notEqual(send.scopeType, "note");
   assert.equal(send.activeNoteContext?.noteId, noteItemId);
   assert.isNumber(send.conversationKey);
   assert.isTrue(
@@ -655,7 +653,6 @@ describe("workflow: note editing mode", function () {
     assert.deepEqual(send.selectedTexts, [selectedSentence]);
     assert.deepEqual(send.selectedTextSources, ["note-edit"]);
     assert.equal(send.conversationKind, "paper");
-    assert.notEqual(send.scopeType, "note");
     assert.equal(send.activeNoteContext?.noteId, fixture.noteItemId);
   });
 });
