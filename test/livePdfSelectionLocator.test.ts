@@ -1374,6 +1374,56 @@ describe("citation page cache warming", function () {
     }
   });
 
+  it("does not let a rendered-pages-only cache rule a quote out in background verification", async function () {
+    clearPageTextCache();
+    // The worker cannot read this PDF and the viewer exposes no PDF.js
+    // document, so warming the reader scrapes its one rendered text layer.
+    const restore = installPdfWorkerStub(async () => null);
+    const renderedText =
+      "Methods. The rendered page holds this complete sentence about the recording rig.";
+    const textLayer = { children: [{ textContent: renderedText }] };
+    const renderedPage = {
+      nodeType: 1,
+      parentElement: null,
+      textContent: renderedText,
+      getAttribute: (name: string) =>
+        name === "data-page-number" ? "1" : null,
+      querySelector: (selector: string) =>
+        selector === ".textLayer" ? textLayer : null,
+    };
+    const reader = {
+      itemID: 508,
+      _iframeWindow: {
+        document: { defaultView: null, querySelectorAll: () => [renderedPage] },
+      },
+    };
+
+    try {
+      const warmed = await warmPageTextCache(reader);
+      assert.equal(warmed?.coverage, "partial-dom");
+
+      const present = await verifyQuoteLocationForAttachment(
+        508,
+        "The rendered page holds this complete sentence about the recording rig.",
+      );
+      const elsewhere = await verifyQuoteLocationForAttachment(
+        508,
+        "A sentence printed on a page the viewer never rendered stays unknown.",
+      );
+
+      // A match on a rendered page is still a match.
+      assert.equal(present.status, "resolved");
+      assert.equal(present.computedPageIndex, 0);
+      // A miss is not: the pages never rendered were never searched.
+      assert.equal(elsewhere.status, "unavailable");
+      assert.equal(elsewhere.computedPageIndex, null);
+      assert.match(elsewhere.reason || "", /rendered pages/i);
+    } finally {
+      restore();
+      clearPageTextCache();
+    }
+  });
+
   it("caches the historical Eppler quote through its unique partial source span", async function () {
     clearPageTextCache();
     const pageOne = "Opening page with unrelated methods text.";

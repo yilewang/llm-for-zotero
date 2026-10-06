@@ -2821,7 +2821,29 @@ export async function verifyQuoteLocationForAttachment(
       "Could not read complete PDF page text for background quote verification.",
     );
   }
-  return locateQuoteInCachedPageTexts(pageTextCache, cleanQuote, null);
+  const result = locateQuoteInCachedPageTexts(pageTextCache, cleanQuote, null);
+  // A reader warmed from its DOM text layers caches only the pages it had
+  // rendered, under this attachment's key too. A complete match there is
+  // still a match. A miss (or a tie) says nothing about the pages never
+  // rendered, and a partial span found there is unique only among the
+  // rendered pages, so neither may read as the PDF's verdict: callers would
+  // report "not found", or trust the span, and skip the viewer, which can
+  // read the whole PDF.
+  if (
+    !canUseCachedPageTextAsNegativeEvidence(pageTextCache) &&
+    result.status !== "selection-too-short" &&
+    !(result.status === "resolved" && result.sourceMatchKind === "exact")
+  ) {
+    return {
+      ...unavailable(
+        result.status === "resolved"
+          ? "Only the PDF's rendered pages were readable in the background; only part of the quote was found on them."
+          : "Only the PDF's rendered pages were readable in the background; the quote was not on them.",
+      ),
+      pagesScanned: result.pagesScanned,
+    };
+  }
+  return result;
 }
 
 /** Clear cache (e.g. when switching documents). */

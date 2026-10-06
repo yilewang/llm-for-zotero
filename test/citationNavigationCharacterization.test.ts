@@ -11,7 +11,8 @@
  *      (resolveAndNavigateAssistantCitation).
  * C2 — the untrusted quote path (navigateUntrustedQuoteCitation).
  * C3 — what each path hands the paragraph jump, and in what query order.
- * C4 — a partial DOM page-text cache read by background verification.
+ * C4 — a partial DOM page-text cache read by background verification
+ *      (fixed by F18: such a cache is not proof that a quote is absent).
  *
  * "D<n>" refers to the per-path differences listed in the step 8 brief.
  */
@@ -1632,7 +1633,7 @@ describe("citation navigation characterization", function () {
     });
   });
 
-  describe("C4 partial DOM page text read by background verification (U3)", function () {
+  describe("C4 partial DOM page text read by background verification (F18)", function () {
     function domReader(itemId: number, renderedPages: Record<number, string>) {
       const pages = Object.entries(renderedPages).map(([index, text]) => {
         const textLayer = {
@@ -1656,7 +1657,33 @@ describe("citation navigation characterization", function () {
       return { itemID: itemId, _iframeWindow: { document: doc } };
     }
 
-    it("lets a rendered-pages-only cache answer background verification", async function () {
+    it("does not let a rendered-pages-only cache vouch for a partial span", async function () {
+      const scope = globalThis as any;
+      const originalZotero = scope.Zotero;
+      scope.Zotero = { PDFWorker: { getFullText: async () => null } };
+      clearPageTextCache();
+      try {
+        // The rendered page holds the first two thirds of QUOTE_B. That span
+        // is unique among the rendered pages, but an unrendered page could
+        // hold it again, or hold the whole quote.
+        const warmed = await warmPageTextCache(
+          domReader(42, { 0: QUOTE_B_PREFIX_PAGE }),
+        );
+        assert.equal(warmed?.coverage, "partial-dom");
+
+        const partial = await verifyQuoteLocationForAttachment(42, QUOTE_B);
+
+        assert.equal(partial.status, "unavailable");
+        assert.equal(partial.computedPageIndex, null);
+        assert.match(partial.reason || "", /only part of the quote/i);
+      } finally {
+        if (originalZotero === undefined) delete scope.Zotero;
+        else scope.Zotero = originalZotero;
+        clearPageTextCache();
+      }
+    });
+
+    it("lets a rendered-pages-only cache confirm a quote but not rule one out", async function () {
       const scope = globalThis as any;
       const originalZotero = scope.Zotero;
       // PDFWorker cannot read this PDF, and the viewer exposes no PDF.js
@@ -1683,12 +1710,11 @@ describe("citation navigation characterization", function () {
 
         assert.equal(onRenderedPage.status, "resolved");
         assert.equal(onRenderedPage.computedPageIndex, 0);
-        // PINNED, LOOKS WRONG (U3): the partial cache is read as if it were
-        // the whole PDF, so a quote on a page that was never rendered comes
-        // back "not-found" rather than "unavailable". An untrusted click then
-        // reports "not found" instead of opening the PDF in the viewer.
-        assert.equal(offRenderedPages.status, "not-found");
-        assert.equal(offRenderedPages.pagesScanned, 1);
+        // FIXED (F18; was "not-found"): the cache holds only the rendered
+        // page, so a miss there says nothing about the pages never rendered.
+        // The verdict is "unavailable", which sends a click to the viewer.
+        assert.equal(offRenderedPages.status, "unavailable");
+        assert.equal(offRenderedPages.computedPageIndex, null);
       } finally {
         if (originalZotero === undefined) delete scope.Zotero;
         else scope.Zotero = originalZotero;
@@ -1696,7 +1722,7 @@ describe("citation navigation characterization", function () {
       }
     });
 
-    it("turns an untrusted click on an unreadable PDF into 'not found' once a partial cache exists", async function () {
+    it("still opens an unreadable PDF in the viewer for an untrusted click once a partial cache exists", async function () {
       // The quote is on page index 1 of a PDF the background worker cannot
       // read. Without a cache the viewer fallback opens it and jumps.
       const scanned = libraryPaper(
@@ -1713,6 +1739,7 @@ describe("citation navigation characterization", function () {
         }),
       );
       assert.equal(fresh.status?.variant, "ready");
+      const freshNavigations = fresh.reader(scanned.attachmentId)!.navigations;
       fresh.restore();
       rig = null;
 
@@ -1729,13 +1756,48 @@ describe("citation navigation characterization", function () {
         }),
       );
 
-      // PINNED, LOOKS WRONG (U3): the partial cache's "not-found" is final,
-      // so the viewer fallback that would have found the quote never runs.
-      assert.deepEqual(r.opened, []);
-      assert.deepEqual(statusTexts(r), [
-        "sending: Locating cited quote...",
-        "error: The complete quote was not found in the live PDF text.",
+      // FIXED (F18; was: nothing opened and "error: The complete quote was
+      // not found in the live PDF text."): the partial cache cannot rule the
+      // quote out, so the viewer fallback opens the PDF and jumps, exactly as
+      // it does without the cache.
+      assert.deepEqual(r.opened, [
+        { itemId: scanned.attachmentId, location: undefined },
       ]);
+      assert.equal(r.status?.variant, "ready");
+      assert.deepEqual(
+        r.reader(scanned.attachmentId)!.navigations,
+        freshNavigations,
+      );
+      assert.deepEqual(freshNavigations, [{ pageIndex: 1, pageLabel: "2" }]);
+    });
+
+    it("still finds a Task progress passage in an unreadable PDF once a partial cache exists", async function () {
+      const scanned = smith({ backgroundText: false });
+      const r = install({ papers: [scanned] });
+      // An earlier warm saw only the PDF's rendered first page.
+      await warmPageTextCache(domReader(11, { 0: scanned.pages[0] }));
+
+      const outcome = await navigateToTaskPaperPassage({
+        body: r.body,
+        target: {
+          itemId: 10,
+          contextItemId: 11,
+          libraryID: 1,
+          rawSnippet: QUOTE_A,
+          cleanedSnippet: QUOTE_A,
+          label: "Results",
+          granularity: "passage" as const,
+        },
+      });
+
+      // Before F18 the partial cache's "not-found" skipped the viewer, and the
+      // click only opened the paper with "Couldn't find this passage".
+      assert.equal(outcome, "jumped");
+      assert.deepEqual(statusTexts(r), [
+        "sending: Locating this passage…",
+        "ready: Jumped to the passage (page 102)",
+      ]);
+      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
     });
   });
 
