@@ -2789,6 +2789,13 @@ export async function warmQuoteLocationCacheForAttachment(
 export async function verifyQuoteLocationForAttachment(
   contextItemId: number,
   quoteText: string,
+  options?: {
+    /**
+     * The page to prefer when the quote occurs on several pages; it only
+     * chooses among identical copies.
+     */
+    expectedPageIndex?: number | null;
+  },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),
@@ -2821,7 +2828,11 @@ export async function verifyQuoteLocationForAttachment(
       "Could not read complete PDF page text for background quote verification.",
     );
   }
-  const result = locateQuoteInCachedPageTexts(pageTextCache, cleanQuote, null);
+  const result = locateQuoteInCachedPageTexts(
+    pageTextCache,
+    cleanQuote,
+    options?.expectedPageIndex ?? null,
+  );
   // A reader warmed from its DOM text layers caches only the pages it had
   // rendered, under this attachment's key too. A complete match there is
   // still a match. A miss (or a tie) says nothing about the pages never
@@ -4265,7 +4276,14 @@ export async function locateCurrentSelectionInLivePdfReader(
 export async function locateQuoteInLivePdfReader(
   reader: any,
   quoteText: string,
-  options?: { exactOnly?: boolean },
+  options?: {
+    exactOnly?: boolean;
+    /**
+     * The page to prefer when the quote occurs on several pages; it only
+     * chooses among identical copies. Default: the reader's current page.
+     */
+    expectedPageIndex?: number | null;
+  },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),
@@ -4288,10 +4306,9 @@ export async function locateQuoteInLivePdfReader(
 
   try {
     const cached = await warmPageTextCache(reader);
-    const expectedPageIndex = getExpectedPageIndex(
-      reader,
-      getPdfViewerApplication(reader),
-    );
+    const expectedPageIndex =
+      options?.expectedPageIndex ??
+      getExpectedPageIndex(reader, getPdfViewerApplication(reader));
     if (!cached?.pages.length) {
       return {
         status: "unavailable",

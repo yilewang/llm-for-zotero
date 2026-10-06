@@ -1,12 +1,12 @@
 /**
- * What every citation navigation tier hands the paragraph jump (step 8, D4).
+ * What every citation navigation path hands the paragraph jump (step 8, D4).
  *
  * The characterization suite pins what a user sees after a click. Some jump
- * arguments leave no visible trace in the rig, for example the T5 and T6
- * fallbacks to the located result's page occurrence: the rig's page text
+ * arguments leave no visible trace in the rig, for example the active-reader
+ * and viewer fallbacks to the located result's page occurrence: the rig's page text
  * makes that occurrence equal to the one the jump would derive on its own.
  * These tests spy on the jump's arguments instead, through
- * `observeCitationParagraphJumpsForTests`, so a refactor of the tiers cannot
+ * `observeCitationParagraphJumpsForTests`, so a refactor of the paths cannot
  * drop or swap one of them silently.
  *
  * Each observed call is shown without its reader and without keys whose value
@@ -71,7 +71,7 @@ function describeJump(params: Record<string, unknown>): ObservedJump {
   return out;
 }
 
-describe("citation navigation jump arguments per tier (D4)", function () {
+describe("citation navigation jump arguments per path (D4)", function () {
   this.timeout(20000);
   let rig: CitationNavigationRig | null = null;
   let jumps: ObservedJump[] = [];
@@ -116,8 +116,12 @@ describe("citation navigation jump arguments per tier (D4)", function () {
     });
   }
 
-  describe("trusted quote ladder", function () {
-    it("T1 hands the jump the cached page and the quote citation's certificate", async function () {
+  describe("trusted quote, verified before the reader moves (U1)", function () {
+    // U1: every trusted jump now runs on a page verified in the background
+    // (or by the viewer, for an unreadable PDF). Caches and hints no longer
+    // pick the jump's page, so the jump always gets the verified wording and
+    // occurrence, with the quote citation's certificate on top.
+    it("a verified page cache adds nothing to the jump: it gets the certificate and the verified wording", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       rememberCachedCitationPage(11, QUOTE_A, 1, "102");
@@ -132,6 +136,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
 
       await r.click(button);
 
+      // U1 (was: the T1 jump on the cached page, with no verified wording).
       assert.deepEqual(jumps, [
         {
           contextItemId: 11,
@@ -143,12 +148,13 @@ describe("citation navigation jump arguments per tier (D4)", function () {
           sourceFingerprint: "pdfjs:fp-11",
           sourceMatchPageOccurrence: 0,
           preferredFullQuoteText: QUOTE_A_PARAGRAPH,
+          verifiedSourceMatchText: `${QUOTE_A}.`,
           verifiedFullSpan: true,
         },
       ]);
     });
 
-    it("T2 falls back to the hidden cache's fingerprint, occurrence and wording", async function () {
+    it("hands the jump the verified occurrence and wording, and no fingerprint of its own", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -157,6 +163,9 @@ describe("citation navigation jump arguments per tier (D4)", function () {
 
       await r.click(button);
 
+      // U1 (was: T2 also passed the hidden cache's background-text
+      // fingerprint "page-text:gskcv1", which the jump ignores because only
+      // a pdfjs: fingerprint is compared).
       assert.deepEqual(jumps, [
         {
           contextItemId: 11,
@@ -165,8 +174,6 @@ describe("citation navigation jump arguments per tier (D4)", function () {
           pageIndex: 1,
           pageLabel: "102",
           citationId: "q1",
-          // The hidden cache's own fingerprint of the background text.
-          sourceFingerprint: "page-text:gskcv1",
           sourceMatchPageOccurrence: 0,
           verifiedSourceMatchText: `${QUOTE_A}.`,
           verifiedFullSpan: false,
@@ -174,7 +181,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
       ]);
     });
 
-    it("T2 prefers the quote citation's fingerprint and occurrence over the hidden cache's", async function () {
+    it("prefers the quote citation's fingerprint and occurrence over the verified ones", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -200,7 +207,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
       });
     });
 
-    it("T3 hands the jump the stored page hint and no verified wording", async function () {
+    it("a stored page hint adds nothing: the viewer-verified page and wording go to the jump", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -214,6 +221,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
 
       await r.click(button);
 
+      // U1 (was: the T3 jump on the hinted page, with no verified wording).
       assert.deepEqual(jumps, [
         {
           contextItemId: 11,
@@ -224,12 +232,13 @@ describe("citation navigation jump arguments per tier (D4)", function () {
           citationId: "q1",
           sourceMatchPageOccurrence: 0,
           preferredFullQuoteText: QUOTE_A_PARAGRAPH,
+          verifiedSourceMatchText: `${QUOTE_A}.`,
           verifiedFullSpan: false,
         },
       ]);
     });
 
-    it("T3 resolves a label-only hint to its page index", async function () {
+    it("a label-only page hint adds nothing: the viewer-verified occurrence goes to the jump", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -238,29 +247,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
 
       await r.click(button);
 
-      assert.deepEqual(jumps, [
-        {
-          contextItemId: 11,
-          displayCitationLabel: "Smith, 2020",
-          quoteText: QUOTE_A,
-          pageIndex: 1,
-          pageLabel: "102",
-          citationId: "q1",
-          verifiedFullSpan: false,
-        },
-      ]);
-    });
-
-    it("T4 hands the jump the explicit label and its resolved index", async function () {
-      const paper = smith({ backgroundText: false });
-      const r = install({ papers: [paper] });
-      const button = trustedButton(r, paper, {
-        citationLabel: "(Smith, 2020, page 102)",
-        quoteCitation: quoteCitation({ sourceMatchPageOccurrence: 0 }),
-      });
-
-      await r.click(button);
-
+      // U1 (was: the T3 jump with no occurrence and no verified wording).
       assert.deepEqual(jumps, [
         {
           contextItemId: 11,
@@ -270,12 +257,39 @@ describe("citation navigation jump arguments per tier (D4)", function () {
           pageLabel: "102",
           citationId: "q1",
           sourceMatchPageOccurrence: 0,
+          verifiedSourceMatchText: `${QUOTE_A}.`,
           verifiedFullSpan: false,
         },
       ]);
     });
 
-    it("T4 → T6: a failed explicit label is followed by the full search's arguments", async function () {
+    it("an explicit page label adds nothing: one jump, on the verified page", async function () {
+      const paper = smith({ backgroundText: false });
+      const r = install({ papers: [paper] });
+      const button = trustedButton(r, paper, {
+        citationLabel: "(Smith, 2020, page 102)",
+        quoteCitation: quoteCitation({ sourceMatchPageOccurrence: 0 }),
+      });
+
+      await r.click(button);
+
+      // U1 (was: the T4 jump with the label, and no verified wording).
+      assert.deepEqual(jumps, [
+        {
+          contextItemId: 11,
+          displayCitationLabel: "Smith, 2020",
+          quoteText: QUOTE_A,
+          pageIndex: 1,
+          pageLabel: "102",
+          citationId: "q1",
+          sourceMatchPageOccurrence: 0,
+          verifiedSourceMatchText: `${QUOTE_A}.`,
+          verifiedFullSpan: false,
+        },
+      ]);
+    });
+
+    it("a wrong explicit page label is never jumped to", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -285,16 +299,9 @@ describe("citation navigation jump arguments per tier (D4)", function () {
 
       await r.click(button);
 
+      // U1 (was: a first jump on page index 2, label "103", then the full
+      // search's jump below).
       assert.deepEqual(jumps, [
-        {
-          contextItemId: 11,
-          displayCitationLabel: "Smith, 2020",
-          quoteText: QUOTE_A,
-          pageIndex: 2,
-          pageLabel: "103",
-          citationId: "q1",
-          verifiedFullSpan: false,
-        },
         {
           contextItemId: 11,
           displayCitationLabel: "Smith, 2020",
@@ -362,7 +369,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
       assert.equal(jumps[0]?.sourceMatchPageOccurrence, 3);
     });
 
-    it("T6 falls back to the located result's occurrence and wording on each candidate", async function () {
+    it("an unreadable PDF: the viewer-located occurrence and wording go to the jump", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -389,7 +396,7 @@ describe("citation navigation jump arguments per tier (D4)", function () {
       ]);
     });
 
-    it("T6 keeps the quote citation's occurrence over the located result's", async function () {
+    it("an unreadable PDF keeps the quote citation's occurrence over the viewer-located one", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {

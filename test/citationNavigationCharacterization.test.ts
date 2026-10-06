@@ -7,8 +7,9 @@
  * the real button, locator, caches and paragraph jump; only Zotero and the
  * PDF.js reader are fakes (see helpers/citationNavigationRig.ts).
  *
- * C1 — the trusted quote ladder and inline citations
- *      (resolveAndNavigateAssistantCitation).
+ * C1 — trusted quotes and inline citations
+ *      (resolveAndNavigateAssistantCitation). Since U1, a trusted quote
+ *      is verified before the reader moves, like an untrusted one.
  * C2 — the untrusted quote path (navigateUntrustedQuoteCitation).
  * C3 — what each path hands the paragraph jump, and in what query order.
  * C4 — a partial DOM page-text cache read by background verification
@@ -132,7 +133,12 @@ describe("citation navigation characterization", function () {
     return rig;
   }
 
-  describe("C1 trusted quote ladder", function () {
+  describe("C1 trusted quotes verify before the reader moves (U1)", function () {
+    // U1 (user decision): a trusted quote is read in the background before
+    // any reader opens or moves, like an untrusted one. Verified page caches,
+    // the hidden location cache, stored page hints and the citation's own page
+    // label no longer open a page first. Tests marked "U1 (was: ...)" pinned
+    // the old hint ladder (tiers T1-T6) and now pin the verified behaviour.
     function trustedButton(
       target: CitationNavigationRig,
       paper: RigPaper,
@@ -153,7 +159,7 @@ describe("citation navigation characterization", function () {
       });
     }
 
-    it("T1: a verified page cache wins before any PDF text is read", async function () {
+    it("T1: a verified page cache no longer opens its page before the quote is read", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       rememberCachedCitationPage(11, QUOTE_A, 1, "102");
@@ -161,11 +167,12 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      assert.deepEqual(r.opened, [
-        { itemId: 11, location: { pageIndex: 1, pageLabel: "102" } },
-      ]);
-      assert.deepEqual(r.pdfWorkerReads, [], "T2 hidden cache never consulted");
+      // U1 (was: opened at the cached { pageIndex: 1, pageLabel: "102" }
+      // with no PDF text read, and no "Locating" status).
+      assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
+      assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
       assert.deepEqual(r.events, [REVALIDATION_EVENT]);
@@ -175,7 +182,7 @@ describe("citation navigation characterization", function () {
       assert.equal(button.dataset.loading, "false");
     });
 
-    it("T1 → T2: a cached page that fails the paragraph jump falls through to the hidden cache", async function () {
+    it("T1: a stale verified page cache cannot move the reader; the verified page opens", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       // A stale verified page: the quote is on page index 1, not 0.
@@ -184,29 +191,49 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
-      // T1 opened the stale page; T2 reused the now-active reader and moved
-      // it to the hidden-cache page without a page label (D4).
-      assert.deepEqual(r.opened, [
-        { itemId: 11, location: { pageIndex: 0, pageLabel: "101" } },
-      ]);
-      assert.deepEqual(r.reader(11)!.navigations, [
-        { pageIndex: 0, pageLabel: "101" },
-        { pageIndex: 1 },
-      ]);
-      assert.deepEqual(r.pdfWorkerReads, [11]);
+      // U1 (was: T1 opened the stale page 0, its jump failed with
+      // "full-quote-not-on-page", and T2 then moved the reader to page 1).
+      assert.deepEqual(failedJumpStages(r), []);
+      assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
+      assert.deepEqual(r.reader(11)!.navigations, [{ pageIndex: 1 }]);
+      assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
       // The corrected page replaces the stale cache entry (D6).
       assert.equal(lookupCachedCitationPage(11, QUOTE_A), "102");
     });
 
-    it("T2: the hidden quote-location cache opens the page index only", async function () {
+    it("a verified page cache puts its paper first, and that paper is still read before it opens", async function () {
+      const first = smith();
+      const second = smith({
+        itemId: 20,
+        attachmentId: 21,
+        title: "Drifting place codes II",
+        fingerprint: "fp-21",
+      });
+      const r = install({ papers: [first, second] });
+      // A previous click jumped to the quote in the second paper.
+      rememberCachedCitationPage(21, QUOTE_A, 1, "102");
+      const button = r.makeButton({
+        citationLabel: "(Smith, 2020)",
+        quoteText: QUOTE_A,
+        candidates: r.messageCandidates([first, second]),
+        navigationMode: "trusted-quote",
+      });
+
+      await r.click(button);
+
+      assert.deepEqual(r.timeline, ["read 21", "open 21", "navigate 21"]);
+      assert.equal(r.status?.variant, "ready");
+    });
+
+    it("opens the background-verified page by index and ignores a stored page hint", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
-        // A page hint is present but never reached: T2 answers first.
+        // A wrong page hint: the quote is on page index 1.
         quoteCitation: quoteCitation({
           pageHintIndex: 2,
           pageHintLabel: "103",
@@ -215,15 +242,18 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
+      // U1 (was: the hidden cache answered first, so the same page opened
+      // without a "Locating" status).
       assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(r.pdfWorkerReads, [11]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
       assert.deepEqual(failedJumpStages(r), []);
     });
 
-    it("T3: a stored page hint opens before the full search when no cache answers", async function () {
+    it("T3: a stored page hint opens nothing; an unreadable PDF opens in the viewer and moves once the quote is found", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -231,24 +261,24 @@ describe("citation navigation characterization", function () {
           pageHintIndex: 1,
           pageHintLabel: "102",
         }),
-        // An explicit page label is present but never reached: T3 answers.
         citationLabel: "(Smith, 2020, page 103)",
       });
-      assert.equal(button.dataset.citationPageLabel, "103");
 
       await r.click(button);
 
-      assert.deepEqual(r.opened, [
-        { itemId: 11, location: { pageIndex: 1, pageLabel: "102" } },
+      // U1 (was: opened at the hint { pageIndex: 1, pageLabel: "102" } with
+      // "Opening cited page hint..." and "Verifying cited quote...").
+      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
       ]);
       assert.deepEqual(statusTexts(r), [
-        "sending: Opening cited page hint...",
-        "sending: Verifying cited quote...",
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
     });
 
-    it("T3 → T6: a wrong page hint falls through to the full search", async function () {
+    it("T3: a wrong stored page hint moves nothing before the quote is found", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -260,40 +290,86 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
-      assert.deepEqual(r.opened, [
-        { itemId: 11, location: { pageIndex: 2, pageLabel: "103" } },
+      // U1 (was: opened at the wrong hint, failed "full-quote-not-on-page"
+      // there, then T6 searched; two focus calls).
+      assert.deepEqual(failedJumpStages(r), []);
+      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
       ]);
       assert.deepEqual(statusTexts(r), [
-        "sending: Opening cited page hint...",
-        "sending: Verifying cited quote...",
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
-      assert.equal(
-        r.focusCount,
-        2,
-        "the failed hint jump and T6 each focus (D15)",
-      );
+      assert.equal(r.focusCount, 1, "only the verified jump focuses (D15)");
     });
 
-    it("T4: an explicit page label opens the paper without a location", async function () {
+    it("T4: an explicit page label opens nothing by itself", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
         citationLabel: "(Smith, 2020, page 102)",
       });
-      assert.equal(button.dataset.citationPageLabel, "102");
 
       await r.click(button);
 
-      // The reader is never moved to the labelled page; only FindController
-      // scrolls it (D4).
+      // U1 (was: no "Locating" status and no navigation; FindController
+      // alone scrolled the reader the label tier opened). The viewer
+      // fallback now finds the page and moves the reader there.
       assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
-      assert.deepEqual(r.reader(11)!.navigations, []);
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
+    });
+
+    it("an absent quote opens nothing, whatever page hint or label it carries (D9)", async function () {
+      const paper = smith();
+      const r = install({ papers: [paper] });
+      rememberCachedCitationPage(11, QUOTE_MISSING, 2, "103");
+      const button = trustedButton(r, paper, {
+        quoteText: QUOTE_MISSING,
+        quoteCitation: quoteCitation({
+          quoteText: QUOTE_MISSING,
+          pageHintIndex: 2,
+          pageHintLabel: "103",
+        }),
+        citationLabel: "(Smith, 2020, page 103)",
+      });
+
+      await r.click(button);
+
+      assert.deepEqual(r.timeline, ["read 11"]);
+      assert.deepEqual(r.opened, []);
+      assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
+        "error: The complete quote was not found in the live PDF text.",
+      ]);
+      assert.deepEqual(r.events, [REVALIDATION_EVENT]);
+    });
+
+    it("does not move an open reader to a page hint for a quote it does not hold", async function () {
+      const paper = smith();
+      const r = install({ papers: [paper] });
+      r.selectReader(11);
+      const button = trustedButton(r, paper, {
+        quoteText: QUOTE_MISSING,
+        quoteCitation: quoteCitation({
+          quoteText: QUOTE_MISSING,
+          pageHintIndex: 2,
+          pageHintLabel: "103",
+        }),
+      });
+
+      await r.click(button);
+
+      assert.deepEqual(r.opened, []);
+      assert.deepEqual(r.reader(11)!.navigations, []);
+      assert.deepEqual(r.findQueries(11), []);
+      assert.equal(r.status?.variant, "error");
     });
 
     it("T5: with no candidates at all, the active reader is searched directly", async function () {
@@ -312,11 +388,232 @@ describe("citation navigation characterization", function () {
       await r.click(button);
 
       assert.deepEqual(r.opened, [], "the active reader is used as is");
+      // Its text is read, and the reader is never sent to a page; only the
+      // jump scrolls it, after the quote was found.
+      assert.deepEqual(r.timeline, ["read 77"]);
+      assert.deepEqual(r.reader(77)!.navigations, []);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 2, paragraph matched)",
       ]);
       assert.equal(lookupCachedCitationPage(77, QUOTE_A), "2");
+    });
+
+    it("T5: the active reader must hold the complete quote; a partial span moves nothing", async function () {
+      const r = install({
+        papers: [],
+        // Page index 1 holds only the first two thirds of QUOTE_B.
+        orphanReaders: [{ itemId: 77, pages: smith().pages }],
+      });
+      r.selectReader(77);
+      const button = r.makeButton({
+        citationLabel: "(Smith, 2020)",
+        quoteText: QUOTE_B,
+        navigationMode: "trusted-quote",
+      });
+
+      await r.click(button);
+
+      assert.deepEqual(r.findQueries(77), [], "no partial span is searched");
+      assert.deepEqual(r.reader(77)!.navigations, []);
+      assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
+        "error: The complete quote was not found in the live PDF text.",
+      ]);
+      assert.isNull(lookupCachedCitationPage(77, QUOTE_B));
+    });
+
+    describe("identical copies of the quote", function () {
+      const samePage = (patch: Partial<RigPaper> = {}) =>
+        smith({
+          pages: [
+            "Introduction. Neural populations in the hippocampus encode spatial context over many days.",
+            `Results. ${QUOTE_A}. Replication. ${QUOTE_A}.`,
+            "Discussion. These findings constrain models of memory consolidation.",
+          ],
+          findMatchCount: 2,
+          ...patch,
+        });
+      const twoPages = (patch: Partial<RigPaper> = {}) =>
+        smith({
+          pages: [
+            `Abstract. ${QUOTE_A}.`,
+            "Methods. Unrelated text about the recording rig.",
+            `Conclusion. ${QUOTE_A}.`,
+          ],
+          ...patch,
+        });
+      const agains = (target: CitationNavigationRig) =>
+        target
+          .reader(11)!
+          .fixture.dispatched.filter((entry) => entry.type === "again").length;
+
+      it("on one page, the recorded occurrence picks the copy after the page is verified", async function () {
+        const paper = samePage();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({
+            pageHintIndex: 1,
+            pageHintLabel: "102",
+            sourceMatchPageOccurrence: 1,
+          }),
+        });
+
+        await r.click(button);
+
+        // Background text holds the quote twice on page index 1, so it is
+        // "ambiguous" there; the answer's recorded occurrence settles it.
+        assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
+        assert.deepEqual(r.opened, [
+          { itemId: 11, location: { pageIndex: 1 } },
+        ]);
+        assert.equal(agains(r), 1, "the jump selects the second copy");
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "ready: Jumped to cited source (page 102, paragraph matched)",
+        ]);
+      });
+
+      it("on one page of an unreadable PDF, the viewer applies the same rule", async function () {
+        const paper = samePage({ backgroundText: false });
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({ sourceMatchPageOccurrence: 1 }),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+        assert.deepEqual(r.reader(11)!.navigations, [
+          { pageIndex: 1, pageLabel: "102" },
+        ]);
+        assert.equal(agains(r), 1);
+        assert.equal(r.status?.variant, "ready");
+      });
+
+      it("on one page, the stored page hint naming that page settles the tie and opens that page", async function () {
+        const paper = samePage();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({ pageHintIndex: 1 }),
+        });
+
+        await r.click(button);
+
+        // No recorded occurrence: the hinted page is verified and opened, and
+        // the jump is left to pick a copy. Without an occurrence the jump
+        // cannot align one of two identical copies, so the click ends on the
+        // page. The old page-hint path also opened this page, and then
+        // reported "matched more than one occurrence" without a highlight.
+        assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
+        assert.deepEqual(r.opened, [
+          { itemId: 11, location: { pageIndex: 1 } },
+        ]);
+        assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "error: Jumped to page 102. Paragraph jump failed: Neither the complete quote nor a strong unique partial source span could be aligned to the cited PDF page.",
+        ]);
+      });
+
+      it("on one page, with no page hint and no recorded occurrence, opens nothing", async function () {
+        const paper = samePage();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation(),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.opened, []);
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "error: The complete quote matched more than one occurrence on the PDF page.",
+        ]);
+      });
+
+      it("on one page, a stored page hint naming another page settles nothing", async function () {
+        const paper = samePage();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          // Page index 0 does not hold the quote.
+          quoteCitation: quoteCitation({ pageHintIndex: 0 }),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.opened, []);
+        assert.equal(r.status?.variant, "error");
+      });
+
+      it("on one page of an unreadable PDF, the stored page hint naming that page settles the tie in the viewer", async function () {
+        const paper = samePage({ backgroundText: false });
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({ pageHintIndex: 1 }),
+        });
+
+        await r.click(button);
+
+        // The viewer verifies the page and the reader moves there; as above,
+        // the jump without an occurrence ends on the page.
+        assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+        assert.deepEqual(r.reader(11)!.navigations, [
+          { pageIndex: 1, pageLabel: "102" },
+        ]);
+        assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
+        assert.equal(r.status?.variant, "error");
+      });
+
+      it("on two pages, the first copy wins", async function () {
+        const paper = twoPages();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation(),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.opened, [
+          { itemId: 11, location: { pageIndex: 0 } },
+        ]);
+      });
+
+      it("on two pages, the stored page hint picks the copy, and the reader opens there only after verification", async function () {
+        const paper = twoPages();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({
+            pageHintIndex: 2,
+            pageHintLabel: "103",
+          }),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
+        assert.deepEqual(r.opened, [
+          { itemId: 11, location: { pageIndex: 2 } },
+        ]);
+      });
+
+      it("on two pages of an unreadable PDF, the stored page hint picks the copy the viewer moves to", async function () {
+        const paper = twoPages({ backgroundText: false });
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({
+            pageHintIndex: 2,
+            pageHintLabel: "103",
+          }),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+        assert.deepEqual(r.reader(11)!.navigations, [
+          { pageIndex: 2, pageLabel: "103" },
+        ]);
+      });
     });
 
     it("T5: with no candidates and no reader, the click reports that no reader is open", async function () {
@@ -336,7 +633,7 @@ describe("citation navigation characterization", function () {
       assert.deepEqual(r.events, [REVALIDATION_EVENT]);
     });
 
-    it("T4 → T6: a wrong explicit page label falls through to the full search", async function () {
+    it("T4: a wrong explicit page label moves nothing before the quote is found", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -345,15 +642,19 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
+      // U1 (was: a failed "full-quote-not-on-page" jump on page 103 first).
+      assert.deepEqual(failedJumpStages(r), []);
       assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
     });
 
-    it("T6 opens each candidate in turn and moves past one whose jump fails (D1, D9)", async function () {
+    it("passes over an unreadable candidate whose PDF is not the certificate's (D9)", async function () {
       const first = smith({ backgroundText: false });
       const second = smith({
         itemId: 20,
@@ -374,13 +675,18 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
+      // U1 (was: the ladder's full search opened each candidate in turn).
+      // Now the viewer fallback opens the first unreadable paper, finds the
+      // quote there, and its jump proves it is another PDF; the second paper
+      // is then read the same way and holds the cited PDF.
       assert.deepEqual(r.opened, [
         { itemId: 11, location: undefined },
         { itemId: 21, location: undefined },
       ]);
-      // The first paper's jump fails; the loop moves on, and the last
-      // candidate's verdict is the one reported.
       assert.deepEqual(failedJumpStages(r), ["source-fingerprint-mismatch"]);
+      assert.deepEqual(r.reader(21)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
@@ -389,7 +695,7 @@ describe("citation navigation characterization", function () {
       assert.equal(lookupCachedCitationPage(21, QUOTE_A), "102");
     });
 
-    it("T2 -> T3: a hidden-cache jump that fails is followed by the stored page hint", async function () {
+    it("a verified page whose highlight fails ends the click there; a stored page hint adds no second try", async function () {
       // Background text finds the page, but the viewer cannot highlight it.
       const paper = smith({ viewerFinds: false });
       const r = install({ papers: [paper] });
@@ -402,26 +708,20 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
+      // U1 (was: the hint tier and the full search each jumped again, three
+      // failed jumps in all, with "Opening cited page hint..." and
+      // "Verifying cited quote..." on the way).
       assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
-      assert.deepEqual(r.reader(11)!.navigations, [
-        { pageIndex: 1 },
-        // The stored hint reuses the open reader and adds its label.
-        { pageIndex: 1, pageLabel: "102" },
-      ]);
-      assert.deepEqual(failedJumpStages(r), [
-        "full-match-not-found",
-        "full-match-not-found",
-        "full-match-not-found",
-      ]);
+      assert.deepEqual(r.reader(11)!.navigations, [{ pageIndex: 1 }]);
+      assert.deepEqual(failedJumpStages(r), ["full-match-not-found"]);
       assert.deepEqual(statusTexts(r), [
-        "sending: Opening cited page hint...",
-        "sending: Verifying cited quote...",
         "sending: Locating cited quote...",
         "error: Jumped to page 102. Paragraph jump failed: FindController completed the full-PDF search and found no complete quote match.",
       ]);
+      assert.isNull(lookupCachedCitationPage(11, QUOTE_A));
     });
 
-    it("T3: a page hint with a label and no index is resolved through the viewer's page labels", async function () {
+    it("T3: a label-only page hint opens nothing; the verified page is opened by its label", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -430,36 +730,39 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
+      // U1 (was: the same open and move, after "Opening cited page hint..."
+      // and "Verifying cited quote..."; the move came from the hint).
       assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
       assert.deepEqual(r.reader(11)!.navigations, [
         { pageIndex: 1, pageLabel: "102" },
       ]);
-      assert.deepEqual(statusTexts(r), [
-        "sending: Opening cited page hint...",
-        "sending: Verifying cited quote...",
-        "ready: Jumped to cited source (page 102, paragraph matched)",
-      ]);
-    });
-
-    it("T4: a page label the viewer cannot resolve falls through to the full search", async function () {
-      const paper = smith({ backgroundText: false });
-      const r = install({ papers: [paper] });
-      const button = trustedButton(r, paper, {
-        citationLabel: "(Smith, 2020, page xx)",
-      });
-      assert.equal(button.dataset.citationPageLabel, "xx");
-
-      await r.click(button);
-
-      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
-      assert.deepEqual(r.reader(11)!.navigations, []);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
     });
 
-    it("T4: an unresolvable page label does not survive a full search that misses", async function () {
+    it("T4: a page label the viewer cannot resolve changes nothing", async function () {
+      const paper = smith({ backgroundText: false });
+      const r = install({ papers: [paper] });
+      const button = trustedButton(r, paper, {
+        citationLabel: "(Smith, 2020, page xx)",
+      });
+
+      await r.click(button);
+
+      // U1 (was: no navigation; FindController alone scrolled the reader).
+      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
+      assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
+        "ready: Jumped to cited source (page 102, paragraph matched)",
+      ]);
+    });
+
+    it("T4: an unreadable PDF without the quote is opened in the viewer, but never moved", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, {
@@ -469,8 +772,10 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      // The T4 reason (`Could not resolve cited page label "xx".`) is never
-      // shown: the full search that follows always replaces it.
+      // U1: the bounded viewer fallback opens the unreadable PDF to read it
+      // (D9), and the page label never moves it.
+      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      assert.deepEqual(r.reader(11)!.navigations, []);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "error: The complete quote was not found in the live PDF text.",
@@ -478,7 +783,7 @@ describe("citation navigation characterization", function () {
     });
 
     describe("page occurrence (D4)", function () {
-      // Not pinned here: the T5 and T6 fallbacks to the located result's occurrence. This doubled viewer text makes the exact-only live locate report "ambiguous", so those tiers never jump here. The argument spy in citationNavigationJumpArguments.test.ts pins them.
+      // Not pinned here: the T5 fallback to the located result's occurrence. This doubled viewer text makes the exact-only live locate report "ambiguous", so it never jumps here. The argument spy in citationNavigationJumpArguments.test.ts pins it.
       // The background worker reads the quote once on page index 1, but the
       // viewer's page text holds it twice and FindController reports two
       // matches. Only a recorded occurrence can pick between them.
@@ -501,7 +806,7 @@ describe("citation navigation characterization", function () {
           .reader(11)!
           .fixture.dispatched.filter((entry) => entry.type === "again").length;
 
-      it("T1 hands the jump only the quote citation's occurrence", async function () {
+      it("a verified page cache leaves the quote citation's occurrence to the jump", async function () {
         const paper = twice();
         const r = install({ papers: [paper] });
         rememberCachedCitationPage(11, QUOTE_A, 1, "102");
@@ -511,17 +816,19 @@ describe("citation navigation characterization", function () {
 
         await r.click(button);
 
+        // U1 (was: opened at the cached page and label, no "Locating").
         assert.equal(agains(r), 1);
         assert.deepEqual(failedJumpStages(r), []);
         assert.deepEqual(r.opened, [
-          { itemId: 11, location: { pageIndex: 1, pageLabel: "102" } },
+          { itemId: 11, location: { pageIndex: 1 } },
         ]);
         assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
           "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
 
-      it("T2 hands the jump the quote citation's occurrence over the hidden cache's", async function () {
+      it("hands the jump the quote citation's occurrence over the verified one", async function () {
         const paper = twice();
         const r = install({ papers: [paper] });
         const button = trustedButton(r, paper, {
@@ -536,11 +843,12 @@ describe("citation navigation characterization", function () {
           { itemId: 11, location: { pageIndex: 1 } },
         ]);
         assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
           "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
 
-      it("T2 falls back to the hidden cache's occurrence when the quote citation has none", async function () {
+      it("falls back to the verified occurrence when the quote citation has none", async function () {
         const paper = twice();
         const r = install({ papers: [paper] });
         const button = trustedButton(r, paper);
@@ -553,12 +861,13 @@ describe("citation navigation characterization", function () {
           { itemId: 11, location: { pageIndex: 1 } },
         ]);
         assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
           "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
     });
 
-    it("T2 through a real mousedown also warms the hidden cache and reaches the same page", async function () {
+    it("a real mousedown warms the PDF text and reaches the same page", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper);
@@ -567,6 +876,7 @@ describe("citation navigation characterization", function () {
 
       assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
       assert.deepEqual(failedJumpStages(r), []);
@@ -593,13 +903,18 @@ describe("citation navigation characterization", function () {
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
-      assert.deepEqual(r.reader(11)!.navigations, []);
+      // U1 (was: no navigation). The reader that turned up is moved to the
+      // page the viewer found the quote on.
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
       assert.equal(r.focusCount, 1);
     });
 
-    it("T2 rescues a partial span via the hidden cache (D14)", async function () {
-      // Page index 1 holds only the first two thirds of QUOTE_B. The hidden
-      // cache locates the partial span and the paragraph jump rescues it.
+    it("a partial span verified in the background is rescued by the jump (D14)", async function () {
+      // Page index 1 holds only the first two thirds of QUOTE_B. Background
+      // verification accepts that span for a conversation paper, and the
+      // paragraph jump rescues it.
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, { quoteText: QUOTE_B });
@@ -608,22 +923,29 @@ describe("citation navigation characterization", function () {
 
       assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
     });
 
-    it("without background text only the exact-only T6 runs and refuses a partial span (D2)", async function () {
+    it("without background text, the viewer accepts a conversation paper's partial span, as for untrusted quotes (D2)", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, { quoteText: QUOTE_B });
 
       await r.click(button);
 
+      // U1 (was: the exact-only full search refused the span: no search and
+      // "The complete quote was not found in the live PDF text."). The
+      // viewer fallback gates a partial span by acceptsOpenedQuoteMatch, which
+      // lets a paper the conversation carries through.
       assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
-      assert.deepEqual(r.findQueries(11), []);
+      assert.deepEqual(r.findQueries(11), [
+        "Dopamine release in the ventral striatum tracked the reward prediction error on",
+      ]);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
-        "error: The complete quote was not found in the live PDF text.",
+        "ready: Jumped to cited source (page 102, paragraph matched)",
       ]);
     });
 
@@ -634,8 +956,8 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      // Every tier skips a candidate that is not auto-navigable, and the
-      // active-reader last resort only runs when there are no candidates.
+      // A candidate that is not auto-navigable is never read or opened, and
+      // the active-reader last resort only runs when there are no candidates.
       assert.deepEqual(r.opened, []);
       assert.deepEqual(r.pdfWorkerReads, []);
       assert.deepEqual(statusTexts(r), [
@@ -644,14 +966,22 @@ describe("citation navigation characterization", function () {
       ]);
     });
 
-    it("T6: the full search opens each candidate without a location", async function () {
+    it("an unreadable PDF opens in the viewer without a location, and moves once the quote is found", async function () {
       const paper = smith({ backgroundText: false });
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper);
 
       await r.click(button);
 
+      // U1 (was: the full search opened it and FindController alone moved
+      // it). The move now comes after the viewer found the quote.
       assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      const timeline = r.timeline;
+      assert.equal(timeline[timeline.length - 1], "navigate 11");
+      assert.isBelow(
+        timeline.indexOf("open 11"),
+        timeline.indexOf("navigate 11"),
+      );
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "ready: Jumped to cited source (page 102, paragraph matched)",
@@ -659,14 +989,15 @@ describe("citation navigation characterization", function () {
       assert.equal(lookupCachedCitationPage(11, QUOTE_A), "102");
     });
 
-    it("reports the full search's verdict when every tier misses", async function () {
+    it("reports the background verdict for a quote the paper does not hold, and opens nothing", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       const button = trustedButton(r, paper, { quoteText: QUOTE_MISSING });
 
       await r.click(button);
 
-      assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+      // U1 (was: the full search opened the paper to search it).
+      assert.deepEqual(r.opened, []);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
         "error: The complete quote was not found in the live PDF text.",
@@ -685,7 +1016,9 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
+      // U1 (was: no "Locating" status before the error).
       assert.deepEqual(statusTexts(r), [
+        "sending: Locating cited quote...",
         "error: Could not open the cited source. The citation was preserved.",
       ]);
       assert.deepEqual(r.events, [REVALIDATION_EVENT]);
@@ -731,7 +1064,8 @@ describe("citation navigation characterization", function () {
     describe("verifiedFullSpan (D3)", function () {
       // Page index 1 holds only the first two thirds of QUOTE_B, so the
       // paragraph jump can succeed only through the largest-unique-partial
-      // span, which verifiedFullSpan switches off.
+      // span, which verifiedFullSpan switches off. The PDF is unreadable in
+      // the background, so the viewer verifies the span before the jump.
       async function clickWithCitation(patch: Partial<QuoteCitation>) {
         const paper = smith({ backgroundText: false });
         const r = install({ papers: [paper] });
@@ -752,6 +1086,12 @@ describe("citation navigation characterization", function () {
         assert.deepEqual(r.findQueries(11), [], "no partial span is tried");
         assert.include(failedJumpStages(r), "full-quote-not-on-page");
         assert.equal(r.status?.variant, "error");
+        // U1: the jump still gets the certificate after verification, on the
+        // page the viewer verified (was: the cached page, opened first).
+        assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
+        assert.deepEqual(r.reader(11)!.navigations, [
+          { pageIndex: 1, pageLabel: "102" },
+        ]);
       });
 
       it("is off for an exact match grounded in non-pdf.js text", async function () {
@@ -763,6 +1103,7 @@ describe("citation navigation characterization", function () {
         assert.include(QUOTE_B, r.findQueries(11)[0]);
         assert.notEqual(r.findQueries(11)[0], QUOTE_B);
         assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
           "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
@@ -774,12 +1115,13 @@ describe("citation navigation characterization", function () {
         });
         assert.lengthOf(r.findQueries(11), 1);
         assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
           "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
     });
 
-    it("hands the jump the quote citation's fingerprint, which can fail a tier (D4)", async function () {
+    it("hands the jump the quote citation's fingerprint, which can rule the paper out (D4)", async function () {
       const paper = smith();
       const r = install({ papers: [paper] });
       rememberCachedCitationPage(11, QUOTE_A, 1, "102");
@@ -791,13 +1133,11 @@ describe("citation navigation characterization", function () {
 
       await r.click(button);
 
-      // Every tier passes the same fingerprint, so every tier fails the same
-      // way; the full search finds the quote but cannot jump to it.
-      assert.deepEqual(failedJumpStages(r), [
-        "source-fingerprint-mismatch",
-        "source-fingerprint-mismatch",
-        "source-fingerprint-mismatch",
-      ]);
+      // U1 (was: three tiers each failed the same way). The one verified
+      // paper is opened at its page, its jump fails on the fingerprint, and
+      // no other paper is left to try.
+      assert.deepEqual(failedJumpStages(r), ["source-fingerprint-mismatch"]);
+      assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(r.findQueries(11), []);
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",

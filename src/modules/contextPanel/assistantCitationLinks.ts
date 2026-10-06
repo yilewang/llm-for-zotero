@@ -59,6 +59,7 @@ import {
   lookupCitationPage,
 } from "../../services/pdf/citationNavigationCache";
 import {
+  lookupCachedQuoteLocationForAttachment,
   resolvePageIndexForLabel,
   warmPageTextCache,
   warmQuoteLocationCacheForAttachment,
@@ -97,11 +98,6 @@ import {
   taskPaperPassagePageLabel,
   type TaskPaperPassageTarget,
 } from "./taskProgress/passageSource";
-
-type QuoteCitationPageHint = {
-  pageIndex?: number;
-  pageLabel?: string;
-};
 
 type CitationCandidateProvenance =
   | "message-context"
@@ -246,25 +242,14 @@ function logCitationNavigationTiming(
   });
 }
 
-function resolveQuoteCitationPageHint(
-  citation: QuoteCitation | null | undefined,
-): QuoteCitationPageHint | null {
-  if (!citation) return null;
-  const rawPageIndex = Number(citation.pageHintIndex);
-  const pageIndex =
-    Number.isFinite(rawPageIndex) && rawPageIndex >= 0
-      ? Math.floor(rawPageIndex)
-      : undefined;
-  const pageLabel = sanitizeText(citation.pageHintLabel || "").trim();
-  if (pageIndex === undefined && !pageLabel) return null;
-  const hint: QuoteCitationPageHint = {};
-  if (pageIndex !== undefined) hint.pageIndex = pageIndex;
-  if (pageLabel) hint.pageLabel = pageLabel;
-  return hint;
+/** A quote citation's stored page index, when it is a usable one. */
+function normalizeStoredPageHintIndex(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const pageIndex = Number(value);
+  return Number.isFinite(pageIndex) && pageIndex >= 0
+    ? Math.floor(pageIndex)
+    : undefined;
 }
-
-export const resolveQuoteCitationPageHintForTests =
-  resolveQuoteCitationPageHint;
 
 export type AssistantCitationPaperCandidate = {
   paperContext: PaperContextRef;
@@ -1925,23 +1910,6 @@ export function resolveAutoNavigableCitationCandidatesForTests(input: {
   );
 }
 
-function selectSingleAutoNavigablePdfHintCandidate(params: {
-  orderedCandidates: AssistantCitationPaperCandidate[];
-  autoNavigableCandidateKeys: Set<string>;
-}): AssistantCitationPaperCandidate | null {
-  const autoNavigableCandidates = params.orderedCandidates.filter(
-    (candidate) =>
-      isPdfBackedCitationCandidate(candidate) &&
-      isAutoNavigableCitationCandidate(
-        candidate,
-        params.autoNavigableCandidateKeys,
-      ),
-  );
-  return autoNavigableCandidates.length === 1
-    ? autoNavigableCandidates[0]
-    : null;
-}
-
 function mergeCitationCandidates(
   ...candidateSets: AssistantCitationPaperCandidate[][]
 ): AssistantCitationPaperCandidate[] {
@@ -2377,7 +2345,6 @@ async function navigateUntrustedQuoteCitation(params: {
     searchTexts,
     displayCitationLabel: params.displayCitationLabel,
     policy: {
-      strategy: "verify-first",
       jumpFallbackTexts: false,
       rememberPage: true,
     },
@@ -2577,28 +2544,31 @@ async function resolveAndNavigateAssistantCitation(params: {
       return;
     }
 
-    // Every tier tries only candidates a click may navigate to on its own.
+    // Only candidates a click may navigate to on its own are tried.
     const navigableCandidates = orderedCandidates.filter(
       (candidate) =>
         isPdfBackedCitationCandidate(candidate) &&
         isAutoNavigableCitationCandidate(candidate, autoNavigableCandidateKeys),
     );
-    // Stored quote page hint — non-authoritative fast first paint after the
-    // verified caches miss, for the one candidate it can belong to.
-    const storedPageHint =
-      navigationMode === "trusted-quote"
-        ? resolveQuoteCitationPageHint(quoteCitation)
-        : null;
-    const hintedCandidate = storedPageHint
-      ? selectSingleAutoNavigablePdfHintCandidate({
-          orderedCandidates,
-          autoNavigableCandidateKeys,
-        })
-      : null;
+    if (status) setStatus(status, "Locating cited quote...", "sending");
     const outcome = await navigateToQuote({
+      // A page cache that already places the quote in a paper (a verified
+      // jump, or the hidden location the render warmed) puts that paper
+      // first. It never moves the reader: the paper is still read first.
       candidates: buildQuoteTargetCandidates(
         navigableCandidates,
         extractedCitation,
+      ).map((candidate) =>
+        lookupCitationPage({
+          contextItemId: candidate.contextItemId,
+          quoteText: normalizedQuoteText,
+        }) ||
+        lookupCachedQuoteLocationForAttachment(
+          candidate.contextItemId,
+          normalizedQuoteText,
+        )
+          ? { ...candidate, cachedPage: true }
+          : candidate,
       ),
       searchTexts: [normalizedQuoteText],
       preferredFullQuoteText,
@@ -2607,43 +2577,21 @@ async function resolveAndNavigateAssistantCitation(params: {
         citationId: quoteCitation?.id,
         sourceFingerprint: quoteCitation?.sourceFingerprint,
         sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
+        // The stored page hint only picks among identical copies of the
+        // quote; it never opens or moves a reader.
+        pageIndex: normalizeStoredPageHintIndex(quoteCitation?.pageHintIndex),
         verifiedFullSpan,
       },
-      hints: {
-        storedPage:
-          storedPageHint && hintedCandidate
-            ? {
-                contextItemId: hintedCandidate.contextItemId,
-                pageHint: storedPageHint,
-              }
-            : undefined,
-        // Set once when the button is built, so reading it here is the same
-        // as reading it when the ladder reaches it.
-        pageLabel: sanitizeText(
-          params.button.dataset.citationPageLabel || "",
-        ).trim(),
-      },
       policy: {
-        strategy: "hint-ladder",
         rememberPage: true,
-        fullSearchExactOnly: true,
         // Only a click that resolved no candidate at all searches whatever
         // PDF is open.
         activeReaderFallback: !orderedCandidates.length,
       },
       trace: (stage, details) =>
         markCitationNavigationTiming(timing, stage, details),
-      onProgress: (step) => {
-        if (!status) return;
-        if (step === "opening-page-hint") {
-          setStatus(status, "Opening cited page hint...", "sending");
-        } else if (step === "verifying-page-hint") {
-          setStatus(status, "Verifying cited quote...", "sending");
-        } else {
-          setStatus(status, "Locating cited quote...", "sending");
-        }
-      },
     });
+    timingOutcome = outcome.kind === "jumped" ? outcome.tier : outcome.kind;
     if (outcome.kind === "jumped") {
       updateCitationButtonPage(
         params.button,
@@ -2657,16 +2605,22 @@ async function resolveAndNavigateAssistantCitation(params: {
           "ready",
         );
       }
-      timingOutcome = outcome.tier;
       quoteJumpSucceeded = true;
       return;
     }
-
-    // The ladder reports every miss as not-found, with the last tier's reason.
-    if (status && outcome.kind === "not-found") {
-      setStatus(status, outcome.reason, "error");
+    if (status) {
+      setStatus(
+        status,
+        outcome.kind === "page-only"
+          ? buildParagraphJumpFailureStatus(outcome.pageLabel, outcome.jump)
+          : outcome.kind === "open-failed"
+            ? "Could not open the cited paper."
+            : outcome.kind === "no-candidates"
+              ? "Could not resolve the cited quote to a unique page."
+              : outcome.reason,
+        "error",
+      );
     }
-    timingOutcome = "not-found";
   } catch (error) {
     timingOutcome = "error";
     appLogger.warn("LLM: Failed to navigate assistant citation", error);
@@ -2831,7 +2785,6 @@ export async function navigateToTaskPaperPassage(params: {
         openableInViewer: (contextItemId) =>
           Boolean(buildCandidateForContextItemId(contextItemId)),
         policy: {
-          strategy: "verify-first",
           jumpFallbackTexts: true,
           rememberPage: false,
         },
@@ -3142,10 +3095,6 @@ function createCitationButton(params: {
   if (primaryContextItemId) {
     citationButton.dataset.primaryCitationContextItemId =
       String(primaryContextItemId);
-  }
-  if (params.extractedCitation.pageLabel) {
-    citationButton.dataset.citationPageLabel =
-      params.extractedCitation.pageLabel;
   }
 
   // Tooltip: show a preview of the quoted text, or fallback to paper title

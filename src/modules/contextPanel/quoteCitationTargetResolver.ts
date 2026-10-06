@@ -43,6 +43,13 @@ export type QuoteTargetCandidate = {
   authoritative: boolean;
   /** Higher means the citation label agrees more strongly with this paper. */
   labelRank: number;
+  /**
+   * True when a page cache already places this quote in this paper: an
+   * earlier jump landed on it, or background text located it. Such a paper
+   * is read before others of the same standing, ahead of label agreement.
+   * It is only an order: the paper is still read before the reader moves.
+   */
+  cachedPage?: boolean;
 };
 
 export type QuoteTargetResolution =
@@ -177,6 +184,7 @@ function prioritizeCandidates(
       contextItemId,
       authoritative: Boolean(candidate.authoritative),
       labelRank: normalizeLabelRank(candidate.labelRank),
+      ...(candidate.cachedPage ? { cachedPage: true } : {}),
     };
     const existing = byContextItemId.get(contextItemId);
     if (!existing) {
@@ -189,6 +197,9 @@ function prioritizeCandidates(
       contextItemId,
       authoritative: existing.authoritative || normalized.authoritative,
       labelRank: Math.max(existing.labelRank, normalized.labelRank),
+      ...(existing.cachedPage || normalized.cachedPage
+        ? { cachedPage: true }
+        : {}),
     });
   }
   return Array.from(byContextItemId.values())
@@ -198,6 +209,10 @@ function prioritizeCandidates(
         Number(right.candidate.authoritative) -
         Number(left.candidate.authoritative);
       if (authoritativeDelta !== 0) return authoritativeDelta;
+      const cachedDelta =
+        Number(Boolean(right.candidate.cachedPage)) -
+        Number(Boolean(left.candidate.cachedPage));
+      if (cachedDelta !== 0) return cachedDelta;
       const labelDelta = right.candidate.labelRank - left.candidate.labelRank;
       if (labelDelta !== 0) return labelDelta;
       return left.index - right.index;

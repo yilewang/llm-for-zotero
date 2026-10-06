@@ -4,6 +4,7 @@ import type {
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
 import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 
 /**
  * Library chat discovers its sources at runtime, so an answer's quotes there
@@ -13,7 +14,9 @@ import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelec
  * open the paper they name without a quote to search.
  *
  * Characterization gate for the citation-navigator refactor (step 8): these
- * pin what a user sees today on both paths.
+ * pin what a user sees today on both paths. Since U1, a quote card the
+ * answer bound to its paper ("trusted") is also verified before any reader
+ * opens or moves; the last two cases pin that.
  */
 
 const SOURCE_QUOTE =
@@ -25,6 +28,9 @@ const SOURCE_PAGES = [
 const DECOY_PAGES = [
   "A second paper by the same author about cortical oscillations during sleep.",
 ];
+/** A quote the answer attributes to the source paper, which never says it. */
+const ABSENT_QUOTE =
+  "Grid cell modules realigned to the new enclosure geometry within minutes of the first exposure session";
 
 function getApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
@@ -57,6 +63,20 @@ function readersFor(attachmentId: number): any[] {
   return (Zotero.Reader._readers as any[]).filter(
     (reader) => reader?.itemID === attachmentId,
   );
+}
+
+/** The reader's current 0-based page, from the PDF.js viewer. */
+function readerPageIndex(reader: any): number | null {
+  for (const view of [
+    reader?._internalReader?._lastView,
+    reader?._internalReader?._primaryView,
+  ]) {
+    const frame = view?._iframeWindow;
+    const app = (frame?.wrappedJSObject || frame)?.PDFViewerApplication;
+    const page = Number(app?.pdfViewer?.currentPageNumber);
+    if (Number.isFinite(page) && page > 0) return page - 1;
+  }
+  return null;
 }
 
 describe("workflow: library chat citation navigation", function () {
@@ -241,5 +261,139 @@ describe("workflow: library chat citation navigation", function () {
       "Opened cited paper. Paragraph jump skipped: no quote text was available.",
     );
     assert.isAtLeast(navigation.focusRequests, 1, "Zotero is raised");
+  });
+
+  /**
+   * A quote card the answer bound to the source paper, for a quote that paper
+   * does not hold, with a stored page hint pointing at page 2.
+   */
+  async function renderTrustedAbsentQuoteCard(
+    source: WorkflowTestFixture,
+  ): Promise<{ win: Window; button: HTMLElement }> {
+    const win = await openLibraryChat(source.parentItemId);
+    const citation = buildQuoteCitation({
+      quoteText: ABSENT_QUOTE,
+      citationLabel: "(Fixture, 2024)",
+      sourceMatchText: ABSENT_QUOTE,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      itemId: source.parentItemId,
+      contextItemId: source.pdfAttachmentId,
+      pageHintIndex: 1,
+      pageHintLabel: "2",
+    });
+    assert.isOk(citation, "the quote citation is well formed");
+    await api.seedStandaloneConversation([
+      { role: "user", text: "What happens to grid cells in a new room?" },
+      {
+        role: "assistant",
+        text: `The source reports:\n\n> ${ABSENT_QUOTE}\n\n(Fixture, 2024)`,
+        quoteCitations: [citation!],
+      },
+    ]);
+    const findButton = () =>
+      win.document.querySelector<HTMLElement>(
+        ".llm-quote-card .llm-citation-icon",
+      );
+    await until(
+      () => Boolean(findButton()),
+      "the bound quote renders as a quote card with a source control",
+    );
+    assert.equal(
+      findButton()!.dataset.citationNavigationMode,
+      "trusted-quote",
+      "a quote bound to its paper takes the trusted path",
+    );
+    return { win, button: findButton()! };
+  }
+
+  it("opens no reader for a trusted quote card whose paper does not hold the quote", async function () {
+    const source = await api.createPaperWithPdfFixture({
+      title: "Fixture source paper",
+      pages: SOURCE_PAGES,
+    });
+    fixtures.push(source);
+    await setCitationMetadata(source);
+    assert.lengthOf(readersFor(source.pdfAttachmentId), 0);
+    const { win, button } = await renderTrustedAbsentQuoteCard(source);
+
+    const readerApi = Zotero.Reader as any;
+    const open = readerApi.open;
+    const opens: unknown[][] = [];
+    readerApi.open = (...args: unknown[]) => {
+      opens.push(args);
+      return open.apply(readerApi, args);
+    };
+    let navigation: Awaited<
+      ReturnType<WorkflowTestApi["observeCitationNavigationFocus"]>
+    >;
+    try {
+      navigation = await api.observeCitationNavigationFocus(button);
+    } finally {
+      readerApi.open = open;
+    }
+
+    assert.isTrue(navigation.started);
+    assert.isTrue(navigation.finished, JSON.stringify(navigation));
+    assert.deepEqual(
+      opens,
+      [],
+      "neither the page hint nor a search opens the paper before the quote is verified",
+    );
+    assert.lengthOf(readersFor(source.pdfAttachmentId), 0);
+    assert.equal(
+      statusText(win),
+      "The complete quote was not found in the live PDF text.",
+      JSON.stringify(navigation.diagnostics),
+    );
+  });
+
+  it("does not move an open reader to a trusted quote card's page hint before verifying it", async function () {
+    const source = await api.createPaperWithPdfFixture({
+      title: "Fixture source paper",
+      pages: SOURCE_PAGES,
+    });
+    fixtures.push(source);
+    await setCitationMetadata(source);
+    const reader = await Zotero.Reader.open(source.pdfAttachmentId);
+    await (reader as any)._initPromise;
+    await (reader as any)._waitForReader();
+    await until(
+      () => readerPageIndex(reader) === 0,
+      "the open reader shows page 1",
+    );
+    const { win, button } = await renderTrustedAbsentQuoteCard(source);
+
+    const target = reader as any;
+    const navigate = target.navigate;
+    const navigations: unknown[] = [];
+    target.navigate = (...args: unknown[]) => {
+      navigations.push(args[0]);
+      return navigate.apply(target, args);
+    };
+    let navigation: Awaited<
+      ReturnType<WorkflowTestApi["observeCitationNavigationFocus"]>
+    >;
+    try {
+      navigation = await api.observeCitationNavigationFocus(button);
+    } finally {
+      delete target.navigate;
+      if (target.navigate !== navigate) target.navigate = navigate;
+    }
+
+    assert.isTrue(navigation.started);
+    assert.isTrue(navigation.finished, JSON.stringify(navigation));
+    assert.deepEqual(
+      navigations,
+      [],
+      "the reader is not sent to the hinted page before the quote is verified",
+    );
+    assert.equal(readerPageIndex(reader), 0, "the reader stays on page 1");
+    assert.lengthOf(readersFor(source.pdfAttachmentId), 1);
+    assert.equal(
+      statusText(win),
+      "The complete quote was not found in the live PDF text.",
+      JSON.stringify(navigation.diagnostics),
+    );
   });
 });

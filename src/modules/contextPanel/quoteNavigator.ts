@@ -2,13 +2,13 @@
  * How a click on a quote moves the reader to it.
  *
  * `navigateToQuote` takes the papers a caller has already resolved, the
- * wordings of the quote, and a policy, and reports what happened. Two
- * strategies share it: "verify-first" (untrusted quotes, Task progress) reads
- * candidates in the background and opens only the winner; "hint-ladder"
- * (trusted quotes) opens the most likely page first and lets the jump verify
- * it. It owns the steps in between: opening a reader, the paragraph jump, and
- * the verified page cache. Callers keep what a user sees around a click:
- * status text, button state, busy guards, and any event they raise afterwards.
+ * wordings of the quote, and a policy, and reports what happened. Every quote
+ * path (trusted and untrusted quote cards, Task progress) verifies first: it
+ * reads the candidates' text in the background and opens only the paper that
+ * holds the quote, at the page it was found on. It owns the steps in between:
+ * opening a reader, the paragraph jump, and the verified page cache. Callers
+ * keep what a user sees around a click: status text, button state, busy
+ * guards, and any event they raise afterwards.
  *
  * The steps it is built from are exported too, because the rest of the
  * citation code still drives some of them directly.
@@ -26,11 +26,8 @@ import {
   type LivePdfSelectionLocateResult,
   getPageLabelForIndex,
   locateQuoteInLivePdfReader,
-  lookupCachedQuoteLocationForAttachment,
-  resolvePageIndexForLabel,
   scrollToExactQuoteInReader,
   verifyQuoteLocationForAttachment,
-  warmQuoteLocationCacheForAttachment,
 } from "../../services/pdf/livePdfSelectionLocator";
 import {
   MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE,
@@ -541,6 +538,51 @@ function acceptsOpenedQuoteMatch(params: {
 export const acceptsOpenedQuoteMatchForTests = acceptsOpenedQuoteMatch;
 
 /**
+ * Where the answer recorded its quote. It only chooses among identical
+ * copies of the quote in a PDF that was read; it is never a page to open.
+ */
+export type RecordedQuoteLocation = {
+  /**
+   * Preferred page when complete copies sit on several pages. When every
+   * copy sits on this one page, it also settles that tie.
+   */
+  pageIndex?: number;
+  /** Which copy on its page the answer quoted, counting from 0. */
+  occurrence?: number;
+};
+
+/**
+ * A quote that occurs more than once on one page is "ambiguous" to the
+ * locator, though its page is certain. When the answer recorded which copy
+ * it quoted, or recorded that very page, the page is verified and the jump
+ * picks the copy.
+ */
+function settleCopiesOnOnePage(
+  result: LivePdfSelectionLocateResult,
+  recorded: RecordedQuoteLocation | undefined,
+): LivePdfSelectionLocateResult {
+  if (result.status !== "ambiguous" || !recorded) return result;
+  const pages = new Set(result.matchedPageIndexes);
+  if (pages.size !== 1) return result;
+  const [pageIndex] = pages;
+  // Without a recorded copy, only the recorded page may settle the tie;
+  // the jump then picks the copy, as the old page-hint path did.
+  if (recorded.occurrence === undefined && recorded.pageIndex !== pageIndex) {
+    return result;
+  }
+  return {
+    ...result,
+    status: "resolved",
+    computedPageIndex: pageIndex,
+    ...(recorded.occurrence !== undefined
+      ? { sourceMatchPageOccurrence: recorded.occurrence }
+      : {}),
+    reason:
+      "The complete quote occurs more than once on one PDF page; the recorded page or occurrence picks it.",
+  };
+}
+
+/**
  * Read a candidate's PDF text in the background to decide whether it really
  * contains the quote.  This deliberately does not open a reader tab: a click
  * may have several candidates in range and only the winner should ever appear
@@ -549,10 +591,17 @@ export const acceptsOpenedQuoteMatchForTests = acceptsOpenedQuoteMatch;
 async function verifyQuoteInCitationCandidate(
   candidate: QuoteTargetCandidate,
   quoteText: string,
+  recorded?: RecordedQuoteLocation,
 ): Promise<QuoteTargetVerification> {
-  const result = await verifyQuoteLocationForAttachment(
-    candidate.contextItemId,
-    quoteText,
+  const result = settleCopiesOnOnePage(
+    await verifyQuoteLocationForAttachment(
+      candidate.contextItemId,
+      quoteText,
+      recorded?.pageIndex !== undefined
+        ? { expectedPageIndex: recorded.pageIndex }
+        : undefined,
+    ),
+    recorded,
   );
   // When the whole quote does not align, the locator falls back to the largest
   // contiguous span that occurs exactly once.  A short shared phrase must not
@@ -587,7 +636,8 @@ async function verifyQuoteInCitationCandidate(
 
 /**
  * Opening a paper that turns out not to hold the quote is exactly the tab
- * spam this path exists to avoid, so only the few best guesses are tried.
+ * spam this path exists to avoid, so only the few best guesses are tried,
+ * at most this many per click.
  */
 const MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES = 3;
 
@@ -601,25 +651,46 @@ async function locateQuoteByOpeningCitationCandidates(
   params: {
     candidates: readonly QuoteTargetCandidate[];
     searchTexts: readonly string[];
+    /** How many readers this call may still open. */
+    limit: number;
+    recorded?: RecordedQuoteLocation;
   },
   deps: QuoteNavigatorDeps,
 ): Promise<{
   matches: ResolvedQuoteCitationMatch[];
   reason: string;
+  /** Readers this call tried to open. */
+  attempted: number;
+  /** Papers that would not open, or that the viewer read without the quote. */
+  missed: number[];
 }> {
   const matches: ResolvedQuoteCitationMatch[] = [];
+  const missed: number[] = [];
   let reason = "";
+  let attempted = 0;
+  const recordedPage = params.recorded?.pageIndex;
   for (const candidate of params.candidates.slice(
     0,
-    MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES,
+    Math.max(0, params.limit),
   )) {
+    attempted += 1;
     const reader = await deps.openReader(candidate.contextItemId);
     if (!reader) {
       reason = "Could not open the cited paper.";
+      missed.push(candidate.contextItemId);
       continue;
     }
     for (const searchText of params.searchTexts) {
-      const result = await deps.locateInReader(reader, searchText);
+      const result = settleCopiesOnOnePage(
+        await deps.locateInReader(
+          reader,
+          searchText,
+          recordedPage !== undefined
+            ? { expectedPageIndex: recordedPage }
+            : undefined,
+        ),
+        params.recorded,
+      );
       if (
         acceptsOpenedQuoteMatch({
           authoritative: candidate.authoritative,
@@ -642,190 +713,9 @@ async function locateQuoteByOpeningCitationCandidates(
       if (result.reason) reason = result.reason;
     }
     if (matches.length) break;
+    missed.push(candidate.contextItemId);
   }
-  return { matches, reason };
-}
-
-// ---------------------------------------------------------------------------
-// The trusted ladder's tiers
-
-/** What a tier's jump did, on the reader that tier opened. */
-type CitationParagraphJumpNavigation = {
-  reader: any;
-  contextItemId: number;
-  pageIndex: number;
-  pageLabel: string;
-  paragraphJump: ExactQuoteJumpResult;
-};
-
-type QuoteNavigationProvenance = {
-  citationId?: string;
-  sourceFingerprint?: string;
-  sourceMatchPageOccurrence?: number;
-  preferredFullQuoteText?: string;
-  verifiedSourceMatchText?: string;
-  verifiedFullSpan?: boolean;
-};
-
-async function navigateToCachedCitationPage(
-  contextItemId: number,
-  quoteText: string,
-  displayCitationLabel: string,
-  provenance: QuoteNavigationProvenance | undefined,
-  deps: QuoteNavigatorDeps,
-): Promise<CitationParagraphJumpNavigation | null> {
-  const cached = lookupCitationPage({ contextItemId, quoteText });
-  if (!cached) return null;
-  const targetPageIndex = Math.floor(cached.pageIndex);
-  const targetPageLabel =
-    typeof cached.pageLabel === "string" && cached.pageLabel.trim()
-      ? cached.pageLabel.trim()
-      : `${targetPageIndex + 1}`;
-
-  const reader = await deps.openReader(contextItemId, {
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-  });
-  if (!reader) return null;
-
-  const paragraphJump = await deps.jump({
-    reader,
-    contextItemId,
-    displayCitationLabel,
-    quoteText,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    ...provenance,
-  });
-  return {
-    reader,
-    contextItemId,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    paragraphJump,
-  };
-}
-
-async function navigateToHiddenQuoteLocation(
-  params: {
-    contextItemId: number;
-    quoteText: string;
-    displayCitationLabel: string;
-    pageIndex: number;
-    citationId?: string;
-    sourceFingerprint?: string;
-    sourceMatchPageOccurrence?: number;
-    preferredFullQuoteText?: string;
-    verifiedSourceMatchText?: string;
-    verifiedFullSpan?: boolean;
-  },
-  deps: QuoteNavigatorDeps,
-): Promise<CitationParagraphJumpNavigation | null> {
-  const targetPageIndex = Math.floor(params.pageIndex);
-  if (!Number.isFinite(targetPageIndex) || targetPageIndex < 0) return null;
-
-  const reader = await deps.openReader(params.contextItemId, {
-    pageIndex: targetPageIndex,
-  });
-  if (!reader) return null;
-
-  const targetPageLabel =
-    deps.pageLabelFor(reader, targetPageIndex) || `${targetPageIndex + 1}`;
-
-  const paragraphJump = await deps.jump({
-    reader,
-    contextItemId: params.contextItemId,
-    displayCitationLabel: params.displayCitationLabel,
-    quoteText: params.quoteText,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    citationId: params.citationId,
-    sourceFingerprint: params.sourceFingerprint,
-    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
-    preferredFullQuoteText: params.preferredFullQuoteText,
-    verifiedSourceMatchText: params.verifiedSourceMatchText,
-    verifiedFullSpan: params.verifiedFullSpan,
-  });
-  return {
-    reader,
-    contextItemId: params.contextItemId,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    paragraphJump,
-  };
-}
-
-async function navigateToStoredQuotePageHint(
-  params: {
-    contextItemId: number;
-    quoteText: string;
-    displayCitationLabel: string;
-    pageHint: QuoteNavigationPageHint;
-    citationId?: string;
-    sourceFingerprint?: string;
-    sourceMatchPageOccurrence?: number;
-    preferredFullQuoteText?: string;
-    verifiedFullSpan?: boolean;
-    onReaderOpened?: () => void;
-  },
-  deps: QuoteNavigatorDeps,
-): Promise<CitationParagraphJumpNavigation | null> {
-  const hintedPageIndex =
-    params.pageHint.pageIndex !== undefined
-      ? Math.floor(params.pageHint.pageIndex)
-      : undefined;
-  const hintedPageLabel = sanitizeText(params.pageHint.pageLabel || "").trim();
-  if (
-    hintedPageIndex !== undefined &&
-    (!Number.isFinite(hintedPageIndex) || hintedPageIndex < 0)
-  ) {
-    return null;
-  }
-  if (hintedPageIndex === undefined && !hintedPageLabel) return null;
-
-  const reader =
-    hintedPageIndex !== undefined
-      ? await deps.openReader(params.contextItemId, {
-          pageIndex: hintedPageIndex,
-          pageLabel: hintedPageLabel || undefined,
-        })
-      : await deps.openReader(params.contextItemId);
-  if (!reader) return null;
-  params.onReaderOpened?.();
-
-  let targetPageIndex = hintedPageIndex;
-  if (targetPageIndex === undefined) {
-    const resolvedPageIndex = resolvePageIndexForLabel(reader, hintedPageLabel);
-    if (resolvedPageIndex === null) return null;
-    targetPageIndex = resolvedPageIndex;
-    await navigateReaderToPage(reader, targetPageIndex, hintedPageLabel);
-  }
-
-  const targetPageLabel =
-    hintedPageLabel ||
-    deps.pageLabelFor(reader, targetPageIndex) ||
-    `${targetPageIndex + 1}`;
-
-  const paragraphJump = await deps.jump({
-    reader,
-    contextItemId: params.contextItemId,
-    displayCitationLabel: params.displayCitationLabel,
-    quoteText: params.quoteText,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    citationId: params.citationId,
-    sourceFingerprint: params.sourceFingerprint,
-    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
-    preferredFullQuoteText: params.preferredFullQuoteText,
-    verifiedFullSpan: params.verifiedFullSpan,
-  });
-  return {
-    reader,
-    contextItemId: params.contextItemId,
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-    paragraphJump,
-  };
+  return { matches, reason, attempted, missed };
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +727,7 @@ export type QuoteNavigatorDeps = {
   verifyInBackground: (
     candidate: QuoteTargetCandidate,
     quoteText: string,
+    recorded?: RecordedQuoteLocation,
   ) => Promise<QuoteTargetVerification>;
   /** Open (or reuse) an attachment's reader, at a page when one is given. */
   openReader: (
@@ -847,7 +738,7 @@ export type QuoteNavigatorDeps = {
   locateInReader: (
     reader: any,
     quoteText: string,
-    options?: { exactOnly?: boolean },
+    options?: { exactOnly?: boolean; expectedPageIndex?: number | null },
   ) => Promise<LivePdfSelectionLocateResult>;
   /** Scroll the reader to the quote and highlight it. */
   jump: (params: CitationParagraphJumpParams) => Promise<ExactQuoteJumpResult>;
@@ -872,25 +763,14 @@ export const defaultQuoteNavigatorDeps: QuoteNavigatorDeps = {
 };
 
 export type QuoteNavigationPolicy = {
-  /**
-   * "verify-first": read every candidate's text in the background and open
-   * only the paper found to hold the quote. A PDF whose text cannot be read
-   * in the background is opened in the viewer instead, a few at most.
-   *
-   * "hint-ladder": open the most likely page first and let the jump verify
-   * it there, falling through cached pages and hints to a full search (see
-   * `navigateByHintLadder`).
-   */
-  strategy: "verify-first" | "hint-ladder";
   /** Record the page a successful jump landed on in the page cache. */
   rememberPage: boolean;
-  /** verify-first: also hand the jump every search text as a wording. */
+  /** Also hand the jump every search text as a wording. */
   jumpFallbackTexts?: boolean;
-  /** hint-ladder: the full search accepts only the complete quote. */
-  fullSearchExactOnly?: boolean;
   /**
-   * hint-ladder: with no candidate at all, search the reader that is open.
-   * A caller turns this on only when it resolved no candidate whatsoever.
+   * With no candidate at all, search the reader that is already open: its
+   * text must hold the complete quote before the jump moves it. A caller
+   * turns this on only when it resolved no candidate whatsoever.
    */
   activeReaderFallback?: boolean;
 };
@@ -899,7 +779,16 @@ export type QuoteNavigationPolicy = {
 export type QuoteNavigationCertificate = {
   citationId?: string;
   sourceFingerprint?: string;
+  /**
+   * Which copy of the quote on its page the answer quoted. Verification
+   * also uses it to accept a page that holds the quote more than once.
+   */
   sourceMatchPageOccurrence?: number;
+  /**
+   * The page the answer recorded the quote on. It only chooses among
+   * identical copies on several pages; it is never a page to open.
+   */
+  pageIndex?: number;
   /**
    * The quote matched the PDF.js text exactly, so the jump must highlight
    * the whole quote and not a partial span of it.
@@ -907,62 +796,32 @@ export type QuoteNavigationCertificate = {
   verifiedFullSpan?: boolean;
 };
 
-export type QuoteNavigationPageHint = {
-  pageIndex?: number;
-  pageLabel?: string;
-};
-
-/** hint-ladder: pages to try before a full search. */
-export type QuoteNavigationHints = {
-  /** A page stored with the quote, for the one candidate it applies to. */
-  storedPage?: { contextItemId: number; pageHint: QuoteNavigationPageHint };
-  /** A page label written in the citation; tried on the first candidate. */
-  pageLabel?: string;
-};
-
-/** hint-ladder steps a caller may want to show while they run. */
-export type QuoteNavigationProgress =
-  | "opening-page-hint"
-  | "verifying-page-hint"
-  | "locating";
-
 /** Which step found the quote. */
-export type QuoteNavigationTier =
-  | "verified"
-  | "verified-cache"
-  | "hidden-cache"
-  | "stored-page-hint"
-  | "explicit-page-hint"
-  | "full-search-active-reader"
-  | "full-search-candidate";
+export type QuoteNavigationTier = "verified" | "active-reader";
 
 export type QuoteNavigationRequest = {
-  /** The papers to try, as the caller resolved and ranked them. */
+  /**
+   * The papers to try, as the caller resolved and ranked them. A candidate's
+   * `cachedPage` only moves it earlier in the reading order.
+   */
   candidates: readonly QuoteTargetCandidate[];
   /**
-   * verify-first: more papers, asked for only when none of `candidates`
-   * holds the quote. Their verdict is merged with the first one's, which
-   * keeps precedence.
+   * More papers, asked for only when none of `candidates` holds the quote.
+   * Their verdict is merged with the first one's, which keeps precedence.
    */
   moreCandidates?: () => Promise<readonly QuoteTargetCandidate[]>;
-  /**
-   * The wordings to verify, best first. The hint ladder searches for the
-   * first one only.
-   */
+  /** The wordings to verify, best first. */
   searchTexts: readonly string[];
-  /** hint-ladder: the fuller displayed passage, tried before the quote. */
+  /** The fuller displayed passage, which the jump tries before the quote. */
   preferredFullQuoteText?: string;
   /** The citation label the jump logs. */
   displayCitationLabel: string;
-  /** verify-first: whether a candidate may be opened in the viewer. */
+  /** Whether a candidate whose text would not read may open in the viewer. */
   openableInViewer?: (contextItemId: number) => boolean;
   certificate?: QuoteNavigationCertificate;
-  hints?: QuoteNavigationHints;
   policy: QuoteNavigationPolicy;
   /** Called with each timing stage the caller may want to record. */
   trace?: (stage: string, details?: unknown) => void;
-  /** Called as hint-ladder steps start. */
-  onProgress?: (step: QuoteNavigationProgress) => void;
 };
 
 export type QuoteNavigationOutcome =
@@ -983,10 +842,7 @@ export type QuoteNavigationOutcome =
       pageLabel: string;
       jump: ExactQuoteJumpResult;
     }
-  /**
-   * No candidate holds the quote. For the hint ladder: every tier missed,
-   * and `reason` is the last one's.
-   */
+  /** No candidate holds the quote. */
   | { kind: "not-found"; reason: string }
   /** No candidate's text could be read, and the viewer did not find it. */
   | { kind: "unverifiable"; reason: string }
@@ -996,139 +852,294 @@ export type QuoteNavigationOutcome =
   | { kind: "no-candidates" };
 
 /**
- * Move the reader to a quote, the way `req.policy` says, and report what
- * happened. Nothing here touches the status line or the button.
+ * Move the reader to a quote and report what happened. Nothing here touches
+ * the status line or the button.
+ *
+ * Every candidate's PDF text is read in the background first, and only the
+ * paper found to hold the quote is opened, at the page it was found on. A PDF
+ * whose text cannot be read in the background is opened in the viewer
+ * instead, a few at most, and must hold the quote there before the reader
+ * moves to it. No cached page or page hint opens or moves a reader before
+ * the quote is verified.
  */
 export async function navigateToQuote(
   req: QuoteNavigationRequest,
   deps: QuoteNavigatorDeps = defaultQuoteNavigatorDeps,
 ): Promise<QuoteNavigationOutcome> {
-  return req.policy.strategy === "hint-ladder"
-    ? navigateByHintLadder(req, deps)
-    : navigateVerifyFirst(req, deps);
-}
-
-async function navigateVerifyFirst(
-  req: QuoteNavigationRequest,
-  deps: QuoteNavigatorDeps,
-): Promise<QuoteNavigationOutcome> {
-  if (!req.candidates.length || !req.searchTexts.length) {
-    return { kind: "no-candidates" };
+  if (!req.searchTexts.length) return { kind: "no-candidates" };
+  if (!req.candidates.length) {
+    return req.policy.activeReaderFallback
+      ? navigateInActiveReader(req, deps)
+      : { kind: "no-candidates" };
   }
-  let candidatesByContextItemId = new Map(
+  const candidatesByContextItemId = new Map(
     req.candidates.map((candidate) => [candidate.contextItemId, candidate]),
   );
+  const certificate = req.certificate || {};
+  const recorded: RecordedQuoteLocation | undefined = req.certificate
+    ? {
+        pageIndex: certificate.pageIndex,
+        occurrence: certificate.sourceMatchPageOccurrence,
+      }
+    : undefined;
+  // A jump that finds another PDF than the certificate names rules that
+  // attachment out, and so does a viewer read that found no quote; the rest
+  // are verified again without them.
+  const ruledOut = new Set<number>();
+  const notRuledOut = (candidates: readonly QuoteTargetCandidate[]) =>
+    candidates.filter((candidate) => !ruledOut.has(candidate.contextItemId));
   const verifyCandidates = (candidates: readonly QuoteTargetCandidate[]) =>
     resolveVerifiedQuoteTarget({
       candidates,
       searchTexts: req.searchTexts,
-      verify: deps.verifyInBackground,
+      verify: (candidate, quoteText) =>
+        recorded
+          ? deps.verifyInBackground(candidate, quoteText, recorded)
+          : deps.verifyInBackground(candidate, quoteText),
     });
-  let resolution = await verifyCandidates(req.candidates);
-  if (resolution.status !== "resolved" && req.moreCandidates) {
-    // The first papers did not hold the quote after all (for a recorded
-    // paper, its item id may have been reused, or its text may not extract).
-    // Rather than dead-end, look further.
-    const searched = await req.moreCandidates();
-    const fallbackCandidates = searched.filter(
-      (candidate) => !candidatesByContextItemId.has(candidate.contextItemId),
-    );
-    if (fallbackCandidates.length) {
-      candidatesByContextItemId = new Map(
-        [...req.candidates, ...fallbackCandidates].map((candidate) => [
-          candidate.contextItemId,
+  let fallbackCandidates: QuoteTargetCandidate[] | null = null;
+  let viewerOpensLeft = MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES;
+  let wrongPdf: QuoteNavigationOutcome | null = null;
+
+  for (;;) {
+    let resolution = await verifyCandidates(notRuledOut(req.candidates));
+    if (resolution.status !== "resolved" && req.moreCandidates) {
+      // The first papers did not hold the quote after all (for a recorded
+      // paper, its item id may have been reused, or its text may not
+      // extract). Rather than dead-end, look further, once per click.
+      if (!fallbackCandidates) {
+        const searched = await req.moreCandidates();
+        fallbackCandidates = searched.filter(
+          (candidate) =>
+            !candidatesByContextItemId.has(candidate.contextItemId),
+        );
+        for (const candidate of fallbackCandidates) {
+          candidatesByContextItemId.set(candidate.contextItemId, candidate);
+        }
+      }
+      const remaining = notRuledOut(fallbackCandidates);
+      if (remaining.length) {
+        // Only the papers the first pass skipped are re-read, so the second
+        // verdict covers fewer papers than the click does.  Merging keeps the
+        // first papers' standing — a scanned PDF stays eligible for the viewer
+        // fallback instead of being written off by a search that failed
+        // somewhere else.
+        resolution = mergeQuoteTargetResolutions({
+          recorded: resolution,
+          searched: await verifyCandidates(remaining),
+        });
+      }
+    }
+    req.trace?.("quote verification", {
+      status: resolution.status,
+      // How many PDFs this click had to read. A jump to a paper the answer
+      // recorded should be 1; higher means the label search did the work.
+      pdfsRead: resolution.readCount,
+    });
+
+    let match: ResolvedQuoteCitationMatch | null = null;
+    let lastReason = "The cited quote was not found in the cited paper.";
+    if (resolution.status === "resolved") {
+      const candidate = candidatesByContextItemId.get(resolution.contextItemId);
+      if (candidate) {
+        match = {
           candidate,
-        ]),
+          pageIndex: resolution.pageIndex,
+          quoteText: resolution.quoteText,
+          sourceMatchText: resolution.sourceMatchText,
+          sourceMatchPageOccurrence: resolution.sourceMatchPageOccurrence,
+        };
+      }
+    } else if (resolution.status === "unverifiable") {
+      // Background text extraction failed for these; fall back to the viewer.
+      const opened = await locateQuoteByOpeningCitationCandidates(
+        {
+          candidates: resolution.contextItemIds
+            .map((contextItemId) =>
+              candidatesByContextItemId.get(contextItemId),
+            )
+            .filter(
+              (candidate): candidate is QuoteTargetCandidate =>
+                Boolean(candidate) &&
+                (req.openableInViewer?.(candidate!.contextItemId) ?? true),
+            ),
+          searchTexts: req.searchTexts,
+          limit: viewerOpensLeft,
+          recorded,
+        },
+        deps,
       );
-      // Only the papers the first pass skipped are re-read, so the second
-      // verdict covers fewer papers than the click does.  Merging keeps the
-      // first papers' standing — a scanned PDF stays eligible for the viewer
-      // fallback instead of being written off by a search that failed
-      // somewhere else.
-      resolution = mergeQuoteTargetResolutions({
-        recorded: resolution,
-        searched: await verifyCandidates(fallbackCandidates),
-      });
+      viewerOpensLeft -= opened.attempted;
+      for (const contextItemId of opened.missed) ruledOut.add(contextItemId);
+      match = opened.matches[0] || null;
+      if (opened.reason) lastReason = opened.reason;
+      if (!match && !opened.reason) lastReason = resolution.reason;
+    } else {
+      lastReason = resolution.reason;
     }
-  }
-  req.trace?.("quote verification", {
-    status: resolution.status,
-    // How many PDFs this click had to read. A jump to a paper the answer
-    // recorded should be 1; higher means the label search did the work.
-    pdfsRead: resolution.readCount,
-  });
 
-  let match: ResolvedQuoteCitationMatch | null = null;
-  let lastReason = "The cited quote was not found in the cited paper.";
-  if (resolution.status === "resolved") {
-    const candidate = candidatesByContextItemId.get(resolution.contextItemId);
-    if (candidate) {
-      match = {
-        candidate,
-        pageIndex: resolution.pageIndex,
-        quoteText: resolution.quoteText,
-        sourceMatchText: resolution.sourceMatchText,
-        sourceMatchPageOccurrence: resolution.sourceMatchPageOccurrence,
-      };
+    if (!match) {
+      if (wrongPdf) return wrongPdf;
+      return resolution.status === "unverifiable"
+        ? { kind: "unverifiable", reason: lastReason }
+        : { kind: "not-found", reason: lastReason };
     }
-  } else if (resolution.status === "unverifiable") {
-    // Background text extraction failed for these; fall back to the viewer.
-    const opened = await locateQuoteByOpeningCitationCandidates(
-      {
-        candidates: resolution.contextItemIds
-          .map((contextItemId) => candidatesByContextItemId.get(contextItemId))
-          .filter(
-            (candidate): candidate is QuoteTargetCandidate =>
-              Boolean(candidate) &&
-              (req.openableInViewer?.(candidate!.contextItemId) ?? true),
-          ),
-        searchTexts: req.searchTexts,
-      },
-      deps,
+
+    // Only the verified winner is ever opened, so a click can never leave the
+    // user parked on a paper that does not contain the quote.
+    const contextItemId = match.candidate.contextItemId;
+    const reader = await deps.openReader(contextItemId, {
+      pageIndex: match.pageIndex,
+      pageLabel: match.pageLabel,
+    });
+    if (!reader) return { kind: "open-failed", contextItemId };
+    const pageLabel =
+      deps.pageLabelFor(reader, match.pageIndex) ||
+      match.pageLabel ||
+      `${match.pageIndex + 1}`;
+
+    const jump = await deps.jump({
+      reader,
+      contextItemId,
+      displayCitationLabel: req.displayCitationLabel,
+      quoteText: match.quoteText,
+      pageIndex: match.pageIndex,
+      pageLabel,
+      sourceMatchPageOccurrence:
+        certificate.sourceMatchPageOccurrence ??
+        match.sourceMatchPageOccurrence,
+      verifiedSourceMatchText: match.sourceMatchText,
+      ...answerJumpInputs(req),
+      ...(req.policy.jumpFallbackTexts
+        ? { fallbackQuoteTexts: req.searchTexts.slice() }
+        : {}),
+    });
+    const jumpedLabel = resolveJumpedPageLabel(
+      reader,
+      jump,
+      pageLabel,
+      deps.pageLabelFor,
     );
-    match = opened.matches[0] || null;
-    if (opened.reason) lastReason = opened.reason;
-    if (!match && !opened.reason) lastReason = resolution.reason;
-  } else {
-    lastReason = resolution.reason;
+    if (!jump.matched) {
+      const pageOnly: QuoteNavigationOutcome = {
+        kind: "page-only",
+        contextItemId,
+        pageIndex: match.pageIndex,
+        pageLabel: jumpedLabel,
+        jump,
+      };
+      if (jump.failureStage !== "source-fingerprint-mismatch") return pageOnly;
+      // The quote is in this paper, but it is not the PDF the answer quoted
+      // (a second copy or version). Try the others before settling here.
+      ruledOut.add(contextItemId);
+      wrongPdf = pageOnly;
+      continue;
+    }
+    const jumpedPageIndex = jump.matchedPageIndex ?? match.pageIndex;
+    if (req.policy.rememberPage) {
+      deps.rememberPage(
+        contextItemId,
+        match.quoteText,
+        jumpedPageIndex,
+        jumpedLabel,
+      );
+    }
+    return {
+      kind: "jumped",
+      tier: "verified",
+      contextItemId,
+      pageIndex: jumpedPageIndex,
+      pageLabel: jumpedLabel,
+      jump,
+    };
   }
+}
 
-  if (!match) {
-    return resolution.status === "unverifiable"
-      ? { kind: "unverifiable", reason: lastReason }
-      : { kind: "not-found", reason: lastReason };
+/**
+ * What the answer itself recorded for the jump: its certificate and the
+ * fuller passage it displayed. Absent for a quote with no such record.
+ */
+function answerJumpInputs(
+  req: QuoteNavigationRequest,
+): Partial<CitationParagraphJumpParams> {
+  const certificate = req.certificate;
+  return {
+    ...(certificate
+      ? {
+          citationId: certificate.citationId,
+          sourceFingerprint: certificate.sourceFingerprint,
+          // Only the answer's own certificate turns on `verifiedFullSpan`:
+          // for a passage verified here, it would switch off the page's
+          // largest-unique-partial-span fallback the passage may need.
+          verifiedFullSpan: certificate.verifiedFullSpan,
+        }
+      : {}),
+    ...(req.preferredFullQuoteText
+      ? { preferredFullQuoteText: req.preferredFullQuoteText }
+      : {}),
+  };
+}
+
+/**
+ * With no candidate at all, look in the reader that is already open. Its
+ * text is searched for the complete quote before the jump moves it.
+ */
+async function navigateInActiveReader(
+  req: QuoteNavigationRequest,
+  deps: QuoteNavigatorDeps,
+): Promise<QuoteNavigationOutcome> {
+  const activeReader = getActiveReaderForSelectedTab();
+  if (!activeReader) {
+    return { kind: "not-found", reason: "No PDF reader is currently open." };
   }
-
-  // Only the verified winner is ever opened, so a click can never leave the
-  // user parked on a paper that does not contain the quote.
-  const contextItemId = match.candidate.contextItemId;
-  const reader = await deps.openReader(contextItemId, {
-    pageIndex: match.pageIndex,
-    pageLabel: match.pageLabel,
+  const quoteText = req.searchTexts[0];
+  const certificate = req.certificate || {};
+  req.trace?.("full quote locate", { source: "active-reader", phase: "start" });
+  const result = await deps.locateInReader(activeReader, quoteText, {
+    exactOnly: true,
   });
-  if (!reader) return { kind: "open-failed", contextItemId };
+  req.trace?.("full quote locate", {
+    source: "active-reader",
+    status: result.status,
+    computedPageIndex: result.computedPageIndex,
+  });
+  if (result.status !== "resolved" || result.computedPageIndex === null) {
+    return {
+      kind: "not-found",
+      reason:
+        result.reason ||
+        (result.status === "not-found"
+          ? "The cited quote was not found in the paper text."
+          : result.status === "ambiguous"
+            ? "The cited quote matched multiple pages."
+            : "Could not resolve the cited quote to a unique page."),
+    };
+  }
+  const pageIndex = Math.floor(result.computedPageIndex);
   const pageLabel =
-    deps.pageLabelFor(reader, match.pageIndex) ||
-    match.pageLabel ||
-    `${match.pageIndex + 1}`;
-
+    deps.pageLabelFor(activeReader, pageIndex) || `${pageIndex + 1}`;
+  const contextItemId = getReaderItemId(activeReader);
   const jump = await deps.jump({
-    reader,
+    reader: activeReader,
     contextItemId,
     displayCitationLabel: req.displayCitationLabel,
-    quoteText: match.quoteText,
-    pageIndex: match.pageIndex,
+    quoteText,
+    pageIndex,
     pageLabel,
-    sourceMatchPageOccurrence: match.sourceMatchPageOccurrence,
-    verifiedSourceMatchText: match.sourceMatchText,
-    // Never `verifiedFullSpan`: it would switch off the page's
-    // largest-unique-partial-span fallback a verified passage may need.
-    ...(req.policy.jumpFallbackTexts
-      ? { fallbackQuoteTexts: req.searchTexts.slice() }
-      : {}),
+    sourceMatchPageOccurrence:
+      certificate.sourceMatchPageOccurrence ?? result.sourceMatchPageOccurrence,
+    verifiedSourceMatchText: result.sourceMatchText,
+    ...answerJumpInputs(req),
   });
+  req.trace?.("paragraph jump", {
+    source: "full-quote-locate-active-reader",
+    matched: jump.matched,
+    matchedPageIndex: jump.matchedPageIndex,
+  });
+  // FindController's page wins if it landed somewhere other than the page
+  // the text search predicted.
   const jumpedLabel = resolveJumpedPageLabel(
-    reader,
+    activeReader,
     jump,
     pageLabel,
     deps.pageLabelFor,
@@ -1137,379 +1148,21 @@ async function navigateVerifyFirst(
     return {
       kind: "page-only",
       contextItemId,
-      pageIndex: match.pageIndex,
+      pageIndex,
       pageLabel: jumpedLabel,
       jump,
     };
   }
-  const jumpedPageIndex = jump.matchedPageIndex ?? match.pageIndex;
+  const jumpedPageIndex = jump.matchedPageIndex ?? pageIndex;
   if (req.policy.rememberPage) {
-    deps.rememberPage(
-      contextItemId,
-      match.quoteText,
-      jumpedPageIndex,
-      jumpedLabel,
-    );
+    deps.rememberPage(contextItemId, quoteText, jumpedPageIndex, jumpedLabel);
   }
   return {
     kind: "jumped",
-    tier: "verified",
+    tier: "active-reader",
     contextItemId,
     pageIndex: jumpedPageIndex,
     pageLabel: jumpedLabel,
     jump,
   };
-}
-
-/**
- * The trusted ladder: try the cheapest known page first and fall through
- * on any failed jump. The verified page cache, then the hidden quote-location
- * cache, then the stored page hint, then the citation's own page label, then
- * a full search of each candidate (or, with none, of the active reader).
- * Every tier opens the reader before the quote is verified there (D1).
- */
-async function navigateByHintLadder(
-  req: QuoteNavigationRequest,
-  deps: QuoteNavigatorDeps,
-): Promise<QuoteNavigationOutcome> {
-  const quoteText = req.searchTexts[0] || "";
-  const displayCitationLabel = req.displayCitationLabel;
-  const certificate = req.certificate || {};
-  const preferredFullQuoteText = req.preferredFullQuoteText;
-  const verifiedFullSpan = certificate.verifiedFullSpan;
-  const trace = (stage: string, details?: unknown) =>
-    req.trace?.(stage, details);
-  let lastReason = "Could not resolve the cited quote to a unique page.";
-
-  // A matched jump ends the click on the page it landed on; a failed one is
-  // only the latest reason, and the next tier runs.
-  const settle = (
-    tier: QuoteNavigationTier,
-    navigation: CitationParagraphJumpNavigation,
-  ): QuoteNavigationOutcome | null => {
-    // FindController's page wins if it landed somewhere different than the
-    // (possibly wrong) page this tier opened.
-    const effectiveLabel = resolveJumpedPageLabel(
-      navigation.reader,
-      navigation.paragraphJump,
-      navigation.pageLabel,
-      deps.pageLabelFor,
-    );
-    if (!navigation.paragraphJump.matched) {
-      lastReason = buildParagraphJumpFailureStatus(
-        effectiveLabel,
-        navigation.paragraphJump,
-      );
-      return null;
-    }
-    const pageIndex =
-      navigation.paragraphJump.matchedPageIndex ?? navigation.pageIndex;
-    if (req.policy.rememberPage) {
-      deps.rememberPage(
-        navigation.contextItemId,
-        quoteText,
-        pageIndex,
-        effectiveLabel,
-      );
-    }
-    return {
-      kind: "jumped",
-      tier,
-      contextItemId: navigation.contextItemId,
-      pageIndex,
-      pageLabel: effectiveLabel,
-      jump: navigation.paragraphJump,
-    };
-  };
-
-  // Verified page cache. The caller has already dropped candidates that are
-  // not auto-navigable, so a stale entry from whatever PDF happens to be open
-  // cannot win over the cited paper.
-  for (const candidate of req.candidates) {
-    const cached = await navigateToCachedCitationPage(
-      candidate.contextItemId,
-      quoteText,
-      displayCitationLabel,
-      {
-        citationId: certificate.citationId,
-        sourceFingerprint: certificate.sourceFingerprint,
-        sourceMatchPageOccurrence: certificate.sourceMatchPageOccurrence,
-        preferredFullQuoteText,
-        verifiedFullSpan,
-      },
-      deps,
-    );
-    if (cached) {
-      trace("cache lookup", {
-        cache: "verified-page",
-        contextItemId: cached.contextItemId,
-      });
-      const settled = settle("verified-cache", cached);
-      if (settled) return settled;
-      // A stale/early cache miss is not a verdict. Continue to the full
-      // live-PDF locator before deciding that a quote is unsearchable.
-    }
-  }
-  trace("cache lookup", { cache: "verified-page", result: "miss" });
-
-  // Hidden page-index cache — never shown during render, but lets click
-  // navigation jump to the likely page immediately before FindController
-  // verifies/refines the paragraph and page label.
-  for (const candidate of req.candidates) {
-    const hiddenLocation =
-      lookupCachedQuoteLocationForAttachment(
-        candidate.contextItemId,
-        quoteText,
-      ) ??
-      (await warmQuoteLocationCacheForAttachment(
-        candidate.contextItemId,
-        quoteText,
-      ));
-    if (!hiddenLocation) continue;
-    const cached = await navigateToHiddenQuoteLocation(
-      {
-        contextItemId: candidate.contextItemId,
-        quoteText,
-        displayCitationLabel,
-        pageIndex: hiddenLocation.pageIndex,
-        citationId: certificate.citationId,
-        sourceFingerprint:
-          certificate.sourceFingerprint || hiddenLocation.sourceFingerprint,
-        sourceMatchPageOccurrence:
-          certificate.sourceMatchPageOccurrence ??
-          hiddenLocation.sourceMatchPageOccurrence,
-        preferredFullQuoteText,
-        verifiedSourceMatchText: hiddenLocation.sourceMatchText,
-        verifiedFullSpan,
-      },
-      deps,
-    );
-    if (!cached) continue;
-    trace("cache lookup", {
-      cache: "hidden-quote-location",
-      contextItemId: cached.contextItemId,
-    });
-    const settled = settle("hidden-cache", cached);
-    if (settled) return settled;
-    // The hidden cache is only a fast page hint. Failed verification falls
-    // through to an exhaustive live search.
-  }
-  trace("cache lookup", { cache: "hidden-quote-location", result: "miss" });
-
-  // Stored quote page hint — non-authoritative fast first paint after
-  // verified caches miss. navigateToStoredQuotePageHint calls deps.jump
-  // (attemptCitationParagraphJump), and failures continue to full
-  // quote-location fallback instead of treating the hinted page as proof.
-  const storedPage = req.hints?.storedPage;
-  if (storedPage) {
-    req.onProgress?.("opening-page-hint");
-    const hinted = await navigateToStoredQuotePageHint(
-      {
-        contextItemId: storedPage.contextItemId,
-        quoteText,
-        displayCitationLabel,
-        pageHint: storedPage.pageHint,
-        citationId: certificate.citationId,
-        sourceFingerprint: certificate.sourceFingerprint,
-        sourceMatchPageOccurrence: certificate.sourceMatchPageOccurrence,
-        preferredFullQuoteText,
-        verifiedFullSpan,
-        onReaderOpened: () => {
-          trace("hint open", {
-            contextItemId: storedPage.contextItemId,
-            pageHint: storedPage.pageHint,
-          });
-          req.onProgress?.("verifying-page-hint");
-        },
-      },
-      deps,
-    );
-    if (hinted) {
-      trace("paragraph jump", {
-        source: "stored-page-hint",
-        contextItemId: hinted.contextItemId,
-        matched: hinted.paragraphJump.matched,
-        matchedPageIndex: hinted.paragraphJump.matchedPageIndex,
-      });
-      const settled = settle("stored-page-hint", hinted);
-      if (settled) return settled;
-      // Wrong or unverified stored hint: continue to full quote-location fallback.
-    } else {
-      trace("hint open", {
-        result: "unresolved",
-        pageHint: storedPage.pageHint,
-      });
-    }
-  }
-
-  // Use the explicit page as a navigation hint only when we do not already
-  // have a verified cached page for this quote. The cache stores the
-  // authoritative page after eager resolution or a FindController jump.
-  const explicitPageLabel = req.hints?.pageLabel || "";
-  if (explicitPageLabel) {
-    const bestRanked = req.candidates[0];
-    if (bestRanked) {
-      const target = await deps.openReader(bestRanked.contextItemId);
-      if (target) {
-        const pageIndex = resolvePageIndexForLabel(target, explicitPageLabel);
-        if (pageIndex === null) {
-          lastReason = `Could not resolve cited page label "${explicitPageLabel}".`;
-        } else {
-          const paragraphJump = await deps.jump({
-            reader: target,
-            contextItemId: bestRanked.contextItemId,
-            displayCitationLabel,
-            quoteText,
-            pageIndex,
-            pageLabel: explicitPageLabel,
-            citationId: certificate.citationId,
-            sourceFingerprint: certificate.sourceFingerprint,
-            sourceMatchPageOccurrence: certificate.sourceMatchPageOccurrence,
-            preferredFullQuoteText,
-            verifiedFullSpan,
-          });
-          const settled = settle("explicit-page-hint", {
-            reader: target,
-            contextItemId: bestRanked.contextItemId,
-            pageIndex,
-            pageLabel: explicitPageLabel,
-            paragraphJump,
-          });
-          if (settled) return settled;
-          // A rendered page label is only a hint. Continue through the full
-          // PDF text before returning a failure.
-        }
-      }
-    }
-  }
-
-  req.onProgress?.("locating");
-
-  // Last-resort: if there are still no candidates, try the active reader
-  // directly without needing a candidate entry.
-  if (req.policy.activeReaderFallback && !req.candidates.length) {
-    const activeReader = getActiveReaderForSelectedTab();
-    if (activeReader) {
-      trace("full quote locate", { source: "active-reader", phase: "start" });
-      const result = await deps.locateInReader(activeReader, quoteText, {
-        exactOnly: req.policy.fullSearchExactOnly,
-      });
-      trace("full quote locate", {
-        source: "active-reader",
-        status: result.status,
-        computedPageIndex: result.computedPageIndex,
-      });
-      if (result.status === "resolved" && result.computedPageIndex !== null) {
-        const pageIndex = Math.floor(result.computedPageIndex);
-        const pageLabel =
-          deps.pageLabelFor(activeReader, pageIndex) || `${pageIndex + 1}`;
-        const contextItemId = getReaderItemId(activeReader);
-        const paragraphJump = await deps.jump({
-          reader: activeReader,
-          contextItemId,
-          displayCitationLabel,
-          quoteText,
-          pageIndex,
-          pageLabel,
-          citationId: certificate.citationId,
-          sourceFingerprint: certificate.sourceFingerprint,
-          sourceMatchPageOccurrence:
-            certificate.sourceMatchPageOccurrence ??
-            result.sourceMatchPageOccurrence,
-          preferredFullQuoteText,
-          verifiedSourceMatchText: result.sourceMatchText,
-          verifiedFullSpan,
-        });
-        trace("paragraph jump", {
-          source: "full-quote-locate-active-reader",
-          matched: paragraphJump.matched,
-          matchedPageIndex: paragraphJump.matchedPageIndex,
-        });
-        const settled = settle("full-search-active-reader", {
-          reader: activeReader,
-          contextItemId,
-          pageIndex,
-          pageLabel,
-          paragraphJump,
-        });
-        if (settled) return settled;
-      }
-      if (result.status !== "resolved") {
-        if (result.reason) lastReason = result.reason;
-        else if (result.status === "not-found")
-          lastReason = "The cited quote was not found in the paper text.";
-        else if (result.status === "ambiguous")
-          lastReason = "The cited quote matched multiple pages.";
-      }
-    } else {
-      lastReason = "No PDF reader is currently open.";
-    }
-  }
-
-  for (const candidate of req.candidates) {
-    const reader = await deps.openReader(candidate.contextItemId);
-    if (!reader) {
-      lastReason = "Could not open the cited paper.";
-      continue;
-    }
-    trace("full quote locate", {
-      source: "candidate",
-      contextItemId: candidate.contextItemId,
-      phase: "start",
-    });
-    const result = await deps.locateInReader(reader, quoteText, {
-      exactOnly: req.policy.fullSearchExactOnly,
-    });
-    trace("full quote locate", {
-      source: "candidate",
-      contextItemId: candidate.contextItemId,
-      status: result.status,
-      computedPageIndex: result.computedPageIndex,
-    });
-    if (result.status === "resolved" && result.computedPageIndex !== null) {
-      const pageIndex = Math.floor(result.computedPageIndex);
-      const pageLabel =
-        deps.pageLabelFor(reader, pageIndex) || `${pageIndex + 1}`;
-      const paragraphJump = await deps.jump({
-        reader,
-        contextItemId: candidate.contextItemId,
-        displayCitationLabel,
-        quoteText,
-        pageIndex,
-        pageLabel,
-        citationId: certificate.citationId,
-        sourceFingerprint: certificate.sourceFingerprint,
-        sourceMatchPageOccurrence:
-          certificate.sourceMatchPageOccurrence ??
-          result.sourceMatchPageOccurrence,
-        preferredFullQuoteText,
-        verifiedSourceMatchText: result.sourceMatchText,
-        verifiedFullSpan,
-      });
-      trace("paragraph jump", {
-        source: "full-quote-locate-candidate",
-        contextItemId: candidate.contextItemId,
-        matched: paragraphJump.matched,
-        matchedPageIndex: paragraphJump.matchedPageIndex,
-      });
-      const settled = settle("full-search-candidate", {
-        reader,
-        contextItemId: candidate.contextItemId,
-        pageIndex,
-        pageLabel,
-        paragraphJump,
-      });
-      if (settled) return settled;
-      continue;
-    }
-    if (result.reason) {
-      lastReason = result.reason;
-    } else if (result.status === "ambiguous") {
-      lastReason = "The cited quote matched multiple pages.";
-    } else if (result.status === "not-found") {
-      lastReason = "The cited quote was not found in the paper text.";
-    }
-  }
-
-  return { kind: "not-found", reason: lastReason };
 }

@@ -159,6 +159,32 @@ describe("quote citation target resolver", function () {
     assert.lengthOf(attempts, 1);
   });
 
+  it("reads a paper a page cache already places the quote in before a better-labelled one", async function () {
+    const attempts: Array<{ contextItemId: number; quoteText: string }> = [];
+    const resolution = await resolveVerifiedQuoteTarget({
+      candidates: [
+        candidate(11, { authoritative: true, labelRank: 4 }),
+        {
+          ...candidate(22, { authoritative: true, labelRank: 1 }),
+          cachedPage: true,
+        },
+        // A cached page does not lift a library guess above a context paper.
+        { ...candidate(33, { labelRank: 9 }), cachedPage: true },
+      ],
+      searchTexts: ["shared sentence"],
+      verify: trackingVerifier({ 11: resolved(2), 22: NOT_FOUND }, attempts),
+    });
+
+    // The cached paper is still read, and its miss is not a jump.
+    assert.deepEqual(
+      attempts.map((attempt) => attempt.contextItemId),
+      [22, 11],
+    );
+    assert.equal(resolution.status, "resolved");
+    if (resolution.status !== "resolved") return;
+    assert.equal(resolution.contextItemId, 11);
+  });
+
   it("jumps to a near-duplicate rather than refusing when labels tie", async function () {
     // A preprint and its published version both hold the quote; sending the
     // reader to the first is far better than declining to move at all.
@@ -437,7 +463,7 @@ describe("untrusted quote navigation contract", function () {
   );
   const navigateStart = source.indexOf("type ResolvedQuoteCitationMatch = {");
   const verifyFirstStart = source.indexOf(
-    "async function navigateVerifyFirst(",
+    "export async function navigateToQuote(",
   );
   const navigateEnd = source.indexOf("\n}\n", verifyFirstStart);
   const navigateSection = source.slice(navigateStart, navigateEnd);
@@ -459,7 +485,9 @@ describe("untrusted quote navigation contract", function () {
     assert.isAbove(verifyFirstStart, navigateStart);
     assert.isAbove(navigateEnd, verifyFirstStart);
     assert.include(untrustedCallerSection, "navigateToQuote({");
-    assert.include(untrustedCallerSection, 'strategy: "verify-first"');
+    // One strategy serves every quote path (U1): verify first.
+    assert.notInclude(untrustedCallerSection, "strategy:");
+    assert.notInclude(source, "hint-ladder");
   });
 
   it("never invents a page label for the reader to navigate by", function () {

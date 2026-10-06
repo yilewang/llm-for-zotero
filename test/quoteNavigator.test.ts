@@ -21,6 +21,8 @@ function fakeDeps(options: {
   texts: Record<number, string[] | null>;
   viewer?: Record<number, string[]>;
   jumpMatches?: boolean;
+  /** A failed jump's failure stage, by the attachment it ran on. */
+  jumpFailures?: Record<number, string>;
   openFails?: boolean;
 }) {
   const calls: Call[] = [];
@@ -66,6 +68,15 @@ function fakeDeps(options: {
       const { reader: _reader, ...rest } = params;
       void _reader;
       calls.push(["jump", rest]);
+      const failureStage = options.jumpFailures?.[rest.contextItemId];
+      if (failureStage) {
+        return {
+          matched: false,
+          failureStage,
+          reason: failureStage,
+          queries: [],
+        } as unknown as ExactQuoteJumpResult;
+      }
       return {
         matched: options.jumpMatches ?? true,
         matchedPageIndex: options.jumpMatches === false ? undefined : 4,
@@ -92,7 +103,6 @@ function request(
     searchTexts: ["the quote"],
     displayCitationLabel: "Smith, 2020",
     policy: {
-      strategy: "verify-first",
       jumpFallbackTexts: false,
       rememberPage: true,
     },
@@ -149,7 +159,6 @@ describe("navigateToQuote (verify-first)", function () {
         candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
         searchTexts: ["the quote", "the quote, raw"],
         policy: {
-          strategy: "verify-first",
           jumpFallbackTexts: true,
           rememberPage: false,
         },
@@ -314,35 +323,212 @@ describe("navigateToQuote (verify-first)", function () {
   });
 });
 
-describe("navigateToQuote (hint-ladder)", function () {
-  it("with no candidate and no active-reader fallback, reports its default reason after announcing the search", async function () {
-    const { deps, calls } = fakeDeps({ texts: {} });
-    const progress: string[] = [];
-    const stages: string[] = [];
+describe("navigateToQuote with a trusted quote's record", function () {
+  const certificate = {
+    citationId: "q1",
+    sourceFingerprint: "pdfjs:fp-2",
+    verifiedFullSpan: true,
+  };
 
-    const outcome = await navigateToQuote(
+  it("hands the jump the certificate and the fuller passage, after verifying", async function () {
+    const { deps, calls } = fakeDeps({ texts: { 1: ["the quote"] } });
+
+    await navigateToQuote(
       request({
-        candidates: [],
-        policy: {
-          strategy: "hint-ladder",
-          rememberPage: true,
-          fullSearchExactOnly: true,
-          activeReaderFallback: false,
-        },
-        trace: (stage) => stages.push(stage),
-        onProgress: (step) => progress.push(step),
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+        certificate: { ...certificate, sourceMatchPageOccurrence: 3 },
+        preferredFullQuoteText: "the quote, in full",
       }),
       deps,
     );
 
-    assert.deepEqual(outcome, {
-      kind: "not-found",
-      reason: "Could not resolve the cited quote to a unique page.",
+    assert.deepEqual(
+      calls.map((call) => call[0]),
+      ["verify", "open", "jump", "remember"],
+    );
+    assert.deepEqual(calls[2], [
+      "jump",
+      {
+        contextItemId: 1,
+        displayCitationLabel: "Smith, 2020",
+        quoteText: "the quote",
+        pageIndex: 0,
+        pageLabel: "L0",
+        citationId: "q1",
+        sourceFingerprint: "pdfjs:fp-2",
+        // The certificate's occurrence wins over the verified one (0).
+        sourceMatchPageOccurrence: 3,
+        preferredFullQuoteText: "the quote, in full",
+        verifiedSourceMatchText: "the quote.",
+        verifiedFullSpan: true,
+      },
+    ]);
+  });
+
+  it("reads a paper with a cached page first, and still verifies it before opening", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: ["the quote"], 2: ["the quote"] },
     });
-    // Unlike verify-first, an empty ladder still runs: there is no
-    // "no-candidates" verdict, only the misses of each tier.
-    assert.deepEqual(progress, ["locating"]);
-    assert.deepEqual(stages, ["cache lookup", "cache lookup"]);
-    assert.deepEqual(calls, []);
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [
+          { contextItemId: 1, authoritative: true, labelRank: 5 },
+          {
+            contextItemId: 2,
+            authoritative: true,
+            labelRank: 0,
+            cachedPage: true,
+          },
+        ],
+      }),
+      deps,
+    );
+
+    assert.deepEqual(calls.slice(0, 2), [
+      ["verify", 2, "the quote"],
+      ["open", 2, { pageIndex: 0, pageLabel: undefined }],
+    ]);
+    assert.include(outcome as object, { kind: "jumped", contextItemId: 2 });
+  });
+
+  it("opens nothing for a quote no candidate holds, cached page or not", async function () {
+    const { deps, calls } = fakeDeps({ texts: { 1: ["nothing"] } });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [
+          {
+            contextItemId: 1,
+            authoritative: true,
+            labelRank: 0,
+            cachedPage: true,
+          },
+        ],
+        certificate,
+      }),
+      deps,
+    );
+
+    assert.deepEqual(outcome, { kind: "not-found", reason: "not in 1" });
+    assert.deepEqual(
+      calls.map((call) => call[0]),
+      ["verify"],
+    );
+  });
+
+  it("moves on from a verified paper whose PDF is not the one the certificate names", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: ["the quote"], 2: ["the quote"] },
+      jumpFailures: { 1: "source-fingerprint-mismatch" },
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [
+          { contextItemId: 1, authoritative: true, labelRank: 0 },
+          { contextItemId: 2, authoritative: true, labelRank: 0 },
+        ],
+        certificate,
+      }),
+      deps,
+    );
+
+    assert.deepEqual(
+      calls.map((call) => [
+        call[0],
+        typeof call[1] === "number" ? call[1] : "",
+      ]),
+      [
+        ["verify", 1],
+        ["open", 1],
+        ["jump", ""],
+        // Paper 1 is ruled out; paper 2 is verified before it opens.
+        ["verify", 2],
+        ["open", 2],
+        ["jump", ""],
+        ["remember", 2],
+      ],
+    );
+    assert.include(outcome as object, { kind: "jumped", contextItemId: 2 });
+  });
+
+  it("stays on the last wrong PDF when no other paper holds the quote", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: ["the quote"], 2: ["nothing"] },
+      jumpFailures: { 1: "source-fingerprint-mismatch" },
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [
+          { contextItemId: 1, authoritative: true, labelRank: 0 },
+          { contextItemId: 2, authoritative: true, labelRank: 0 },
+        ],
+        certificate,
+      }),
+      deps,
+    );
+
+    assert.equal(outcome.kind, "page-only");
+    assert.include(outcome as object, { contextItemId: 1, pageIndex: 0 });
+    assert.deepEqual(
+      calls.filter((call) => call[0] === "open").map((call) => call[1]),
+      [1],
+    );
+  });
+
+  it("does not move on after a jump that fails for any other reason", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: ["the quote"], 2: ["the quote"] },
+      jumpFailures: { 1: "full-match-not-found" },
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [
+          { contextItemId: 1, authoritative: true, labelRank: 0 },
+          { contextItemId: 2, authoritative: true, labelRank: 0 },
+        ],
+        certificate,
+      }),
+      deps,
+    );
+
+    assert.equal(outcome.kind, "page-only");
+    assert.deepEqual(
+      calls.filter((call) => call[0] === "open").map((call) => call[1]),
+      [1],
+    );
+  });
+
+  it("keeps the viewer fallback to three opened papers across a ruled-out PDF, and never reopens one it read", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: null, 2: null, 3: null, 4: null },
+      viewer: { 2: ["the quote"], 3: ["the quote"], 4: ["the quote"] },
+      jumpFailures: { 2: "source-fingerprint-mismatch" },
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [1, 2, 3, 4].map((contextItemId) => ({
+          contextItemId,
+          authoritative: true,
+          labelRank: 0,
+        })),
+        certificate,
+      }),
+      deps,
+    );
+
+    // 1 is read in the viewer and holds nothing. 2 holds the quote and opens
+    // again as the winner, but its jump finds another PDF. The second pass
+    // skips 1 (already read) and 2 (ruled out) and spends the last viewer
+    // open on 3, which holds the quote. 4 is never opened.
+    assert.deepEqual(
+      calls.filter((call) => call[0] === "open").map((call) => call[1]),
+      [1, 2, 2, 3, 3],
+    );
+    assert.include(outcome as object, { kind: "jumped", contextItemId: 3 });
   });
 });

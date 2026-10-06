@@ -7,7 +7,9 @@
  * so the real locator, page-text caches and paragraph jump all run. The rig
  * records what a user could see: which readers opened and where, which
  * FindController queries ran, the status line, the events the panel received,
- * and how often the main window was raised.
+ * and how often the main window was raised. Its timeline puts background
+ * reads, reader opens and reader moves in one order, so a test can show that
+ * a reader moved only after the quote was read.
  */
 import { FakeElement } from "./fakeDom";
 import {
@@ -221,6 +223,8 @@ export function installCitationNavigationRig(options: {
   const readers = new Map<number, RigReader>();
   const opened: RigOpen[] = [];
   const pdfWorkerReads: number[] = [];
+  /** "read <id>", "open <id>" and "navigate <id>", in the order they ran. */
+  const timeline: string[] = [];
   let libraryScans = 0;
   let focusCount = 0;
   let activeReaderItemId: number | null = null;
@@ -280,6 +284,7 @@ export function installCitationNavigationRig(options: {
     // fallback waits for it.
     fixture.reader._internalReader = {};
     fixture.reader.navigate = async (location: Record<string, unknown>) => {
+      timeline.push(`navigate ${itemId}`);
       navigations.push({ ...location });
     };
     const rigReader = { fixture, navigations };
@@ -304,6 +309,7 @@ export function installCitationNavigationRig(options: {
     PDFWorker: {
       getFullText: async (itemId: number) => {
         pdfWorkerReads.push(itemId);
+        timeline.push(`read ${itemId}`);
         const paper = papersByAttachment.get(itemId);
         if (!paper || paper.backgroundText === false) return null;
         return {
@@ -314,6 +320,7 @@ export function installCitationNavigationRig(options: {
     },
     Reader: {
       open: async (itemId: number, location?: Record<string, unknown>) => {
+        timeline.push(`open ${itemId}`);
         opened.push({
           itemId,
           location: location ? { ...location } : location,
@@ -399,6 +406,7 @@ export function installCitationNavigationRig(options: {
     body,
     opened,
     pdfWorkerReads,
+    timeline,
     statusHistory,
     events,
     /** Warnings the navigator logged, e.g. failed paragraph jumps. */
