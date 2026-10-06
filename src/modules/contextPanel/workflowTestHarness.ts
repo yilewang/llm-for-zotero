@@ -733,12 +733,17 @@ function minimalPdfBytes(title: string): Uint8Array {
   return buildPdfBytes([title]);
 }
 
+// Two fixtures written in the same millisecond must not share a file: one
+// test's cleanup would otherwise remove another test's fixture.
+let tempFileSequence = 0;
+
 async function writeTempFile(
   filename: string,
   data: Uint8Array,
 ): Promise<string> {
+  tempFileSequence += 1;
   const path = getTempPath(
-    `llm-for-zotero-workflow-${Date.now()}-${sanitizeTempFilename(filename)}`,
+    `llm-for-zotero-workflow-${Date.now()}-${tempFileSequence}-${sanitizeTempFilename(filename)}`,
   );
   const ioUtils = (
     globalThis as unknown as {
