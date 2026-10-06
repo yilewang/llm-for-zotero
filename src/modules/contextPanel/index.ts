@@ -136,6 +136,7 @@ import {
   isPanelOperationLeaseCurrent,
   renderPanelOwnershipBlocked,
 } from "./panelHostOwnership";
+import { getPanelHandle } from "./panelHandle";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -522,10 +523,9 @@ export function registerReaderContextPanel() {
               kind: "context-refresh",
               itemKey: getPanelItemIdKey(item || null),
             });
-            const refreshContextSource = (body as any)
-              .__llmRefreshContextSourceForCurrentItem;
-            if (typeof refreshContextSource === "function") {
-              refreshContextSource();
+            const panelHandle = getPanelHandle(body);
+            if (panelHandle) {
+              panelHandle.refreshContextSourceForCurrentItem();
             } else {
               activeContextPanelStateSync.get(body)?.();
             }
@@ -633,10 +633,9 @@ export function registerReaderContextPanel() {
         setupEmbeddedPanelHandlers(body, item);
       }
       if (contextRefreshOnly) {
-        const refreshContextSource = (body as any)
-          .__llmRefreshContextSourceForCurrentItem;
-        if (typeof refreshContextSource === "function") {
-          refreshContextSource();
+        const panelHandle = getPanelHandle(body);
+        if (panelHandle) {
+          panelHandle.refreshContextSourceForCurrentItem();
         } else {
           activeContextPanelStateSync.get(body)?.();
         }

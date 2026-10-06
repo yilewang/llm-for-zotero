@@ -103,11 +103,9 @@ function applyResolvedClaudeEffortDisplay(
 ): void {
   if (event.type !== "provider_event") return;
   if (event.providerType !== "runtime_config") return;
-  const applyResolvedEffort = (body as any).__llmApplyResolvedClaudeEffort as
-    | ((effort: unknown) => void)
-    | undefined;
-  if (typeof applyResolvedEffort !== "function") return;
-  applyResolvedEffort(event.payload?.resolvedEffort);
+  getPanelHandle(body)?.applyResolvedClaudeEffort(
+    event.payload?.resolvedEffort,
+  );
 }
 import type {
   AdvancedModelParams,
@@ -143,6 +141,7 @@ import {
 } from "../../../services/quotes/quoteCitations";
 import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
+import { getPanelHandle } from "../panelHandle";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key];

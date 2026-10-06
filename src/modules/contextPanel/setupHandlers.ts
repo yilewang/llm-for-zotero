@@ -225,6 +225,11 @@ import {
   shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
 import {
+  publishPanelHandle,
+  unpublishPanelHandle,
+  type PanelHandle,
+} from "./panelHandle";
+import {
   getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
   appendSelectedTextContextForItem,
@@ -6382,9 +6387,6 @@ export function setupHandlers(
     }
   };
 
-  (body as any).__llmApplyResolvedClaudeEffort =
-    applyClaudeResolvedReasoningDisplay;
-
   const syncModelFromPrefs = (onlyIfChanged = false) => {
     updateModelButton(onlyIfChanged);
     updateReasoningButton(onlyIfChanged);
@@ -6406,18 +6408,22 @@ export function setupHandlers(
     onStateChange: syncModelFromPrefs,
   });
 
-  (body as any).__llmRefreshContextSourceForCurrentItem = () => {
-    withScrollGuard(chatBox, conversationKey, () => {
-      refreshAutoLoadedPaperContextForCurrentItem();
-      updatePaperPreviewPreservingScroll();
-      syncModelFromPrefs();
-      flushResponsiveLayoutSyncNow();
-      flushPanelStateRefreshNow();
-      if (item && chatBox && !chatBox.childElementCount) {
-        refreshChat(body, item);
-      }
-    });
+  const panelHandle: PanelHandle = {
+    refreshContextSourceForCurrentItem: () => {
+      withScrollGuard(chatBox, conversationKey, () => {
+        refreshAutoLoadedPaperContextForCurrentItem();
+        updatePaperPreviewPreservingScroll();
+        syncModelFromPrefs();
+        flushResponsiveLayoutSyncNow();
+        flushPanelStateRefreshNow();
+        if (item && chatBox && !chatBox.childElementCount) {
+          refreshChat(body, item);
+        }
+      });
+    },
+    applyResolvedClaudeEffort: applyClaudeResolvedReasoningDisplay,
   };
+  publishPanelHandle(body, panelHandle);
 
   const webChatHistoryController = createWebChatHistoryController({
     body,
@@ -8226,12 +8232,9 @@ export function setupHandlers(
     // Rebuilding the root of a still-mounted body must retain its raw paper
     // identity. A detached body, however, owns no surviving UI registration.
     if (!body.isConnected) unregisterContextPanel(body);
-    delete (body as any).__llmApplyResolvedClaudeEffort;
-    delete (body as any).__llmRefreshContextSourceForCurrentItem;
+    unpublishPanelHandle(body, panelHandle);
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
-    delete (body as any).__llmScheduleClaudeQueueDrain;
-    delete (body as any).__llmScheduleClaudeThreadQueueDrain;
     delete (body as any).__llmQueueTurnDeletion;
     delete (body as any).__llmSearchPanelHistory;
     panelLifecycle.dispose();

@@ -1611,7 +1611,7 @@ describe("chat scroll snapshots", function () {
       branch,
     );
     const refresh = source.indexOf(
-      "__llmRefreshContextSourceForCurrentItem",
+      "refreshContextSourceForCurrentItem()",
       branch,
     );
 
