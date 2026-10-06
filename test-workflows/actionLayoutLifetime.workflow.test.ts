@@ -254,4 +254,56 @@ describe("workflow: native action layout lifetime", function () {
     await Zotero.Promise.delay(300);
     assertUnchanged("after the standalone window closes");
   });
+
+  it("focuses an open standalone window from the sidebar's pop-out button without closing or retargeting it", async function () {
+    const root = await openPanel();
+    const sidebarConversation = root.dataset.itemId;
+    await api.openStandaloneForItem(fixture.parentItemId);
+    const library = await api.clickStandaloneTab("open");
+    assert.equal(library.activeTab, "open", JSON.stringify(library));
+    const standaloneWin = (Zotero as any).LLMForZotero.data
+      .standaloneWindow as Window;
+    assert.isOk(standaloneWin, "the standalone window is open");
+    const windowConversation = () =>
+      (
+        standaloneWin.document.querySelector(
+          ".llm-standalone-content #llm-main",
+        ) as HTMLElement | null
+      )?.dataset.itemId;
+    const before = windowConversation();
+    assert.isOk(before, "the window shows a conversation");
+    assert.notEqual(before, sidebarConversation);
+    let focusCalls = 0;
+    const nativeFocus = standaloneWin.focus;
+    (standaloneWin as any).focus = function (this: Window) {
+      focusCalls++;
+      return nativeFocus.call(this);
+    };
+    try {
+      (root.parentElement!.querySelector("#llm-popout") as HTMLElement).click();
+      await Zotero.Promise.delay(500);
+      assert.isFalse(standaloneWin.closed, "the window stays open");
+      assert.strictEqual(
+        (Zotero as any).LLMForZotero.data.standaloneWindow,
+        standaloneWin,
+        "no second window is opened",
+      );
+      assert.isAbove(focusCalls, 0, "the open window is focused");
+      assert.equal(
+        windowConversation(),
+        before,
+        "the window keeps its own conversation",
+      );
+      assert.strictEqual(
+        win.document
+          .getElementById("zotero-item-details")
+          .querySelector(".llm-dedicated-chat-pane #llm-main"),
+        root,
+        "the sidebar panel is untouched",
+      );
+      assert.equal(root.dataset.itemId, sidebarConversation);
+    } finally {
+      delete (standaloneWin as any).focus;
+    }
+  });
 });
