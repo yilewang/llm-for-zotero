@@ -16,6 +16,10 @@
  * the retry hint) are injected.
  *
  * One owner belongs to one assistant message and one turn.
+ *
+ * Saving the completed answer is not part of the stream: a save that fails
+ * after the model finished leaves a complete answer, not an interrupted one.
+ * Both flows save it through `saveCompletion`, which owns that error handling.
  */
 import type { BlockStreamFlushReason } from "./blockStreamCoalescer";
 import {
@@ -48,6 +52,8 @@ import type {
   UsageTurnFlushReason,
 } from "../../utils/usageTurnRecorder";
 import { sanitizeText } from "../../utils/textSanitization";
+import { t } from "../../utils/i18n";
+import { appLogger } from "../../core/logging";
 
 export type AssistantTurnStatusKind = "ready" | "sending" | "error" | "warning";
 
@@ -173,6 +179,15 @@ export type AssistantTurn = {
    */
   presentCompletion: (options: { compactMarker: boolean }) => void;
   /**
+   * Saves the completed answer's row with the flow's `save` (attempt 0,
+   * then 1). A failed save is logged and tried once more. If that fails
+   * too, the answer stays complete in memory and the status warns that it
+   * is not saved. Never throws; returns whether the answer was saved.
+   */
+  saveCompletion: (
+    save: (attempt: number) => Promise<void>,
+  ) => Promise<boolean>;
+  /**
    * Reads what a failed turn leaves behind. The streamed text (and its
    * unreleased tail) is read before the stream is disposed.
    */
@@ -193,6 +208,13 @@ export type AssistantTurn = {
  * progress reads it as "cancelled".
  */
 const CANCELLED_TEXT = "[Cancelled]";
+
+/** One save, then one more, for a completed answer's row. */
+const COMPLETION_SAVE_ATTEMPTS = 2;
+
+/** The status after both saves of a completed answer failed. */
+const ANSWER_NOT_SAVED_STATUS =
+  "Answer not saved. It will be lost when you reload.";
 
 /** A cancelled answer: whatever streamed, or the fallback text. */
 export function finalizeCancelledAssistantMessage(
@@ -340,6 +362,22 @@ export function createAssistantTurn(deps: AssistantTurnDeps): AssistantTurn {
       message.interrupted = undefined;
       message.streaming = false;
       deps.refreshCompletedTurn();
+    },
+
+    async saveCompletion(save): Promise<boolean> {
+      for (let attempt = 0; attempt < COMPLETION_SAVE_ATTEMPTS; attempt += 1) {
+        try {
+          await save(attempt);
+          return true;
+        } catch (error) {
+          appLogger.warn(
+            `LLM: The completed answer was not saved (attempt ${attempt + 1} of ${COMPLETION_SAVE_ATTEMPTS})`,
+            error,
+          );
+        }
+      }
+      deps.setStatus(t(ANSWER_NOT_SAVED_STATUS), "warning");
+      return false;
     },
 
     readInterruption(error, { codexLabel, imageCount }) {

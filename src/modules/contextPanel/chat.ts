@@ -1906,10 +1906,37 @@ async function updateStoredLatestAssistantMessageByConversation(
   );
 }
 
+/** Whether the conversation's store holds an assistant row at `timestamp`. */
+async function isAssistantRowStored(
+  conversationKey: number,
+  timestamp: number,
+  conversationSystem?: ConversationSystem | null,
+): Promise<boolean> {
+  const storageSystem = resolveConversationStorageSystem({
+    conversationKey,
+    conversationSystem,
+  });
+  if (!storageSystem) return false;
+  const latest = await loadStoredConversationByKey(
+    conversationKey,
+    4,
+    storageSystem,
+  );
+  return latest.some(
+    (row) => row.role === "assistant" && row.timestamp === timestamp,
+  );
+}
+
+/**
+ * Appends one message row and runs the store upkeep after it. A failure is
+ * logged and swallowed, unless `options.rethrow` asks for it to propagate
+ * (the completed answer's save, which handles its own failures).
+ */
 async function persistConversationMessage(
   conversationKey: number,
   message: StoredChatMessage,
   conversationSystem?: ConversationSystem | null,
+  options: { rethrow?: boolean } = {},
 ): Promise<void> {
   try {
     const expectedGeneration = Number(message.conversationGeneration);
@@ -1975,6 +2002,7 @@ async function persistConversationMessage(
     });
   } catch (err) {
     appLogger.warn("LLM: Failed to persist chat message", err);
+    if (options.rethrow) throw err;
   }
 }
 
@@ -6298,21 +6326,25 @@ export async function retryLatestAssistantResponse(
     });
 
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateStoredLatestAssistantMessageByConversation(
-      conversationKey,
-      {
-        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
-        documentId: assistantMessage.documentId,
-        planDocumentId: assistantMessage.planDocumentId,
-        completionStatus: assistantMessage.completionStatus,
-        completionReason: assistantMessage.completionReason,
-        contextTokens: latestContextSnapshot?.contextTokens,
-        contextWindow: latestContextSnapshot?.contextWindow,
-      },
-      effectiveStorageSystem,
+    // The answer is complete: a failed save is the turn owner's to handle,
+    // not a stream failure. The row UPDATE is safe to run a second time.
+    const saved = await assistantTurn.saveCompletion(() =>
+      updateStoredLatestAssistantMessageByConversation(
+        conversationKey,
+        {
+          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+          documentId: assistantMessage.documentId,
+          planDocumentId: assistantMessage.planDocumentId,
+          completionStatus: assistantMessage.completionStatus,
+          completionReason: assistantMessage.completionReason,
+          contextTokens: latestContextSnapshot?.contextTokens,
+          contextWindow: latestContextSnapshot?.contextWindow,
+        },
+        effectiveStorageSystem,
+      ),
     );
 
-    setStatusSafely("Ready", "ready");
+    if (saved) setStatusSafely("Ready", "ready");
     return true;
   } catch (err) {
     const isCancelled = assistantTurn.wasCancelled(err);
@@ -8543,13 +8575,7 @@ export async function sendQuestion(
     resolveRetryHint: resolveMultimodalRetryHint,
   });
   let assistantPersisted = false;
-  const persistAssistantOnce = async (
-    status?: import("../../agent/types").AgentRunStatus,
-  ) => {
-    if (assistantPersisted) return;
-    assistantPersisted = true;
-    if (!shouldPersistTurn) return;
-    await assistantTurn.persistTrace(status);
+  const writeAssistantRow = async (options?: { rethrow?: boolean }) => {
     // Like the retry rows, the send row stores the context-usage snapshot,
     // so a reopened chat shows this turn's context count.
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
@@ -8570,7 +8596,40 @@ export async function sendQuestion(
         contextWindow: latestContextSnapshot?.contextWindow,
       },
       effectiveStorageSystem,
+      options,
     );
+  };
+  const persistAssistantOnce = async (
+    status?: import("../../agent/types").AgentRunStatus,
+  ) => {
+    if (assistantPersisted) return;
+    assistantPersisted = true;
+    if (!shouldPersistTurn) return;
+    await assistantTurn.persistTrace(status);
+    await writeAssistantRow();
+  };
+  // The completed answer's save, under the same once-guard. A failed save is
+  // the turn owner's to handle, not a stream failure. The row is appended,
+  // so before the second attempt a row the first attempt already stored
+  // (its failure came after the append) counts as saved: no duplicate row.
+  const persistCompletedAssistantOnce = async (): Promise<boolean> => {
+    if (assistantPersisted) return true;
+    assistantPersisted = true;
+    if (!shouldPersistTurn) return true;
+    await assistantTurn.persistTrace();
+    return assistantTurn.saveCompletion(async (attempt) => {
+      if (
+        attempt > 0 &&
+        (await isAssistantRowStored(
+          conversationKey,
+          assistantMessage.timestamp,
+          effectiveStorageSystem,
+        ))
+      ) {
+        return;
+      }
+      await writeAssistantRow({ rethrow: true });
+    });
   };
   // The send repaints before it writes, and its once-guarded persist writes
   // the cancelled trace together with the row.
@@ -9023,7 +9082,7 @@ export async function sendQuestion(
     assistantTurn.presentCompletion({
       compactMarker: isCompactCommandText(question),
     });
-    await persistAssistantOnce();
+    const saved = await persistCompletedAssistantOnce();
     if (resolveConversationSystemForItem(item) === "claude_code") {
       const activeNoteSession = resolveActiveNoteSession(item);
       const conversationKind =
@@ -9061,7 +9120,7 @@ export async function sendQuestion(
       });
     }
 
-    setStatusSafely("Ready", "ready");
+    if (saved) setStatusSafely("Ready", "ready");
   } catch (err) {
     const isCancelled = assistantTurn.wasCancelled(err);
     assistantTurn.noteUsageOutcome(isCancelled ? "abort" : "error");

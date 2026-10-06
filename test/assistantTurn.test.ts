@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { afterEach, describe, it } from "mocha";
+import { afterEach, beforeEach, describe, it } from "mocha";
 
 import {
   createAssistantTurn,
@@ -14,6 +14,7 @@ import {
 } from "../src/modules/contextPanel/state";
 import type { Message } from "../src/modules/contextPanel/types";
 import { formatCodexZoteroMcpError } from "../src/codexAppServer/mcpErrors";
+import { setAppLogSinkForTests } from "../src/core/logging";
 import type { ModelTurnOutcome } from "../src/shared/llm";
 import type { TurnUsageRecorder } from "../src/utils/usageTurnRecorder";
 
@@ -459,6 +460,99 @@ describe("assistant turn owner", function () {
 
       assert.equal(message.text, "summary");
       assert.isFalse(message.compactMarker);
+    });
+  });
+
+  describe("saveCompletion", function () {
+    /** Completes the turn the way both flows do before they save it. */
+    async function completedTurn() {
+      const rig = harness();
+      rig.turn.start();
+      rig.turn.push("the answer");
+      rig.turn.beginCompletion(COMPLETE);
+      await rig.turn.recordCompletion(COMPLETE, {});
+      rig.turn.presentCompletion({ compactMarker: false });
+      rig.log.length = 0;
+      return rig;
+    }
+
+    /** The completed answer's state, which a failed save must not change. */
+    const completedState = (message: Message) => ({
+      text: message.text,
+      streaming: message.streaming,
+      interrupted: message.interrupted,
+      completionStatus: message.completionStatus,
+    });
+
+    const logged: { level: string; args: readonly unknown[] }[] = [];
+    beforeEach(function () {
+      logged.length = 0;
+      setAppLogSinkForTests((level, args) => logged.push({ level, args }));
+    });
+    afterEach(function () {
+      setAppLogSinkForTests(null);
+    });
+
+    it("saves once and sets no status when the save succeeds", async function () {
+      const { turn, log } = await completedTurn();
+      const attempts: number[] = [];
+
+      const saved = await turn.saveCompletion(async (attempt) => {
+        attempts.push(attempt);
+      });
+
+      assert.isTrue(saved);
+      assert.deepEqual(attempts, [0]);
+      assert.deepEqual(log, []);
+      assert.deepEqual(logged, []);
+    });
+
+    it("tries a failed save once more, and a second success saves the answer", async function () {
+      const { turn, log, message } = await completedTurn();
+      const before = completedState(message);
+      const attempts: number[] = [];
+
+      const saved = await turn.saveCompletion(async (attempt) => {
+        attempts.push(attempt);
+        if (attempt === 0) throw new Error("store busy");
+      });
+
+      assert.isTrue(saved);
+      assert.deepEqual(attempts, [0, 1]);
+      assert.deepEqual(log, [], "no status: the flow reports Ready");
+      assert.deepEqual(completedState(message), before);
+      assert.lengthOf(logged, 1, "the first failure is logged");
+      assert.include(String(logged[0].args[0]), "not saved");
+      assert.equal((logged[0].args[1] as Error).message, "store busy");
+    });
+
+    it("keeps the answer complete and warns when the second save fails too", async function () {
+      const { turn, log, message } = await completedTurn();
+      const before = completedState(message);
+      assert.deepEqual(before, {
+        text: "the answer",
+        streaming: false,
+        interrupted: undefined,
+        completionStatus: "complete",
+      });
+      const attempts: number[] = [];
+
+      const saved = await turn.saveCompletion(async (attempt) => {
+        attempts.push(attempt);
+        throw new Error(`write failed ${attempt}`);
+      });
+
+      assert.isFalse(saved);
+      assert.deepEqual(attempts, [0, 1], "one save, then one more");
+      assert.deepEqual(completedState(message), before, "not interrupted");
+      assert.deepEqual(log, [
+        "status:warning:Answer not saved. It will be lost when you reload.",
+      ]);
+      assert.deepEqual(
+        logged.map((entry) => (entry.args[1] as Error).message),
+        ["write failed 0", "write failed 1"],
+        "both failures are logged with their errors",
+      );
     });
   });
 

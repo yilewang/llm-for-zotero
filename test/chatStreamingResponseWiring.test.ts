@@ -155,6 +155,35 @@ describe("chat streaming-response wiring", function () {
       }
     });
 
+    it("saves the completed answer through the owner, apart from stream errors", function () {
+      const source = readChatSource();
+      const retry = retryFlowSource(source);
+      const send = sendFlowSource(source);
+
+      // Both flows hand the completed answer's row write to the owner's
+      // saveCompletion, after the completion is on screen, and report Ready
+      // only once it is saved. A failed save never reaches the flow's catch,
+      // which would mark the complete answer interrupted.
+      for (const flow of [retry, send]) {
+        assert.include(flow, "assistantTurn.saveCompletion(");
+        assert.include(flow, 'if (saved) setStatusSafely("Ready", "ready");');
+      }
+      const retryPresent = retry.indexOf("assistantTurn.presentCompletion(");
+      const retrySave = retry.indexOf("assistantTurn.saveCompletion(");
+      assert.isAtLeast(retryPresent, 0);
+      assert.isAbove(retrySave, retryPresent);
+      const sendPresent = send.indexOf("assistantTurn.presentCompletion(");
+      const sendSave = send.indexOf(
+        "await persistCompletedAssistantOnce()",
+        sendPresent,
+      );
+      assert.isAtLeast(sendPresent, 0);
+      assert.isAbove(sendSave, sendPresent);
+      const owner = ownerStep("async saveCompletion(", "readInterruption(");
+      assert.include(owner, "COMPLETION_SAVE_ATTEMPTS");
+      assert.include(owner, "t(ANSWER_NOT_SAVED_STATUS)");
+    });
+
     it("reads the streamed text before discarding it on the error path", function () {
       const source = readChatSource();
 

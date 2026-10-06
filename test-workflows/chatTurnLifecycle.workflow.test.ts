@@ -1411,4 +1411,236 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       await settledUsageRows(conversationKey, 1);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // The completed answer's save fails
+  // -------------------------------------------------------------------------
+
+  const ANSWER_NOT_SAVED = "Answer not saved. It will be lost when you reload.";
+
+  /**
+   * Makes the next `failures` matching store writes throw: the send's answer
+   * row INSERT, the retry's answer row UPDATE, or the prune that follows an
+   * appended row. Returns how many it threw.
+   */
+  const withAssistantRowWriteFaults = async (
+    write: "insert" | "update" | "prune",
+    failures: number,
+    run: (arm: () => void) => Promise<void>,
+  ): Promise<number> => {
+    const db = Zotero.DB;
+    const originalQuery = db.queryAsync;
+    let remaining = 0;
+    let thrown = 0;
+    db.queryAsync = function (this: unknown, sql: string, ...rest: unknown[]) {
+      const text = String(sql);
+      const params = rest[0] as unknown[] | undefined;
+      const assistantRowWrite =
+        write === "insert"
+          ? /INSERT\s+INTO\s+llm_for_zotero_chat_messages\b/i.test(text) &&
+            Array.isArray(params) &&
+            params[2] === "assistant"
+          : write === "update"
+            ? /UPDATE\s+llm_for_zotero_chat_messages\b/i.test(text) &&
+              /role = 'assistant'/.test(text)
+            : /DELETE\s+FROM\s+llm_for_zotero_chat_messages\b/i.test(text) &&
+              /OFFSET \?/.test(text);
+      if (remaining > 0 && assistantRowWrite) {
+        remaining -= 1;
+        thrown += 1;
+        return Promise.reject(new Error("workflow store write failed"));
+      }
+      return originalQuery.call(this, sql, ...rest);
+    };
+    try {
+      await run(() => {
+        remaining = failures;
+      });
+    } finally {
+      db.queryAsync = originalQuery;
+    }
+    return thrown;
+  };
+
+  it("send whose answer save fails twice: the answer stays complete in memory and the status says it is not saved", async function () {
+    await surfacing(async () => {
+      let state!: WorkflowTestChatTurnLifecycleState;
+      const thrown = await withAssistantRowWriteFaults(
+        "insert",
+        2,
+        async (arm) => {
+          const started = await startSend("Answer, but do not keep it.");
+          const stream = await nextStream(0);
+          stream.push("An answer the store refuses.");
+          stream.usage(11, 7);
+          arm();
+          stream.finish();
+          state = await waitForSendSettled(started);
+        },
+      );
+
+      assert.equal(thrown, 2, "the save ran, then ran once more");
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.text, "An answer the store refuses.");
+      assert.equal(assistant.completionStatus, "complete");
+      assert.isNotOk(assistant.interrupted, "a complete answer, not cut off");
+      assert.equal(assistant.streaming, false);
+      assert.deepEqual(
+        state.storedRows.map((row) => row.role),
+        ["user"],
+        "no answer row was stored",
+      );
+      assert.equal(await statusText(), ANSWER_NOT_SAVED);
+    });
+  });
+
+  it("send whose first answer save fails: the second save stores the answer once", async function () {
+    await surfacing(async () => {
+      let state!: WorkflowTestChatTurnLifecycleState;
+      const thrown = await withAssistantRowWriteFaults(
+        "insert",
+        1,
+        async (arm) => {
+          const started = await startSend("Answer after one failed save.");
+          const stream = await nextStream(0);
+          stream.push("An answer saved on the second try.");
+          stream.usage(11, 7);
+          arm();
+          stream.finish();
+          state = await waitForSendSettled(started);
+        },
+      );
+
+      assert.equal(thrown, 1);
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.completionStatus, "complete");
+      assert.isNotOk(assistant.interrupted);
+      const answerRows = state.storedRows.filter(
+        (row) => row.role === "assistant",
+      );
+      assert.lengthOf(answerRows, 1, "the answer is stored exactly once");
+      assert.equal(answerRows[0].text, "An answer saved on the second try.");
+      assert.equal(answerRows[0].completion_status, "complete");
+      assert.equal(await statusText(), "Ready");
+    });
+  });
+
+  it("send whose answer save fails after the row is written: the answer is stored once", async function () {
+    await surfacing(async () => {
+      let state!: WorkflowTestChatTurnLifecycleState;
+      // The prune after the append fails, so the first save throws although
+      // its row is stored. The second save must not append it again.
+      const thrown = await withAssistantRowWriteFaults(
+        "prune",
+        1,
+        async (arm) => {
+          const started = await startSend("Answer, then fail the upkeep.");
+          const stream = await nextStream(0);
+          stream.push("An answer stored before its upkeep failed.");
+          stream.usage(11, 7);
+          arm();
+          stream.finish();
+          state = await waitForSendSettled(started);
+        },
+      );
+
+      assert.equal(thrown, 1);
+      const answerRows = state.storedRows.filter(
+        (row) => row.role === "assistant",
+      );
+      assert.lengthOf(answerRows, 1, "the answer is stored exactly once");
+      assert.equal(
+        answerRows[0].text,
+        "An answer stored before its upkeep failed.",
+      );
+      assert.equal(await statusText(), "Ready");
+    });
+  });
+
+  it("retry whose answer save fails twice: the new answer stays complete in memory and the stored answer is the old one", async function () {
+    await surfacing(async () => {
+      const conversationKey = await completedSend(
+        "Answer once.",
+        "Original answer.",
+      );
+      await settledUsageRows(conversationKey, 1);
+      const before = await read(conversationKey);
+      let result: unknown;
+      const thrown = await withAssistantRowWriteFaults(
+        "update",
+        2,
+        async (arm) => {
+          const streamsBefore = streams.length;
+          const retry = api().retryLatestPanelResponse(
+            panel.panelId,
+            RETRY_ENTRY_ID,
+          );
+          const stream = await nextStream(streamsBefore);
+          stream.push("A retried answer the store refuses.");
+          stream.usage(13, 5);
+          arm();
+          stream.finish();
+          result = await retry;
+        },
+      );
+      const state = await read(conversationKey);
+
+      assert.equal(thrown, 2, "the save ran, then ran once more");
+      assert.strictEqual(result, true, "the retry itself completed");
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.text, "A retried answer the store refuses.");
+      assert.equal(assistant.completionStatus, "complete");
+      assert.isNotOk(assistant.interrupted, "a complete answer, not cut off");
+      assert.equal(assistant.streaming, false);
+      const row = storedOf(state, "assistant");
+      const rowBefore = storedOf(before, "assistant");
+      assert.equal(
+        row.text,
+        rowBefore.text,
+        "the stored answer is the old one",
+      );
+      assert.isNotOk(row.interrupted);
+      assert.equal(await statusText(), ANSWER_NOT_SAVED);
+    });
+  });
+
+  it("retry whose first answer save fails: the second save stores the new answer as complete", async function () {
+    await surfacing(async () => {
+      const conversationKey = await completedSend(
+        "Answer once.",
+        "Original answer.",
+      );
+      await settledUsageRows(conversationKey, 1);
+      let result: unknown;
+      const thrown = await withAssistantRowWriteFaults(
+        "update",
+        1,
+        async (arm) => {
+          const streamsBefore = streams.length;
+          const retry = api().retryLatestPanelResponse(
+            panel.panelId,
+            RETRY_ENTRY_ID,
+          );
+          const stream = await nextStream(streamsBefore);
+          stream.push("A retried answer saved on the second try.");
+          stream.usage(13, 5);
+          arm();
+          stream.finish();
+          result = await retry;
+        },
+      );
+      const state = await read(conversationKey);
+
+      assert.equal(thrown, 1);
+      assert.strictEqual(result, true);
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.completionStatus, "complete");
+      assert.isNotOk(assistant.interrupted);
+      const row = storedOf(state, "assistant");
+      assert.equal(row.text, "A retried answer saved on the second try.");
+      assert.equal(row.completion_status, "complete");
+      assert.isNotOk(row.interrupted, "stored as complete, not interrupted");
+      assert.equal(await statusText(), "Ready");
+    });
+  });
 });
