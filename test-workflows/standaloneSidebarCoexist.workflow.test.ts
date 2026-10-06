@@ -1589,6 +1589,197 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   });
 
+  // ── T11: the same chat in both surfaces ────────────────────────────────
+
+  /** A paper chat seeded in the sidebar, shown in the window and the sidebar. */
+  async function openSharedConversation(
+    title: string,
+    seedAnswer = "SHARED-SEED-ANSWER",
+  ) {
+    const paper = await newFixture(title);
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const key = await completeSidebarTurn(`${title} seed question`, seedAnswer);
+    await api.openStandaloneForItem(paper.parentItemId);
+    await ensureWindowShowsConversation(key);
+    await showConversationInSidebar(key);
+    return { paper, key };
+  }
+
+  function taskRow(body: HTMLElement | null) {
+    const row = body?.querySelector("#llm-task-progress") as HTMLElement | null;
+    return {
+      shown: Boolean(row && !row.hidden && !row.closest("[hidden]")),
+      state: row?.dataset.state || "",
+    };
+  }
+
+  function hitlCard(body: HTMLElement | null, requestId: string) {
+    return (
+      (body?.querySelector(
+        `#llm-chat-box .llm-agent-hitl-card[data-request-id="${requestId}"]`,
+      ) as HTMLElement | null) || null
+    );
+  }
+
+  it("T11: a run in a chat open in both surfaces shows its Task progress and its approval in both, and settles once", async function () {
+    const { paper, key } = await openSharedConversation("Coexist T11");
+    const folder = new Zotero.Collection();
+    folder.libraryID = Zotero.Libraries.userLibraryID;
+    folder.name = `Coexist T11 folder ${Date.now()}`;
+    await folder.saveTx();
+    const paperItem = Zotero.Items.get(paper.parentItemId);
+    paperItem.setCollections([folder.id]);
+    await paperItem.saveTx();
+    const agentApi = (Zotero as any).LLMForZotero.api.agent;
+    const handle = await api.startTaskProgressReplay({
+      surface: "standalone",
+      followUp: true,
+      question: "Coexist T11 what does the folder say?",
+      user: {
+        selectedCollectionContexts: [
+          {
+            collectionId: folder.id,
+            name: folder.name,
+            libraryID: folder.libraryID,
+          },
+        ],
+      },
+    });
+    try {
+      assert.equal(
+        handle.conversationKey,
+        key,
+        "the run is in the shared chat",
+      );
+      const describe = () =>
+        JSON.stringify({
+          window: taskRow(windowBody()),
+          sidebar: taskRow(sidebarBody()),
+          snapshot: api.getTaskProgressSnapshot(key)?.runState,
+        });
+      await until(
+        () => {
+          api.flushTaskProgress();
+          return (
+            taskRow(windowBody()).shown &&
+            taskRow(sidebarBody()).shown &&
+            taskRow(windowBody()).state === "working" &&
+            taskRow(sidebarBody()).state === "working"
+          );
+        },
+        () => `both surfaces show the working run: ${describe()}`,
+      );
+
+      // The run asks for approval; the sidebar approves it.
+      const requestId = `coexist-t11-${Date.now()}`;
+      const resolutions: unknown[] = [];
+      agentApi.registerPendingConfirmation(requestId, (resolution: unknown) =>
+        resolutions.push(resolution),
+      );
+      await handle.emit({
+        type: "confirmation_required",
+        requestId,
+        action: {
+          toolName: "workflow_probe",
+          title: "Coexist probe action",
+          mode: "approval",
+          confirmLabel: "Apply",
+          cancelLabel: "Cancel",
+          fields: [],
+        },
+      } as any);
+      await until(
+        () =>
+          Boolean(hitlCard(windowBody(), requestId)) &&
+          Boolean(hitlCard(sidebarBody(), requestId)),
+        () =>
+          `the approval shows in both surfaces: ${JSON.stringify({
+            window: Boolean(hitlCard(windowBody(), requestId)),
+            sidebar: Boolean(hitlCard(sidebarBody(), requestId)),
+          })}`,
+      );
+      const approve = hitlCard(sidebarBody(), requestId)!.querySelector(
+        '[data-kind="save"]',
+      ) as HTMLButtonElement;
+      assert.isOk(approve, "the sidebar's card offers Apply");
+      approve.click();
+      await until(
+        () => resolutions.length === 1,
+        () => "the sidebar's Apply settles the approval",
+      );
+      assert.isTrue(
+        (resolutions[0] as any).approved,
+        JSON.stringify(resolutions),
+      );
+      // The window's copy cannot settle it a second time.
+      (
+        hitlCard(windowBody(), requestId)?.querySelector(
+          '[data-kind="save"]',
+        ) as HTMLButtonElement | null
+      )?.click();
+      await handle.emit({
+        type: "confirmation_resolved",
+        requestId,
+        approved: true,
+      } as any);
+      await Zotero.Promise.delay(300);
+      assert.lengthOf(resolutions, 1, "the approval settles once");
+      await until(
+        () =>
+          !hitlCard(windowBody(), requestId)?.querySelector(
+            '[data-kind="save"]:not([disabled])',
+          ) &&
+          !hitlCard(sidebarBody(), requestId)?.querySelector(
+            '[data-kind="save"]:not([disabled])',
+          ),
+        () =>
+          `neither surface still offers Apply once it is settled: ${JSON.stringify(
+            [windowBody(), sidebarBody()].map((panel) => {
+              const card = hitlCard(panel, requestId);
+              return card
+                ? {
+                    inline: Boolean(card.closest(".llm-action-inline-card")),
+                    className: card.className,
+                    status: textOf(card).slice(0, 160),
+                    applyDisabled: (
+                      card.querySelector(
+                        '[data-kind="save"]',
+                      ) as HTMLButtonElement | null
+                    )?.disabled,
+                  }
+                : null;
+            }),
+          )}`,
+      );
+
+      await handle.emit({ type: "final", text: "COEXIST-T11-FINAL" } as any);
+      handle.refreshChat();
+      handle.finish();
+      await until(
+        () => {
+          api.flushTaskProgress();
+          return (
+            taskRow(windowBody()).state === "completed" &&
+            taskRow(sidebarBody()).state === "completed"
+          );
+        },
+        () => `both surfaces show the run finished: ${describe()}`,
+      );
+      await until(
+        () =>
+          lastAssistantBubbleText(sidebarRoot()).includes(
+            "COEXIST-T11-FINAL",
+          ) &&
+          lastAssistantBubbleText(windowRoot()).includes("COEXIST-T11-FINAL"),
+        () => "both surfaces show the final answer",
+      );
+    } finally {
+      handle.finish();
+      await folder.eraseTx().catch(() => undefined);
+    }
+  });
+
   // ── T8 ───────────────────────────────────────────────────────────────────
 
   /**

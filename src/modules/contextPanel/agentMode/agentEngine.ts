@@ -300,6 +300,10 @@ export function createAgentTurnEventHandler(
   // Task progress follows the run: working from its start, the paper ledger
   // as reads land, answering at the first answer text, ✓ at final.
   let taskRunBegun = false;
+  // Approvals already settled. The card's second, delayed paint must not
+  // bring back a card settled before it ran (the same chat open in another
+  // surface can approve it at once).
+  const settledConfirmationIds = new Set<string>();
   // The run's outcome ledger, folded from its whole and delta events.
   const outcomeLedger = new ExecutionCheckpointFold();
   const ensureTaskRun = () => {
@@ -548,12 +552,14 @@ export function createAgentTurnEventHandler(
         showInlineConfirmationCard(body, ui, event.requestId, event.action);
         queueRefresh();
         body.ownerDocument?.defaultView?.setTimeout(() => {
+          if (settledConfirmationIds.has(event.requestId)) return;
           showInlineConfirmationCard(body, ui, event.requestId, event.action);
         }, 90);
         setStatusSafely("Approval required", "sending");
         return;
       case "confirmation_resolved":
         applyTaskProgress(event);
+        settledConfirmationIds.add(event.requestId);
         closeInlineConfirmationCard(body, ui, event.requestId);
         queueRefresh();
         setStatusSafely(
