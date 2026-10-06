@@ -3036,6 +3036,9 @@ export async function runCodexAppServerNativeTurn(input: {
     const proc = await getOrCreateCodexAppServerProcess(processKey, {
       codexPath,
     });
+    // One conversation's turns run in order; another conversation's turn can
+    // run on the same process at the same time. Keyed by conversation, not
+    // thread: the thread is resolved inside, and can be replaced there.
     return await proc.runTurnExclusive(async () => {
       const codexNativeRuntimeCwd = resolveCodexNativeRuntimeCwd();
       const storedSession = await loadResumableProviderSession({
@@ -3627,29 +3630,34 @@ export async function runCodexAppServerNativeTurn(input: {
             throw new Error(mcpWarning);
           }
         }
-        const resolvePersistentThread = async (forceReplacement = false) => {
-          // Loaded native threads retain their discovered MCP catalog. Reload
-          // before thread/resume so the thread binds this turn's current Plan
-          // phase; reloading after resume leaves the previous phase's catalog
-          // attached for the entire turn.
-          if (storedThreadId && !forceReplacement && scopedMcp) {
-            await proc.sendRequest("config/mcpServer/reload");
-            assertTurnStillLive();
-          }
-          return resolveNativeThread({
-            proc,
-            scope: scopeWithProfile,
-            model: params.model,
-            effort: reasoningParams.effort,
-            developerInstructions: developerPreparedTurn.developerInstructions,
-            config: threadConfig,
-            cwd: codexNativeRuntimeCwd,
-            hooks: params.hooks,
-            storedThreadId: storedThreadId || null,
-            permissionExecution,
-            forceReplacement,
+        // The MCP reload is process-wide, so the reload and the thread/resume
+        // that binds it run as one step, never interleaved with another
+        // conversation's setup on the same process.
+        const resolvePersistentThread = (forceReplacement = false) =>
+          proc.runThreadSetupExclusive(async () => {
+            // Loaded native threads retain their discovered MCP catalog.
+            // Reload before thread/resume so the thread binds this turn's
+            // current Plan phase; reloading after resume leaves the previous
+            // phase's catalog attached for the entire turn.
+            if (storedThreadId && !forceReplacement && scopedMcp) {
+              await proc.sendRequest("config/mcpServer/reload");
+              assertTurnStillLive();
+            }
+            return resolveNativeThread({
+              proc,
+              scope: scopeWithProfile,
+              model: params.model,
+              effort: reasoningParams.effort,
+              developerInstructions:
+                developerPreparedTurn.developerInstructions,
+              config: threadConfig,
+              cwd: codexNativeRuntimeCwd,
+              hooks: params.hooks,
+              storedThreadId: storedThreadId || null,
+              permissionExecution,
+              forceReplacement,
+            });
           });
-        };
         let thread: NativeThreadResolution = rawPdfMode
           ? await (async () => {
               // Do not start an ephemeral provider thread after Clear has
@@ -3658,16 +3666,18 @@ export async function runCodexAppServerNativeTurn(input: {
               // the provider response.
               assertTurnStillLive();
               return {
-                ...(await startNativeThread({
-                  proc,
-                  model: params.model,
-                  developerInstructions:
-                    developerPreparedTurn.developerInstructions,
-                  config: threadConfig,
-                  cwd: codexNativeRuntimeCwd,
-                  ephemeral: true,
-                  permissionExecution,
-                })),
+                ...(await proc.runThreadSetupExclusive(() =>
+                  startNativeThread({
+                    proc,
+                    model: params.model,
+                    developerInstructions:
+                      developerPreparedTurn.developerInstructions,
+                    config: threadConfig,
+                    cwd: codexNativeRuntimeCwd,
+                    ephemeral: true,
+                    permissionExecution,
+                  }),
+                )),
                 resumed: false,
               };
             })()
@@ -3896,7 +3906,7 @@ export async function runCodexAppServerNativeTurn(input: {
         scopedMcp?.clear();
         unregisterApprovalHandlers();
       }
-    });
+    }, `conversation:${params.scope.conversationKey}`);
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const redactedMessage = redactTerminalText(rawMessage);

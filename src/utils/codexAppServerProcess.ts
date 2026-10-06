@@ -133,6 +133,40 @@ function createAbortError(): Error {
   return err;
 }
 
+/**
+ * The first Codex release whose app-server is known to tag every turn event
+ * and every server request with the thread (and turn) it belongs to. Older or
+ * unidentified servers get one process-wide turn queue, as before.
+ */
+const CODEX_APP_SERVER_CONCURRENT_TURNS_MIN_VERSION: readonly [
+  number,
+  number,
+  number,
+] = [0, 156, 1];
+const CODEX_APP_SERVER_SETUP_LOCK_KEY = "\u0000setup";
+
+/** Reads the Codex version from the initialize response's `userAgent`. */
+export function parseCodexAppServerUserAgentVersion(
+  userAgent: unknown,
+): [number, number, number] | null {
+  if (typeof userAgent !== "string") return null;
+  const match = userAgent.trim().match(/^[^\s/]+\/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function isVersionAtLeast(
+  version: readonly [number, number, number],
+  minimum: readonly [number, number, number],
+): boolean {
+  for (let index = 0; index < 3; index++) {
+    if (version[index] !== minimum[index]) {
+      return version[index] > minimum[index];
+    }
+  }
+  return true;
+}
+
 function extractCodexAppServerRequestThreadId(params: unknown): string {
   if (!params || typeof params !== "object") return "";
   const record = params as { threadId?: unknown; conversationId?: unknown };
@@ -186,7 +220,8 @@ export class CodexAppServerProcess {
   private closeHandlers = new Set<() => void>();
   private readLoopPromise: Promise<void> | null = null;
   private stderrLoopPromise: Promise<void> | null = null;
-  private turnQueue = Promise.resolve();
+  private turnQueues = new Map<string, Promise<void>>();
+  private serverVersion: [number, number, number] | null = null;
   private lineBuffer = "";
   private diagnosticBuffer = "";
   private readonly diagnosticStreamRedactor =
@@ -572,22 +607,61 @@ export class CodexAppServerProcess {
     }
   }
 
-  async runTurnExclusive<T>(callback: () => Promise<T>): Promise<T> {
-    const previous = this.turnQueue;
-    let release!: () => void;
-    this.turnQueue = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    await previous;
-    try {
+  /**
+   * Runs one turn. Turns with the same key (one conversation) run one after
+   * another; turns with different keys share the process and run at once.
+   * A server that is not known to tag every turn event and request with its
+   * thread puts all turns on one queue instead.
+   */
+  async runTurnExclusive<T>(callback: () => Promise<T>, key = ""): Promise<T> {
+    const queueKey = this.supportsConcurrentTurns() ? `turn:${key}` : "turn:";
+    return this.runQueued(queueKey, async () => {
       if (this.destroyed) {
         throw new Error("CodexAppServerProcess destroyed");
       }
       return await callback();
+    });
+  }
+
+  /**
+   * Serializes the short, process-wide thread setup of a turn (MCP config
+   * reload, thread resume or start) across all conversations.
+   */
+  async runThreadSetupExclusive<T>(callback: () => Promise<T>): Promise<T> {
+    return this.runQueued(CODEX_APP_SERVER_SETUP_LOCK_KEY, callback);
+  }
+
+  private async runQueued<T>(
+    key: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.turnQueues.get(key) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.turnQueues.set(key, current);
+    await previous;
+    try {
+      return await callback();
     } finally {
       release();
+      if (this.turnQueues.get(key) === current) this.turnQueues.delete(key);
     }
+  }
+
+  setServerUserAgent(userAgent: unknown): void {
+    this.serverVersion = parseCodexAppServerUserAgentVersion(userAgent);
+  }
+
+  supportsConcurrentTurns(): boolean {
+    return Boolean(
+      this.serverVersion &&
+      isVersionAtLeast(
+        this.serverVersion,
+        CODEX_APP_SERVER_CONCURRENT_TURNS_MIN_VERSION,
+      ),
+    );
   }
 
   onNotification(method: string, handler: NotificationHandler): () => void {
@@ -661,7 +735,7 @@ export class CodexAppServerProcess {
   }
 
   private async initialize(): Promise<void> {
-    await this.sendRequest("initialize", {
+    const result = await this.sendRequest("initialize", {
       clientInfo: {
         name: "llm-for-zotero",
         title: "LLM for Zotero",
@@ -669,6 +743,11 @@ export class CodexAppServerProcess {
       },
       capabilities: { experimentalApi: true },
     });
+    this.setServerUserAgent(
+      result && typeof result === "object"
+        ? (result as { userAgent?: unknown }).userAgent
+        : undefined,
+    );
     this.sendNotification("initialized");
     this.protocolInitialized = true;
   }

@@ -4032,7 +4032,9 @@ describe("Codex MCP tool activity bridge", function () {
   });
 });
 
-describe("Codex native requests of two conversations on one process", function () {
+describe("Codex native turns of two conversations on one process", function () {
+  const CURRENT_USER_AGENT =
+    "llm-for-zotero/0.156.1 (Mac OS 15.7.4; arm64) unknown (llm-for-zotero; 1.0)";
   const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   type TestProcess = CodexAppServerProcess & {
     handleMessage: (msg: Record<string, unknown>) => void;
@@ -4148,5 +4150,147 @@ describe("Codex native requests of two conversations on one process", function (
     assert.lengthOf(approvals, 1);
     assert.equal(approvals[0].params.threadId, "thread-A");
     proc.handleMessage({ id: approvals[0].id, result: {} });
+  });
+
+  async function runTwoConversations(params: {
+    onTurn: Parameters<typeof createNativeLifecycleTestProcess>[0]["onTurn"];
+    onServerResponse?: (message: Record<string, any>) => void;
+    runA: (
+      run: (
+        extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>,
+      ) => Promise<unknown>,
+    ) => Promise<unknown>;
+    runB: (
+      run: (
+        extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>,
+      ) => Promise<unknown>,
+    ) => Promise<unknown>;
+    requests: Array<{ method: string; params: Record<string, any> }>;
+  }) {
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["coexist-thread-1", "coexist-thread-2"],
+      requests: params.requests,
+      onServerResponse: params.onServerResponse,
+      onTurn: params.onTurn,
+    });
+    proc.setServerUserAgent(CURRENT_USER_AGENT);
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs();
+    const processKey = "codex-two-conversations";
+    const globalScope = globalThis as typeof globalThis & {
+      ztoolkit?: { log: (...args: unknown[]) => void };
+    };
+    const originalZtoolkit = globalScope.ztoolkit;
+    globalScope.ztoolkit = { log: () => undefined };
+    CodexAppServerProcess.spawn = async () => proc;
+    const run =
+      (conversationKey: number, title: string) =>
+      (extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>) =>
+        runCodexAppServerNativeTurn({
+          scope: { conversationKey, libraryID: 1, kind: "global", title },
+          model: "gpt-5.6",
+          messages: [{ role: "user", content: `Question ${title}` }],
+          processKey,
+          hooks: {
+            loadProviderSessionId: async () => undefined,
+            persistProviderSession: async () => {},
+          },
+          ...extra,
+        });
+    try {
+      const guard = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("the two conversations did not overlap")),
+          2000,
+        ),
+      );
+      return await Promise.race([
+        Promise.allSettled([
+          params.runA(run(6_000_000_501, "A")),
+          params.runB(run(6_000_000_502, "B")),
+        ]),
+        guard,
+      ]);
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+      globalScope.ztoolkit = originalZtoolkit;
+    }
+  }
+
+  it("lets one conversation answer while another waits on an approval", async function () {
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const emitters = new Map<
+      number,
+      { turnId: string; emit: (message: Record<string, unknown>) => void }
+    >();
+    const order: string[] = [];
+    let finishB!: () => void;
+    const bFinished = new Promise<void>((resolve) => {
+      finishB = resolve;
+    });
+    const results = await runTwoConversations({
+      requests,
+      onTurn: ({ threadId, turnId, emit }) => {
+        const approvalId = 9200 + emitters.size;
+        emitters.set(approvalId, { turnId, emit });
+        emit({
+          id: approvalId,
+          method: "item/commandExecution/requestApproval",
+          params: { threadId, turnId, itemId: `cmd-${turnId}`, command: "ls" },
+        });
+      },
+      onServerResponse: (message) => {
+        const owner = emitters.get(message.id);
+        if (!owner) return;
+        owner.emit({
+          method: "item/agentMessage/delta",
+          params: { turnId: owner.turnId, delta: `answer ${owner.turnId}` },
+        });
+        owner.emit({
+          method: "turn/completed",
+          params: { turn: { id: owner.turnId, status: "completed" } },
+        });
+      },
+      runA: (run) =>
+        run({
+          onApprovalRequest: async (request) => {
+            order.push(`A asked on ${(request.params as any).threadId}`);
+            await bFinished;
+            order.push("A approved");
+            return { decision: "accept" };
+          },
+        }).then((result) => {
+          order.push("A done");
+          return result;
+        }),
+      runB: (run) =>
+        run({
+          onApprovalRequest: async (request) => {
+            order.push(`B asked on ${(request.params as any).threadId}`);
+            return { decision: "accept" };
+          },
+        }).then((result) => {
+          order.push("B done");
+          finishB();
+          return result;
+        }),
+    });
+    assert.deepEqual(
+      results.map((result) => result.status),
+      ["fulfilled", "fulfilled"],
+      JSON.stringify(results),
+    );
+    const [resultA, resultB] = results.map(
+      (result) => (result as PromiseFulfilledResult<any>).value,
+    );
+    assert.notEqual(resultA.threadId, resultB.threadId);
+    assert.include(order, `A asked on ${resultA.threadId}`);
+    assert.include(order, `B asked on ${resultB.threadId}`);
+    assert.isBelow(order.indexOf("B done"), order.indexOf("A approved"));
+    assert.isBelow(order.indexOf("A approved"), order.indexOf("A done"));
+    assert.equal(resultA.text, `answer ${resultA.turnId}`);
+    assert.equal(resultB.text, `answer ${resultB.turnId}`);
   });
 });

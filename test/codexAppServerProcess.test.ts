@@ -679,42 +679,16 @@ describe("codexAppServerProcess", function () {
     }
   });
 
-  it("serializes turn work on a shared process", async function () {
-    const proc = createProcess();
-    const order: string[] = [];
-    let releaseFirst!: () => void;
-
-    const first = proc.runTurnExclusive(async () => {
-      order.push("first-start");
-      await new Promise<void>((resolve) => {
-        releaseFirst = resolve;
-      });
-      order.push("first-end");
-      return "first";
-    });
-
-    const second = proc.runTurnExclusive(async () => {
-      order.push("second-start");
-      return "second";
-    });
-
-    await Promise.resolve();
-    assert.deepEqual(order, ["first-start"]);
-
-    releaseFirst();
-    const results = await Promise.all([first, second]);
-
-    assert.deepEqual(results, ["first", "second"]);
-    assert.deepEqual(order, ["first-start", "first-end", "second-start"]);
-  });
-
-  describe("server requests on a shared process", function () {
+  describe("concurrent turns on a shared process", function () {
+    const CURRENT_USER_AGENT =
+      "llm-for-zotero/0.156.1 (Mac OS 15.7.4; arm64) unknown (llm-for-zotero; 1.0)";
     const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     type TestProcess = CodexAppServerProcess & {
       handleMessage: (msg: Record<string, unknown>) => void;
     };
     function createConcurrentProcess(
       options: {
+        userAgent?: string;
         writes?: Array<Record<string, any>>;
         onKill?: () => void;
       } = {},
@@ -727,8 +701,75 @@ describe("codexAppServerProcess", function () {
         },
         kill: () => options.onKill?.(),
       }) as TestProcess;
+      if (options.userAgent !== undefined)
+        proc.setServerUserAgent(options.userAgent);
       return proc;
     }
+    function startHeldTurn(
+      proc: CodexAppServerProcess,
+      key: string | undefined,
+      label: string,
+      order: string[],
+    ) {
+      let release!: () => void;
+      const done = proc.runTurnExclusive(async () => {
+        order.push(`${label}-start`);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        order.push(`${label}-end`);
+        return label;
+      }, key);
+      return { done, release: () => release() };
+    }
+
+    it("serializes turns of one conversation but runs two conversations at once", async function () {
+      const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+      const order: string[] = [];
+      const firstA = startHeldTurn(proc, "conversation:1", "a1", order);
+      const secondA = startHeldTurn(proc, "conversation:1", "a2", order);
+      const firstB = startHeldTurn(proc, "conversation:2", "b1", order);
+      await tick();
+      assert.deepEqual(order, ["a1-start", "b1-start"]);
+      firstB.release();
+      assert.equal(await firstB.done, "b1");
+      assert.deepEqual(order, ["a1-start", "b1-start", "b1-end"]);
+      firstA.release();
+      await firstA.done;
+      await tick();
+      assert.deepEqual(order.slice(-2), ["a1-end", "a2-start"]);
+      secondA.release();
+      assert.equal(await secondA.done, "a2");
+    });
+
+    it("keeps every turn on one queue when the Codex version is unknown or too old", async function () {
+      for (const userAgent of [
+        undefined,
+        "",
+        "llm-for-zotero/0.150.0 (Mac OS 15.7.4; arm64) unknown",
+        "llm-for-zotero/0.0.0 (dev build)",
+      ]) {
+        const proc = createConcurrentProcess({ userAgent });
+        assert.isFalse(proc.supportsConcurrentTurns(), String(userAgent));
+        const order: string[] = [];
+        const a = startHeldTurn(proc, "conversation:1", "a", order);
+        const b = startHeldTurn(proc, "conversation:2", "b", order);
+        await tick();
+        assert.deepEqual(order, ["a-start"], String(userAgent));
+        a.release();
+        await a.done;
+        await tick();
+        assert.deepEqual(order, ["a-start", "a-end", "b-start"]);
+        b.release();
+        await b.done;
+      }
+      assert.isTrue(
+        createConcurrentProcess({
+          userAgent: "codex_cli_rs/0.157.0 (Linux; x86_64)",
+        }).supportsConcurrentTurns(),
+      );
+    });
+
     it("routes each server request to the handler that accepts its thread", async function () {
       const writes: Array<Record<string, any>> = [];
       const proc = createConcurrentProcess({ writes });
