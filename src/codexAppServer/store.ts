@@ -21,7 +21,6 @@ import { serializeForcedSkillIds } from "../shared/skillIds";
 import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
-  isConversationKeyFor,
   isConversationKeyForKind,
   getConversationKeyRange,
 } from "../shared/conversationKeySpace";
@@ -33,8 +32,6 @@ import {
   buildDefaultCodexPaperConversationKey,
   getCodexProfileSignature,
   getCodexAllocatedConversationKeyRange,
-  getCodexGlobalConversationKeyRange,
-  getCodexPaperConversationKeyRange,
 } from "./constants";
 import {
   getLastAllocatedCodexGlobalConversationKey,
@@ -48,7 +45,6 @@ import {
 } from "./prefs";
 import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
-  buildConversationID,
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
@@ -58,7 +54,6 @@ import {
   registerConversationScope,
   repairRegisteredConversationScope,
   syncCatalogInstanceID,
-  type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
 import {
@@ -123,34 +118,19 @@ import {
   normalizePaperItemID,
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
-import {
-  resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
-  type MessageConversationSelector,
-} from "../shared/conversationStore/messageConversationSelector";
-import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
 import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
-import {
-  backfillStoreCatalogConversationIDs,
-  backfillStoreCatalogConversationInstanceIDs,
-  backfillStoreCatalogConversationTimestamps,
-  repairRecoverableStoreCatalogMessageConversationIDs,
-} from "../services/providers/conversationStoreIdentityRepair";
-import {
-  filterValidStoreConversationSummaries,
-  refreshStoreConversationCatalogSummary,
-  sameStoreCatalogScope,
-  type ConversationStoreCatalogConfig,
-} from "../services/providers/conversationStoreCatalogSummary";
-import {
-  deleteStoreConversationSearchIndex,
-  refreshStoreConversationSearchIndex,
-} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import {
   deleteUsageEventsForConversation,
   deleteUsageEventsForConversationInTransaction,
 } from "../utils/usageStore";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
+import {
+  RUNTIME_MESSAGE_SELECT_COLUMNS_SQL,
+  createRuntimeConversationStore,
+  ensureColumn,
+  normalizeConversationTitleSeed,
+} from "../services/providers/runtimeConversationStore";
 
 const CODEX_MESSAGES_TABLE = "llm_for_zotero_codex_messages";
 const CODEX_MESSAGES_INDEX = "llm_for_zotero_codex_messages_conversation_idx";
@@ -163,92 +143,51 @@ const CODEX_CONVERSATIONS_ACTIVITY_INDEX =
   "llm_for_zotero_codex_conversations_activity_idx";
 const CODEX_CONVERSATIONS_ID_INDEX =
   "llm_for_zotero_codex_conversations_id_idx";
+
+const store = createRuntimeConversationStore({
+  system: "codex",
+  storeLabel: "Codex",
+  tables: {
+    messages: CODEX_MESSAGES_TABLE,
+    messagesIndex: CODEX_MESSAGES_INDEX,
+    messagesIdIndex: CODEX_MESSAGES_ID_INDEX,
+    catalog: CODEX_CONVERSATIONS_TABLE,
+    kindIndex: CODEX_CONVERSATIONS_KIND_INDEX,
+    activityIndex: CODEX_CONVERSATIONS_ACTIVITY_INDEX,
+    idIndex: CODEX_CONVERSATIONS_ID_INDEX,
+  },
+  prefs: {
+    setLastUsedPaper: setLastUsedCodexPaperConversationKey,
+  },
+});
+const CODEX_MESSAGE_SELECT_COLUMNS_SQL = RUNTIME_MESSAGE_SELECT_COLUMNS_SQL;
+const isCodexStoreConversationKey = store.isStoreConversationKey;
+const isCodexStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
+const buildCodexConversationID = store.buildConversationID;
+const resolveRegisteredConversationID = store.resolveRegisteredConversationID;
+const resolveCodexAppendIdentity = store.resolveAppendIdentity;
+const resolveRepairingMessageConversationSelector =
+  store.resolveRepairingMessageConversationSelector;
+const refreshCodexConversationSearchIndex = store.refreshSearchIndex;
+const deleteCodexConversationSearchIndex = store.deleteSearchIndex;
+const backfillCodexConversationTimestamps =
+  store.backfillConversationTimestamps;
+const refreshCodexConversationCatalogSummary = store.refreshCatalogSummary;
+const getCodexMessagePaperContextRows = store.getMessagePaperContextRows;
+const repairRecoverableCodexCatalogMessageConversationIDs =
+  store.repairRecoverableCatalogMessageConversationIDs;
+const backfillCodexConversationIDs = store.backfillConversationIDs;
+const backfillCodexConversationInstanceIDs =
+  store.backfillConversationInstanceIDs;
+const sameCodexCatalogScope = store.sameCatalogScope;
+const filterValidCodexConversationSummaries = store.filterValidSummaries;
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_CONVERSATIONS_TABLE = "llm_for_zotero_claude_conversations";
-const CODEX_MESSAGE_SELECT_COLUMNS_SQL = `id,
-            role,
-            text,
-            timestamp,
-            run_mode AS runMode,
-            agent_run_id AS agentRunId,
-            document_id AS documentId,
-            selected_text AS selectedText,
-            selected_text_contexts_json AS selectedTextContextsJson,
-            selected_texts_json AS selectedTextsJson,
-            selected_text_sources_json AS selectedTextSourcesJson,
-            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
-            selected_text_note_contexts_json AS selectedTextNoteContextsJson,
-            forced_skill_ids_json AS forcedSkillIdsJson,
-            paper_contexts_json AS paperContextsJson,
-            pdf_paper_contexts_json AS pdfPaperContextsJson,
-            full_text_paper_contexts_json AS fullTextPaperContextsJson,
-            citation_paper_contexts_json AS citationPaperContextsJson,
-            quote_citations_json AS quoteCitationsJson,
-            collection_contexts_json AS collectionContextsJson,
-            tag_contexts_json AS tagContextsJson,
-            screenshot_images AS screenshotImages,
-            attachments_json AS attachmentsJson,
-            generated_images_json AS generatedImagesJson,
-            model_name AS modelName,
-            model_entry_id AS modelEntryId,
-            model_provider_label AS modelProviderLabel,
-            interrupted,
-            webchat_run_state AS webchatRunState,
-            webchat_completion_reason AS webchatCompletionReason,
-            reasoning_summary AS reasoningSummary,
-            reasoning_details AS reasoningDetails,
-            compact_marker AS compactMarker,
-            context_tokens AS contextTokens,
-            context_window AS contextWindow`;
 const CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C = `MAX(
   COALESCE(c.last_activity_at, 0),
   COALESCE(c.updated_at, 0),
   COALESCE(c.created_at, 0)
 )`;
-
-function isCodexStoreConversationKey(conversationKey: number): boolean {
-  return isConversationKeyFor("codex", conversationKey);
-}
-
-function isCodexStoreConversationKeyForKind(
-  conversationKey: number,
-  kind: CodexConversationKind,
-): boolean {
-  return isConversationKeyForKind("codex", kind, conversationKey);
-}
-
-function normalizeConversationTitleSeed(value: string): string {
-  if (typeof value !== "string") return "";
-  const normalized = value
-
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return "";
-  return normalized.slice(0, 96);
-}
-
-function buildCodexConversationID(params: {
-  conversationKey: number;
-  kind: CodexConversationKind;
-  libraryID: number;
-  paperItemID?: number | null;
-}): string {
-  return buildConversationID({
-    conversationKey: params.conversationKey,
-    system: "codex",
-    kind: params.kind,
-    libraryID: params.libraryID,
-    paperItemID: params.paperItemID,
-  });
-}
-
-async function resolveRegisteredConversationID(
-  conversationKey: number,
-): Promise<string | null> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  return registered?.conversationID || null;
-}
 
 async function resolveRegisteredConversationInstanceID(
   conversationKey: number,
@@ -287,63 +226,6 @@ async function assertCodexForkSourceLive(params: {
     ],
   )) as Array<{ conversationID?: unknown }> | undefined;
   if (!rows?.length) throw new ConversationRetiredError(key, instanceID);
-}
-
-async function resolveCodexAppendIdentity(
-  conversationKey: number,
-  requestedInstanceID?: string,
-): Promise<{
-  instanceID: string | null;
-  conversationID: string | null;
-  ledgerAvailable: boolean;
-}> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  let ledger;
-  const ledgerAvailable = isConversationKeyLedgerStoreInitialized();
-  if (ledgerAvailable) {
-    ledger = await getConversationKeyLedgerEntry(conversationKey);
-  }
-  if (ledgerAvailable) {
-    if (!ledger || ledger.retiredAt) {
-      throw new ConversationRetiredError(
-        conversationKey,
-        requestedInstanceID || registered?.instanceID || "",
-      );
-    }
-    if (requestedInstanceID && requestedInstanceID !== ledger.instanceID) {
-      throw new Error(
-        `Conversation ${conversationKey} instance identity mismatch`,
-      );
-    }
-  }
-  return {
-    instanceID:
-      ledger?.instanceID ||
-      requestedInstanceID ||
-      registered?.instanceID ||
-      null,
-    conversationID:
-      ledger?.conversationID || registered?.conversationID || null,
-    ledgerAvailable,
-  };
-}
-
-const CODEX_MESSAGE_SELECTOR_CONFIG = {
-  messagesTable: CODEX_MESSAGES_TABLE,
-  storeLabel: "Codex",
-  getPaperContextRows: getCodexMessagePaperContextRows,
-  log: logConversationStoreWarning,
-};
-
-async function resolveRepairingMessageConversationSelector(
-  conversationKey: number,
-  options: { destructive?: boolean } = {},
-): Promise<MessageConversationSelector> {
-  return await resolveSharedRepairingMessageConversationSelector(
-    CODEX_MESSAGE_SELECTOR_CONFIG,
-    conversationKey,
-    options,
-  );
 }
 
 async function touchCodexConversationActivity(
@@ -681,19 +563,6 @@ async function tableExists(tableName: string): Promise<boolean> {
   return Boolean(rows?.length);
 }
 
-async function ensureColumn(
-  tableName: string,
-  columns: Array<{ name?: unknown }> | undefined,
-  columnName: string,
-  definition: string,
-): Promise<void> {
-  if (columns?.some((column) => column?.name === columnName)) return;
-  await Zotero.DB.queryAsync(
-    `ALTER TABLE ${tableName}
-     ADD COLUMN ${definition}`,
-  );
-}
-
 async function ensureCodexConversationCatalogColumns(
   columns: Array<{ name?: unknown }> | undefined,
 ): Promise<void> {
@@ -728,19 +597,6 @@ async function ensureCodexConversationCatalogColumns(
       definition,
     );
   }
-}
-
-async function backfillCodexConversationTimestamps(): Promise<void> {
-  await backfillStoreCatalogConversationTimestamps(CODEX_STORE_CATALOG_CONFIG);
-}
-
-async function refreshCodexConversationCatalogSummary(
-  conversationKey?: number,
-): Promise<void> {
-  await refreshStoreConversationCatalogSummary(
-    CODEX_STORE_CATALOG_CONFIG,
-    conversationKey,
-  );
 }
 
 async function countRowsForConversationKey(
@@ -925,46 +781,6 @@ export async function repairMisroutedCodexConversationRows(): Promise<void> {
     await moveConversationRowsIfSafe(conversationKey);
     await moveMessageRowsIfSafe(conversationKey);
   }
-}
-
-async function getCodexMessagePaperContextRows(
-  conversationKey: number,
-): Promise<PaperContextJsonColumns[]> {
-  return await getMessagePaperContextRows(
-    CODEX_MESSAGES_TABLE,
-    conversationKey,
-  );
-}
-
-const CODEX_STORE_CATALOG_CONFIG: ConversationStoreCatalogConfig = {
-  system: "codex",
-  storeLabel: "Codex",
-  catalogTable: CODEX_CONVERSATIONS_TABLE,
-  messagesTable: CODEX_MESSAGES_TABLE,
-  buildConversationID: buildCodexConversationID,
-  getPaperContextRows: getCodexMessagePaperContextRows,
-  rememberPaperConversationKey: setLastUsedCodexPaperConversationKey,
-};
-
-async function repairRecoverableCodexCatalogMessageConversationIDs(
-  conversationKey?: number,
-): Promise<{
-  checked: number;
-  repaired: number;
-  refused: number;
-}> {
-  return await repairRecoverableStoreCatalogMessageConversationIDs(
-    CODEX_STORE_CATALOG_CONFIG,
-    conversationKey,
-  );
-}
-
-async function backfillCodexConversationIDs(): Promise<void> {
-  await backfillStoreCatalogConversationIDs(CODEX_STORE_CATALOG_CONFIG);
-}
-
-async function backfillCodexConversationInstanceIDs(): Promise<void> {
-  await backfillStoreCatalogConversationInstanceIDs(CODEX_CONVERSATIONS_TABLE);
 }
 
 export async function repairCodexConversationIdentityRegistry(
@@ -2319,47 +2135,6 @@ function toCodexConversationSummary(
       ? Math.max(0, Math.floor(userTurnCount))
       : 0,
   };
-}
-
-function sameCodexCatalogScope(
-  existing: CodexConversationSummary,
-  params: {
-    libraryID: number;
-    kind: CodexConversationKind;
-    paperItemID?: number | null;
-  },
-): boolean {
-  return sameStoreCatalogScope(existing, params);
-}
-
-async function refreshCodexConversationSearchIndex(
-  conversationKey: number,
-): Promise<void> {
-  await refreshStoreConversationSearchIndex({
-    system: "codex",
-    storeLabel: "Codex",
-    conversationKey,
-  });
-}
-
-async function deleteCodexConversationSearchIndex(
-  conversationKey: number,
-): Promise<void> {
-  await deleteStoreConversationSearchIndex({
-    system: "codex",
-    conversationKey,
-  });
-}
-
-async function filterValidCodexConversationSummaries(
-  summaries: CodexConversationSummary[],
-  expectedPaperItemID?: number | null,
-): Promise<CodexConversationSummary[]> {
-  return await filterValidStoreConversationSummaries(
-    CODEX_STORE_CATALOG_CONFIG,
-    summaries,
-    expectedPaperItemID,
-  );
 }
 
 export async function getCodexConversationSummary(

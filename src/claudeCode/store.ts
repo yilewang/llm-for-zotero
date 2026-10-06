@@ -15,7 +15,6 @@ import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import { serializeForcedSkillIds } from "../shared/skillIds";
 import {
-  isConversationKeyFor,
   isConversationKeyForKind,
   getConversationKeyRange,
 } from "../shared/conversationKeySpace";
@@ -25,8 +24,6 @@ import {
   buildDefaultClaudeGlobalConversationKey,
   buildDefaultClaudePaperConversationKey,
   getClaudeAllocatedConversationKeyRange,
-  getClaudeGlobalConversationKeyRange,
-  getClaudePaperConversationKeyRange,
 } from "./constants";
 import {
   getLastAllocatedClaudeGlobalConversationKey,
@@ -41,7 +38,6 @@ import {
 import { getClaudeProfileSignature } from "./projectSkills";
 import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
-  buildConversationID,
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
@@ -51,7 +47,6 @@ import {
   registerConversationScope,
   repairRegisteredConversationScope,
   syncCatalogInstanceID,
-  type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
 import {
@@ -116,34 +111,19 @@ import {
   normalizePaperItemID,
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
-import {
-  resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
-  type MessageConversationSelector,
-} from "../shared/conversationStore/messageConversationSelector";
-import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
 import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
-import {
-  backfillStoreCatalogConversationIDs,
-  backfillStoreCatalogConversationInstanceIDs,
-  backfillStoreCatalogConversationTimestamps,
-  repairRecoverableStoreCatalogMessageConversationIDs,
-} from "../services/providers/conversationStoreIdentityRepair";
-import {
-  filterValidStoreConversationSummaries,
-  refreshStoreConversationCatalogSummary,
-  sameStoreCatalogScope,
-  type ConversationStoreCatalogConfig,
-} from "../services/providers/conversationStoreCatalogSummary";
-import {
-  deleteStoreConversationSearchIndex,
-  refreshStoreConversationSearchIndex,
-} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import {
   deleteUsageEventsForConversation,
   deleteUsageEventsForConversationInTransaction,
 } from "../utils/usageStore";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
+import {
+  RUNTIME_MESSAGE_SELECT_COLUMNS_SQL,
+  createRuntimeConversationStore,
+  ensureColumn,
+  normalizeConversationTitleSeed,
+} from "../services/providers/runtimeConversationStore";
 
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_MESSAGES_INDEX = "llm_for_zotero_claude_messages_conversation_idx";
@@ -156,143 +136,43 @@ const CLAUDE_CONVERSATIONS_ACTIVITY_INDEX =
   "llm_for_zotero_claude_conversations_activity_idx";
 const CLAUDE_CONVERSATIONS_ID_INDEX =
   "llm_for_zotero_claude_conversations_id_idx";
-const CLAUDE_MESSAGE_SELECT_COLUMNS_SQL = `id,
-            role,
-            text,
-            timestamp,
-            run_mode AS runMode,
-            agent_run_id AS agentRunId,
-            document_id AS documentId,
-            selected_text AS selectedText,
-            selected_text_contexts_json AS selectedTextContextsJson,
-            selected_texts_json AS selectedTextsJson,
-            selected_text_sources_json AS selectedTextSourcesJson,
-            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
-            selected_text_note_contexts_json AS selectedTextNoteContextsJson,
-            forced_skill_ids_json AS forcedSkillIdsJson,
-            paper_contexts_json AS paperContextsJson,
-            pdf_paper_contexts_json AS pdfPaperContextsJson,
-            full_text_paper_contexts_json AS fullTextPaperContextsJson,
-            citation_paper_contexts_json AS citationPaperContextsJson,
-            quote_citations_json AS quoteCitationsJson,
-            collection_contexts_json AS collectionContextsJson,
-            tag_contexts_json AS tagContextsJson,
-            screenshot_images AS screenshotImages,
-            attachments_json AS attachmentsJson,
-            generated_images_json AS generatedImagesJson,
-            model_name AS modelName,
-            model_entry_id AS modelEntryId,
-            model_provider_label AS modelProviderLabel,
-            interrupted,
-            webchat_run_state AS webchatRunState,
-            webchat_completion_reason AS webchatCompletionReason,
-            reasoning_summary AS reasoningSummary,
-            reasoning_details AS reasoningDetails,
-            compact_marker AS compactMarker,
-            context_tokens AS contextTokens,
-            context_window AS contextWindow`;
 
-function isClaudeStoreConversationKey(conversationKey: number): boolean {
-  return isConversationKeyFor("claude_code", conversationKey);
-}
-
-function isClaudeStoreConversationKeyForKind(
-  conversationKey: number,
-  kind: ClaudeConversationKind,
-): boolean {
-  return isConversationKeyForKind("claude_code", kind, conversationKey);
-}
-
-function normalizeConversationTitleSeed(value: string): string {
-  if (typeof value !== "string") return "";
-  const normalized = value
-
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return "";
-  return normalized.slice(0, 96);
-}
-
-function buildClaudeConversationID(params: {
-  conversationKey: number;
-  kind: ClaudeConversationKind;
-  libraryID: number;
-  paperItemID?: number | null;
-}): string {
-  return buildConversationID({
-    conversationKey: params.conversationKey,
-    system: "claude_code",
-    kind: params.kind,
-    libraryID: params.libraryID,
-    paperItemID: params.paperItemID,
-  });
-}
-
-async function resolveRegisteredConversationID(
-  conversationKey: number,
-): Promise<string | null> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  return registered?.conversationID || null;
-}
-
-async function resolveClaudeAppendIdentity(
-  conversationKey: number,
-  requestedInstanceID?: string,
-): Promise<{
-  instanceID: string | null;
-  conversationID: string | null;
-  ledgerAvailable: boolean;
-}> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  let ledger;
-  const ledgerAvailable = isConversationKeyLedgerStoreInitialized();
-  if (ledgerAvailable) {
-    ledger = await getConversationKeyLedgerEntry(conversationKey);
-  }
-  if (ledgerAvailable) {
-    if (!ledger || ledger.retiredAt) {
-      throw new ConversationRetiredError(
-        conversationKey,
-        requestedInstanceID || registered?.instanceID || "",
-      );
-    }
-    if (requestedInstanceID && requestedInstanceID !== ledger.instanceID) {
-      throw new Error(
-        `Conversation ${conversationKey} instance identity mismatch`,
-      );
-    }
-  }
-  return {
-    instanceID:
-      ledger?.instanceID ||
-      requestedInstanceID ||
-      registered?.instanceID ||
-      null,
-    conversationID:
-      ledger?.conversationID || registered?.conversationID || null,
-    ledgerAvailable,
-  };
-}
-
-const CLAUDE_MESSAGE_SELECTOR_CONFIG = {
-  messagesTable: CLAUDE_MESSAGES_TABLE,
+const store = createRuntimeConversationStore({
+  system: "claude_code",
   storeLabel: "Claude",
-  getPaperContextRows: getClaudeMessagePaperContextRows,
-  log: logConversationStoreWarning,
-};
-
-async function resolveRepairingMessageConversationSelector(
-  conversationKey: number,
-  options: { destructive?: boolean } = {},
-): Promise<MessageConversationSelector> {
-  return await resolveSharedRepairingMessageConversationSelector(
-    CLAUDE_MESSAGE_SELECTOR_CONFIG,
-    conversationKey,
-    options,
-  );
-}
-
+  tables: {
+    messages: CLAUDE_MESSAGES_TABLE,
+    messagesIndex: CLAUDE_MESSAGES_INDEX,
+    messagesIdIndex: CLAUDE_MESSAGES_ID_INDEX,
+    catalog: CLAUDE_CONVERSATIONS_TABLE,
+    kindIndex: CLAUDE_CONVERSATIONS_KIND_INDEX,
+    activityIndex: CLAUDE_CONVERSATIONS_ACTIVITY_INDEX,
+    idIndex: CLAUDE_CONVERSATIONS_ID_INDEX,
+  },
+  prefs: {
+    setLastUsedPaper: setLastUsedClaudePaperConversationKey,
+  },
+});
+const CLAUDE_MESSAGE_SELECT_COLUMNS_SQL = RUNTIME_MESSAGE_SELECT_COLUMNS_SQL;
+const isClaudeStoreConversationKey = store.isStoreConversationKey;
+const isClaudeStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
+const buildClaudeConversationID = store.buildConversationID;
+const resolveClaudeAppendIdentity = store.resolveAppendIdentity;
+const resolveRepairingMessageConversationSelector =
+  store.resolveRepairingMessageConversationSelector;
+const refreshClaudeConversationSearchIndex = store.refreshSearchIndex;
+const deleteClaudeConversationSearchIndex = store.deleteSearchIndex;
+const backfillClaudeConversationTimestamps =
+  store.backfillConversationTimestamps;
+const refreshClaudeConversationCatalogSummary = store.refreshCatalogSummary;
+const getClaudeMessagePaperContextRows = store.getMessagePaperContextRows;
+const repairRecoverableClaudeCatalogMessageConversationIDs =
+  store.repairRecoverableCatalogMessageConversationIDs;
+const backfillClaudeConversationIDs = store.backfillConversationIDs;
+const backfillClaudeConversationInstanceIDs =
+  store.backfillConversationInstanceIDs;
+const sameClaudeCatalogScope = store.sameCatalogScope;
+const filterValidClaudeConversationSummaries = store.filterValidSummaries;
 function remapLegacyConversationKey(
   legacyConversationKey: number,
   kind: ClaudeConversationKind,
@@ -473,38 +353,6 @@ async function migrateLegacyClaudeConversationKeys(): Promise<
   return remaps;
 }
 
-async function refreshClaudeConversationSearchIndex(
-  conversationKey: number,
-): Promise<void> {
-  await refreshStoreConversationSearchIndex({
-    system: "claude_code",
-    storeLabel: "Claude",
-    conversationKey,
-  });
-}
-
-async function deleteClaudeConversationSearchIndex(
-  conversationKey: number,
-): Promise<void> {
-  await deleteStoreConversationSearchIndex({
-    system: "claude_code",
-    conversationKey,
-  });
-}
-
-async function ensureColumn(
-  tableName: string,
-  columns: Array<{ name?: unknown }> | undefined,
-  columnName: string,
-  definition: string,
-): Promise<void> {
-  if (columns?.some((column) => column?.name === columnName)) return;
-  await Zotero.DB.queryAsync(
-    `ALTER TABLE ${tableName}
-     ADD COLUMN ${definition}`,
-  );
-}
-
 async function ensureClaudeConversationCatalogColumns(
   columns: Array<{ name?: unknown }> | undefined,
 ): Promise<void> {
@@ -537,59 +385,6 @@ async function ensureClaudeConversationCatalogColumns(
       definition,
     );
   }
-}
-
-async function backfillClaudeConversationTimestamps(): Promise<void> {
-  await backfillStoreCatalogConversationTimestamps(CLAUDE_STORE_CATALOG_CONFIG);
-}
-
-async function refreshClaudeConversationCatalogSummary(
-  conversationKey?: number,
-): Promise<void> {
-  await refreshStoreConversationCatalogSummary(
-    CLAUDE_STORE_CATALOG_CONFIG,
-    conversationKey,
-  );
-}
-
-async function getClaudeMessagePaperContextRows(
-  conversationKey: number,
-): Promise<PaperContextJsonColumns[]> {
-  return await getMessagePaperContextRows(
-    CLAUDE_MESSAGES_TABLE,
-    conversationKey,
-  );
-}
-
-const CLAUDE_STORE_CATALOG_CONFIG: ConversationStoreCatalogConfig = {
-  system: "claude_code",
-  storeLabel: "Claude",
-  catalogTable: CLAUDE_CONVERSATIONS_TABLE,
-  messagesTable: CLAUDE_MESSAGES_TABLE,
-  buildConversationID: buildClaudeConversationID,
-  getPaperContextRows: getClaudeMessagePaperContextRows,
-  rememberPaperConversationKey: setLastUsedClaudePaperConversationKey,
-};
-
-async function repairRecoverableClaudeCatalogMessageConversationIDs(
-  conversationKey?: number,
-): Promise<{
-  checked: number;
-  repaired: number;
-  refused: number;
-}> {
-  return await repairRecoverableStoreCatalogMessageConversationIDs(
-    CLAUDE_STORE_CATALOG_CONFIG,
-    conversationKey,
-  );
-}
-
-async function backfillClaudeConversationIDs(): Promise<void> {
-  await backfillStoreCatalogConversationIDs(CLAUDE_STORE_CATALOG_CONFIG);
-}
-
-async function backfillClaudeConversationInstanceIDs(): Promise<void> {
-  await backfillStoreCatalogConversationInstanceIDs(CLAUDE_CONVERSATIONS_TABLE);
 }
 
 export async function repairClaudeConversationIdentityRegistry(
@@ -1868,28 +1663,6 @@ function toClaudeConversationSummary(
       ? Math.max(0, Math.floor(userTurnCount))
       : 0,
   };
-}
-
-function sameClaudeCatalogScope(
-  existing: ClaudeConversationSummary,
-  params: {
-    libraryID: number;
-    kind: ClaudeConversationKind;
-    paperItemID?: number | null;
-  },
-): boolean {
-  return sameStoreCatalogScope(existing, params);
-}
-
-async function filterValidClaudeConversationSummaries(
-  summaries: ClaudeConversationSummary[],
-  expectedPaperItemID?: number | null,
-): Promise<ClaudeConversationSummary[]> {
-  return await filterValidStoreConversationSummaries(
-    CLAUDE_STORE_CATALOG_CONFIG,
-    summaries,
-    expectedPaperItemID,
-  );
 }
 
 export async function getClaudeConversationSummary(
