@@ -53,6 +53,7 @@ import {
   resolveCodexAppServerReasoningParams,
   resolveCodexAppServerTurnInputWithFallback,
   retireCodexAppServerProcessAfterTurnFailure,
+  runCodexAppServerTurnOnCachedProcess,
   waitForCodexAppServerThreadCompacted,
   waitForCodexAppServerTurnCompletion,
   type CodexAppServerAgentMessageDeltaEvent,
@@ -3052,13 +3053,17 @@ export async function runCodexAppServerNativeTurn(input: {
   const processKey = params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY;
   try {
     const skillContext = params.skillContext;
-    const proc = await getOrCreateCodexAppServerProcess(processKey, {
-      codexPath,
-    });
     // One conversation's turns run in order; another conversation's turn can
     // run on the same process at the same time. Keyed by conversation, not
-    // thread: the thread is resolved inside, and can be replaced there.
-    return await proc.runTurnExclusive(async () => {
+    // thread: the thread is resolved inside, and can be replaced there. A
+    // turn queued behind a failure that retired the process starts on a
+    // fresh one.
+    const target = {
+      cacheKey: processKey,
+      options: { codexPath },
+      turnKey: `conversation:${params.scope.conversationKey}`,
+    };
+    return await runCodexAppServerTurnOnCachedProcess(target, async (proc) => {
       const codexNativeRuntimeCwd = resolveCodexNativeRuntimeCwd();
       const storedSession = await loadResumableProviderSession({
         conversationKey: params.scope.conversationKey,
@@ -3933,7 +3938,7 @@ export async function runCodexAppServerNativeTurn(input: {
         scopedMcp?.clear();
         unregisterApprovalHandlers();
       }
-    }, `conversation:${params.scope.conversationKey}`);
+    });
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const redactedMessage = redactTerminalText(rawMessage);

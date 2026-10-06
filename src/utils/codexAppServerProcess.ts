@@ -205,6 +205,18 @@ function extractCodexAppServerNotificationThreadId(rawParams: unknown): string {
   return "";
 }
 
+/**
+ * Thrown before a turn starts on a process that a failure already retired.
+ * The turn has not run; it can be started again on a fresh process.
+ */
+export class CodexAppServerProcessRetiredError extends Error {
+  constructor() {
+    // Same message as before, for callers and logs that match on it.
+    super("CodexAppServerProcess destroyed");
+    this.name = "CodexAppServerProcessRetiredError";
+  }
+}
+
 export class CodexAppServerProcess {
   private proc: unknown;
   private nextId = 1;
@@ -625,12 +637,17 @@ export class CodexAppServerProcess {
    * another; turns with different keys share the process and run at once.
    * A server that is not known to tag every turn event and request with its
    * thread puts all turns on one queue instead.
+   *
+   * A turn that reaches the front after a failure retired this process (it
+   * is destroyed, or waits to be destroyed once a sibling turn ends) does not
+   * start here: it throws CodexAppServerProcessRetiredError, so the caller
+   * can start it on a fresh process.
    */
   async runTurnExclusive<T>(callback: () => Promise<T>, key = ""): Promise<T> {
     const queueKey = this.supportsConcurrentTurns() ? `turn:${key}` : "turn:";
     return this.runQueued(queueKey, async () => {
-      if (this.destroyed) {
-        throw new Error("CodexAppServerProcess destroyed");
+      if (this.destroyed || this.destroyWhenIdleRequested) {
+        throw new CodexAppServerProcessRetiredError();
       }
       const release = this.holdActiveTurn();
       try {
@@ -2898,6 +2915,35 @@ export function retireCodexAppServerProcessAfterTurnFailure(params: {
     params.processOptions,
   );
   params.proc.destroyWhenIdle();
+}
+
+/**
+ * Runs one turn on the cached process for the cache key, queued behind the
+ * same turn key's earlier turns. If a failure retired that process while this
+ * turn waited, the turn starts once on a fresh cached process instead.
+ */
+export async function runCodexAppServerTurnOnCachedProcess<T>(
+  target: {
+    cacheKey: string;
+    options?: CodexAppServerProcessOptions;
+    turnKey: string;
+  },
+  callback: (proc: CodexAppServerProcess) => Promise<T>,
+): Promise<T> {
+  const runOn = async (proc: CodexAppServerProcess) =>
+    proc.runTurnExclusive(() => callback(proc), target.turnKey);
+  const proc = await getOrCreateCodexAppServerProcess(
+    target.cacheKey,
+    target.options,
+  );
+  try {
+    return await runOn(proc);
+  } catch (error) {
+    if (!(error instanceof CodexAppServerProcessRetiredError)) throw error;
+  }
+  return runOn(
+    await getOrCreateCodexAppServerProcess(target.cacheKey, target.options),
+  );
 }
 
 export async function getOrCreateCodexAppServerProcess(

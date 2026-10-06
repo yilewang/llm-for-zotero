@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   CodexAppServerProcess,
+  CodexAppServerProcessRetiredError,
   destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
@@ -12,6 +13,8 @@ import {
   resolveCodexBinary,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
+  retireCodexAppServerProcessAfterTurnFailure,
+  runCodexAppServerTurnOnCachedProcess,
   selectCodexLookupResult,
   waitForCodexAppServerThreadCompacted,
   waitForCodexAppServerTurnCompletion,
@@ -1155,6 +1158,116 @@ describe("codexAppServerProcess", function () {
       }
       assert.match(String(failure), /Timed out waiting/);
       assert.isFalse(killed);
+    });
+
+    describe("a turn queued behind a failure that retired its process", function () {
+      const originalSpawn = CodexAppServerProcess.spawn;
+      let spawned: TestProcess[] = [];
+      beforeEach(function () {
+        spawned = [];
+        CodexAppServerProcess.spawn = async () => {
+          const proc = createConcurrentProcess({
+            userAgent: CURRENT_USER_AGENT,
+          });
+          spawned.push(proc);
+          return proc;
+        };
+      });
+      afterEach(function () {
+        CodexAppServerProcess.spawn = originalSpawn;
+        destroyCachedCodexAppServerProcess("queued-behind-retired");
+        for (const proc of spawned) proc.destroy();
+      });
+      function startCachedTurn(turnKey: string) {
+        let release!: () => void;
+        let ranOn: CodexAppServerProcess | undefined;
+        const done = runCodexAppServerTurnOnCachedProcess(
+          { cacheKey: "queued-behind-retired", turnKey },
+          async (proc) => {
+            ranOn = proc;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            return turnKey;
+          },
+        );
+        return {
+          done,
+          release: () => release(),
+          ranOn: () => ranOn,
+        };
+      }
+
+      it("refuses to start a queued turn on the retired process", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const order: string[] = [];
+        const sibling = startHeldTurn(proc, "conversation:B", "b", order);
+        const failing = startHeldTurn(proc, "conversation:A", "a1", order);
+        let ranQueued = false;
+        const queued = proc.runTurnExclusive(async () => {
+          ranQueued = true;
+        }, "conversation:A");
+        await tick();
+        proc.destroyWhenIdle();
+        failing.release();
+        let failure: unknown;
+        try {
+          await queued;
+        } catch (error) {
+          failure = error;
+        }
+        assert.isFalse(ranQueued, "the queued turn ran on the retired process");
+        assert.instanceOf(failure, CodexAppServerProcessRetiredError);
+        sibling.release();
+        await sibling.done;
+      });
+
+      it("runs on a fresh process while the sibling turn finishes on the old one", async function () {
+        const sibling = startCachedTurn("conversation:B");
+        const failing = startCachedTurn("conversation:A");
+        const queued = startCachedTurn("conversation:A");
+        await tick();
+        await tick();
+        const retired = spawned[0];
+        assert.strictEqual(sibling.ranOn(), retired);
+        assert.strictEqual(failing.ranOn(), retired);
+        assert.isUndefined(queued.ranOn());
+        // The failing turn retires its process; the sibling still runs on it.
+        retireCodexAppServerProcessAfterTurnFailure({
+          cacheKey: "queued-behind-retired",
+          proc: retired,
+          otherLiveTurns: retired.getActiveTurnCount() - 1,
+        });
+        failing.release();
+        await failing.done;
+        for (let i = 0; i < 5 && !queued.ranOn(); i++) await tick();
+        assert.lengthOf(spawned, 2);
+        assert.strictEqual(queued.ranOn(), spawned[1]);
+        queued.release();
+        assert.equal(await queued.done, "conversation:A");
+        sibling.release();
+        assert.equal(await sibling.done, "conversation:B");
+      });
+
+      it("runs on a fresh process after a lone failure destroyed the old one", async function () {
+        const failing = startCachedTurn("conversation:A");
+        const queued = startCachedTurn("conversation:A");
+        await tick();
+        await tick();
+        const retired = spawned[0];
+        retireCodexAppServerProcessAfterTurnFailure({
+          cacheKey: "queued-behind-retired",
+          proc: retired,
+          otherLiveTurns: retired.getActiveTurnCount() - 1,
+        });
+        failing.release();
+        await failing.done;
+        for (let i = 0; i < 5 && !queued.ranOn(); i++) await tick();
+        assert.lengthOf(spawned, 2);
+        assert.strictEqual(queued.ranOn(), spawned[1]);
+        queued.release();
+        assert.equal(await queued.done, "conversation:A");
+      });
     });
   });
 
