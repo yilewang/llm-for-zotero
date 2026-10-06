@@ -35,7 +35,6 @@ import {
   buildFullPaperContext,
   buildTruncatedFullPaperContext,
   buildPaperKey,
-  buildPaperRetrievalCandidates,
   preGenerateEmbeddings,
   ensurePDFTextCached,
   ensureNoteTextCached,
@@ -49,6 +48,7 @@ import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
 import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
+import { retrievePerPaper } from "../../services/retrieval/paperRetriever";
 import {
   buildRetrievalQueryPlan,
   buildRetrievalQueryPlanCacheKey,
@@ -114,20 +114,15 @@ function buildRetrievalCacheKey(paperKey: string, question: string): string {
 }
 
 function getCachedRetrievalCandidates(
-  paperKey: string,
-  question: string,
+  key: string,
 ): PaperContextCandidate[] | undefined {
-  return retrievalCandidateCache.get(
-    buildRetrievalCacheKey(paperKey, question),
-  );
+  return retrievalCandidateCache.get(key);
 }
 
 function setCachedRetrievalCandidates(
-  paperKey: string,
-  question: string,
+  key: string,
   candidates: PaperContextCandidate[],
 ): void {
-  const key = buildRetrievalCacheKey(paperKey, question);
   if (retrievalCandidateCache.size >= MAX_RETRIEVAL_CACHE_ENTRIES) {
     // Evict the oldest entry (Maps preserve insertion order).
     const first = retrievalCandidateCache.keys().next().value;
@@ -1157,7 +1152,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
   }
 
   // Pre-compute query embedding once so we don't make N identical API calls
-  // for N papers in the loop below.
+  // for N papers in the loop below. It is computed even when every paper hits
+  // the retrieval cache: the section-intent ranking below also uses it.
   let precomputedQueryEmbedding: number[] | undefined;
   if (queryPlan.semanticQuery.trim() && resolveSemanticSearchState().enabled) {
     try {
@@ -1169,40 +1165,35 @@ export async function assembleRetrievedMultiPaperContext(params: {
     }
   }
 
-  const allCandidates: PaperContextCandidate[] = [];
-  for (const paper of papers) {
-    const lockedChunkIndexes =
-      options?.lockedChunkIndexesByContextItem?.get(
-        paper.paperContext.contextItemId,
-      ) || [];
-    const cached = lockedChunkIndexes.length
-      ? undefined
-      : getCachedRetrievalCandidates(paper.paperKey, retrievalCacheKey);
-    if (cached) {
-      allCandidates.push(...cached);
-      continue;
-    }
-    const candidates = await buildPaperRetrievalCandidates(
-      paper.paperContext,
-      paper.pdfContext,
-      question,
-      {
+  const lockedChunkIndexesFor = (paper: PlannerPaperEntry): number[] =>
+    options?.lockedChunkIndexesByContextItem?.get(
+      paper.paperContext.contextItemId,
+    ) || [];
+  const allCandidates: PaperContextCandidate[] = await retrievePerPaper({
+    targets: papers,
+    question,
+    cache: {
+      // Locked chunks must stay selectable, so such a read neither reuses
+      // nor stores candidates.
+      keyFor: (paper) =>
+        lockedChunkIndexesFor(paper).length
+          ? undefined
+          : buildRetrievalCacheKey(paper.paperKey, retrievalCacheKey),
+      get: getCachedRetrievalCandidates,
+      set: setCachedRetrievalCandidates,
+    },
+    resolveQueryEmbedding: async () => precomputedQueryEmbedding,
+    builderArguments: (paper, embedding) => ({
+      options: {
         topK: RETRIEVAL_TOP_K_PER_PAPER,
         mode: "evidence",
-        precomputedQueryEmbedding,
+        precomputedQueryEmbedding: embedding,
         queryPlan,
-        preferredChunkIndexes: lockedChunkIndexes,
+        preferredChunkIndexes: lockedChunkIndexesFor(paper),
       },
-    );
-    if (!lockedChunkIndexes.length) {
-      setCachedRetrievalCandidates(
-        paper.paperKey,
-        retrievalCacheKey,
-        candidates,
-      );
-    }
-    allCandidates.push(...candidates);
-  }
+    }),
+    project: (_paper, candidates) => candidates,
+  });
 
   if (!allCandidates.length) {
     const readStrategy = buildRetrievedAssemblyReadStrategy({

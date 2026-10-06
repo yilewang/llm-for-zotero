@@ -19,6 +19,7 @@ import {
 import type { PaperContextRef } from "../../shared/types";
 import { renderSectionLabel } from "../../shared/libraryChatEvidencePolicy";
 import { PdfService } from "./pdfService";
+import { retrievePerPaper } from "../../services/retrieval/paperRetriever";
 import type { ModelProfileOverride } from "../../modelCapabilities";
 
 type RetrievalResult = {
@@ -197,84 +198,82 @@ export class RetrievalService {
         embeddingsAvailable = false;
       }
     }
-    let queryEmbedding: Promise<number[] | undefined> | undefined;
-    const results: RetrievalResult[] = [];
-    for (const paperContext of papers) {
-      const sectionIds = [
+    const targets = papers.map((paperContext) => ({
+      paperContext,
+      pdfContext: pdfContexts.get(paperContext.contextItemId),
+      sectionIds: [
         ...(params.sectionIdsByPaper?.get(paperContext.contextItemId) ??
           params.sectionIds ??
           []),
-      ].filter(Boolean);
-      const pdfContext = pdfContexts.get(paperContext.contextItemId);
-      const cacheKey = buildEvidenceCacheKey({
-        paper: paperContext,
-        queryKey: queryCacheKey,
-        perPaperTopK,
-        sectionIds,
-        source: pdfContext,
-        embeddingKey,
-        quotePolicy: queryPlan.quoteAnchorPolicy,
-      });
-      const cached = this.evidenceCache.get(cacheKey);
-      if (cached) {
-        results.push(...cached);
-        continue;
-      }
+      ].filter(Boolean),
+    }));
+    const results = await retrievePerPaper({
+      targets,
+      question: params.question,
+      cache: {
+        keyFor: (target) =>
+          buildEvidenceCacheKey({
+            paper: target.paperContext,
+            queryKey: queryCacheKey,
+            perPaperTopK,
+            sectionIds: target.sectionIds,
+            source: target.pdfContext,
+            embeddingKey,
+            quotePolicy: queryPlan.quoteAnchorPolicy,
+          }),
+        get: (key) => this.evidenceCache.get(key),
+        set: (key, entries) => {
+          this.evidenceCache.set(key, entries);
+        },
+      },
       // Shared across this read's papers, and never spent for a cache hit.
-      if (
-        !queryEmbedding &&
-        queryPlan.semanticQuery.trim() &&
-        embeddingsAvailable
-      ) {
-        queryEmbedding = callEmbeddings([queryPlan.semanticQuery])
-          .then((values) => values[0])
-          .catch(() => undefined);
-      }
-      const precomputedQueryEmbedding = await queryEmbedding;
-      const candidates = await this.candidateBuilder(
-        paperContext,
-        pdfContext,
-        params.question,
-        {
+      resolveQueryEmbedding: () =>
+        queryPlan.semanticQuery.trim() && embeddingsAvailable
+          ? callEmbeddings([queryPlan.semanticQuery])
+              .then((values) => values[0])
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
+      builderArguments: ({ sectionIds }, precomputedQueryEmbedding) => ({
+        apiOverrides: {
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
         },
-        {
+        options: {
           topK: perPaperTopK,
           mode: "evidence",
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
         },
-      );
-      const paperResults: RetrievalResult[] = candidates.map((candidate) => ({
-        paperContext,
-        chunkIndex: candidate.chunkIndex,
-        sectionLabel: renderSectionLabel(
-          candidate.sectionLabel,
-          candidate.enclosingSection,
-          candidate.title,
-        ),
-        sectionPath: candidate.sectionPath,
-        chunkKind: candidate.chunkKind,
-        citationLabel: formatPaperCitationLabel(paperContext),
-        sourceLabel: formatPaperSourceLabel(paperContext),
-        text: candidate.chunkText,
-        score: candidate.evidenceScore,
-        hybridScore: candidate.hybridScore,
-        sourceStart: candidate.sourceStart,
-        sourceEnd: candidate.sourceEnd,
-        sourceFingerprint: candidate.sourceFingerprint,
-        pageStart: candidate.pageStart,
-        pageEnd: candidate.pageEnd,
-        why: candidate.why,
-      }));
-      this.evidenceCache.set(cacheKey, paperResults);
-      results.push(...paperResults);
-    }
+      }),
+      project: ({ paperContext }, candidates): RetrievalResult[] =>
+        candidates.map((candidate) => ({
+          paperContext,
+          chunkIndex: candidate.chunkIndex,
+          sectionLabel: renderSectionLabel(
+            candidate.sectionLabel,
+            candidate.enclosingSection,
+            candidate.title,
+          ),
+          sectionPath: candidate.sectionPath,
+          chunkKind: candidate.chunkKind,
+          citationLabel: formatPaperCitationLabel(paperContext),
+          sourceLabel: formatPaperSourceLabel(paperContext),
+          text: candidate.chunkText,
+          score: candidate.evidenceScore,
+          hybridScore: candidate.hybridScore,
+          sourceStart: candidate.sourceStart,
+          sourceEnd: candidate.sourceEnd,
+          sourceFingerprint: candidate.sourceFingerprint,
+          pageStart: candidate.pageStart,
+          pageEnd: candidate.pageEnd,
+          why: candidate.why,
+        })),
+      candidateBuilder: this.candidateBuilder,
+    });
     // Evidence mode gives every paper's rank-1 chunk the same score, so the
     // fused score decides which paper's best chunk leads; the chunk index is
     // only the last resort.
