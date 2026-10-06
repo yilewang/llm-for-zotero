@@ -1,6 +1,7 @@
 declare const Zotero: any;
 
 import type { CodexConversationSummary } from "../../shared/types";
+import type { StoredChatMessage } from "../../utils/chatStore";
 import {
   isConversationKeyFor,
   isConversationKeyForKind,
@@ -16,6 +17,14 @@ import {
   isConversationKeyLedgerStoreInitialized,
 } from "../../shared/conversationKeyLedger";
 import { logConversationStoreWarning } from "../../shared/conversationStore/diagnostics";
+import {
+  normalizeCatalogTimestamp,
+  normalizeConversationKey,
+  normalizeLibraryID,
+  normalizeLimit,
+  normalizeOptionalLimit,
+  normalizePaperItemID,
+} from "../../shared/conversationStore/keyNormalization";
 import {
   resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
   type MessageConversationSelector,
@@ -37,6 +46,7 @@ import {
   sameStoreCatalogScope,
   type ConversationStoreCatalogConfig,
 } from "./conversationStoreCatalogSummary";
+import { loadStoredConversationMessages } from "./conversationStoreMessageMapping";
 
 /**
  * One conversation store for the two runtime backends (Claude Code and Codex).
@@ -70,6 +80,24 @@ export type RuntimeStoreConfig = {
   /** The store name in warnings and error messages. */
   storeLabel: "Claude" | "Codex";
   tables: RuntimeStoreTables;
+  /** Default and fallback row limit for loading a conversation. */
+  historyLimit: number;
+  /**
+   * D1: the activity timestamp of catalog alias `c`, reported as `updatedAt`
+   * and used to order every summary and list query.
+   */
+  activityTimestampSqlForAliasC: string;
+  /** D3: extra catalog columns read into the summary (Codex only). */
+  summaryExtraColumns: ReadonlyArray<{
+    sql: string;
+    alias: "providerPermissionState";
+  }>;
+  keys: {
+    allocatedRange(kind: RuntimeConversationKind): {
+      start: number;
+      endExclusive: number;
+    };
+  };
   prefs: {
     setLastUsedPaper(
       libraryID: number,
@@ -139,8 +167,60 @@ export async function ensureColumn(
   );
 }
 
+type RuntimeConversationRow = {
+  instanceID?: unknown;
+  conversationID?: unknown;
+  conversationKey?: unknown;
+  libraryID?: unknown;
+  kind?: unknown;
+  paperItemID?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  title?: unknown;
+  providerSessionId?: unknown;
+  providerPermissionState?: unknown;
+  scopedConversationKey?: unknown;
+  scopeType?: unknown;
+  scopeId?: unknown;
+  scopeLabel?: unknown;
+  cwd?: unknown;
+  modelName?: unknown;
+  effort?: unknown;
+  userTurnCount?: unknown;
+};
+
 export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
   const { system, storeLabel, tables } = config;
+  const historyLimit = config.historyLimit;
+  const activitySql = config.activityTimestampSqlForAliasC;
+
+  /**
+   * D3: the extra summary columns as SELECT lines, each on its own line after
+   * the provider session line.  Empty for Claude, so its SQL is unchanged.
+   */
+  function summaryExtraSelectSql(indent: string): string {
+    return config.summaryExtraColumns
+      .map((column) => `\n${indent}${column.sql} AS ${column.alias},`)
+      .join("");
+  }
+
+  /**
+   * Zotero rows throw on a column the query did not select, so only the
+   * configured extra columns are read.
+   */
+  function readSummaryExtraColumns(
+    row: RuntimeConversationRow,
+  ): Partial<Pick<RuntimeConversationSummary, "providerPermissionState">> {
+    const extra: Partial<
+      Pick<RuntimeConversationSummary, "providerPermissionState">
+    > = {};
+    for (const column of config.summaryExtraColumns) {
+      const value = row[column.alias];
+      extra[column.alias] =
+        typeof value === "string" && value.trim() ? value.trim() : undefined;
+    }
+    return extra;
+  }
 
   function isStoreConversationKey(conversationKey: number): boolean {
     return isConversationKeyFor(system, conversationKey);
@@ -322,6 +402,309 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     );
   }
 
+  async function loadConversation(
+    conversationKey: number,
+    limit = historyLimit,
+  ): Promise<StoredChatMessage[]> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return [];
+    const selector =
+      await resolveRepairingMessageConversationSelector(normalizedKey);
+    const normalizedLimit = normalizeLimit(limit, historyLimit);
+    return await loadStoredConversationMessages({
+      messagesTable: tables.messages,
+      selectColumnsSql: RUNTIME_MESSAGE_SELECT_COLUMNS_SQL,
+      whereSql: selector.whereSql,
+      params: selector.params,
+      limit: normalizedLimit,
+    });
+  }
+
+  function toSummary(
+    row: RuntimeConversationRow,
+  ): RuntimeConversationSummary | null {
+    const conversationKey = normalizeConversationKey(
+      Number(row.conversationKey),
+    );
+    const libraryID = normalizeLibraryID(Number(row.libraryID));
+    const createdAt = normalizeCatalogTimestamp(row.createdAt);
+    const updatedAt = normalizeCatalogTimestamp(row.updatedAt);
+    const kind =
+      row.kind === "paper" ? "paper" : row.kind === "global" ? "global" : null;
+    if (
+      !conversationKey ||
+      !libraryID ||
+      !kind ||
+      !isStoreConversationKeyForKind(conversationKey, kind)
+    ) {
+      return null;
+    }
+    const paperItemID = normalizePaperItemID(Number(row.paperItemID));
+    const userTurnCount = Number(row.userTurnCount);
+    let instanceID: string | undefined;
+    try {
+      instanceID =
+        typeof row.instanceID === "string" && row.instanceID.trim()
+          ? row.instanceID.trim()
+          : undefined;
+    } catch {
+      // Legacy test/upgrade rows may not expose the new identity column.
+    }
+    return {
+      instanceID,
+      conversationID:
+        typeof row.conversationID === "string" && row.conversationID.trim()
+          ? row.conversationID.trim()
+          : buildConversationID({
+              conversationKey,
+              kind,
+              libraryID,
+              paperItemID,
+            }),
+      conversationKey,
+      libraryID,
+      kind,
+      paperItemID: paperItemID || undefined,
+      createdAt,
+      updatedAt,
+      title:
+        typeof row.title === "string" && row.title.trim()
+          ? row.title.trim()
+          : undefined,
+      providerSessionId:
+        typeof row.providerSessionId === "string" &&
+        row.providerSessionId.trim()
+          ? row.providerSessionId.trim()
+          : undefined,
+      ...readSummaryExtraColumns(row),
+      scopedConversationKey:
+        typeof row.scopedConversationKey === "string" &&
+        row.scopedConversationKey.trim()
+          ? row.scopedConversationKey.trim()
+          : undefined,
+      scopeType:
+        typeof row.scopeType === "string" && row.scopeType.trim()
+          ? row.scopeType.trim()
+          : undefined,
+      scopeId:
+        typeof row.scopeId === "string" && row.scopeId.trim()
+          ? row.scopeId.trim()
+          : undefined,
+      scopeLabel:
+        typeof row.scopeLabel === "string" && row.scopeLabel.trim()
+          ? row.scopeLabel.trim()
+          : undefined,
+      cwd:
+        typeof row.cwd === "string" && row.cwd.trim()
+          ? row.cwd.trim()
+          : undefined,
+      model:
+        typeof row.modelName === "string" && row.modelName.trim()
+          ? row.modelName.trim()
+          : undefined,
+      effort:
+        typeof row.effort === "string" && row.effort.trim()
+          ? row.effort.trim()
+          : undefined,
+      userTurnCount: Number.isFinite(userTurnCount)
+        ? Math.max(0, Math.floor(userTurnCount))
+        : 0,
+    };
+  }
+
+  async function getSummary(
+    conversationKey: number,
+  ): Promise<RuntimeConversationSummary | null> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return null;
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT c.conversation_id AS conversationID,
+            c.conversation_instance_id AS instanceID,
+            c.conversation_key AS conversationKey,
+            c.library_id AS libraryID,
+            c.kind AS kind,
+            c.paper_item_id AS paperItemID,
+            c.created_at AS createdAt,
+            ${activitySql} AS updatedAt,
+            COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
+            c.provider_session_id AS providerSessionId,${summaryExtraSelectSql("            ")}
+            c.scoped_conversation_key AS scopedConversationKey,
+            c.scope_type AS scopeType,
+            c.scope_id AS scopeId,
+            c.scope_label AS scopeLabel,
+            c.cwd AS cwd,
+            c.model_name AS modelName,
+            c.effort AS effort,
+            COALESCE(c.user_turn_count, 0) AS userTurnCount
+     FROM ${tables.catalog} c
+     WHERE c.conversation_key = ?
+     LIMIT 1`,
+      [normalizedKey],
+    )) as RuntimeConversationRow[] | undefined;
+    return rows?.length ? toSummary(rows[0]) : null;
+  }
+
+  async function listConversations(params: {
+    libraryID: number;
+    kind: RuntimeConversationKind;
+    paperItemID?: number;
+    limit?: number | null;
+  }): Promise<RuntimeConversationSummary[]> {
+    const libraryID = normalizeLibraryID(params.libraryID);
+    if (!libraryID) return [];
+    const limit =
+      params.limit === null ? null : normalizeLimit(params.limit ?? 50, 50);
+    const sql =
+      params.kind === "paper"
+        ? `SELECT c.conversation_id AS conversationID,
+              c.conversation_key AS conversationKey,
+              c.library_id AS libraryID,
+              c.kind AS kind,
+              c.paper_item_id AS paperItemID,
+              c.created_at AS createdAt,
+              ${activitySql} AS updatedAt,
+              COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
+              c.provider_session_id AS providerSessionId,${summaryExtraSelectSql("              ")}
+              c.scoped_conversation_key AS scopedConversationKey,
+              c.scope_type AS scopeType,
+              c.scope_id AS scopeId,
+              c.scope_label AS scopeLabel,
+              c.cwd AS cwd,
+              c.model_name AS modelName,
+              c.effort AS effort,
+              COALESCE(c.user_turn_count, 0) AS userTurnCount
+       FROM ${tables.catalog} c
+       WHERE c.library_id = ?
+         AND c.kind = 'paper'
+         AND c.paper_item_id = ?
+       ORDER BY updatedAt DESC, c.conversation_key DESC
+       ${limit ? "LIMIT ?" : ""}`
+        : `SELECT c.conversation_id AS conversationID,
+              c.conversation_key AS conversationKey,
+              c.library_id AS libraryID,
+              c.kind AS kind,
+              c.paper_item_id AS paperItemID,
+              c.created_at AS createdAt,
+              ${activitySql} AS updatedAt,
+              COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
+              c.provider_session_id AS providerSessionId,${summaryExtraSelectSql("              ")}
+              c.scoped_conversation_key AS scopedConversationKey,
+              c.scope_type AS scopeType,
+              c.scope_id AS scopeId,
+              c.scope_label AS scopeLabel,
+              c.cwd AS cwd,
+              c.model_name AS modelName,
+              c.effort AS effort,
+              COALESCE(c.user_turn_count, 0) AS userTurnCount
+       FROM ${tables.catalog} c
+       WHERE c.library_id = ?
+         AND c.kind = 'global'
+       ORDER BY updatedAt DESC, c.conversation_key DESC
+       ${limit ? "LIMIT ?" : ""}`;
+    const queryParams =
+      params.kind === "paper"
+        ? [
+            libraryID,
+            normalizePaperItemID(Number(params.paperItemID)) || 0,
+            ...(limit ? [limit] : []),
+          ]
+        : [libraryID, ...(limit ? [limit] : [])];
+    const rows = (await Zotero.DB.queryAsync(sql, queryParams)) as
+      | RuntimeConversationRow[]
+      | undefined;
+    if (!rows?.length) return [];
+    const summaries = rows
+      .map((row) => toSummary(row))
+      .filter((row): row is RuntimeConversationSummary => Boolean(row));
+    return filterValidSummaries(
+      summaries,
+      params.kind === "paper"
+        ? normalizePaperItemID(Number(params.paperItemID))
+        : null,
+    );
+  }
+
+  async function listGlobalConversations(
+    libraryID: number,
+    limit: number | null = 50,
+  ): Promise<RuntimeConversationSummary[]> {
+    return listConversations({ libraryID, kind: "global", limit });
+  }
+
+  async function listPaperConversations(
+    libraryID: number,
+    paperItemID: number,
+    limit = 50,
+  ): Promise<RuntimeConversationSummary[]> {
+    return listConversations({
+      libraryID,
+      kind: "paper",
+      paperItemID,
+      limit,
+    });
+  }
+
+  async function listAllPaperConversationsByLibrary(
+    libraryID: number,
+    limit: number | null = 100,
+  ): Promise<RuntimeConversationSummary[]> {
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    if (!normalizedLibraryID) return [];
+    const normalizedLimit = normalizeOptionalLimit(limit);
+    const queryParams: unknown[] = [normalizedLibraryID];
+    if (normalizedLimit) queryParams.push(normalizedLimit);
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT c.conversation_id AS conversationID,
+            c.conversation_key AS conversationKey,
+            c.library_id AS libraryID,
+            c.kind AS kind,
+            c.paper_item_id AS paperItemID,
+            c.created_at AS createdAt,
+            ${activitySql} AS updatedAt,
+            COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
+            c.provider_session_id AS providerSessionId,${summaryExtraSelectSql("            ")}
+            c.scoped_conversation_key AS scopedConversationKey,
+            c.scope_type AS scopeType,
+            c.scope_id AS scopeId,
+            c.scope_label AS scopeLabel,
+            c.cwd AS cwd,
+            c.model_name AS modelName,
+            c.effort AS effort,
+            COALESCE(c.user_turn_count, 0) AS userTurnCount
+     FROM ${tables.catalog} c
+     WHERE c.library_id = ?
+       AND c.kind = 'paper'
+       AND COALESCE(c.user_turn_count, 0) > 0
+     ORDER BY updatedAt DESC, c.conversation_key DESC
+     ${normalizedLimit ? "LIMIT ?" : ""}`,
+      queryParams,
+    )) as RuntimeConversationRow[] | undefined;
+    if (!rows?.length) return [];
+    const summaries = rows
+      .map((row) => toSummary(row))
+      .filter((row): row is RuntimeConversationSummary => Boolean(row));
+    return filterValidSummaries(summaries);
+  }
+
+  async function getMaxConversationKey(
+    kind: RuntimeConversationKind,
+  ): Promise<number> {
+    const range = config.keys.allocatedRange(kind);
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT MAX(conversation_key) AS maxConversationKey
+     FROM ${tables.catalog}
+     WHERE kind = ?
+       AND conversation_key >= ?
+       AND conversation_key < ?`,
+      [kind, range.start, range.endExclusive],
+    )) as Array<{ maxConversationKey?: unknown }> | undefined;
+    const maxConversationKey = Number(rows?.[0]?.maxConversationKey);
+    if (!Number.isFinite(maxConversationKey) || maxConversationKey <= 0) {
+      return range.start - 1;
+    }
+    return Math.floor(maxConversationKey);
+  }
+
   return {
     isStoreConversationKey,
     isStoreConversationKeyForKind,
@@ -339,6 +722,14 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     backfillConversationInstanceIDs,
     sameCatalogScope,
     filterValidSummaries,
+    loadConversation,
+    toSummary,
+    getSummary,
+    listConversations,
+    listGlobalConversations,
+    listPaperConversations,
+    listAllPaperConversationsByLibrary,
+    getMaxConversationKey,
   };
 }
 

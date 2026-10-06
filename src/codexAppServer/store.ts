@@ -114,11 +114,9 @@ import {
   normalizeConversationKey,
   normalizeLibraryID,
   normalizeLimit,
-  normalizeOptionalLimit,
   normalizePaperItemID,
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
-import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import {
   deleteUsageEventsForConversation,
@@ -126,7 +124,6 @@ import {
 } from "../utils/usageStore";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 import {
-  RUNTIME_MESSAGE_SELECT_COLUMNS_SQL,
   createRuntimeConversationStore,
   ensureColumn,
   normalizeConversationTitleSeed,
@@ -144,6 +141,12 @@ const CODEX_CONVERSATIONS_ACTIVITY_INDEX =
 const CODEX_CONVERSATIONS_ID_INDEX =
   "llm_for_zotero_codex_conversations_id_idx";
 
+const CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C = `MAX(
+  COALESCE(c.last_activity_at, 0),
+  COALESCE(c.updated_at, 0),
+  COALESCE(c.created_at, 0)
+)`;
+
 const store = createRuntimeConversationStore({
   system: "codex",
   storeLabel: "Codex",
@@ -156,11 +159,19 @@ const store = createRuntimeConversationStore({
     activityIndex: CODEX_CONVERSATIONS_ACTIVITY_INDEX,
     idIndex: CODEX_CONVERSATIONS_ID_INDEX,
   },
+  historyLimit: CODEX_HISTORY_LIMIT,
+  activityTimestampSqlForAliasC:
+    CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C,
+  summaryExtraColumns: [
+    { sql: "c.provider_permission_state", alias: "providerPermissionState" },
+  ],
+  keys: {
+    allocatedRange: getCodexAllocatedConversationKeyRange,
+  },
   prefs: {
     setLastUsedPaper: setLastUsedCodexPaperConversationKey,
   },
 });
-const CODEX_MESSAGE_SELECT_COLUMNS_SQL = RUNTIME_MESSAGE_SELECT_COLUMNS_SQL;
 const isCodexStoreConversationKey = store.isStoreConversationKey;
 const isCodexStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
 const buildCodexConversationID = store.buildConversationID;
@@ -180,14 +191,8 @@ const backfillCodexConversationIDs = store.backfillConversationIDs;
 const backfillCodexConversationInstanceIDs =
   store.backfillConversationInstanceIDs;
 const sameCodexCatalogScope = store.sameCatalogScope;
-const filterValidCodexConversationSummaries = store.filterValidSummaries;
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_CONVERSATIONS_TABLE = "llm_for_zotero_claude_conversations";
-const CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C = `MAX(
-  COALESCE(c.last_activity_at, 0),
-  COALESCE(c.updated_at, 0),
-  COALESCE(c.created_at, 0)
-)`;
 
 async function resolveRegisteredConversationInstanceID(
   conversationKey: number,
@@ -1551,21 +1556,9 @@ export async function getLatestCodexForkableAssistantTimestamp(
 }
 
 export async function loadCodexConversation(
-  conversationKey: number,
-  limit = CODEX_HISTORY_LIMIT,
-): Promise<StoredChatMessage[]> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return [];
-  const selector =
-    await resolveRepairingMessageConversationSelector(normalizedKey);
-  const normalizedLimit = normalizeLimit(limit, CODEX_HISTORY_LIMIT);
-  return await loadStoredConversationMessages({
-    messagesTable: CODEX_MESSAGES_TABLE,
-    selectColumnsSql: CODEX_MESSAGE_SELECT_COLUMNS_SQL,
-    whereSql: selector.whereSql,
-    params: selector.params,
-    limit: normalizedLimit,
-  });
+  ...args: Parameters<typeof store.loadConversation>
+) {
+  return store.loadConversation(...args);
 }
 
 export async function clearCodexConversation(
@@ -2022,153 +2015,14 @@ export async function updateLatestCodexAssistantMessage(
   await refreshCodexConversationSearchIndex(normalizedKey);
 }
 
-type CodexConversationRow = {
-  instanceID?: unknown;
-  conversationID?: unknown;
-  conversationKey?: unknown;
-  libraryID?: unknown;
-  kind?: unknown;
-  paperItemID?: unknown;
-  createdAt?: unknown;
-  updatedAt?: unknown;
-  title?: unknown;
-  providerSessionId?: unknown;
-  providerPermissionState?: unknown;
-  scopedConversationKey?: unknown;
-  scopeType?: unknown;
-  scopeId?: unknown;
-  scopeLabel?: unknown;
-  cwd?: unknown;
-  modelName?: unknown;
-  effort?: unknown;
-  userTurnCount?: unknown;
-};
+type CodexConversationRow = Parameters<typeof store.toSummary>[0];
 
-function toCodexConversationSummary(
-  row: CodexConversationRow,
-): CodexConversationSummary | null {
-  const conversationKey = normalizeConversationKey(Number(row.conversationKey));
-  const libraryID = normalizeLibraryID(Number(row.libraryID));
-  const createdAt = normalizeCatalogTimestamp(row.createdAt);
-  const updatedAt = normalizeCatalogTimestamp(row.updatedAt);
-  const kind =
-    row.kind === "paper" ? "paper" : row.kind === "global" ? "global" : null;
-  if (
-    !conversationKey ||
-    !libraryID ||
-    !kind ||
-    !isCodexStoreConversationKeyForKind(conversationKey, kind)
-  ) {
-    return null;
-  }
-  const paperItemID = normalizePaperItemID(Number(row.paperItemID));
-  const userTurnCount = Number(row.userTurnCount);
-  let instanceID: string | undefined;
-  try {
-    instanceID =
-      typeof row.instanceID === "string" && row.instanceID.trim()
-        ? row.instanceID.trim()
-        : undefined;
-  } catch {
-    // Legacy test/upgrade rows may not expose the new identity column.
-  }
-  return {
-    instanceID,
-    conversationID:
-      typeof row.conversationID === "string" && row.conversationID.trim()
-        ? row.conversationID.trim()
-        : buildCodexConversationID({
-            conversationKey,
-            kind,
-            libraryID,
-            paperItemID,
-          }),
-    conversationKey,
-    libraryID,
-    kind,
-    paperItemID: paperItemID || undefined,
-    createdAt,
-    updatedAt,
-    title:
-      typeof row.title === "string" && row.title.trim()
-        ? row.title.trim()
-        : undefined,
-    providerSessionId:
-      typeof row.providerSessionId === "string" && row.providerSessionId.trim()
-        ? row.providerSessionId.trim()
-        : undefined,
-    providerPermissionState:
-      typeof row.providerPermissionState === "string" &&
-      row.providerPermissionState.trim()
-        ? row.providerPermissionState.trim()
-        : undefined,
-    scopedConversationKey:
-      typeof row.scopedConversationKey === "string" &&
-      row.scopedConversationKey.trim()
-        ? row.scopedConversationKey.trim()
-        : undefined,
-    scopeType:
-      typeof row.scopeType === "string" && row.scopeType.trim()
-        ? row.scopeType.trim()
-        : undefined,
-    scopeId:
-      typeof row.scopeId === "string" && row.scopeId.trim()
-        ? row.scopeId.trim()
-        : undefined,
-    scopeLabel:
-      typeof row.scopeLabel === "string" && row.scopeLabel.trim()
-        ? row.scopeLabel.trim()
-        : undefined,
-    cwd:
-      typeof row.cwd === "string" && row.cwd.trim()
-        ? row.cwd.trim()
-        : undefined,
-    model:
-      typeof row.modelName === "string" && row.modelName.trim()
-        ? row.modelName.trim()
-        : undefined,
-    effort:
-      typeof row.effort === "string" && row.effort.trim()
-        ? row.effort.trim()
-        : undefined,
-    userTurnCount: Number.isFinite(userTurnCount)
-      ? Math.max(0, Math.floor(userTurnCount))
-      : 0,
-  };
-}
+const toCodexConversationSummary = store.toSummary;
 
 export async function getCodexConversationSummary(
-  conversationKey: number,
-): Promise<CodexConversationSummary | null> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey))
-    return null;
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT c.conversation_id AS conversationID,
-            c.conversation_instance_id AS instanceID,
-            c.conversation_key AS conversationKey,
-            c.library_id AS libraryID,
-            c.kind AS kind,
-            c.paper_item_id AS paperItemID,
-            c.created_at AS createdAt,
-            ${CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C} AS updatedAt,
-            COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
-            c.provider_session_id AS providerSessionId,
-            c.provider_permission_state AS providerPermissionState,
-            c.scoped_conversation_key AS scopedConversationKey,
-            c.scope_type AS scopeType,
-            c.scope_id AS scopeId,
-            c.scope_label AS scopeLabel,
-            c.cwd AS cwd,
-            c.model_name AS modelName,
-            c.effort AS effort,
-            COALESCE(c.user_turn_count, 0) AS userTurnCount
-     FROM ${CODEX_CONVERSATIONS_TABLE} c
-     WHERE c.conversation_key = ?
-     LIMIT 1`,
-    [normalizedKey],
-  )) as CodexConversationRow[] | undefined;
-  return rows?.length ? toCodexConversationSummary(rows[0]) : null;
+  ...args: Parameters<typeof store.getSummary>
+) {
+  return store.getSummary(...args);
 }
 
 export async function upsertCodexConversationSummary(params: {
@@ -2328,149 +2182,24 @@ export async function upsertCodexConversationSummary(params: {
   return true;
 }
 
-async function listCodexConversations(params: {
-  libraryID: number;
-  kind: CodexConversationKind;
-  paperItemID?: number;
-  limit?: number | null;
-}): Promise<CodexConversationSummary[]> {
-  const libraryID = normalizeLibraryID(params.libraryID);
-  if (!libraryID) return [];
-  const limit =
-    params.limit === null ? null : normalizeLimit(params.limit ?? 50, 50);
-  const sql =
-    params.kind === "paper"
-      ? `SELECT c.conversation_id AS conversationID,
-              c.conversation_key AS conversationKey,
-              c.library_id AS libraryID,
-              c.kind AS kind,
-              c.paper_item_id AS paperItemID,
-              c.created_at AS createdAt,
-              ${CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C} AS updatedAt,
-              COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
-              c.provider_session_id AS providerSessionId,
-              c.provider_permission_state AS providerPermissionState,
-              c.scoped_conversation_key AS scopedConversationKey,
-              c.scope_type AS scopeType,
-              c.scope_id AS scopeId,
-              c.scope_label AS scopeLabel,
-              c.cwd AS cwd,
-              c.model_name AS modelName,
-              c.effort AS effort,
-              COALESCE(c.user_turn_count, 0) AS userTurnCount
-       FROM ${CODEX_CONVERSATIONS_TABLE} c
-       WHERE c.library_id = ?
-         AND c.kind = 'paper'
-         AND c.paper_item_id = ?
-       ORDER BY updatedAt DESC, c.conversation_key DESC
-       ${limit ? "LIMIT ?" : ""}`
-      : `SELECT c.conversation_id AS conversationID,
-              c.conversation_key AS conversationKey,
-              c.library_id AS libraryID,
-              c.kind AS kind,
-              c.paper_item_id AS paperItemID,
-              c.created_at AS createdAt,
-              ${CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C} AS updatedAt,
-              COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
-              c.provider_session_id AS providerSessionId,
-              c.provider_permission_state AS providerPermissionState,
-              c.scoped_conversation_key AS scopedConversationKey,
-              c.scope_type AS scopeType,
-              c.scope_id AS scopeId,
-              c.scope_label AS scopeLabel,
-              c.cwd AS cwd,
-              c.model_name AS modelName,
-              c.effort AS effort,
-              COALESCE(c.user_turn_count, 0) AS userTurnCount
-       FROM ${CODEX_CONVERSATIONS_TABLE} c
-       WHERE c.library_id = ?
-         AND c.kind = 'global'
-       ORDER BY updatedAt DESC, c.conversation_key DESC
-       ${limit ? "LIMIT ?" : ""}`;
-  const queryParams =
-    params.kind === "paper"
-      ? [
-          libraryID,
-          normalizePaperItemID(Number(params.paperItemID)) || 0,
-          ...(limit ? [limit] : []),
-        ]
-      : [libraryID, ...(limit ? [limit] : [])];
-  const rows = (await Zotero.DB.queryAsync(sql, queryParams)) as
-    | CodexConversationRow[]
-    | undefined;
-  if (!rows?.length) return [];
-  const summaries = rows
-    .map((row) => toCodexConversationSummary(row))
-    .filter((row): row is CodexConversationSummary => Boolean(row));
-  return filterValidCodexConversationSummaries(
-    summaries,
-    params.kind === "paper"
-      ? normalizePaperItemID(Number(params.paperItemID))
-      : null,
-  );
-}
+const listCodexConversations = store.listConversations;
 
 export async function listCodexGlobalConversations(
-  libraryID: number,
-  limit: number | null = 50,
-): Promise<CodexConversationSummary[]> {
-  return listCodexConversations({ libraryID, kind: "global", limit });
+  ...args: Parameters<typeof store.listGlobalConversations>
+) {
+  return store.listGlobalConversations(...args);
 }
 
 export async function listCodexPaperConversations(
-  libraryID: number,
-  paperItemID: number,
-  limit = 50,
-): Promise<CodexConversationSummary[]> {
-  return listCodexConversations({
-    libraryID,
-    kind: "paper",
-    paperItemID,
-    limit,
-  });
+  ...args: Parameters<typeof store.listPaperConversations>
+) {
+  return store.listPaperConversations(...args);
 }
 
 export async function listAllCodexPaperConversationsByLibrary(
-  libraryID: number,
-  limit: number | null = 100,
-): Promise<CodexConversationSummary[]> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return [];
-  const normalizedLimit = normalizeOptionalLimit(limit);
-  const queryParams: unknown[] = [normalizedLibraryID];
-  if (normalizedLimit) queryParams.push(normalizedLimit);
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT c.conversation_id AS conversationID,
-            c.conversation_key AS conversationKey,
-            c.library_id AS libraryID,
-            c.kind AS kind,
-            c.paper_item_id AS paperItemID,
-            c.created_at AS createdAt,
-            ${CODEX_CONVERSATION_ACTIVITY_TIMESTAMP_SQL_FOR_ALIAS_C} AS updatedAt,
-            COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
-            c.provider_session_id AS providerSessionId,
-            c.provider_permission_state AS providerPermissionState,
-            c.scoped_conversation_key AS scopedConversationKey,
-            c.scope_type AS scopeType,
-            c.scope_id AS scopeId,
-            c.scope_label AS scopeLabel,
-            c.cwd AS cwd,
-            c.model_name AS modelName,
-            c.effort AS effort,
-            COALESCE(c.user_turn_count, 0) AS userTurnCount
-     FROM ${CODEX_CONVERSATIONS_TABLE} c
-     WHERE c.library_id = ?
-       AND c.kind = 'paper'
-       AND COALESCE(c.user_turn_count, 0) > 0
-     ORDER BY updatedAt DESC, c.conversation_key DESC
-     ${normalizedLimit ? "LIMIT ?" : ""}`,
-    queryParams,
-  )) as CodexConversationRow[] | undefined;
-  if (!rows?.length) return [];
-  const summaries = rows
-    .map((row) => toCodexConversationSummary(row))
-    .filter((row): row is CodexConversationSummary => Boolean(row));
-  return filterValidCodexConversationSummaries(summaries);
+  ...args: Parameters<typeof store.listAllPaperConversationsByLibrary>
+) {
+  return store.listAllPaperConversationsByLibrary(...args);
 }
 
 export async function ensureCodexGlobalConversation(
@@ -2514,24 +2243,7 @@ export async function ensureCodexPaperConversation(
   );
 }
 
-async function getMaxCodexConversationKey(
-  kind: CodexConversationKind,
-): Promise<number> {
-  const range = getCodexAllocatedConversationKeyRange(kind);
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT MAX(conversation_key) AS maxConversationKey
-     FROM ${CODEX_CONVERSATIONS_TABLE}
-     WHERE kind = ?
-       AND conversation_key >= ?
-       AND conversation_key < ?`,
-    [kind, range.start, range.endExclusive],
-  )) as Array<{ maxConversationKey?: unknown }> | undefined;
-  const maxConversationKey = Number(rows?.[0]?.maxConversationKey);
-  if (!Number.isFinite(maxConversationKey) || maxConversationKey <= 0) {
-    return range.start - 1;
-  }
-  return Math.floor(maxConversationKey);
-}
+const getMaxCodexConversationKey = store.getMaxConversationKey;
 
 async function allocateCodexConversationKey(params: {
   libraryID: number;
