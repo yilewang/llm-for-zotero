@@ -4498,6 +4498,16 @@ function createCitationButton(params: {
   return container;
 }
 
+/**
+ * Test-only: the production button builder and the click navigator, so the
+ * citation-navigation characterization tests can drive a real button through
+ * every navigation path. Not used by production code.
+ */
+export const citationNavigationForTests = {
+  createCitationButton,
+  resolveAndNavigateAssistantCitation,
+};
+
 function resolveQuoteCitationCandidates(
   citation: QuoteCitation,
   extractedCitation: ExtractedCitationLabel | null,
