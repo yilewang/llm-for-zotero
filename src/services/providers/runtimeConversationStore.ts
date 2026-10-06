@@ -1224,11 +1224,11 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         destructive: true,
       },
     );
-    // Remove the old indexed body in the same transaction as pruning.  The
-    // post-commit refresh is best-effort, but it must never leave deleted text
+    // Remove the old indexed body in the same transaction as the clear.  The
+    // post-commit refresh is best-effort, but it must never leave cleared text
     // searchable if that refresh is interrupted or the database is transiently
     // unavailable.
-    await initConversationSearchIndexStore();
+    const searchIndexReady = await initConversationSearchIndexStore();
     await Zotero.DB.executeTransaction(async () => {
       if (identity?.instanceID) {
         const witnessRows = (await Zotero.DB.queryAsync(
@@ -1252,6 +1252,12 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         [...selector.params, ...messageIdentityParams],
       );
       await refreshCatalogSummary(normalizedKey);
+      if (searchIndexReady) {
+        await deleteConversationSearchIndexRowInTransaction({
+          system,
+          conversationKey: normalizedKey,
+        });
+      }
       // Clear is content-authoritative.  Detach the exact native session in the
       // same transaction so a provider-resume path cannot reintroduce the
       // cleared turns if the adapter is unavailable after commit.

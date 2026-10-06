@@ -1142,6 +1142,10 @@
           "params": [2500000000]
         },
         {
+          "sql": "DELETE FROM llm_for_zotero_conversation_search_index WHERE system = ? AND legacy_conversation_key = ?",
+          "params": ["upstream", 2500000000]
+        },
+        {
           "sql": "SELECT COUNT(*) AS count FROM llm_for_zotero_chat_messages WHERE conversation_key = ?",
           "params": [2500000000]
         },

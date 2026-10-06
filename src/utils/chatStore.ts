@@ -3018,8 +3018,8 @@ export async function clearConversation(
       destructive: true,
     },
   );
-  // Remove the old indexed body in the same transaction as pruning.  The
-  // post-commit refresh is best-effort, but it must never leave deleted text
+  // Remove the old indexed body in the same transaction as the clear.  The
+  // post-commit refresh is best-effort, but it must never leave cleared text
   // searchable if that refresh is interrupted or the database is transiently
   // unavailable.
   const searchIndexReady = await initConversationSearchIndexStore();
@@ -3046,6 +3046,12 @@ export async function clearConversation(
       [...selector.params, ...messageIdentityParams],
     );
     await refreshUpstreamConversationCatalogSummary(normalizedKey);
+    if (searchIndexReady) {
+      await deleteConversationSearchIndexRowInTransaction({
+        system: "upstream",
+        conversationKey: normalizedKey,
+      });
+    }
     await onBeforeCommit?.();
   });
   await refreshUpstreamConversationSearchIndex(normalizedKey);

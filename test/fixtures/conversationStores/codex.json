@@ -1029,6 +1029,10 @@
           "params": [5812730500000000]
         },
         {
+          "sql": "DELETE FROM llm_for_zotero_conversation_search_index WHERE system = ? AND legacy_conversation_key = ?",
+          "params": ["codex", 5812730500000000]
+        },
+        {
           "sql": "UPDATE llm_for_zotero_codex_conversations SET provider_session_id = NULL, provider_permission_state = NULL, provider_session_path_state = NULL, scoped_conversation_key = NULL, scope_type = NULL, scope_id = NULL, scope_label = NULL, cwd = NULL, updated_at = ? WHERE conversation_key = ? AND conversation_instance_id = ?",
           "params": ["<now>", 5812730500000000, "<id-1>"]
         },
