@@ -79,6 +79,8 @@ import { createContextIcon } from "./contextIcons";
 import {
   selectedReasoningCache,
   selectedReasoningProviderCache,
+  reasoningCacheKey,
+  clearSelectedReasoningForSurface,
   selectedRuntimeModeCache,
   selectedImageCache,
   selectedFileAttachmentCache,
@@ -5896,7 +5898,9 @@ export function setupHandlers(
       .filter((option) => option.enabled)
       .map((option) => option.level);
     const previousLevel =
-      selectedReasoningCache.get(item.id) ||
+      selectedReasoningCache.get(
+        reasoningCacheKey(selectionSurface(), item.id),
+      ) ||
       panelChoices.getLastUsedReasoningLevelForProvider(provider) ||
       panelChoices.getLastUsedReasoningLevel();
     const resolved = getSelectedReasoningForItem(
@@ -6236,7 +6240,10 @@ export function setupHandlers(
         "Webchat mode",
         "llm-reasoning-menu-section",
       );
-      const currentSel = selectedReasoningCache.get(item.id) || "none";
+      const currentSel =
+        selectedReasoningCache.get(
+          reasoningCacheKey(selectionSurface(), item.id),
+        ) || "none";
       for (const mode of WEBCHAT_MODES) {
         const isSelected = currentSel === mode.level;
         const option = createElement(
@@ -6259,9 +6266,10 @@ export function setupHandlers(
               mode.level === "none" ? "auto" : (mode.level as any),
             );
           } else {
-            selectedReasoningCache.clear();
-            selectedReasoningCache.set(item.id, mode.level as any);
-            selectedReasoningProviderCache.set(item.id, "unsupported");
+            const reasoningKey = reasoningCacheKey(selectionSurface(), item.id);
+            clearSelectedReasoningForSurface(selectionSurface());
+            selectedReasoningCache.set(reasoningKey, mode.level as any);
+            selectedReasoningProviderCache.set(reasoningKey, "unsupported");
             panelChoices.setLastUsedReasoningLevel(mode.level as any);
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -6390,10 +6398,11 @@ export function setupHandlers(
             panelChoices.setClaudeReasoningMode(nextMode as any);
           } else {
             if (reasoningBtn) delete reasoningBtn.dataset.reasoningAdjustment;
-            selectedReasoningCache.clear();
-            selectedReasoningCache.set(item.id, level);
+            const reasoningKey = reasoningCacheKey(selectionSurface(), item.id);
+            clearSelectedReasoningForSurface(selectionSurface());
+            selectedReasoningCache.set(reasoningKey, level);
             selectedReasoningProviderCache.set(
-              item.id,
+              reasoningKey,
               provider === "unsupported" ? "customized" : provider,
             );
             panelChoices.setLastUsedReasoningLevelForProvider(provider, level);
@@ -6471,10 +6480,16 @@ export function setupHandlers(
     isWebChatMode,
     clearNextWebChatNewChatIntent,
     setSelectedReasoningLevel: (itemId, level) => {
-      selectedReasoningCache.set(itemId, level);
+      selectedReasoningCache.set(
+        reasoningCacheKey(selectionSurface(), itemId),
+        level,
+      );
     },
     setSelectedReasoningProvider: (itemId, provider) => {
-      selectedReasoningProviderCache.set(itemId, provider);
+      selectedReasoningProviderCache.set(
+        reasoningCacheKey(selectionSurface(), itemId),
+        provider,
+      );
     },
     updateReasoningButton,
     setStatusMessage: status

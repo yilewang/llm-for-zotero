@@ -10,6 +10,11 @@ import {
   setSelectedModelEntryForSurface,
   surfaceChoices,
 } from "../src/modules/contextPanel/surfaceChoices";
+import {
+  clearSelectedReasoningForSurface,
+  reasoningCacheKey,
+  selectedReasoningCache,
+} from "../src/modules/contextPanel/state";
 import { setModelProviderGroups } from "../src/utils/modelProviders";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
@@ -137,5 +142,37 @@ describe("request config: a panel's send uses its own surface's model", function
     )?.level;
     assert.equal(windowLevel, "high");
     assert.equal(sidebarLevel, "low");
+  });
+
+  it("the window and a sidebar panel showing the same conversation keep separate reasoning levels", function () {
+    clearSelectedReasoningForSurface("embedded");
+    clearSelectedReasoningForSurface("standalone");
+    surfaceChoices.lastUsedReasoningLevel.set("low", "embedded");
+    surfaceChoices.lastUsedReasoningLevel.set("high", "standalone");
+    const ask = (surface: "embedded" | "standalone") =>
+      getSelectedReasoningForItem(
+        7777,
+        "gpt-5",
+        "https://api.openai.com/v1",
+        "responses_api",
+        undefined,
+        surface,
+      )?.level;
+
+    // Same item id on both surfaces: the sidebar resolves first, then the
+    // window must still get its own level rather than the sidebar's cached one.
+    assert.equal(ask("embedded"), "low");
+    assert.equal(ask("standalone"), "high");
+    assert.equal(ask("embedded"), "low");
+
+    // Picking a level on one surface and clearing that surface leaves the other's.
+    clearSelectedReasoningForSurface("standalone");
+    assert.isUndefined(
+      selectedReasoningCache.get(reasoningCacheKey("standalone", 7777)),
+    );
+    assert.equal(
+      selectedReasoningCache.get(reasoningCacheKey("embedded", 7777)),
+      "low",
+    );
   });
 });

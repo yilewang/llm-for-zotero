@@ -48,14 +48,45 @@ export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
 const webChatForceNewChatConversationKeys = new Set<number>();
+/**
+ * Per-surface reasoning choice for a conversation, keyed by
+ * reasoningCacheKey(): the window and a sidebar panel can show the same
+ * conversation (the same item id) and each keeps its own level.
+ */
 export const selectedReasoningCache = new Map<
-  number,
+  string,
   ReasoningLevelSelection
 >();
 export const selectedReasoningProviderCache = new Map<
-  number,
+  string,
   ReasoningProviderKind
 >();
+
+// The same two values as conversationSelection's SelectionSurface, spelled out
+// here because that module imports this one.
+type ReasoningSurface = "embedded" | "standalone";
+
+export function reasoningCacheKey(
+  surface: ReasoningSurface | undefined,
+  itemId: number,
+): string {
+  return `${surface || "embedded"}:${itemId}`;
+}
+
+/** Forget one surface's reasoning choices; the other surface keeps its own. */
+export function clearSelectedReasoningForSurface(
+  surface: ReasoningSurface | undefined,
+): void {
+  const prefix = `${surface || "embedded"}:`;
+  for (const cache of [
+    selectedReasoningCache,
+    selectedReasoningProviderCache,
+  ]) {
+    for (const key of Array.from(cache.keys())) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  }
+}
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
 export const shortcutTextCache = new Map<string, string>();

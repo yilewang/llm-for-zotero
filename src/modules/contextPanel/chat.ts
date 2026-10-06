@@ -236,6 +236,7 @@ import {
   webChatIsolatedConversationKeys,
   selectedReasoningCache,
   selectedReasoningProviderCache,
+  reasoningCacheKey,
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelStateSync,
@@ -2830,9 +2831,10 @@ export function getSelectedReasoningForItem(
   });
   const provider =
     detectedProvider === "unsupported" ? "customized" : detectedProvider;
+  const cacheKey = reasoningCacheKey(surface, itemId);
   const cached =
-    selectedReasoningProviderCache.get(itemId) === provider
-      ? selectedReasoningCache.get(itemId)
+    selectedReasoningProviderCache.get(cacheKey) === provider
+      ? selectedReasoningCache.get(cacheKey)
       : undefined;
   const saved =
     cached ||
@@ -2842,8 +2844,8 @@ export function getSelectedReasoningForItem(
     level: saved || "auto",
   });
   const level = selected.kind === "option" ? selected.option.id : "auto";
-  selectedReasoningCache.set(itemId, level);
-  selectedReasoningProviderCache.set(itemId, provider);
+  selectedReasoningCache.set(cacheKey, level);
+  selectedReasoningProviderCache.set(cacheKey, provider);
   return { provider, level };
 }
 
