@@ -4711,9 +4711,8 @@ async function exerciseReaderPopupStandaloneRouting(input: {
     if (!readerContextPanel) {
       throw new Error("Workflow reader tab does not expose a context panel");
     }
-    // First in the reader's pane, so routing picks it over a native panel
-    // that, sharing the window's remembered Library mode, may show the
-    // window's own conversation.
+    // First in the reader's pane, so routing picks it over any native panel
+    // in the pane that may show another conversation.
     readerContextPanel.insertBefore(
       readerPanel.body,
       readerContextPanel.firstChild,
