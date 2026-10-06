@@ -658,18 +658,77 @@ export async function executeJourneyStep(
           panel.panelId,
           savedEvent,
         );
-        const card = trace?.querySelector(".llm-saved-note-card");
+        // A lone new note is the note mode of the turn's action card: one card,
+        // whose single row is the note_create receipt and whose note chip
+        // navigates to the created note.
+        const savedCards = Array.from(
+          trace?.querySelectorAll(".llm-saved-note-card") || [],
+        ) as HTMLElement[];
+        assertExact(savedCards.length, 1, "Saved-note cards for one new note");
+        const card = savedCards[0];
         check(
-          card && card.dataset.noteId === String(added[0].id),
+          card.matches(".llm-agent-action-summary-card") &&
+            card.dataset.mode === "note",
+          "A lone new note must render as the note mode of the action card",
+        );
+        assertExact(
+          card.querySelector(".llm-plan-status")?.textContent,
+          "Saved",
+          "Saved-note card status",
+        );
+        const receipt = savedEvent.actionReceipts.find(
+          (entry) =>
+            entry.operation === "note_create" && entry.status === "applied",
+        )!;
+        check(
+          (receipt.verifiedFacts || []).some((fact) =>
+            fact.startsWith(`native_note:${added[0].id}:`),
+          ),
+          "The note_create receipt does not verify the created native note",
+        );
+        const effects = Array.from(
+          card.querySelectorAll(".llm-agent-action-effect"),
+        ) as HTMLElement[];
+        assertExact(
+          effects.map((effect) => effect.dataset.receiptId),
+          [receipt.id],
+          "Saved card row must be the note_create receipt",
+        );
+        const chips = Array.from(
+          effects[0].querySelectorAll(".llm-note-context-chip"),
+        ) as HTMLElement[];
+        assertExact(chips.length, 1, "Note chips on the saved-note row");
+        let nav: any;
+        try {
+          nav = JSON.parse(chips[0].dataset.llmNav || "null");
+        } catch {
+          nav = null;
+        }
+        assertExact(
+          nav && {
+            kind: nav.kind,
+            noteId: nav.noteId,
+            libraryID: nav.libraryID,
+            itemKey: nav.itemKey,
+          },
+          {
+            kind: "note",
+            noteId: added[0].id,
+            libraryID: added[0].libraryID,
+            itemKey: added[0].key,
+          },
           "Saved card must target the exact native note",
         );
         check(
-          !card.querySelector("button, textarea"),
-          "New-note result must not contain approval or a draft editor",
+          !card.querySelector("textarea"),
+          "New-note result must not contain a draft editor",
         );
-        check(
-          card.querySelector("a")?.href.includes(added[0].key),
-          "Saved card has no exact native note link",
+        assertExact(
+          (Array.from(card.querySelectorAll("button")) as HTMLElement[]).map(
+            (button) => button.textContent?.trim(),
+          ),
+          ["Open note"],
+          "New-note result must offer only Open note, no approval controls",
         );
         await write(`${id}/saved-card.html`, card.outerHTML, true);
         check(
