@@ -199,6 +199,11 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
 
 let initPromise: Promise<void> | null = null;
 
+/** Forget the cached table init, for a test that swaps in a fresh database. */
+export function resetConversationCleanupJobsInitForTests(): void {
+  initPromise = null;
+}
+
 function isAlreadyExistingColumnError(error: unknown): boolean {
   return /duplicate column|already exists/i.test(
     String(error instanceof Error ? error.message : error || ""),

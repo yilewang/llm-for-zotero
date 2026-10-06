@@ -21,7 +21,6 @@ import {
 import { forget } from "./conversationSelection";
 import {
   clearOwnerAttachmentRefs,
-  clearOwnerAttachmentRefsInTransaction,
   replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
 import type {
@@ -55,7 +54,6 @@ import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/
 import {
   clearAgentConversationState,
   clearDeletedAgentConversationState,
-  clearPersistedAgentConversationRowsInTransaction,
   withAgentConversationPurge,
 } from "./agentConversationCleanup";
 import { ensureAgentTraceSchema } from "../../agent/store/traceStore";
@@ -296,6 +294,8 @@ function buildOperations(
     deleteLocalConversationRows: async (target) => {
       // Ensure the trace-file cleanup table exists before the owning catalog
       // transaction starts; the transaction callback itself is DML-only.
+      // The store's deletion transaction purges the agent rows and the
+      // attachment refs itself.
       await ensureAgentTraceSchema();
       await conversationRepository.deleteLocalConversationRows({
         instanceID: target.instanceID,
@@ -308,15 +308,6 @@ function buildOperations(
         additionalProviderCleanup: target.additionalProviderCleanup,
         libraryID: target.libraryID,
         paperItemID: target.paperItemID,
-        onBeforeCommit: async () => {
-          await clearPersistedAgentConversationRowsInTransaction(
-            target.conversationKey,
-          );
-          await clearOwnerAttachmentRefsInTransaction(
-            "conversation",
-            target.conversationKey,
-          );
-        },
       });
     },
     clearOwnerAttachmentRefs,
