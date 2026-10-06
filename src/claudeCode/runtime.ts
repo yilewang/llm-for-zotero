@@ -99,8 +99,6 @@ export type ClaudeBridgeScope = {
   scopeLabel?: string;
 };
 
-const conversationScopeCache = new Map<number, ClaudeBridgeScope>();
-const conversationScopeIdentityCache = new Map<number, string>();
 let bridgeRuntimeCache: AgentRuntimeLike | null = null;
 let bridgeRuntimeCoreRef: AgentRuntime | null = null;
 
@@ -176,47 +174,9 @@ export function buildClaudeScope(params: {
   };
 }
 
-export function rememberClaudeConversationScope(
-  conversationKey: number,
-  scope: ClaudeBridgeScope,
-  instanceID?: string,
-): void {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  const key = Math.floor(conversationKey);
-  conversationScopeCache.set(key, scope);
-  if (instanceID?.trim())
-    conversationScopeIdentityCache.set(key, instanceID.trim());
-}
-
-export function getRememberedClaudeConversationScope(
-  conversationKey: number,
-): ClaudeBridgeScope | null {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return null;
-  return conversationScopeCache.get(Math.floor(conversationKey)) || null;
-}
-
-export function forgetClaudeConversationScope(
-  conversationKey: number,
-  expectedInstanceID?: string,
-): void {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  const key = Math.floor(conversationKey);
-  const expected = expectedInstanceID?.trim();
-  if (expected) {
-    // If a cleanup job carries an identity, absence is not permission to
-    // delete an unlabelled/new runtime entry.  This closes the old-key race.
-    const remembered = conversationScopeIdentityCache.get(key);
-    if (!remembered || remembered !== expected) return;
-  }
-  conversationScopeCache.delete(key);
-  conversationScopeIdentityCache.delete(key);
-}
-
 export function resetClaudeBridgeRuntime(): void {
   bridgeRuntimeCache = null;
   bridgeRuntimeCoreRef = null;
-  conversationScopeCache.clear();
-  conversationScopeIdentityCache.clear();
 }
 
 export function getClaudeBridgeRuntime(
@@ -344,10 +304,6 @@ export async function invalidateClaudeConversationSessionWithinWriteLock(
     // durable cleanup job is still pending.
     if (Number(current?.userTurnCount || 0) > 0) return;
   }
-  forgetClaudeConversationScope(
-    params.conversationKey,
-    expectedInstanceID || undefined,
-  );
   // The bridge runtime binds the MCP scope header for the whole conversation,
   // so its stable token dies with the session it scoped.  The profile is
   // always available in Zotero, but keep bootstrap and test callers from
@@ -384,14 +340,12 @@ export async function fetchClaudeSessionInfo(
 ): Promise<ClaudeBridgeSessionInfo | null> {
   const baseUrl = getBridgeUrl();
   if (!baseUrl.trim()) return null;
-  const rememberedScope =
-    scope || getRememberedClaudeConversationScope(conversationKey);
   return fetchExternalBridgeSessionInfo({
     baseUrl,
     conversationKey,
-    scopeType: rememberedScope?.scopeType,
-    scopeId: rememberedScope?.scopeId,
-    scopeLabel: rememberedScope?.scopeLabel,
+    scopeType: scope?.scopeType,
+    scopeId: scope?.scopeId,
+    scopeLabel: scope?.scopeLabel,
   });
 }
 
