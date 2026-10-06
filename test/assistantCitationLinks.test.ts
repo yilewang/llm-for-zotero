@@ -790,6 +790,27 @@ describe("assistantCitationLinks", function () {
     assert.notInclude(navigationSource, "removeChild(citation)");
     assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
     assert.notInclude(source, "shouldMarkQuoteCardUnverifiedAfterNavigation");
+    // The navigation the click hands its quote to must not reach for the
+    // quote's provenance either.
+    const navigatorSource = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+      "utf8",
+    );
+    assert.include(navigationSource, "navigateToQuote({");
+    assert.notInclude(navigatorSource, "quoteStatus");
+    assert.notInclude(navigatorSource, "removeChild(citation)");
+    assert.notInclude(
+      navigatorSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure",
+    );
+    assert.notInclude(
+      navigatorSource,
+      "shouldMarkQuoteCardUnverifiedAfterNavigation",
+    );
+    assert.notInclude(
+      navigatorSource,
+      "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
+    );
   });
 
   it("keeps repeated source text a navigation ambiguity, not a provenance downgrade", function () {
@@ -811,10 +832,24 @@ describe("assistantCitationLinks", function () {
       resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
       "utf8",
     );
-    assert.notInclude(source, "startBackgroundQuoteCardVerification");
-    assert.notInclude(source, "verifyQuoteCardSearchabilityInBackground");
-    assert.notInclude(source, "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS");
-    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
+    // The click navigation moved to quoteNavigator.ts; it is held to the
+    // same rule.
+    const navigatorSource = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+      "utf8",
+    );
+    for (const checked of [source, navigatorSource]) {
+      assert.notInclude(checked, "startBackgroundQuoteCardVerification");
+      assert.notInclude(checked, "verifyQuoteCardSearchabilityInBackground");
+      assert.notInclude(
+        checked,
+        "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
+      );
+      assert.notInclude(
+        checked,
+        "markQuoteCardUnverifiedAfterNavigationFailure",
+      );
+    }
   });
 
   it("does not render source-less fallback quote cards for unresolved blockquotes", function () {
@@ -1649,25 +1684,63 @@ describe("assistantCitationLinks", function () {
         ),
         "utf8",
       );
-      const verifiedStart = source.indexOf(
+      // The trusted click hands its ladder to the navigator and keeps the
+      // success bookkeeping.
+      const trustedStart = source.indexOf(
+        "async function resolveAndNavigateAssistantCitation(params: {",
+      );
+      const trustedEnd = source.indexOf("} catch (error) {", trustedStart);
+      const trustedSection = source.slice(trustedStart, trustedEnd);
+      assert.isAtLeast(trustedStart, 0);
+      assert.isAbove(trustedEnd, trustedStart);
+      assert.include(trustedSection, 'strategy: "hint-ladder"');
+      assert.include(trustedSection, "quoteJumpSucceeded = true");
+      assert.include(trustedSection, "return;");
+
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      const ladderStart = navigatorSource.indexOf(
+        "async function navigateByHintLadder(",
+      );
+      const ladderEnd = navigatorSource.indexOf("\n}\n", ladderStart);
+      const ladder = navigatorSource.slice(ladderStart, ladderEnd);
+      const settleStart = ladder.indexOf("const settle = (");
+      const settleEnd = ladder.indexOf("\n  };\n", settleStart);
+      const settleSection = ladder.slice(settleStart, settleEnd);
+      const verifiedStart = ladder.indexOf(
         "const cached = await navigateToCachedCitationPage",
       );
-      const hiddenStart = source.indexOf("// Hidden page-index cache");
-      const hintStart = source.indexOf("// Stored quote page hint");
-      const fullSearchStart = source.indexOf(
-        'if (status) setStatus(status, "Locating cited quote...", "sending")',
+      const hiddenStart = ladder.indexOf("// Hidden page-index cache");
+      const hintStart = ladder.indexOf("// Stored quote page hint");
+      const fullSearchStart = ladder.indexOf('req.onProgress?.("locating")');
+      const hintSection = ladder.slice(hintStart, fullSearchStart);
+      const hintTierStart = navigatorSource.indexOf(
+        "async function navigateToStoredQuotePageHint(",
       );
-      const hintSection = source.slice(hintStart, fullSearchStart);
+      const hintTier = navigatorSource.slice(
+        hintTierStart,
+        navigatorSource.indexOf("\n}\n", hintTierStart),
+      );
 
-      assert.isAtLeast(verifiedStart, 0);
+      assert.isAtLeast(ladderStart, 0);
+      assert.isAbove(ladderEnd, ladderStart);
+      assert.isAtLeast(settleStart, 0);
+      assert.isAbove(settleEnd, settleStart);
+      assert.isAbove(verifiedStart, settleEnd);
       assert.isAbove(hiddenStart, verifiedStart);
       assert.isAbove(hintStart, hiddenStart);
       assert.isAbove(fullSearchStart, hintStart);
+      assert.isAtLeast(hintTierStart, 0);
       assert.include(hintSection, "navigateToStoredQuotePageHint");
-      assert.include(hintSection, "attemptCitationParagraphJump");
-      assert.include(hintSection, "rememberCachedCitationPage");
-      assert.include(hintSection, "quoteJumpSucceeded = true");
-      assert.include(hintSection, "return;");
+      assert.include(hintTier, "deps.jump(");
+      // A matched hint jump remembers its page and ends the click; a failed
+      // one falls through.
+      assert.include(hintSection, 'settle("stored-page-hint", hinted)');
+      assert.include(hintSection, "if (settled) return settled;");
+      assert.include(settleSection, "deps.rememberPage(");
+      assert.include(settleSection, 'kind: "jumped"');
       assert.include(hintSection, "continue to full quote-location fallback");
     });
 
@@ -1719,21 +1792,25 @@ describe("assistantCitationLinks", function () {
 
     it("keeps cached citation navigation tied to the reader it opened", function () {
       const source = readFileSync(
-        resolve(
-          testDir,
-          "../src/modules/contextPanel/assistantCitationLinks.ts",
-        ),
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
         "utf8",
       );
       const resultTypeStart = source.indexOf(
         "type CitationParagraphJumpNavigation",
       );
       const resultTypeEnd = source.indexOf(
-        "const citationButtonCandidateCache",
+        "type QuoteNavigationProvenance",
         resultTypeStart,
       );
+      const ladderStart = source.indexOf(
+        "async function navigateByHintLadder(",
+      );
+      const settleStart = source.indexOf("const settle = (", ladderStart);
+      const settleEnd = source.indexOf("\n  };\n", settleStart);
+      const settleSection = source.slice(settleStart, settleEnd);
       const cachedBranchStart = source.indexOf(
         "const cached = await navigateToCachedCitationPage",
+        ladderStart,
       );
       const hiddenBranchStart = source.indexOf(
         "// Hidden page-index cache",
@@ -1751,7 +1828,18 @@ describe("assistantCitationLinks", function () {
         source.slice(resultTypeStart, resultTypeEnd),
         "contextItemId: number",
       );
-      assert.match(cachedBranch, /resolveJumpedPageLabel\(\s*cached\.reader,/);
+      assert.isAtLeast(ladderStart, 0);
+      assert.isAbove(settleEnd, settleStart);
+      assert.isAbove(cachedBranchStart, settleEnd);
+      // The label and the remembered page come from the reader and the
+      // attachment the cached tier opened, not from whatever reader is active.
+      assert.include(cachedBranch, 'settle("verified-cache", cached)');
+      assert.match(
+        settleSection,
+        /resolveJumpedPageLabel\(\s*navigation\.reader,/,
+      );
+      assert.include(settleSection, "navigation.contextItemId");
+      assert.notInclude(settleSection, "getActiveReaderForSelectedTab()");
       assert.notInclude(cachedBranch, "getActiveReaderForSelectedTab()");
       assert.include(cachedBranch, "cached.contextItemId");
     });
@@ -1791,6 +1879,12 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(source, "resolvePageForCitationButton");
       assert.notInclude(source, "PDFWorker.getFullText");
       assert.include(source, "warmPageTextCache");
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      assert.notInclude(navigatorSource, "resolvePageForCitationButton");
+      assert.notInclude(navigatorSource, "PDFWorker.getFullText");
     });
 
     it("keeps idle cache warming separate from page label mutation", function () {
@@ -2066,12 +2160,17 @@ describe("assistantCitationLinks", function () {
       assert.include(warmSection, "isPdfBackedCitationCandidate");
       assert.notInclude(warmSection, "updateCitationButtonPage");
       assert.notInclude(warmSection, "rememberCachedCitationPage");
-      assert.include(source, "lookupCachedQuoteLocationForAttachment");
+      // The click reads the warmed cache in the navigator's hint ladder.
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      assert.include(navigatorSource, "lookupCachedQuoteLocationForAttachment");
       assert.match(
-        source,
+        navigatorSource,
         /lookupCachedQuoteLocationForAttachment\([\s\S]*?\)\s*\?\?\s*\(await warmQuoteLocationCacheForAttachment\(/,
       );
-      assert.include(source, "navigateToHiddenQuoteLocation");
+      assert.include(navigatorSource, "navigateToHiddenQuoteLocation");
     });
 
     it("warms trusted quote locations while rendering citation buttons", function () {

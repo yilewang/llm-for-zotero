@@ -133,6 +133,7 @@ describe("navigateToQuote (verify-first)", function () {
     assert.deepEqual(calls[4], ["remember", 2, "the quote", 4, "L4"]);
     assert.deepEqual(outcome, {
       kind: "jumped",
+      tier: "verified",
       contextItemId: 2,
       pageIndex: 4,
       pageLabel: "L4",
@@ -310,5 +311,38 @@ describe("navigateToQuote (verify-first)", function () {
 
     assert.deepEqual(outcome, { kind: "not-found", reason: "not in 1" });
     assert.deepEqual(stages, ["quote verification"]);
+  });
+});
+
+describe("navigateToQuote (hint-ladder)", function () {
+  it("with no candidate and no active-reader fallback, reports its default reason after announcing the search", async function () {
+    const { deps, calls } = fakeDeps({ texts: {} });
+    const progress: string[] = [];
+    const stages: string[] = [];
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [],
+        policy: {
+          strategy: "hint-ladder",
+          rememberPage: true,
+          fullSearchExactOnly: true,
+          activeReaderFallback: false,
+        },
+        trace: (stage) => stages.push(stage),
+        onProgress: (step) => progress.push(step),
+      }),
+      deps,
+    );
+
+    assert.deepEqual(outcome, {
+      kind: "not-found",
+      reason: "Could not resolve the cited quote to a unique page.",
+    });
+    // Unlike verify-first, an empty ladder still runs: there is no
+    // "no-candidates" verdict, only the misses of each tier.
+    assert.deepEqual(progress, ["locating"]);
+    assert.deepEqual(stages, ["cache lookup", "cache lookup"]);
+    assert.deepEqual(calls, []);
   });
 });
