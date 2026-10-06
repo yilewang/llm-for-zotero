@@ -18,12 +18,23 @@ import {
 } from "../../shared/conversationKeySpace";
 import {
   buildConversationID as buildSharedConversationID,
+  deleteRegisteredConversationScopeInTransaction,
+  generateConversationInstanceID,
   getRegisteredConversationScope,
+  registerConversationScope,
+  syncCatalogInstanceID,
   type PaperContextJsonColumns,
 } from "../../shared/conversationRegistry";
 import {
+  allocateConversationKeyInTransaction,
   ConversationRetiredError,
+  ensureConversationKeyLedgerEntry,
+  ensureConversationKeyLedgerEntryInTransaction,
   getConversationKeyLedgerEntry,
+  initConversationKeyLedgerStore,
+  rememberConversationKeyRetired,
+  retireConversationKeyInTransaction,
+  updateConversationKeyLedgerConversationIDInTransaction,
   isConversationKeyLedgerStoreInitialized,
   withRetiredKeyErrorMapping,
 } from "../../shared/conversationKeyLedger";
@@ -114,6 +125,13 @@ export type RuntimeStoreConfig = {
     sql: string;
     alias: "providerPermissionState";
   }>;
+  /** D3: extra catalog columns that the summary upsert writes and merges. */
+  upsertExtraColumns: ReadonlyArray<{
+    column: string;
+    param: "providerPermissionState";
+  }>;
+  /** The profile signature recorded on every key the store issues. */
+  profileSignature(): string;
   /**
    * D4: extra catalog columns that clearing a conversation or its session
    * metadata resets to NULL with the provider session (Codex only).
@@ -138,6 +156,8 @@ export type RuntimeStoreConfig = {
     };
   };
   prefs: {
+    setLastAllocatedGlobal(conversationKey: number): void;
+    setLastAllocatedPaper(conversationKey: number): void;
     setLastUsedPaper(
       libraryID: number,
       paperItemID: number,
@@ -242,6 +262,20 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       .map((column) => `\n${indent}${column.sql} AS ${column.alias},`)
       .join("");
   }
+
+  /** D3: the extra upsert columns, their placeholders and merge lines. */
+  const upsertExtraColumnListSql = config.upsertExtraColumns
+    .map((column) => `, ${column.column}`)
+    .join("");
+  const upsertExtraPlaceholderSql = config.upsertExtraColumns
+    .map(() => ", ?")
+    .join("");
+  const upsertExtraMergeSql = config.upsertExtraColumns
+    .map(
+      (column) =>
+        `\n         ${column.column} = COALESCE(excluded.${column.column}, ${tables.catalog}.${column.column}),`,
+    )
+    .join("");
 
   /** D4: the extra reset columns as SET lines after the provider session. */
   function sessionResetSql(indent: string): string {
@@ -1202,7 +1236,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       await refreshCatalogSummary(normalizedKey);
       if (searchIndexReady) {
         await deleteConversationSearchIndexRowInTransaction({
-          system: system,
+          system,
           conversationKey: normalizedKey,
         });
       }
@@ -1239,7 +1273,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       await refreshCatalogSummary(normalizedKey);
       if (searchIndexReady) {
         await deleteConversationSearchIndexRowInTransaction({
-          system: system,
+          system,
           conversationKey: normalizedKey,
         });
       }
@@ -1504,6 +1538,381 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     await refreshSearchIndex(normalizedKey);
   }
 
+  async function upsertSummary(params: {
+    conversationKey: number;
+    instanceID?: string;
+    conversationID?: string;
+    libraryID: number;
+    kind: RuntimeConversationKind;
+    paperItemID?: number;
+    createdAt?: number;
+    updatedAt?: number;
+    title?: string;
+    providerSessionId?: string;
+    providerPermissionState?: string;
+    scopedConversationKey?: string;
+    scopeType?: string;
+    scopeId?: string;
+    scopeLabel?: string;
+    cwd?: string;
+    model?: string;
+    effort?: string;
+    inTransaction?: boolean;
+  }): Promise<boolean> {
+    const conversationKey = normalizeConversationKey(params.conversationKey);
+    const libraryID = normalizeLibraryID(params.libraryID);
+    if (
+      !conversationKey ||
+      !libraryID ||
+      !isStoreConversationKeyForKind(conversationKey, params.kind)
+    ) {
+      return false;
+    }
+    const createdAt = normalizeCatalogTimestamp(params.createdAt);
+    const updatedAt = normalizeCatalogTimestamp(params.updatedAt);
+    const paperItemID = normalizePaperItemID(Number(params.paperItemID));
+    const title = normalizeConversationTitleSeed(params.title || "") || null;
+    const conversationID =
+      params.conversationID?.trim() ||
+      buildConversationID({
+        conversationKey,
+        kind: params.kind,
+        libraryID,
+        paperItemID,
+      });
+    const existing = await getSummary(conversationKey);
+    if (
+      existing &&
+      !sameCatalogScope(existing, {
+        libraryID,
+        kind: params.kind,
+        paperItemID,
+      })
+    ) {
+      logConversationStoreWarning(
+        `Refused to reassign ${storeLabel} conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
+      );
+      return false;
+    }
+    let instanceID = params.instanceID?.trim() || "";
+    if (!instanceID) {
+      const registered = await getRegisteredConversationScope(conversationKey);
+      instanceID = registered?.instanceID || "";
+    }
+    if (!instanceID) instanceID = generateConversationInstanceID();
+    try {
+      const ensureLedgerEntry = params.inTransaction
+        ? ensureConversationKeyLedgerEntryInTransaction
+        : ensureConversationKeyLedgerEntry;
+      await ensureLedgerEntry({
+        conversationKey,
+        instanceID,
+        conversationID,
+        system,
+        kind: params.kind,
+        profileSignature: config.profileSignature(),
+        libraryID,
+        paperItemID: paperItemID || undefined,
+        issuedAt: createdAt,
+      });
+    } catch (error) {
+      logConversationStoreWarning(String(error));
+      return false;
+    }
+    const registryOk = await registerConversationScope(
+      {
+        conversationID,
+        instanceID,
+        conversationKey,
+        system,
+        kind: params.kind,
+        libraryID,
+        paperItemID,
+        createdAt,
+        updatedAt,
+        title,
+      },
+      { inTransaction: params.inTransaction },
+    );
+    if (!registryOk) return false;
+    const writeCatalog = async () => {
+      await Zotero.DB.queryAsync(
+        `INSERT INTO ${tables.catalog}
+        (conversation_id, conversation_instance_id, conversation_key, library_id, kind, paper_item_id, created_at, updated_at, last_activity_at, user_turn_count, first_user_title, title, provider_session_id${upsertExtraColumnListSql}, scoped_conversation_key, scope_type, scope_id, scope_label, cwd, model_name, effort)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?${upsertExtraPlaceholderSql})
+       ON CONFLICT(conversation_key) DO UPDATE SET
+         conversation_id = excluded.conversation_id,
+         library_id = excluded.library_id,
+         kind = excluded.kind,
+         paper_item_id = excluded.paper_item_id,
+         created_at = COALESCE(${tables.catalog}.created_at, excluded.created_at),
+         updated_at = excluded.updated_at,
+         last_activity_at = COALESCE(excluded.last_activity_at, ${tables.catalog}.last_activity_at, excluded.updated_at),
+         title = COALESCE(excluded.title, ${tables.catalog}.title),
+         provider_session_id = COALESCE(excluded.provider_session_id, ${tables.catalog}.provider_session_id),${upsertExtraMergeSql}
+         scoped_conversation_key = COALESCE(excluded.scoped_conversation_key, ${tables.catalog}.scoped_conversation_key),
+         scope_type = COALESCE(excluded.scope_type, ${tables.catalog}.scope_type),
+         scope_id = COALESCE(excluded.scope_id, ${tables.catalog}.scope_id),
+         scope_label = COALESCE(excluded.scope_label, ${tables.catalog}.scope_label),
+         cwd = COALESCE(excluded.cwd, ${tables.catalog}.cwd),
+         model_name = COALESCE(excluded.model_name, ${tables.catalog}.model_name),
+         effort = COALESCE(excluded.effort, ${tables.catalog}.effort)`,
+        [
+          conversationID,
+          instanceID,
+          conversationKey,
+          libraryID,
+          params.kind,
+          paperItemID || null,
+          createdAt,
+          updatedAt,
+          updatedAt,
+          title,
+          params.providerSessionId?.trim() || null,
+          ...config.upsertExtraColumns.map(
+            (column) => params[column.param]?.trim() || null,
+          ),
+          params.scopedConversationKey?.trim() || null,
+          params.scopeType?.trim() || null,
+          params.scopeId?.trim() || null,
+          params.scopeLabel?.trim() || null,
+          params.cwd?.trim() || null,
+          params.model?.trim() || null,
+          params.effort?.trim() || null,
+        ],
+      );
+      await refreshCatalogSummary(conversationKey);
+    };
+    if (params.inTransaction) {
+      await writeCatalog();
+    } else {
+      await Zotero.DB.executeTransaction(writeCatalog);
+    }
+    if (!params.inTransaction) {
+      const registered = await getRegisteredConversationScope(conversationKey);
+      if (registered) await syncCatalogInstanceID(registered);
+      await refreshSearchIndex(conversationKey);
+    }
+    return true;
+  }
+
+  async function ensureGlobalConversation(
+    libraryID: number,
+    preferredConversationKey?: number,
+  ): Promise<RuntimeConversationSummary | null> {
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    if (!normalizedLibraryID) return null;
+    const existing = await listConversations({
+      libraryID: normalizedLibraryID,
+      kind: "global",
+      limit: 1,
+    });
+    return (
+      existing[0] ||
+      createGlobalConversation(normalizedLibraryID, {
+        conversationKey: preferredConversationKey,
+      })
+    );
+  }
+
+  async function ensurePaperConversation(
+    libraryID: number,
+    paperItemID: number,
+    preferredConversationKey?: number,
+  ): Promise<RuntimeConversationSummary | null> {
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    const normalizedPaperItemID = normalizePaperItemID(paperItemID);
+    if (!normalizedLibraryID || !normalizedPaperItemID) return null;
+    const existing = await listConversations({
+      libraryID: normalizedLibraryID,
+      kind: "paper",
+      paperItemID: normalizedPaperItemID,
+      limit: 1,
+    });
+    return (
+      existing[0] ||
+      createPaperConversation(normalizedLibraryID, normalizedPaperItemID, {
+        conversationKey: preferredConversationKey,
+      })
+    );
+  }
+
+  async function allocateConversationKey(params: {
+    libraryID: number;
+    kind: RuntimeConversationKind;
+    paperItemID?: number;
+    issuedAt: number;
+    preferredConversationKey?: number;
+    inTransaction?: boolean;
+  }): Promise<{
+    conversationKey: number;
+    instanceID: string;
+    conversationID: string;
+  }> {
+    await initConversationKeyLedgerStore();
+    const preferredKey = normalizeConversationKey(
+      params.preferredConversationKey || 0,
+    );
+    if (
+      preferredKey &&
+      !isConversationKeyForKind(system, params.kind, preferredKey)
+    ) {
+      throw new Error(
+        `Preferred ${storeLabel} conversation key is outside its range`,
+      );
+    }
+    const allocate = async () => {
+      if (preferredKey) {
+        const instanceID = generateConversationInstanceID();
+        const conversationID = buildConversationID({
+          conversationKey: preferredKey,
+          kind: params.kind,
+          libraryID: params.libraryID,
+          paperItemID: params.paperItemID,
+        });
+        await ensureConversationKeyLedgerEntryInTransaction({
+          conversationKey: preferredKey,
+          instanceID,
+          conversationID,
+          system,
+          kind: params.kind,
+          profileSignature: config.profileSignature(),
+          libraryID: params.libraryID,
+          paperItemID: params.paperItemID,
+          issuedAt: params.issuedAt,
+        });
+        return { conversationKey: preferredKey, instanceID, conversationID };
+      }
+      const issued = await allocateConversationKeyInTransaction({
+        range: {
+          system,
+          kind: params.kind,
+          start: config.keys.allocatedRange(params.kind).start,
+          endExclusive: config.keys.allocatedRange(params.kind).endExclusive,
+          profileSignature: config.profileSignature(),
+        },
+        libraryID: params.libraryID,
+        paperItemID: params.paperItemID,
+        issuedAt: params.issuedAt,
+      });
+      const conversationID = buildConversationID({
+        conversationKey: issued.conversationKey,
+        kind: params.kind,
+        libraryID: params.libraryID,
+        paperItemID: params.paperItemID,
+      });
+      await updateConversationKeyLedgerConversationIDInTransaction({
+        conversationKey: issued.conversationKey,
+        instanceID: issued.instanceID,
+        conversationID,
+      });
+      return {
+        conversationKey: issued.conversationKey,
+        instanceID: issued.instanceID,
+        conversationID,
+      };
+    };
+    const allocated = params.inTransaction
+      ? await allocate()
+      : await Zotero.DB.executeTransaction(allocate);
+    return {
+      conversationKey: allocated.conversationKey,
+      instanceID: allocated.instanceID,
+      conversationID: allocated.conversationID,
+    };
+  }
+
+  async function retireAllocationAfterCreateFailure(params: {
+    conversationKey: number;
+    instanceID: string;
+    conversationID: string;
+  }): Promise<void> {
+    await Zotero.DB.executeTransaction(async () => {
+      await deleteRegisteredConversationScopeInTransaction(
+        params.instanceID,
+        params.conversationKey,
+        params.conversationID,
+        system,
+      );
+      await retireConversationKeyInTransaction({
+        conversationKey: params.conversationKey,
+        instanceID: params.instanceID,
+        reason: "conversation-create-failed",
+      });
+    });
+    rememberConversationKeyRetired(params.conversationKey);
+  }
+
+  async function createGlobalConversation(
+    libraryID: number,
+    options: { conversationKey?: number } = {},
+  ): Promise<RuntimeConversationSummary | null> {
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    if (!normalizedLibraryID) return null;
+    const allocated = await Zotero.DB.executeTransaction(async () => {
+      const issued = await allocateConversationKey({
+        libraryID: normalizedLibraryID,
+        kind: "global",
+        issuedAt: Date.now(),
+        preferredConversationKey: options.conversationKey,
+        inTransaction: true,
+      });
+      const stored = await upsertSummary({
+        conversationKey: issued.conversationKey,
+        instanceID: issued.instanceID,
+        conversationID: issued.conversationID,
+        libraryID: normalizedLibraryID,
+        kind: "global",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        inTransaction: true,
+      });
+      if (!stored)
+        throw new Error(`${storeLabel} conversation creation was refused`);
+      return issued;
+    });
+    await refreshSearchIndex(allocated.conversationKey);
+    config.prefs.setLastAllocatedGlobal(allocated.conversationKey);
+    return getSummary(allocated.conversationKey);
+  }
+
+  async function createPaperConversation(
+    libraryID: number,
+    paperItemID: number,
+    options: { conversationKey?: number } = {},
+  ): Promise<RuntimeConversationSummary | null> {
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    const normalizedPaperItemID = normalizePaperItemID(paperItemID);
+    if (!normalizedLibraryID || !normalizedPaperItemID) return null;
+    const allocated = await Zotero.DB.executeTransaction(async () => {
+      const issued = await allocateConversationKey({
+        libraryID: normalizedLibraryID,
+        kind: "paper",
+        paperItemID: normalizedPaperItemID,
+        issuedAt: Date.now(),
+        preferredConversationKey: options.conversationKey,
+        inTransaction: true,
+      });
+      const stored = await upsertSummary({
+        conversationKey: issued.conversationKey,
+        instanceID: issued.instanceID,
+        conversationID: issued.conversationID,
+        libraryID: normalizedLibraryID,
+        kind: "paper",
+        paperItemID: normalizedPaperItemID,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        inTransaction: true,
+      });
+      if (!stored)
+        throw new Error(`${storeLabel} conversation creation was refused`);
+      return issued;
+    });
+    await refreshSearchIndex(allocated.conversationKey);
+    config.prefs.setLastAllocatedPaper(allocated.conversationKey);
+    return getSummary(allocated.conversationKey);
+  }
+
   return {
     isStoreConversationKey,
     isStoreConversationKeyForKind,
@@ -1539,6 +1948,13 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     pruneConversation,
     updateLatestUserMessage,
     updateLatestAssistantMessage,
+    upsertSummary,
+    ensureGlobalConversation,
+    ensurePaperConversation,
+    allocateConversationKey,
+    retireAllocationAfterCreateFailure,
+    createGlobalConversation,
+    createPaperConversation,
   };
 }
 

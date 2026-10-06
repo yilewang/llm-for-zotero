@@ -1,9 +1,6 @@
 declare const Zotero: any;
 
-import type {
-  CodexConversationSummary,
-  CodexConversationKind,
-} from "../shared/types";
+import type { CodexConversationKind } from "../shared/types";
 import {
   copyConversationMessagesThroughAssistantAnchor,
   type ForkConversationMessagesResult,
@@ -11,7 +8,6 @@ import {
 import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
-  isConversationKeyForKind,
   getConversationKeyRange,
 } from "../shared/conversationKeySpace";
 import { storedMessageDisplayOrderSql } from "../shared/conversationMessageSql";
@@ -38,12 +34,10 @@ import {
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
-  generateConversationInstanceID,
   initConversationRegistryStore,
   deleteRegisteredConversationScopeInTransaction,
   registerConversationScope,
   repairRegisteredConversationScope,
-  syncCatalogInstanceID,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
 import {
@@ -64,11 +58,8 @@ import {
   type StartupSchemaPass,
 } from "../shared/startupSchemaFingerprint";
 import {
-  allocateConversationKeyInTransaction,
   nextUnissuedConversationKeyInRange,
   ConversationRetiredError,
-  ensureConversationKeyLedgerEntry,
-  ensureConversationKeyLedgerEntryInTransaction,
   getConversationKeyLedgerEntry,
   initializeConversationKeyCounterInTransaction,
   initConversationKeyLedgerStore,
@@ -82,7 +73,6 @@ import {
   seedConversationKeyLedgerFromTombstones,
   retireOrphanedConversationLedgerEntries,
   rememberConversationKeyRetired,
-  updateConversationKeyLedgerConversationIDInTransaction,
 } from "../shared/conversationKeyLedger";
 import { pendingDeletionStore } from "../core/conversations/pendingDeletionStore";
 import {
@@ -106,7 +96,6 @@ import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefSto
 import {
   createRuntimeConversationStore,
   ensureColumn,
-  normalizeConversationTitleSeed,
 } from "../services/providers/runtimeConversationStore";
 
 const CODEX_MESSAGES_TABLE = "llm_for_zotero_codex_messages";
@@ -148,6 +137,13 @@ const store = createRuntimeConversationStore({
   hooks: {
     afterMessageWriteInTransaction: touchCodexConversationActivity,
   },
+  upsertExtraColumns: [
+    {
+      column: "provider_permission_state",
+      param: "providerPermissionState",
+    },
+  ],
+  profileSignature: getCodexProfileSignature,
   sessionResetColumns: [
     "provider_permission_state",
     "provider_session_path_state",
@@ -156,11 +152,12 @@ const store = createRuntimeConversationStore({
     allocatedRange: getCodexAllocatedConversationKeyRange,
   },
   prefs: {
+    setLastAllocatedGlobal: setLastAllocatedCodexGlobalConversationKey,
+    setLastAllocatedPaper: setLastAllocatedCodexPaperConversationKey,
     setLastUsedPaper: setLastUsedCodexPaperConversationKey,
   },
 });
 const isCodexStoreConversationKey = store.isStoreConversationKey;
-const isCodexStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
 const buildCodexConversationID = store.buildConversationID;
 const resolveRegisteredConversationID = store.resolveRegisteredConversationID;
 const resolveRepairingMessageConversationSelector =
@@ -175,7 +172,6 @@ const repairRecoverableCodexCatalogMessageConversationIDs =
 const backfillCodexConversationIDs = store.backfillConversationIDs;
 const backfillCodexConversationInstanceIDs =
   store.backfillConversationInstanceIDs;
-const sameCodexCatalogScope = store.sameCatalogScope;
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_CONVERSATIONS_TABLE = "llm_for_zotero_claude_conversations";
 
@@ -1421,164 +1417,11 @@ export async function getCodexConversationSummary(
   return store.getSummary(...args);
 }
 
-export async function upsertCodexConversationSummary(params: {
-  conversationKey: number;
-  instanceID?: string;
-  conversationID?: string;
-  libraryID: number;
-  kind: CodexConversationKind;
-  paperItemID?: number;
-  createdAt?: number;
-  updatedAt?: number;
-  title?: string;
-  providerSessionId?: string;
-  providerPermissionState?: string;
-  scopedConversationKey?: string;
-  scopeType?: string;
-  scopeId?: string;
-  scopeLabel?: string;
-  cwd?: string;
-  model?: string;
-  effort?: string;
-  inTransaction?: boolean;
-}): Promise<boolean> {
-  const conversationKey = normalizeConversationKey(params.conversationKey);
-  const libraryID = normalizeLibraryID(params.libraryID);
-  if (
-    !conversationKey ||
-    !libraryID ||
-    !isCodexStoreConversationKeyForKind(conversationKey, params.kind)
-  ) {
-    return false;
-  }
-  const createdAt = normalizeCatalogTimestamp(params.createdAt);
-  const updatedAt = normalizeCatalogTimestamp(params.updatedAt);
-  const paperItemID = normalizePaperItemID(Number(params.paperItemID));
-  const title = normalizeConversationTitleSeed(params.title || "") || null;
-  const conversationID =
-    params.conversationID?.trim() ||
-    buildCodexConversationID({
-      conversationKey,
-      kind: params.kind,
-      libraryID,
-      paperItemID,
-    });
-  const existing = await getCodexConversationSummary(conversationKey);
-  if (
-    existing &&
-    !sameCodexCatalogScope(existing, {
-      libraryID,
-      kind: params.kind,
-      paperItemID,
-    })
-  ) {
-    logConversationStoreWarning(
-      `Refused to reassign Codex conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
-    );
-    return false;
-  }
-  let instanceID = params.instanceID?.trim() || "";
-  if (!instanceID) {
-    const registered = await getRegisteredConversationScope(conversationKey);
-    instanceID = registered?.instanceID || "";
-  }
-  if (!instanceID) instanceID = generateConversationInstanceID();
-  try {
-    const ensureLedgerEntry = params.inTransaction
-      ? ensureConversationKeyLedgerEntryInTransaction
-      : ensureConversationKeyLedgerEntry;
-    await ensureLedgerEntry({
-      conversationKey,
-      instanceID,
-      conversationID,
-      system: "codex",
-      kind: params.kind,
-      profileSignature: getCodexProfileSignature(),
-      libraryID,
-      paperItemID: paperItemID || undefined,
-      issuedAt: createdAt,
-    });
-  } catch (error) {
-    logConversationStoreWarning(String(error));
-    return false;
-  }
-  const registryOk = await registerConversationScope(
-    {
-      conversationID,
-      instanceID,
-      conversationKey,
-      system: "codex",
-      kind: params.kind,
-      libraryID,
-      paperItemID,
-      createdAt,
-      updatedAt,
-      title,
-    },
-    { inTransaction: params.inTransaction },
-  );
-  if (!registryOk) return false;
-  const writeCatalog = async () => {
-    await Zotero.DB.queryAsync(
-      `INSERT INTO ${CODEX_CONVERSATIONS_TABLE}
-        (conversation_id, conversation_instance_id, conversation_key, library_id, kind, paper_item_id, created_at, updated_at, last_activity_at, user_turn_count, first_user_title, title, provider_session_id, provider_permission_state, scoped_conversation_key, scope_type, scope_id, scope_label, cwd, model_name, effort)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(conversation_key) DO UPDATE SET
-         conversation_id = excluded.conversation_id,
-         library_id = excluded.library_id,
-         kind = excluded.kind,
-         paper_item_id = excluded.paper_item_id,
-         created_at = COALESCE(${CODEX_CONVERSATIONS_TABLE}.created_at, excluded.created_at),
-         updated_at = excluded.updated_at,
-         last_activity_at = COALESCE(excluded.last_activity_at, ${CODEX_CONVERSATIONS_TABLE}.last_activity_at, excluded.updated_at),
-         title = COALESCE(excluded.title, ${CODEX_CONVERSATIONS_TABLE}.title),
-         provider_session_id = COALESCE(excluded.provider_session_id, ${CODEX_CONVERSATIONS_TABLE}.provider_session_id),
-         provider_permission_state = COALESCE(excluded.provider_permission_state, ${CODEX_CONVERSATIONS_TABLE}.provider_permission_state),
-         scoped_conversation_key = COALESCE(excluded.scoped_conversation_key, ${CODEX_CONVERSATIONS_TABLE}.scoped_conversation_key),
-         scope_type = COALESCE(excluded.scope_type, ${CODEX_CONVERSATIONS_TABLE}.scope_type),
-         scope_id = COALESCE(excluded.scope_id, ${CODEX_CONVERSATIONS_TABLE}.scope_id),
-         scope_label = COALESCE(excluded.scope_label, ${CODEX_CONVERSATIONS_TABLE}.scope_label),
-         cwd = COALESCE(excluded.cwd, ${CODEX_CONVERSATIONS_TABLE}.cwd),
-         model_name = COALESCE(excluded.model_name, ${CODEX_CONVERSATIONS_TABLE}.model_name),
-         effort = COALESCE(excluded.effort, ${CODEX_CONVERSATIONS_TABLE}.effort)`,
-      [
-        conversationID,
-        instanceID,
-        conversationKey,
-        libraryID,
-        params.kind,
-        paperItemID || null,
-        createdAt,
-        updatedAt,
-        updatedAt,
-        title,
-        params.providerSessionId?.trim() || null,
-        params.providerPermissionState?.trim() || null,
-        params.scopedConversationKey?.trim() || null,
-        params.scopeType?.trim() || null,
-        params.scopeId?.trim() || null,
-        params.scopeLabel?.trim() || null,
-        params.cwd?.trim() || null,
-        params.model?.trim() || null,
-        params.effort?.trim() || null,
-      ],
-    );
-    await refreshCodexConversationCatalogSummary(conversationKey);
-  };
-  if (params.inTransaction) {
-    await writeCatalog();
-  } else {
-    await Zotero.DB.executeTransaction(writeCatalog);
-  }
-  if (!params.inTransaction) {
-    const registered = await getRegisteredConversationScope(conversationKey);
-    if (registered) await syncCatalogInstanceID(registered);
-    await refreshCodexConversationSearchIndex(conversationKey);
-  }
-  return true;
+export async function upsertCodexConversationSummary(
+  ...args: Parameters<typeof store.upsertSummary>
+) {
+  return store.upsertSummary(...args);
 }
-
-const listCodexConversations = store.listConversations;
 
 export async function listCodexGlobalConversations(
   ...args: Parameters<typeof store.listGlobalConversations>
@@ -1599,219 +1442,29 @@ export async function listAllCodexPaperConversationsByLibrary(
 }
 
 export async function ensureCodexGlobalConversation(
-  libraryID: number,
-  preferredConversationKey?: number,
-): Promise<CodexConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return null;
-  const existing = await listCodexConversations({
-    libraryID: normalizedLibraryID,
-    kind: "global",
-    limit: 1,
-  });
-  return (
-    existing[0] ||
-    createCodexGlobalConversation(normalizedLibraryID, {
-      conversationKey: preferredConversationKey,
-    })
-  );
+  ...args: Parameters<typeof store.ensureGlobalConversation>
+) {
+  return store.ensureGlobalConversation(...args);
 }
 
 export async function ensureCodexPaperConversation(
-  libraryID: number,
-  paperItemID: number,
-  preferredConversationKey?: number,
-): Promise<CodexConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
-  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
-  const existing = await listCodexConversations({
-    libraryID: normalizedLibraryID,
-    kind: "paper",
-    paperItemID: normalizedPaperItemID,
-    limit: 1,
-  });
-  return (
-    existing[0] ||
-    createCodexPaperConversation(normalizedLibraryID, normalizedPaperItemID, {
-      conversationKey: preferredConversationKey,
-    })
-  );
+  ...args: Parameters<typeof store.ensurePaperConversation>
+) {
+  return store.ensurePaperConversation(...args);
 }
 
 const getMaxCodexConversationKey = store.getMaxConversationKey;
 
-async function allocateCodexConversationKey(params: {
-  libraryID: number;
-  kind: CodexConversationKind;
-  paperItemID?: number;
-  issuedAt: number;
-  preferredConversationKey?: number;
-  inTransaction?: boolean;
-}): Promise<{
-  conversationKey: number;
-  instanceID: string;
-  conversationID: string;
-}> {
-  await initConversationKeyLedgerStore();
-  const preferredKey = normalizeConversationKey(
-    params.preferredConversationKey || 0,
-  );
-  if (
-    preferredKey &&
-    !isConversationKeyForKind("codex", params.kind, preferredKey)
-  ) {
-    throw new Error("Preferred Codex conversation key is outside its range");
-  }
-  const range = getCodexAllocatedConversationKeyRange(params.kind);
-  const allocate = async () => {
-    if (preferredKey) {
-      const instanceID = generateConversationInstanceID();
-      const conversationID = buildCodexConversationID({
-        conversationKey: preferredKey,
-        kind: params.kind,
-        libraryID: params.libraryID,
-        paperItemID: params.paperItemID,
-      });
-      await ensureConversationKeyLedgerEntryInTransaction({
-        conversationKey: preferredKey,
-        instanceID,
-        conversationID,
-        system: "codex",
-        kind: params.kind,
-        profileSignature: getCodexProfileSignature(),
-        libraryID: params.libraryID,
-        paperItemID: params.paperItemID,
-        issuedAt: params.issuedAt,
-      });
-      return { conversationKey: preferredKey, instanceID, conversationID };
-    }
-    const issued = await allocateConversationKeyInTransaction({
-      range: {
-        system: "codex",
-        kind: params.kind,
-        start: range.start,
-        endExclusive: range.endExclusive,
-        profileSignature: getCodexProfileSignature(),
-      },
-      libraryID: params.libraryID,
-      paperItemID: params.paperItemID,
-      issuedAt: params.issuedAt,
-    });
-    const conversationID = buildCodexConversationID({
-      conversationKey: issued.conversationKey,
-      kind: params.kind,
-      libraryID: params.libraryID,
-      paperItemID: params.paperItemID,
-    });
-    await updateConversationKeyLedgerConversationIDInTransaction({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID,
-    });
-    return {
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID,
-    };
-  };
-  const allocated = params.inTransaction
-    ? await allocate()
-    : await Zotero.DB.executeTransaction(allocate);
-  return {
-    conversationKey: allocated.conversationKey,
-    instanceID: allocated.instanceID,
-    conversationID: allocated.conversationID,
-  };
-}
-
-async function retireCodexAllocationAfterCreateFailure(params: {
-  conversationKey: number;
-  instanceID: string;
-  conversationID: string;
-}): Promise<void> {
-  await Zotero.DB.executeTransaction(async () => {
-    await deleteRegisteredConversationScopeInTransaction(
-      params.instanceID,
-      params.conversationKey,
-      params.conversationID,
-      "codex",
-    );
-    await retireConversationKeyInTransaction({
-      conversationKey: params.conversationKey,
-      instanceID: params.instanceID,
-      reason: "conversation-create-failed",
-    });
-  });
-  rememberConversationKeyRetired(params.conversationKey);
-}
-
 export async function createCodexGlobalConversation(
-  libraryID: number,
-  options: { conversationKey?: number } = {},
-): Promise<CodexConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return null;
-  const allocated = await Zotero.DB.executeTransaction(async () => {
-    const issued = await allocateCodexConversationKey({
-      libraryID: normalizedLibraryID,
-      kind: "global",
-      issuedAt: Date.now(),
-      preferredConversationKey: options.conversationKey,
-      inTransaction: true,
-    });
-    const stored = await upsertCodexConversationSummary({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID: issued.conversationID,
-      libraryID: normalizedLibraryID,
-      kind: "global",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      inTransaction: true,
-    });
-    if (!stored) throw new Error("Codex conversation creation was refused");
-    return issued;
-  });
-  await refreshCodexConversationSearchIndex(allocated.conversationKey);
-  setLastAllocatedCodexGlobalConversationKey(allocated.conversationKey);
-  return getCodexConversationSummary(allocated.conversationKey);
+  ...args: Parameters<typeof store.createGlobalConversation>
+) {
+  return store.createGlobalConversation(...args);
 }
 
 export async function createCodexPaperConversation(
-  libraryID: number,
-  paperItemID: number,
-  options: { conversationKey?: number } = {},
-): Promise<CodexConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
-  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
-  const allocated = await Zotero.DB.executeTransaction(async () => {
-    const issued = await allocateCodexConversationKey({
-      libraryID: normalizedLibraryID,
-      kind: "paper",
-      paperItemID: normalizedPaperItemID,
-      issuedAt: Date.now(),
-      preferredConversationKey: options.conversationKey,
-      inTransaction: true,
-    });
-    const stored = await upsertCodexConversationSummary({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID: issued.conversationID,
-      libraryID: normalizedLibraryID,
-      kind: "paper",
-      paperItemID: normalizedPaperItemID,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      inTransaction: true,
-    });
-    if (!stored) throw new Error("Codex conversation creation was refused");
-    return issued;
-  });
-  await refreshCodexConversationSearchIndex(allocated.conversationKey);
-  setLastAllocatedCodexPaperConversationKey(allocated.conversationKey);
-  return getCodexConversationSummary(allocated.conversationKey);
+  ...args: Parameters<typeof store.createPaperConversation>
+) {
+  return store.createPaperConversation(...args);
 }
 
 export async function touchCodexConversationTitle(

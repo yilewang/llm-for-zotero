@@ -1,13 +1,7 @@
 declare const Zotero: any;
 
-import type {
-  ClaudeConversationSummary,
-  ClaudeConversationKind,
-} from "../shared/types";
-import {
-  isConversationKeyForKind,
-  getConversationKeyRange,
-} from "../shared/conversationKeySpace";
+import type { ClaudeConversationKind } from "../shared/types";
+import { getConversationKeyRange } from "../shared/conversationKeySpace";
 import {
   CLAUDE_HISTORY_LIMIT,
   buildDefaultClaudeGlobalConversationKey,
@@ -30,12 +24,10 @@ import {
   canMigrateLegacyAmbiguousPaperRegistryScope,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
-  generateConversationInstanceID,
   initConversationRegistryStore,
   deleteRegisteredConversationScopeInTransaction,
   registerConversationScope,
   repairRegisteredConversationScope,
-  syncCatalogInstanceID,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
 import {
@@ -56,11 +48,8 @@ import {
   type StartupSchemaPass,
 } from "../shared/startupSchemaFingerprint";
 import {
-  allocateConversationKeyInTransaction,
   nextUnissuedConversationKeyInRange,
   ConversationRetiredError,
-  ensureConversationKeyLedgerEntry,
-  ensureConversationKeyLedgerEntryInTransaction,
   getConversationKeyLedgerEntry,
   initializeConversationKeyCounterInTransaction,
   initConversationKeyLedgerStore,
@@ -74,7 +63,6 @@ import {
   seedConversationKeyLedgerFromTombstones,
   retireOrphanedConversationLedgerEntries,
   rememberConversationKeyRetired,
-  updateConversationKeyLedgerConversationIDInTransaction,
 } from "../shared/conversationKeyLedger";
 import {
   initRecentlyDeletedConversationTombstones,
@@ -85,7 +73,6 @@ import {
   initConversationForkLinksStore,
 } from "../shared/conversationForkLinks";
 import {
-  normalizeCatalogTimestamp,
   normalizeConversationKey,
   normalizeLibraryID,
   normalizePaperItemID,
@@ -97,7 +84,6 @@ import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefSto
 import {
   createRuntimeConversationStore,
   ensureColumn,
-  normalizeConversationTitleSeed,
 } from "../services/providers/runtimeConversationStore";
 
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
@@ -128,20 +114,22 @@ const store = createRuntimeConversationStore({
   activityTimestampSqlForAliasC:
     "COALESCE(c.last_activity_at, c.updated_at, c.created_at)",
   summaryExtraColumns: [],
+  upsertExtraColumns: [],
+  profileSignature: getClaudeProfileSignature,
   sessionResetColumns: [],
   keys: {
     allocatedRange: getClaudeAllocatedConversationKeyRange,
   },
   prefs: {
+    setLastAllocatedGlobal: setLastAllocatedClaudeGlobalConversationKey,
+    setLastAllocatedPaper: setLastAllocatedClaudePaperConversationKey,
     setLastUsedPaper: setLastUsedClaudePaperConversationKey,
   },
 });
 const isClaudeStoreConversationKey = store.isStoreConversationKey;
-const isClaudeStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
 const buildClaudeConversationID = store.buildConversationID;
 const resolveRepairingMessageConversationSelector =
   store.resolveRepairingMessageConversationSelector;
-const refreshClaudeConversationSearchIndex = store.refreshSearchIndex;
 const backfillClaudeConversationTimestamps =
   store.backfillConversationTimestamps;
 const refreshClaudeConversationCatalogSummary = store.refreshCatalogSummary;
@@ -151,7 +139,6 @@ const repairRecoverableClaudeCatalogMessageConversationIDs =
 const backfillClaudeConversationIDs = store.backfillConversationIDs;
 const backfillClaudeConversationInstanceIDs =
   store.backfillConversationInstanceIDs;
-const sameClaudeCatalogScope = store.sameCatalogScope;
 function remapLegacyConversationKey(
   legacyConversationKey: number,
   kind: ClaudeConversationKind,
@@ -952,161 +939,11 @@ export async function getClaudeConversationSummary(
   return store.getSummary(...args);
 }
 
-export async function upsertClaudeConversationSummary(params: {
-  conversationKey: number;
-  instanceID?: string;
-  conversationID?: string;
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-  createdAt?: number;
-  updatedAt?: number;
-  title?: string;
-  providerSessionId?: string;
-  scopedConversationKey?: string;
-  scopeType?: string;
-  scopeId?: string;
-  scopeLabel?: string;
-  cwd?: string;
-  model?: string;
-  effort?: string;
-  inTransaction?: boolean;
-}): Promise<boolean> {
-  const conversationKey = normalizeConversationKey(params.conversationKey);
-  const libraryID = normalizeLibraryID(params.libraryID);
-  if (
-    !conversationKey ||
-    !libraryID ||
-    !isClaudeStoreConversationKeyForKind(conversationKey, params.kind)
-  ) {
-    return false;
-  }
-  const createdAt = normalizeCatalogTimestamp(params.createdAt);
-  const updatedAt = normalizeCatalogTimestamp(params.updatedAt);
-  const paperItemID = normalizePaperItemID(Number(params.paperItemID));
-  const title = normalizeConversationTitleSeed(params.title || "") || null;
-  const conversationID =
-    params.conversationID?.trim() ||
-    buildClaudeConversationID({
-      conversationKey,
-      kind: params.kind,
-      libraryID,
-      paperItemID,
-    });
-  const existing = await getClaudeConversationSummary(conversationKey);
-  if (
-    existing &&
-    !sameClaudeCatalogScope(existing, {
-      libraryID,
-      kind: params.kind,
-      paperItemID,
-    })
-  ) {
-    logConversationStoreWarning(
-      `Refused to reassign Claude conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
-    );
-    return false;
-  }
-  let instanceID = params.instanceID?.trim() || "";
-  if (!instanceID) {
-    const registered = await getRegisteredConversationScope(conversationKey);
-    instanceID = registered?.instanceID || "";
-  }
-  if (!instanceID) instanceID = generateConversationInstanceID();
-  try {
-    const ensureLedgerEntry = params.inTransaction
-      ? ensureConversationKeyLedgerEntryInTransaction
-      : ensureConversationKeyLedgerEntry;
-    await ensureLedgerEntry({
-      conversationKey,
-      instanceID,
-      conversationID,
-      system: "claude_code",
-      kind: params.kind,
-      profileSignature: getClaudeProfileSignature(),
-      libraryID,
-      paperItemID: paperItemID || undefined,
-      issuedAt: createdAt,
-    });
-  } catch (error) {
-    logConversationStoreWarning(String(error));
-    return false;
-  }
-  const registryOk = await registerConversationScope(
-    {
-      conversationID,
-      instanceID,
-      conversationKey,
-      system: "claude_code",
-      kind: params.kind,
-      libraryID,
-      paperItemID,
-      createdAt,
-      updatedAt,
-      title,
-    },
-    { inTransaction: params.inTransaction },
-  );
-  if (!registryOk) return false;
-  const writeCatalog = async () => {
-    await Zotero.DB.queryAsync(
-      `INSERT INTO ${CLAUDE_CONVERSATIONS_TABLE}
-        (conversation_id, conversation_instance_id, conversation_key, library_id, kind, paper_item_id, created_at, updated_at, last_activity_at, user_turn_count, first_user_title, title, provider_session_id, scoped_conversation_key, scope_type, scope_id, scope_label, cwd, model_name, effort)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(conversation_key) DO UPDATE SET
-         conversation_id = excluded.conversation_id,
-         library_id = excluded.library_id,
-         kind = excluded.kind,
-         paper_item_id = excluded.paper_item_id,
-         created_at = COALESCE(${CLAUDE_CONVERSATIONS_TABLE}.created_at, excluded.created_at),
-         updated_at = excluded.updated_at,
-         last_activity_at = COALESCE(excluded.last_activity_at, ${CLAUDE_CONVERSATIONS_TABLE}.last_activity_at, excluded.updated_at),
-         title = COALESCE(excluded.title, ${CLAUDE_CONVERSATIONS_TABLE}.title),
-         provider_session_id = COALESCE(excluded.provider_session_id, ${CLAUDE_CONVERSATIONS_TABLE}.provider_session_id),
-         scoped_conversation_key = COALESCE(excluded.scoped_conversation_key, ${CLAUDE_CONVERSATIONS_TABLE}.scoped_conversation_key),
-         scope_type = COALESCE(excluded.scope_type, ${CLAUDE_CONVERSATIONS_TABLE}.scope_type),
-         scope_id = COALESCE(excluded.scope_id, ${CLAUDE_CONVERSATIONS_TABLE}.scope_id),
-         scope_label = COALESCE(excluded.scope_label, ${CLAUDE_CONVERSATIONS_TABLE}.scope_label),
-         cwd = COALESCE(excluded.cwd, ${CLAUDE_CONVERSATIONS_TABLE}.cwd),
-         model_name = COALESCE(excluded.model_name, ${CLAUDE_CONVERSATIONS_TABLE}.model_name),
-         effort = COALESCE(excluded.effort, ${CLAUDE_CONVERSATIONS_TABLE}.effort)`,
-      [
-        conversationID,
-        instanceID,
-        conversationKey,
-        libraryID,
-        params.kind,
-        paperItemID || null,
-        createdAt,
-        updatedAt,
-        updatedAt,
-        title,
-        params.providerSessionId?.trim() || null,
-        params.scopedConversationKey?.trim() || null,
-        params.scopeType?.trim() || null,
-        params.scopeId?.trim() || null,
-        params.scopeLabel?.trim() || null,
-        params.cwd?.trim() || null,
-        params.model?.trim() || null,
-        params.effort?.trim() || null,
-      ],
-    );
-    await refreshClaudeConversationCatalogSummary(conversationKey);
-  };
-  if (params.inTransaction) {
-    await writeCatalog();
-  } else {
-    await Zotero.DB.executeTransaction(writeCatalog);
-  }
-  if (!params.inTransaction) {
-    const registered = await getRegisteredConversationScope(conversationKey);
-    if (registered) await syncCatalogInstanceID(registered);
-    await refreshClaudeConversationSearchIndex(conversationKey);
-  }
-  return true;
+export async function upsertClaudeConversationSummary(
+  ...args: Parameters<typeof store.upsertSummary>
+) {
+  return store.upsertSummary(...args);
 }
-
-const listClaudeConversations = store.listConversations;
 
 export async function listClaudeGlobalConversations(
   ...args: Parameters<typeof store.listGlobalConversations>
@@ -1127,219 +964,29 @@ export async function listAllClaudePaperConversationsByLibrary(
 }
 
 export async function ensureClaudeGlobalConversation(
-  libraryID: number,
-  preferredConversationKey?: number,
-): Promise<ClaudeConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return null;
-  const existing = await listClaudeConversations({
-    libraryID: normalizedLibraryID,
-    kind: "global",
-    limit: 1,
-  });
-  return (
-    existing[0] ||
-    createClaudeGlobalConversation(normalizedLibraryID, {
-      conversationKey: preferredConversationKey,
-    })
-  );
+  ...args: Parameters<typeof store.ensureGlobalConversation>
+) {
+  return store.ensureGlobalConversation(...args);
 }
 
 export async function ensureClaudePaperConversation(
-  libraryID: number,
-  paperItemID: number,
-  preferredConversationKey?: number,
-): Promise<ClaudeConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
-  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
-  const existing = await listClaudeConversations({
-    libraryID: normalizedLibraryID,
-    kind: "paper",
-    paperItemID: normalizedPaperItemID,
-    limit: 1,
-  });
-  return (
-    existing[0] ||
-    createClaudePaperConversation(normalizedLibraryID, normalizedPaperItemID, {
-      conversationKey: preferredConversationKey,
-    })
-  );
+  ...args: Parameters<typeof store.ensurePaperConversation>
+) {
+  return store.ensurePaperConversation(...args);
 }
 
 const getMaxClaudeConversationKey = store.getMaxConversationKey;
 
-async function allocateClaudeConversationKey(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-  issuedAt: number;
-  preferredConversationKey?: number;
-  inTransaction?: boolean;
-}): Promise<{
-  conversationKey: number;
-  instanceID: string;
-  conversationID: string;
-}> {
-  await initConversationKeyLedgerStore();
-  const preferredKey = normalizeConversationKey(
-    params.preferredConversationKey || 0,
-  );
-  if (
-    preferredKey &&
-    !isConversationKeyForKind("claude_code", params.kind, preferredKey)
-  ) {
-    throw new Error("Preferred Claude conversation key is outside its range");
-  }
-  const allocate = async () => {
-    if (preferredKey) {
-      const instanceID = generateConversationInstanceID();
-      const conversationID = buildClaudeConversationID({
-        conversationKey: preferredKey,
-        kind: params.kind,
-        libraryID: params.libraryID,
-        paperItemID: params.paperItemID,
-      });
-      await ensureConversationKeyLedgerEntryInTransaction({
-        conversationKey: preferredKey,
-        instanceID,
-        conversationID,
-        system: "claude_code",
-        kind: params.kind,
-        profileSignature: getClaudeProfileSignature(),
-        libraryID: params.libraryID,
-        paperItemID: params.paperItemID,
-        issuedAt: params.issuedAt,
-      });
-      return { conversationKey: preferredKey, instanceID, conversationID };
-    }
-    const issued = await allocateConversationKeyInTransaction({
-      range: {
-        system: "claude_code",
-        kind: params.kind,
-        start: getClaudeAllocatedConversationKeyRange(params.kind).start,
-        endExclusive: getClaudeAllocatedConversationKeyRange(params.kind)
-          .endExclusive,
-        profileSignature: getClaudeProfileSignature(),
-      },
-      libraryID: params.libraryID,
-      paperItemID: params.paperItemID,
-      issuedAt: params.issuedAt,
-    });
-    const conversationID = buildClaudeConversationID({
-      conversationKey: issued.conversationKey,
-      kind: params.kind,
-      libraryID: params.libraryID,
-      paperItemID: params.paperItemID,
-    });
-    await updateConversationKeyLedgerConversationIDInTransaction({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID,
-    });
-    return {
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID,
-    };
-  };
-  const allocated = params.inTransaction
-    ? await allocate()
-    : await Zotero.DB.executeTransaction(allocate);
-  return {
-    conversationKey: allocated.conversationKey,
-    instanceID: allocated.instanceID,
-    conversationID: allocated.conversationID,
-  };
-}
-
-async function retireClaudeAllocationAfterCreateFailure(params: {
-  conversationKey: number;
-  instanceID: string;
-  conversationID: string;
-}): Promise<void> {
-  await Zotero.DB.executeTransaction(async () => {
-    await deleteRegisteredConversationScopeInTransaction(
-      params.instanceID,
-      params.conversationKey,
-      params.conversationID,
-      "claude_code",
-    );
-    await retireConversationKeyInTransaction({
-      conversationKey: params.conversationKey,
-      instanceID: params.instanceID,
-      reason: "conversation-create-failed",
-    });
-  });
-  rememberConversationKeyRetired(params.conversationKey);
-}
-
 export async function createClaudeGlobalConversation(
-  libraryID: number,
-  options: { conversationKey?: number } = {},
-): Promise<ClaudeConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return null;
-  const allocated = await Zotero.DB.executeTransaction(async () => {
-    const issued = await allocateClaudeConversationKey({
-      libraryID: normalizedLibraryID,
-      kind: "global",
-      issuedAt: Date.now(),
-      preferredConversationKey: options.conversationKey,
-      inTransaction: true,
-    });
-    const stored = await upsertClaudeConversationSummary({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID: issued.conversationID,
-      libraryID: normalizedLibraryID,
-      kind: "global",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      inTransaction: true,
-    });
-    if (!stored) throw new Error("Claude conversation creation was refused");
-    return issued;
-  });
-  await refreshClaudeConversationSearchIndex(allocated.conversationKey);
-  setLastAllocatedClaudeGlobalConversationKey(allocated.conversationKey);
-  return getClaudeConversationSummary(allocated.conversationKey);
+  ...args: Parameters<typeof store.createGlobalConversation>
+) {
+  return store.createGlobalConversation(...args);
 }
 
 export async function createClaudePaperConversation(
-  libraryID: number,
-  paperItemID: number,
-  options: { conversationKey?: number } = {},
-): Promise<ClaudeConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
-  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
-  const allocated = await Zotero.DB.executeTransaction(async () => {
-    const issued = await allocateClaudeConversationKey({
-      libraryID: normalizedLibraryID,
-      kind: "paper",
-      paperItemID: normalizedPaperItemID,
-      issuedAt: Date.now(),
-      preferredConversationKey: options.conversationKey,
-      inTransaction: true,
-    });
-    const stored = await upsertClaudeConversationSummary({
-      conversationKey: issued.conversationKey,
-      instanceID: issued.instanceID,
-      conversationID: issued.conversationID,
-      libraryID: normalizedLibraryID,
-      kind: "paper",
-      paperItemID: normalizedPaperItemID,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      inTransaction: true,
-    });
-    if (!stored) throw new Error("Claude conversation creation was refused");
-    return issued;
-  });
-  await refreshClaudeConversationSearchIndex(allocated.conversationKey);
-  setLastAllocatedClaudePaperConversationKey(allocated.conversationKey);
-  return getClaudeConversationSummary(allocated.conversationKey);
+  ...args: Parameters<typeof store.createPaperConversation>
+) {
+  return store.createPaperConversation(...args);
 }
 
 export async function touchClaudeConversationTitle(
