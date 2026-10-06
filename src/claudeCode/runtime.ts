@@ -13,6 +13,7 @@ import {
   createExternalBackendBridgeRuntime,
   fetchExternalBridgeSessionInfo,
   type AgentRuntimeLike,
+  type ClaudeBridgeGateOptions,
   type ExternalBridgeSessionInfo,
 } from "../agent/externalBackendBridge";
 import { releaseConversationScopeToken } from "../agent/mcp/server";
@@ -199,26 +200,39 @@ export async function refreshClaudeSlashCommands(
   await getClaudeBridgeRuntime(coreRuntime).refreshSlashCommands(force);
 }
 
+// The list readers answer for the caller's conversation system when it names
+// one (a panel acting for its own surface); otherwise for the saved system.
 export function listClaudeSlashCommands(
   coreRuntime: AgentRuntime,
+  options?: ClaudeBridgeGateOptions,
 ): ClaudeSlashCommandDescriptor[] {
-  return getClaudeBridgeRuntime(coreRuntime).listSlashCommandsSync();
+  return getClaudeBridgeRuntime(coreRuntime).listSlashCommandsSync(options);
 }
 
 export async function listClaudeEfforts(
   coreRuntime: AgentRuntime,
   model?: string,
   context?: ClaudeModelCatalogRequestContext,
+  options?: ClaudeBridgeGateOptions,
 ): Promise<string[]> {
-  return getClaudeBridgeRuntime(coreRuntime).listEfforts(model, context);
+  return getClaudeBridgeRuntime(coreRuntime).listEfforts(
+    model,
+    context,
+    options,
+  );
 }
 
 export async function listClaudeModels(
   coreRuntime: AgentRuntime,
   force = false,
   context?: ClaudeModelCatalogRequestContext,
+  options?: ClaudeBridgeGateOptions,
 ): Promise<ClaudeModelCatalog> {
-  return getClaudeBridgeRuntime(coreRuntime).listModels(force, context);
+  return getClaudeBridgeRuntime(coreRuntime).listModels(
+    force,
+    context,
+    options,
+  );
 }
 
 export async function runClaudeTurn(

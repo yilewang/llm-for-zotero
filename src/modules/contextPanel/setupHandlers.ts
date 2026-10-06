@@ -27,7 +27,10 @@ import {
   getModelEntryById,
   getModelProviderGroups,
 } from "../../utils/modelProviders";
-import { bindSurfaceChoices } from "./surfaceChoices";
+import {
+  bindSurfaceChoices,
+  demoteConversationSystemOnEverySurface,
+} from "./surfaceChoices";
 import {
   buildQueuedFollowUpThreadKey,
   enqueueQueuedFollowUp,
@@ -544,9 +547,7 @@ import {
   getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
   getClaudeSettingSourcesCsvByPref,
-  getConversationSystemPref,
   setClaudeCodeModeEnabled,
-  setConversationSystemPref,
   getLastUsedClaudePaperConversationKey,
   removeLastUsedClaudeGlobalConversationKey,
   removeLastUsedClaudePaperConversationKey,
@@ -989,11 +990,15 @@ export function setupHandlers(
       ? "claude_code"
       : panelRoot.dataset.conversationSystem === "codex"
         ? "codex"
-        : resolvePreferredConversationSystem({ item });
+        : resolvePreferredConversationSystem({
+            item,
+            surface: selectionSurface(),
+          });
   let currentConversationSystem: ConversationSystem =
     resolvePreferredConversationSystem({
       item,
       preferredSystem: initialConversationSystem,
+      surface: selectionSurface(),
     });
   const getConversationSystem = (): ConversationSystem =>
     currentConversationSystem;
@@ -1124,7 +1129,11 @@ export function setupHandlers(
     const requestId = ++claudeModelCatalogRequestId;
     refreshOpenClaudeModelMenu();
     claudeModelCatalogInFlight = initAgentSubsystem()
-      .then((coreRuntime) => listClaudeModels(coreRuntime, force, context))
+      .then((coreRuntime) =>
+        listClaudeModels(coreRuntime, force, context, {
+          conversationSystem: getConversationSystem(),
+        }),
+      )
       .then((catalog) => {
         if (
           requestId !== claudeModelCatalogRequestId ||
@@ -1401,14 +1410,17 @@ export function setupHandlers(
     claudeWarmupInFlight = initAgentSubsystem()
       .then((coreRuntime) => {
         const context = resolveClaudeModelCatalogContext();
+        // This panel's own system gates the lists, not the saved one.
+        const gate = { conversationSystem: getConversationSystem() };
         return Promise.allSettled([
           refreshClaudeSlashCommands(coreRuntime, false),
           listClaudeEfforts(
             coreRuntime,
             getSelectedClaudeRuntimeEntry().model,
             context,
+            gate,
           ),
-          listClaudeModels(coreRuntime, false, context),
+          listClaudeModels(coreRuntime, false, context, gate),
         ]);
       })
       .catch((err: unknown) => {
@@ -1526,7 +1538,7 @@ export function setupHandlers(
       )
         return;
       item = nextItem;
-      setConversationSystemPref(resolvedNextSystem);
+      panelChoices.setConversationSystem(resolvedNextSystem);
       currentConversationSystem = resolvedNextSystem;
       syncConversationIdentity();
       syncQueuedFollowUpRegistration();
@@ -1552,7 +1564,7 @@ export function setupHandlers(
     if (!libraryID) return;
     const forceFresh = options?.forceFresh === true;
     persistDraftInputForCurrentConversation();
-    setConversationSystemPref(nextSystem);
+    panelChoices.setConversationSystem(nextSystem);
     currentConversationSystem = nextSystem;
     // The mounted DOM scope must keep describing the conversation the panel is
     // actually on. `dataset.conversationSystem` is half of that scope, so
@@ -1828,6 +1840,7 @@ export function setupHandlers(
     currentConversationSystem = resolvePreferredConversationSystem({
       item,
       preferredSystem: currentConversationSystem,
+      surface: selectionSurface(),
     });
     panelRoot.dataset.conversationSystem = currentConversationSystem;
     syncQueuedFollowUpRegistration();
@@ -2030,9 +2043,7 @@ export function setupHandlers(
               err,
             );
           });
-        if (getConversationSystemPref() === "claude_code") {
-          setConversationSystemPref("upstream");
-        }
+        demoteConversationSystemOnEverySurface("claude_code");
         if (isClaudeConversationSystem()) {
           void switchConversationSystem("upstream");
           return;
@@ -2046,9 +2057,7 @@ export function setupHandlers(
         return;
       }
       if (!isCodexAppServerModeEnabled()) {
-        if (getConversationSystemPref() === "codex") {
-          setConversationSystemPref("upstream");
-        }
+        demoteConversationSystemOnEverySurface("codex");
         if (isCodexConversationSystem()) {
           void switchConversationSystem("upstream");
           return;

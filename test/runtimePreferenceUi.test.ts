@@ -49,9 +49,11 @@ describe("runtime preference UI", function () {
 
     assert.include(setupHandlers, "buildClaudeRuntimeModelEntries");
     assert.include(setupHandlers, "ensureClaudeModelCatalogLoaded");
+    // The panel's own conversation system gates the catalog, not the saved
+    // one the other chat surface may have changed.
     assert.include(
       setupHandlers,
-      "listClaudeModels(coreRuntime, force, context)",
+      "listClaudeModels(coreRuntime, force, context, {\n          conversationSystem: getConversationSystem(),",
     );
     assert.include(setupHandlers, "resolveClaudeModelCatalogContext");
     const openModelMenuBlock =

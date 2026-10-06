@@ -84,7 +84,10 @@ export type {
   BuildAgentRuntimeRequestParams,
   EffectiveRequestConfig,
 } from "./requestContext";
-import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
+import {
+  bindClaudeBridgeConversationSystem,
+  preflightClaudeBridgeLocalPdfCapability,
+} from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
   type ChatParams,
@@ -7693,10 +7696,13 @@ function buildAgentEngineDeps(
       );
     },
     sendChatFallback: sendQuestion,
+    // The turn's own system decides, not the saved one: the other chat
+    // surface may have switched backend since (surfaceChoices.ts).
     getAgentRuntime: () =>
       getEffectiveConversationSystem() === "claude_code"
-        ? (getClaudeBridgeRuntime(
-            getCoreAgentRuntime(),
+        ? (bindClaudeBridgeConversationSystem(
+            getClaudeBridgeRuntime(getCoreAgentRuntime()),
+            "claude_code",
           ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
         : getCoreAgentRuntime(),
     maxSelectedImages: MAX_SELECTED_IMAGES,

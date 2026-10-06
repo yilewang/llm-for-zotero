@@ -44,7 +44,11 @@ import {
   remember,
   rememberMode,
 } from "./conversationSelection";
-import { clearStandaloneSurfaceChoices } from "./surfaceChoices";
+import {
+  clearStandaloneSurfaceChoices,
+  demoteConversationSystemOnEverySurface,
+  surfaceChoices,
+} from "./surfaceChoices";
 import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
@@ -135,7 +139,6 @@ import {
   getConversationSystemPref,
   getStoredConversationSystemPref,
   getLastUsedClaudeGlobalConversationKey,
-  setConversationSystemPref,
 } from "../../claudeCode/prefs";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
@@ -3504,7 +3507,11 @@ export function openStandaloneChat(options?: {
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
-          setConversationSystemPref(resolvedNextSystem);
+          // The window's backend is its own; the sidebar keeps the saved one.
+          surfaceChoices.conversationSystem.set(
+            resolvedNextSystem,
+            "standalone",
+          );
           currentConversationSystem = resolvedNextSystem;
           if (options?.forceFresh === true) {
             if (activeNoteSession.conversationKind === "global") {
@@ -3552,7 +3559,7 @@ export function openStandaloneChat(options?: {
         const currentSystem = currentConversationSystem;
         if (nextSystem === currentSystem) return;
         const forceFresh = options?.forceFresh === true;
-        setConversationSystemPref(nextSystem);
+        surfaceChoices.conversationSystem.set(nextSystem, "standalone");
         currentConversationSystem = nextSystem;
         updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
@@ -3703,9 +3710,7 @@ export function openStandaloneChat(options?: {
                   err,
                 );
               });
-            if (getConversationSystemPref() === "claude_code") {
-              setConversationSystemPref("upstream");
-            }
+            demoteConversationSystemOnEverySurface("claude_code");
             if (isClaudeConversationSystem()) {
               void switchConversationSystem("upstream");
               return;
@@ -3719,9 +3724,7 @@ export function openStandaloneChat(options?: {
             return;
           }
           if (!isCodexAppServerModeEnabled()) {
-            if (getConversationSystemPref() === "codex") {
-              setConversationSystemPref("upstream");
-            }
+            demoteConversationSystemOnEverySurface("codex");
             if (isCodexConversationSystem()) {
               void switchConversationSystem("upstream");
               return;

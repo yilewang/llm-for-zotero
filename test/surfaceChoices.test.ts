@@ -9,6 +9,7 @@ import {
   setSelectedModelEntryForSurface,
   surfaceChoices,
 } from "../src/modules/contextPanel/surfaceChoices";
+import { resolvePreferredConversationSystem } from "../src/modules/contextPanel/portalScope";
 import { setModelProviderGroups } from "../src/utils/modelProviders";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
@@ -254,5 +255,25 @@ describe("surfaceChoices: each chat surface keeps its own model and backend", fu
     surface = "embedded";
     assert.equal(choices.getSelectedModelEntry()?.model, "model-a");
     assert.equal(prefStore.get(pref("lastUsedModelEntryId")), "entry-a");
+  });
+
+  it("a panel with nothing else to go on starts on its own surface's backend", function () {
+    prefStore.set(pref("enableClaudeCodeMode"), true);
+    prefStore.set(pref("enableCodexAppServerMode"), true);
+    prefStore.set(pref("conversationSystem"), "upstream");
+    surfaceChoices.conversationSystem.set("claude_code", "standalone");
+
+    assert.equal(
+      resolvePreferredConversationSystem({ item: null, surface: "standalone" }),
+      "claude_code",
+    );
+    assert.equal(
+      resolvePreferredConversationSystem({ item: null, surface: "embedded" }),
+      "upstream",
+    );
+    assert.equal(
+      resolvePreferredConversationSystem({ item: null }),
+      "upstream",
+    );
   });
 });

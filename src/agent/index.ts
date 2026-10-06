@@ -1,4 +1,5 @@
 import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
+import type { ClaudeBridgeGateOptions } from "./externalBackendBridge";
 import {
   getConversationSystemPref,
   isClaudeCodeModeEnabled,
@@ -283,7 +284,12 @@ export function getAgentApi() {
       requestId: string,
       resolve: (resolution: AgentConfirmationResolution) => void,
     ) => getAgentRuntime().registerPendingConfirmation(requestId, resolve),
-    listSlashCommands: () => getClaudeCommandCatalog(getCoreAgentRuntime()),
+    /**
+     * Claude Code's slash commands. A panel names its own conversation
+     * system; without one, the saved system decides.
+     */
+    listSlashCommands: (options?: ClaudeBridgeGateOptions) =>
+      getClaudeCommandCatalog(getCoreAgentRuntime(), options),
 
     // ── Extension API ──────────────────────────────────────────────────────
     /**

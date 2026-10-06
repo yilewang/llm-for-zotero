@@ -34,10 +34,8 @@ import {
   isClaudePaperPortalItem,
   resolveClaudePaperPortalBaseItem,
 } from "../../claudeCode/portal";
-import {
-  getConversationSystemPref,
-  isClaudeCodeModeEnabled,
-} from "../../claudeCode/prefs";
+import { isClaudeCodeModeEnabled } from "../../claudeCode/prefs";
+import { surfaceChoices } from "./surfaceChoices";
 import {
   buildDefaultCodexGlobalConversationKey,
   buildDefaultCodexPaperConversationKey,
@@ -272,11 +270,16 @@ export function resolveConversationSystemForItem(
 export function resolvePreferredConversationSystem(params: {
   item: Zotero.Item | null | undefined;
   preferredSystem?: ConversationSystem | null;
+  /**
+   * Whose chosen system fills in when nothing else decides
+   * (surfaceChoices.ts); the sidebar's saved one when omitted.
+   */
+  surface?: SelectionSurface;
 }): ConversationSystem {
   const preferred =
     params.preferredSystem ||
     getNoteConversation(params.item)?.system ||
-    getConversationSystemPref();
+    surfaceChoices.conversationSystem.get(params.surface);
   if (resolveActiveNoteSession(params.item)) {
     return resolvePreferredNoteFocusSystem({
       preferredSystem: preferred,
@@ -475,6 +478,7 @@ export function resolveInitialPanelItemState(
     const system = resolvePreferredConversationSystem({
       item,
       preferredSystem: options?.conversationSystem,
+      surface,
     });
     const key = resolveConversationKeyForNoteFocus(item, {
       conversationSystem: system,
@@ -501,6 +505,7 @@ export function resolveInitialPanelItemState(
     const system = resolvePreferredConversationSystem({
       item,
       preferredSystem: options?.conversationSystem,
+      surface,
     });
     const mode =
       options?.conversationMode ||
@@ -534,6 +539,7 @@ export function resolveInitialPanelItemState(
   const conversationSystem = resolvePreferredConversationSystem({
     item,
     preferredSystem: options?.conversationSystem,
+    surface,
   });
   const preferredMode =
     options?.conversationMode ||

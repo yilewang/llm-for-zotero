@@ -22,6 +22,7 @@ import { getClaudeConversationSummary } from "../claudeCode/store";
 import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
+import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
@@ -151,9 +152,12 @@ export type AgentRuntimeLike = Pick<
   | "resolveConfirmation"
   | "getRunTrace"
 > & {
-  getCapabilities(request: AgentRuntimeRequestInput): AgentModelCapabilities;
+  getCapabilities(
+    request: AgentRuntimeRequestInput,
+    options?: ClaudeBridgeGateOptions,
+  ): AgentModelCapabilities;
   runTurn(params: RunTurnParams): Promise<AgentRuntimeOutcome>;
-  listExternalActionsSync(): Array<{
+  listExternalActionsSync(options?: ClaudeBridgeGateOptions): Array<{
     name: string;
     description: string;
     inputSchema: object;
@@ -164,7 +168,7 @@ export type AgentRuntimeLike = Pick<
     mutability: "read" | "write";
   }>;
   refreshExternalActions(force?: boolean): Promise<void>;
-  listSlashCommandsSync(): Array<{
+  listSlashCommandsSync(options?: ClaudeBridgeGateOptions): Array<{
     name: string;
     description: string;
     argumentHint?: string;
@@ -174,10 +178,12 @@ export type AgentRuntimeLike = Pick<
   listEfforts(
     model?: string,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<string[]>;
   listModels(
     force?: boolean,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<ClaudeModelCatalog>;
   updateRuntimeRetention(params: {
     conversationKey: number;
@@ -733,10 +739,19 @@ function isClaudeCodeModeEnabled(): boolean {
   }
 }
 
-function isClaudeBridgeActive(): boolean {
-  return (
-    getConversationSystemPref() === "claude_code" && isClaudeCodeModeEnabled()
-  );
+/**
+ * Which conversation system a caller acts for. The standalone window and the
+ * sidebar each have their own (surfaceChoices.ts), so callers acting for a
+ * panel or a turn name it; only callers acting for no panel leave it out and
+ * get the saved system.
+ */
+export type ClaudeBridgeGateOptions = {
+  conversationSystem?: ConversationSystem | null;
+};
+
+function isClaudeBridgeActive(options?: ClaudeBridgeGateOptions): boolean {
+  const system = options?.conversationSystem || getConversationSystemPref();
+  return system === "claude_code" && isClaudeCodeModeEnabled();
 }
 
 export function resolveClaudeBridgeModelForMetadata(
@@ -2373,6 +2388,26 @@ async function runExternalBridgeAction(
   return finalOutcome;
 }
 
+/**
+ * The bridge runtime as seen by one turn or panel: every system gate answers
+ * for `conversationSystem` instead of the saved one; everything else is the
+ * same runtime.
+ */
+export function bindClaudeBridgeConversationSystem(
+  runtime: AgentRuntimeLike,
+  conversationSystem: ConversationSystem,
+): AgentRuntimeLike {
+  const gate: ClaudeBridgeGateOptions = { conversationSystem };
+  return {
+    ...runtime,
+    getCapabilities: (request) => runtime.getCapabilities(request, gate),
+    listExternalActionsSync: () => runtime.listExternalActionsSync(gate),
+    listSlashCommandsSync: () => runtime.listSlashCommandsSync(gate),
+    listEfforts: (model, context) => runtime.listEfforts(model, context, gate),
+    listModels: (force, context) => runtime.listModels(force, context, gate),
+  };
+}
+
 export function createExternalBackendBridgeRuntime(options: {
   coreRuntime: AgentRuntime;
   getBridgeUrl: () => string;
@@ -2466,9 +2501,10 @@ export function createExternalBackendBridgeRuntime(options: {
   const listEfforts = async (
     model?: string,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<string[]> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    if (!bridgeUrl || !isClaudeBridgeActive()) {
+    if (!bridgeUrl || !isClaudeBridgeActive(options)) {
       return [];
     }
     const configKey = resolveCapabilityConfigKey();
@@ -2506,9 +2542,10 @@ export function createExternalBackendBridgeRuntime(options: {
   const listModels = async (
     force = false,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<ClaudeModelCatalog> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    if (!bridgeUrl || !isClaudeBridgeActive()) {
+    if (!bridgeUrl || !isClaudeBridgeActive(options)) {
       return { models: [], legacy: true };
     }
     const configKey = resolveCapabilityConfigKey();
@@ -2649,9 +2686,11 @@ export function createExternalBackendBridgeRuntime(options: {
     await slashCommandsRefreshInFlight;
   };
 
-  const listSlashCommandsSync = (): ExternalSlashCommandDescriptor[] => {
+  const listSlashCommandsSync = (
+    options?: ClaudeBridgeGateOptions,
+  ): ExternalSlashCommandDescriptor[] => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    const hasBridge = !!bridgeUrl && isClaudeBridgeActive();
+    const hasBridge = !!bridgeUrl && isClaudeBridgeActive(options);
     const count = cachedSlashCommands.length;
     dbg("listSlashCommandsSync called", { hasBridge, count, bridgeUrl });
     if (!hasBridge) {
@@ -2700,9 +2739,9 @@ export function createExternalBackendBridgeRuntime(options: {
     resolveConfirmation: (requestId, approvedOrResolution, data) =>
       coreRuntime.resolveConfirmation(requestId, approvedOrResolution, data),
     getRunTrace: (runId: string) => coreRuntime.getRunTrace(runId),
-    getCapabilities: (request) => {
+    getCapabilities: (request, options) => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-      if (!bridgeUrl || !isClaudeBridgeActive()) {
+      if (!bridgeUrl || !isClaudeBridgeActive(options)) {
         return coreRuntime.getCapabilities(request);
       }
       return buildAgentModelCapabilities({
@@ -2717,8 +2756,8 @@ export function createExternalBackendBridgeRuntime(options: {
         reasoning: true,
       });
     },
-    listExternalActionsSync: () => {
-      if (!normalizeBaseUrl(getBridgeUrl()) || !isClaudeBridgeActive()) {
+    listExternalActionsSync: (options) => {
+      if (!normalizeBaseUrl(getBridgeUrl()) || !isClaudeBridgeActive(options)) {
         return [];
       }
       return cachedTools.map((tool) => ({
