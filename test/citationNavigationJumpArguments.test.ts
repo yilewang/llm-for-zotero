@@ -15,9 +15,9 @@
 import { assert } from "chai";
 import {
   navigateToTaskPaperPassage,
-  observeCitationParagraphJumpsForTests,
   rememberCachedCitationPage,
 } from "../src/modules/contextPanel/assistantCitationLinks";
+import { observeCitationParagraphJumpsForTests } from "../src/modules/contextPanel/quoteNavigator";
 import type { QuoteCitation } from "../src/modules/contextPanel/types";
 import {
   installCitationNavigationRig,

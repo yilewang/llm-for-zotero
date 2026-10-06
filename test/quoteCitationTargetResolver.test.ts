@@ -429,19 +429,38 @@ describe("quote citation target resolver", function () {
 });
 
 describe("untrusted quote navigation contract", function () {
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  // The verify-first navigation the untrusted path hands its click to.
   const source = readFileSync(
-    resolve(
-      dirname(fileURLToPath(import.meta.url)),
-      "../src/modules/contextPanel/assistantCitationLinks.ts",
-    ),
+    resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
     "utf8",
   );
-  const navigateSection = source.slice(
-    source.indexOf("type ResolvedQuoteCitationMatch = {"),
-    source.indexOf(
+  const navigateStart = source.indexOf("type ResolvedQuoteCitationMatch = {");
+  const verifyFirstStart = source.indexOf(
+    "async function navigateVerifyFirst(",
+  );
+  const navigateEnd = source.indexOf("\n}\n", verifyFirstStart);
+  const navigateSection = source.slice(navigateStart, navigateEnd);
+  const citationSource = readFileSync(
+    resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+    "utf8",
+  );
+  const untrustedCallerSection = citationSource.slice(
+    citationSource.indexOf(
+      "async function navigateUntrustedQuoteCitation(params: {",
+    ),
+    citationSource.indexOf(
       "async function resolveAndNavigateAssistantCitation(params: {",
     ),
   );
+
+  it("reads the verify-first navigation and its untrusted caller", function () {
+    assert.isAtLeast(navigateStart, 0);
+    assert.isAbove(verifyFirstStart, navigateStart);
+    assert.isAbove(navigateEnd, verifyFirstStart);
+    assert.include(untrustedCallerSection, "navigateToQuote({");
+    assert.include(untrustedCallerSection, 'strategy: "verify-first"');
+  });
 
   it("never invents a page label for the reader to navigate by", function () {
     // Zotero navigates by printed label when one is given, and printed labels
@@ -457,7 +476,15 @@ describe("untrusted quote navigation contract", function () {
     );
   });
   it("re-verifies through the merge so a fallback cannot bury the first verdict", function () {
-    const start = navigateSection.indexOf("const searched = (await");
+    // The untrusted caller hands the library search over as the fallback.
+    assert.include(
+      untrustedCallerSection,
+      "moreCandidates: recordedCandidates.length",
+    );
+    assert.include(untrustedCallerSection, "await searchForCandidates()");
+    const start = navigateSection.indexOf(
+      "const searched = await req.moreCandidates()",
+    );
     assert.isAbove(start, -1, "the fallback search still runs");
     const mergeSection = navigateSection.slice(start);
     assert.include(

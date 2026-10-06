@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { attemptCitationParagraphJumpForTests } from "../src/modules/contextPanel/assistantCitationLinks";
+import { attemptCitationParagraphJumpForTests } from "../src/modules/contextPanel/quoteNavigator";
 import {
   SUMMERFIELD_QUOTE,
   SUMMERFIELD_SOURCE_PREFIX,

@@ -16,8 +16,8 @@
  * "D<n>" refers to the per-path differences listed in the step 8 brief.
  */
 import { assert } from "chai";
+import { attemptCitationParagraphJumpForTests } from "../src/modules/contextPanel/quoteNavigator";
 import {
-  attemptCitationParagraphJumpForTests,
   lookupCachedCitationPage,
   navigateToTaskPaperPassage,
   rememberCachedCitationPage,
