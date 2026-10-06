@@ -167,11 +167,11 @@ import {
   createSerializedConversationDeletionEventQueue,
   resolveConversationDeletionSurfaceAction,
 } from "./conversationDeletionSurfaceSync";
+import { forgetRecentlyDeletedConversation } from "../../core/conversations/recentlyDeletedConversations";
 import {
-  forgetRecentlyDeletedConversation,
-  markConversationInstanceRecentlyDeleted,
-} from "../../core/conversations/recentlyDeletedConversations";
-import { shouldSeedConversationCatalogEntry } from "./conversationLifecycle";
+  markCommittedConversationDeletionTombstone,
+  shouldSeedConversationCatalogEntry,
+} from "./conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -3025,22 +3025,9 @@ export function openStandaloneChat(options?: {
       ): Promise<void> => {
         if (event.entry.kind !== "conversation") return;
         const entry = event.entry;
-        // The store drops the entry before it notifies, so this tombstone is
-        // the only thing keeping renderSidebar from re-seeding the dead key.
-        // Only a REAL deletion tombstones the key; a dropped intent leaves the
-        // conversation alive and it must stay seedable.
-        if (
-          (event.type === "completed" || event.type === "finalized") &&
-          !event.dropped &&
-          entry.instanceID
-        ) {
-          markConversationInstanceRecentlyDeleted(
-            entry.conversationKey,
-            entry.instanceID,
-            Date.now(),
-            entry.identityDigest,
-          );
-        }
+        // The standalone window tombstones when its serialized handler reaches
+        // this event, before renderSidebar can re-seed the dead key.
+        markCommittedConversationDeletionTombstone(event);
         const registered =
           activeConversationKey > 0
             ? await getRegisteredConversationScope(activeConversationKey)

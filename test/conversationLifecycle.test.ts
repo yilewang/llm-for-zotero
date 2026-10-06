@@ -6,7 +6,15 @@ import {
   markConversationInstanceRecentlyDeleted,
   resetRecentlyDeletedConversationsForTests,
 } from "../src/core/conversations/recentlyDeletedConversations";
-import { shouldSeedConversationCatalogEntry } from "../src/modules/contextPanel/conversationLifecycle";
+import {
+  markCommittedConversationDeletionTombstone,
+  shouldSeedConversationCatalogEntry,
+} from "../src/modules/contextPanel/conversationLifecycle";
+import type {
+  PendingConversationDeletionEntry,
+  PendingDeletionEvent,
+  PendingTurnDeletionEntry,
+} from "../src/core/conversations/pendingDeletionStore";
 
 type ZoteroGlobal = typeof globalThis & { Zotero?: Record<string, any> };
 
@@ -17,6 +25,7 @@ describe("conversation lifecycle helpers", function () {
   let originalIsPending: typeof pendingDeletionStore.isConversationPendingDeletion;
   let durableTombstoneKeys: Set<number>;
   let pendingKeys: Set<number>;
+  let dbQueries: Array<{ sql: string; params: unknown[] }>;
   let witnessCalls: unknown[];
   let witness: Awaited<
     ReturnType<typeof conversationRepository.getCatalogIdentityWitness>
@@ -28,14 +37,16 @@ describe("conversation lifecycle helpers", function () {
     originalIsPending = pendingDeletionStore.isConversationPendingDeletion;
     durableTombstoneKeys = new Set();
     pendingKeys = new Set();
+    dbQueries = [];
     witnessCalls = [];
     witness = null;
     resetRecentlyDeletedConversationsForTests();
     globalScope.Zotero = {
       DB: {
-        // Only the durable tombstone lookup reads the DB in these tests; the
-        // in-memory mark's background persist is allowed to fail quietly.
+        // The durable tombstone lookup answers from durableTombstoneKeys;
+        // every other statement (the mark's background persist) is recorded.
         queryAsync: async (sql: string, params?: unknown[]) => {
+          dbQueries.push({ sql, params: params || [] });
           if (
             /FROM llm_for_zotero_conversation_deletion_tombstones/.test(sql)
           ) {
@@ -43,7 +54,7 @@ describe("conversation lifecycle helpers", function () {
               ? [{ present: 1 }]
               : [];
           }
-          throw new Error("unexpected query");
+          return [];
         },
       },
     };
@@ -109,5 +120,93 @@ describe("conversation lifecycle helpers", function () {
     it("allows a witnessless key with no tombstone", async function () {
       assert.isTrue(await shouldSeedConversationCatalogEntry(target));
     });
+  });
+
+  describe("markCommittedConversationDeletionTombstone", function () {
+    const conversationEntry = (
+      overrides: Partial<PendingConversationDeletionEntry> = {},
+    ): PendingConversationDeletionEntry => ({
+      id: "pending-77",
+      kind: "conversation",
+      conversationKind: "global",
+      instanceID: "instance-77",
+      catalogCreatedAt: 1000,
+      conversationKey: 77,
+      libraryID: 1,
+      system: "upstream",
+      title: "Doomed",
+      wasActive: false,
+      queuedAt: 1,
+      expiresAt: 2,
+      attempts: 0,
+      ...overrides,
+    });
+
+    for (const type of ["completed", "finalized"] as const) {
+      it(`tombstones the instance on a real ${type} deletion`, function () {
+        const marked = markCommittedConversationDeletionTombstone({
+          type,
+          entry: conversationEntry(),
+        });
+        assert.isTrue(marked);
+        assert.isTrue(isConversationInstanceRecentlyDeleted(77, "instance-77"));
+      });
+    }
+
+    it("persists the tombstone under the entry's identity digest", async function () {
+      markCommittedConversationDeletionTombstone({
+        type: "completed",
+        entry: conversationEntry({ identityDigest: "digest-77" }),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const insert = dbQueries.find((query) =>
+        /INSERT OR IGNORE INTO llm_for_zotero_conversation_deletion_tombstones/.test(
+          query.sql,
+        ),
+      );
+      assert.isOk(insert);
+      assert.deepEqual(insert!.params.slice(0, 3), [
+        "digest-77",
+        77,
+        "instance-77",
+      ]);
+    });
+
+    const refusals: Array<[string, PendingDeletionEvent]> = [
+      [
+        "a dropped intent",
+        { type: "completed", entry: conversationEntry(), dropped: true },
+      ],
+      ["a queued intent", { type: "queued", entry: conversationEntry() }],
+      ["an undone intent", { type: "undone", entry: conversationEntry() }],
+      [
+        "a local-deleted event",
+        { type: "local-deleted", entry: conversationEntry() },
+      ],
+      [
+        "an entry without an instance ID",
+        { type: "finalized", entry: conversationEntry({ instanceID: "" }) },
+      ],
+      [
+        "a turn deletion",
+        {
+          type: "completed",
+          entry: {
+            id: "turn-77",
+            kind: "turn",
+            conversationKey: 77,
+            instanceID: "instance-77",
+          } as unknown as PendingTurnDeletionEntry,
+        },
+      ],
+    ];
+    for (const [label, event] of refusals) {
+      it(`leaves the key seedable for ${label}`, function () {
+        assert.isFalse(markCommittedConversationDeletionTombstone(event));
+        assert.isFalse(
+          isConversationInstanceRecentlyDeleted(77, "instance-77"),
+        );
+      });
+    }
   });
 });

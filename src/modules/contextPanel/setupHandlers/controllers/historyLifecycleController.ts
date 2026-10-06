@@ -112,11 +112,11 @@ import {
   resolveConversationDeletionSurfaceAction,
   type ConversationDeletionSurfaceSnapshot,
 } from "../../conversationDeletionSurfaceSync";
+import { forgetRecentlyDeletedConversation } from "../../../../core/conversations/recentlyDeletedConversations";
 import {
-  forgetRecentlyDeletedConversation,
-  markConversationInstanceRecentlyDeleted,
-} from "../../../../core/conversations/recentlyDeletedConversations";
-import { shouldSeedConversationCatalogEntry } from "../../conversationLifecycle";
+  markCommittedConversationDeletionTombstone,
+  shouldSeedConversationCatalogEntry,
+} from "../../conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -4128,24 +4128,9 @@ export function createHistoryLifecycleController(
     if (event.entry.kind === "conversation") {
       const entry = event.entry;
       clearPendingDeletionCaches(entry.conversationKey);
-      // The store drops the entry before it notifies, so this tombstone is the
-      // only thing standing between the deleted key and the seeding paths.
-      // Record it before any refresh runs.
-      // Only a REAL deletion tombstones the key; a dropped intent leaves the
-      // conversation alive and it must stay seedable.
-      if (
-        (event.type === "completed" || event.type === "finalized") &&
-        !event.dropped
-      ) {
-        if (entry.instanceID) {
-          markConversationInstanceRecentlyDeleted(
-            entry.conversationKey,
-            entry.instanceID,
-            Date.now(),
-            entry.identityDigest,
-          );
-        }
-      }
+      // The panel tombstones synchronously, in the subscriber itself, so the
+      // key is retired before any queued handler or refresh runs.
+      markCommittedConversationDeletionTombstone(event);
       void enqueueConversationDeletionEvent(() =>
         handleConversationPendingDeletionEvent(
           event.type,

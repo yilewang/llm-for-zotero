@@ -5,10 +5,14 @@
 
 import type { ConversationSystem } from "../../shared/types";
 import { conversationRepository } from "../../core/conversations/repository";
-import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
+import {
+  pendingDeletionStore,
+  type PendingDeletionEvent,
+} from "../../core/conversations/pendingDeletionStore";
 import {
   hasConversationDeletionTombstoneForKey,
   isConversationInstanceRecentlyDeleted,
+  markConversationInstanceRecentlyDeleted,
 } from "../../core/conversations/recentlyDeletedConversations";
 
 export type ConversationSeedTarget = {
@@ -51,4 +55,32 @@ export async function shouldSeedConversationCatalogEntry(
     return false;
   }
   return true;
+}
+
+/**
+ * The store drops a conversation's entry before it notifies, so this
+ * tombstone is the only thing that keeps the seeding paths from bringing the
+ * deleted key back. Only a REAL deletion tombstones the key: a dropped intent
+ * leaves the conversation alive and it must stay seedable. Each surface calls
+ * this at its own point in its event handling. Returns true when it marked.
+ */
+export function markCommittedConversationDeletionTombstone(
+  event: PendingDeletionEvent,
+): boolean {
+  const entry = event.entry;
+  if (entry.kind !== "conversation") return false;
+  if (
+    (event.type === "completed" || event.type === "finalized") &&
+    !event.dropped &&
+    entry.instanceID
+  ) {
+    markConversationInstanceRecentlyDeleted(
+      entry.conversationKey,
+      entry.instanceID,
+      Date.now(),
+      entry.identityDigest,
+    );
+    return true;
+  }
+  return false;
 }
