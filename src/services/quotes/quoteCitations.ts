@@ -42,12 +42,24 @@ import {
   normalizeWrappedCitationLabel as normalizeCitationLabel,
   parseStandaloneCitationLabel as parseStandaloneSourceCitationLabel,
 } from "./citationLabelParser";
+import {
+  normalizeQuoteTokenId,
+  quoteTokenPattern,
+  quoteTokenSource,
+} from "./quoteTokenIds";
 
-export const QUOTE_CITATION_PATTERN = /\[\[quote:([A-Za-z0-9_-]+)\]\]/g;
-const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN =
-  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/gm;
-const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN =
-  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/;
+export const QUOTE_CITATION_PATTERN = quoteTokenPattern("quote");
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE = `^[ \\t]*(?:>[ \\t]*)+${quoteTokenSource("quote")}[ \\t]*$`;
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN = new RegExp(
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE,
+  "gm",
+);
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN = new RegExp(
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE,
+);
+const STANDALONE_QUOTE_CITATION_LINE_PATTERN = new RegExp(
+  `^[ \\t]*${quoteTokenSource("quote")}[ \\t]*$`,
+);
 const STRUCTURED_SOURCE_MARKER_PATTERN =
   /\[\[\s*source\s*=\s*([^\]]+?)\s*\]\]/gi;
 const BRACKETED_SOURCE_METADATA_PATTERN = /\[\s*source\s*=\s*([^\]]+?)\s*\]/gi;
@@ -504,7 +516,7 @@ export function findAdjacentStandaloneQuoteCitation(params: {
   if (lineIndex >= params.markdownLines.length) return null;
   const line = params.markdownLines[lineIndex];
   const candidate = /^[ \t]*>/.test(line) ? stripBlockquoteMarker(line) : line;
-  const match = candidate.match(/^[ \t]*\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/);
+  const match = candidate.match(STANDALONE_QUOTE_CITATION_LINE_PATTERN);
   return match?.[1]
     ? {
         quoteCitationId: match[1],
@@ -1013,7 +1025,7 @@ export function buildQuoteCitation(input: {
   }
   const contextItemId = normalizePositiveInt(input.contextItemId);
   const itemId = normalizePositiveInt(input.itemId);
-  const id = normalizeText(input.id).replace(/[^A-Za-z0-9_-]/g, "");
+  const id = normalizeQuoteTokenId(normalizeText(input.id));
   const displayQuoteText = stripQuoteCitationAnchorsFromDisplayText(
     input.displayQuoteText,
   );
@@ -1361,7 +1373,7 @@ function collectInvalidQuoteCitationIds(value: unknown): Set<string> {
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
-    const id = normalizeText(record.id).replace(/[^A-Za-z0-9_-]/g, "");
+    const id = normalizeQuoteTokenId(normalizeText(record.id));
     if (!id) continue;
     if (!buildQuoteCitation(record)) ids.add(id);
   }

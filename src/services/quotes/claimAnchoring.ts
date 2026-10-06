@@ -2,6 +2,7 @@ import { paragraphCitationIds } from "./paragraphCitations";
 import type { QuoteCitation } from "../../shared/types";
 import { tokenizeRetrievalText } from "../retrieval/retrievalTokenizer";
 import { buildQuoteCitation } from "./quoteCitations";
+import { quoteTokenPattern, quoteTokenSource } from "./quoteTokenIds";
 import {
   collectProseLines,
   splitSentences,
@@ -10,8 +11,10 @@ import {
 
 export const QUOTE_ANCHOR_MIN_CHARS = 40;
 export const QUOTE_ANCHOR_MAX_CHARS = 360;
-export const QUOTE_TOKEN_PATTERN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
-const LEADING_QUOTE_TOKEN_RUN = /^(?:\s*\[\[quote:[A-Za-z0-9._:-]+\]\])+/;
+export const QUOTE_TOKEN_PATTERN = quoteTokenPattern("quote");
+const LEADING_QUOTE_TOKEN_RUN = new RegExp(
+  `^(?:\\s*${quoteTokenSource("quote", { capture: false })})+`,
+);
 const MIN_CLAIM_TOKENS = 3;
 /** A token that is only digits, separators or punctuation — a year or a page
  * number, never the substance of a claim. */

@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import type { PlanDocument } from "../src/agent/documents/types";
 import { buildDocumentCitationContext } from "../src/modules/contextPanel/planDocumentPresentation";
+import { buildQuoteRenderPlan } from "../src/modules/contextPanel/quoteRenderPlan";
 
 describe("document citation context", function () {
   const scope = globalThis as typeof globalThis & { Zotero?: any };
@@ -112,6 +113,54 @@ describe("document citation context", function () {
       "[[quote:Q_doc]]",
     );
     assert.equal(JSON.stringify(document), before);
+  });
+  it("keeps a card for each certified quote when two ids differ only by '.' or ':'", function () {
+    const otherText =
+      "Population codes rotate while the decoder stays aligned with behaviour across weeks.";
+    const base = fixture();
+    const certified = base.verifiedQuotes[0];
+    for (const [first, second] of [
+      ["Q1.a", "Q1a"],
+      ["p:1", "p1"],
+    ]) {
+      const document: PlanDocument = {
+        ...base,
+        visibleMarkdown: `> ${quoteText}\n\n> ${otherText}`,
+        verifiedQuotes: [
+          { ...certified, quoteId: first },
+          {
+            ...certified,
+            quoteId: second,
+            text: otherText,
+            certificate: {
+              ...certified.certificate,
+              sourceMatchText: otherText,
+            },
+          },
+        ],
+      };
+      const context = buildDocumentCitationContext(document)!;
+      const display = context.assistantMessage.quoteDisplayOverride!;
+      assert.equal(
+        display.markdown,
+        `[[quote:${first}]]\n\n[[quote:${second}]]`,
+      );
+      assert.sameMembers(
+        context.assistantMessage.quoteCitations!.map((citation) => citation.id),
+        [first, second],
+      );
+      const plan = buildQuoteRenderPlan(display);
+      assert.deepEqual(
+        plan.occurrences.map((occurrence) => [
+          occurrence.quoteCitationId,
+          occurrence.displayText,
+        ]),
+        [
+          [first, quoteText],
+          [second, otherText],
+        ],
+      );
+    }
   });
   it("rejects a certificate whose attachment identity no longer matches", function () {
     const document = fixture();

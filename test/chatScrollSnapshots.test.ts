@@ -818,6 +818,43 @@ describe("chat scroll snapshots", function () {
     assert.equal(chatBox.scrollTop, 600, "the card must stay where it was");
   });
 
+  it("restores a quote card whose citation id contains '.' and ':'", function () {
+    clearChatScrollSnapshotsForTests();
+    const chatBox = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 2000,
+      clientHeight: 100,
+    });
+    const wrapper = appendElement(chatBox, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 2000,
+      dataset: {
+        messageRole: "assistant",
+        messageTimestamp: "2",
+        messageAnchorKey: "turn-2",
+      },
+    });
+    const lookAlike = appendElement(wrapper, "llm-quote-card", {
+      offsetTop: 100,
+      offsetHeight: 40,
+      dataset: { quoteCitationId: "Q1ap2" },
+    });
+    const card = appendElement(wrapper, "llm-quote-card", {
+      offsetTop: 500,
+      offsetHeight: 40,
+      dataset: { quoteCitationId: "Q1.a:p2" },
+    });
+    persistChatScrollSnapshotForConversationKey(12, chatBox);
+    const snapshot = getChatScrollSnapshot(12);
+    assert.equal(snapshot?.anchor?.kind, "quote");
+    assert.equal(snapshot?.anchor?.quoteCitationId, "Q1.a:p2");
+
+    lookAlike.offsetTop += 100;
+    card.offsetTop += 100;
+    applyChatScrollSnapshot(chatBox, snapshot!);
+    assert.equal(chatBox.scrollTop, 600, "the card must stay where it was");
+  });
+
   it("locates the visible anchor without measuring every message of a long conversation", function () {
     clearChatScrollSnapshotsForTests();
     const chatBox = makeChatBox({

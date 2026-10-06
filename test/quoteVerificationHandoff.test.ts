@@ -15,7 +15,11 @@ import {
   clearPageTextCache,
   verifyCompleteQuoteInLivePdfJs,
 } from "../src/services/pdf/livePdfSelectionLocator";
-import { assistantMarkdownNeedsBackgroundQuoteSearch } from "../src/modules/contextPanel/quoteValidation/sourceEvidence";
+import {
+  assistantMarkdownNeedsBackgroundQuoteSearch,
+  assistantMarkdownNeedsQuoteSourceSearch,
+  registeredQuoteCitationsForReview,
+} from "../src/modules/contextPanel/quoteValidation/sourceEvidence";
 import type { Message } from "../src/modules/contextPanel/types";
 
 const wagleQuote =
@@ -297,4 +301,32 @@ describe("quote verification through display handoff", function () {
       );
     });
   }
+  it("scopes the quote gate to anchors whose ids contain '.' or ':'", function () {
+    const citation = buildQuoteCitation({
+      id: "x.y:1",
+      quoteText: wagleQuote,
+      citationLabel: "(Fixture, 2026)",
+      contextItemId: 212,
+      itemId: 57,
+    })!;
+    assert.equal(citation.id, "x.y:1");
+    const markdown = "The claim.\n\n[[quote:x.y:1]]";
+    assert.isTrue(assistantMarkdownNeedsQuoteSourceSearch(markdown));
+    assert.isTrue(
+      assistantMarkdownNeedsBackgroundQuoteSearch(markdown, [citation]),
+      "an anchor without a verified location still needs a search",
+    );
+    assert.deepEqual(
+      registeredQuoteCitationsForReview(markdown, [citation]).map(
+        (entry) => entry.id,
+      ),
+      ["x.y:1"],
+    );
+    assert.deepEqual(
+      registeredQuoteCitationsForReview("The claim. [[cite:x.y:1]]", [
+        citation,
+      ]).map((entry) => entry.id),
+      ["x.y:1"],
+    );
+  });
 });

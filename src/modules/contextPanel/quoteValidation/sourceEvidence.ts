@@ -8,6 +8,7 @@
  */
 import { appLogger } from "../../../core/logging";
 import { paragraphCitationIds } from "../../../services/quotes/paragraphCitations";
+import { quoteTokenPattern } from "../../../services/quotes/quoteTokenIds";
 import type { AgentRuntimeRequestInput as AgentRuntimeRequest } from "../../../agent/types";
 import {
   getActiveReaderForSelectedTab,
@@ -317,7 +318,7 @@ export function assistantMarkdownNeedsQuoteSourceSearch(
   return (
     /^[ \t]*>/.test(markdown || "") ||
     /\n[ \t]*>/.test(markdown || "") ||
-    /\[\[quote:[A-Za-z0-9_-]+\]\]/.test(markdown || "")
+    quoteTokenPattern("quote", "").test(markdown || "")
   );
 }
 
@@ -332,7 +333,7 @@ export function assistantMarkdownNeedsBackgroundQuoteSearch(
   );
   let hasUnresolvedAnchor = false;
   const withoutResolvedAnchors = (markdown || "").replace(
-    /\[\[quote:([A-Za-z0-9_-]+)\]\]/g,
+    quoteTokenPattern("quote"),
     (token, id: string) => {
       if (knownIds.has(id)) return "";
       hasUnresolvedAnchor = true;
@@ -432,7 +433,7 @@ export function registeredQuoteCitationsForReview(
 ): QuoteCitation[] {
   const anchoredIds = new Set(
     Array.from(
-      (markdown || "").matchAll(/\[\[quote:([A-Za-z0-9_-]+)\]\]/g),
+      (markdown || "").matchAll(quoteTokenPattern("quote")),
       (match) => match[1],
     ),
   );

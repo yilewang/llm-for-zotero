@@ -23,6 +23,7 @@ import {
 } from "../../utils/outputTokenPolicy";
 import { normalizeProviderProtocol } from "../../utils/providerProtocol";
 import { durableTranscriptMessages } from "./transcriptCompactor";
+import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 import { isCatalogToolName, isPaperEvidenceToolName } from "./toolNames";
 
 const HISTORY_CHECKPOINT_MAX_TOKENS = 1_200;
@@ -390,7 +391,7 @@ function compactPaperContext(
 
 function normalizeQuoteCitationId(value: unknown): string {
   const id = compactScalar(value, 80);
-  return typeof id === "string" ? id.replace(/[^A-Za-z0-9_-]/g, "") : "";
+  return typeof id === "string" ? normalizeQuoteTokenId(id) : "";
 }
 
 function compactQuoteCitationRecord(

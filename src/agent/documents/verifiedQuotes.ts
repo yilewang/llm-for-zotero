@@ -8,8 +8,26 @@ import type {
 import { ToolInputRejection } from "../tools/execution/failure";
 import { getAllOpenReaders } from "../../services/pdf/zoteroReaderTabs";
 import { verifyCompleteQuoteInLivePdfJs } from "../../services/pdf/livePdfSelectionLocator";
-const QUOTE_TOKEN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
-const CITE_TOKEN = /\[\[cite:([A-Za-z0-9._:-]+)\]\]/g;
+import {
+  isQuoteTokenId,
+  quoteTokenPattern,
+  quoteTokenSource,
+} from "../../services/quotes/quoteTokenIds";
+const QUOTE_TOKEN = quoteTokenPattern("quote");
+const CITE_TOKEN = quoteTokenPattern("cite");
+const WHOLE_QUOTE_TOKEN = new RegExp(
+  `^${quoteTokenSource("quote", { capture: false })}$`,
+);
+/** A quote token at the end of a block, then its citation and a year. */
+const TRAILING_QUOTE_ANCHOR = new RegExp(
+  `\\s*${quoteTokenSource("quote")}(?:\\s*(${quoteTokenSource("cite", { capture: false })}))?(?:\\s*\\([^()\\n]*\\b\\d{4}[a-z]?\\))?\\s*$`,
+);
+/** A paragraph that is only a quote token, its citation and a year. */
+const STANDALONE_QUOTE_ANCHOR = new RegExp(
+  `^(?:\\([^()\\n]*\\b\\d{4}[a-z]?\\)\\s*)?${quoteTokenSource("quote")}(?:\\s*(${quoteTokenSource("cite", { capture: false })}))?$`,
+);
+/** The longest quote id a plan document may submit. */
+const MAX_PLAN_QUOTE_ID_LENGTH = 80;
 /** Opening and closing quotation marks: straight, curly, CJK corner brackets, guillemets. */
 const OPEN_MARKS = "\"'\u201c\u2018\u300c\u300e\u00ab";
 const CLOSE_MARKS = "\"'\u201d\u2019\u300d\u300f\u00bb";
@@ -19,7 +37,7 @@ const CLOSE_MARKS = "\"'\u201d\u2019\u300d\u300f\u00bb";
  * mark, and the citation tokens the draft placed right after it.
  */
 const DOWNGRADE_TOKEN = new RegExp(
-  `(?:([${OPEN_MARKS}])([ \\t\\u00a0]*))?\\[\\[quote:([A-Za-z0-9._:-]+)\\]\\]([.,;:!?]*)(?:([ \\t\\u00a0]*)([${CLOSE_MARKS}]))?([.,;:!?]*)((?:\\s*\\[\\[cite:[A-Za-z0-9._:-]+\\]\\])*)`,
+  `(?:([${OPEN_MARKS}])([ \\t\\u00a0]*))?${quoteTokenSource("quote")}([.,;:!?]*)(?:([ \\t\\u00a0]*)([${CLOSE_MARKS}]))?([.,;:!?]*)((?:\\s*${quoteTokenSource("cite", { capture: false })})*)`,
   "g",
 );
 /** Quotation marks around a literal, removed before it is compared with a quote. */
@@ -32,6 +50,17 @@ const HTML_BLOCKQUOTE = /<blockquote\b[^>]*>([\s\S]*?)<\/blockquote\s*>/gi;
 const BLOCKQUOTE_LINE = /^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)*>/;
 /** Anything shaped like a quote token, to catch ones the strict form misses. */
 const QUOTE_TOKEN_LIKE = /\[\[quote:[^\]]*\]\]/g;
+/**
+ * A submitted quote id: an id under the shared token rule that starts with a
+ * letter or digit and has at most {@link MAX_PLAN_QUOTE_ID_LENGTH} characters.
+ */
+function isPlanQuoteId(quoteId: string): boolean {
+  return (
+    isQuoteTokenId(quoteId) &&
+    quoteId.length <= MAX_PLAN_QUOTE_ID_LENGTH &&
+    !/^[._:-]/.test(quoteId)
+  );
+}
 /**
  * Resolve quote tokens into verified blockquotes.
  *
@@ -58,10 +87,7 @@ export async function resolveVerifiedQuotes(params: {
   const repairs: string[] = [];
   const mappings = new Map<string, SubmitPlanDocumentInput["quotes"][number]>();
   for (const quote of params.quotes) {
-    if (
-      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(quote.quoteId) ||
-      mappings.has(quote.quoteId)
-    ) {
+    if (!isPlanQuoteId(quote.quoteId) || mappings.has(quote.quoteId)) {
       throw new ToolInputRejection(
         `Duplicate or invalid quote ID: ${quote.quoteId}`,
       );
@@ -72,7 +98,7 @@ export async function resolveVerifiedQuotes(params: {
     (match) => match[1],
   );
   for (const [token] of params.markdown.matchAll(QUOTE_TOKEN_LIKE)) {
-    if (!/^\[\[quote:[A-Za-z0-9._:-]+\]\]$/.test(token)) {
+    if (!WHOLE_QUOTE_TOKEN.test(token)) {
       throw new ToolInputRejection(
         `Document contains malformed quote token ${token}; use one [[quote:ID]] token per quote`,
       );
@@ -366,20 +392,14 @@ export async function resolveVerifiedQuotes(params: {
     const block = blocks[index];
     // A literal paragraph is the same copy as a literal blockquote.
     if (block.type !== "blockquote" && block.type !== "paragraph") continue;
-    const inlineAnchor = block.text.match(
-      /\s*\[\[quote:([A-Za-z0-9._:-]+)\]\](?:\s*(\[\[cite:[A-Za-z0-9._:-]+\]\]))?(?:\s*\([^()\n]*\b\d{4}[a-z]?\))?\s*$/,
-    );
+    const inlineAnchor = block.text.match(TRAILING_QUOTE_ANCHOR);
     let nextIndex = index + 1;
     while (blocks[nextIndex]?.type === "space") nextIndex += 1;
     const following = blocks[nextIndex];
     const anchor =
       inlineAnchor ||
       (following?.type === "paragraph"
-        ? following.raw
-            .trim()
-            .match(
-              /^(?:\([^()\n]*\b\d{4}[a-z]?\)\s*)?\[\[quote:([A-Za-z0-9._:-]+)\]\](?:\s*(\[\[cite:[A-Za-z0-9._:-]+\]\]))?$/,
-            )
+        ? following.raw.trim().match(STANDALONE_QUOTE_ANCHOR)
         : null);
     const quote = anchor
       ? quotesById.get(anchor[1]) || downgradedById.get(anchor[1])
