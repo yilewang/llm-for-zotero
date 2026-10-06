@@ -257,20 +257,21 @@ import {
   getResponseActionRunner,
   getForkSourceNavigationRunner,
   setPromptMenuTarget,
-  inlineEditTarget,
-  setInlineEditTarget,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  inlineEditInputSectionEl,
-  inlineEditInputSectionParent,
-  inlineEditInputSectionNextSib,
-  inlineEditSavedDraft,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   selectedRuntimeModeCache,
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
+import {
+  endInlineEdit,
+  getInlineEditBorrowedInputSection,
+  getInlineEditCleanup,
+  getInlineEditSavedDraft,
+  getInlineEditTarget,
+  setInlineEditBorrowedInputSection,
+  setInlineEditCleanup,
+  setInlineEditSavedDraft,
+  setInlineEditTarget,
+} from "./inlineEditState";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
   formatTime,
@@ -9234,17 +9235,20 @@ function buildInlineEditWidget(
   const widgetRoot = doc.createElement("div") as HTMLDivElement;
   widgetRoot.className = "llm-inline-edit-wrapper";
 
-  // On first entry, grab the real input section and the inputBox from the panel.
+  // On first entry, grab this panel's real input section and inputBox.
   // Subsequent refreshes (e.g. streaming) reuse the saved reference so the
   // already-detached element can be re-attached into the new widget root.
-  const isFirstEntry = !inlineEditInputSectionEl;
-  let inputSectionEl = inlineEditInputSectionEl;
+  // The edit and its borrowed section belong to this panel body only.
+  const borrowedSection = getInlineEditBorrowedInputSection(body);
+  const isFirstEntry = !borrowedSection.el;
+  let inputSectionEl = borrowedSection.el;
   if (isFirstEntry) {
     inputSectionEl = body.querySelector(
       ".llm-input-section",
     ) as HTMLElement | null;
     if (inputSectionEl) {
-      setInlineEditInputSection(
+      setInlineEditBorrowedInputSection(
+        body,
         inputSectionEl,
         inputSectionEl.parentElement,
         inputSectionEl.nextSibling,
@@ -9259,48 +9263,46 @@ function buildInlineEditWidget(
 
   // On first entry: save draft and pre-fill with the user message
   if (isFirstEntry) {
-    setInlineEditSavedDraft(inputBoxEl?.value ?? "");
-    if (inputBoxEl && inlineEditTarget) {
-      inputBoxEl.value = inlineEditTarget.currentText;
+    setInlineEditSavedDraft(body, inputBoxEl?.value ?? "");
+    const editTarget = getInlineEditTarget(body);
+    if (inputBoxEl && editTarget) {
+      inputBoxEl.value = editTarget.currentText;
     }
   }
 
-  // Keep inlineEditTarget.currentText in sync with what the user types
+  // Keep the edit target's currentText in sync with what the user types
   // (so text is preserved if chatBox rebuilds while still in edit mode).
   // Use a one-time marker to avoid stacking duplicate listeners.
   if (inputBoxEl && !inputBoxEl.dataset.inlineEditListening) {
     inputBoxEl.dataset.inlineEditListening = "1";
     inputBoxEl.addEventListener("input", () => {
-      if (inlineEditTarget) inlineEditTarget.currentText = inputBoxEl.value;
+      const editTarget = getInlineEditTarget(body);
+      if (editTarget) editTarget.currentText = inputBoxEl.value;
     });
   }
 
   // Register cleanup (idempotent — only set once per edit session).
-  if (!inlineEditCleanup) {
-    setInlineEditCleanup(() => {
+  if (!getInlineEditCleanup(body)) {
+    setInlineEditCleanup(body, () => {
       // Restore input section to its original position in the panel.
-      const el = inlineEditInputSectionEl;
-      const parent = inlineEditInputSectionParent;
-      const next = inlineEditInputSectionNextSib;
+      const { el, parent, nextSib } = getInlineEditBorrowedInputSection(body);
       if (el && parent) {
-        parent.insertBefore(el, next);
+        parent.insertBefore(el, nextSib);
       }
       // Restore the draft text.
       if (inputBoxEl) {
-        inputBoxEl.value = inlineEditSavedDraft;
+        inputBoxEl.value = getInlineEditSavedDraft(body);
         resizeTextareaToContent(inputBoxEl);
         delete inputBoxEl.dataset.inlineEditListening;
         delete inputBoxEl.dataset.inlineEditFocused;
       }
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
+      setInlineEditBorrowedInputSection(body, null, null, null);
+      setInlineEditSavedDraft(body, "");
     });
   }
 
   const doCancel = () => {
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     const win = body.ownerDocument?.defaultView;
     if (win) win.setTimeout(() => refreshConversationPanels(body, item), 0);
   };
@@ -9658,6 +9660,35 @@ export function refreshChat(
     }
   }
 
+  // This panel's own open message edit. Its widget stays open while the
+  // conversation streams (another panel showing the same conversation may
+  // have sent into it; the edit's send waits until the conversation is idle).
+  // Once its prompt can no longer be shown here (deleted, or the panel shows
+  // another conversation) the edit ends before the chat box is rebuilt, so
+  // the composer it borrowed goes back to its place instead of being dropped.
+  const panelEditTarget = getInlineEditTarget(body);
+  const panelEditIndex =
+    panelEditTarget?.conversationKey === conversationKey
+      ? history.findIndex(
+          (message, index) =>
+            message.role === "user" &&
+            message.timestamp === panelEditTarget.userTimestamp &&
+            canEditUserPromptTurn({
+              isUser: true,
+              hasItem: Boolean(item),
+              conversationIsIdle: true,
+              assistantPair: history[index + 1],
+              providerProtocol: resolveEffectiveRequestConfig({
+                item,
+                surface: resolveSelectionSurfaceForBody(body),
+              }).providerProtocol,
+            }),
+        )
+      : -1;
+  if (panelEditTarget && panelEditIndex < 0 && !useTargetedRerender) {
+    endInlineEdit(body);
+  }
+
   if (history.length === 0) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
     const effectiveRequestConfig = resolveEffectiveRequestConfig({
@@ -9752,11 +9783,7 @@ export function refreshChat(
     const assistantPairMsg = history[index + 1];
     const hasAssistantPair = isUser && assistantPairMsg?.role === "assistant";
     const canEditUserPrompt = canEditPromptAt(index);
-    const isInlineEditBubble = Boolean(
-      canEditUserPrompt &&
-      inlineEditTarget?.conversationKey === conversationKey &&
-      inlineEditTarget.userTimestamp === msg.timestamp,
-    );
+    const isInlineEditBubble = panelEditIndex >= 0 && index === panelEditIndex;
     let hasUserContext = false;
     const wrapper = doc.createElement("div") as HTMLDivElement;
     wrapper.className = `llm-message-wrapper ${isUser ? "user" : "assistant"}`;
@@ -10517,7 +10544,7 @@ export function refreshChat(
                 syncErr,
               );
             }
-            setInlineEditTarget({
+            setInlineEditTarget(body, {
               conversationKey,
               userTimestamp: msg.timestamp,
               assistantTimestamp: Math.floor(assistantPairMsg!.timestamp),

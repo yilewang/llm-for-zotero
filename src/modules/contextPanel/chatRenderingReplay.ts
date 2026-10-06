@@ -10,12 +10,12 @@ import {
   nextRequestId,
   tryBeginRequest,
   finishRequest,
-  inlineEditTarget,
-  inlineEditCleanup,
-  inlineEditInputSectionEl,
-  setInlineEditCleanup,
-  setInlineEditTarget,
 } from "./state";
+import {
+  endInlineEdit,
+  getInlineEditBorrowedInputSection,
+  getInlineEditTarget,
+} from "./inlineEditState";
 import { buildContextUsagePresentation } from "./textUtils";
 import { getConversationWriteGeneration } from "../../shared/conversationWriteFence";
 import { persistChatScrollSnapshotForConversationKey } from "./chatScrollSnapshots";
@@ -363,7 +363,7 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
       ?.click();
     await settle();
     const earlierPromptLockedWhileStreaming =
-      !isPromptEditable(earlierPrompt) && !inlineEditTarget;
+      !isPromptEditable(earlierPrompt) && !getInlineEditTarget(body);
     for (let n = 0; n < 3; n++) {
       answer.text += `Streaming paragraph ${n} with evidence.\n\n`;
       helpers.refreshAssistantMessageSafely(answer);
@@ -445,19 +445,18 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
     return {
       ...result,
       earlierPromptClickOpensEditor:
-        inlineEditTarget?.userTimestamp === earlierPrompt.timestamp &&
+        getInlineEditTarget(body)?.userTimestamp === earlierPrompt.timestamp &&
         Boolean(
           wrapperOf(earlierPrompt)?.querySelector(".llm-inline-edit-wrapper"),
         ),
       earlierPromptEditorUsesOriginalText:
-        inlineEditInputSectionEl?.querySelector<HTMLTextAreaElement>(
-          "#llm-input",
-        )?.value === earlierPrompt.text,
+        getInlineEditBorrowedInputSection(
+          body,
+        ).el?.querySelector<HTMLTextAreaElement>("#llm-input")?.value ===
+        earlierPrompt.text,
     };
   } finally {
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     body
       .querySelector<HTMLElement>("#llm-prompt-menu")
       ?.style.setProperty("display", "none");

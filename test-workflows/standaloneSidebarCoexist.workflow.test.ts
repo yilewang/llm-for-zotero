@@ -1218,6 +1218,213 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     }
   });
 
+  // ── T9 ───────────────────────────────────────────────────────────────────
+
+  /** The panel's user bubble whose text contains `marker`. */
+  function userBubble(root: Element | null, marker: string) {
+    return (
+      (
+        Array.from(
+          root?.querySelectorAll(
+            "#llm-chat-box .llm-message-wrapper.user .llm-bubble.user",
+          ) || [],
+        ) as HTMLElement[]
+      ).find((bubble) => (bubble.textContent || "").includes(marker)) || null
+    );
+  }
+
+  const editWidgets = (root: Element | null) =>
+    Array.from(root?.querySelectorAll(".llm-inline-edit-wrapper") || []);
+
+  /** Where each panel's composer section is: in its own panel, and whether in its edit widget. */
+  function composerPlacement(body: HTMLElement | null) {
+    const sections = Array.from(
+      body?.querySelectorAll(".llm-input-section") || [],
+    ) as HTMLElement[];
+    return {
+      count: sections.length,
+      inEditWidget: sections.some((section) =>
+        Boolean(section.closest(".llm-inline-edit-wrapper")),
+      ),
+      sameDocument: sections.every(
+        (section) => section.ownerDocument === body?.ownerDocument,
+      ),
+    };
+  }
+
+  async function openEditIn(root: () => HTMLElement | null, marker: string) {
+    let bubble: HTMLElement | null = null;
+    await until(
+      () => {
+        bubble = userBubble(root(), marker);
+        return Boolean(bubble?.classList.contains("llm-bubble-editable"));
+      },
+      () => `the prompt "${marker}" is editable`,
+    );
+    bubble!.click();
+    await until(
+      () => editWidgets(root()).length === 1,
+      () =>
+        `the panel shows the edit widget for "${marker}": ${JSON.stringify(
+          composerPlacement(root()?.parentElement || null),
+        )}`,
+    );
+  }
+
+  it("T9a: a message edit open in the window does not take over a send from the sidebar", async function () {
+    const paper = await newFixture("Coexist T9a");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const sidebarKey = await completeSidebarTurn(
+      "Coexist T9a sidebar seed EDIT-SIDEBAR-SEED",
+      "T9A-SIDEBAR-SEED-ANSWER",
+    );
+
+    await api.openStandaloneForItem(paper.parentItemId);
+    await api.clickStandaloneTab("open");
+    const WINDOW_Q = "Coexist T9a window prompt EDIT-WINDOW-PROMPT";
+    typeAndSend(windowBody()!, WINDOW_Q);
+    const windowStream = await provider.waitForStream(WINDOW_Q);
+    windowStream.push("T9A-WINDOW-ANSWER");
+    windowStream.finish();
+    const windowKey = toKey(windowRoot()?.dataset.itemId);
+    assert.notEqual(windowKey, sidebarKey, "two different conversations");
+    await waitForAnswer(windowKey, "T9A-WINDOW-ANSWER");
+
+    await openEditIn(windowRoot, "EDIT-WINDOW-PROMPT");
+    assert.lengthOf(
+      editWidgets(sidebarRoot()),
+      0,
+      "the sidebar is not editing",
+    );
+
+    const SIDEBAR_Q = "Coexist T9a sidebar follow-up EDIT-SIDEBAR-Q";
+    pressEnter(sidebarBody()!, SIDEBAR_Q);
+    const sidebarStream = await provider.waitForStream(SIDEBAR_Q, 10_000);
+    sidebarStream.push("T9A-SIDEBAR-ANSWER");
+    sidebarStream.finish();
+    await waitForAnswer(sidebarKey, "T9A-SIDEBAR-ANSWER");
+
+    const sidebarHistory = await history(sidebarKey);
+    const windowHistory = await history(windowKey);
+    assert.include(
+      sidebarHistory.memory.map((entry) => entry.text).join("\n"),
+      SIDEBAR_Q,
+      JSON.stringify(sidebarHistory.memory),
+    );
+    assert.notInclude(
+      windowHistory.memory.map((entry) => entry.text).join("\n"),
+      SIDEBAR_Q,
+      "the sidebar's message is not taken as the window's edit",
+    );
+    assert.lengthOf(
+      editWidgets(windowRoot()),
+      1,
+      "the window's edit stays open after the sidebar sent",
+    );
+    const windowComposer = composerPlacement(windowBody());
+    assert.deepEqual(
+      windowComposer,
+      { count: 1, inEditWidget: true, sameDocument: true },
+      "the window's composer stays in the window's edit widget",
+    );
+    assert.deepEqual(
+      composerPlacement(sidebarBody()),
+      { count: 1, inEditWidget: false, sameDocument: true },
+      "the sidebar's composer stays in place",
+    );
+  });
+
+  it("T9b: the same conversation in both surfaces shows the edit only where it was opened", async function () {
+    const paper = await newFixture("Coexist T9b");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const SEED = "Coexist T9b shared prompt EDIT-SHARED-PROMPT";
+    const key = await completeSidebarTurn(SEED, "T9B-SEED-ANSWER");
+    await api.openStandaloneForItem(paper.parentItemId);
+    await ensureWindowShowsConversation(key);
+    await showConversationInSidebar(key);
+
+    await openEditIn(windowRoot, "EDIT-SHARED-PROMPT");
+    await Zotero.Promise.delay(400);
+    assert.lengthOf(
+      editWidgets(sidebarRoot()),
+      0,
+      "the sidebar shows the conversation without the window's edit widget",
+    );
+    assert.isOk(
+      userBubble(sidebarRoot(), "EDIT-SHARED-PROMPT"),
+      "the sidebar still shows the prompt as a normal message",
+    );
+    assert.deepEqual(
+      composerPlacement(sidebarBody()),
+      { count: 1, inEditWidget: false, sameDocument: true },
+      "the sidebar keeps its own composer",
+    );
+    assert.deepEqual(
+      composerPlacement(windowBody()),
+      { count: 1, inEditWidget: true, sameDocument: true },
+      "the window's own composer is in its edit widget",
+    );
+
+    // The sidebar sends into the shared conversation while the window edits:
+    // the window's edit and composer survive the streaming renders.
+    const SIDEBAR_Q = "Coexist T9b sidebar question EDIT-SHARED-SIDEBAR-Q";
+    pressEnter(sidebarBody()!, SIDEBAR_Q);
+    const sidebarStream = await provider.waitForStream(SIDEBAR_Q, 10_000);
+    sidebarStream.push("T9B-SIDEBAR-PART ");
+    await until(
+      () => lastAssistantBubbleText(windowRoot()).includes("T9B-SIDEBAR-PART"),
+      () => "the window mirrors the sidebar's streaming answer",
+    );
+    assert.lengthOf(editWidgets(windowRoot()), 1, "the edit stays open");
+    assert.deepEqual(
+      composerPlacement(windowBody()),
+      { count: 1, inEditWidget: true, sameDocument: true },
+      "the window's composer is not dropped while the conversation streams",
+    );
+    sidebarStream.push("T9B-SIDEBAR-END");
+    sidebarStream.finish();
+    await waitForAnswer(key, "T9B-SIDEBAR-END");
+
+    // The window sends its edit: one retry request, mirrored to the sidebar.
+    const requestsBefore = provider.streams.length;
+    const EDITED = "Coexist T9b edited prompt EDIT-SHARED-EDITED";
+    pressEnter(windowBody()!, EDITED);
+    const editStream = await provider.waitForStream(EDITED, 10_000);
+    editStream.push("T9B-EDITED-ANSWER");
+    editStream.finish();
+    await waitForAnswer(key, "T9B-EDITED-ANSWER");
+    assert.equal(
+      provider.streams.length,
+      requestsBefore + 1,
+      "the edit sends one request",
+    );
+    await until(
+      () =>
+        editWidgets(windowRoot()).length === 0 &&
+        Boolean(userBubble(sidebarRoot(), "EDIT-SHARED-EDITED")) &&
+        lastAssistantBubbleText(sidebarRoot()).includes("T9B-EDITED-ANSWER"),
+      () =>
+        `the edit closes in the window and its retry shows in the sidebar: ${JSON.stringify(
+          {
+            window: composerPlacement(windowBody()),
+            sidebar: sidebarState(),
+          },
+        )}`,
+    );
+    assert.deepEqual(
+      composerPlacement(windowBody()),
+      { count: 1, inEditWidget: false, sameDocument: true },
+      "the window's composer is back in place",
+    );
+    assert.deepEqual(
+      composerPlacement(sidebarBody()),
+      { count: 1, inEditWidget: false, sameDocument: true },
+      "the sidebar's composer never moved",
+    );
+  });
+
   // ── T8 ───────────────────────────────────────────────────────────────────
 
   /**

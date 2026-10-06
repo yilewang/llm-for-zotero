@@ -36,11 +36,6 @@ import {
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
   draftInputCache,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  setInlineEditTarget,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   setForkSourceNavigationRunner,
   isRequestPending,
 } from "../../state";
@@ -164,6 +159,7 @@ import {
   type SidebarChatModeTab,
 } from "../../sidebarChatModeToggle";
 import { installSidebarModeSwitch } from "../../sidebarModeSwitch";
+import { endInlineEdit } from "../../inlineEditState";
 import {
   canCommitPanelConversation,
   capturePanelOperationLease,
@@ -2309,9 +2305,7 @@ export function createHistoryLifecycleController(
     syncConversationIdentity();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
     setActiveEditSession(null);
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     clearForcedSkill();
     closePaperPicker();
     closePromptMenu();
@@ -2566,9 +2560,7 @@ export function createHistoryLifecycleController(
     }
     if (!isPanelOperationLeaseCurrent(hostLease)) return false;
     setActiveEditSession(null);
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     clearForcedSkill();
     closePaperPicker();
     closePromptMenu();

@@ -32,9 +32,10 @@ type FloatingMenuInteractionControllerDeps = {
   closePaperChipMineruCacheMenu: () => void;
   closePaperChipMenu: () => void;
   getItem: () => Zotero.Item | null;
+  /** This panel's open message edit, if any. */
   getInlineEditTarget: () => unknown;
-  getInlineEditCleanup: () => (() => void) | null;
-  clearInlineEdit: () => void;
+  /** End this panel's message edit and give back its composer. */
+  endInlineEdit: () => void;
   closePromptMenu: () => void;
   closeRetryModelMenu: () => void;
   closePaperPicker: () => void;
@@ -248,8 +249,7 @@ export function attachFloatingMenuInteractionController(
           ".llm-inline-edit-wrapper",
         );
         if (!isInsideEdit) {
-          deps.getInlineEditCleanup()?.();
-          deps.clearInlineEdit();
+          deps.endInlineEdit();
           refreshConversationPanels(body, deps.getItem());
           return;
         }

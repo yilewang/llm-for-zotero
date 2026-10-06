@@ -118,12 +118,6 @@ import {
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
-  inlineEditTarget,
-  setInlineEditTarget,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   addAutoLockedGlobalConversationKey,
   removeAutoLockedGlobalConversationKey,
   isAutoLockedGlobalConversation,
@@ -484,6 +478,11 @@ import {
 } from "./setupHandlers/controllers/sendFlowController";
 import { cancelVisiblePendingConfirmationCards } from "./setupHandlers/controllers/cancelPendingConfirmationController";
 import { buildInlineEditRetryContextSnapshot } from "./setupHandlers/controllers/inlineEditRetryController";
+import {
+  endInlineEdit,
+  getInlineEditTarget,
+  releaseInlineEdit,
+} from "./inlineEditState";
 import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assistantSelectionPopupController";
 import { attachMenuActionController } from "./setupHandlers/controllers/menuActionController";
 import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pdfPaperAttachmentResolver";
@@ -2702,17 +2701,17 @@ export function setupHandlers(
     // Most programmatic composer updates already persist immediately. Keeping
     // sizing here makes those paths share the same behavior as typed input.
     resizeTextareaToContent(inputBox);
-    // Don't persist the edit-mode text as a draft; the real draft was saved in
-    // inlineEditSavedDraft when edit mode was entered.
-    if (!item || !inputBox || inlineEditTarget) return;
+    // Don't persist the edit-mode text as a draft; the real draft was saved
+    // with this panel's edit when edit mode was entered.
+    if (!item || !inputBox || getInlineEditTarget(body)) return;
     setDraftInputForConversation(getConversationKey(item), inputBox.value);
   };
   const restoreDraftInputForCurrentConversation = () => {
     if (!item || !inputBox) return;
     // Don't overwrite the user's in-progress edit text; the real draft was saved
-    // in inlineEditSavedDraft when edit mode was entered and will be restored by
-    // inlineEditCleanup when the edit session ends.
-    if (inlineEditTarget) return;
+    // with this panel's edit when edit mode was entered and is restored when
+    // the edit ends.
+    if (getInlineEditTarget(body)) return;
     const cache = isWebChatModeActive()
       ? webChatDraftInputCache
       : draftInputCache;
@@ -6021,7 +6020,7 @@ export function setupHandlers(
     loadedConversationKeys.add(key);
     markNextWebChatSendAsNewChat();
     primeFreshWebChatPaperChipState();
-    if (inputBox && !inlineEditTarget) {
+    if (inputBox && !getInlineEditTarget(body)) {
       inputBox.value = "";
       resizeTextareaToContent(inputBox);
     }
@@ -6041,7 +6040,7 @@ export function setupHandlers(
       webChatDraftInputCache.delete(key);
       markNextWebChatSendAsNewChat();
       primeFreshWebChatPaperChipState();
-      if (inputBox && !inlineEditTarget) {
+      if (inputBox && !getInlineEditTarget(body)) {
         inputBox.value = "";
         resizeTextareaToContent(inputBox);
       }
@@ -6642,7 +6641,7 @@ export function setupHandlers(
     syncModelFromPrefs(true);
     // Another view of this conversation can edit the shared draft. Restore
     // that change without remeasuring an unchanged composer on every visit.
-    if (item && inputBox && !inlineEditTarget) {
+    if (item && inputBox && !getInlineEditTarget(body)) {
       const cache = isWebChatModeActive()
         ? webChatDraftInputCache
         : draftInputCache;
@@ -7317,9 +7316,10 @@ export function setupHandlers(
   const executeSend = async () => {
     // If the inline edit widget is active, route through editUserTurnAndRetry
     // instead of the normal send flow.
-    if (inlineEditTarget && item) {
+    const panelEditTarget = getInlineEditTarget(body);
+    if (panelEditTarget && item) {
       const currentItem = item;
-      const editTarget = inlineEditTarget;
+      const editTarget = panelEditTarget;
       const newText = inputBox?.value.trim() ?? "";
       if (!newText && isRequestPending(getConversationKey(currentItem))) return;
       const inlineRequest = newText
@@ -7522,11 +7522,7 @@ export function setupHandlers(
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
       const targetRuntimeMode = getCurrentRuntimeMode();
-      inlineEditCleanup?.();
-      setInlineEditCleanup(null);
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
-      setInlineEditTarget(null);
+      endInlineEdit(body);
       if (newText) {
         const webchatGreyOut = isWebChatMode();
         let retrySucceeded = false;
@@ -7835,14 +7831,10 @@ export function setupHandlers(
         }
       }
     }
-    if (ke.key === "Escape" && inlineEditTarget) {
+    if (ke.key === "Escape" && getInlineEditTarget(body)) {
       e.preventDefault();
       e.stopPropagation();
-      inlineEditCleanup?.();
-      setInlineEditCleanup(null);
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
-      setInlineEditTarget(null);
+      endInlineEdit(body);
       refreshConversationPanels(body, item);
       return;
     }
@@ -8001,12 +7993,8 @@ export function setupHandlers(
     closePaperChipMineruCacheMenu,
     closePaperChipMenu,
     getItem: () => item,
-    getInlineEditTarget: () => inlineEditTarget,
-    getInlineEditCleanup: () => inlineEditCleanup,
-    clearInlineEdit: () => {
-      setInlineEditCleanup(null);
-      setInlineEditTarget(null);
-    },
+    getInlineEditTarget: () => getInlineEditTarget(body),
+    endInlineEdit: () => endInlineEdit(body),
     closePromptMenu,
     closeRetryModelMenu,
     closePaperPicker,
@@ -8266,7 +8254,10 @@ export function setupHandlers(
     activeContextPanelStateSync.delete(body);
     // Rebuilding the root of a still-mounted body must retain its raw paper
     // identity. A detached body, however, owns no surviving UI registration.
-    if (!body.isConnected) unregisterContextPanel(body);
+    if (!body.isConnected) {
+      unregisterContextPanel(body);
+      releaseInlineEdit(body);
+    }
     unpublishPanelHandle(body, panelHandle);
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];

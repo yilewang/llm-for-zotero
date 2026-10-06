@@ -15,6 +15,7 @@ import type {
   PaperContentSourceMode,
   GeneratedChatImage,
 } from "./types";
+import { releaseInlineEditsForConversation } from "./inlineEditState";
 import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { TTLMap } from "../../utils/ttlMap";
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
@@ -353,17 +354,9 @@ export function clearConversationOwnedRuntimeState(
 
   if (promptMenuTarget?.conversationKey === key) promptMenuTarget = null;
   if (responseMenuTarget?.conversationKey === key) responseMenuTarget = null;
-  if (inlineEditTarget?.conversationKey === key) {
-    // The finalizer may run without a mounted panel, so do not invoke the DOM
-    // cleanup callback here.  Releasing the references is enough to prevent a
-    // stale callback from writing the deleted conversation back into the UI.
-    inlineEditCleanup = null;
-    inlineEditTarget = null;
-    inlineEditInputSectionEl = null;
-    inlineEditInputSectionParent = null;
-    inlineEditInputSectionNextSib = null;
-    inlineEditSavedDraft = "";
-  }
+  // The finalizer may run without a mounted panel, so the panels' DOM cleanup
+  // is not run; releasing the references is enough.
+  releaseInlineEditsForConversation(key);
 }
 export let panelFontScalePercent = 120; // FONT_SCALE_DEFAULT_PERCENT — overwritten by initFontScale()
 export function setPanelFontScalePercent(value: number) {
@@ -586,48 +579,8 @@ export function isAutoLockedGlobalConversation(key: number): boolean {
   return autoLockedGlobalConversationKeys.has(key);
 }
 
-// ── Inline edit state ───────────────────────────────────────────────────────
-
-export type InlineEditTarget = {
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-  /** Text currently typed in the inline textarea (preserved across refreshes). */
-  currentText: string;
-};
-
-export let inlineEditTarget: InlineEditTarget | null = null;
-export function setInlineEditTarget(value: InlineEditTarget | null): void {
-  inlineEditTarget = value;
-}
-
-/** Cleanup callback to restore borrowed DOM elements when the inline edit widget is dismissed. */
-export let inlineEditCleanup: (() => void) | null = null;
-export function setInlineEditCleanup(fn: (() => void) | null): void {
-  inlineEditCleanup = fn;
-}
-
-/** The .llm-input-section element borrowed into the chat widget during inline edit. */
-export let inlineEditInputSectionEl: HTMLElement | null = null;
-/** Original parent of the borrowed input section (for restoring). */
-export let inlineEditInputSectionParent: Element | null = null;
-/** Original next-sibling of the borrowed input section (for restoring). */
-export let inlineEditInputSectionNextSib: Node | null = null;
-/** Draft text that was in the inputBox when edit mode was entered. */
-export let inlineEditSavedDraft: string = "";
-
-export function setInlineEditInputSection(
-  el: HTMLElement | null,
-  parent: Element | null,
-  nextSib: Node | null,
-): void {
-  inlineEditInputSectionEl = el;
-  inlineEditInputSectionParent = parent;
-  inlineEditInputSectionNextSib = nextSib;
-}
-export function setInlineEditSavedDraft(text: string): void {
-  inlineEditSavedDraft = text;
-}
+// The message edit open in each panel lives per panel body in
+// inlineEditState.ts.
 
 /**
  * Release all module-level state.  Called on plugin shutdown to prevent
