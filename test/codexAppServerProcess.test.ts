@@ -967,6 +967,94 @@ describe("codexAppServerProcess", function () {
       assert.isTrue(killed, "the retired process goes once its last turn ends");
     });
 
+    it("a stalled turn still times out while another conversation streams on the same process", async function () {
+      const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+      let releaseB!: () => void;
+      const turnB = proc.runTurnExclusive(async () => {
+        await new Promise<void>((resolve) => {
+          releaseB = resolve;
+        });
+      }, "conversation:B");
+      const turnA = proc.runTurnExclusive(
+        () =>
+          waitForCodexAppServerTurnCompletion({
+            proc,
+            threadId: "thread-A",
+            turnId: "turn-A",
+            cacheKey: "stalled-while-sibling-streams-missing-entry",
+            timeoutMs: 40,
+          }),
+        "conversation:A",
+      );
+      const chatter = setInterval(() => {
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: { threadId: "thread-B", turnId: "turn-B", delta: "b" },
+        });
+      }, 5);
+      let failure: unknown;
+      const startedAt = Date.now();
+      try {
+        await turnA;
+      } catch (error) {
+        failure = error;
+      } finally {
+        clearInterval(chatter);
+      }
+      releaseB();
+      await turnB;
+      assert.match(String(failure), /Timed out waiting for codex app-server/);
+      assert.isBelow(Date.now() - startedAt, 400);
+    });
+
+    it("a turn stays alive on its sub-agent's traffic and on its own, not on a sibling's", async function () {
+      const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+      const turnA = proc.runTurnExclusive(
+        () =>
+          waitForCodexAppServerTurnCompletion({
+            proc,
+            threadId: "thread-A",
+            turnId: "turn-A",
+            cacheKey: "child-traffic-missing-entry",
+            timeoutMs: 40,
+          }),
+        "conversation:A",
+      );
+      await tick();
+      proc.handleMessage({
+        method: "item/started",
+        params: {
+          threadId: "thread-A",
+          turnId: "turn-A",
+          item: {
+            id: "spawn-1",
+            type: "collabAgentToolCall",
+            receiverThreadIds: ["child-1"],
+          },
+        },
+      });
+      // 100 ms of sub-agent chatter, well past the 40 ms timeout.
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: { threadId: "child-1", turnId: "child-turn", delta: "c" },
+        });
+      }
+      proc.handleMessage({
+        method: "item/agentMessage/delta",
+        params: { threadId: "thread-A", turnId: "turn-A", delta: "done" },
+      });
+      proc.handleMessage({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-A",
+          turn: { id: "turn-A", status: "completed" },
+        },
+      });
+      assert.equal(await turnA, "done");
+    });
+
     it("still destroys the process when a lone turn times out", async function () {
       let killed = false;
       const proc = createConcurrentProcess({

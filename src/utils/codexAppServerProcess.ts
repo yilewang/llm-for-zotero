@@ -48,7 +48,7 @@ type PendingRequest = {
   reject: (reason: unknown) => void;
 };
 
-type ActivityHandler = () => void;
+type ActivityHandler = (message: Record<string, unknown>) => void;
 type NotificationHandler = (params: unknown) => void;
 type RequestHandler = (
   params: unknown,
@@ -430,7 +430,7 @@ export class CodexAppServerProcess {
   private handleMessage(msg: Record<string, unknown>): void {
     for (const handler of this.activityHandlers) {
       try {
-        handler();
+        handler(msg);
       } catch {
         /* ignore */
       }
@@ -1660,7 +1660,35 @@ export function waitForCodexAppServerTurnCompletion(params: {
       fn();
     }
 
-    const unsubActivity = proc.onActivity(() => {
+    // Threads a sub-agent of this turn runs on; their traffic keeps this turn
+    // alive, other conversations' traffic on the shared process does not.
+    const childThreadIds = new Set<string>();
+    const unsubActivity = proc.onActivity((message) => {
+      const messageParams = message.params;
+      const messageThreadId =
+        extractCodexAppServerNotificationThreadId(messageParams) ||
+        extractCodexAppServerRequestThreadId(messageParams);
+      const messageTurnId =
+        extractCodexAppServerNotificationTurnId(messageParams);
+      if (params.threadId && messageThreadId) {
+        if (messageThreadId === params.threadId) {
+          if (messageTurnId && turnId && messageTurnId !== turnId) return;
+          const item = (messageParams as { item?: Record<string, unknown> })
+            ?.item;
+          const receivers =
+            item?.receiverThreadIds ?? item?.receiver_thread_ids;
+          if (Array.isArray(receivers)) {
+            for (const receiver of receivers) {
+              if (typeof receiver === "string" && receiver) {
+                childThreadIds.add(receiver);
+              }
+            }
+          }
+        } else if (!childThreadIds.has(messageThreadId)) {
+          // Another conversation's message.
+          return;
+        }
+      }
       scheduleTimeout();
     });
     scheduleTimeout();
