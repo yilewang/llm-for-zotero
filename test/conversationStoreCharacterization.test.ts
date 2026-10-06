@@ -2371,8 +2371,9 @@ describe("conversation store characterization (golden)", function () {
       const misroutedKey = getCodexGlobalConversationKeyRange().start + 3;
       harness.run(
         `INSERT INTO ${CLAUDE_CATALOG}
-           (conversation_key, library_id, kind, created_at, updated_at, title)
-         VALUES (?, 1, 'global', ?, ?, 'misrouted')`,
+           (conversation_key, library_id, kind, created_at, updated_at, title,
+            provider_permission_state)
+         VALUES (?, 1, 'global', ?, ?, 'misrouted', 'legacy-permission')`,
         [misroutedKey, NOW, NOW],
       );
       harness.run(
@@ -2408,13 +2409,23 @@ describe("conversation store characterization (golden)", function () {
         ),
         1,
       );
+      assert.equal(
+        harness.all(
+          `SELECT provider_permission_state AS state FROM ${CODEX_CATALOG}
+            WHERE conversation_key = ?`,
+          [misroutedKey],
+        )[0]?.state,
+        "legacy-permission",
+        "a column the Claude catalog has is carried over, not nulled",
+      );
       golden("codex", "startup.misrouteRepair", null);
     });
 
-    it("Codex init fails on a misrouted catalog row when the Claude catalog lacks the permission column (D6, as-is)", async function () {
-      // Pinned as found: the transfer column list includes
-      // provider_permission_state, which the current Claude catalog schema
-      // does not have, so moving a misrouted catalog row aborts Codex init.
+    it("Codex init moves a misrouted catalog row when the Claude catalog lacks the permission column (D6)", async function () {
+      // The current Claude catalog schema has no provider_permission_state.
+      // The transfer selects only the columns the Claude table has and
+      // writes NULL for the Codex-only ones, without altering the Claude
+      // table.
       await claude.initClaudeCodeStore();
       const misroutedKey = getCodexGlobalConversationKeyRange().start + 3;
       harness.run(
@@ -2424,17 +2435,41 @@ describe("conversation store characterization (golden)", function () {
         [misroutedKey, NOW, NOW],
       );
       const result = await outcome(() => codex.initCodexAppServerStore());
-      assert.deepEqual(result, {
-        error: "Error",
-        message: "no such column: provider_permission_state",
-      });
+      assert.deepEqual(result, { ok: null });
       assert.lengthOf(
         harness.all(
           `SELECT 1 FROM ${CLAUDE_CATALOG} WHERE conversation_key = ?`,
           [misroutedKey],
         ),
-        1,
-        "the failed init rolled back",
+        0,
+        "the row left the Claude catalog",
+      );
+      assert.deepEqual(
+        harness.all(
+          `SELECT library_id AS libraryID, kind, title,
+                  created_at AS createdAt,
+                  provider_permission_state AS providerPermissionState
+           FROM ${CODEX_CATALOG}
+           WHERE conversation_key = ?`,
+          [misroutedKey],
+        ),
+        [
+          {
+            libraryID: 1,
+            kind: "global",
+            title: "misrouted",
+            createdAt: NOW,
+            providerPermissionState: null,
+          },
+        ],
+      );
+      const claudeColumns = harness
+        .all(`PRAGMA table_info(${CLAUDE_CATALOG})`)
+        .map((row) => (row as { name: string }).name);
+      assert.notInclude(
+        claudeColumns,
+        "provider_permission_state",
+        "the Claude catalog is not altered",
       );
     });
 

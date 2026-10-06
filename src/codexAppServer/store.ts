@@ -657,6 +657,18 @@ function transferColumnSql(columns: readonly string[]): string {
   return columns.join(", ");
 }
 
+function transferSelectColumnSql(
+  columns: readonly string[],
+  sourceColumns: Array<{ name?: unknown }> | undefined,
+): string {
+  const present = new Set(
+    (sourceColumns || []).map((column) => String(column?.name || "")),
+  );
+  return columns
+    .map((column) => (present.has(column) ? column : `NULL AS ${column}`))
+    .join(", ");
+}
+
 async function tableExists(tableName: string): Promise<boolean> {
   const rows = (await Zotero.DB.queryAsync(
     `SELECT name
@@ -794,10 +806,19 @@ async function moveConversationRowsIfSafe(
     );
     return;
   }
+  // The Claude catalog has no Codex-only columns (provider_permission_state),
+  // so select only the columns the source has and write NULL for the rest.
+  const sourceColumns = (await Zotero.DB.queryAsync(
+    `PRAGMA table_info(${CLAUDE_CONVERSATIONS_TABLE})`,
+  )) as Array<{ name?: unknown }> | undefined;
   const columns = transferColumnSql(CONVERSATION_TRANSFER_COLUMNS);
+  const selectColumns = transferSelectColumnSql(
+    CONVERSATION_TRANSFER_COLUMNS,
+    sourceColumns,
+  );
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CODEX_CONVERSATIONS_TABLE} (${columns})
-     SELECT ${columns}
+     SELECT ${selectColumns}
      FROM ${CLAUDE_CONVERSATIONS_TABLE}
      WHERE conversation_key = ?`,
     [conversationKey],

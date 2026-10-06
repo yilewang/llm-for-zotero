@@ -7248,7 +7248,8 @@
           "last_activity_at": "<now+1000>",
           "user_turn_count": 1,
           "first_user_title": "misrouted message",
-          "title": "misrouted"
+          "title": "misrouted",
+          "provider_permission_state": "legacy-permission"
         }
       ],
       "llm_for_zotero_codex_messages": [
