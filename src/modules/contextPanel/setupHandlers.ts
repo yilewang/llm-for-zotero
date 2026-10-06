@@ -180,7 +180,7 @@ import {
   refreshChat,
   syncUserContextAlignmentWidths,
   getConversationKey,
-  canIsolateConversationForWebChat,
+  shouldMoveToOwnWebChatSession,
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   requestChatScrollFollowBottom,
@@ -6067,8 +6067,11 @@ export function setupHandlers(
     const hadWebChatSession =
       webChatIsolatedConversationKeys.has(key) && chatHistory.has(key);
     if (
-      !hadWebChatSession &&
-      (isPaperMode() || !canIsolateConversationForWebChat(key, body))
+      shouldMoveToOwnWebChatSession({
+        conversationKey: key,
+        paperMode: isPaperMode(),
+        body,
+      })
     ) {
       void moveToOwnWebChatSession().catch((err) => {
         appLogger.warn("LLM: Failed to open the WebChat session", err);

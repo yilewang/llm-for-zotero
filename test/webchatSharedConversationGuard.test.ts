@@ -2,11 +2,14 @@ import { assert } from "chai";
 import {
   canIsolateConversationForWebChat,
   isConversationShownOutsideWebChat,
+  shouldMoveToOwnWebChatSession,
 } from "../src/modules/contextPanel/chat";
 import {
   activeContextPanels,
+  chatHistory,
   clearAllState,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
 } from "../src/modules/contextPanel/state";
 
 /** A mounted panel body showing `conversationKey`. */
@@ -81,5 +84,81 @@ describe("WebChat never empties a chat another panel shows outside WebChat", fun
     assert.isTrue(
       canIsolateConversationForWebChat(44, sidebar, (body) => body === sidebar),
     );
+  });
+});
+
+describe("a paper panel in WebChat always ends up on the paper's WebChat session", function () {
+  afterEach(function () {
+    clearAllState();
+  });
+
+  it("moves off the paper's ordinary chat even when another panel left it isolated for WebChat", function () {
+    // Another panel on the same paper entered WebChat on the ordinary chat
+    // (isolating it) and then moved to the WebChat session. A second panel
+    // opening on the ordinary chat must follow it, not stay behind.
+    webChatIsolatedConversationKeys.add(43);
+    chatHistory.set(43, []);
+    assert.isTrue(
+      shouldMoveToOwnWebChatSession({ conversationKey: 43, paperMode: true }),
+    );
+  });
+
+  it("stays on a WebChat session row it already shows", function () {
+    webChatSessionConversationKeys.add(1500000006);
+    webChatIsolatedConversationKeys.add(1500000006);
+    chatHistory.set(1500000006, []);
+    assert.isFalse(
+      shouldMoveToOwnWebChatSession({
+        conversationKey: 1500000006,
+        paperMode: true,
+      }),
+    );
+    // A session row whose WebChat history is gone is opened afresh.
+    chatHistory.delete(1500000006);
+    assert.isTrue(
+      shouldMoveToOwnWebChatSession({
+        conversationKey: 1500000006,
+        paperMode: true,
+      }),
+    );
+  });
+
+  it("a library chat stays in place unless another panel shows it outside WebChat", function () {
+    const asking = panelBody(45);
+    const other = panelBody(45);
+    activeContextPanels.set(asking, () => fakeItem(45));
+    activeContextPanels.set(other, () => fakeItem(45));
+    assert.isFalse(
+      shouldMoveToOwnWebChatSession({
+        conversationKey: 45,
+        paperMode: false,
+        body: asking,
+        isWebChatPanel: () => true,
+      }),
+    );
+    assert.isTrue(
+      shouldMoveToOwnWebChatSession({
+        conversationKey: 45,
+        paperMode: false,
+        body: asking,
+        isWebChatPanel: (body) => body === asking,
+      }),
+    );
+    webChatIsolatedConversationKeys.add(45);
+    chatHistory.set(45, []);
+    assert.isFalse(
+      shouldMoveToOwnWebChatSession({
+        conversationKey: 45,
+        paperMode: false,
+        body: asking,
+        isWebChatPanel: (body) => body === asking,
+      }),
+    );
+  });
+
+  it("forgets a session row with the rest of the runtime state", function () {
+    webChatSessionConversationKeys.add(1500000007);
+    clearAllState();
+    assert.isFalse(webChatSessionConversationKeys.has(1500000007));
   });
 });

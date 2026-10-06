@@ -234,6 +234,7 @@ import {
   loadedConversationKeys,
   loadingConversationTasks,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
   selectedReasoningCache,
   selectedReasoningProviderCache,
   reasoningCacheKey,
@@ -585,6 +586,42 @@ export function canIsolateConversationForWebChat(
   return (
     webChatIsolatedConversationKeys.has(conversationKey) ||
     !isConversationShownOutsideWebChat(conversationKey, body, isWebChatPanel)
+  );
+}
+
+/**
+ * Whether a panel entering WebChat on `conversationKey` moves to its paper's
+ * own WebChat session instead of keeping the chat it is on.
+ *
+ * A paper panel stays only on a WebChat session row it already holds. Being
+ * isolated for WebChat is not enough: another panel on the same paper may
+ * have emptied the paper's ordinary chat for WebChat in place and then moved
+ * to the session, and this panel must follow it there so both show the same
+ * WebChat chat. A library chat stays in place unless another panel shows it
+ * outside WebChat.
+ */
+export function shouldMoveToOwnWebChatSession(params: {
+  conversationKey: number;
+  paperMode: boolean;
+  body?: Element | null;
+  isWebChatPanel?: (body: Element, item: Zotero.Item) => boolean;
+}): boolean {
+  const { conversationKey } = params;
+  const hasWebChatHistory =
+    webChatIsolatedConversationKeys.has(conversationKey) &&
+    chatHistory.has(conversationKey);
+  if (params.paperMode) {
+    return !(
+      hasWebChatHistory && webChatSessionConversationKeys.has(conversationKey)
+    );
+  }
+  return (
+    !hasWebChatHistory &&
+    !canIsolateConversationForWebChat(
+      conversationKey,
+      params.body,
+      params.isWebChatPanel,
+    )
   );
 }
 

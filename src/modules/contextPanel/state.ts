@@ -50,6 +50,12 @@ export const conversationForkLinks = new Map<number, ConversationForkLink>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
+/**
+ * Paper WebChat session rows (webchat_session = 1) a panel has switched to.
+ * webChatIsolatedConversationKeys also holds ordinary chats a panel emptied
+ * for WebChat in place, so it cannot tell a paper's WebChat session apart.
+ */
+export const webChatSessionConversationKeys = new Set<number>();
 const webChatForceNewChatConversationKeys = new Set<number>();
 /**
  * Per-surface reasoning choice for a conversation, keyed by
@@ -367,6 +373,7 @@ export function clearConversationOwnedRuntimeState(
   loadedConversationKeys.delete(key);
   loadingConversationTasks.delete(key);
   webChatIsolatedConversationKeys.delete(key);
+  webChatSessionConversationKeys.delete(key);
   webChatForceNewChatConversationKeys.delete(key);
   selectedRuntimeModeCache.delete(key);
   draftInputCache.delete(key);
@@ -749,5 +756,6 @@ export function clearAllState(): void {
   autoLockedGlobalConversationKeys.clear();
   selectedTagContextCache.clear();
   webChatIsolatedConversationKeys.clear();
+  webChatSessionConversationKeys.clear();
   clearMermaidSvgCache();
 }

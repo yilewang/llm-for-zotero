@@ -35,6 +35,7 @@ import {
   conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
   draftInputCache,
   setForkSourceNavigationRunner,
   isRequestPending,
@@ -2564,6 +2565,7 @@ export function createHistoryLifecycleController(
           persist: false,
         });
         webChatIsolatedConversationKeys.add(resolvedConversationKey);
+        webChatSessionConversationKeys.add(resolvedConversationKey);
       } else {
         remember(paperScope, resolvedConversationKey);
       }
@@ -2576,9 +2578,11 @@ export function createHistoryLifecycleController(
     // is on, and the other surface (on an API model) may show that chat. On
     // an ordinary chat the panel shows it as it is for a moment and moves to
     // the paper's own WebChat session.
+    // (An ordinary chat another panel isolated for WebChat is still not a
+    // WebChat session row.)
     const moveToOwnWebChatSession =
       isWebChatMode() &&
-      !webChatIsolatedConversationKeys.has(resolvedConversationKey);
+      !webChatSessionConversationKeys.has(resolvedConversationKey);
     if (moveToOwnWebChatSession) {
       // The chat's history stays as it is.
     } else if (isWebChatMode()) {
