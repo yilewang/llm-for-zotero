@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { resolveLiveAgentCredentials } from "./liveAgentCredentials";
+import {
+  liveModelName,
+  resolveLiveAgentCredentials,
+} from "./liveAgentCredentials";
 import {
   getOriginalAgentPermissionMode,
   setOriginalAgentPermissionMode,
@@ -12,7 +15,7 @@ describe("live: selected note rewrite", function () {
   for (const paragraph of [false, true])
     it(`${paragraph ? "paragraph rewrite" : "faithful rewrite"}: completes in one verified action without researching the library`, async function () {
       const creds = await resolveLiveAgentCredentials({
-        requestedModel: "deepseek-v4-flash",
+        requestedModel: liveModelName("deepseek-v4-flash"),
       });
       assert.isNotNull(creds, "DeepSeek acceptance must execute, not skip");
       const api = Zotero.LLMForZotero.api;

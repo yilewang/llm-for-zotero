@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { resolveLiveAgentCredentials } from "./liveAgentCredentials";
+import {
+  liveModelName,
+  resolveLiveAgentCredentials,
+} from "./liveAgentCredentials";
 import {
   getOriginalAgentPermissionMode,
   setOriginalAgentPermissionMode,
@@ -12,7 +15,7 @@ describe("live: note writing from typed workspace context", function () {
   this.timeout(720000);
   it("reads the source paper, replaces the bound note, appends, edits, and clarifies ambiguous writing", async function () {
     const creds = await resolveLiveAgentCredentials({
-      requestedModel: "deepseek-v4-flash",
+      requestedModel: liveModelName("deepseek-v4-flash"),
     });
     assert.isNotNull(
       creds,
