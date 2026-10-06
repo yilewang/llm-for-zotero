@@ -5,6 +5,7 @@ import {
   bindSurfaceChoices,
   clearStandaloneSurfaceChoices,
   demoteConversationSystemOnEverySurface,
+  startStandaloneSurfaceChoicesFromSidebar,
   getSelectedModelEntryForSurface,
   setSelectedModelEntryForSurface,
   surfaceChoices,
@@ -109,6 +110,94 @@ describe("surfaceChoices: each chat surface keeps its own model and backend", fu
     assert.equal(
       surfaceChoices.conversationSystem.get("standalone"),
       "upstream",
+    );
+  });
+
+  it("a window copies the sidebar's choices when it opens, and later sidebar changes leave it alone", function () {
+    prefStore.set(pref("conversationSystem"), "claude_code");
+    prefStore.set(pref("claudeCodeModel"), "sonnet");
+    prefStore.set(pref("codexAppServerReasoning"), "medium");
+    prefStore.set(pref("lastUsedRuntimeMode"), "agent");
+    surfaceChoices.lastUsedReasoningLevelForProvider.set(
+      "openai",
+      "low",
+      "embedded",
+    );
+    surfaceChoices.codexDirectReasoningSelection.set(
+      "gpt-5.4",
+      "medium",
+      "embedded",
+    );
+    // A previous window's choice does not carry over.
+    surfaceChoices.claudeRuntimeModel.set("haiku", "standalone");
+
+    startStandaloneSurfaceChoicesFromSidebar();
+
+    setSelectedModelEntryForSurface("entry-b", "embedded");
+    surfaceChoices.conversationSystem.set("upstream", "embedded");
+    surfaceChoices.claudeRuntimeModel.set("opus", "embedded");
+    surfaceChoices.codexReasoningMode.set("xhigh", "embedded");
+    surfaceChoices.lastUsedRuntimeMode.set("chat", "embedded");
+    surfaceChoices.lastUsedReasoningLevelForProvider.set(
+      "openai",
+      "high",
+      "embedded",
+    );
+    surfaceChoices.lastUsedReasoningLevelForProvider.set(
+      "gemini",
+      "high",
+      "embedded",
+    );
+    surfaceChoices.codexDirectReasoningSelection.set(
+      "gpt-5.4",
+      "high",
+      "embedded",
+    );
+    surfaceChoices.codexDirectReasoningSelection.set(
+      "gpt-5.5",
+      "low",
+      "embedded",
+    );
+
+    assert.equal(
+      getSelectedModelEntryForSurface("standalone")?.model,
+      "model-a",
+    );
+    assert.equal(
+      surfaceChoices.conversationSystem.get("standalone"),
+      "claude_code",
+    );
+    assert.equal(surfaceChoices.claudeRuntimeModel.get("standalone"), "sonnet");
+    assert.equal(surfaceChoices.codexReasoningMode.get("standalone"), "medium");
+    assert.equal(surfaceChoices.lastUsedRuntimeMode.get("standalone"), "agent");
+    assert.equal(
+      surfaceChoices.lastUsedReasoningLevelForProvider.get(
+        "openai",
+        "standalone",
+      ),
+      "low",
+    );
+    // A provider or model the sidebar had no value for when the window
+    // opened reads as unset, not as the sidebar's later value.
+    assert.isNull(
+      surfaceChoices.lastUsedReasoningLevelForProvider.get(
+        "gemini",
+        "standalone",
+      ),
+    );
+    assert.equal(
+      surfaceChoices.codexDirectReasoningSelection.get("gpt-5.4", "standalone"),
+      "medium",
+    );
+    assert.equal(
+      surfaceChoices.codexDirectReasoningSelection.get("gpt-5.5", "standalone"),
+      "auto",
+    );
+    // The window's own choices still win over its snapshot.
+    setSelectedModelEntryForSurface("entry-b", "standalone");
+    assert.equal(
+      getSelectedModelEntryForSurface("standalone")?.model,
+      "model-b",
     );
   });
 

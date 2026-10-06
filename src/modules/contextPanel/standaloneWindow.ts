@@ -45,7 +45,7 @@ import {
   rememberMode,
 } from "./conversationSelection";
 import {
-  clearStandaloneSurfaceChoices,
+  startStandaloneSurfaceChoicesFromSidebar,
   demoteConversationSystemOnEverySurface,
   surfaceChoices,
 } from "./surfaceChoices";
@@ -361,9 +361,9 @@ export function openStandaloneChat(options?: {
 
   // A new window starts from the sidebar's selection (read below), model and
   // backend, and keeps its own from here on; nothing a previous window chose
-  // carries over.
+  // carries over, and a later sidebar change does not move this window.
   clearStandaloneSelection();
-  clearStandaloneSurfaceChoices();
+  startStandaloneSurfaceChoicesFromSidebar();
 
   const sourceRawContextItem =
     options?.sourceBody && options.sourceBody.isConnected

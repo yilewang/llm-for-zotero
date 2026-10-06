@@ -57,6 +57,11 @@ function readSelections(): Record<string, string> {
   }
 }
 
+/** Every model's Codex Direct reasoning selection, keyed by normalized model. */
+export function getCodexDirectReasoningSelections(): Record<string, string> {
+  return readSelections();
+}
+
 export function getCodexDirectReasoningSelection(model: string): string {
   return readSelections()[selectionKey(model)] || "auto";
 }

@@ -8,9 +8,12 @@
  * - Embedded reads and writes the existing prefs exactly as before, so the
  *   sidebar panels keep sharing one choice and it survives a restart.
  * - Standalone keeps its choices in memory, for the window's lifetime. It
- *   never writes these prefs, and wherever it has not chosen yet it reads the
- *   sidebar's (persisted) value. A new window starts from the sidebar's values
- *   because opening one clears the previous window's choices.
+ *   never writes these prefs. Opening a window copies the sidebar's current
+ *   values into the window's store (startStandaloneSurfaceChoicesFromSidebar),
+ *   so a new window starts from the sidebar's values and afterwards the two
+ *   are independent: a later sidebar change does not move an untouched window.
+ *   Without that copy (no window opened yet) a standalone read falls back to
+ *   the sidebar's (persisted) value.
  *
  * The choices covered: the model entry (and with it WebChat mode, which is a
  * property of the entry), the conversation system (API / Claude Code /
@@ -44,6 +47,7 @@ import {
 import { DEFAULT_CODEX_RUNTIME_MODEL } from "../../codexAppServer/constants";
 import {
   getCodexDirectReasoningSelection,
+  getCodexDirectReasoningSelections,
   setCodexDirectReasoningSelection,
 } from "../../codexAuth/reasoningPrefs";
 import {
@@ -56,6 +60,7 @@ import type { SelectionSurface } from "./conversationSelection";
 import {
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
+  getLastUsedReasoningLevelsByProvider,
   getLastUsedRuntimeMode,
   isReasoningLevelSelection,
   normalizeReasoningProviderSelectionKey,
@@ -72,11 +77,15 @@ const standaloneChoices = new Map<string, unknown>();
 type SurfaceChoice<T> = {
   get: (surface?: SelectionSurface) => T;
   set: (value: T, surface?: SelectionSurface) => void;
+  /** Copy the sidebar's current value into the window's store. */
+  snapshot: () => void;
 };
 
 type KeyedSurfaceChoice<T> = {
   get: (key: string, surface?: SelectionSurface) => T;
   set: (key: string, value: T, surface?: SelectionSurface) => void;
+  /** Copy the sidebar's current values (every key) into the window's store. */
+  snapshot: () => void;
 };
 
 /**
@@ -104,13 +113,24 @@ function surfaceChoice<T>(params: {
       if (normalized === null) return;
       standaloneChoices.set(params.name, normalized);
     },
+    snapshot: () => {
+      standaloneChoices.set(params.name, params.getPref());
+    },
   };
 }
 
+/**
+ * One choice per key. `getAllPrefs` lists every key the pref holds, so the
+ * window can copy them when it opens; `unset` is what the pref reads for a
+ * key it does not hold, which is what the window reads for a key the sidebar
+ * had not set when the window opened.
+ */
 function keyedSurfaceChoice<T>(params: {
   name: string;
   normalizeKey: (key: string) => string | null;
   getPref: (key: string) => T;
+  getAllPrefs: () => Record<string, T>;
+  unset: T;
   setPref: (key: string, value: T) => void;
   normalize: (value: T) => T | null;
 }): KeyedSurfaceChoice<T> {
@@ -120,11 +140,18 @@ function keyedSurfaceChoice<T>(params: {
       ? null
       : `${params.name}\u0000${normalizedKey}`;
   };
+  // Present once the window has copied the sidebar's values for this choice.
+  const snapshotMarker = `${params.name}\u0000\u0000snapshot`;
   return {
     get: (key, surface) => {
-      const standaloneKey = surface === "standalone" ? slot(key) : null;
-      return standaloneKey !== null && standaloneChoices.has(standaloneKey)
-        ? (standaloneChoices.get(standaloneKey) as T)
+      if (surface !== "standalone") return params.getPref(key);
+      const standaloneKey = slot(key);
+      if (standaloneKey === null) return params.getPref(key);
+      if (standaloneChoices.has(standaloneKey)) {
+        return standaloneChoices.get(standaloneKey) as T;
+      }
+      return standaloneChoices.has(snapshotMarker)
+        ? params.unset
         : params.getPref(key);
     },
     set: (key, value, surface) => {
@@ -136,6 +163,13 @@ function keyedSurfaceChoice<T>(params: {
       const normalized = params.normalize(value);
       if (standaloneKey === null || normalized === null) return;
       standaloneChoices.set(standaloneKey, normalized);
+    },
+    snapshot: () => {
+      for (const [key, value] of Object.entries(params.getAllPrefs())) {
+        const standaloneKey = slot(key);
+        if (standaloneKey !== null) standaloneChoices.set(standaloneKey, value);
+      }
+      standaloneChoices.set(snapshotMarker, true);
     },
   };
 }
@@ -203,6 +237,8 @@ const lastUsedReasoningLevelForProvider =
     name: "lastUsedReasoningLevelForProvider",
     normalizeKey: normalizeReasoningProviderSelectionKey,
     getPref: getLastUsedReasoningLevelForProvider,
+    getAllPrefs: getLastUsedReasoningLevelsByProvider,
+    unset: null,
     setPref: (provider, level) => {
       if (level) setLastUsedReasoningLevelForProvider(provider, level);
     },
@@ -214,6 +250,8 @@ const codexDirectReasoningSelection = keyedSurfaceChoice<string>({
   name: "codexDirectReasoningSelection",
   normalizeKey: (model) => model.trim().toLowerCase(),
   getPref: getCodexDirectReasoningSelection,
+  getAllPrefs: getCodexDirectReasoningSelections,
+  unset: "auto",
   setPref: setCodexDirectReasoningSelection,
   normalize: (selection) => selection.trim() || "auto",
 });
@@ -271,9 +309,19 @@ export function demoteConversationSystemOnEverySurface(
   }
 }
 
-/** Forget every standalone choice; a new window starts from the sidebar's. */
+/** Forget every standalone choice; reads fall back to the sidebar's prefs. */
 export function clearStandaloneSurfaceChoices(): void {
   standaloneChoices.clear();
+}
+
+/**
+ * A new window starts from the sidebar's current values: forget the previous
+ * window's choices and copy every sidebar value into the window's store, so
+ * a later sidebar change does not move the window.
+ */
+export function startStandaloneSurfaceChoicesFromSidebar(): void {
+  standaloneChoices.clear();
+  for (const choice of Object.values(surfaceChoices)) choice.snapshot();
 }
 
 /**

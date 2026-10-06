@@ -235,6 +235,17 @@ function getLastReasoningLevelByProviderMap(): Record<string, string> {
   }
 }
 
+/** Every provider's last-used reasoning level, keyed by normalized provider. */
+export function getLastUsedReasoningLevelsByProvider(): Record<
+  string,
+  ReasoningLevelSelection
+> {
+  return getLastReasoningLevelByProviderMap() as Record<
+    string,
+    ReasoningLevelSelection
+  >;
+}
+
 /** The normalized provider key a last-used reasoning level is stored under. */
 export function normalizeReasoningProviderSelectionKey(
   provider: string,

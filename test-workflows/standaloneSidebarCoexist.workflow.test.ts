@@ -304,22 +304,27 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   }
 
-  async function selectWindowModel(entryId: string, model: string) {
-    const body = windowBody()!;
+  async function selectPanelModel(
+    body: HTMLElement,
+    entryId: string,
+    model: string,
+    name: string,
+  ) {
     const toggle = body.querySelector(
       "#llm-model-toggle",
     ) as HTMLButtonElement | null;
-    assert.isOk(toggle, "the window has a model button");
+    assert.isOk(toggle, `the ${name} has a model button`);
     toggle!.click();
     let option: HTMLElement | null = null;
+    const selector = `#llm-model-menu .llm-model-option[data-entry-id="${entryId}"]`;
     await until(
       () => {
-        option = body.ownerDocument.querySelector<HTMLElement>(
-          `#llm-model-menu .llm-model-option[data-entry-id="${entryId}"]`,
-        );
+        option =
+          body.querySelector<HTMLElement>(selector) ||
+          body.ownerDocument.querySelector<HTMLElement>(selector);
         return Boolean(option);
       },
-      () => `the window's model menu offers ${entryId}`,
+      () => `the ${name}'s model menu offers ${entryId}`,
     );
     option!.click();
     await until(
@@ -329,9 +334,14 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
             ?.dataset.modelLabel || ""
         ).includes(model),
       () =>
-        `the window's model button shows ${model}: ${JSON.stringify(windowState())}`,
+        `the ${name}'s model button shows ${model}: ${JSON.stringify(
+          readPanelState(null, body.querySelector("#llm-main")),
+        )}`,
     );
   }
+
+  const selectWindowModel = (entryId: string, model: string) =>
+    selectPanelModel(windowBody()!, entryId, model, "window");
 
   // ── Sending through a panel's own composer ───────────────────────────────
 
@@ -1024,6 +1034,55 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       "the sidebar's next send uses the sidebar's model, not the window's",
     );
     await waitForAnswer(toKey(sidebarRoot()?.dataset.itemId), "MODEL-ANSWER");
+  });
+
+  it("T5b: a model the sidebar chooses after the window opened does not change the window's model", async function () {
+    const paper = await newFixture("Coexist T5b");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    await until(
+      () => sidebarState().modelLabel.includes(MODEL_A),
+      () =>
+        `the sidebar starts on ${MODEL_A}: ${JSON.stringify(sidebarState())}`,
+    );
+
+    await api.openStandaloneForItem(paper.parentItemId);
+    await api.clickStandaloneTab("open");
+    await until(
+      () => windowState().modelLabel.includes(MODEL_A),
+      () =>
+        `the window opens on the sidebar's ${MODEL_A}: ${JSON.stringify(windowState())}`,
+    );
+    assertSidebarLive("after opening the window");
+
+    // The window never chose a model; the sidebar now does.
+    await selectPanelModel(sidebarBody()!, ENTRY_B, MODEL_B, "sidebar");
+    assert.equal(
+      Zotero.Prefs.get(PREF_PREFIX + "lastUsedModelEntryId", true),
+      ENTRY_B,
+      "the sidebar's choice is saved",
+    );
+    await Zotero.Promise.delay(400);
+    const state = windowState();
+    assert.include(
+      state.modelLabel,
+      MODEL_A,
+      `the window keeps the model it opened with after the sidebar chose ${MODEL_B}: ${JSON.stringify(state)}`,
+    );
+    assert.notInclude(state.modelLabel, MODEL_B, JSON.stringify(state));
+
+    const QUESTION = "Coexist T5b window question SNAPSHOT-Q";
+    typeAndSend(windowBody()!, QUESTION);
+    const stream = await provider.waitForStream(QUESTION);
+    const requestedModel = stream.model;
+    stream.push("SNAPSHOT-ANSWER");
+    stream.finish();
+    assert.equal(
+      requestedModel,
+      MODEL_A,
+      "the window's next send uses the model it opened with, not the sidebar's later choice",
+    );
+    await waitForAnswer(toKey(windowRoot()?.dataset.itemId), "SNAPSHOT-ANSWER");
   });
 
   // ── T6 ───────────────────────────────────────────────────────────────────
