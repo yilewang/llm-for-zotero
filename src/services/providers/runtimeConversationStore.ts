@@ -13,11 +13,20 @@ import { normalizeQuoteCitations } from "../quotes/quoteCitations";
 import { serializeForcedSkillIds } from "../../shared/skillIds";
 import { storedMessageDisplayOrderSql } from "../../shared/conversationMessageSql";
 import {
+  copyConversationMessagesThroughAssistantAnchor,
+  type ForkConversationMessagesResult,
+} from "../../shared/conversationMessageForkCopy";
+import {
+  getConversationKeyRange,
   isConversationKeyFor,
   isConversationKeyForKind,
 } from "../../shared/conversationKeySpace";
 import {
+  AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   buildConversationID as buildSharedConversationID,
+  canMigrateLegacyAmbiguousPaperRegistryScope,
+  getPaperContextOwnershipEvidenceFromRows,
+  repairRegisteredConversationScope,
   deleteRegisteredConversationScopeInTransaction,
   generateConversationInstanceID,
   getRegisteredConversationScope,
@@ -26,8 +35,30 @@ import {
   syncCatalogInstanceID,
   type PaperContextJsonColumns,
 } from "../../shared/conversationRegistry";
+import { stagePaperRestoreTargetForStartup } from "../../shared/paperConversationRestore";
+import {
+  CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+  CONVERSATION_KEY_LEDGER_MIGRATION_ID,
+  hasConversationSchemaMigration,
+  rekeyConversationCatalogKeyInTransaction,
+  rekeyConversationOwnedRowsInTransaction,
+  runConversationSchemaMigrationOnce,
+} from "../../shared/conversationSchemaMigrations";
+import {
+  runConversationStoreStartupSchema,
+  type StartupSchemaPass,
+} from "../../shared/startupSchemaFingerprint";
 import {
   allocateConversationKeyInTransaction,
+  initializeConversationKeyCounterInTransaction,
+  installConversationKeyLedgerCatalogTriggers,
+  installConversationKeyLedgerMessageTriggers,
+  nextUnissuedConversationKeyInRange,
+  refreshConversationKeyLedgerStore,
+  reserveOrphanConversationMessageKeys,
+  retireOrphanedConversationLedgerEntries,
+  seedConversationKeyLedgerFromCatalogs,
+  seedConversationKeyLedgerFromTombstones,
   ConversationRetiredError,
   ensureConversationKeyLedgerEntry,
   ensureConversationKeyLedgerEntryInTransaction,
@@ -125,6 +156,15 @@ export type RuntimeStoreConfig = {
   system: RuntimeConversationSystem;
   /** The store name in warnings and error messages. */
   storeLabel: "Claude" | "Codex";
+  /** Persisted: names the store's startup fingerprint row. */
+  startupStoreID: "claude-code" | "codex";
+  /** Persisted: the store's instance-identity backfill migration. */
+  instanceIdMigrationID: string;
+  /**
+   * Bump when the startup schema pass changes in a way that must run inside a
+   * transaction once (a new multi-statement repair, a table rebuild).
+   */
+  schemaRevision: number;
   tables: RuntimeStoreTables;
   /** Default and fallback row limit for loading a conversation. */
   historyLimit: number;
@@ -133,6 +173,16 @@ export type RuntimeStoreConfig = {
    * and used to order every summary and list query.
    */
   activityTimestampSqlForAliasC: string;
+  /**
+   * D3: extra catalog columns (name, column definition), created after
+   * provider_session_id and added to an older catalog (Codex only).
+   */
+  extraCatalogColumns: ReadonlyArray<readonly [name: string, ddl: string]>;
+  /**
+   * D2: the user turn count the identity-registry repair reports.  Claude
+   * reads the cached catalog column; Codex counts its user messages.
+   */
+  registryRepairUserTurnCountSql: string;
   /** D3: extra catalog columns read into the summary (Codex only). */
   summaryExtraColumns: ReadonlyArray<{
     sql: string;
@@ -168,14 +218,30 @@ export type RuntimeStoreConfig = {
       conversationKey: number,
       timestamp: number,
     ): Promise<void>;
+    /**
+     * D6: runs in the first startup pass, before the legacy key migration
+     * (Codex moves its misrouted rows out of the Claude tables).
+     */
+    beforeLegacyKeyMigration?(): Promise<void>;
+    /** D7: runs after the startup schema pass (Codex cleans key prefs). */
+    afterStartupSchema?(): void;
   };
+  /** D8: the message columns a fork copies (Codex only; Claude cannot fork). */
+  fork?: { copyColumns: readonly string[] };
   keys: {
     allocatedRange(kind: RuntimeConversationKind): {
       start: number;
       endExclusive: number;
     };
+    buildDefaultGlobalKey(libraryID: number): number;
+    buildDefaultPaperKey(paperItemID: number): number;
+    isInRange(conversationKey: number, kind: RuntimeConversationKind): boolean;
   };
   prefs: {
+    getLastAllocatedGlobal(): number | null;
+    getLastAllocatedPaper(): number | null;
+    setLastUsedMode(libraryID: number, mode: RuntimeConversationKind): void;
+    setLastUsedGlobal(libraryID: number, conversationKey: number): void;
     setLastAllocatedGlobal(conversationKey: number): void;
     setLastAllocatedPaper(conversationKey: number): void;
     setLastUsedPaper(
@@ -268,6 +334,13 @@ type RuntimeConversationRow = {
   userTurnCount?: unknown;
 };
 
+type RuntimeConversationKeyRemap = {
+  legacyKey: number;
+  targetKey: number;
+  /** A retired key may contain an older owner's rows; never adopt them. */
+  preserveLegacyRows?: boolean;
+};
+
 export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
   const { system, storeLabel, tables } = config;
   const historyLimit = config.historyLimit;
@@ -282,6 +355,22 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       .map((column) => `\n${indent}${column.sql} AS ${column.alias},`)
       .join("");
   }
+
+  /**
+   * Migrations the startup schema pass guards with markers.  Their IDs are part
+   * of the startup fingerprint, so declaring a new one here forces the next
+   * launch back through the transactional pass (see startupSchemaFingerprint).
+   */
+  const startupMigrationIDs = [
+    CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+    config.instanceIdMigrationID,
+    CONVERSATION_KEY_LEDGER_MIGRATION_ID,
+  ] as const;
+
+  /** D3: the extra catalog columns as CREATE TABLE lines. */
+  const extraCatalogCreateSql = config.extraCatalogColumns
+    .map(([, definition]) => `\n        ${definition},`)
+    .join("");
 
   /** D3: the extra upsert columns, their placeholders and merge lines. */
   const upsertExtraColumnListSql = config.upsertExtraColumns
@@ -2107,50 +2196,858 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     }
   }
 
+  function remapLegacyConversationKey(
+    legacyConversationKey: number,
+    kind: RuntimeConversationKind,
+    libraryID: number,
+    paperItemID?: number,
+  ): number | null {
+    const normalizedLegacyKey = normalizeConversationKey(legacyConversationKey);
+    const normalizedLibraryID = normalizeLibraryID(libraryID);
+    if (!normalizedLegacyKey || !normalizedLibraryID) return null;
+    if (config.keys.isInRange(normalizedLegacyKey, kind))
+      return normalizedLegacyKey;
+    if (kind === "paper") {
+      const normalizedPaperItemID = normalizePaperItemID(paperItemID || 0);
+      if (!normalizedPaperItemID) return null;
+      return config.keys.buildDefaultPaperKey(normalizedPaperItemID);
+    }
+    return config.keys.buildDefaultGlobalKey(normalizedLibraryID);
+  }
+
+  async function migrateLegacyConversationKeys(): Promise<
+    RuntimeConversationKeyRemap[]
+  > {
+    const remaps: RuntimeConversationKeyRemap[] = [];
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT conversation_key AS conversationKey,
+            library_id AS libraryID,
+            kind AS kind,
+            paper_item_id AS paperItemID,
+            updated_at AS updatedAt
+     FROM ${tables.catalog}
+     ORDER BY updated_at DESC, conversation_key DESC`,
+    )) as
+      | Array<{
+          conversationKey?: unknown;
+          libraryID?: unknown;
+          kind?: unknown;
+          paperItemID?: unknown;
+          updatedAt?: unknown;
+        }>
+      | undefined;
+    if (!rows?.length) return remaps;
+
+    const claimedKeys = new Set<number>(
+      rows
+        .map((row) => {
+          const kind =
+            row.kind === "paper"
+              ? "paper"
+              : row.kind === "global"
+                ? "global"
+                : null;
+          const conversationKey = normalizeConversationKey(
+            Number(row.conversationKey),
+          );
+          return kind &&
+            conversationKey &&
+            config.keys.isInRange(conversationKey, kind)
+            ? conversationKey
+            : null;
+        })
+        .filter((value): value is number => Number.isFinite(value)),
+    );
+    const latestModeByLibrary = new Set<number>();
+    const latestGlobalByLibrary = new Set<number>();
+    const latestPaperByState = new Set<string>();
+    const isUnavailable = async (key: number): Promise<boolean> =>
+      Boolean(await getConversationKeyLedgerEntry(key));
+    const isRetired = async (key: number): Promise<boolean> =>
+      Boolean((await getConversationKeyLedgerEntry(key))?.retiredAt);
+    for (const row of rows) {
+      const kind =
+        row.kind === "paper"
+          ? "paper"
+          : row.kind === "global"
+            ? "global"
+            : null;
+      const legacyConversationKey = normalizeConversationKey(
+        Number(row.conversationKey),
+      );
+      const libraryID = normalizeLibraryID(Number(row.libraryID));
+      const paperItemID = normalizePaperItemID(Number(row.paperItemID));
+      if (!kind || !legacyConversationKey || !libraryID) continue;
+
+      // A tombstone/retired ledger witness means this numeric key belonged to a
+      // prior immutable instance. If an old catalog row was later reused before
+      // the permanent-key migration ran, its key-only messages and agent rows
+      // are ambiguous and must remain quarantined rather than being moved into
+      // the replacement catalog below.
+      const legacyKeyWasRetired = Boolean(
+        (await getConversationKeyLedgerEntry(legacyConversationKey))?.retiredAt,
+      );
+
+      let targetConversationKey = remapLegacyConversationKey(
+        legacyConversationKey,
+        kind,
+        libraryID,
+        paperItemID || undefined,
+      );
+      if (!targetConversationKey) continue;
+      if (await isRetired(targetConversationKey)) {
+        targetConversationKey = null;
+      }
+      if (targetConversationKey === null) {
+        // Fall through to the monotonic fallback below.
+      }
+      if (
+        targetConversationKey !== null &&
+        claimedKeys.has(targetConversationKey) &&
+        targetConversationKey !== legacyConversationKey
+      ) {
+        targetConversationKey = null;
+      }
+      if (!targetConversationKey) {
+        targetConversationKey = Math.max(
+          ((kind === "paper"
+            ? config.prefs.getLastAllocatedPaper()
+            : config.prefs.getLastAllocatedGlobal()) || 0) + 1,
+          (await getMaxConversationKey(kind)) + 1,
+        );
+        const range = getConversationKeyRange(system, kind);
+        targetConversationKey = await nextUnissuedConversationKeyInRange({
+          start: range.start,
+          endExclusive: range.endExclusive,
+          atLeast: targetConversationKey,
+        });
+      }
+
+      claimedKeys.add(targetConversationKey);
+      if (targetConversationKey !== legacyConversationKey) {
+        await rekeyConversationCatalogKeyInTransaction({
+          table: tables.catalog,
+          legacyKey: legacyConversationKey,
+          targetKey: targetConversationKey,
+        });
+        if (!legacyKeyWasRetired) {
+          await Zotero.DB.queryAsync(
+            `UPDATE ${tables.messages}
+           SET conversation_key = ?
+           WHERE conversation_key = ?`,
+            [targetConversationKey, legacyConversationKey],
+          );
+        }
+        remaps.push({
+          legacyKey: legacyConversationKey,
+          targetKey: targetConversationKey,
+          preserveLegacyRows: legacyKeyWasRetired,
+        });
+      }
+
+      if (!latestModeByLibrary.has(libraryID)) {
+        config.prefs.setLastUsedMode(
+          libraryID,
+          kind === "paper" ? "paper" : "global",
+        );
+        latestModeByLibrary.add(libraryID);
+      }
+      if (kind === "paper" && paperItemID) {
+        const paperStateKey = `${libraryID}:${paperItemID}`;
+        if (!latestPaperByState.has(paperStateKey)) {
+          stagePaperRestoreTargetForStartup(
+            { system, libraryID, paperItemID },
+            targetConversationKey,
+          );
+          latestPaperByState.add(paperStateKey);
+        }
+        config.prefs.setLastAllocatedPaper(targetConversationKey);
+        continue;
+      }
+      if (!latestGlobalByLibrary.has(libraryID)) {
+        config.prefs.setLastUsedGlobal(libraryID, targetConversationKey);
+        latestGlobalByLibrary.add(libraryID);
+      }
+      config.prefs.setLastAllocatedGlobal(targetConversationKey);
+    }
+    return remaps;
+  }
+
+  async function ensureCatalogColumns(
+    columns: Array<{ name?: unknown }> | undefined,
+  ): Promise<void> {
+    const requiredColumns: Array<readonly [string, string]> = [
+      ["conversation_id", "conversation_id TEXT"],
+      ["conversation_instance_id", "conversation_instance_id TEXT"],
+      ["library_id", "library_id INTEGER"],
+      ["kind", "kind TEXT"],
+      ["paper_item_id", "paper_item_id INTEGER"],
+      ["created_at", "created_at INTEGER"],
+      ["updated_at", "updated_at INTEGER"],
+      ["last_activity_at", "last_activity_at INTEGER"],
+      ["user_turn_count", "user_turn_count INTEGER NOT NULL DEFAULT 0"],
+      ["first_user_title", "first_user_title TEXT"],
+      ["title", "title TEXT"],
+      ["provider_session_id", "provider_session_id TEXT"],
+      ...config.extraCatalogColumns,
+      ["scoped_conversation_key", "scoped_conversation_key TEXT"],
+      ["scope_type", "scope_type TEXT"],
+      ["scope_id", "scope_id TEXT"],
+      ["scope_label", "scope_label TEXT"],
+      ["cwd", "cwd TEXT"],
+      ["model_name", "model_name TEXT"],
+      ["effort", "effort TEXT"],
+    ];
+    for (const [columnName, definition] of requiredColumns) {
+      await ensureColumn(tables.catalog, columns, columnName, definition);
+    }
+  }
+
+  async function repairConversationIdentityRegistry(
+    options: { inTransaction?: boolean } = {},
+  ): Promise<void> {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT c.conversation_id AS conversationID,
+            c.conversation_key AS conversationKey,
+            c.library_id AS libraryID,
+            c.kind AS kind,
+            c.paper_item_id AS paperItemID,
+            c.created_at AS createdAt,
+            ${activitySql} AS updatedAt,
+            COALESCE(NULLIF(TRIM(c.title), ''), NULLIF(TRIM(c.first_user_title), '')) AS title,
+            c.provider_session_id AS providerSessionId,${summaryExtraSelectSql("            ")}
+            c.scoped_conversation_key AS scopedConversationKey,
+            c.scope_type AS scopeType,
+            c.scope_id AS scopeId,
+            c.scope_label AS scopeLabel,
+            c.cwd AS cwd,
+            c.model_name AS modelName,
+            c.effort AS effort,
+            ${config.registryRepairUserTurnCountSql} AS userTurnCount
+     FROM ${tables.catalog} c
+     ORDER BY updatedAt DESC, c.conversation_key DESC`,
+    )) as RuntimeConversationRow[] | undefined;
+    for (const row of rows || []) {
+      const summary = toSummary(row);
+      if (!summary) continue;
+      if (summary.kind === "paper") {
+        const registered = await getRegisteredConversationScope(
+          summary.conversationKey,
+        );
+        if (
+          canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
+            system,
+            kind: summary.kind,
+            libraryID: summary.libraryID,
+            paperItemID: summary.paperItemID,
+          })
+        ) {
+          await repairRegisteredConversationScope(
+            {
+              conversationID: summary.conversationID,
+              conversationKey: summary.conversationKey,
+              system,
+              kind: "paper",
+              libraryID: summary.libraryID,
+              paperItemID: summary.paperItemID,
+              createdAt: summary.createdAt,
+              updatedAt: summary.updatedAt,
+              title: summary.title,
+            },
+            options,
+          );
+          logConversationStoreWarning(
+            `Migrated ${storeLabel} conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
+          );
+          continue;
+        }
+        if (!summary.paperItemID) {
+          const evidence = getPaperContextOwnershipEvidenceFromRows(
+            await getMessagePaperContextRows(summary.conversationKey),
+          );
+          const inferredPaperItemID = evidence.singlePaperItemID;
+          if (!inferredPaperItemID) continue;
+          const repairedConversationID = buildConversationID({
+            conversationKey: summary.conversationKey,
+            kind: "paper",
+            libraryID: summary.libraryID,
+            paperItemID: inferredPaperItemID,
+          });
+          await Zotero.DB.queryAsync(
+            `UPDATE ${tables.catalog}
+           SET conversation_id = ?,
+               paper_item_id = ?
+           WHERE conversation_key = ?`,
+            [
+              repairedConversationID,
+              inferredPaperItemID,
+              summary.conversationKey,
+            ],
+          );
+          await Zotero.DB.queryAsync(
+            `UPDATE ${tables.messages}
+           SET conversation_id = ?
+           WHERE conversation_key = ?`,
+            [repairedConversationID, summary.conversationKey],
+          );
+          await repairRegisteredConversationScope(
+            {
+              conversationKey: summary.conversationKey,
+              system,
+              kind: "paper",
+              libraryID: summary.libraryID,
+              paperItemID: inferredPaperItemID,
+              createdAt: summary.createdAt,
+              updatedAt: summary.updatedAt,
+              title: summary.title,
+            },
+            options,
+          );
+          logConversationStoreWarning(
+            `Repaired ${storeLabel} conversation ${summary.conversationKey} to paper ${inferredPaperItemID} based on stored paper contexts.`,
+          );
+          continue;
+        }
+      }
+      await registerConversationScope(
+        {
+          conversationID: summary.conversationID,
+          conversationKey: summary.conversationKey,
+          system,
+          kind: summary.kind,
+          libraryID: summary.libraryID,
+          paperItemID: summary.paperItemID,
+          createdAt: summary.createdAt,
+          updatedAt: summary.updatedAt,
+          title: summary.title,
+        },
+        options,
+      );
+    }
+  }
+
+  async function initStore(): Promise<void> {
+    const conversationIDTransitionAlreadyApplied =
+      await hasConversationSchemaMigration(
+        CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+      );
+    const applyStartupSchema = async ({
+      atomically,
+    }: StartupSchemaPass): Promise<void> => {
+      await initConversationRegistryStore();
+      await Zotero.DB.queryAsync(
+        `CREATE TABLE IF NOT EXISTS ${tables.messages} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT,
+        conversation_instance_id TEXT,
+        conversation_key INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+        text TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        run_mode TEXT CHECK(run_mode IN ('chat', 'agent')),
+        agent_run_id TEXT,
+        document_id TEXT,
+        selected_text TEXT,
+        selected_text_contexts_json TEXT,
+        selected_texts_json TEXT,
+        selected_text_sources_json TEXT,
+        selected_text_paper_contexts_json TEXT,
+        selected_text_note_contexts_json TEXT,
+        forced_skill_ids_json TEXT,
+        paper_contexts_json TEXT,
+        pdf_paper_contexts_json TEXT,
+        full_text_paper_contexts_json TEXT,
+        citation_paper_contexts_json TEXT,
+        quote_citations_json TEXT,
+        collection_contexts_json TEXT,
+        tag_contexts_json TEXT,
+        screenshot_images TEXT,
+        attachments_json TEXT,
+        generated_images_json TEXT,
+        model_name TEXT,
+        model_entry_id TEXT,
+        model_provider_label TEXT,
+        interrupted INTEGER,
+        webchat_run_state TEXT,
+        webchat_completion_reason TEXT,
+        reasoning_summary TEXT,
+        reasoning_details TEXT,
+        compact_marker INTEGER,
+        context_tokens INTEGER,
+        context_window INTEGER
+      )`,
+      );
+      const columns = (await Zotero.DB.queryAsync(
+        `PRAGMA table_info(${tables.messages})`,
+      )) as Array<{ name?: unknown }> | undefined;
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "conversation_id",
+        "conversation_id TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "conversation_instance_id",
+        "conversation_instance_id TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "document_id",
+        "document_id TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "selected_text_contexts_json",
+        "selected_text_contexts_json TEXT",
+      );
+      const hasCompactMarkerColumn = Boolean(
+        columns?.some((column) => column?.name === "compact_marker"),
+      );
+      if (!hasCompactMarkerColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN compact_marker INTEGER`,
+        );
+      }
+      const hasContextTokensColumn = Boolean(
+        columns?.some((column) => column?.name === "context_tokens"),
+      );
+      if (!hasContextTokensColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN context_tokens INTEGER`,
+        );
+      }
+      const hasContextWindowColumn = Boolean(
+        columns?.some((column) => column?.name === "context_window"),
+      );
+      if (!hasContextWindowColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN context_window INTEGER`,
+        );
+      }
+      const hasCitationPaperContextsJsonColumn = Boolean(
+        columns?.some(
+          (column) => column?.name === "citation_paper_contexts_json",
+        ),
+      );
+      const hasPdfPaperContextsJsonColumn = Boolean(
+        columns?.some((column) => column?.name === "pdf_paper_contexts_json"),
+      );
+      if (!hasPdfPaperContextsJsonColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN pdf_paper_contexts_json TEXT`,
+        );
+      }
+      if (!hasCitationPaperContextsJsonColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN citation_paper_contexts_json TEXT`,
+        );
+      }
+      const hasQuoteCitationsJsonColumn = Boolean(
+        columns?.some((column) => column?.name === "quote_citations_json"),
+      );
+      if (!hasQuoteCitationsJsonColumn) {
+        await Zotero.DB.queryAsync(
+          `ALTER TABLE ${tables.messages}
+         ADD COLUMN quote_citations_json TEXT`,
+        );
+      }
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "collection_contexts_json",
+        "collection_contexts_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "tag_contexts_json",
+        "tag_contexts_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "forced_skill_ids_json",
+        "forced_skill_ids_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "generated_images_json",
+        "generated_images_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "interrupted",
+        "interrupted INTEGER",
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE INDEX IF NOT EXISTS ${tables.messagesIndex}
+       ON ${tables.messages} (conversation_key, timestamp, id)`,
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE INDEX IF NOT EXISTS ${tables.messagesIdIndex}
+       ON ${tables.messages} (conversation_id, timestamp, id)`,
+      );
+
+      await Zotero.DB.queryAsync(
+        `CREATE TABLE IF NOT EXISTS ${tables.catalog} (
+        conversation_id TEXT,
+        conversation_instance_id TEXT,
+        conversation_key INTEGER PRIMARY KEY,
+        library_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
+        paper_item_id INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_activity_at INTEGER,
+        user_turn_count INTEGER NOT NULL DEFAULT 0,
+        first_user_title TEXT,
+        title TEXT,
+        provider_session_id TEXT,${extraCatalogCreateSql}
+        scoped_conversation_key TEXT,
+        scope_type TEXT,
+        scope_id TEXT,
+        scope_label TEXT,
+        cwd TEXT,
+        model_name TEXT,
+        effort TEXT
+      )`,
+      );
+      const conversationColumns = (await Zotero.DB.queryAsync(
+        `PRAGMA table_info(${tables.catalog})`,
+      )) as Array<{ name?: unknown }> | undefined;
+      await ensureCatalogColumns(conversationColumns);
+      let migratedKeyRemaps: RuntimeConversationKeyRemap[] = [];
+      if (!conversationIDTransitionAlreadyApplied) {
+        await backfillConversationTimestamps();
+      }
+      await Zotero.DB.queryAsync(
+        `CREATE INDEX IF NOT EXISTS ${tables.kindIndex}
+       ON ${tables.catalog} (library_id, kind, paper_item_id, updated_at DESC, conversation_key DESC)`,
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE INDEX IF NOT EXISTS ${tables.activityIndex}
+       ON ${tables.catalog} (library_id, kind, paper_item_id, last_activity_at DESC, updated_at DESC, conversation_key DESC)`,
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE UNIQUE INDEX IF NOT EXISTS ${tables.idIndex}
+       ON ${tables.catalog} (conversation_id)`,
+      );
+      if (!conversationIDTransitionAlreadyApplied) {
+        await initConversationKeyLedgerStore();
+        await initRecentlyDeletedConversationTombstones();
+        await seedConversationKeyLedgerFromTombstones();
+        await reserveOrphanConversationMessageKeys({
+          messageTable: tables.messages,
+          catalogTables: [tables.catalog],
+          system,
+          sourceTables: [
+            { table: "llm_for_zotero_agent_memory" },
+            { table: "llm_for_zotero_agent_transcript" },
+            { table: "llm_for_zotero_agent_tool_result_handles" },
+            { table: "llm_for_zotero_agent_evidence" },
+            { table: "llm_for_zotero_agent_runs" },
+            {
+              table: "llm_for_zotero_agent_coverage",
+              column: "origin_conversation_key",
+            },
+            {
+              table: "llm_for_zotero_attachment_refs",
+              column: "owner_id",
+              whereSql: "s.owner_type = 'conversation'",
+            },
+          ],
+        });
+        await config.hooks?.beforeLegacyKeyMigration?.();
+        migratedKeyRemaps = await migrateLegacyConversationKeys();
+        await backfillConversationIDs();
+        await repairConversationIdentityRegistry({ inTransaction: true });
+        await refreshCatalogSummary();
+      }
+      await runConversationSchemaMigrationOnce(
+        config.instanceIdMigrationID,
+        `Backfill immutable conversation instance identities for ${storeLabel} catalogs and registry rows.`,
+        async () => {
+          await backfillConversationIDs();
+          await backfillConversationInstanceIDs();
+          await repairConversationIdentityRegistry({ inTransaction: true });
+        },
+      );
+      await refreshConversationKeyLedgerStore();
+      await initRecentlyDeletedConversationTombstones();
+      await runConversationSchemaMigrationOnce(
+        CONVERSATION_KEY_LEDGER_MIGRATION_ID,
+        `Reserve every existing ${storeLabel} conversation key permanently and initialize the monotonic allocator.`,
+        async () => {
+          await seedConversationKeyLedgerFromCatalogs([
+            {
+              table: tables.catalog,
+              system,
+              kind: "global",
+              kindColumn: true,
+            },
+            {
+              table: tables.catalog,
+              system,
+              kind: "paper",
+              kindColumn: true,
+            },
+          ]);
+        },
+      );
+      await seedConversationKeyLedgerFromCatalogs([
+        {
+          table: tables.catalog,
+          system,
+          kind: "global",
+          kindColumn: true,
+        },
+        {
+          table: tables.catalog,
+          system,
+          kind: "paper",
+          kindColumn: true,
+        },
+      ]);
+      for (const remap of migratedKeyRemaps) {
+        if (remap.preserveLegacyRows) continue;
+        await rekeyConversationOwnedRowsInTransaction(
+          remap.legacyKey,
+          remap.targetKey,
+        );
+      }
+      await seedConversationKeyLedgerFromTombstones();
+      await reserveOrphanConversationMessageKeys({
+        messageTable: tables.messages,
+        catalogTables: [tables.catalog],
+        system,
+        sourceTables: [
+          { table: "llm_for_zotero_agent_memory" },
+          { table: "llm_for_zotero_agent_transcript" },
+          { table: "llm_for_zotero_agent_tool_result_handles" },
+          { table: "llm_for_zotero_agent_evidence" },
+          { table: "llm_for_zotero_agent_runs" },
+          {
+            table: "llm_for_zotero_agent_coverage",
+            column: "origin_conversation_key",
+          },
+          {
+            table: "llm_for_zotero_attachment_refs",
+            column: "owner_id",
+            whereSql: "s.owner_type = 'conversation'",
+          },
+          {
+            table: "llm_for_zotero_conversation_registry",
+            column: "legacy_conversation_key",
+          },
+          {
+            table: "llm_for_zotero_conversation_search_index",
+            column: "legacy_conversation_key",
+          },
+          { table: "llm_for_zotero_conversation_cleanup_jobs" },
+          { table: "llm_for_zotero_pending_deletions" },
+          { table: "llm_for_zotero_agent_trace_exports" },
+          { table: "llm_for_zotero_agent_trace_file_cleanup" },
+          {
+            table: "llm_for_zotero_conversation_fork_links",
+            column: "source_conversation_key",
+          },
+          {
+            table: "llm_for_zotero_conversation_fork_links",
+            column: "target_conversation_key",
+          },
+        ],
+      });
+      await retireOrphanedConversationLedgerEntries({
+        system,
+        kind: "global",
+        catalogTables: [tables.catalog],
+        atomically,
+      });
+      await retireOrphanedConversationLedgerEntries({
+        system,
+        kind: "paper",
+        catalogTables: [tables.catalog],
+        atomically,
+      });
+      const globalRange = config.keys.allocatedRange("global");
+      const paperRange = config.keys.allocatedRange("paper");
+      await initializeConversationKeyCounterInTransaction({
+        system,
+        kind: "global",
+        start: globalRange.start,
+        endExclusive: globalRange.endExclusive,
+        profileSignature: config.profileSignature(),
+      });
+      await initializeConversationKeyCounterInTransaction({
+        system,
+        kind: "paper",
+        start: paperRange.start,
+        endExclusive: paperRange.endExclusive,
+        profileSignature: config.profileSignature(),
+      });
+      await Zotero.DB.queryAsync(
+        `UPDATE ${tables.messages}
+       SET conversation_instance_id = (
+         SELECT c.conversation_instance_id
+         FROM ${tables.catalog} c
+         WHERE c.conversation_key = ${tables.messages}.conversation_key
+       )
+       WHERE conversation_instance_id IS NULL
+          OR TRIM(conversation_instance_id) = ''`,
+      );
+      await installConversationKeyLedgerCatalogTriggers([tables.catalog]);
+      await installConversationKeyLedgerMessageTriggers({
+        messageTable: tables.messages,
+      });
+    };
+    await runConversationStoreStartupSchema({
+      storeID: config.startupStoreID,
+      schemaRevision: config.schemaRevision,
+      migrationIDs: startupMigrationIDs,
+      body: applyStartupSchema,
+    });
+    config.hooks?.afterStartupSchema?.();
+  }
+
+  async function resolveRegisteredConversationInstanceID(
+    conversationKey: number,
+  ): Promise<string | null> {
+    const registered = await getRegisteredConversationScope(conversationKey);
+    if (registered?.instanceID) return registered.instanceID;
+    const ledger = await getConversationKeyLedgerEntry(conversationKey);
+    return ledger?.instanceID || null;
+  }
+
+  async function assertForkSourceLive(params: {
+    conversationKey: number;
+    instanceID?: string;
+    conversationID?: string;
+  }): Promise<void> {
+    const key = normalizeConversationKey(params.conversationKey);
+    if (!key) throw new ConversationRetiredError(0, params.instanceID || "");
+    const ledger = await getConversationKeyLedgerEntry(key);
+    if (!ledger && !params.instanceID) return;
+    const instanceID = params.instanceID?.trim() || ledger?.instanceID || "";
+    if (!ledger || ledger.retiredAt || ledger.instanceID !== instanceID) {
+      throw new ConversationRetiredError(key, instanceID);
+    }
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT conversation_id AS conversationID
+     FROM ${tables.catalog}
+     WHERE conversation_key = ?
+       AND conversation_instance_id = ?
+       AND (? = '' OR conversation_id = ?)
+     LIMIT 1`,
+      [
+        key,
+        instanceID,
+        params.conversationID?.trim() || "",
+        params.conversationID?.trim() || "",
+      ],
+    )) as Array<{ conversationID?: unknown }> | undefined;
+    if (!rows?.length) throw new ConversationRetiredError(key, instanceID);
+  }
+
+  /** D8: only a store configured with `fork` (Codex) can fork. */
+  function requireForkConfig(): NonNullable<RuntimeStoreConfig["fork"]> {
+    if (!config.fork) {
+      throw new Error(`${storeLabel} conversations cannot be forked`);
+    }
+    return config.fork;
+  }
+
+  async function forkConversationMessages(params: {
+    sourceConversationKey: number;
+    sourceInstanceID?: string;
+    sourceConversationID?: string;
+    targetConversationKey: number;
+    throughAssistantTimestamp: number;
+    timestampBase?: number;
+  }): Promise<ForkConversationMessagesResult> {
+    const fork = requireForkConfig();
+    return copyConversationMessagesThroughAssistantAnchor(
+      {
+        tableName: tables.messages,
+        copyColumns: fork.copyColumns,
+        isValidConversationKey: isStoreConversationKey,
+        resolveSourceSelector: resolveRepairingMessageConversationSelector,
+        resolveTargetConversationID: resolveRegisteredConversationID,
+        resolveTargetInstanceID: resolveRegisteredConversationInstanceID,
+        assertSourceConversationLive: assertForkSourceLive,
+        refreshCatalogSummary,
+        refreshSearchIndex,
+        afterCopy: config.hooks?.afterMessageWriteInTransaction,
+      },
+      params,
+    );
+  }
+
+  async function getLatestForkableAssistantTimestamp(
+    conversationKey: number,
+  ): Promise<number> {
+    requireForkConfig();
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return 0;
+    const selector =
+      await resolveRepairingMessageConversationSelector(normalizedKey);
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT timestamp
+     FROM ${tables.messages}
+     WHERE ${selector.whereSql}
+       AND role = 'assistant'
+       AND COALESCE(compact_marker, 0) = 0
+       AND NULLIF(TRIM(COALESCE(webchat_run_state, '')), '') IS NULL
+       AND NULLIF(TRIM(COALESCE(webchat_completion_reason, '')), '') IS NULL
+     ORDER BY ${storedMessageDisplayOrderSql({ direction: "desc" })}
+     LIMIT 1`,
+      selector.params,
+    )) as Array<{ timestamp?: unknown }> | undefined;
+    const timestamp = Number(rows?.[0]?.timestamp || 0);
+    return Number.isFinite(timestamp) && timestamp > 0
+      ? Math.floor(timestamp)
+      : 0;
+  }
+
   return {
     isStoreConversationKey,
-    isStoreConversationKeyForKind,
-    buildConversationID,
-    resolveRegisteredConversationID,
-    resolveAppendIdentity,
-    getMessagePaperContextRows,
-    resolveRepairingMessageConversationSelector,
-    refreshSearchIndex,
-    deleteSearchIndex,
-    backfillConversationTimestamps,
-    refreshCatalogSummary,
-    repairRecoverableCatalogMessageConversationIDs,
-    backfillConversationIDs,
-    backfillConversationInstanceIDs,
-    sameCatalogScope,
-    filterValidSummaries,
-    loadConversation,
-    toSummary,
-    getSummary,
-    listConversations,
-    listGlobalConversations,
-    listPaperConversations,
-    listAllPaperConversationsByLibrary,
-    getMaxConversationKey,
-    touchConversationTitle,
-    clearConversationSessionMetadata,
-    setConversationTitle,
-    deleteConversation,
+    startupMigrationIDs,
+    initStore,
+    repairConversationIdentityRegistry,
     appendMessage,
+    loadConversation,
     clearConversation,
     deleteTurnMessages,
     pruneConversation,
     updateLatestUserMessage,
     updateLatestAssistantMessage,
+    getSummary,
     upsertSummary,
+    listGlobalConversations,
+    listPaperConversations,
+    listAllPaperConversationsByLibrary,
     ensureGlobalConversation,
     ensurePaperConversation,
-    allocateConversationKey,
-    retireAllocationAfterCreateFailure,
     createGlobalConversation,
     createPaperConversation,
+    touchConversationTitle,
+    clearConversationSessionMetadata,
+    setConversationTitle,
+    deleteConversation,
     preflightDeleteConversationLocalRows,
     deleteConversationLocalRows,
+    forkConversationMessages,
+    getLatestForkableAssistantTimestamp,
   };
 }
 
