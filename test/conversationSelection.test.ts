@@ -545,6 +545,16 @@ describe("conversationSelection", function () {
           assert.equal(standaloneGlobalConversationByLibrary.size, 0);
         });
 
+        it("does not write the sidebar's saved chat when only the window asked for a provisioned conversation", function () {
+          const requested = fixture.globalKey();
+          const replacement = fixture.globalKey() + 7;
+          remember(windowGlobal(), requested);
+          rememberProvisioned(globalScopeFor(), requested, replacement);
+          assert.equal(recall(windowGlobal()), replacement);
+          assert.isFalse(fixture.globalMap().has(fixture.globalStateKey()));
+          assert.isNull(fixture.getGlobal());
+        });
+
         it("drops everything the window chose when cleared", function () {
           remember(windowGlobal(), fixture.globalKey());
           remember(windowPaper(), fixture.paperKey());

@@ -383,7 +383,9 @@ export function remember(
  * surface whose pointer names `requestedKey` moves to `key` (the same key, or
  * the fresh key that replaced a retired one). The sidebar's pointer is also
  * written (and persisted) when it names `key` already or names nothing yet —
- * a sidebar that has chosen a different conversation keeps it.
+ * a sidebar that has chosen a different conversation keeps it. A sidebar that
+ * names nothing is left alone when the window's own slot is the one that
+ * asked: the window never writes the sidebar's saved chat.
  */
 export function rememberProvisioned(
   scope: SelectionScope,
@@ -391,9 +393,11 @@ export function rememberProvisioned(
   key: number,
 ): void {
   const windowSlot = standaloneSlotFor(scope);
-  if (windowSlot.get() === requestedKey) windowSlot.set(key);
+  const windowAsked = windowSlot.get() === requestedKey;
+  if (windowAsked) windowSlot.set(key);
   const embeddedScope: SelectionScope = { ...scope, surface: "embedded" };
   const sidebarKey = recall(embeddedScope);
+  if (!sidebarKey && windowAsked) return;
   if (!sidebarKey || sidebarKey === requestedKey || sidebarKey === key) {
     remember(embeddedScope, key);
   }
