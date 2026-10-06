@@ -1,6 +1,7 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { classifyConversationKey } from "./conversationKeySpace";
+import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
 
@@ -624,12 +625,6 @@ function logLedger(message: string, details?: Record<string, unknown>): void {
     // Diagnostics must never break a migration.
   }
 }
-
-const CONVERSATION_MESSAGE_TABLES = [
-  "llm_for_zotero_chat_messages",
-  "llm_for_zotero_claude_messages",
-  "llm_for_zotero_codex_messages",
-];
 
 /** True when any provider's message table still holds rows for this key. */
 async function conversationKeyHasMessages(

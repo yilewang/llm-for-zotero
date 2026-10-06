@@ -1,4 +1,8 @@
 import type { ConversationSystem } from "./types";
+import {
+  CONVERSATION_CATALOG_TABLES,
+  CONVERSATION_STORE_TABLES,
+} from "./conversationStore/storeTables";
 
 type ZoteroDb = {
   queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -29,84 +33,38 @@ export type ConversationIntegrityReport = {
 
 const CONVERSATION_REGISTRY_TABLE = "llm_for_zotero_conversation_registry";
 
-const CATALOG_TABLES: Array<{
-  system: ConversationSystem;
-  catalogTable: string;
-}> = [
-  {
-    system: "upstream",
-    catalogTable: "llm_for_zotero_global_conversations",
-  },
-  {
-    system: "upstream",
-    catalogTable: "llm_for_zotero_paper_conversations",
-  },
-  {
-    system: "claude_code",
-    catalogTable: "llm_for_zotero_claude_conversations",
-  },
-  {
-    system: "codex",
-    catalogTable: "llm_for_zotero_codex_conversations",
-  },
-];
-
+/** Every messages table, in store order, with the catalogs its rows belong to. */
 const MESSAGE_TABLES: Array<{
   system: ConversationSystem;
   messageTable: string;
   catalogTables: string[];
-}> = [
-  {
-    system: "upstream",
-    messageTable: "llm_for_zotero_chat_messages",
-    catalogTables: [
-      "llm_for_zotero_global_conversations",
-      "llm_for_zotero_paper_conversations",
-    ],
-  },
-  {
-    system: "claude_code",
-    messageTable: "llm_for_zotero_claude_messages",
-    catalogTables: ["llm_for_zotero_claude_conversations"],
-  },
-  {
-    system: "codex",
-    messageTable: "llm_for_zotero_codex_messages",
-    catalogTables: ["llm_for_zotero_codex_conversations"],
-  },
-];
+}> = CONVERSATION_STORE_TABLES.map((store) => ({
+  system: store.system,
+  messageTable: store.messageTable,
+  catalogTables: Array.from(
+    new Set([store.catalogTables.global, store.catalogTables.paper]),
+  ),
+}));
 
+/**
+ * Every catalog, in store order, with the activity fallback its summary uses:
+ * a runtime catalog falls back to updated_at, an upstream one has only
+ * created_at.
+ */
 const SUMMARY_TABLES: Array<{
   system: ConversationSystem;
   catalogTable: string;
   messageTable: string;
   activityFallbackSql: string;
-}> = [
-  {
-    system: "upstream",
-    catalogTable: "llm_for_zotero_global_conversations",
-    messageTable: "llm_for_zotero_chat_messages",
-    activityFallbackSql: "c.created_at",
-  },
-  {
-    system: "upstream",
-    catalogTable: "llm_for_zotero_paper_conversations",
-    messageTable: "llm_for_zotero_chat_messages",
-    activityFallbackSql: "c.created_at",
-  },
-  {
-    system: "claude_code",
-    catalogTable: "llm_for_zotero_claude_conversations",
-    messageTable: "llm_for_zotero_claude_messages",
-    activityFallbackSql: "c.updated_at, c.created_at",
-  },
-  {
-    system: "codex",
-    catalogTable: "llm_for_zotero_codex_conversations",
-    messageTable: "llm_for_zotero_codex_messages",
-    activityFallbackSql: "c.updated_at, c.created_at",
-  },
-];
+}> = CONVERSATION_CATALOG_TABLES.map((catalog) => ({
+  system: catalog.system,
+  catalogTable: catalog.catalogTable,
+  messageTable: catalog.messageTable,
+  activityFallbackSql:
+    catalog.system === "upstream"
+      ? "c.created_at"
+      : "c.updated_at, c.created_at",
+}));
 
 function getZoteroDb(): ZoteroDb | null {
   return (
@@ -225,7 +183,7 @@ export async function auditConversationIntegrity(): Promise<ConversationIntegrit
     });
   }
 
-  for (const store of CATALOG_TABLES) {
+  for (const store of CONVERSATION_CATALOG_TABLES) {
     const catalogExists = await tableExists(db, store.catalogTable);
 
     if (catalogExists) {

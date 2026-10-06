@@ -12,6 +12,7 @@ import {
   toFileUrl,
 } from "../utils/localPath";
 import { isConversationKeyRetiredInMemory } from "../shared/conversationKeyLedger";
+import { CONVERSATION_CATALOG_TABLES } from "../shared/conversationStore/storeTables";
 import {
   areConversationWritesFrozen,
   withConversationWriteLock,
@@ -455,26 +456,11 @@ async function removeConversationAttachmentFilesUnlocked(
       instanceColumn: "instance_id",
       keyColumn: "legacy_conversation_key",
     },
-    {
-      name: "llm_for_zotero_global_conversations",
+    ...CONVERSATION_CATALOG_TABLES.map((catalog) => ({
+      name: catalog.catalogTable,
       instanceColumn: "conversation_instance_id",
       keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_paper_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_claude_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_codex_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
+    })),
   ];
   let sawCurrentInstance = false;
   let sawCatalogRow = false;

@@ -3,6 +3,7 @@ declare const Zotero: any;
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
+import { getConversationCatalogTable } from "./conversationStore/storeTables";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -103,18 +104,6 @@ export function registerPaperRestoreTargetInvalidationListener(
     }
   };
 }
-
-const CATALOG_TABLES: Record<
-  `${ConversationSystem}:${RegistryConversationKind}`,
-  string
-> = {
-  "upstream:global": "llm_for_zotero_global_conversations",
-  "upstream:paper": "llm_for_zotero_paper_conversations",
-  "claude_code:global": "llm_for_zotero_claude_conversations",
-  "claude_code:paper": "llm_for_zotero_claude_conversations",
-  "codex:global": "llm_for_zotero_codex_conversations",
-  "codex:paper": "llm_for_zotero_codex_conversations",
-};
 
 function normalizePositiveInt(value: unknown): number | null {
   const parsed = Number(value);
@@ -418,7 +407,7 @@ export async function syncCatalogInstanceID(
   >,
 ): Promise<void> {
   const db = getZoteroDb();
-  const table = CATALOG_TABLES[`${scope.system}:${scope.kind}`];
+  const table = getConversationCatalogTable(scope.system, scope.kind);
   const instanceID = normalizeInstanceID(scope.instanceID);
   const conversationKey = normalizePositiveInt(scope.conversationKey);
   if (!db?.queryAsync || !table || !instanceID || !conversationKey) return;
@@ -440,7 +429,7 @@ async function getCatalogInstanceID(
   scope: Pick<ConversationRegistryScope, "conversationKey" | "system" | "kind">,
 ): Promise<string> {
   const db = getZoteroDb();
-  const table = CATALOG_TABLES[`${scope.system}:${scope.kind}`];
+  const table = getConversationCatalogTable(scope.system, scope.kind);
   const conversationKey = normalizePositiveInt(scope.conversationKey);
   if (!db?.queryAsync || !table || !conversationKey) return "";
   try {
