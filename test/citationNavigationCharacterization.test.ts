@@ -1184,9 +1184,12 @@ describe("citation navigation characterization", function () {
       assert.deepEqual(failedJumpStages(r), ["source-fingerprint-mismatch"]);
       assert.deepEqual(r.opened, [{ itemId: 11, location: { pageIndex: 1 } }]);
       assert.deepEqual(r.findQueries(11), []);
+      // D3 (was "Jumped to page 102. Paragraph jump failed: The cited source
+      // fingerprint does not match the loaded PDF."): the status says the
+      // reader stays on another copy of the paper.
       assert.deepEqual(statusTexts(r), [
         "sending: Locating cited quote...",
-        "error: Jumped to page 102. Paragraph jump failed: The cited source fingerprint does not match the loaded PDF.",
+        "error: Opened a different copy of this paper; the quote could not be confirmed here.",
       ]);
     });
   });

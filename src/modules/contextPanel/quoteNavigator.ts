@@ -370,6 +370,13 @@ export function resolveJumpedPageLabel(
   return fallbackPageLabel;
 }
 
+/**
+ * Said when a trusted click stays on a copy of the paper whose PDF is not
+ * the one the answer quoted.
+ */
+export const DIFFERENT_COPY_STATUS =
+  "Opened a different copy of this paper; the quote could not be confirmed here.";
+
 export function buildParagraphJumpFailureStatus(
   pageLabel: string,
   paragraphJump: ExactQuoteJumpResult,
@@ -880,6 +887,11 @@ export type QuoteNavigationOutcome =
       pageIndex: number;
       pageLabel: string;
       jump: ExactQuoteJumpResult;
+      /**
+       * The paper holds the quote, but its PDF is not the one the answer
+       * quoted (another copy or version), and no other paper held it.
+       */
+      differentCopy?: true;
     }
   /** No candidate holds the quote. */
   | { kind: "not-found"; reason: string }
@@ -1072,7 +1084,7 @@ export async function navigateToQuote(
       // The quote is in this paper, but it is not the PDF the answer quoted
       // (a second copy or version). Try the others before settling here.
       ruledOut.add(contextItemId);
-      wrongPdf = pageOnly;
+      wrongPdf = { ...pageOnly, differentCopy: true };
       continue;
     }
     if (req.policy.rememberPage) {

@@ -475,7 +475,11 @@ describe("navigateToQuote with a trusted quote's record", function () {
     );
 
     assert.equal(outcome.kind, "page-only");
-    assert.include(outcome as object, { contextItemId: 1, pageIndex: 0 });
+    assert.include(outcome as object, {
+      contextItemId: 1,
+      pageIndex: 0,
+      differentCopy: true,
+    });
     assert.deepEqual(
       calls.filter((call) => call[0] === "open").map((call) => call[1]),
       [1],
@@ -500,6 +504,7 @@ describe("navigateToQuote with a trusted quote's record", function () {
     );
 
     assert.equal(outcome.kind, "page-only");
+    assert.notProperty(outcome, "differentCopy");
     assert.deepEqual(
       calls.filter((call) => call[0] === "open").map((call) => call[1]),
       [1],

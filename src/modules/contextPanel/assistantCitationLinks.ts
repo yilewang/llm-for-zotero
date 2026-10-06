@@ -72,6 +72,7 @@ import {
 import { type QuoteTargetCandidate } from "./quoteCitationTargetResolver";
 import {
   attemptCitationParagraphJump,
+  DIFFERENT_COPY_STATUS,
   buildParagraphJumpFailureStatus,
   buildParagraphJumpSuccessStatus,
   getPdfAttachments,
@@ -2620,7 +2621,9 @@ async function resolveAndNavigateAssistantCitation(params: {
       setStatus(
         status,
         outcome.kind === "page-only"
-          ? buildParagraphJumpFailureStatus(outcome.pageLabel, outcome.jump)
+          ? outcome.differentCopy
+            ? DIFFERENT_COPY_STATUS
+            : buildParagraphJumpFailureStatus(outcome.pageLabel, outcome.jump)
           : outcome.kind === "open-failed"
             ? "Could not open the cited paper."
             : outcome.kind === "no-candidates"
