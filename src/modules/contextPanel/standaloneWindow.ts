@@ -43,14 +43,13 @@ import {
   remember,
   rememberMode,
 } from "./conversationSelection";
-import { buildUI } from "./buildUI";
+import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
   observeHistoryActivity,
 } from "./historyActivity";
 import {
   disposeSetupHandlers,
-  setupHandlers,
   type ContextPreviewRenderMetrics,
   type SetupHandlersHooks,
 } from "./setupHandlers";
@@ -124,10 +123,7 @@ import {
   invalidateAllClaudeHotRuntimes,
   refreshClaudeSlashCommands,
 } from "../../claudeCode/runtime";
-import {
-  retainClaudeRuntimeForBody,
-  releaseClaudeRuntimeForBody,
-} from "../../claudeCode/runtimeRetention";
+import { releaseClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import {
   createClaudeProjectSkillTemplate,
   deleteClaudeProjectSkillFile,
@@ -367,10 +363,13 @@ function restoreEmbeddedPanelsAfterStandaloneClose(
     ) {
       continue;
     }
-    buildUI(body as Element, resolved.item);
-    activeContextPanels.set(body, () => resolved.item);
-    activeContextPanelRawItems.set(body as Element, rawItem);
-    setupHandlers(body as Element, resolved.item || rawItem);
+    mountPanelShell({
+      body: body as Element,
+      renderItem: resolved.item,
+      getMountedItem: () => resolved.item,
+      rawItem,
+      setupItem: resolved.item || rawItem,
+    });
     void (async () => {
       try {
         if (resolved.item) await ensureConversationLoaded(resolved.item);
@@ -1778,21 +1777,6 @@ export function openStandaloneChat(options?: {
           clearContent();
           updateContentTitle();
 
-          buildUI(contentArea, mountedItem);
-
-          // The left tab represents the preserved paper-side slot, so do not
-          // derive its label from a mounted global portal item.
-          syncPaperTabLabel();
-
-          const llmMain = contentArea.querySelector(
-            "#llm-main",
-          ) as HTMLElement | null;
-          if (llmMain) llmMain.dataset.standalone = "true";
-
-          bindStandalonePanelHost(contentArea, mountedItem);
-          activeContextPanels.set(contentArea, () => activeItem);
-          activeContextPanelRawItems.set(contentArea, rawItemForPanel);
-          void retainClaudeRuntimeForBody(contentArea, mountedItem);
           let standaloneInputFitRequestId = 0;
           const cancelPendingStandaloneInputFit = () => {
             standaloneInputFitRequestId += 1;
@@ -1833,7 +1817,23 @@ export function openStandaloneChat(options?: {
               return await createStandaloneOpenConversationForContext();
             },
           };
-          setupHandlers(contentArea, mountedItem as any, chatHooks);
+          const llmMain = mountPanelShell({
+            body: contentArea,
+            renderItem: mountedItem,
+            beforeRegister: (panelRoot) => {
+              // The left tab represents the preserved paper-side slot, so do
+              // not derive its label from a mounted global portal item.
+              syncPaperTabLabel();
+              if (panelRoot) panelRoot.dataset.standalone = "true";
+              bindStandalonePanelHost(contentArea, mountedItem);
+            },
+            // Live: the standalone window re-points activeItem in place.
+            getMountedItem: () => activeItem,
+            rawItem: rawItemForPanel,
+            retainFor: mountedItem,
+            setupItem: mountedItem,
+            hooks: chatHooks,
+          });
           // Store hooks reference so webchat load handlers can call clearWebChatNewChatIntent
           currentChatHooks = chatHooks;
 

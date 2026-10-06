@@ -74,7 +74,27 @@ describe("runtime preference UI", function () {
       "(!force || claudeModelCatalogInFlightForced)",
     );
     assert.include(embeddedPanel, "setupHandlers(body, rawItem)");
-    assert.include(standalonePanel, "setupHandlers(contentArea, mountedItem");
+    const embeddedRebuild =
+      embeddedPanel.match(
+        /mountPanelShell\(\{\s*body,[\s\S]*?\n {4}\}\);/,
+      )?.[0] ?? "";
+    assert.include(embeddedRebuild, "setupItem: rawItem,");
+    // The standalone panel mounts through the shared shell, which hands its
+    // setup item to the same setupHandlers.
+    const standaloneMount =
+      standalonePanel.match(
+        /mountPanelShell\(\{\s*body: contentArea,[\s\S]*?\n {10}\}\);/,
+      )?.[0] ?? "";
+    assert.include(standaloneMount, "setupItem: mountedItem,");
+    const panelMount = source("src/modules/contextPanel/panelMount.ts");
+    assert.include(
+      panelMount,
+      'import { setupHandlers, type SetupHandlersHooks } from "./setupHandlers";',
+    );
+    assert.include(
+      panelMount,
+      "deps.setupHandlers(body, mount.setupItem, mount.hooks);",
+    );
   });
 
   it("keeps an expanded runtime row's border identical to a collapsed one", function () {

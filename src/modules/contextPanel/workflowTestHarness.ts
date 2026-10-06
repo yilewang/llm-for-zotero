@@ -49,7 +49,7 @@ import {
   exerciseLongJobNoteResume,
   exerciseLongJobReplay,
 } from "./longJobReplay";
-import { buildUI } from "./buildUI";
+import { mountPanelShell } from "./panelMount";
 import { getAgentRuntime } from "../../agent";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
 import {
@@ -1078,10 +1078,13 @@ async function exerciseBackgroundAgentPublication(input: {
   const paperB = Zotero.Items.get(input.paperBItemId);
   disposeSetupHandlers(panel.body);
   bindTestPanelHost(panel.body, paperB);
-  buildUI(panel.body, paperB);
-  activeContextPanels.set(panel.body, () => paperB);
-  activeContextPanelRawItems.set(panel.body, paperB);
-  setupHandlers(panel.body, paperB);
+  mountPanelShell({
+    body: panel.body,
+    renderItem: paperB,
+    getMountedItem: () => paperB,
+    rawItem: paperB,
+    setupItem: paperB,
+  });
   await ensureConversationLoaded(paperB);
   panel.item = paperB;
   refreshChat(panel.body, paperB);
@@ -1162,10 +1165,13 @@ async function renderPanelForItemInternal(
   const initialPanelItem = options?.resolveRememberedState
     ? resolveInitialPanelItemState(item).item
     : item;
-  buildUI(body, initialPanelItem);
-  activeContextPanels.set(body, () => initialPanelItem);
-  activeContextPanelRawItems.set(body, item);
-  setupHandlers(body, item);
+  mountPanelShell({
+    body,
+    renderItem: initialPanelItem,
+    getMountedItem: () => initialPanelItem,
+    rawItem: item,
+    setupItem: item,
+  });
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
   refreshChat(body, mountedItem);
@@ -1253,10 +1259,13 @@ async function exerciseStaleAgentTracePanelIsolation(input: {
 
     disposeSetupHandlers(body);
     bindTestPanelHost(body, paperBItem);
-    buildUI(body, paperBItem);
-    activeContextPanels.set(body, () => paperBItem);
-    activeContextPanelRawItems.set(body, paperBItem);
-    setupHandlers(body, paperBItem);
+    mountPanelShell({
+      body,
+      renderItem: paperBItem,
+      getMountedItem: () => paperBItem,
+      rawItem: paperBItem,
+      setupItem: paperBItem,
+    });
     await ensureConversationLoaded(paperBItem);
     const paperBConversationKey = getConversationKey(paperBItem);
     if (!paperBConversationKey) {

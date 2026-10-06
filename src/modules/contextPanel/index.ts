@@ -48,6 +48,7 @@ import {
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
+import { mountPanelShell } from "./panelMount";
 import { ensureConversationLoaded, getConversationKey } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
@@ -289,13 +290,16 @@ export function registerReaderContextPanel() {
     }
     clearCompletedPanelLifecycleSignature(body);
     persistPendingChatScrollRestoreFromBody(body);
-    buildUI(body, resolvedState.item);
-    const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
-    writePanelContextDataset(panelRoot, rawItem || resolvedState.item);
-    activeContextPanels.set(body, () => resolvedState.item);
-    activeContextPanelRawItems.set(body, rawItem || null);
-    void retainClaudeRuntimeForBody(body, resolvedState.item);
-    setupEmbeddedPanelHandlers(body, rawItem);
+    mountPanelShell({
+      body,
+      renderItem: resolvedState.item,
+      beforeRegister: (panelRoot) =>
+        writePanelContextDataset(panelRoot, rawItem || resolvedState.item),
+      getMountedItem: () => resolvedState.item,
+      rawItem: rawItem || null,
+      retainFor: resolvedState.item,
+      setupItem: rawItem,
+    });
     const chatRenderCycle = beginChatRenderCycle(body);
     setPanelRenderClaim(body, {
       kind: "sync-rendered",

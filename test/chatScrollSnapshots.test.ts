@@ -1574,13 +1574,13 @@ describe("chat scroll snapshots", function () {
     const capture = source.indexOf(
       "persistPendingChatScrollRestoreFromBody(body)",
     );
-    const rebuild = source.indexOf(
-      "buildUI(body, resolvedState.item)",
-      capture,
-    );
+    // The rebuild builds the UI through the shared mount shell.
+    const rebuild = source.indexOf("mountPanelShell({", capture);
+    const rebuildCall = source.slice(rebuild, source.indexOf("});", rebuild));
 
     assert.isAtLeast(capture, 0);
     assert.isAbove(rebuild, capture);
+    assert.include(rebuildCall, "renderItem: resolvedState.item,");
   });
 
   it("captures chat scroll before citation navigation opens another reader", function () {

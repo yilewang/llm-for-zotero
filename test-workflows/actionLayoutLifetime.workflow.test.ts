@@ -191,4 +191,57 @@ describe("workflow: native action layout lifetime", function () {
       );
     }
   });
+
+  it("restores the embedded panel's conversation and paper shortcuts when the standalone window closes", async function () {
+    const root = await openPanel();
+    const details = win.document.getElementById("zotero-item-details");
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    const shortcutCount = (panel: Element) =>
+      panel.querySelectorAll("#llm-shortcuts .llm-shortcut-btn").length;
+    await until(
+      () => shortcutCount(root) > 0,
+      "embedded paper panel renders its shortcuts",
+    );
+    const before = {
+      conversationKey: root.dataset.itemId,
+      paperItemId: root.dataset.basePaperItemId,
+      conversationKind: root.dataset.conversationKind,
+      conversationSystem: root.dataset.conversationSystem,
+    };
+    assert.isOk(before.conversationKey, "mounted panel has a conversation");
+    assert.equal(before.paperItemId, String(fixture.parentItemId));
+    assert.equal(before.conversationKind, "paper");
+
+    await api.openStandaloneForItem(fixture.parentItemId);
+    await until(
+      () => !root.isConnected,
+      "embedded panel is replaced by the detached placeholder",
+    );
+    await api.closeStandalone();
+
+    // The close path rebuilds the embedded panel itself; no reselect or
+    // sidenav click runs here, so this observes the standalone-close restore.
+    const restoredRoot = () =>
+      section.querySelector("#llm-main") as HTMLElement | null;
+    await until(
+      () => Boolean(restoredRoot()?.dataset.handlersInitialized),
+      "standalone close restores an initialized embedded panel",
+    );
+    const restored = restoredRoot()!;
+    assert.notStrictEqual(restored, root);
+    assert.isUndefined(restored.dataset.standalone);
+    assert.deepEqual(
+      {
+        conversationKey: restored.dataset.itemId,
+        paperItemId: restored.dataset.basePaperItemId,
+        conversationKind: restored.dataset.conversationKind,
+        conversationSystem: restored.dataset.conversationSystem,
+      },
+      before,
+    );
+    await until(
+      () => shortcutCount(restoredRoot()!) > 0,
+      "restored embedded panel renders paper-mode shortcuts",
+    );
+  });
 });
