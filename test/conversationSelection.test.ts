@@ -38,6 +38,7 @@ import {
 } from "../src/codexAppServer/state";
 import { buildDefaultUpstreamGlobalConversationKey } from "../src/modules/contextPanel/constants";
 import {
+  clearStandaloneSelection,
   forget,
   isRemembered,
   prime,
@@ -47,6 +48,7 @@ import {
   recallPersisted,
   remember,
   rememberMode,
+  rememberProvisioned,
   type SelectionScope,
 } from "../src/modules/contextPanel/conversationSelection";
 import {
@@ -61,6 +63,9 @@ import {
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
+  standaloneConversationModeByLibrary,
+  standaloneGlobalConversationByLibrary,
+  standalonePaperConversationByPaper,
   webChatIsolatedConversationKeys,
 } from "../src/modules/contextPanel/state";
 import { flushPaperRestoreSelectionWrites } from "../src/shared/paperConversationRestore";
@@ -167,6 +172,7 @@ function clearMaps(): void {
   activeCodexConversationModeByLibrary.clear();
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
+  clearStandaloneSelection();
   webChatIsolatedConversationKeys.clear();
 }
 
@@ -364,6 +370,197 @@ describe("conversationSelection", function () {
         rememberMode(fixture.system, LIBRARY_ID, "paper");
         assert.equal(fixture.modeMap().get(fixture.modeStateKey()), "paper");
         assert.equal(fixture.getMode(), "paper");
+      });
+
+      describe("standalone surface", function () {
+        const windowGlobal = (): SelectionScope => ({
+          ...globalScopeFor(),
+          surface: "standalone",
+        });
+        const windowPaper = (): SelectionScope => ({
+          ...paperScopeFor(),
+          surface: "standalone",
+        });
+
+        it("remembers the window's global key in its own slot only", function () {
+          remember(windowGlobal(), fixture.globalKey());
+          assert.isFalse(fixture.globalMap().has(fixture.globalStateKey()));
+          assert.isNull(fixture.getGlobal());
+          assert.equal(recallActive(windowGlobal()), fixture.globalKey());
+          assert.equal(recall(windowGlobal()), fixture.globalKey());
+          assert.equal(recall(globalScopeFor()), 0);
+          assert.equal(standaloneGlobalConversationByLibrary.size, 1);
+        });
+
+        it("never persists, even when asked to", function () {
+          remember(windowGlobal(), fixture.globalKey(), { persist: true });
+          assert.isNull(fixture.getGlobal());
+        });
+
+        it("reads the sidebar's choice until the window makes its own", function () {
+          fixture.setGlobal(fixture.globalKey());
+          assert.equal(recall(windowGlobal()), fixture.globalKey());
+          fixture
+            .globalMap()
+            .set(fixture.globalStateKey(), fixture.globalKey() + 1);
+          assert.equal(recallActive(windowGlobal()), fixture.globalKey() + 1);
+          remember(windowGlobal(), fixture.globalKey() + 2);
+          assert.equal(recall(windowGlobal()), fixture.globalKey() + 2);
+          assert.equal(recall(globalScopeFor()), fixture.globalKey() + 1);
+        });
+
+        it("keeps the window's paper key apart from the sidebar's", function () {
+          remember(paperScopeFor(), fixture.paperKey(), { persist: false });
+          remember(windowPaper(), fixture.paperKey() + 1);
+          assert.equal(recall(paperScopeFor()), fixture.paperKey());
+          assert.equal(recall(windowPaper()), fixture.paperKey() + 1);
+          assert.equal(
+            fixture.paperMap().get(fixture.paperStateKey()),
+            fixture.paperKey(),
+          );
+          assert.equal(standalonePaperConversationByPaper.size, 1);
+        });
+
+        it("counts a key the window remembers as remembered for either surface", function () {
+          remember(windowPaper(), fixture.paperKey());
+          assert.isTrue(isRemembered(paperScopeFor(), fixture.paperKey()));
+          assert.isTrue(isRemembered(windowPaper(), fixture.paperKey()));
+        });
+
+        it("forgets a deleted key in both surfaces", function () {
+          const key = fixture.globalKey();
+          fixture.globalMap().set(fixture.globalStateKey(), key);
+          remember(windowGlobal(), key);
+          forget(globalScopeFor(), { expectedKey: key });
+          assert.isFalse(fixture.globalMap().has(fixture.globalStateKey()));
+          assert.equal(standaloneGlobalConversationByLibrary.size, 0);
+        });
+
+        it("remembers the window's mode without touching the sidebar's mode or the pref", function () {
+          rememberMode(fixture.system, LIBRARY_ID, "global", {
+            surface: "standalone",
+          });
+          assert.isFalse(fixture.modeMap().has(fixture.modeStateKey()));
+          assert.isNull(fixture.getMode());
+          assert.equal(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+              surface: "standalone",
+            }),
+            "global",
+          );
+          assert.isNull(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+            }),
+          );
+          assert.equal(standaloneConversationModeByLibrary.size, 1);
+        });
+
+        it("reads the sidebar's mode until the window has its own", function () {
+          rememberMode(fixture.system, LIBRARY_ID, "paper");
+          assert.equal(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+              surface: "standalone",
+            }),
+            "paper",
+          );
+        });
+
+        it("primes and restores the window's own slots, never the sidebar's or a pref", function () {
+          fixture.modeMap().set(fixture.modeStateKey(), "paper");
+          fixture
+            .globalMap()
+            .set(fixture.globalStateKey(), fixture.globalKey());
+          const snapshot = prime({
+            system: fixture.system,
+            libraryID: LIBRARY_ID,
+            mode: "global",
+            conversationKey: fixture.globalKey() + 3,
+            surface: "standalone",
+          });
+          assert.equal(fixture.modeMap().get(fixture.modeStateKey()), "paper");
+          assert.equal(
+            fixture.globalMap().get(fixture.globalStateKey()),
+            fixture.globalKey(),
+          );
+          assert.isNull(fixture.getMode());
+          assert.isNull(fixture.getGlobal());
+          assert.equal(recall(windowGlobal()), fixture.globalKey() + 3);
+
+          snapshot.restore();
+          assert.equal(recall(windowGlobal()), fixture.globalKey());
+          assert.equal(standaloneConversationModeByLibrary.size, 0);
+          assert.equal(standaloneGlobalConversationByLibrary.size, 0);
+        });
+
+        it("primes a window paper navigation into the window's paper slot", function () {
+          prime({
+            system: fixture.system,
+            libraryID: LIBRARY_ID,
+            mode: "paper",
+            conversationKey: fixture.paperKey(),
+            paperItemID: PAPER_ID,
+            surface: "standalone",
+          });
+          assert.isFalse(fixture.paperMap().has(fixture.paperStateKey()));
+          assert.equal(recall(windowPaper()), fixture.paperKey());
+        });
+
+        it("re-points only the surfaces that asked for a provisioned conversation", function () {
+          const requested = fixture.globalKey();
+          const replacement = fixture.globalKey() + 7;
+          const sidebarChoice = fixture.globalKey() + 1;
+          fixture.globalMap().set(fixture.globalStateKey(), sidebarChoice);
+          remember(windowGlobal(), requested);
+          rememberProvisioned(globalScopeFor(), requested, replacement);
+          assert.equal(recall(windowGlobal()), replacement);
+          assert.equal(
+            fixture.globalMap().get(fixture.globalStateKey()),
+            sidebarChoice,
+          );
+          assert.isNull(fixture.getGlobal());
+
+          fixture.globalMap().set(fixture.globalStateKey(), requested);
+          rememberProvisioned(globalScopeFor(), requested, replacement);
+          assert.equal(
+            fixture.globalMap().get(fixture.globalStateKey()),
+            replacement,
+          );
+          assert.equal(fixture.getGlobal(), replacement);
+        });
+
+        it("records a provisioned conversation for a sidebar that has chosen nothing", function () {
+          rememberProvisioned(
+            globalScopeFor(),
+            fixture.globalKey(),
+            fixture.globalKey(),
+          );
+          assert.equal(
+            fixture.globalMap().get(fixture.globalStateKey()),
+            fixture.globalKey(),
+          );
+          assert.equal(fixture.getGlobal(), fixture.globalKey());
+          assert.equal(standaloneGlobalConversationByLibrary.size, 0);
+        });
+
+        it("drops everything the window chose when cleared", function () {
+          remember(windowGlobal(), fixture.globalKey());
+          remember(windowPaper(), fixture.paperKey());
+          rememberMode(fixture.system, LIBRARY_ID, "global", {
+            surface: "standalone",
+          });
+          clearStandaloneSelection();
+          assert.equal(recall(windowGlobal()), 0);
+          assert.equal(recall(windowPaper()), 0);
+          assert.isNull(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+              surface: "standalone",
+            }),
+          );
+        });
       });
 
       it("primes the mode and global key and restores both", function () {

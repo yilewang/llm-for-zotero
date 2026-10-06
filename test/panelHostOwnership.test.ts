@@ -14,6 +14,7 @@ import {
   isPanelHostCompatibleWithPaper,
   getConversationScopeIdentityForTests,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
   shouldOwnershipFenceSwallowEvent,
 } from "../src/modules/contextPanel/panelHostOwnership";
 import { createRuntimeSystemControls } from "../src/modules/contextPanel/runtimeSystemControls";
@@ -344,6 +345,33 @@ describe("panel host ownership", function () {
 
     assert.equal(evaluatePanelOwnership(panel.body, itemB), "match");
     clearPanelHostBinding(panel.body);
+  });
+
+  it("puts the standalone window on its own selection surface and every sidebar panel on the shared one", function () {
+    const paper = fakePaper(101);
+    const library = fakePanel({ conversationKey: 101, paperItemID: 101 });
+    const reader = fakePanel({
+      conversationKey: 101,
+      paperItemID: 101,
+      tabID: "reader-a",
+    });
+    const window = fakePanel({
+      conversationKey: 101,
+      paperItemID: 101,
+      standalone: true,
+    });
+    bindEmbeddedPanelHost(library.body, paper, "library");
+    bindEmbeddedPanelHost(reader.body, paper, "reader");
+    assert.equal(resolveSelectionSurfaceForBody(library.body), "embedded");
+    assert.equal(resolveSelectionSurfaceForBody(reader.body), "embedded");
+    // Before the window binds its host, its panel root marks it.
+    assert.equal(resolveSelectionSurfaceForBody(window.body), "standalone");
+    bindStandalonePanelHost(window.body, paper);
+    assert.equal(resolveSelectionSurfaceForBody(window.body), "standalone");
+    assert.equal(resolveSelectionSurfaceForBody(null), "embedded");
+    for (const panel of [library, reader, window]) {
+      clearPanelHostBinding(panel.body);
+    }
   });
 });
 

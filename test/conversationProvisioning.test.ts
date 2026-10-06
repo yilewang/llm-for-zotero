@@ -55,6 +55,11 @@ import {
   resolveConversationStorageSystemForItem,
 } from "../src/modules/contextPanel/conversationProvisioning";
 import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
+import {
+  clearStandaloneSelection,
+  recall,
+  remember,
+} from "../src/modules/contextPanel/conversationSelection";
 import { buildDefaultConversationKey } from "../src/shared/conversationKeySpace";
 import { validateConversationScope } from "../src/shared/conversationRegistry";
 
@@ -851,6 +856,7 @@ describe("conversation provisioning remembered selection", function () {
     activeClaudePaperConversationByPaper.clear();
     activeCodexGlobalConversationByLibrary.clear();
     activeCodexPaperConversationByPaper.clear();
+    clearStandaloneSelection();
   };
 
   const install = () => {
@@ -1106,6 +1112,60 @@ describe("conversation provisioning remembered selection", function () {
       );
       assert.equal(getConversationKey(item), key);
       assert.equal(paperActive(system), key);
+    });
+
+    it(`leaves the sidebar's ${system} library chat alone when the window's chat is provisioned`, async function () {
+      install();
+      const sidebarKey = defaultGlobalKey(system);
+      const windowKey = sidebarKey + 5;
+      setGlobalActive(system, sidebarKey);
+      setGlobalPersisted(system, sidebarKey);
+      remember(
+        { system, libraryID: 1, kind: "global", surface: "standalone" },
+        windowKey,
+      );
+      const item = globalItem(system, windowKey);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item,
+          conversationSystem: system,
+        }),
+        "a key the window remembers may be provisioned",
+      );
+      assert.equal(getConversationKey(item), windowKey);
+      assert.equal(globalActive(system), sidebarKey);
+      assert.equal(globalPersisted(system), sidebarKey);
+      assert.equal(
+        recall({ system, libraryID: 1, kind: "global", surface: "standalone" }),
+        windowKey,
+      );
+    });
+
+    it(`leaves the sidebar's ${system} paper chat alone when the window's chat is provisioned`, async function () {
+      install();
+      globalThis.Zotero.Items.get = (id: number) =>
+        id === paperItem.id ? paperItem : null;
+      const sidebarKey = defaultPaperKey(system);
+      const windowKey = sidebarKey + 5;
+      setPaperActive(system, sidebarKey);
+      remember(
+        {
+          system,
+          libraryID: 1,
+          kind: "paper",
+          paperItemID: paperItem.id,
+          surface: "standalone",
+        },
+        windowKey,
+      );
+      const item = paperPortalItem(system, windowKey);
+      assert.isTrue(
+        await provisionConversationScopeForItem({
+          item,
+          conversationSystem: system,
+        }),
+      );
+      assert.equal(paperActive(system), sidebarKey);
     });
   }
 });

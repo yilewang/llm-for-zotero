@@ -38,6 +38,7 @@ import {
   setStandaloneSidebarWidthPref,
 } from "./prefHelpers";
 import {
+  clearStandaloneSelection,
   recall,
   recallMode,
   remember,
@@ -205,29 +206,32 @@ const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
 const STANDALONE_WINDOW_FEATURES =
   "chrome,extrachrome,menubar,resizable,scrollbars,status,centerscreen,dialog=no,dependent=no";
 
-// The standalone window remembers a library chat in the active map and the
-// pref, except Claude Code, which writes the active map only here.
+// The standalone window remembers its library chat in its own selection slot
+// only. The sidebar panels keep theirs, and the persisted pointers stay the
+// sidebar's (see conversationSelection.ts).
 function rememberStandaloneGlobalConversation(
   system: ConversationSystem,
   libraryID: number,
   conversationKey: number,
 ): void {
-  remember({ system, libraryID, kind: "global" }, conversationKey, {
-    persist: system !== "claude_code",
-  });
+  remember(
+    { system, libraryID, kind: "global", surface: "standalone" },
+    conversationKey,
+  );
 }
 
-// The standalone window remembers a paper chat in the active map; only Codex
-// also writes its paper restore target here.
+// The standalone window remembers its paper chat in its own selection slot
+// only; the sidebar's remembered chat for the paper is left alone.
 function rememberStandalonePaperConversation(
   system: ConversationSystem,
   libraryID: number,
   paperItemID: number,
   conversationKey: number,
 ): void {
-  remember({ system, libraryID, kind: "paper", paperItemID }, conversationKey, {
-    persist: system === "codex",
-  });
+  remember(
+    { system, libraryID, kind: "paper", paperItemID, surface: "standalone" },
+    conversationKey,
+  );
 }
 
 function clampStandaloneWindowSize(win: Window): void {
@@ -350,6 +354,10 @@ export function openStandaloneChat(options?: {
 
   const mainWin = Zotero.getMainWindow();
   if (!mainWin) return;
+
+  // A new window starts from the sidebar's selection (read below) and keeps
+  // its own from here on; nothing a previous window chose carries over.
+  clearStandaloneSelection();
 
   const sourceRawContextItem =
     options?.sourceBody && options.sourceBody.isConnected
@@ -1561,6 +1569,7 @@ export function openStandaloneChat(options?: {
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: standaloneMode === "open" ? "global" : "paper",
+          surface: "standalone",
         });
         const mountedItem = resolvedState.item || nextItem;
         const rawItemForPanel =
@@ -2117,6 +2126,7 @@ export function openStandaloneChat(options?: {
                 Number(entry.libraryID || 0) ||
                 Number(paperItem.libraryID || 0) ||
                 getCurrentLibraryScopeID(),
+              surface: "standalone",
               mode: "paper",
               conversationKey: entry.conversationKey,
               paperItemID: paperItem.id,
@@ -2164,6 +2174,7 @@ export function openStandaloneChat(options?: {
               system: currentConversationSystem,
               libraryID:
                 Number(entry.libraryID || 0) || getCurrentLibraryScopeID(),
+              surface: "standalone",
               mode: "global",
               conversationKey: entry.conversationKey,
             });
@@ -3345,6 +3356,7 @@ export function openStandaloneChat(options?: {
             ? resolveRememberedGlobalPanelItem(
                 getCurrentLibraryScopeID(),
                 currentConversationSystem,
+                "standalone",
               )
             : null;
         const conversationKey = rememberedItem
@@ -3575,6 +3587,7 @@ export function openStandaloneChat(options?: {
           const rememberedItem = resolveRememberedGlobalPanelItem(
             libraryID,
             nextSystem,
+            "standalone",
           );
           const targetKey = rememberedItem
             ? getConversationKey(rememberedItem)
@@ -3590,6 +3603,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(nextRawItem, {
           conversationSystem: nextSystem,
           conversationMode: "paper",
+          surface: "standalone",
         });
         currentRawContextItem = nextRawItem || currentRawContextItem;
         currentBasePaperItem = resolved.basePaperItem || currentBasePaperItem;
@@ -3730,12 +3744,13 @@ export function openStandaloneChat(options?: {
 
       const commitStandaloneMode = (mode: "open" | "paper") => {
         standaloneMode = mode;
-        // The pref only; the active mode map is left as it is.
+        // The window's own mode slot only; the sidebar's mode and the
+        // persisted mode stay as they are.
         rememberMode(
           currentConversationSystem,
           getCurrentLibraryScopeID(),
           mode === "open" ? "global" : "paper",
-          { active: false },
+          { surface: "standalone" },
         );
         paperTab.classList.toggle("active", mode === "paper");
         openTab.classList.toggle("active", mode === "open");
@@ -3758,6 +3773,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(rawItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: "paper",
+          surface: "standalone",
         });
         const paperItem =
           resolved.basePaperItem ||
@@ -3811,6 +3827,7 @@ export function openStandaloneChat(options?: {
             const rememberedItem = resolveRememberedGlobalPanelItem(
               getCurrentLibraryScopeID(),
               currentConversationSystem,
+              "standalone",
             );
             const key = rememberedItem ? getConversationKey(rememberedItem) : 0;
             if (!key) return;

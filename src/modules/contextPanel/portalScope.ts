@@ -12,7 +12,11 @@ import { isSupportedContextAttachment } from "../../services/paperContent/contex
 import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
-import { recall, recallMode } from "./conversationSelection";
+import {
+  recall,
+  recallMode,
+  type SelectionSurface,
+} from "./conversationSelection";
 import type { ActiveNoteSession } from "./types";
 import type {
   GlobalPortalItem,
@@ -311,15 +315,18 @@ export function resolveNoteFocusSystemSwitch(params: {
 function resolvePreferredConversationMode(
   libraryID: number,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): "global" | "paper" {
   if (system === "claude_code" || system === "codex") {
     const rememberedMode = recallMode(system, libraryID, {
       source: "active+persisted",
+      surface,
     });
     return rememberedMode === "global" ? "global" : "paper";
   }
   const rememberedMode = recallMode("upstream", libraryID, {
     source: "active+persisted",
+    surface,
   });
   if (rememberedMode === "paper") {
     return "paper";
@@ -334,11 +341,12 @@ function resolvePreferredConversationMode(
 function resolveGlobalConversationKey(
   libraryID: number,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): number {
   if (system === "claude_code") {
     return Math.floor(
       Number(
-        recall({ system, libraryID, kind: "global" }) ||
+        recall({ system, libraryID, kind: "global", surface }) ||
           buildDefaultClaudeGlobalConversationKey(libraryID),
       ),
     );
@@ -346,7 +354,7 @@ function resolveGlobalConversationKey(
   if (system === "codex") {
     return Math.floor(
       Number(
-        recall({ system, libraryID, kind: "global" }) ||
+        recall({ system, libraryID, kind: "global", surface }) ||
           buildDefaultCodexGlobalConversationKey(libraryID),
       ),
     );
@@ -360,7 +368,7 @@ function resolveGlobalConversationKey(
       : lockedKey;
   }
   const activeKey = Number(
-    recall({ system: "upstream", libraryID, kind: "global" }),
+    recall({ system: "upstream", libraryID, kind: "global", surface }),
   );
   if (isUpstreamGlobalConversationKey(activeKey)) {
     return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -373,12 +381,14 @@ function resolveGlobalConversationKey(
 export function resolveRememberedGlobalPanelItem(
   libraryID: number,
   conversationSystem: ConversationSystem,
+  surface?: SelectionSurface,
 ): Zotero.Item | null {
   const normalizedLibraryID = normalizePositiveInt(libraryID);
   if (!normalizedLibraryID) return null;
   const conversationKey = resolveGlobalConversationKey(
     normalizedLibraryID,
     conversationSystem,
+    surface,
   );
   return conversationSystem === "claude_code"
     ? createClaudeGlobalPortalItem(normalizedLibraryID, conversationKey)
@@ -390,12 +400,13 @@ export function resolveRememberedGlobalPanelItem(
 export function resolvePaperConversationKeyForBaseItem(
   basePaperItem: Zotero.Item,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): number {
   const libraryID = resolveLibraryIdFromItem(basePaperItem);
   const paperItemID = normalizePositiveInt(basePaperItem?.id) || 0;
   if (!libraryID || !paperItemID) return paperItemID;
   const rememberedPaperKey = Number(
-    recall({ system, libraryID, kind: "paper", paperItemID }) ||
+    recall({ system, libraryID, kind: "paper", paperItemID, surface }) ||
       (system === "claude_code"
         ? buildDefaultClaudePaperConversationKey(paperItemID)
         : system === "codex"
@@ -435,11 +446,14 @@ export function resolveInitialPanelItemState(
   options?: {
     conversationSystem?: ConversationSystem | null;
     conversationMode?: "global" | "paper";
+    /** Whose remembered selection to read; the sidebar's when omitted. */
+    surface?: SelectionSurface;
   },
 ): {
   item: Zotero.Item | null;
   basePaperItem: Zotero.Item | null;
 } {
+  const surface = options?.surface;
   let item = initialItem || null;
   const noteSession = resolveActiveNoteSession(item);
   if (noteSession && item) {
@@ -475,11 +489,11 @@ export function resolveInitialPanelItemState(
     });
     const mode =
       options?.conversationMode ||
-      resolvePreferredConversationMode(libraryID, system);
+      resolvePreferredConversationMode(libraryID, system, surface);
     return {
       item:
         !item && mode === "global"
-          ? resolveRememberedGlobalPanelItem(libraryID, system)
+          ? resolveRememberedGlobalPanelItem(libraryID, system, surface)
           : item,
       basePaperItem: null,
     };
@@ -508,10 +522,14 @@ export function resolveInitialPanelItemState(
   });
   const preferredMode =
     options?.conversationMode ||
-    resolvePreferredConversationMode(libraryID, conversationSystem);
+    resolvePreferredConversationMode(libraryID, conversationSystem, surface);
 
   if (preferredMode === "global") {
-    item = resolveRememberedGlobalPanelItem(libraryID, conversationSystem);
+    item = resolveRememberedGlobalPanelItem(
+      libraryID,
+      conversationSystem,
+      surface,
+    );
     return { item, basePaperItem };
   }
 
@@ -519,6 +537,7 @@ export function resolveInitialPanelItemState(
   const rememberedPaperKey = resolvePaperConversationKeyForBaseItem(
     basePaperItem,
     conversationSystem,
+    surface,
   );
   if (
     Number.isFinite(rememberedPaperKey) &&

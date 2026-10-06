@@ -174,6 +174,7 @@ import {
   recallActive,
   remember,
   rememberMode,
+  type SelectionSurface,
 } from "./conversationSelection";
 import { refreshConfiguredProviderModelCatalogs } from "../../utils/modelProviders";
 import {
@@ -222,6 +223,7 @@ import {
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
   shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
 import {
@@ -536,7 +538,6 @@ import {
   listClaudeEfforts,
   listClaudeModels,
   rememberClaudeConversationSelection,
-  resolveRememberedClaudeConversationKey,
   refreshClaudeSlashCommands,
   touchClaudeConversation,
 } from "../../claudeCode/runtime";
@@ -546,7 +547,6 @@ import {
   getClaudeRuntimeModelPref,
   getClaudeSettingSourcesCsvByPref,
   getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
   setClaudeCodeModeEnabled,
   setConversationSystemPref,
   getLastUsedClaudePaperConversationKey,
@@ -683,9 +683,14 @@ export function setupHandlers(
       : existingPanelRoot?.dataset?.conversationKind === "paper"
         ? "paper"
         : undefined;
+  // Which surface's remembered selection this panel reads and writes: the
+  // standalone window's own, or the one every sidebar panel shares.
+  const selectionSurface = (): SelectionSurface =>
+    resolveSelectionSurfaceForBody(body);
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
     conversationMode: preferredConversationMode,
+    surface: selectionSurface(),
   });
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
@@ -1563,16 +1568,17 @@ export function setupHandlers(
         await createAndSwitchGlobalConversation(true);
         return;
       }
+      const surface = selectionSurface();
       const nextConversationKey =
         nextSystem === "claude_code"
-          ? resolveRememberedClaudeConversationKey({
+          ? recall({
+              system: "claude_code",
               libraryID,
               kind: "global",
-            }) ||
-            getLastUsedClaudeGlobalConversationKey(libraryID) ||
-            0
+              surface,
+            })
           : nextSystem === "codex"
-            ? recall({ system: "codex", libraryID, kind: "global" })
+            ? recall({ system: "codex", libraryID, kind: "global", surface })
             : (() => {
                 const lockedKey = getLockedGlobalConversationKey(libraryID);
                 if (lockedKey !== null) return lockedKey;
@@ -1581,6 +1587,7 @@ export function setupHandlers(
                   system: "upstream",
                   libraryID,
                   kind: "global",
+                  surface,
                 });
                 if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
                 return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -1599,6 +1606,7 @@ export function setupHandlers(
       if (!rawBaseItem) return;
       const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
         conversationSystem: nextSystem,
+        surface: selectionSurface(),
       });
       const nextItem = resolvedState.item || item;
       const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
@@ -1625,6 +1633,7 @@ export function setupHandlers(
     if (!rawBaseItem) return;
     const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
       conversationSystem: nextSystem,
+      surface: selectionSurface(),
     });
     const nextItem = resolvedState.item || item;
     const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
@@ -1841,13 +1850,18 @@ export function setupHandlers(
     if (item && libraryID > 0 && mode && !noteSession) {
       // Each runtime writes a different set here: Claude Code only the mode;
       // Codex and upstream also the library chat (map and pref) and the
-      // paper chat (map only).
+      // paper chat (map only). All of it goes to this panel's own surface:
+      // the standalone window's writes stay in its own slots.
+      const surface = selectionSurface();
       if (isClaudeConversationSystem()) {
-        rememberMode("claude_code", libraryID, mode);
+        rememberMode("claude_code", libraryID, mode, { surface });
       } else if (isCodexConversationSystem()) {
-        rememberMode("codex", libraryID, mode);
+        rememberMode("codex", libraryID, mode, { surface });
         if (mode === "global") {
-          remember({ system: "codex", libraryID, kind: "global" }, item.id);
+          remember(
+            { system: "codex", libraryID, kind: "global", surface },
+            item.id,
+          );
         } else if (
           Number.isFinite(conversationKey) &&
           (conversationKey as number) > 0 &&
@@ -1860,15 +1874,19 @@ export function setupHandlers(
               libraryID,
               kind: "paper",
               paperItemID: Math.floor(currentBasePaperItemID),
+              surface,
             },
             Math.floor(conversationKey as number),
             { persist: false },
           );
         }
       } else {
-        rememberMode("upstream", libraryID, mode);
+        rememberMode("upstream", libraryID, mode, { surface });
         if (mode === "global") {
-          remember({ system: "upstream", libraryID, kind: "global" }, item.id);
+          remember(
+            { system: "upstream", libraryID, kind: "global", surface },
+            item.id,
+          );
         } else if (
           Number.isFinite(conversationKey) &&
           (conversationKey as number) > 0 &&
@@ -1886,6 +1904,7 @@ export function setupHandlers(
               libraryID,
               kind: "paper",
               paperItemID: Math.floor(currentBasePaperItemID),
+              surface,
             },
             Math.floor(conversationKey as number),
             { persist: false },

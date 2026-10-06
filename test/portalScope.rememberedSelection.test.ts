@@ -47,7 +47,14 @@ import {
   resolveRememberedGlobalPanelItem,
 } from "../src/modules/contextPanel/portalScope";
 import {
+  clearStandaloneSelection,
+  remember,
+  rememberMode,
+} from "../src/modules/contextPanel/conversationSelection";
+import {
   buildPaperStateKey,
+  getLastUsedUpstreamConversationMode,
+  getLastUsedUpstreamGlobalConversationKey,
   setLastUsedPaperConversationKey,
   setLastUsedUpstreamConversationMode,
   setLastUsedUpstreamGlobalConversationKey,
@@ -87,6 +94,7 @@ function clearMaps(): void {
   activeCodexConversationModeByLibrary.clear();
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
+  clearStandaloneSelection();
 }
 
 describe("portalScope remembered selection", function () {
@@ -301,6 +309,113 @@ describe("portalScope remembered selection", function () {
       const resolved = resolveInitialPanelItemState(paperItem);
       assert.equal(resolved.item, paperItem);
     });
+  });
+
+  describe("per-surface selection (sidebar vs standalone window)", function () {
+    it("keeps the window's Library chat out of the sidebar's", function () {
+      const base = buildDefaultUpstreamGlobalConversationKey(7);
+      remember(
+        {
+          system: "upstream",
+          libraryID: 7,
+          kind: "global",
+          surface: "standalone",
+        },
+        base + 5,
+      );
+      assert.equal(resolveRememberedGlobalPanelItem(7, "upstream")?.id, base);
+      assert.equal(
+        resolveRememberedGlobalPanelItem(7, "upstream", "standalone")?.id,
+        base + 5,
+      );
+      assert.isNull(getLastUsedUpstreamGlobalConversationKey(7));
+    });
+
+    it("opens the sidebar's Library chat in the window until the window picks one", function () {
+      const base = buildDefaultUpstreamGlobalConversationKey(7);
+      activeGlobalConversationByLibrary.set(7, base + 2);
+      assert.equal(
+        resolveRememberedGlobalPanelItem(7, "upstream", "standalone")?.id,
+        base + 2,
+      );
+    });
+
+    it("keeps the window's Library mode out of the sidebar's mode", function () {
+      rememberMode("upstream", 7, "global", { surface: "standalone" });
+      assert.isNull(getLastUsedUpstreamConversationMode(7));
+      assert.equal(resolveInitialPanelItemState(paperItem).item, paperItem);
+      assert.isTrue(
+        isGlobalPortalItem(
+          resolveInitialPanelItemState(paperItem, { surface: "standalone" })
+            .item,
+        ),
+      );
+    });
+
+    it("reads the sidebar's mode in the window until the window has its own", function () {
+      setLastUsedUpstreamConversationMode(7, "global");
+      assert.isTrue(
+        isGlobalPortalItem(
+          resolveInitialPanelItemState(paperItem, { surface: "standalone" })
+            .item,
+        ),
+      );
+      rememberMode("upstream", 7, "paper", { surface: "standalone" });
+      assert.equal(
+        resolveInitialPanelItemState(paperItem, { surface: "standalone" }).item,
+        paperItem,
+      );
+      assert.isTrue(
+        isGlobalPortalItem(resolveInitialPanelItemState(paperItem).item),
+      );
+    });
+
+    for (const system of ["upstream", "claude_code", "codex"] as const) {
+      it(`keeps the window's ${system} paper chat apart from the sidebar's`, function () {
+        enableRuntimes();
+        const sidebarKey =
+          system === "claude_code"
+            ? buildDefaultClaudePaperConversationKey(42) + 1
+            : system === "codex"
+              ? buildDefaultCodexPaperConversationKey(42) + 1
+              : 4201;
+        remember(
+          { system, libraryID: 7, kind: "paper", paperItemID: 42 },
+          sidebarKey,
+          { persist: false },
+        );
+        remember(
+          {
+            system,
+            libraryID: 7,
+            kind: "paper",
+            paperItemID: 42,
+            surface: "standalone",
+          },
+          sidebarKey + 1,
+        );
+        assert.equal(
+          resolvePaperConversationKeyForBaseItem(paperItem, system),
+          sidebarKey,
+        );
+        assert.equal(
+          resolvePaperConversationKeyForBaseItem(
+            paperItem,
+            system,
+            "standalone",
+          ),
+          sidebarKey + 1,
+        );
+        assert.equal(
+          resolveInitialPanelItemState(paperItem, {
+            conversationSystem: system,
+            conversationMode: "paper",
+            surface: "standalone",
+          }).item?.id,
+          sidebarKey + 1,
+        );
+      });
+    }
   });
 
   describe("paper conversation key", function () {

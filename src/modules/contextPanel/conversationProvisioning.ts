@@ -28,7 +28,7 @@ import {
 } from "./conversationIdentity";
 import {
   isRemembered,
-  remember,
+  rememberProvisioned,
   type SelectionScope,
 } from "./conversationSelection";
 import {
@@ -522,8 +522,11 @@ async function provisionRuntimeConversationUncoalesced(
     : null;
 }
 
+// Re-points only the surface selections that asked for this conversation; a
+// load in the standalone window must not move the sidebar's choice.
 function rememberProvisionedConversation(
   scope: {
+    conversationKey: number;
     kind: ConversationKind;
     libraryID: number;
     paperItemID?: number;
@@ -546,7 +549,13 @@ function rememberProvisionedConversation(
       paperItemID: scope.paperItemID,
     };
   }
-  if (selectionScope) remember(selectionScope, entry.conversationKey);
+  if (selectionScope) {
+    rememberProvisioned(
+      selectionScope,
+      scope.conversationKey,
+      entry.conversationKey,
+    );
+  }
   return true;
 }
 

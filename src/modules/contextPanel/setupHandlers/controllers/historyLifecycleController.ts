@@ -68,14 +68,9 @@ import {
   loadAllCodexConversationHistory,
   loadCodexConversationHistoryScope,
 } from "../../../../codexAppServer/historyLoader";
-import {
-  rememberClaudeConversationSelection,
-  resolveRememberedClaudeConversationKey,
-  touchClaudeConversation,
-} from "../../../../claudeCode/runtime";
+import { touchClaudeConversation } from "../../../../claudeCode/runtime";
 import {
   getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
   setConversationSystemPref,
   setLastUsedClaudeGlobalConversationKey,
 } from "../../../../claudeCode/prefs";
@@ -175,6 +170,7 @@ import {
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
 } from "../../panelHostOwnership";
 
 type HistorySearchIndexFallbackStatus = Pick<
@@ -442,6 +438,9 @@ export function createHistoryLifecycleController(
     libraryChatTabBtn,
     modeSwitch,
   } = deps;
+  // This panel's selection surface: the standalone window's own slots, or the
+  // ones every sidebar panel shares (see conversationSelection.ts).
+  const selectionSurface = () => resolveSelectionSurfaceForBody(body);
   const getConversationSystem = deps.getConversationSystem;
   const isClaudeConversationSystem = deps.isClaudeConversationSystem;
   const isCodexConversationSystem = deps.isCodexConversationSystem;
@@ -1905,6 +1904,7 @@ export function createHistoryLifecycleController(
               system: "claude_code",
               libraryID,
               kind: "global",
+              surface: selectionSurface(),
             }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
@@ -1988,7 +1988,12 @@ export function createHistoryLifecycleController(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            recall({ system: "codex", libraryID, kind: "global" }),
+            recall({
+              system: "codex",
+              libraryID,
+              kind: "global",
+              surface: selectionSurface(),
+            }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -2075,6 +2080,7 @@ export function createHistoryLifecycleController(
             system: "upstream",
             libraryID,
             kind: "global",
+            surface: selectionSurface(),
           });
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey =
@@ -2291,20 +2297,14 @@ export function createHistoryLifecycleController(
       return false;
     }
     if (!setCurrentItem(nextItem as any)) return false;
+    remember(
+      { system, libraryID, kind: "global", surface: selectionSurface() },
+      normalizedConversationKey,
+    );
     if (system === "claude_code") {
-      rememberClaudeConversationSelection({
-        conversationKey: normalizedConversationKey,
-        kind: "global",
-        libraryID,
-      });
       void touchClaudeConversation(normalizedConversationKey, {
         updatedAt: Date.now(),
       });
-    } else {
-      remember(
-        { system, libraryID, kind: "global" },
-        normalizedConversationKey,
-      );
     }
     syncConversationIdentity();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
@@ -2403,18 +2403,16 @@ export function createHistoryLifecycleController(
       }
       return entry;
     };
-    const resolveRememberedPaperConversationKey = (): number => {
-      if (system === "claude_code") {
-        return Number(
-          resolveRememberedClaudeConversationKey({
-            libraryID,
-            kind: "paper",
-            paperItemID,
-          }) || 0,
-        );
-      }
-      return Number(recall({ system, libraryID, kind: "paper", paperItemID }));
-    };
+    const resolveRememberedPaperConversationKey = (): number =>
+      Number(
+        recall({
+          system,
+          libraryID,
+          kind: "paper",
+          paperItemID,
+          surface: selectionSurface(),
+        }),
+      );
 
     let targetSummary = await loadPaperCatalogEntry(requestedConversationKey);
     if (!targetSummary) {
@@ -2511,27 +2509,29 @@ export function createHistoryLifecycleController(
         return false;
       }
     }
-    if (system === "claude_code") {
-      rememberClaudeConversationSelection({
-        conversationKey: resolvedConversationKey,
-        kind: "paper",
-        libraryID,
-        paperItemID,
-      });
-      void touchClaudeConversation(resolvedConversationKey, {
-        updatedAt: Date.now(),
-      });
-    } else if (system === "codex") {
+    if (system === "claude_code" || system === "codex") {
       remember(
-        { system: "codex", libraryID, kind: "paper", paperItemID },
+        {
+          system,
+          libraryID,
+          kind: "paper",
+          paperItemID,
+          surface: selectionSurface(),
+        },
         resolvedConversationKey,
       );
+      if (system === "claude_code") {
+        void touchClaudeConversation(resolvedConversationKey, {
+          updatedAt: Date.now(),
+        });
+      }
     } else {
       const paperScope = {
         system: "upstream",
         libraryID,
         kind: "paper",
         paperItemID,
+        surface: selectionSurface(),
       } as const;
       // Ephemeral webchat session rows (flagged in the catalog) are swept at
       // the next startup, so they must never become the paper's persisted
@@ -2625,6 +2625,7 @@ export function createHistoryLifecycleController(
     const targetModeSnapshot = primeHistoryNavigationMode({
       system: link.sourceSystem,
       libraryID,
+      surface: selectionSurface(),
       mode: link.sourceKind,
       conversationKey: sourceConversationKey,
       paperItemID:
@@ -2788,6 +2789,7 @@ export function createHistoryLifecycleController(
           normalizeHistoryPaperItemID(entry.libraryID) ||
           normalizeHistoryPaperItemID(paperItem.libraryID) ||
           getCurrentLibraryID(),
+        surface: selectionSurface(),
         mode: "paper",
         conversationKey: entry.conversationKey,
         paperItemID: paperItem.id,
@@ -2833,6 +2835,7 @@ export function createHistoryLifecycleController(
       system: getConversationSystem(),
       libraryID:
         normalizeHistoryPaperItemID(entry.libraryID) || getCurrentLibraryID(),
+      surface: selectionSurface(),
       mode: "global",
       conversationKey: entry.conversationKey,
     });
@@ -3560,7 +3563,12 @@ export function createHistoryLifecycleController(
     const currentCandidate = (() => {
       // The active map only: a persisted pointer is not a current draft.
       const activeKey = () =>
-        recallActive({ system, libraryID, kind: "global" });
+        recallActive({
+          system,
+          libraryID,
+          kind: "global",
+          surface: selectionSurface(),
+        });
       if (system === "claude_code") {
         return (
           currentGlobalConversationKeyForSystem("claude_code") || activeKey()
@@ -3630,9 +3638,11 @@ export function createHistoryLifecycleController(
     }
     // Claude Code remembers the new key in the active map only here; its
     // pref is written when switchGlobalConversation commits the switch.
-    remember({ system, libraryID, kind: "global" }, targetConversationKey, {
-      persist: system !== "claude_code",
-    });
+    remember(
+      { system, libraryID, kind: "global", surface: selectionSurface() },
+      targetConversationKey,
+      { persist: system !== "claude_code" },
+    );
     if (forceFresh) {
       clearTransientComposeStateForItem(targetConversationKey);
     }
@@ -4125,19 +4135,29 @@ export function createHistoryLifecycleController(
   // menu: prime the target mode, switch, and roll the priming back on failure.
   const resolveRememberedGlobalConversationKey = (libraryID: number): number =>
     isClaudeConversationSystem()
-      ? resolveRememberedClaudeConversationKey({
+      ? recall({
+          system: "claude_code",
           libraryID,
           kind: "global",
-        }) ||
-        getLastUsedClaudeGlobalConversationKey(libraryID) ||
-        0
+          surface: selectionSurface(),
+        })
       : isCodexConversationSystem()
-        ? recall({ system: "codex", libraryID, kind: "global" })
+        ? recall({
+            system: "codex",
+            libraryID,
+            kind: "global",
+            surface: selectionSurface(),
+          })
         : (() => {
             const lockedKey = getLockedGlobalConversationKey(libraryID);
             if (lockedKey !== null) return lockedKey;
             const activeKey = Number(
-              recall({ system: "upstream", libraryID, kind: "global" }),
+              recall({
+                system: "upstream",
+                libraryID,
+                kind: "global",
+                surface: selectionSurface(),
+              }),
             );
             if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
             return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -4177,6 +4197,7 @@ export function createHistoryLifecycleController(
       const targetModeSnapshot = primeHistoryNavigationMode({
         system: getConversationSystem(),
         libraryID,
+        surface: selectionSurface(),
         mode: "global",
         conversationKey: targetGlobalKey,
       });
@@ -4191,6 +4212,7 @@ export function createHistoryLifecycleController(
     const targetModeSnapshot = primeHistoryNavigationMode({
       system: getConversationSystem(),
       libraryID: normalizeHistoryPaperItemID(paperItem?.libraryID) || libraryID,
+      surface: selectionSurface(),
       mode: "paper",
       paperItemID: paperItem?.id,
     });

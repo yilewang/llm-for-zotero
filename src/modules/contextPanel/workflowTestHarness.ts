@@ -1,3 +1,4 @@
+import { clearStandaloneSelection } from "./conversationSelection";
 import { callLLM, callLLMStream } from "../../utils/llmClient";
 import { appLogger } from "../../core/logging";
 import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
@@ -1150,6 +1151,7 @@ function clearWorkflowConversationRuntimeState(): void {
   activeCodexConversationModeByLibrary.clear();
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
+  clearStandaloneSelection();
   selectedPaperContextCache.clear();
   selectedCollectionContextCache.clear();
   selectedTagContextCache.clear();

@@ -340,6 +340,16 @@ export function clearConversationOwnedRuntimeState(
       activePaperConversationByPaper.delete(stateKey);
     }
   }
+  for (const [stateKey, activeKey] of standaloneGlobalConversationByLibrary) {
+    if (normalizeConversationKey(activeKey) === key) {
+      standaloneGlobalConversationByLibrary.delete(stateKey);
+    }
+  }
+  for (const [stateKey, activeKey] of standalonePaperConversationByPaper) {
+    if (normalizeConversationKey(activeKey) === key) {
+      standalonePaperConversationByPaper.delete(stateKey);
+    }
+  }
 
   if (promptMenuTarget?.conversationKey === key) promptMenuTarget = null;
   if (responseMenuTarget?.conversationKey === key) responseMenuTarget = null;
@@ -552,6 +562,17 @@ export const recentReaderSelectionCache = new TTLMap<number, string>(
 
 export const activePaperConversationByPaper = new Map<string, number>();
 
+// The standalone window's own selection, kept apart from the maps above (which
+// every sidebar panel shares) so the two surfaces choose independently. Keys
+// are "<system>|<runtime state key>"; nothing here is ever persisted. Read and
+// written only through conversationSelection.ts.
+export const standaloneConversationModeByLibrary = new Map<
+  string,
+  "paper" | "global"
+>();
+export const standaloneGlobalConversationByLibrary = new Map<string, number>();
+export const standalonePaperConversationByPaper = new Map<string, number>();
+
 // ── Auto-lock state (open chat locks during generation) ─────────────────────
 // Multiple conversations can be auto-locked simultaneously.
 const autoLockedGlobalConversationKeys = new Set<number>();
@@ -653,6 +674,9 @@ export function clearAllState(): void {
   pinnedPaperKeys.clear();
   recentReaderSelectionCache.clear();
   activePaperConversationByPaper.clear();
+  standaloneConversationModeByLibrary.clear();
+  standaloneGlobalConversationByLibrary.clear();
+  standalonePaperConversationByPaper.clear();
   const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
   for (const key of pendingKeys) notifyRequestActivityChanged(key, true);
