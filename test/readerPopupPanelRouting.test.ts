@@ -3,7 +3,6 @@ import {
   getReaderContextPanelForTab,
   isPanelInReaderContextForTab,
   resolveReaderPopupPanelTarget,
-  resolveStandalonePopupPanelTarget,
 } from "../src/modules/contextPanel/readerPopupPanelRouting";
 
 class FakeElement {
@@ -85,20 +84,20 @@ function buildReaderDeck() {
   };
 }
 
-function buildStandalonePanel() {
-  const deck = new FakeElement();
-  const doc = new FakeDocument(deck);
-  deck.ownerDocument = doc;
+/** The standalone chat window: a live chat panel and no reader deck. */
+function buildStandaloneDocument() {
+  const doc = {
+    getElementById: () => null,
+    querySelector: (selector: string) =>
+      selector === "#llm-main" ? root : null,
+  };
   const body = new FakeElement();
   const root = new FakeElement();
-  body.ownerDocument = doc;
+  body.ownerDocument = doc as unknown as FakeDocument;
   root.setAttribute("id", "llm-main");
   root.setAttribute("data-standalone", "true");
   body.append(root);
-  return {
-    body: body as unknown as Element,
-    root: root as unknown as Element,
-  };
+  return { doc: doc as unknown as Document };
 }
 
 describe("reader popup panel routing", function () {
@@ -202,30 +201,29 @@ describe("reader popup panel routing", function () {
     );
   });
 
-  it("returns the standalone chat target outside the reader deck", function () {
+  it("returns the reader's own panel, never the standalone chat window", function () {
     const reader = buildReaderDeck();
-    const standalone = buildStandalonePanel();
+    const standalone = buildStandaloneDocument();
 
-    const target = resolveStandalonePopupPanelTarget([
-      reader.activePanel,
-      standalone.body,
-    ]);
+    const target = resolveReaderPopupPanelTarget({
+      preferredDocument: reader.doc,
+      documents: [standalone.doc, reader.doc],
+      tabID: "tab-active",
+    });
 
-    assert.strictEqual(target?.body, standalone.body);
-    assert.strictEqual(target?.root, standalone.root);
+    assert.strictEqual(target?.root, reader.activeRoot);
   });
 
-  it("ignores a disconnected standalone chat target", function () {
-    const standalone = buildStandalonePanel();
-    (standalone.body as unknown as FakeElement).isConnected = false;
+  it("adds nowhere when the reader has no panel, even with the standalone window open", function () {
+    const reader = buildReaderDeck();
+    const standalone = buildStandaloneDocument();
 
-    assert.isNull(resolveStandalonePopupPanelTarget([standalone.body]));
-  });
-
-  it("refuses multiple live standalone chat targets", function () {
-    const first = buildStandalonePanel();
-    const second = buildStandalonePanel();
-
-    assert.isNull(resolveStandalonePopupPanelTarget([first.body, second.body]));
+    assert.isNull(
+      resolveReaderPopupPanelTarget({
+        preferredDocument: reader.doc,
+        documents: [reader.doc, standalone.doc],
+        tabID: "tab-without-panel",
+      }),
+    );
   });
 });

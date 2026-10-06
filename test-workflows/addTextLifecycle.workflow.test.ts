@@ -88,17 +88,22 @@ describe("workflow: Add Text lifecycle", function () {
     assert.isTrue(diagnostics.secondConversationHasText, message);
   });
 
-  it("routes popup text to standalone chat while embedded reader panels are placeholders", async function () {
+  it("routes popup text to the reader's own panel while the standalone window is open", async function () {
     const selectedText = "STANDALONE_READER_POPUP_SELECTION";
     fixture = await api.createPaperWithPdfFixture({
       title: "Workflow Standalone Add Text",
       pdfTitle: "Workflow Standalone Add Text PDF",
       pages: [`The standalone reader contains ${selectedText} for routing.`],
     });
-    const standalone = await api.openStandaloneForItem(fixture.parentItemId);
-    assert.equal(standalone.activeTab, "paper", JSON.stringify(standalone));
+    const readerPanel = await api.renderPanelForItem(fixture.parentItemId);
+    await api.openStandaloneForItem(fixture.parentItemId);
+    // Library chat in the window, so the window and the reader's panel hold
+    // different conversations and the routing is observable.
+    const standalone = await api.clickStandaloneTab("open");
+    assert.equal(standalone.activeTab, "open", JSON.stringify(standalone));
 
     const diagnostics = await api.exerciseReaderPopupStandaloneRouting({
+      panelId: readerPanel.panelId,
       attachmentItemId: fixture.pdfAttachmentId,
       pageIndex: 0,
       selectedText,
@@ -112,8 +117,15 @@ describe("workflow: Add Text lifecycle", function () {
       standalone.conversationKey,
       message,
     );
-    assert.isTrue(diagnostics.standaloneConversationHasText, message);
-    assert.isTrue(diagnostics.standalonePreviewHasText, message);
+    assert.notEqual(
+      diagnostics.readerConversationKey,
+      diagnostics.standaloneConversationKey,
+      message,
+    );
+    assert.isTrue(diagnostics.readerConversationHasText, message);
+    assert.isTrue(diagnostics.readerPreviewHasText, message);
+    assert.isFalse(diagnostics.standaloneConversationHasText, message);
+    assert.isFalse(diagnostics.standalonePreviewHasText, message);
   });
 
   for (const trigger of ["popup", "action-bar"] as const) {

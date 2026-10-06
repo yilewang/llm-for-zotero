@@ -4664,12 +4664,18 @@ async function exerciseReaderPopupActiveTabRouting(input: {
   }
 }
 
+/**
+ * Reader Add Text while the standalone window is open: the selection goes to
+ * the panel in the reader tab's own context pane, never to the window.
+ */
 async function exerciseReaderPopupStandaloneRouting(input: {
+  panelId: string;
   attachmentItemId: number;
   pageIndex: number;
   selectedText: string;
 }): Promise<WorkflowTestReaderPopupStandaloneRoutingDiagnostics> {
   assertWorkflowTestEnabled();
+  const readerPanel = getPanel(input.panelId);
   const standaloneDoc = await waitForStandaloneReady();
   const standaloneBody = standaloneDoc.querySelector(
     ".llm-standalone-content",
@@ -4688,6 +4694,24 @@ async function exerciseReaderPopupStandaloneRouting(input: {
   let popupHost: HTMLElement | null = null;
   let selectionDoc: Document | null = null;
   try {
+    const mainDocument = Zotero.getMainWindow?.()?.document || null;
+    const readerContextPanel = mainDocument
+      ? getReaderContextPanelForTab(mainDocument, reader.tabID)
+      : null;
+    if (!readerContextPanel) {
+      throw new Error("Workflow reader tab does not expose a context panel");
+    }
+    // First in the reader's pane, so routing picks it over a native panel
+    // that, sharing the window's remembered Library mode, may show the
+    // window's own conversation.
+    readerContextPanel.insertBefore(
+      readerPanel.body,
+      readerContextPanel.firstChild,
+    );
+    const readerItem =
+      activeContextPanels.get(readerPanel.body)?.() || readerPanel.item;
+    const readerConversationKey = getConversationKey(readerItem);
+
     const popupAction = await dispatchWorkflowReaderAddTextPopup({
       reader,
       pageIndex: input.pageIndex,
@@ -4695,23 +4719,55 @@ async function exerciseReaderPopupStandaloneRouting(input: {
     });
     popupHost = popupAction.popupHost;
     selectionDoc = popupAction.selectionDoc;
-    await waitForSelectedContext({
-      conversationKey: standaloneConversationKey,
-      selectedText: input.selectedText,
-      pageIndex: input.pageIndex,
-    });
+    try {
+      await waitForSelectedContext({
+        conversationKey: readerConversationKey,
+        selectedText: input.selectedText,
+        pageIndex: input.pageIndex,
+      });
+    } catch (err) {
+      const roots = Array.from(
+        readerContextPanel.querySelectorAll("#llm-main"),
+      ) as HTMLElement[];
+      throw new Error(
+        `${(err as Error).message}: ${JSON.stringify({
+          readerConversationKey,
+          standaloneConversationKey,
+          readerPanelRoots: roots.map((root) => ({
+            workflowPanel: root.parentElement === readerPanel.body,
+            conversationKey: Number(root.dataset.itemId || 0),
+            conversationKind: root.dataset.conversationKind || "",
+            hasText: getSelectedTextContextEntries(
+              Number(root.dataset.itemId || 0),
+            ).some((context) => context.text === input.selectedText),
+          })),
+          standaloneHasText: getSelectedTextContextEntries(
+            standaloneConversationKey,
+          ).some((context) => context.text === input.selectedText),
+        })}`,
+      );
+    }
     await Zotero.Promise.delay(25);
 
+    const previewHasText = (body: Element) =>
+      Array.from(body.querySelectorAll(".llm-selected-context-text")).some(
+        (node) => node?.textContent?.trim() === input.selectedText,
+      );
+    const conversationHasText = (conversationKey: number) =>
+      getSelectedTextContextEntries(conversationKey).some(
+        (context) => context.text === input.selectedText,
+      );
     return {
       readerTabId: `${reader.tabID || ""}`,
       addTextButtonLabel: popupAction.addTextButtonLabel,
+      readerConversationKey,
+      readerConversationHasText: conversationHasText(readerConversationKey),
+      readerPreviewHasText: previewHasText(readerPanel.body),
       standaloneConversationKey,
-      standaloneConversationHasText: getSelectedTextContextEntries(
+      standaloneConversationHasText: conversationHasText(
         standaloneConversationKey,
-      ).some((context) => context.text === input.selectedText),
-      standalonePreviewHasText: Array.from(
-        standaloneBody.querySelectorAll(".llm-selected-context-text"),
-      ).some((node) => node?.textContent?.trim() === input.selectedText),
+      ),
+      standalonePreviewHasText: previewHasText(standaloneBody),
     };
   } finally {
     selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();

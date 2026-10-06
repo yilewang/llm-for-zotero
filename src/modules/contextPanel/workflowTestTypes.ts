@@ -361,6 +361,9 @@ export type WorkflowTestReaderPopupRoutingDiagnostics = {
 export type WorkflowTestReaderPopupStandaloneRoutingDiagnostics = {
   readerTabId: string;
   addTextButtonLabel: string;
+  readerConversationKey: number;
+  readerConversationHasText: boolean;
+  readerPreviewHasText: boolean;
   standaloneConversationKey: number;
   standaloneConversationHasText: boolean;
   standalonePreviewHasText: boolean;
@@ -1028,6 +1031,7 @@ export type WorkflowTestApi = {
     selectedText: string;
   }) => Promise<WorkflowTestReaderPopupRoutingDiagnostics>;
   exerciseReaderPopupStandaloneRouting: (input: {
+    panelId: string;
     attachmentItemId: number;
     pageIndex: number;
     selectedText: string;
