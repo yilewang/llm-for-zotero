@@ -179,7 +179,7 @@ describe("chat streaming-response wiring", function () {
       const restore = sliceBetween(
         retryFlowSource(source),
         "const restoreOriginalTurn = () => {",
-        "const stopRetryPreparation = () => {",
+        "const persistRetryUserRow = async () => {",
       );
 
       const discard = matchIndex(restore, DISCARD_STREAM);

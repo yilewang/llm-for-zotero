@@ -5838,15 +5838,9 @@ export async function retryLatestAssistantResponse(
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
     refreshChatSafely();
   };
-  const stopRetryPreparation = () => {
-    if (requestIsActive()) return false;
-    restoreOriginalTurn();
-    releaseRequest();
-    return true;
-  };
-  // Writes the user row as it currently stands in memory. Called once before
-  // the request goes out, and again after restoreOriginalTurn on a
-  // zero-output failure so the stored row rolls back with the answer.
+  // Writes the user row as it currently stands in memory. The restore paths
+  // call it after restoreOriginalTurn so the stored row rolls back with the
+  // answer; the first write before the request goes out is inline below.
   const persistRetryUserRow = async () => {
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
@@ -5856,6 +5850,35 @@ export async function retryLatestAssistantResponse(
       }),
       effectiveStorageSystem,
     );
+  };
+  let retryUserRowWritten = false;
+  let retryDispatched = false;
+  // The one way a retry that never reached the provider ends: put the
+  // previous turn back in memory and, once the retry wrote its user row,
+  // write the restored row back too. The answer row was never touched.
+  const restorePreparedTurn = async () => {
+    restoreOriginalTurn();
+    // The store UPDATE targets the conversation's latest user row. A send
+    // queued behind this retry after Cancel may already own that row, so
+    // write back only while the retried pair is still the latest pair. The
+    // check is synchronous with the call: the write lock is FIFO, so any
+    // later send orders after this write.
+    const live = chatHistory.get(conversationKey) || [];
+    const stillLatest =
+      live[live.length - 1] === assistantMessage &&
+      live[live.length - 2] === retryPair.userMessage;
+    if (!retryUserRowWritten || !stillLatest) return;
+    try {
+      await persistRetryUserRow();
+    } catch (error) {
+      appLogger.warn("LLM: Failed to restore the retried user row", error);
+    }
+  };
+  const stopRetryPreparation = async () => {
+    if (requestIsActive()) return false;
+    await restorePreparedTurn();
+    releaseRequest();
+    return true;
   };
   // The retry persists the cancelled trace before repainting, then writes its
   // row through the store UPDATE, which throws on failure (no once-guard).
@@ -5908,7 +5931,7 @@ export async function retryLatestAssistantResponse(
       modelAttachmentsOverride,
       effectiveRequestConfig,
     });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     retryScreenshotImages = retryModelInputs.screenshotImages;
     retryPair.userMessage.screenshotImages = retryScreenshotImages.length
       ? retryScreenshotImages
@@ -5950,13 +5973,13 @@ export async function retryLatestAssistantResponse(
       usesLocalPdfTransport && pdfPaperContexts.length
         ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
         : undefined;
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (
       retryLocalDocuments?.length &&
       effectiveConversationSystem === "claude_code"
     ) {
       await preflightClaudeBridgeLocalPdfCapability();
-      if (stopRetryPreparation()) return;
+      if (await stopRetryPreparation()) return;
     }
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
@@ -5970,7 +5993,7 @@ export async function retryLatestAssistantResponse(
         providerProtocol: effectiveRequestConfig.providerProtocol,
         profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       });
-      if (stopRetryPreparation()) return;
+      if (await stopRetryPreparation()) return;
     }
 
     const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
@@ -6002,7 +6025,7 @@ export async function retryLatestAssistantResponse(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
@@ -6023,20 +6046,27 @@ export async function retryLatestAssistantResponse(
       selectedCollectionContexts.length
         ? selectedCollectionContexts
         : undefined;
-    await persistRetryUserRow();
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await finalizeCancelledAssistant();
-      return;
-    }
+    // The first write is skipped when the retry was cancelled while it waited
+    // for the lock, so a cancelled retry never changes the stored row.
+    let wrote = false;
+    await withConversationWriteLock(conversationKey, async () => {
+      if (!requestIsActive()) return;
+      wrote = true;
+      await updateStoredLatestUserMessageByConversationUnlocked(
+        conversationKey,
+        toStoredUserRowPatch(retryPair.userMessage, {
+          conversationGeneration,
+          selectedTexts: retryPair.userMessage.selectedTexts || [],
+        }),
+        effectiveStorageSystem,
+      );
+    });
+    retryUserRowWritten = wrote;
+    if (await stopRetryPreparation()) return;
 
     const queueRefresh = assistantTurn.queueRefresh;
     assistantTurn.attachCodexTrace(retryPair.userMessage.forcedSkillIds);
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await finalizeCancelledAssistant();
-      return;
-    }
+    if (await stopRetryPreparation()) return;
 
     // Models resolved as image-disabled reject image_url content, so drop all images.
     const allImages = supportsImageInputs(effectiveRequestConfig)
@@ -6069,7 +6099,7 @@ export async function retryLatestAssistantResponse(
         contextPlan,
         combinedContext,
       });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (workflowTestIntercepted) {
       assistantMessage.text = "Workflow request intercepted before dispatch.";
       assistantMessage.streaming = false;
@@ -6147,7 +6177,7 @@ export async function retryLatestAssistantResponse(
           ),
         )
       : undefined;
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (
       !notifyProviderDispatch(
         body,
@@ -6161,6 +6191,7 @@ export async function retryLatestAssistantResponse(
     // The request is going out: from here the provider bills whatever it
     // produces, including on abort, so the turn owes a usage row.
     assistantTurn.dispatched();
+    retryDispatched = true;
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await runCodexNativePanelTurn(
           {
@@ -6259,7 +6290,13 @@ export async function retryLatestAssistantResponse(
     const isCancelled = assistantTurn.wasCancelled(err);
     assistantTurn.noteUsageOutcome(isCancelled ? "abort" : "error");
     if (isCancelled) {
-      await finalizeCancelledAssistant();
+      // A cancel that aborted the preparation restores like any other
+      // pre-dispatch stop; after dispatch the turn keeps what streamed.
+      if (retryDispatched) await finalizeCancelledAssistant();
+      else {
+        await restorePreparedTurn();
+        setStatusSafely("Cancelled", "ready");
+      }
       return;
     }
 

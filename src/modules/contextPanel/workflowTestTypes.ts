@@ -1079,6 +1079,13 @@ export type WorkflowTestApi = {
     query: string,
   ) => Promise<WorkflowTestHistorySearchResult>;
   failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  /** Holds a conversation's write lock until released. */
+  holdConversationWriteLock: (conversationKey: number) => Promise<void>;
+  /** Whether a write waits behind the held lock. */
+  isConversationWriteLockQueued: (conversationKey: number) => Promise<boolean>;
+  /** Treats the writes queued so far as seen. */
+  markConversationWriteLockQueue: (conversationKey: number) => Promise<void>;
+  releaseConversationWriteLock: (conversationKey: number) => Promise<void>;
   forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,

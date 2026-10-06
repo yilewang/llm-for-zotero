@@ -211,6 +211,8 @@ import {
 import {
   getConversationWriteGeneration,
   bumpConversationWriteGeneration,
+  getConversationWriteLockTailForTests,
+  withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
 import { loadPlanDocumentOutbox } from "../../agent/documents/store";
 import {
@@ -4880,6 +4882,8 @@ async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   resolveDelayedCodexPermissionCatalog?.();
   resolveDelayedCodexPermissionCatalog = null;
+  for (const held of heldConversationWriteLocks.values()) held.release();
+  heldConversationWriteLocks.clear();
   setFooterPermissionCatalogLoadersForTests();
   setAgentRunTraceLoaderForTests();
   await closeStandalone();
@@ -5318,6 +5322,70 @@ async function searchPanelHistory(
     throw new Error("History search hook not installed on panel body");
   }
   return search(query);
+}
+
+const heldConversationWriteLocks = new Map<
+  number,
+  { release: () => void; tail: Promise<void> | undefined }
+>();
+
+/**
+ * Holds the conversation's write lock until `releaseConversationWriteLock`,
+ * so a test can stop a flow at its next store write.
+ */
+async function holdConversationWriteLock(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  if (heldConversationWriteLocks.has(conversationKey)) {
+    throw new Error(`write lock ${conversationKey} is already held`);
+  }
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await new Promise<void>((held) => {
+    void withConversationWriteLock(conversationKey, () => {
+      held();
+      return released;
+    });
+  });
+  heldConversationWriteLocks.set(conversationKey, {
+    release,
+    tail: getConversationWriteLockTailForTests(conversationKey),
+  });
+}
+
+/** Whether another write now waits behind the held lock. */
+async function isConversationWriteLockQueued(
+  conversationKey: number,
+): Promise<boolean> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  if (!held) throw new Error(`write lock ${conversationKey} is not held`);
+  return getConversationWriteLockTailForTests(conversationKey) !== held.tail;
+}
+
+/**
+ * Treats the writes queued so far as seen, so that
+ * isConversationWriteLockQueued reports only a write that queues later.
+ */
+async function markConversationWriteLockQueue(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  if (!held) throw new Error(`write lock ${conversationKey} is not held`);
+  held.tail = getConversationWriteLockTailForTests(conversationKey);
+}
+
+async function releaseConversationWriteLock(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  heldConversationWriteLocks.delete(conversationKey);
+  held?.release();
 }
 
 async function failNextPendingTurnFinalizes(count: number): Promise<void> {
@@ -6201,6 +6269,10 @@ export function installWorkflowTestHarness(targetAddon: {
     sweepPendingDeletionsAsRestart,
     searchPanelHistory,
     failNextPendingTurnFinalizes,
+    holdConversationWriteLock,
+    isConversationWriteLockQueued,
+    markConversationWriteLockQueue,
+    releaseConversationWriteLock,
     forceWebChatSessionAnchorFailures,
     askCapturingFinalRequest,
     simulateProviderContextUsage,

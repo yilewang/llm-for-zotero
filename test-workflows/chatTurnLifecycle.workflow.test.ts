@@ -1047,6 +1047,119 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
+  it("retry cancelled while its user-row write waits: the previous answer and rows are restored", async function () {
+    await surfacing(async () => {
+      const conversationKey = await completedSend(
+        "Answer once.",
+        "Original answer.",
+      );
+      await settledUsageRows(conversationKey, 1);
+      const before = await read(conversationKey);
+
+      // Stop the retry at its pre-dispatch user-row write, then Cancel.
+      await api().holdConversationWriteLock(conversationKey);
+      let retry: Promise<unknown> | undefined;
+      try {
+        retry = api().retryLatestPanelResponse(panel.panelId, RETRY_ENTRY_ID);
+        await waitFor(
+          () => api().isConversationWriteLockQueued(conversationKey),
+          (queued) => queued,
+          "the retry's user-row write to wait on the lock",
+        );
+        panelElement("#llm-cancel").click();
+      } finally {
+        await api().releaseConversationWriteLock(conversationKey);
+      }
+      assert.isUndefined(await retry, "a cancelled retry returns nothing");
+      const state = await read(conversationKey);
+
+      assert.lengthOf(streams, 1, "the retry never dispatched");
+      assert.deepEqual(
+        state.memory,
+        before.memory,
+        "both in-memory messages are restored exactly",
+      );
+      // The user row the retry wrote is written back; the answer row was
+      // never touched.
+      assert.deepEqual(
+        state.storedRows,
+        before.storedRows,
+        "stored rows are restored exactly",
+      );
+      assert.equal(await statusText(), "Cancelled");
+    });
+  });
+
+  it("retry cancelled while a new send queues: the restore never overwrites the new turn's user row", async function () {
+    await surfacing(async () => {
+      const conversationKey = await completedSend(
+        "Answer once.",
+        "Original answer.",
+      );
+      await settledUsageRows(conversationKey, 1);
+      const before = await read(conversationKey);
+      const NEW_QUESTION = "A newer question.";
+      const streamsBefore = streams.length;
+
+      // Hold the write lock, start the retry, and Cancel while its user-row
+      // write waits. Then send a new question: its row insert queues behind
+      // the same lock, ahead of the cancelled retry's restore write.
+      await api().holdConversationWriteLock(conversationKey);
+      let retry: Promise<unknown> | undefined;
+      let newSend:
+        | { conversationKey: number; sendSettledSequenceBefore: number }
+        | undefined;
+      try {
+        retry = api().retryLatestPanelResponse(panel.panelId, RETRY_ENTRY_ID);
+        await waitFor(
+          () => api().isConversationWriteLockQueued(conversationKey),
+          (queued) => queued,
+          "the retry's user-row write to wait on the lock",
+        );
+        await api().markConversationWriteLockQueue(conversationKey);
+        panelElement("#llm-cancel").click();
+        newSend = await startSend(NEW_QUESTION);
+        await waitFor(
+          () => read(conversationKey),
+          (state) =>
+            state.memory.some((message) => message.text === NEW_QUESTION),
+          "the new question to reach memory",
+        );
+        await waitFor(
+          () => api().isConversationWriteLockQueued(conversationKey),
+          (queued) => queued,
+          "the new send's user-row insert to wait on the lock",
+        );
+      } finally {
+        await api().releaseConversationWriteLock(conversationKey);
+      }
+      await retry;
+      const newStream = await nextStream(streamsBefore);
+      newStream.push("New answer.");
+      newStream.usage(5, 3);
+      newStream.finish();
+      await waitForSendSettled(newSend!);
+      const state = await read(conversationKey);
+
+      assert.equal(
+        storedOf(state, "user").text,
+        NEW_QUESTION,
+        "the new turn's stored user row keeps its own text",
+      );
+      assert.deepEqual(
+        state.storedRows.filter((row) => row.role === "user")[0],
+        before.storedRows.filter((row) => row.role === "user")[0],
+        "the old turn's stored user row is unchanged",
+      );
+      assert.deepEqual(
+        state.memory.slice(0, 2),
+        before.memory,
+        "the cancelled retry's pair is restored in memory",
+      );
+      assert.lengthOf(state.memory, 4, "the new turn follows the old pair");
+    });
+  });
+
   it("retry over an answer with a document id clears the stale id", async function () {
     await surfacing(async () => {
       const seeded = await api().seedPanelStoredTurn(
