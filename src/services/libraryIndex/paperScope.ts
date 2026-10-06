@@ -2,11 +2,16 @@
  * The papers that attached papers, folders and tags cover, read from the
  * library index snapshot.
  *
- * One union serves retrieval (`ZoteroGateway.resolveLibraryScopeItemIds`) and
- * the Task progress listing (`resolveTaskPaperScopeItemIds`): explicit papers
- * first, then each folder's direct items (subcollections are not expanded),
- * then each tag's items; only live regular items; papers the user removed
- * from the task left out; each paper once, in first-seen order.
+ * One union serves retrieval (`ZoteroGateway.resolveLibraryScopeItemIds`),
+ * the Task progress listing (`resolveTaskPaperScopeItemIds`) and the
+ * plain-chat planner's tag scopes: explicit papers first, then each folder's
+ * direct items (subcollections are not expanded), then each tag's items; only
+ * live regular items; papers the user removed from the task left out; each
+ * paper once, in first-seen order.
+ *
+ * This module owns the plugin's one tag rule: a tag is looked up by its
+ * display name (else its normalized name), compared in Unicode NFC and
+ * without case (`normalizeLibraryIndexTagIdentity`).
  *
  * Pure: reads only the snapshot object it is given.
  */
@@ -22,6 +27,7 @@ export type PaperScopeSnapshot = Pick<
   | "directItemIdsByCollectionId"
   | "collectionPathById"
   | "tagByNormalizedName"
+  | "pdfCapableItemIds"
 >;
 
 /** A tag, or the "all tagged" / "untagged" aggregate, as a scope names it. */
@@ -40,6 +46,12 @@ export type PaperScopeRequest = {
   tagContexts?: readonly PaperScopeTag[];
   /** Papers the user removed from the task: never part of the scope. */
   excludedItemIds?: readonly number[];
+  /**
+   * Keep only papers with a PDF whose text the plugin can read. Plain chat
+   * asks for this because it answers from extracted PDF text; the agent
+   * does not, because it can also read other attachments and metadata.
+   */
+  pdfOnly?: boolean;
 };
 
 export type PaperScope = {
@@ -93,9 +105,25 @@ export function libraryIndexTagItemIds(
   ]);
 }
 
-/** The items a scope tag names, before the paper filter. */
-function scopeTagItemIds(
-  snapshot: PaperScopeSnapshot,
+/**
+ * The name a scope tag is looked up by: its display name, else its normalized
+ * name. The display name is the exact Zotero tag; a stored normalized name
+ * can be a legacy fuzzy key (`C++` saved as `c`) that names another tag.
+ */
+function paperScopeTagLookupName(tag: PaperScopeTag): string {
+  return tag.name || tag.normalizedName || "";
+}
+
+/**
+ * The items a scope tag names, before the paper filter: each item of any
+ * kind that holds the tag; for an aggregate, each top-level item that is
+ * tagged (or untagged).
+ */
+export function scopeTagItemIds(
+  snapshot: Pick<
+    LibraryIndexSnapshot,
+    "itemById" | "topLevelItemOrder" | "tagByNormalizedName"
+  >,
   tag: PaperScopeTag,
 ): Set<number> {
   const includeAutomatic = tag.includeAutomatic === true;
@@ -111,10 +139,9 @@ function scopeTagItemIds(
       }),
     );
   }
-  // The display name wins; the normalized name is only a fallback.
   return libraryIndexTagItemIds(
     snapshot,
-    tag.name || tag.normalizedName || "",
+    paperScopeTagLookupName(tag),
     includeAutomatic,
   );
 }
@@ -133,6 +160,7 @@ export function resolvePaperScope(
     for (const id of ids) {
       if (!isPaperScopeItem(snapshot.itemById.get(id))) continue;
       if (excluded.has(id)) continue;
+      if (request.pdfOnly && !snapshot.pdfCapableItemIds.has(id)) continue;
       union.add(id);
       count += 1;
     }

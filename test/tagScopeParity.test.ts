@@ -21,8 +21,8 @@ import type { PdfContext } from "../src/services/paperContent/types";
  * Each case pins what each one returns for the same tag selection.
  */
 
-const NFC_CAFE = "Café";
-const NFD_CAFE = "Café";
+const NFC_CAFE = "Caf\u00e9";
+const NFD_CAFE = "Cafe\u0301";
 
 type Seed = {
   id: number;
@@ -38,12 +38,12 @@ type Seed = {
 };
 
 /**
- * 101 "Café" (NFC), PDF.            102 "Café" (NFD), PDF.
- * 103 "café", no PDF (HTML only).   104 "CAFÉ", PDF, in the trash.
- * 105 "Café" automatic only, PDF.   107 untagged, its PDF 106 tagged "Café".
- * 108 standalone PDF tagged "Café". 109 standalone note tagged "Café".
+ * 101 "Cafe" (NFC), PDF.            102 "Cafe" (NFD), PDF.
+ * 103 "cafe", no PDF (HTML only).   104 "CAFE", PDF, in the trash.
+ * 105 "Cafe" automatic only, PDF.   107 untagged, its PDF 106 tagged "Cafe".
+ * 108 standalone PDF tagged "Cafe". 109 standalone note tagged "Cafe".
  * 110 "Learning", PDF.              111 untagged, PDF.
- * 112 untagged, no attachment.      113 "CAFÉ" (upper case), PDF.
+ * 112 untagged, no attachment.      113 "CAFE" (upper case), PDF.
  * Folder 50 holds 101; its child folder 51 holds 110.
  */
 function seeds(): Seed[] {
@@ -73,7 +73,7 @@ function seeds(): Seed[] {
     {
       id: 103,
       title: "Lower Cafe No PDF",
-      tags: [{ tag: "café" }],
+      tags: [{ tag: "caf\u00e9" }],
       attachments: [1103],
     },
     {
@@ -86,7 +86,7 @@ function seeds(): Seed[] {
     {
       id: 104,
       title: "Trashed Cafe Paper",
-      tags: [{ tag: "CAFÉ" }],
+      tags: [{ tag: "CAF\u00c9" }],
       attachments: [1104],
       deleted: true,
     },
@@ -129,7 +129,7 @@ function seeds(): Seed[] {
     {
       id: 113,
       title: "Upper Cafe Paper",
-      tags: [{ tag: "CAFÉ" }],
+      tags: [{ tag: "CAF\u00c9" }],
       attachments: [1113],
     },
     pdf(1113, 113),
@@ -325,29 +325,43 @@ type Case = {
   tagListing: number[];
 };
 
+const NFC_CAFE_LOWER = NFC_CAFE.toLowerCase();
+
+/**
+ * One tag rule (`services/libraryIndex/paperScope`): look the tag up by its
+ * display name (else its normalized name), in NFC, without case. The planner
+ * asks the same union, for papers with a readable PDF only.
+ * Before the rule the planner compared code points (no NFC), looked up the
+ * normalized name first, read live Zotero, and dropped a tag with an empty
+ * display name.
+ */
 const CASES: Case[] = [
   {
-    // NFC: the planner compares code points, so the decomposed "Café" (102)
-    // is a different tag; the index folds both to NFC.
-    // PDF-only: the planner keeps only papers with a PDF (103 has HTML).
-    // Trash, automatic tags, a tagged child PDF, standalone notes and
-    // files: left out by both.
-    // Case: both ignore case (113 "CAFÉ").
+    // NFC: 101 and 102 hold the same tag in two Unicode forms.
+    // Case: 113 "CAFE" in upper case holds it too.
+    // PDF-only: plain chat leaves out 103 (HTML only).
+    // Trash (104), automatic tags (105), a tagged child PDF (106), and
+    // standalone files and notes (108, 109): never papers of the tag.
     name: "composed name, chip-normalized",
-    tag: { name: NFC_CAFE, normalizedName: "café", libraryID: 1 },
+    tag: { name: NFC_CAFE, normalizedName: NFC_CAFE_LOWER, libraryID: 1 },
     planner: {
-      scopeLine: `- ${NFC_CAFE} [tag=${NFC_CAFE}, libraryID=1, papers=2]`,
-      itemIds: [101, 113],
+      scopeLine: `- ${NFC_CAFE} [tag=${NFC_CAFE}, libraryID=1, papers=3]`,
+      itemIds: [101, 102, 113],
     },
     snapshot: [101, 102, 103, 113],
     tagListing: [101, 102, 103, 108, 109, 113],
   },
   {
+    // Was: the planner found only 102, the decomposed spelling.
     name: "decomposed name, chip-normalized",
-    tag: { name: NFD_CAFE, normalizedName: "café", libraryID: 1 },
+    tag: {
+      name: NFD_CAFE,
+      normalizedName: NFD_CAFE.toLowerCase(),
+      libraryID: 1,
+    },
     planner: {
-      scopeLine: `- ${NFD_CAFE} [tag=${NFD_CAFE}, libraryID=1, papers=1]`,
-      itemIds: [102],
+      scopeLine: `- ${NFD_CAFE} [tag=${NFD_CAFE}, libraryID=1, papers=3]`,
+      itemIds: [101, 102, 113],
     },
     snapshot: [101, 102, 103, 113],
     tagListing: [101, 102, 103, 108, 109, 113],
@@ -356,35 +370,39 @@ const CASES: Case[] = [
     name: "automatic tags included",
     tag: {
       name: NFC_CAFE,
-      normalizedName: "café",
+      normalizedName: NFC_CAFE_LOWER,
       libraryID: 1,
       includeAutomatic: true,
     },
     planner: {
-      scopeLine: `- ${NFC_CAFE} [tag=${NFC_CAFE}, libraryID=1, papers=3]`,
-      itemIds: [101, 105, 113],
+      scopeLine: `- ${NFC_CAFE} [tag=${NFC_CAFE}, libraryID=1, papers=4]`,
+      itemIds: [101, 102, 105, 113],
     },
     snapshot: [101, 102, 103, 105, 113],
     tagListing: [101, 102, 103, 105, 108, 109, 113],
   },
   {
-    // Name priority: the planner looks up the normalized name, the
-    // snapshot resolvers look up the display name.
+    // The display name is the exact Zotero tag; a stored normalized name can
+    // be a legacy fuzzy key. Was: the planner looked up the normalized name
+    // and listed the "Cafe" papers.
     name: "display name and normalized name disagree",
-    tag: { name: "Learning", normalizedName: "café", libraryID: 1 },
+    tag: { name: "Learning", normalizedName: NFC_CAFE_LOWER, libraryID: 1 },
     planner: {
-      scopeLine: "- Learning [tag=Learning, libraryID=1, papers=2]",
-      itemIds: [101, 113],
+      scopeLine: "- Learning [tag=Learning, libraryID=1, papers=1]",
+      itemIds: [110],
     },
     snapshot: [110],
     tagListing: [110],
   },
   {
-    // An empty display name: the planner drops the tag; the snapshot
-    // resolvers fall back to the normalized name.
+    // Was: the planner dropped the tag. The scope line now names it by its
+    // normalized name.
     name: "empty display name",
     tag: { name: "", normalizedName: "learning", libraryID: 1 },
-    planner: { scopeLine: "", itemIds: [] },
+    planner: {
+      scopeLine: "- learning [tag=learning, libraryID=1, papers=1]",
+      itemIds: [110],
+    },
     snapshot: [110],
     tagListing: [110],
   },
@@ -446,7 +464,7 @@ describe("tag scope parity: plain-chat planner vs library index snapshot", funct
     });
   }
 
-  it("pins staleness: the planner reads live tags, the snapshot reads the index until notified", async function () {
+  it("pins staleness: the planner and the snapshot both read the index, which reconciles notified changes before it answers", async function () {
     const tag: TagContextRef = {
       name: "Learning",
       normalizedName: "learning",
@@ -454,10 +472,11 @@ describe("tag scope parity: plain-chat planner vs library index snapshot", funct
     };
     assert.deepEqual(await snapshotScope(tag), [110]);
     // Zotero tags 111 "Learning"; the index has not been told yet.
+    // Was: the planner read live Zotero and already saw 111.
     fixture.seedById.get(111)!.tags = [{ tag: "Learning" }];
     assert.deepEqual(
       (await plannerScope({ tagContexts: [tag] })).itemIds,
-      [110, 111],
+      [110],
     );
     assert.deepEqual(await snapshotScope(tag), [110]);
     // The notifier reports the change; the index reconciles before reading.
@@ -468,10 +487,31 @@ describe("tag scope parity: plain-chat planner vs library index snapshot", funct
       extraData: { libraryID: 1 },
       receivedAt: Date.now(),
     });
+    assert.deepEqual(
+      (await plannerScope({ tagContexts: [tag] })).itemIds,
+      [110, 111],
+    );
     assert.deepEqual(await snapshotScope(tag), [110, 111]);
   });
 
-  it("pins folders: the planner expands subfolders, the snapshot union does not", async function () {
+  it("leaves papers the user removed from the task out of a plain-chat tag scope", async function () {
+    const planner = await plannerScope({
+      tagContexts: [
+        {
+          name: NFC_CAFE,
+          normalizedName: NFC_CAFE_LOWER,
+          libraryID: 1,
+          excludedItemIds: [102],
+        },
+      ],
+    });
+    assert.deepEqual(planner, {
+      scopeLine: `- ${NFC_CAFE} [tag=${NFC_CAFE}, libraryID=1, papers=2]`,
+      itemIds: [101, 113],
+    });
+  });
+
+  it("pins folders (unchanged, not a tag rule): the planner expands subfolders, the snapshot union does not", async function () {
     const planner = await plannerScope({
       collectionContexts: [{ collectionId: 50, name: "Cafes", libraryID: 1 }],
     });

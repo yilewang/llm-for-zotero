@@ -79,6 +79,8 @@ import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 import { renderSelectedTextPageFallbackContext } from "../../services/context/selectedTextAnchorFormatting";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
+import { libraryIndexService } from "../../services/libraryIndexService";
+import { resolvePaperScope } from "../../services/libraryIndex/paperScope";
 
 /**
  * Which part of papers a plain-chat question asks about, in any language:
@@ -443,67 +445,26 @@ function collectCollectionItemIds(
   return Array.from(out);
 }
 
-function getTagContextItemTagNames(
-  item: Zotero.Item,
-  includeAutomatic: boolean,
-): string[] {
-  try {
-    const rawTags = (item as { getTags?: () => unknown[] }).getTags?.();
-    if (!Array.isArray(rawTags)) return [];
-    const out = new Set<string>();
-    for (const entry of rawTags) {
-      let name = "";
-      let type: unknown;
-      if (typeof entry === "string") {
-        name = entry;
-      } else if (entry && typeof entry === "object") {
-        const typed = entry as {
-          tag?: unknown;
-          name?: unknown;
-          type?: unknown;
-        };
-        name =
-          typeof typed.tag === "string"
-            ? typed.tag
-            : typeof typed.name === "string"
-              ? typed.name
-              : "";
-        type = typed.type;
-      }
-      const normalized = sanitizeText(name).trim();
-      if (!normalized) continue;
-      if (type === 1 && !includeAutomatic) continue;
-      out.add(normalized);
-    }
-    return Array.from(out);
-  } catch (_err) {
-    return [];
-  }
-}
-
+/**
+ * The papers a tag scope covers, by the plugin's one tag rule
+ * (`services/libraryIndex/paperScope`), read from the library index like the
+ * reference picker that offered the tag. Plain chat answers from PDF text, so
+ * it asks for papers with a readable PDF only.
+ */
 async function collectTagContextItems(
   tagContext: TagContextRef,
 ): Promise<Zotero.Item[]> {
   const libraryID = Math.floor(Number(tagContext.libraryID) || 0);
   if (libraryID <= 0) return [];
-  const allItems = await Promise.resolve(
-    (Zotero.Items as any).getAll?.(libraryID, true, false, false) || [],
-  );
-  if (!Array.isArray(allItems)) return [];
-  const includeAutomatic = tagContext.includeAutomatic === true;
-  const tagName = sanitizeText(
-    tagContext.normalizedName || tagContext.name || "",
-  ).trim();
-  const tagNameLower = tagName.toLowerCase();
-  return allItems.filter((item): item is Zotero.Item => {
-    if (!item?.isRegularItem?.()) return false;
-    const tags = getTagContextItemTagNames(item, includeAutomatic);
-    if (tagContext.scope === "allTagged") return tags.length > 0;
-    if (tagContext.scope === "untagged") return tags.length === 0;
-    return tags.some(
-      (tag) => tag === tagName || tag.toLowerCase() === tagNameLower,
-    );
+  const snapshot = await libraryIndexService.getSnapshot(libraryID);
+  const { itemIds } = resolvePaperScope(snapshot, {
+    libraryID,
+    tagContexts: [tagContext],
+    pdfOnly: true,
   });
+  return itemIds
+    .map((itemId) => Zotero.Items.get(itemId))
+    .filter((item): item is Zotero.Item => Boolean(item?.isRegularItem?.()));
 }
 
 type CollectionScopeResolution = {
@@ -669,7 +630,11 @@ async function resolveCollectionScopePapers(params: {
   }
 
   for (const tagContext of tagContexts) {
-    const tagName = sanitizeText(tagContext.name).trim();
+    // The display name labels the scope; the shared rule falls back to the
+    // normalized name when it is empty, and so does the label.
+    const tagName = sanitizeText(
+      tagContext.name || tagContext.normalizedName || "",
+    ).trim();
     if (!tagName) continue;
     const items = await collectTagContextItems(tagContext);
     let tagPaperCount = 0;

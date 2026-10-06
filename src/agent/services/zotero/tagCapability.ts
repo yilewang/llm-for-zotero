@@ -9,7 +9,7 @@
  * lookup gets exactly the behaviour it asked for.
  */
 
-import { indexItemMatchesAggregateTagScope } from "../../../services/libraryIndex/paperScope";
+import { scopeTagItemIds } from "../../../services/libraryIndex/paperScope";
 import { libraryIndexService } from "../../../services/libraryIndexService";
 import type { TagContextRef } from "../../../shared/types";
 import type { BatchTagAssignment } from "../libraryMutation/valueTypes";
@@ -135,49 +135,9 @@ export class TagCapability {
       : 0;
     if (!libraryID) throw new Error("No active library available");
     const tagName = normalizeText(params.tagContext.name);
-    const normalizedName = normalizeText(
-      params.tagContext.normalizedName || params.tagContext.name,
-    )
-      .toLowerCase()
-      .trim();
-    const includeAutomatic = params.tagContext.includeAutomatic === true;
     const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    let members: ReadonlySet<number>;
-    if (params.tagContext.scope === "allTagged") {
-      members = new Set(
-        snapshot.topLevelItemOrder.filter((itemId) => {
-          const item = snapshot.itemById.get(itemId);
-          return Boolean(
-            item &&
-            indexItemMatchesAggregateTagScope(
-              item,
-              "allTagged",
-              includeAutomatic,
-            ),
-          );
-        }),
-      );
-    } else if (params.tagContext.scope === "untagged") {
-      members = new Set(
-        snapshot.topLevelItemOrder.filter((itemId) => {
-          const item = snapshot.itemById.get(itemId);
-          return Boolean(
-            item &&
-            indexItemMatchesAggregateTagScope(
-              item,
-              "untagged",
-              includeAutomatic,
-            ),
-          );
-        }),
-      );
-    } else {
-      members = libraryIndexService.tagItemIds(
-        snapshot,
-        tagName || normalizedName,
-        includeAutomatic,
-      );
-    }
+    // The plugin's one tag rule; items of every kind, not only papers.
+    const members = scopeTagItemIds(snapshot, params.tagContext);
     const ids = orderedIndexIds(
       snapshot,
       (item) =>

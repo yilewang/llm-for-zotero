@@ -4,6 +4,7 @@ import {
   isPaperScopeItem,
   libraryIndexTagItemIds,
   resolvePaperScope,
+  scopeTagItemIds,
   type PaperScopeSnapshot,
 } from "../src/services/libraryIndex/paperScope";
 import type {
@@ -192,6 +193,40 @@ describe("libraryIndex paperScope", function () {
     assert.deepEqual(scope.itemIds, [5, 6, 1, 2]);
     assert.deepEqual(scope.tagItemIds, [5, 6, 1, 2]);
     assert.equal(scope.summedScopeCount, 5);
+  });
+
+  it("keeps only papers with a readable PDF when asked (plain chat)", function () {
+    const withPdf = {
+      ...snapshot(),
+      pdfCapableItemIds: new Set([1, 6]),
+    } as PaperScopeSnapshot;
+    const request = {
+      libraryID: 1,
+      itemIds: [2, 6],
+      tagContexts: [{ name: "a", includeAutomatic: true }],
+    };
+    assert.deepEqual(resolvePaperScope(withPdf, request).itemIds, [2, 6, 1, 5]);
+    const pdfOnly = resolvePaperScope(withPdf, { ...request, pdfOnly: true });
+    assert.deepEqual(pdfOnly.itemIds, [6, 1]);
+    assert.deepEqual(pdfOnly.tagItemIds, [1]);
+    assert.equal(pdfOnly.summedScopeCount, 1);
+  });
+
+  it("looks a tag up by its display name, else its normalized name, in NFC", function () {
+    const scopeTagIds = (tag: { name: string; normalizedName?: string }) =>
+      [...scopeTagItemIds(snapshot(), tag)].sort((a, b) => a - b);
+    // A legacy fuzzy normalized name does not override the display name.
+    assert.deepEqual(scopeTagIds({ name: "B", normalizedName: "a" }), [2]);
+    assert.deepEqual(scopeTagIds({ name: "", normalizedName: "A" }), [1, 3]);
+    const cafe = {
+      ...snapshot(),
+      tagByNormalizedName: new Map([tag("caf\u00e9", [2])]),
+    } as PaperScopeSnapshot;
+    assert.deepEqual(
+      [...scopeTagItemIds(cafe, { name: "Cafe\u0301" })],
+      [2],
+      "a decomposed name finds the composed tag",
+    );
   });
 
   it("skips the folders of other libraries by the requested library", function () {
