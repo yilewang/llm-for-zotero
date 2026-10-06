@@ -11,7 +11,12 @@ import {
 } from "../context/normalizers";
 import { normalizeQuoteCitations } from "../quotes/quoteCitations";
 import { serializeForcedSkillIds } from "../../shared/skillIds";
-import { storedMessageDisplayOrderSql } from "../../shared/conversationMessageSql";
+import {
+  buildUserRowExistsQuery,
+  latestUserRowFilter,
+  storedMessageDisplayOrderSql,
+  type UpdateLatestUserMessageOptions,
+} from "../../shared/conversationMessageSql";
 import {
   copyConversationMessagesThroughAssistantAnchor,
   type ForkConversationMessagesResult,
@@ -1334,6 +1339,12 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     await refreshSearchIndex(normalizedKey);
   }
 
+  /**
+   * Rewrite the conversation's latest user row, or, with
+   * `options.expectedTimestamp`, the user row stored at that timestamp.
+   * Returns false when nothing was written: the key is not this store's, or
+   * no user row has the expected timestamp.
+   */
   async function updateLatestUserMessage(
     conversationKey: number,
     message: Pick<
@@ -1360,9 +1371,11 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       | "screenshotImages"
       | "attachments"
     >,
-  ): Promise<void> {
+    options: UpdateLatestUserMessageOptions = {},
+  ): Promise<boolean> {
     const normalizedKey = normalizeConversationKey(conversationKey);
-    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return false;
+    const userRowFilter = latestUserRowFilter(options);
     const selectedTextContexts = synthesizeSelectedTextContexts({
       selectedTextContexts: message.selectedTextContexts,
       selectedTexts: message.selectedTexts,
@@ -1392,7 +1405,20 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       : Date.now();
     const selector =
       await resolveRepairingMessageConversationSelector(normalizedKey);
+    let matched = true;
     await Zotero.DB.executeTransaction(async () => {
+      if (userRowFilter.exact) {
+        const rows = (await Zotero.DB.queryAsync(
+          buildUserRowExistsQuery({
+            tableName: tables.messages,
+            whereSql: selector.whereSql,
+            filterSql: userRowFilter.sql,
+          }),
+          [...selector.params, ...userRowFilter.params],
+        )) as unknown[] | undefined;
+        matched = Boolean(rows?.length);
+        if (!matched) return;
+      }
       await Zotero.DB.queryAsync(
         `UPDATE ${tables.messages}
        SET text = ?,
@@ -1418,7 +1444,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
        WHERE id = (
          SELECT id
          FROM ${tables.messages}
-         WHERE ${selector.whereSql} AND role = 'user'
+         WHERE ${selector.whereSql} AND role = 'user'${userRowFilter.sql}
          ORDER BY timestamp DESC, id DESC
          LIMIT 1
        )`,
@@ -1479,6 +1505,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
             ? JSON.stringify(message.attachments)
             : null,
           ...selector.params,
+          ...userRowFilter.params,
         ],
       );
       await config.hooks?.afterMessageWriteInTransaction?.(
@@ -1487,7 +1514,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       );
       await refreshCatalogSummary(normalizedKey);
     });
+    if (!matched) return false;
     await refreshSearchIndex(normalizedKey);
+    return true;
   }
 
   async function updateLatestAssistantMessage(

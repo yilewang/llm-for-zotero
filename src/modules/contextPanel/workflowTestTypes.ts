@@ -1086,6 +1086,14 @@ export type WorkflowTestApi = {
   /** Treats the writes queued so far as seen. */
   markConversationWriteLockQueue: (conversationKey: number) => Promise<void>;
   releaseConversationWriteLock: (conversationKey: number) => Promise<void>;
+  /**
+   * Holds the next chat request after it wrote its user row, before
+   * dispatch, until released. Later requests pass.
+   */
+  holdNextFinalRequest: () => Promise<void>;
+  /** Whether the held request has reached the hold. */
+  isFinalRequestHeld: () => Promise<boolean>;
+  releaseFinalRequest: () => Promise<void>;
   forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,

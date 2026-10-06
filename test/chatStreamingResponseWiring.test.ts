@@ -190,4 +190,46 @@ describe("chat streaming-response wiring", function () {
       assert.isBelow(discard, snapshot);
     });
   });
+
+  describe("retry user-row target", function () {
+    it("every retry user-row write targets the retried pair's own row", function () {
+      const retry = retryFlowSource(readChatSource());
+
+      // The target is the pair's stored timestamp, which a retry never
+      // changes. Without it the store writes the newest user row, which a
+      // send that arrived after Cancel may own.
+      assert.match(
+        retry,
+        /const retryUserRowTarget: UpdateLatestUserMessageOptions = \{\s+expectedTimestamp: retryPair\.userMessage\.timestamp,\s+\};/,
+      );
+      const persist = sliceBetween(
+        retry,
+        "const persistRetryUserRow = async () => {",
+        "  };",
+      );
+      assert.include(persist, "updateStoredLatestUserMessageByConversation(");
+      assert.include(persist, "retryUserRowTarget,");
+      const firstWrite = sliceBetween(
+        retry,
+        "let wrote = false;",
+        "retryUserRowWritten = wrote;",
+      );
+      assert.include(firstWrite, "withConversationWriteLock(conversationKey");
+      assert.include(
+        firstWrite,
+        "updateStoredLatestUserMessageByConversationUnlocked(",
+      );
+      assert.include(firstWrite, "retryUserRowTarget,");
+      // Both write-backs go through persistRetryUserRow, and no other user-row
+      // write in the retry flow skips the target.
+      assert.lengthOf(
+        retry.match(
+          /updateStoredLatestUserMessageByConversation(?:Unlocked)?\(/g,
+        ) || [],
+        2,
+      );
+      assert.lengthOf(retry.match(/await persistRetryUserRow\(\)/g) || [], 2);
+      assert.notInclude(retry, "stillLatest");
+    });
+  });
 });

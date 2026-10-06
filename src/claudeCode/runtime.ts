@@ -411,15 +411,27 @@ export async function updateLatestClaudeConversationUserMessage(
   );
 }
 
-/** Caller must already hold the conversation write lock. */
+/**
+ * Caller must already hold the conversation write lock. With
+ * `options.expectedTimestamp` the write targets that user row only; when no
+ * user row has it, nothing is written and the conversation is not touched.
+ * Returns whether the row was written.
+ */
 export async function updateLatestClaudeConversationUserMessageWithinWriteLock(
   conversationKey: number,
   message: Parameters<typeof updateLatestClaudeUserMessage>[1],
-): Promise<void> {
-  await updateLatestClaudeUserMessage(conversationKey, message);
+  options?: Parameters<typeof updateLatestClaudeUserMessage>[2],
+): Promise<boolean> {
+  const written = await updateLatestClaudeUserMessage(
+    conversationKey,
+    message,
+    options,
+  );
+  if (!written) return false;
   await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
   });
+  return true;
 }
 
 export async function updateLatestClaudeConversationAssistantMessage(

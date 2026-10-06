@@ -5388,6 +5388,55 @@ async function releaseConversationWriteLock(
   held?.release();
 }
 
+let heldFinalRequest: {
+  reached: boolean;
+  release: () => void;
+  previous: ReturnType<typeof getWorkflowTestFinalRequestInterceptor>;
+} | null = null;
+
+/**
+ * Holds the next chat request at its final preparation step, after the flow
+ * wrote its user row and before dispatch, until `releaseFinalRequest`. Later
+ * requests pass through to the interceptor that was installed before.
+ */
+async function holdNextFinalRequest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  if (heldFinalRequest) throw new Error("a final request is already held");
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hold = {
+    reached: false,
+    release,
+    previous: getWorkflowTestFinalRequestInterceptor(),
+  };
+  heldFinalRequest = hold;
+  setWorkflowTestFinalRequestInterceptor(async (snapshot) => {
+    if (!hold.reached) {
+      hold.reached = true;
+      await released;
+      return false;
+    }
+    return hold.previous ? await hold.previous(snapshot) : false;
+  });
+}
+
+/** Whether the held request has reached its final preparation step. */
+async function isFinalRequestHeld(): Promise<boolean> {
+  assertWorkflowTestEnabled();
+  return Boolean(heldFinalRequest?.reached);
+}
+
+async function releaseFinalRequest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  const hold = heldFinalRequest;
+  heldFinalRequest = null;
+  if (!hold) return;
+  setWorkflowTestFinalRequestInterceptor(hold.previous);
+  hold.release();
+}
+
 async function failNextPendingTurnFinalizes(count: number): Promise<void> {
   assertWorkflowTestEnabled();
   forcePendingTurnFinalizeFailuresForTests(count);
@@ -6273,6 +6322,9 @@ export function installWorkflowTestHarness(targetAddon: {
     isConversationWriteLockQueued,
     markConversationWriteLockQueue,
     releaseConversationWriteLock,
+    holdNextFinalRequest,
+    isFinalRequestHeld,
+    releaseFinalRequest,
     forceWebChatSessionAnchorFailures,
     askCapturingFinalRequest,
     simulateProviderContextUsage,

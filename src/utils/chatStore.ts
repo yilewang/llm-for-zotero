@@ -24,7 +24,10 @@ import {
 } from "../shared/conversationKeySpace";
 import {
   buildLatestStoredMessagesQuery,
+  buildUserRowExistsQuery,
+  latestUserRowFilter,
   storedMessageDisplayOrderSql,
+  type UpdateLatestUserMessageOptions,
 } from "../shared/conversationMessageSql";
 import {
   copyConversationMessagesThroughAssistantAnchor,
@@ -2724,6 +2727,14 @@ export async function appendMessage(
   await refreshUpstreamConversationSearchIndex(normalizedKey);
 }
 
+export type { UpdateLatestUserMessageOptions };
+
+/**
+ * Rewrite the conversation's latest user row, or, with
+ * `options.expectedTimestamp`, the user row stored at that timestamp.
+ * Returns false when nothing was written: the key is not an upstream key,
+ * or no user row has the expected timestamp.
+ */
 export async function updateLatestUserMessage(
   conversationKey: number,
   message: Pick<
@@ -2753,9 +2764,13 @@ export async function updateLatestUserMessage(
     | "modelEntryId"
     | "modelProviderLabel"
   >,
-): Promise<void> {
+  options: UpdateLatestUserMessageOptions = {},
+): Promise<boolean> {
   const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
+  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) {
+    return false;
+  }
+  const userRowFilter = latestUserRowFilter(options);
 
   const timestamp = Number(message.timestamp);
   const selectedTextContexts = synthesizeSelectedTextContexts({
@@ -2805,7 +2820,20 @@ export async function updateLatestUserMessage(
   const selector =
     await resolveRepairingMessageConversationSelector(normalizedKey);
 
+  let matched = true;
   await Zotero.DB.executeTransaction(async () => {
+    if (userRowFilter.exact) {
+      const rows = (await Zotero.DB.queryAsync(
+        buildUserRowExistsQuery({
+          tableName: CHAT_MESSAGES_TABLE,
+          whereSql: selector.whereSql,
+          filterSql: userRowFilter.sql,
+        }),
+        [...selector.params, ...userRowFilter.params],
+      )) as unknown[] | undefined;
+      matched = Boolean(rows?.length);
+      if (!matched) return;
+    }
     await Zotero.DB.queryAsync(
       `UPDATE ${CHAT_MESSAGES_TABLE}
        SET text = ?,
@@ -2835,7 +2863,7 @@ export async function updateLatestUserMessage(
        WHERE id = (
          SELECT id
          FROM ${CHAT_MESSAGES_TABLE}
-         WHERE ${selector.whereSql} AND role = 'user'
+         WHERE ${selector.whereSql} AND role = 'user'${userRowFilter.sql}
          ORDER BY timestamp DESC, id DESC
          LIMIT 1
        )`,
@@ -2877,11 +2905,14 @@ export async function updateLatestUserMessage(
         message.modelEntryId || null,
         message.modelProviderLabel || null,
         ...selector.params,
+        ...userRowFilter.params,
       ],
     );
     await refreshUpstreamConversationCatalogSummary(normalizedKey);
   });
+  if (!matched) return false;
   await refreshUpstreamConversationSearchIndex(normalizedKey);
+  return true;
 }
 
 export async function updateLatestAssistantMessage(

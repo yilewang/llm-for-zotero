@@ -1162,6 +1162,84 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
+  it("retry cancelled at its last preparation step while a new send arrives: the old user row is restored, the new row is intact", async function () {
+    await surfacing(async () => {
+      const conversationKey = await completedSend(
+        "Answer once.",
+        "Original answer.",
+      );
+      await settledUsageRows(conversationKey, 1);
+      const before = await read(conversationKey);
+      const NEW_QUESTION = "A newer question.";
+      const streamsBefore = streams.length;
+
+      // Stop the retry after it wrote its user row, Cancel it there, and send
+      // a new question. The retry's write-back runs after the new row exists.
+      await api().holdNextFinalRequest();
+      let retry: Promise<unknown> | undefined;
+      let newSend:
+        | { conversationKey: number; sendSettledSequenceBefore: number }
+        | undefined;
+      try {
+        retry = api().retryLatestPanelResponse(panel.panelId, RETRY_ENTRY_ID);
+        await waitFor(
+          () => api().isFinalRequestHeld(),
+          (held) => held,
+          "the retry to reach its last preparation step",
+        );
+        const during = await read(conversationKey);
+        assert.equal(
+          storedOf(during, "user").model_name,
+          RETRY_MODEL,
+          "the retry wrote its user row before the hold",
+        );
+        panelElement("#llm-cancel").click();
+        newSend = await startSend(NEW_QUESTION);
+        await waitFor(
+          () => read(conversationKey),
+          (state) =>
+            state.storedRows.some(
+              (row) => row.role === "user" && row.text === NEW_QUESTION,
+            ),
+          "the new question's stored user row",
+        );
+      } finally {
+        await api().releaseFinalRequest();
+      }
+      assert.isUndefined(await retry, "a cancelled retry returns nothing");
+      const newStream = await nextStream(streamsBefore);
+      newStream.push("New answer.");
+      newStream.usage(5, 3);
+      newStream.finish();
+      await waitForSendSettled(newSend!);
+      const state = await read(conversationKey);
+
+      const userRows = state.storedRows.filter((row) => row.role === "user");
+      assert.lengthOf(userRows, 2, "one stored user row per turn");
+      assert.deepEqual(
+        userRows[0],
+        before.storedRows.filter((row) => row.role === "user")[0],
+        "the old turn's stored user row is restored exactly",
+      );
+      assert.equal(
+        userRows[1].text,
+        NEW_QUESTION,
+        "the new turn's stored user row keeps its own text",
+      );
+      assert.equal(
+        userRows[1].model_name,
+        MODEL,
+        "the new turn's stored user row keeps its own model",
+      );
+      assert.deepEqual(
+        state.memory.slice(0, 2),
+        before.memory,
+        "the cancelled retry's pair is restored in memory",
+      );
+      assert.lengthOf(state.memory, 4, "the new turn follows the old pair");
+    });
+  });
+
   it("retry over an answer with a document id clears the stale id", async function () {
     await surfacing(async () => {
       const seeded = await api().seedPanelStoredTurn(

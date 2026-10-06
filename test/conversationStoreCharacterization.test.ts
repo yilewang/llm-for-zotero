@@ -112,6 +112,12 @@ type StoreAdapter = {
   ): Promise<void>;
   load(key: number, limit: number): Promise<StoredChatMessage[]>;
   updateLatestUser(key: number, message: StoredChatMessage): Promise<void>;
+  /** The exact-row form: only the user row stored at `expectedTimestamp`. */
+  updateUserAt(
+    key: number,
+    message: StoredChatMessage,
+    expectedTimestamp: number,
+  ): Promise<boolean>;
   updateLatestAssistant(key: number, message: StoredChatMessage): Promise<void>;
   clear(
     key: number,
@@ -228,7 +234,13 @@ function runtimeAdapter(name: "claude_code" | "codex"): StoreAdapter {
     append: (key, message, instanceID) =>
       store.append(key, message, instanceID),
     load: (key, limit) => store.load(key, limit),
-    updateLatestUser: (key, message) => store.updateLatestUser(key, message),
+    // The goldens record this call's result as null, so the write's
+    // matched-row flag is not passed on here; updateUserAt returns it.
+    updateLatestUser: async (key, message) => {
+      await store.updateLatestUser(key, message);
+    },
+    updateUserAt: (key, message, expectedTimestamp) =>
+      store.updateLatestUser(key, message, { expectedTimestamp }),
     updateLatestAssistant: (key, message) =>
       store.updateLatestAssistant(key, message),
     clear: (key, identity, onBeforeCommit) =>
@@ -278,8 +290,11 @@ const upstreamAdapter: StoreAdapter = {
   append: (key, message, instanceID) =>
     upstream.appendMessage(key, message, instanceID),
   load: (key, limit) => upstream.loadConversation(key, limit),
-  updateLatestUser: (key, message) =>
-    upstream.updateLatestUserMessage(key, message),
+  updateLatestUser: async (key, message) => {
+    await upstream.updateLatestUserMessage(key, message);
+  },
+  updateUserAt: (key, message, expectedTimestamp) =>
+    upstream.updateLatestUserMessage(key, message, { expectedTimestamp }),
   updateLatestAssistant: (key, message) =>
     upstream.updateLatestAssistantMessage(key, message),
   clear: (key, identity, onBeforeCommit) =>
@@ -1171,6 +1186,47 @@ describe("conversation store characterization (golden)", function () {
         );
         golden(storeName, "updateLatestUser", {
           trace: transactionTrace(from),
+          loaded: await store.load(key, 50),
+        });
+      });
+
+      it("updateLatestUser with an expected timestamp writes only that row, and nothing when it is gone", async function () {
+        const key = await initAndCreate("global");
+        await store.append(key, plain("user", "u1", at(1)));
+        await store.append(key, plain("assistant", "a1", at(2)));
+        await store.append(key, plain("user", "u2", at(3)));
+        await store.append(key, plain("assistant", "a2", at(4)));
+        const from = harness.statements.length;
+        // The older pair's user row, although a later user row exists.
+        const matched = await store.updateUserAt(
+          key,
+          plain("user", "u1-restored", at(1)),
+          at(1),
+        );
+        const matchedTrace = transactionTrace(from);
+        assert.deepEqual(
+          messageRows(store, key).map((row) => row.text),
+          ["u1-restored", "a1", "u2", "a2"],
+          "only the row stored at the expected timestamp changes",
+        );
+        const absentFrom = harness.statements.length;
+        const absent = await store.updateUserAt(
+          key,
+          plain("user", "never written", at(9)),
+          at(9),
+        );
+        assert.isTrue(matched);
+        assert.isFalse(absent);
+        assert.deepEqual(
+          messageRows(store, key).map((row) => row.text),
+          ["u1-restored", "a1", "u2", "a2"],
+          "no row is written when no user row has the expected timestamp",
+        );
+        golden(storeName, "updateLatestUser.expectedTimestamp", {
+          matched,
+          absent,
+          matchedTrace,
+          absentTrace: transactionTrace(absentFrom),
           loaded: await store.load(key, 50),
         });
       });
