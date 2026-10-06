@@ -159,12 +159,6 @@ import {
   getClaudeCodeModeEnabled,
   applyPanelFontScale,
   getAdvancedModelParamsForEntry,
-  getLastUsedReasoningLevel,
-  getLastUsedReasoningLevelForProvider,
-  getLastUsedRuntimeMode,
-  setLastUsedReasoningLevel,
-  setLastUsedReasoningLevelForProvider,
-  setLastUsedRuntimeMode,
   getLastUsedPaperConversationKey,
   removeLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
@@ -544,15 +538,11 @@ import {
 } from "../../claudeCode/runtime";
 import {
   getClaudeBridgeUrl,
-  getClaudeReasoningModePref,
-  getClaudeRuntimeModelPref,
   getClaudeSettingSourcesCsvByPref,
   setClaudeCodeModeEnabled,
   getLastUsedClaudePaperConversationKey,
   removeLastUsedClaudeGlobalConversationKey,
   removeLastUsedClaudePaperConversationKey,
-  setClaudeReasoningModePref,
-  setClaudeRuntimeModelPref,
 } from "../../claudeCode/prefs";
 import {
   buildClaudeRuntimeModelEntries,
@@ -560,15 +550,11 @@ import {
   type ClaudeModelCatalogRequestContext,
 } from "../../claudeCode/modelCatalog";
 import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
   getLastUsedCodexConversationMode,
   getLastUsedCodexPaperConversationKey,
   isCodexAppServerModeEnabled,
   removeLastUsedCodexGlobalConversationKey,
   removeLastUsedCodexPaperConversationKey,
-  setCodexReasoningModePref,
-  setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
@@ -1170,10 +1156,10 @@ export function setupHandlers(
   const getClaudeRuntimeModelEntries = (): RuntimeModelEntry[] =>
     buildClaudeRuntimeModelEntries({
       models: claudeModelCatalogModels,
-      selectedModel: getClaudeRuntimeModelPref(),
+      selectedModel: panelChoices.getClaudeRuntimeModel(),
     });
   const getSelectedClaudeRuntimeEntry = (): RuntimeModelEntry => {
-    const selectedModel = getClaudeRuntimeModelPref();
+    const selectedModel = panelChoices.getClaudeRuntimeModel();
     const entries = getClaudeRuntimeModelEntries();
     return (
       entries.find((entry) => entry.model === selectedModel) ||
@@ -1183,20 +1169,20 @@ export function setupHandlers(
   };
   const resolveCurrentCodexReasoningSelection = () =>
     resolveCodexAppServerReasoningSelection({
-      mode: getCodexReasoningModePref(),
+      mode: panelChoices.getCodexReasoningMode(),
       choices: getCodexAppServerReasoningChoices({
         models: codexModelCatalogModels,
-        selectedModel: getCodexRuntimeModelPref(),
+        selectedModel: panelChoices.getCodexRuntimeModel(),
       }),
       catalogReady: codexModelCatalogStatus === "ready",
     });
   const getCodexReasoningChoices = () =>
     resolveCurrentCodexReasoningSelection().choices;
   const reconcileSelectedCodexReasoningMode = () => {
-    const currentMode = getCodexReasoningModePref();
+    const currentMode = panelChoices.getCodexReasoningMode();
     const reconciledMode = resolveCurrentCodexReasoningSelection().mode;
     if (codexModelCatalogStatus === "ready" && reconciledMode !== currentMode) {
-      setCodexReasoningModePref(reconciledMode);
+      panelChoices.setCodexReasoningMode(reconciledMode);
     }
     return reconciledMode;
   };
@@ -1250,7 +1236,7 @@ export function setupHandlers(
     return codexModelCatalogInFlight;
   };
   const getCodexRuntimeModelEntries = (): RuntimeModelEntry[] => {
-    const model = getCodexRuntimeModelPref();
+    const model = panelChoices.getCodexRuntimeModel();
     return buildCodexRuntimeModelEntries({
       models: codexModelCatalogModels,
       selectedModel: model,
@@ -1258,7 +1244,7 @@ export function setupHandlers(
     });
   };
   const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry => {
-    const selectedModel = getCodexRuntimeModelPref().toLowerCase();
+    const selectedModel = panelChoices.getCodexRuntimeModel().toLowerCase();
     const entries = getCodexRuntimeModelEntries();
     return (
       entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
@@ -1285,7 +1271,7 @@ export function setupHandlers(
       agentModeEnabled: getAgentModeEnabled(),
       displayConversationKind: resolveDisplayConversationKind(item),
       noteKind: noteSession?.noteKind || null,
-      lastUsedRuntimeMode: getLastUsedRuntimeMode(),
+      lastUsedRuntimeMode: panelChoices.getLastUsedRuntimeMode(),
     });
   };
   let syncFooterPermissionControl = () => Promise.resolve();
@@ -5434,7 +5420,7 @@ export function setupHandlers(
           if (!item) return;
           if (isClaudeConversationSystem()) {
             clearClaudeReasoningDisplayOverride();
-            setClaudeRuntimeModelPref(entry.model);
+            panelChoices.setClaudeRuntimeModel(entry.model);
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
             setFloatingMenuOpen(
               reasoningMenu,
@@ -5446,7 +5432,7 @@ export function setupHandlers(
             return;
           }
           if (isCodexConversationSystem()) {
-            setCodexRuntimeModelPref(entry.model);
+            panelChoices.setCodexRuntimeModel(entry.model);
             reconcileSelectedCodexReasoningMode();
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
             setFloatingMenuOpen(
@@ -5694,6 +5680,7 @@ export function setupHandlers(
                   entry.apiBase,
                   entry.providerProtocol,
                   entry.advanced?.profileOverride,
+                  selectionSurface(),
                 );
           const retryAdvanced = getAdvancedModelParams(entry.entryId);
           await retryLatestAssistantResponse(
@@ -5765,7 +5752,7 @@ export function setupHandlers(
       }
       claudeReasoningDisplayOverride = null;
     }
-    return getClaudeReasoningModePref();
+    return panelChoices.getClaudeReasoningMode();
   };
 
   const getClaudeReasoningDisplayLabel = (mode: ClaudeReasoningDisplayMode) => {
@@ -5796,7 +5783,7 @@ export function setupHandlers(
     if (!isClaudeConversationSystem()) return;
     const mode = normalizeClaudeReasoningDisplayMode(effort);
     if (!mode) return;
-    if (mode === getClaudeReasoningModePref()) {
+    if (mode === panelChoices.getClaudeReasoningMode()) {
       claudeReasoningDisplayOverride = null;
     } else {
       claudeReasoningDisplayOverride = {
@@ -5849,7 +5836,7 @@ export function setupHandlers(
       };
     }
     if (isCodexConversationSystem()) {
-      const selectedMode = getCodexReasoningModePref();
+      const selectedMode = panelChoices.getCodexReasoningMode();
       const options: ReasoningOption[] = getCodexReasoningChoices()
         .filter((choice) => choice.value !== "auto")
         .map((choice) => ({
@@ -5910,14 +5897,15 @@ export function setupHandlers(
       .map((option) => option.level);
     const previousLevel =
       selectedReasoningCache.get(item.id) ||
-      getLastUsedReasoningLevelForProvider(provider) ||
-      getLastUsedReasoningLevel();
+      panelChoices.getLastUsedReasoningLevelForProvider(provider) ||
+      panelChoices.getLastUsedReasoningLevel();
     const resolved = getSelectedReasoningForItem(
       item.id,
       currentModel,
       selectedProfile?.apiBase,
       selectedProfile?.providerProtocol,
       selectedProfile?.advanced?.profileOverride,
+      selectionSurface(),
     );
     const selectedLevel = resolved?.level || "auto";
     if (
@@ -6143,7 +6131,7 @@ export function setupHandlers(
         })()
       : isCodexConversationSystem()
         ? (() => {
-            const mode = getCodexReasoningModePref();
+            const mode = panelChoices.getCodexReasoningMode();
             return (
               getCodexReasoningChoices().find(
                 (choice) => choice.value.toLowerCase() === mode.toLowerCase(),
@@ -6267,14 +6255,14 @@ export function setupHandlers(
           if (!item) return;
           if (isClaudeConversationSystem()) {
             clearClaudeReasoningDisplayOverride();
-            setClaudeReasoningModePref(
+            panelChoices.setClaudeReasoningMode(
               mode.level === "none" ? "auto" : (mode.level as any),
             );
           } else {
             selectedReasoningCache.clear();
             selectedReasoningCache.set(item.id, mode.level as any);
             selectedReasoningProviderCache.set(item.id, "unsupported");
-            setLastUsedReasoningLevel(mode.level as any);
+            panelChoices.setLastUsedReasoningLevel(mode.level as any);
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
@@ -6321,7 +6309,7 @@ export function setupHandlers(
           e.stopPropagation();
           if (!item) return;
           clearClaudeReasoningDisplayOverride();
-          setClaudeReasoningModePref(mode.value as any);
+          panelChoices.setClaudeReasoningMode(mode.value as any);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         };
@@ -6333,13 +6321,13 @@ export function setupHandlers(
     }
     if (isCodexConversationSystem()) {
       const codexModes = getCodexReasoningChoices();
-      const currentMode = getCodexReasoningModePref();
+      const currentMode = panelChoices.getCodexReasoningMode();
       appendReasoningChoiceButtons({
         menu: reasoningMenu,
         choices: codexModes,
         currentValue: currentMode,
         onSelect: (value) => {
-          setCodexReasoningModePref(value);
+          panelChoices.setCodexReasoningMode(value);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         },
@@ -6399,7 +6387,7 @@ export function setupHandlers(
           if (isClaudeConversationSystem()) {
             const nextMode = optionState.label === "Max" ? "max" : level;
             clearClaudeReasoningDisplayOverride();
-            setClaudeReasoningModePref(nextMode as any);
+            panelChoices.setClaudeReasoningMode(nextMode as any);
           } else {
             if (reasoningBtn) delete reasoningBtn.dataset.reasoningAdjustment;
             selectedReasoningCache.clear();
@@ -6408,9 +6396,9 @@ export function setupHandlers(
               item.id,
               provider === "unsupported" ? "customized" : provider,
             );
-            setLastUsedReasoningLevelForProvider(provider, level);
+            panelChoices.setLastUsedReasoningLevelForProvider(provider, level);
             if (provider !== "anthropic") {
-              setLastUsedReasoningLevel(level);
+              panelChoices.setLastUsedReasoningLevel(level);
             }
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -6446,6 +6434,8 @@ export function setupHandlers(
       item ? panelChoices.getSelectedModelEntry() : null,
     isRuntimeConversationSystem,
     onStateChange: syncModelFromPrefs,
+    getReasoningSelection: panelChoices.getCodexDirectReasoningSelection,
+    setReasoningSelection: panelChoices.setCodexDirectReasoningSelection,
   });
 
   const panelHandle: PanelHandle = {
@@ -6721,7 +6711,7 @@ export function setupHandlers(
       const mode =
         codexModelCatalogStatus === "ready"
           ? reconcileSelectedCodexReasoningMode()
-          : getCodexReasoningModePref();
+          : panelChoices.getCodexReasoningMode();
       return buildCodexAppServerReasoningConfig(mode);
     }
     const directEntry = codexDirectController?.getSelectedEntry();
@@ -7696,7 +7686,7 @@ export function setupHandlers(
       setCurrentRuntimeMode(nextMode);
       // Only an explicit toggle updates the sticky default, so implicit
       // switches (/compact, skill selection) stay scoped to this conversation.
-      setLastUsedRuntimeMode(nextMode);
+      panelChoices.setLastUsedRuntimeMode(nextMode);
       if (status) {
         setStatus(
           status,

@@ -1,10 +1,14 @@
 import { assert } from "chai";
 import { afterEach, beforeEach, describe, it } from "mocha";
 import { config } from "../package.json";
-import { resolveEffectiveRequestConfig } from "../src/modules/contextPanel/chat";
+import {
+  getSelectedReasoningForItem,
+  resolveEffectiveRequestConfig,
+} from "../src/modules/contextPanel/chat";
 import {
   clearStandaloneSurfaceChoices,
   setSelectedModelEntryForSurface,
+  surfaceChoices,
 } from "../src/modules/contextPanel/surfaceChoices";
 import { setModelProviderGroups } from "../src/utils/modelProviders";
 
@@ -86,5 +90,52 @@ describe("request config: a panel's send uses its own surface's model", function
         .providerProtocol,
       "web_sync",
     );
+  });
+
+  it("a Codex send with no model named uses its own surface's Codex model and effort", function () {
+    prefStore.set(`${config.prefsPrefix}.enableCodexAppServerMode`, true);
+    prefStore.set(`${config.prefsPrefix}.codexAppServerModel`, "gpt-5.4");
+    prefStore.set(`${config.prefsPrefix}.codexAppServerReasoning`, "low");
+    surfaceChoices.codexRuntimeModel.set("gpt-5.5", "standalone");
+    surfaceChoices.codexReasoningMode.set("high", "standalone");
+
+    const windowConfig = resolveEffectiveRequestConfig({
+      item,
+      authMode: "codex_app_server",
+      surface: "standalone",
+    });
+    const sidebarConfig = resolveEffectiveRequestConfig({
+      item,
+      authMode: "codex_app_server",
+      surface: "embedded",
+    });
+    assert.equal(windowConfig.model, "gpt-5.5");
+    assert.equal((windowConfig.reasoning as any)?.effort, "high");
+    assert.equal(sidebarConfig.model, "gpt-5.4");
+    assert.equal((sidebarConfig.reasoning as any)?.effort, "low");
+  });
+
+  it("an API send falls back to its own surface's last reasoning level", function () {
+    surfaceChoices.lastUsedReasoningLevel.set("low", "embedded");
+    surfaceChoices.lastUsedReasoningLevel.set("high", "standalone");
+
+    const windowLevel = getSelectedReasoningForItem(
+      9001,
+      "gpt-5",
+      "https://api.openai.com/v1",
+      "responses_api",
+      undefined,
+      "standalone",
+    )?.level;
+    const sidebarLevel = getSelectedReasoningForItem(
+      9002,
+      "gpt-5",
+      "https://api.openai.com/v1",
+      "responses_api",
+      undefined,
+      "embedded",
+    )?.level;
+    assert.equal(windowLevel, "high");
+    assert.equal(sidebarLevel, "low");
   });
 });

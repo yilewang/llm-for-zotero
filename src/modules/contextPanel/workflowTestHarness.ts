@@ -2825,6 +2825,7 @@ async function retryLatestPanelResponse(
       entry.apiBase,
       entry.providerProtocol,
       entry.advanced?.profileOverride,
+      resolveSelectionSurfaceForBody(panel.body),
     ),
     getAdvancedModelParamsForEntry(entry.entryId),
   );

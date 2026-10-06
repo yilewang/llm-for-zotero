@@ -60,8 +60,6 @@ import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
@@ -194,7 +192,10 @@ import {
   resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
 import type { SelectionSurface } from "./conversationSelection";
-import { getSelectedModelEntryForSurface } from "./surfaceChoices";
+import {
+  getSelectedModelEntryForSurface,
+  surfaceChoices,
+} from "./surfaceChoices";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -306,8 +307,6 @@ import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import {
   getAvailableModelEntries,
   getLastReasoningExpanded,
-  getLastUsedReasoningLevel,
-  getLastUsedReasoningLevelForProvider,
   getStringPref,
   setLastReasoningExpanded,
   setLastUsedReasoningLevelForProvider,
@@ -382,7 +381,6 @@ import {
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
 import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
-import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
 import {
   appendAgentRunEventAfterLatest,
   getAgentRunTrace,
@@ -2818,6 +2816,8 @@ export function getSelectedReasoningForItem(
   apiBase?: string,
   providerProtocol?: ProviderProtocol,
   profileOverride?: ModelProfileOverride,
+  /** Whose last-used level fills in (surfaceChoices.ts); the sidebar's when omitted. */
+  surface?: SelectionSurface,
 ): LLMReasoningConfig | undefined {
   const detectedProvider = detectReasoningProvider(modelName, apiBase);
   const capabilities = getModelCapabilities({
@@ -2835,8 +2835,8 @@ export function getSelectedReasoningForItem(
       : undefined;
   const saved =
     cached ||
-    getLastUsedReasoningLevelForProvider(provider) ||
-    getLastUsedReasoningLevel();
+    surfaceChoices.lastUsedReasoningLevelForProvider.get(provider, surface) ||
+    surfaceChoices.lastUsedReasoningLevel.get(surface);
   const selected = resolveModelReasoningSelection(capabilities, {
     level: saved || "auto",
   });
@@ -3498,8 +3498,11 @@ export function resolveEffectiveRequestConfig(params: {
 
   if (isCodexAppServerConversationRequest(params)) {
     const model =
-      (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
-    const reasoningMode = getCodexReasoningModePref();
+      (
+        params.model || surfaceChoices.codexRuntimeModel.get(resolveSurface())
+      ).trim() || "gpt-5.4";
+    const reasoningMode =
+      surfaceChoices.codexReasoningMode.get(resolveSurface());
     const reasoning =
       params.reasoning || buildCodexAppServerReasoningConfig(reasoningMode);
     return {
@@ -3594,6 +3597,7 @@ export function resolveEffectiveRequestConfig(params: {
         apiBase,
         providerProtocol,
         advanced?.profileOverride,
+        resolveSurface(),
       );
   return {
     model,
@@ -7450,7 +7454,9 @@ async function buildAgentRuntimeRequest(
     claudeEffortLevel:
       typeof params.effectiveRequestConfig.reasoning?.level === "string"
         ? ((params.effectiveRequestConfig.reasoning.level === "xhigh"
-            ? getClaudeReasoningModePref() === "max"
+            ? surfaceChoices.claudeReasoningMode.get(
+                params.surface || resolveSurfaceForMountedItem(params.item),
+              ) === "max"
               ? "max"
               : "xhigh"
             : params.effectiveRequestConfig.reasoning.level) as
@@ -7549,7 +7555,15 @@ function buildAgentEngineDeps(
     ensureConversationLoaded,
     getConversationKey,
     buildLLMHistoryMessages,
-    buildAgentRuntimeRequest,
+    buildAgentRuntimeRequest: (requestParams) =>
+      buildAgentRuntimeRequest(
+        panelBody && !requestParams.surface
+          ? {
+              ...requestParams,
+              surface: resolveSelectionSurfaceForBody(panelBody),
+            }
+          : requestParams,
+      ),
     resolveLocalPdfResources: (paperContexts) =>
       createLocalPdfResourceResolver().resolve(paperContexts),
     preflightLocalPdfCapability: async () => {
@@ -11154,6 +11168,7 @@ export function refreshChat(
           originalEntry.apiBase,
           originalEntry.providerProtocol,
           originalEntry.advanced?.profileOverride,
+          resolveSelectionSurfaceForBody(body),
         );
         void retryLatestAssistantResponse(
           body,

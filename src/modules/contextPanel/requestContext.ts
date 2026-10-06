@@ -13,6 +13,7 @@
  * purpose (or by an open product decision), so this module only names the
  * shape and the two projections, never a shared assembler.
  */
+import type { SelectionSurface } from "./conversationSelection";
 import type {
   AdvancedModelParams,
   ChatAttachment,
@@ -76,6 +77,12 @@ export type BuildAgentRuntimeRequestParams = {
   forcedSkillIds?: string[];
   effectiveRequestConfig: EffectiveRequestConfig;
   history: ChatMessage[];
+  /**
+   * The chat surface that sent the turn, whose Claude Code effort choice
+   * tells "max" from "xhigh" (surfaceChoices.ts); the surface showing `item`
+   * when omitted.
+   */
+  surface?: SelectionSurface;
 };
 
 /**
