@@ -40,6 +40,7 @@ import {
   resolveDisplayConversationKind,
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
+import { toStoredUserRowPatch } from "../storedUserRow";
 import { filterMessagesInPendingTurns } from "../turnMessageUtils";
 import { resolveStreamInterruptionOutcome } from "../streamInterruption";
 import {
@@ -217,37 +218,14 @@ function appendPendingFinalText(
 }
 
 /**
- * The stored-row patch for a turn's user message. Shared by the onStart and
- * tool_result persistence in both the send and retry paths, which previously
- * hand-copied these fields four times.
+ * The stored-row patch for a turn's user message, written by the onStart and
+ * tool_result persistence in both the send and retry paths and by the retry
+ * restore. Every field is named, so no update NULLs one.
  */
 function buildStoredUserMessagePatch(
   message: Message,
 ): Parameters<AgentEngineDeps["updateStoredLatestUserMessage"]>[1] {
-  return {
-    text: message.text,
-    timestamp: message.timestamp,
-    runMode: "agent",
-    agentRunId: message.agentRunId,
-    selectedText: message.selectedText,
-    selectedTextContexts: message.selectedTextContexts,
-    selectedTexts: message.selectedTexts,
-    selectedTextSources: message.selectedTextSources,
-    selectedTextPaperContexts: message.selectedTextPaperContexts,
-    selectedTextNoteContexts: message.selectedTextNoteContexts,
-    screenshotImages: message.screenshotImages,
-    paperContexts: message.paperContexts,
-    pdfPaperContexts: message.pdfPaperContexts,
-    fullTextPaperContexts: message.fullTextPaperContexts,
-    citationPaperContexts: message.citationPaperContexts,
-    selectedCollectionContexts: message.selectedCollectionContexts,
-    selectedTagContexts: message.selectedTagContexts,
-    attachments: message.attachments,
-    modelAttachments: message.modelAttachments,
-    modelName: message.modelName,
-    modelEntryId: message.modelEntryId,
-    modelProviderLabel: message.modelProviderLabel,
-  };
+  return toStoredUserRowPatch(message, { runMode: "agent" });
 }
 
 type AgentTurnEventContext = {

@@ -474,13 +474,12 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     assert.equal(row.text, user.text);
     assert.equal(row.timestamp, user.timestamp);
     assert.deepEqual(user.forcedSkillIds, [FORCED_SKILL_ID]);
-    // Pins current behaviour; suspected bug B1, see design review: the send
-    // inserts the user row WITH forced_skill_ids_json, then its context-plan
-    // update omits forcedSkillIds, and the UPDATE writes every column, so the
-    // stored row loses the forced skills that memory still holds.
-    assert.isNull(
-      row.forced_skill_ids_json,
-      "B1: the send's user-row update drops forced skill ids",
+    // The context-plan update writes every column, so it must carry the
+    // forced skills the insert stored.
+    assert.include(
+      String(row.forced_skill_ids_json || ""),
+      FORCED_SKILL_ID,
+      "the send's user-row update keeps forced skill ids",
     );
     assert.equal(
       (user.selectedTagContexts as Row[] | undefined)?.[0]?.name,
@@ -727,17 +726,19 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     assert.equal(user.modelEntryId, RETRY_ENTRY_ID);
     assert.equal(row.model_name, RETRY_MODEL);
     assert.equal(row.model_entry_id, RETRY_ENTRY_ID);
-    assert.isNull(row.forced_skill_ids_json, "B1: forced skill ids stay lost");
-    // Pins current behaviour; suspected bug B1, see design review: the retry
-    // rewrites the user row without selectedTagContexts, so tag_contexts_json
-    // is NULLed although memory still holds the tag.
+    assert.include(
+      String(row.forced_skill_ids_json || ""),
+      FORCED_SKILL_ID,
+      "the retry's user-row rewrite keeps forced skill ids",
+    );
     assert.equal(
       (user.selectedTagContexts as Row[] | undefined)?.[0]?.name,
       TAG_NAME,
     );
-    assert.isNull(
-      row.tag_contexts_json,
-      "B1: the retry's user-row rewrite drops tag contexts",
+    assert.include(
+      String(row.tag_contexts_json || ""),
+      TAG_NAME,
+      "the retry's user-row rewrite keeps tag contexts",
     );
   };
 
@@ -833,19 +834,15 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       const userBefore = storedOf(before, "user");
       const userAfter = storedOf(state, "user");
       assert.include(String(userBefore.tag_contexts_json || ""), TAG_NAME);
-      // Pins current behaviour; suspected bug B1, see design review: the
-      // restore rewrites the user row from memory but without
-      // selectedTagContexts, so the only stored difference after a fully
-      // restored retry is the lost tag context.
+      // The restore rewrites the user row from memory with every field, so
+      // the stored rows are exactly the rows before the retry.
       assert.deepEqual(
         state.storedRows,
-        before.storedRows.map((row) =>
-          row.role === "user" ? { ...row, tag_contexts_json: null } : row,
-        ),
-        "stored rows are restored except the B1 tag-context loss",
+        before.storedRows,
+        "stored rows are restored exactly",
       );
       assert.equal(userAfter.model_name, MODEL);
-      assert.isNull(userAfter.tag_contexts_json);
+      assert.include(String(userAfter.tag_contexts_json || ""), TAG_NAME);
 
       const usage = await settledUsageRows(conversationKey, 2);
       assert.include(usage[1], {

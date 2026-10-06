@@ -730,6 +730,69 @@ describe("agent engine final UI release", function () {
     }
   });
 
+  it("keeps the forced skills in every user-row update of a send", async function () {
+    const conversationKey = 4705;
+    const storedUpdates: Array<Record<string, unknown>> = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        onStart?: (runId: string) => Promise<void> | void;
+        onEvent?: (event: any) => Promise<void> | void;
+      }) => {
+        await params.onStart?.("run-forced-skills");
+        await params.onEvent?.({
+          type: "tool_result",
+          callId: "paper-read",
+          name: "paper_read",
+          ok: true,
+          content: {
+            paperContext: {
+              itemId: 99,
+              contextItemId: 100,
+              title: "Tool citation",
+              contentSourceMode: "text",
+            },
+          },
+        });
+        return {
+          kind: "completed",
+          runId: "run-forced-skills",
+          text: "Done.",
+          usedFallback: false,
+        } as AgentRuntimeOutcome;
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.updateStoredLatestUserMessage = async (_key, update) => {
+      storedUpdates.push(update as unknown as Record<string, unknown>);
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Use the forced skill.",
+        forcedSkillIds: ["skill-forced"],
+      },
+      deps,
+    );
+
+    // The first write, onStart, and the tool-result citation update.
+    assert.isAtLeast(storedUpdates.length, 3);
+    for (const update of storedUpdates) {
+      assert.deepEqual(update.forcedSkillIds, ["skill-forced"]);
+    }
+  });
+
   it("preserves raw PDF identity in retry start and tool-result full-row updates", async function () {
     const conversationKey = 4702;
     const pdfContext = {
