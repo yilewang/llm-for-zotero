@@ -4284,6 +4284,8 @@ type AssistantMessageSnapshot = Pick<
   | "webchatCompletionReason"
   | "quoteCitations"
   | "quoteDisplayOverride"
+  | "documentId"
+  | "planDocumentId"
 >;
 
 export function findLatestRetryPair(
@@ -4336,6 +4338,8 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
           ),
         }
       : undefined,
+    documentId: message.documentId,
+    planDocumentId: message.planDocumentId,
   };
 }
 
@@ -4376,6 +4380,8 @@ function restoreAssistantSnapshot(
         ),
       }
     : undefined;
+  message.documentId = snapshot.documentId;
+  message.planDocumentId = snapshot.planDocumentId;
   message.streaming = false;
 }
 
@@ -5630,6 +5636,11 @@ export async function retryLatestAssistantResponse(
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
   assistantMessage.agentRunId = undefined;
+  if (!continueIncomplete) {
+    // A new answer is not the previous answer's document.
+    assistantMessage.documentId = undefined;
+    assistantMessage.planDocumentId = undefined;
+  }
   assistantMessage.pendingAgentTraceEvents = undefined;
   assistantMessage.generatedImages = undefined;
   assistantMessage.streaming = true;

@@ -1007,7 +1007,7 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
-  it("retry over an answer with a document id keeps the stale id", async function () {
+  it("retry over an answer with a document id clears the stale id", async function () {
     await surfacing(async () => {
       const seeded = await api().seedPanelStoredTurn(
         panel.panelId,
@@ -1031,20 +1031,41 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       const row = storedOf(state, "assistant");
       assert.equal(assistant.text, "Plain retried answer.");
       assert.equal(assistant.completionStatus, "complete");
-      // Pins current behaviour; suspected bug B3, see design review: the
-      // retry never resets documentId at start, so a plain retried answer
-      // stays tied to the previous answer's document, in memory and stored.
-      assert.equal(
-        assistant.documentId,
-        "workflow-stale-document",
-        "B3: the retried answer keeps the stale document id",
-      );
-      assert.equal(
-        row.document_id,
-        "workflow-stale-document",
-        "B3: the stored retried answer keeps the stale document id",
-      );
+      // The plain retried answer is no longer tied to the previous
+      // answer's document, in memory or stored.
+      assert.isUndefined(assistant.documentId);
+      assert.isNotOk(row.document_id);
       assert.equal(row.text, "Plain retried answer.");
+      await settledUsageRows(conversationKey, 1);
+    });
+  });
+
+  it("retry error with no output over a document answer restores the document id", async function () {
+    await surfacing(async () => {
+      const seeded = await api().seedPanelStoredTurn(
+        panel.panelId,
+        "Write it up as a document.",
+        "Document answer.",
+        { documentId: "workflow-kept-document", runMode: "chat" },
+      );
+      const conversationKey = seeded.conversationKey;
+
+      const retry = api().retryLatestPanelResponse(
+        panel.panelId,
+        RETRY_ENTRY_ID,
+      );
+      const stream = await nextStream(0);
+      stream.fail("workflow upstream unavailable");
+      assert.isUndefined(await retry, "a failed retry returns nothing");
+      const state = await read(conversationKey);
+
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.text, "Document answer.");
+      assert.equal(assistant.documentId, "workflow-kept-document");
+      assert.equal(
+        storedOf(state, "assistant").document_id,
+        "workflow-kept-document",
+      );
       await settledUsageRows(conversationKey, 1);
     });
   });
