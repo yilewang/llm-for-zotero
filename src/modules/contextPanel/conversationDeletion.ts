@@ -56,6 +56,7 @@ import {
   clearAgentConversationState,
   clearDeletedAgentConversationState,
   clearPersistedAgentConversationRowsInTransaction,
+  withAgentConversationPurge,
 } from "./agentConversationCleanup";
 import { ensureAgentTraceSchema } from "../../agent/store/traceStore";
 import { resolveConversationRefForKey } from "../../shared/conversationRef";
@@ -1358,25 +1359,28 @@ export async function finalizeQueuedTurnDeletion(
   const warn = deps.warn || deps.log || (() => {});
   return withConversationWriteLock(entry.conversationKey, async () => {
     try {
-      const deleteTarget = {
-        system: entry.system,
-        conversationKey: entry.conversationKey,
-        userTimestamp: entry.userTimestamp,
-        assistantTimestamp: entry.assistantTimestamp,
-        ...(entry.userMessageID ? { userMessageID: entry.userMessageID } : {}),
-        ...(entry.assistantMessageID
-          ? { assistantMessageID: entry.assistantMessageID }
-          : {}),
-        // Agent transcript/memory/evidence/run state is keyed by the immutable
-        // conversation, not by the chat-message row IDs.  Purge it in the same
-        // transaction as the turn rows so a crash cannot leave deleted turn
-        // content available to the next prompt.
-        onBeforeCommit: () =>
-          clearPersistedAgentConversationRowsInTransaction(
-            entry.conversationKey,
-          ),
-      };
-      await conversationRepository.deleteTurnMessages(deleteTarget);
+      // Agent transcript/memory/evidence/run state is keyed by the immutable
+      // conversation, not by the chat-message row IDs.  Purge it in the same
+      // transaction as the turn rows so a crash cannot leave deleted turn
+      // content available to the next prompt; a failed transaction rolls the
+      // purge back with it.
+      await withAgentConversationPurge(
+        entry.conversationKey,
+        (onBeforeCommit) =>
+          conversationRepository.deleteTurnMessages({
+            system: entry.system,
+            conversationKey: entry.conversationKey,
+            userTimestamp: entry.userTimestamp,
+            assistantTimestamp: entry.assistantTimestamp,
+            ...(entry.userMessageID
+              ? { userMessageID: entry.userMessageID }
+              : {}),
+            ...(entry.assistantMessageID
+              ? { assistantMessageID: entry.assistantMessageID }
+              : {}),
+            onBeforeCommit,
+          }),
+      );
     } catch (err) {
       warn("LLM: queued turn deletion failed to delete rows", err);
       return false;

@@ -29,7 +29,7 @@ import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLe
 import { filterMessagesInPendingTurns } from "./turnMessageUtils";
 import {
   clearAgentConversationState,
-  clearPersistedAgentConversationRowsInTransaction,
+  withAgentConversationPurge,
 } from "./agentConversationCleanup";
 import {
   appendCodexMessage,
@@ -6713,14 +6713,15 @@ export async function editUserTurnAndRetry(opts: {
             conversationSystem: retryStorageSystem,
           });
           if (!storageSystem) return false;
-          await conversationRepository.deleteTurnMessages({
-            system: storageSystem,
-            conversationKey,
-            userTimestamp: p.userTs,
-            assistantTimestamp: p.assistantTs,
-            onBeforeCommit: () =>
-              clearPersistedAgentConversationRowsInTransaction(conversationKey),
-          });
+          await withAgentConversationPurge(conversationKey, (onBeforeCommit) =>
+            conversationRepository.deleteTurnMessages({
+              system: storageSystem,
+              conversationKey,
+              userTimestamp: p.userTs,
+              assistantTimestamp: p.assistantTs,
+              onBeforeCommit,
+            }),
+          );
           return true;
         },
       );

@@ -42,6 +42,17 @@ async function ignoringMissingTable(task: Promise<void>): Promise<void> {
 }
 
 /**
+ * A purge that ran inside a transaction.  The transaction's owner calls
+ * `rollback()` when the transaction fails: the rows come back with the
+ * rollback, and this undoes what the purge changed outside the database.
+ */
+export type AgentConversationPurge = {
+  rollback(): void;
+};
+
+const NOTHING_TO_ROLL_BACK: AgentConversationPurge = { rollback() {} };
+
+/**
  * Delete every agent-owned database participant inside the conversation
  * catalog's active transaction.  Runtime caches and trace-export files are
  * cleared after commit, but persistent rows are removed atomically with the
@@ -53,39 +64,56 @@ async function ignoringMissingTable(task: Promise<void>): Promise<void> {
  * trace files queued) before any row goes; then the trace, memory,
  * transcript, tool-result handle, evidence and coverage rows, the dormant
  * plan and research rows, the plan documents, and the change journal.
+ *
+ * The remembered run IDs mark the conversation's runs as deleted, so a late
+ * run is dropped until the post-commit cleanup clears the mark.  That mark
+ * lives outside the database, so a rollback does not undo it: the purge
+ * undoes it itself when it fails part-way, and the returned `rollback()`
+ * undoes it when the owning transaction fails later.  Without that, every
+ * later agent run of a conversation whose deletion rolled back is deleted
+ * the moment it starts.  Task progress needs no undo: the panel rebuilds a
+ * cleared record from the rows that remain.
  */
 export async function purgeAgentConversation(
   conversationKey: number,
   deps: AgentConversationPurgeDeps,
-): Promise<void> {
+): Promise<AgentConversationPurge> {
   const key = Math.floor(Number(conversationKey));
   if (Number.isFinite(key) && key > 0) deps.clearTaskProgress(key);
   const db = getAgentDb();
-  if (!db || !Number.isFinite(key) || key <= 0) return;
+  if (!db || !Number.isFinite(key) || key <= 0) return NOTHING_TO_ROLL_BACK;
 
   const { runIds, exportRunIds } = await listAgentTraceRunIDsInTransaction(
     db,
     key,
   );
-  rememberAgentTraceRunIDsForDeletedConversation(key, [
-    ...runIds,
-    ...exportRunIds,
-  ]);
-  await queueAgentTraceFileCleanupInTransaction(key, [
-    ...runIds,
-    ...exportRunIds,
-  ]);
-  await deleteAgentTraceRowsInTransaction(db, key, runIds);
-  await deleteAgentMemoryRowsInTransaction(db, key);
-  await deleteAgentTranscriptRowsInTransaction(db, key);
-  await deleteAgentToolResultHandleRowsInTransaction(db, key);
-  await deleteAgentEvidenceRowsInTransaction(db, key);
-  await deleteAgentCoverageRowsInTransaction(db, key);
-  await ignoringMissingTable(clearDormantPlanRowsInTransaction(key));
-  await ignoringMissingTable(clearDormantResearchRowsInTransaction(key));
-  await ignoringMissingTable(
-    clearPlanDocumentConversationRowsInTransaction(key),
+  const forgetDeletedRuns = rememberAgentTraceRunIDsForDeletedConversation(
+    key,
+    [...runIds, ...exportRunIds],
   );
-  await ignoringMissingTable(queueJournalRecoveryBlobCleanupInTransaction(key));
-  await deleteJournalRowsInTransaction(db, key);
+  try {
+    await queueAgentTraceFileCleanupInTransaction(key, [
+      ...runIds,
+      ...exportRunIds,
+    ]);
+    await deleteAgentTraceRowsInTransaction(db, key, runIds);
+    await deleteAgentMemoryRowsInTransaction(db, key);
+    await deleteAgentTranscriptRowsInTransaction(db, key);
+    await deleteAgentToolResultHandleRowsInTransaction(db, key);
+    await deleteAgentEvidenceRowsInTransaction(db, key);
+    await deleteAgentCoverageRowsInTransaction(db, key);
+    await ignoringMissingTable(clearDormantPlanRowsInTransaction(key));
+    await ignoringMissingTable(clearDormantResearchRowsInTransaction(key));
+    await ignoringMissingTable(
+      clearPlanDocumentConversationRowsInTransaction(key),
+    );
+    await ignoringMissingTable(
+      queueJournalRecoveryBlobCleanupInTransaction(key),
+    );
+    await deleteJournalRowsInTransaction(db, key);
+  } catch (error) {
+    forgetDeletedRuns();
+    throw error;
+  }
+  return { rollback: forgetDeletedRuns };
 }

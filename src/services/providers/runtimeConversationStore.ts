@@ -117,6 +117,7 @@ import {
   deleteConversationLocalRows as deleteSharedConversationLocalRows,
   deleteConversationTurnMessages,
   preflightDeleteConversationLocalRows as preflightDeleteSharedConversationLocalRows,
+  type ConversationAgentPurge,
   type ConversationLocalRowDeletionIdentity,
   type ConversationLocalRowStore,
 } from "../../shared/conversationStore/localRowDeletion";
@@ -191,11 +192,12 @@ export type RuntimeStoreConfig = {
   }>;
   /**
    * Deletes the agent rows of a conversation inside the deletion transaction.
-   * Injected because the agent purge lives above this layer.
+   * Injected because the agent purge lives above this layer.  The deletion
+   * kernel rolls the returned purge back when its transaction fails.
    */
   clearAgentConversationRowsInTransaction(
     conversationKey: number,
-  ): Promise<void>;
+  ): Promise<ConversationAgentPurge>;
   /** The profile signature recorded on every key the store issues. */
   profileSignature(): string;
   /**

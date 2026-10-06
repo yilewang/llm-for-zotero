@@ -7,7 +7,10 @@ import { clearPersistedAgentCoverage } from "../../agent/context/coverageLedger"
 import { clearRememberedLocalDocumentPaths } from "../../agent/privacy/localDocumentPathRedaction";
 import { clearAgentTraceState } from "../../agent/store/traceStore";
 import { sweepJournalRecoveryBlobCleanup } from "../../agent/store/changeJournal";
-import { purgeAgentConversation } from "../../agent/store/agentConversationPurge";
+import {
+  purgeAgentConversation,
+  type AgentConversationPurge,
+} from "../../agent/store/agentConversationPurge";
 import { clearAgentRuntimeTraceState } from "./agentState";
 import { clearTaskProgress } from "./taskProgress/store";
 
@@ -26,8 +29,29 @@ export type AgentConversationCleanupDeps = {
  */
 export async function clearPersistedAgentConversationRowsInTransaction(
   conversationKey: number,
+): Promise<AgentConversationPurge> {
+  return purgeAgentConversation(conversationKey, { clearTaskProgress });
+}
+
+/**
+ * Run a turn-row deletion whose transaction purges the conversation's agent
+ * rows in its onBeforeCommit (turn deletion, edit truncation).  When that
+ * transaction fails, the purge's in-memory part is rolled back with it.
+ */
+export async function withAgentConversationPurge(
+  conversationKey: number,
+  deleteRows: (onBeforeCommit: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
-  await purgeAgentConversation(conversationKey, { clearTaskProgress });
+  let purge: AgentConversationPurge | undefined;
+  try {
+    await deleteRows(async () => {
+      purge =
+        await clearPersistedAgentConversationRowsInTransaction(conversationKey);
+    });
+  } catch (error) {
+    purge?.rollback();
+    throw error;
+  }
 }
 
 export async function clearAgentConversationState(

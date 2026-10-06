@@ -343,13 +343,18 @@ export function sweepOrphanedAgentTraceExports(): Promise<void> {
   return task;
 }
 
-/** Remember run IDs before the deletion transaction removes their rows. */
+/**
+ * Remember run IDs before the deletion transaction removes their rows.
+ * Returns an undo for the owning transaction to call if it rolls back: it
+ * puts back the conversation's marker as it was before this call, so it also
+ * undoes any marker a later purge in the same transaction added.
+ */
 export function rememberAgentTraceRunIDsForDeletedConversation(
   conversationKey: number,
   runIDs: readonly string[],
-): void {
+): () => void {
   const key = Math.floor(Number(conversationKey));
-  if (!Number.isFinite(key) || key <= 0) return;
+  if (!Number.isFinite(key) || key <= 0) return () => {};
   const normalized = Array.from(
     new Set(
       runIDs
@@ -357,13 +362,16 @@ export function rememberAgentTraceRunIDsForDeletedConversation(
         .filter(Boolean),
     ),
   );
-  if (normalized.length) {
-    const previous = deletedRunIDsByConversation.get(key);
-    deletedRunIDsByConversation.set(key, {
-      runIDs: Array.from(new Set([...(previous?.runIDs || []), ...normalized])),
-      generation: getConversationWriteGeneration(key),
-    });
-  }
+  if (!normalized.length) return () => {};
+  const previous = deletedRunIDsByConversation.get(key);
+  deletedRunIDsByConversation.set(key, {
+    runIDs: Array.from(new Set([...(previous?.runIDs || []), ...normalized])),
+    generation: getConversationWriteGeneration(key),
+  });
+  return () => {
+    if (previous) deletedRunIDsByConversation.set(key, previous);
+    else forgetAgentTraceRunIDsForDeletedConversation(key);
+  };
 }
 
 /**

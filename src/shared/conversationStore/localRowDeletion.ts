@@ -39,6 +39,9 @@ import type { MessageConversationSelector } from "./messageConversationSelector"
  * passes those as a `ConversationLocalRowStore`.  The SQL text is the text the
  * stores ran before the kernel, so a deletion runs the same statements.
  */
+/** An agent purge that ran in the deletion transaction. */
+export type ConversationAgentPurge = { rollback(): void };
+
 export type ConversationLocalRowStore = {
   system: ConversationSystem;
   /** The store name in error messages ("upstream", "Claude", "Codex"). */
@@ -54,11 +57,13 @@ export type ConversationLocalRowStore = {
   ): Promise<MessageConversationSelector>;
   /**
    * Deletes the agent rows of a conversation inside the deletion transaction.
-   * Injected because the agent purge lives above this layer.
+   * Injected because the agent purge lives above this layer.  The returned
+   * rollback undoes what the purge changed outside the database; the kernel
+   * calls it when the deletion transaction fails.
    */
   clearAgentConversationRowsInTransaction(
     conversationKey: number,
-  ): Promise<void>;
+  ): Promise<ConversationAgentPurge>;
   /** Refreshes the catalog summary inside the turn-deletion transaction. */
   refreshCatalogSummary(conversationKey: number): Promise<void>;
   /** Refreshes the search index after the turn-deletion transaction. */
@@ -171,6 +176,9 @@ export async function deleteConversationLocalRows(
   await initConversationRegistryStore();
   await initConversationSearchIndexStore();
   await initRecentlyDeletedConversationTombstones();
+  // The agent purge also marks the conversation's runs as deleted, outside
+  // the database; a failed transaction must undo that mark with its rows.
+  let agentPurge: ConversationAgentPurge | undefined;
   await Zotero.DB.executeTransaction(async () => {
     if (deletionIdentity?.instanceID) {
       const witnessRows = (await Zotero.DB.queryAsync(
@@ -200,7 +208,8 @@ export async function deleteConversationLocalRows(
           ]
         : [...selector.params, ...messageIdentityParams],
     );
-    await store.clearAgentConversationRowsInTransaction(normalizedKey);
+    agentPurge =
+      await store.clearAgentConversationRowsInTransaction(normalizedKey);
     await clearOwnerAttachmentRefsInTransaction("conversation", normalizedKey);
     // A deleted conversation leaves no usage rows behind: the local usage
     // ledger is scoped to conversations the user can still see.
@@ -243,6 +252,9 @@ export async function deleteConversationLocalRows(
     }
     await deletionIdentity?.onBeforeCommit?.();
     await deletionIdentity?.onCommit?.();
+  }).catch((error: unknown) => {
+    agentPurge?.rollback();
+    throw error;
   });
   if (deletionIdentity?.instanceID) {
     rememberConversationKeyRetired(normalizedKey);
