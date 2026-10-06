@@ -83,6 +83,7 @@ import {
 } from "../../utils/attachmentRefStore";
 import {
   chatHistory,
+  isRequestPending,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
 } from "./state";
@@ -3139,7 +3140,23 @@ export function openStandaloneChat(options?: {
         }
       };
 
+      // Like the panel, never delete a conversation that is generating:
+      // queueing the deletion fences the send's writes, so an Undo would
+      // restore the chat with an answer that streamed but was never saved.
+      const rejectStandaloneDeletionWhileGenerating = (
+        conversationKey: number,
+      ): boolean => {
+        if (!isRequestPending(conversationKey)) return false;
+        setStandaloneHistoryStatus(
+          t("Cannot delete while generating"),
+          "ready",
+        );
+        return true;
+      };
+
       const queueStandaloneHistoryDeletion = async (rawEntry: SidebarConv) => {
+        const rawKey = Number(rawEntry.conversationKey || 0);
+        if (rawKey && rejectStandaloneDeletionWhileGenerating(rawKey)) return;
         const entry = await hydrateStandaloneHistoryDeletionEntry(rawEntry);
         const key = Number(entry.conversationKey || 0);
         if (!key) return;
@@ -3159,8 +3176,8 @@ export function openStandaloneChat(options?: {
           // Persist the write-ahead intent before moving an active window.
           // The queued event performs the move after the row is durable, so a
           // crash cannot strand the user in a new chat without an obligation.
-          // The window's only guard is the pending-deletion check above, made
-          // before the witness read; it passes no final check.
+          // The pending-deletion check above runs before the witness read;
+          // the final check refuses a send that started in the meantime.
           const queueResult = await queueWitnessedConversationDeletion({
             intent: {
               conversationKind,
@@ -3177,8 +3194,10 @@ export function openStandaloneChat(options?: {
               title: entry.title || "",
               wasActive: isActive,
             },
+            finalCheck: () => !rejectStandaloneDeletionWhileGenerating(key),
           });
-          if (queueResult.status !== "queued") {
+          if (queueResult.status === "refused") return;
+          if (queueResult.status === "failed") {
             setStandaloneHistoryStatus(
               t("Failed to queue deletion. Check logs."),
               "error",

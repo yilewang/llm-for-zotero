@@ -158,21 +158,39 @@ describe("conversation lifecycle call sites", function () {
     assert.notInclude(fn, "pendingDeletionStore.queueConversationDeletion");
   });
 
-  it("the standalone deletion checks pending deletion before the witness read and passes no final check", function () {
+  it("the standalone deletion refuses a generating chat early and in its final check", function () {
     const fn = sliceBetween(
       standaloneSource,
       "const queueStandaloneHistoryDeletion = async (",
       "// Sidebar click handler",
     );
+    const earlyRefusal = fn.indexOf(
+      "if (rawKey && rejectStandaloneDeletionWhileGenerating(rawKey)) return;",
+    );
+    const hydrate = fn.indexOf("await hydrateStandaloneHistoryDeletionEntry(");
     const pendingCheck = fn.indexOf(
       "if (pendingDeletionStore.isConversationPendingDeletion(key)) {",
     );
     const call = fn.indexOf("await queueWitnessedConversationDeletion({");
-    assert.isAtLeast(pendingCheck, 0);
+    assert.isAtLeast(earlyRefusal, 0);
+    assert.isAbove(hydrate, earlyRefusal);
+    assert.isAbove(pendingCheck, hydrate);
     assert.isAbove(call, pendingCheck);
-    assert.notInclude(fn, "finalCheck");
-    assert.notInclude(fn, "isRequestPending");
+    assert.include(
+      fn.slice(call),
+      "finalCheck: () => !rejectStandaloneDeletionWhileGenerating(key),",
+    );
     assert.notInclude(fn, "getCatalogIdentityWitness");
     assert.notInclude(fn, "pendingDeletionStore.queueConversationDeletion");
+    const reject = sliceBetween(
+      standaloneSource,
+      "const rejectStandaloneDeletionWhileGenerating = (",
+      "const queueStandaloneHistoryDeletion = async (",
+    );
+    assert.include(
+      reject,
+      "if (!isRequestPending(conversationKey)) return false;",
+    );
+    assert.include(reject, 't("Cannot delete while generating")');
   });
 });
