@@ -593,6 +593,63 @@ describe("navigateToQuote with a trusted quote's record", function () {
   });
 });
 
+describe("navigateToQuote for a reader with no page labels (D5)", function () {
+  it("opens and jumps by page index only, remembers no label, and numbers the page for display", async function () {
+    const { deps, calls } = fakeDeps({
+      texts: { 1: null },
+      viewer: { 1: ["x", "the quote"] },
+    });
+    deps.pageLabelFor = () => undefined;
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+      }),
+      deps,
+    );
+
+    const opens = calls.filter((call) => call[0] === "open");
+    assert.deepEqual(opens, [
+      ["open", 1, undefined],
+      // No label: openReaderForItem drops the empty key.
+      ["open", 1, { pageIndex: 1, pageLabel: undefined }],
+    ]);
+    const jump = calls.find((call) => call[0] === "jump")![1] as object;
+    assert.notProperty(jump, "pageLabel");
+    // The fake jump lands on page index 4.
+    assert.deepEqual(
+      calls.find((call) => call[0] === "remember"),
+      ["remember", 1, "the quote", 4, undefined],
+    );
+    assert.include(outcome as object, {
+      kind: "jumped",
+      pageIndex: 4,
+      pageLabel: "5",
+    });
+  });
+
+  it("reports a page it could not highlight by its number", async function () {
+    const { deps } = fakeDeps({
+      texts: { 1: ["the quote"] },
+      jumpMatches: false,
+    });
+    deps.pageLabelFor = () => undefined;
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+      }),
+      deps,
+    );
+
+    assert.include(outcome as object, {
+      kind: "page-only",
+      pageIndex: 0,
+      pageLabel: "1",
+    });
+  });
+});
+
 describe("buildParagraphJumpSuccessStatus", function () {
   const selected = {
     matched: true,

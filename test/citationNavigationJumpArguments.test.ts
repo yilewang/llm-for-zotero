@@ -337,8 +337,9 @@ describe("citation navigation jump arguments per path (D4)", function () {
           contextItemId: 77,
           displayCitationLabel: "Smith, 2020",
           quoteText: QUOTE_A,
+          // D5 (was pageLabel: "2"): the reader has no printed labels, so the
+          // jump gets the page index only.
           pageIndex: 1,
-          pageLabel: "2",
           citationId: "q5",
           sourceMatchPageOccurrence: 0,
           preferredFullQuoteText: QUOTE_A_PARAGRAPH,
@@ -456,7 +457,7 @@ describe("citation navigation jump arguments per path (D4)", function () {
       ]);
     });
 
-    it("the viewer fallback hands the jump the reader's own page label", async function () {
+    it("the viewer fallback hands the jump no page label when the reader has none", async function () {
       const paper = smith({ backgroundText: false, pageLabels: undefined });
       const r = install({ papers: [paper] });
       const button = r.makeButton({
@@ -472,8 +473,8 @@ describe("citation navigation jump arguments per path (D4)", function () {
           contextItemId: 11,
           displayCitationLabel: "Smith, 2020",
           quoteText: QUOTE_A,
+          // D5 (was pageLabel: "2", guessed from the page index).
           pageIndex: 1,
-          pageLabel: "2",
           sourceMatchPageOccurrence: 0,
           verifiedSourceMatchText: `${QUOTE_A}.`,
         },

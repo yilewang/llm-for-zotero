@@ -1504,16 +1504,19 @@ describe("citation navigation characterization", function () {
         { itemId: unreadable[1].attachmentId, location: undefined },
       ]);
       // The winner is already the active reader, so it is moved, not reopened.
-      // PINNED, LOOKS WRONG (D4): ResolvedQuoteCitationMatch.pageLabel is
-      // documented as "only set when a reader actually reported it", but
-      // getPageLabelForIndex falls back to `${pageIndex + 1}`, so a PDF with
-      // no printed labels still navigates by a label guessed from the index.
+      // FIXED (D5; was { pageIndex: 1, pageLabel: "2" }): a PDF with no
+      // printed labels navigates by page index only, with no label guessed
+      // from the index. The status line still names page 2 for display.
       assert.deepEqual(r.reader(unreadable[1].attachmentId)!.navigations, [
-        { pageIndex: 1, pageLabel: "2" },
+        { pageIndex: 1 },
       ]);
       assert.equal(
         r.status?.text,
         "Jumped to cited source (page 2, paragraph matched)",
+      );
+      assert.equal(
+        lookupCachedCitationPage(unreadable[1].attachmentId, QUOTE_A),
+        "2",
       );
     });
 
@@ -1658,8 +1661,9 @@ describe("citation navigation characterization", function () {
 
         await r.click(button);
 
+        // D5 (was { pageIndex: 0, pageLabel: "1" }): no guessed label.
         assert.deepEqual(r.reader(paper.attachmentId)!.navigations, [
-          { pageIndex: 0, pageLabel: "1" },
+          { pageIndex: 0 },
         ]);
         assert.equal(r.status?.variant, "ready");
       });
@@ -2153,7 +2157,8 @@ describe("citation navigation characterization", function () {
         r.reader(scanned.attachmentId)!.navigations,
         freshNavigations,
       );
-      assert.deepEqual(freshNavigations, [{ pageIndex: 1, pageLabel: "2" }]);
+      // D5 (was { pageIndex: 1, pageLabel: "2" }): no guessed label.
+      assert.deepEqual(freshNavigations, [{ pageIndex: 1 }]);
     });
 
     it("still finds a Task progress passage in an unreadable PDF once a partial cache exists", async function () {

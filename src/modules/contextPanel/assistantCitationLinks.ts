@@ -55,6 +55,7 @@ import { persistPendingChatScrollRestoreForElement } from "./chatScrollSnapshots
 import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import {
   buildCitationQuoteHash,
+  citationPageDisplayLabel,
   clearCitationPageCache,
   lookupCitationPage,
 } from "../../services/pdf/citationNavigationCache";
@@ -376,6 +377,7 @@ function isYearOnlyCitationLabel(value: string): boolean {
 // and the citation tests read it through this module.
 export {
   lookupCachedCitationPage,
+  lookupCachedCitationPageLocation,
   rememberCachedCitationPage,
 } from "./quoteNavigator";
 
@@ -490,8 +492,7 @@ function lookupCachedCitationPageForContextIds(
       contextItemId,
       quoteText: normalizedQuoteText,
     });
-    const pageLabel = sanitizeText(cached?.pageLabel || "").trim();
-    if (pageLabel) return pageLabel;
+    if (cached) return citationPageDisplayLabel(cached);
   }
   return null;
 }
@@ -1622,8 +1623,7 @@ function lookupVerifiedCachedCitationPageForButton(
       contextItemId: candidate.contextItemId,
       quoteText: normalizedQuoteText,
     });
-    const pageLabel = sanitizeText(cached?.pageLabel || "").trim();
-    if (pageLabel) return pageLabel;
+    if (cached) return citationPageDisplayLabel(cached);
   }
   return undefined;
 }

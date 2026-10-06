@@ -40,8 +40,9 @@ import {
   formatSourceLabelWithPage,
   formatUnverifiedCitationChipLabel,
   matchAssistantCitationCandidates,
-  lookupCachedCitationPage,
+  lookupCachedCitationPageLocation,
 } from "./assistantCitationLinks";
+import { citationPageDisplayLabel } from "../../services/pdf/citationNavigationCache";
 import { resolveNoteParentItem } from "./portalScope";
 import {
   isGlobalPortalItem,
@@ -131,7 +132,7 @@ async function renderRawNoteHtmlForSave(
  */
 function buildZoteroPdfUri(
   contextItemId: number,
-  pageLabel?: string,
+  pageIndex?: number,
 ): string | null {
   try {
     const item = Zotero.Items.get(contextItemId);
@@ -149,14 +150,14 @@ function buildZoteroPdfUri(
       }
     }
     let uri = `zotero://open-pdf/${libraryPath}/items/${key}`;
-    // pageLabel is a display label (e.g. "5", "iv").  The `page` param in the
-    // zotero:// URI expects a 1-based physical page number.  If it looks like
-    // a simple integer, append it; otherwise omit to open at the start.
-    if (pageLabel) {
-      const pageNum = parseInt(pageLabel, 10);
-      if (Number.isFinite(pageNum) && pageNum > 0) {
-        uri += `?page=${pageNum}`;
-      }
+    // The `page` param in the zotero:// URI is the 1-based physical page
+    // number, not the printed label (which can be "iv" or "431" on page 4).
+    if (
+      pageIndex !== undefined &&
+      Number.isFinite(pageIndex) &&
+      pageIndex >= 0
+    ) {
+      uri += `?page=${Math.floor(pageIndex) + 1}`;
     }
     return uri;
   } catch {
@@ -216,15 +217,21 @@ function injectCitationLinksIntoNoteHtml(
             .filter(Boolean),
         ),
       );
-      let cachedPage = "";
-      for (const lookupText of lookupTexts) {
-        cachedPage =
-          lookupCachedCitationPage(bestCandidate.contextItemId, lookupText) ||
-          "";
-        if (cachedPage) break;
-      }
-      const pageLabel = cachedPage || undefined;
-      const uri = buildZoteroPdfUri(bestCandidate.contextItemId, pageLabel);
+      const cachedPage = lookupTexts
+        .map((lookupText) =>
+          lookupCachedCitationPageLocation(
+            bestCandidate.contextItemId,
+            lookupText,
+          ),
+        )
+        .find(Boolean);
+      const pageLabel = cachedPage
+        ? citationPageDisplayLabel(cachedPage)
+        : undefined;
+      const uri = buildZoteroPdfUri(
+        bestCandidate.contextItemId,
+        cachedPage?.pageIndex,
+      );
       if (!uri) return _match;
       const visibleCitationText = pageLabel
         ? formatSourceLabelWithPage(
@@ -271,15 +278,21 @@ function injectCitationLinksIntoNoteHtml(
             .filter(Boolean),
         ),
       );
-      let cachedPage = "";
-      for (const lookupText of lookupTexts) {
-        cachedPage =
-          lookupCachedCitationPage(bestCandidate.contextItemId, lookupText) ||
-          "";
-        if (cachedPage) break;
-      }
-      const pageLabel = cachedPage || undefined;
-      const uri = buildZoteroPdfUri(bestCandidate.contextItemId, pageLabel);
+      const cachedPage = lookupTexts
+        .map((lookupText) =>
+          lookupCachedCitationPageLocation(
+            bestCandidate.contextItemId,
+            lookupText,
+          ),
+        )
+        .find(Boolean);
+      const pageLabel = cachedPage
+        ? citationPageDisplayLabel(cachedPage)
+        : undefined;
+      const uri = buildZoteroPdfUri(
+        bestCandidate.contextItemId,
+        cachedPage?.pageIndex,
+      );
       if (!uri) return _match;
       const visibleCitationText = pageLabel
         ? formatSourceLabelWithPage(

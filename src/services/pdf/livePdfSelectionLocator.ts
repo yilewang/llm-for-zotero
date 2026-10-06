@@ -313,6 +313,13 @@ function parsePageIndexFromElement(
   return null;
 }
 
+/**
+ * The printed label on a PDF.js page element or its ancestors. PDF.js sets
+ * data-page-label exactly when the page has one. The page's other attributes
+ * are no label: data-page-number is the page number, and the landmark's
+ * l10n args and aria-label hold `pageLabel ?? pageNumber`, so without a
+ * label they hold the page number too.
+ */
 function getPageLabelFromElement(
   element: Element | null | undefined,
 ): string | undefined {
@@ -320,39 +327,6 @@ function getPageLabelFromElement(
   while (current) {
     const explicitPageLabel = current.getAttribute("data-page-label")?.trim();
     if (explicitPageLabel) return explicitPageLabel;
-
-    const localizationArgs = current.getAttribute("data-l10n-args");
-    if (localizationArgs) {
-      try {
-        const parsed = JSON.parse(localizationArgs) as Record<string, unknown>;
-        const localizedPageLabel = String(
-          parsed.pageLabel ?? parsed.page ?? parsed.label ?? "",
-        ).trim();
-        if (localizedPageLabel) return localizedPageLabel;
-      } catch {
-        // Ignore malformed localization metadata and use the PDF.js fallback.
-      }
-    }
-
-    const ariaLabel = current.getAttribute("aria-label")?.trim();
-    if (ariaLabel) {
-      const pageLabelMatch = ariaLabel.match(
-        /(?:^|\b)page\s*:?\s*([^\s,.]+)(?:\s|[,.]|$)/i,
-      );
-      if (pageLabelMatch?.[1]) return pageLabelMatch[1];
-    }
-
-    const pageNumberAttr = current.getAttribute("data-page-number");
-    if (pageNumberAttr) {
-      return pageNumberAttr;
-    }
-    const pageIndexAttr = current.getAttribute("data-page-index");
-    if (pageIndexAttr) {
-      const pageIndex = Number.parseInt(pageIndexAttr, 10);
-      if (Number.isFinite(pageIndex) && pageIndex >= 0) {
-        return `${pageIndex + 1}`;
-      }
-    }
     current = current.parentElement;
   }
   return undefined;
@@ -1194,6 +1168,10 @@ export function getCurrentSelectionPageLocationFromReader(
   return null;
 }
 
+/**
+ * The printed label the reader reports for a page, from the viewer's label
+ * array or the page's DOM. Undefined when the reader reports none.
+ */
 export function getPageLabelForIndex(
   reader: any,
   pageIndex: number,
@@ -1220,7 +1198,11 @@ export function getPageLabelForIndex(
     if (pageLabel) return pageLabel;
   }
 
-  return `${normalizedPageIndex + 1}`;
+  // No label is guessed from the page index. The index drives navigation;
+  // a label is for display and links, and a PDF's printed labels need not
+  // follow its page order. A caller that shows a page falls back to
+  // `${pageIndex + 1}` itself.
+  return undefined;
 }
 
 /**

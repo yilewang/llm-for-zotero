@@ -29,6 +29,7 @@ import {
 import * as citationLinks from "../src/modules/contextPanel/assistantCitationLinks";
 import { stripLeadingCitationSeparators } from "../src/services/quotes/citationText";
 import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
+import { lookupCitationPage } from "../src/services/pdf/citationNavigationCache";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -1502,13 +1503,22 @@ describe("assistantCitationLinks", function () {
       assert.isNull(lookupCachedCitationPage(23, ""));
     });
 
-    it("does not synthesize verified page labels from page indexes", function () {
+    it("stores a verified page without a reader label, and numbers it only for display", function () {
       const quote =
         "Only reader-confirmed page labels should enter the citation cache.";
       const pageLabel = rememberCachedCitationPage(23, quote, 10);
 
-      assert.isNull(pageLabel);
-      assert.isNull(lookupCachedCitationPage(23, quote));
+      // D5 (was: nothing stored, null): the page index is the verified
+      // fact; the cache stores no label the reader did not report.
+      const entry = lookupCitationPage({ contextItemId: 23, quoteText: quote });
+      assert.equal(entry?.pageIndex, 10);
+      assert.isUndefined(entry?.pageLabel);
+      assert.equal(pageLabel, "11");
+      assert.equal(lookupCachedCitationPage(23, quote), "11");
+      assert.equal(
+        lookupCachedCitationPageForContextIdsForTests("23", quote),
+        "11",
+      );
     });
 
     it("looks up verified page labels by the button's own context ids", function () {
@@ -1759,7 +1769,9 @@ describe("assistantCitationLinks", function () {
         navigateSection,
         /const reader = await deps\.openReader\(contextItemId,/,
       );
-      assert.match(navigateSection, /resolveJumpedPageLabel\(\s*reader,/);
+      // D5 (was resolveJumpedPageLabel): jumpedPage reads the label from
+      // the opened reader and guesses none.
+      assert.match(navigateSection, /jumpedPage\(\s*reader,/);
       assert.match(navigateSection, /deps\.rememberPage\(\s*contextItemId,/);
       assert.notInclude(navigateSection, "getActiveReaderForSelectedTab()");
     });

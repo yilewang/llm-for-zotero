@@ -1635,16 +1635,60 @@ describe("live reader page labels", function () {
     );
   });
 
-  it("reads a printed label from the PDF.js page accessibility label", function () {
+  it("reads a printed label from the PDF.js page's data-page-label", function () {
+    // D5 (was: read "431" from the aria-label "Page: 431. Index: 4").
+    // PDF.js sets data-page-label exactly when the page has a printed label.
     const reader = createSelectedPageReader();
     delete reader._window.PDFViewerApplication.pdfViewer._pageLabels;
     const pageElement = reader._window.document.querySelectorAll()[0];
     pageElement.getAttribute = (name: string) => {
-      if (name === "aria-label") return "Page: 431. Index: 4";
+      if (name === "data-page-label") return "431";
       return name === "data-page-number" ? "4" : null;
     };
 
     assert.equal(getPageLabelForIndex(reader, 3), "431");
+  });
+
+  it("returns no label when neither the viewer nor the DOM has a real one", function () {
+    // data-page-number is PDF.js's own 1-based page number, not a label.
+    const reader = createSelectedPageReader();
+    delete reader._window.PDFViewerApplication.pdfViewer._pageLabels;
+    assert.isUndefined(getPageLabelForIndex(reader, 3));
+
+    const pageElement = reader._window.document.querySelectorAll()[0];
+    pageElement.getAttribute = (name: string) =>
+      name === "data-page-index" ? "3" : null;
+    assert.isUndefined(getPageLabelForIndex(reader, 3));
+
+    // PDF.js fills the landmark's l10n args and aria-label with
+    // `pageLabel ?? pageNumber`, so without data-page-label they hold the
+    // page number, not a printed label.
+    pageElement.getAttribute = (name: string) => {
+      if (name === "data-l10n-args") return JSON.stringify({ page: 4 });
+      if (name === "aria-label") return "Page 4";
+      return name === "data-page-number" ? "4" : null;
+    };
+    assert.isUndefined(getPageLabelForIndex(reader, 3));
+
+    assert.isUndefined(getPageLabelForIndex({}, 3));
+  });
+
+  it("leaves the selection snapshot without a label when the PDF has none", function () {
+    const reader = createSelectedPageReader();
+    delete reader._window.PDFViewerApplication.pdfViewer._pageLabels;
+
+    assert.deepEqual(
+      getCurrentSelectionPageLocationFromReader(
+        reader,
+        "Selected place-cell passage",
+      ),
+      {
+        contextItemId: 42,
+        pageIndex: 3,
+        pageLabel: undefined,
+        pagesScanned: 1,
+      },
+    );
   });
 });
 
