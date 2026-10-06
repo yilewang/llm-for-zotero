@@ -114,10 +114,9 @@ import {
 } from "../../conversationDeletionSurfaceSync";
 import {
   forgetRecentlyDeletedConversation,
-  hasConversationDeletionTombstoneForKey,
-  isConversationInstanceRecentlyDeleted,
   markConversationInstanceRecentlyDeleted,
 } from "../../../../core/conversations/recentlyDeletedConversations";
+import { shouldSeedConversationCatalogEntry } from "../../conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -549,28 +548,7 @@ export function createHistoryLifecycleController(
     kind: "global" | "paper";
     paperItemID?: number;
   }) => {
-    if (
-      pendingDeletionStore.isConversationPendingDeletion(params.conversationKey)
-    ) {
-      return null;
-    }
-    const identityWitness =
-      await conversationRepository.getCatalogIdentityWitness(params);
-    if (
-      identityWitness?.instanceID &&
-      isConversationInstanceRecentlyDeleted(
-        params.conversationKey,
-        identityWitness.instanceID,
-      )
-    ) {
-      return null;
-    }
-    if (
-      !identityWitness &&
-      (await hasConversationDeletionTombstoneForKey(params.conversationKey))
-    ) {
-      return null;
-    }
+    if (!(await shouldSeedConversationCatalogEntry(params))) return null;
     return ensureConversationCatalogEntry(params);
   };
   const touchEmptyDraftActivity = async (

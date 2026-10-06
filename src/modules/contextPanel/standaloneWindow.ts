@@ -169,10 +169,9 @@ import {
 } from "./conversationDeletionSurfaceSync";
 import {
   forgetRecentlyDeletedConversation,
-  hasConversationDeletionTombstoneForKey,
-  isConversationInstanceRecentlyDeleted,
   markConversationInstanceRecentlyDeleted,
 } from "../../core/conversations/recentlyDeletedConversations";
+import { shouldSeedConversationCatalogEntry } from "./conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -1332,32 +1331,13 @@ export function openStandaloneChat(options?: {
         const key = Number(params.conversationKey || 0);
         if (
           key > 0 &&
-          pendingDeletionStore.isConversationPendingDeletion(key)
+          !(await shouldSeedConversationCatalogEntry({
+            system: currentConversationSystem,
+            kind: params.kind,
+            conversationKey: key,
+          }))
         ) {
           return null;
-        }
-        if (key > 0) {
-          const identityWitness =
-            await conversationRepository.getCatalogIdentityWitness({
-              system: currentConversationSystem,
-              kind: params.kind,
-              conversationKey: key,
-            });
-          if (
-            identityWitness?.instanceID &&
-            isConversationInstanceRecentlyDeleted(
-              key,
-              identityWitness.instanceID,
-            )
-          ) {
-            return null;
-          }
-          if (
-            !identityWitness &&
-            (await hasConversationDeletionTombstoneForKey(key))
-          ) {
-            return null;
-          }
         }
         return ensureConversationCatalogEntry(params);
       };
