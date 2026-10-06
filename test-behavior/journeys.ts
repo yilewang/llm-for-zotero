@@ -5,6 +5,7 @@ import {
   directActionCases,
 } from "./directAgentWorkflow";
 import type { AgentRuntimeRequestInput } from "../src/agent/types";
+import type { QuoteCitation } from "../src/shared/types";
 import { assertExact, check, type StepOutcome } from "./core";
 import { catalog } from "./catalog";
 import { LiveDriver, requireReceipt, type Turn, type Writer } from "./driver";
@@ -86,6 +87,37 @@ function permitNewChild(before: NativeState, after: NativeState, item: any) {
   );
 }
 
+/**
+ * The first paper question must be answered from the paper itself.
+ *
+ * The agent may read it with a tool, or, since the active paper's text is
+ * placed in the prompt, answer from that text. With no tool call, the only
+ * citations a turn can publish are the passage citations issued for the paper
+ * text in its prompt, so the answer must carry at least one, and every one
+ * must be matched against this paper's context text.
+ *
+ * The envelope's fullTextPaperCount is not the witness: it counts only papers
+ * the composer marked full-text, and the active paper's text is placed in the
+ * prompt without that mark when no collection or tag is in scope.
+ */
+function assertPaperEvidenceUsed(turn: Turn, paperId: number) {
+  if (turn.events.some((event) => event.type === "tool_call")) return;
+  const citations: QuoteCitation[] = turn.result?.quoteCitations || [];
+  check(
+    citations.length > 0,
+    "Initial paper question did not call a tool and quoted nothing from the paper text in the prompt",
+  );
+  const unmatched = citations.filter(
+    (citation) =>
+      citation.sourceMatchSource !== "context-text" ||
+      citation.itemId !== paperId,
+  );
+  check(
+    !unmatched.length,
+    `Initial paper question did not call a tool and ${unmatched.length} quote citation(s) do not match this paper's context text: ${unmatched.map((citation) => citation.id).join(", ")}`,
+  );
+}
+
 export async function executeJourneyStep(
   id: string,
   ctx: JourneyContext,
@@ -153,11 +185,8 @@ export async function executeJourneyStep(
           "none",
           () => harness.askStandalone(prompt),
         );
-        check(
-          turn.events.some((event) => event.type === "tool_call") ||
-            prompts.indexOf(prompt) > 0,
-          "Initial paper question did not call a tool",
-        );
+        if (prompts.indexOf(prompt) === 0)
+          assertPaperEvidenceUsed(turn, f.items.primary.id);
       }
       assertExact(
         await snapshot(),
