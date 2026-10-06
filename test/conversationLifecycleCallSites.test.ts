@@ -104,20 +104,20 @@ describe("conversation lifecycle call sites", function () {
     assert.notInclude(subscriber, "markCommittedConversationDeletionTombstone");
   });
 
-  const PANEL_ONLY_RENAME_GUARDS = [
+  const SURFACE_RENAME_GUARDS = [
     "isEntryPendingDelete:",
     "isOrphan:",
     "isRequestPending:",
     "isStillCurrent:",
   ];
 
-  it("the panel rename commit passes the panel-only guards", function () {
+  it("the panel rename commit passes all four surface guards", function () {
     const call = sliceBetween(
       panelSource,
       "const renamed = await commitConversationRename({",
       "if (!renamed) return;",
     );
-    for (const guard of PANEL_ONLY_RENAME_GUARDS) {
+    for (const guard of SURFACE_RENAME_GUARDS) {
       assert.include(call, guard);
     }
     assert.include(call, "Boolean(currentEntry.isPendingDelete)");
@@ -129,16 +129,47 @@ describe("conversation lifecycle call sites", function () {
     );
   });
 
-  it("the standalone rename commit passes no panel-only guard", function () {
+  it("the standalone rename commit passes the panel's guards that the window has", function () {
     const call = sliceBetween(
       standaloneSource,
       "const renamed = await commitConversationRename({",
       "if (!renamed) return;",
     );
     assert.include(call, "toIdentity: getStandaloneRenameIdentity");
-    for (const guard of PANEL_ONLY_RENAME_GUARDS) {
-      assert.notInclude(call, guard);
-    }
+    // This used to pass none of them, so a rename confirmed while the chat
+    // generated was written. Each guard reads the window's own fact.
+    assert.include(call, "isRequestPending(conversationKey)");
+    assert.include(
+      call,
+      "isOrphanHistoryEntry(toStandaloneHistoryEntry(currentEntry))",
+    );
+    assert.include(call, "isStillCurrent: () => !cancelled");
+    // A sidebar row has no pending-delete flag of its own; the shared commit
+    // already checks the pending-deletion store.
+    assert.notInclude(call, "isEntryPendingDelete:");
+  });
+
+  it("the standalone rename refuses an orphan or a generating chat before the dialog opens", function () {
+    const fn = sliceBetween(
+      standaloneSource,
+      "const renameStandaloneHistoryEntry = async (",
+      "const renamed = await commitConversationRename({",
+    );
+    const dialog = fn.indexOf("showConversationRenameDialog(");
+    const orphan = fn.indexOf(
+      "if (isOrphanHistoryEntry(toStandaloneHistoryEntry(entry))) {",
+    );
+    const generating = fn.indexOf(
+      "if (isRequestPending(target.conversationKey)) {",
+    );
+    assert.isAtLeast(dialog, 0);
+    assert.isAtLeast(orphan, 0);
+    assert.isAtLeast(generating, 0);
+    assert.isBelow(orphan, dialog);
+    assert.isBelow(generating, dialog);
+    // The panel's own messages.
+    assert.include(fn, 't("This chat\'s source item was deleted")');
+    assert.include(fn, 't("History is unavailable while generating")');
   });
 
   it("the panel deletion passes its ownership and generating check as the final check", function () {

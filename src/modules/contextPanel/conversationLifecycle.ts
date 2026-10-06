@@ -94,9 +94,10 @@ export function markCommittedConversationDeletionTombstone(
  * Commit a title the user typed after the rename dialog closed. The row must
  * still be the same live conversation both before and after the catalog
  * read; the write carries the generation captured before the dialog, so a
- * deletion or a fresh write in between drops it. The panel-only guards are
- * options: the standalone window passes none of them today. Returns true once
- * the title write ran; a failed write throws to the caller.
+ * deletion or a fresh write in between drops it. The surface guards are
+ * options: the panel passes all four, and the standalone window passes the
+ * three it has state for (not isEntryPendingDelete). Returns true once the
+ * title write ran; a failed write throws to the caller.
  */
 export async function commitConversationRename<Entry>(params: {
   target: ConversationRenameIdentity;
@@ -106,11 +107,14 @@ export async function commitConversationRename<Entry>(params: {
   toIdentity: (entry: Entry) => ConversationRenameIdentity;
   /** Panel: the row itself is flagged as pending deletion. */
   isEntryPendingDelete?: (entry: Entry) => boolean;
-  /** Panel: the row's source item was deleted. */
+  /** Both surfaces: the row's source item was deleted. */
   isOrphan?: (entry: Entry) => boolean;
-  /** Panel: a response is generating in the target conversation. */
+  /** Both surfaces: a response is generating in the target conversation. */
   isRequestPending?: (conversationKey: number) => boolean;
-  /** Panel: the panel still owns this operation after the catalog read. */
+  /**
+   * Both surfaces: the surface still owns this operation after the catalog
+   * read (the panel: its operation lease; the standalone: its window is open).
+   */
   isStillCurrent?: () => boolean;
 }): Promise<boolean> {
   const { target } = params;

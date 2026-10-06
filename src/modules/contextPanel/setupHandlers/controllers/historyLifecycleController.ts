@@ -3265,7 +3265,8 @@ export function createHistoryLifecycleController(
           findHistoryEntryByKey(target.kind, target.conversationKey),
         toIdentity: (currentEntry) =>
           getHistoryEntryRenameIdentity(currentEntry),
-        // The panel-only guards; the standalone window passes none of them.
+        // The surface guards; the standalone window passes all but the
+        // row's own pending-delete flag, which its rows do not have.
         isEntryPendingDelete: (currentEntry) =>
           Boolean(currentEntry.isPendingDelete),
         isOrphan: (currentEntry) => isOrphanHistoryEntry(currentEntry),

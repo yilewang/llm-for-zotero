@@ -2811,6 +2811,22 @@ export function openStandaloneChat(options?: {
         ) {
           return;
         }
+        // Like the panel, refuse before the dialog opens, with the panel's
+        // messages; the commit re-checks both after the user confirms.
+        if (isOrphanHistoryEntry(toStandaloneHistoryEntry(entry))) {
+          setStandaloneHistoryStatus(
+            t("This chat's source item was deleted"),
+            "warning",
+          );
+          return;
+        }
+        if (isRequestPending(target.conversationKey)) {
+          setStandaloneHistoryStatus(
+            t("History is unavailable while generating"),
+            "ready",
+          );
+          return;
+        }
         const currentTitle = normalizeHistoryTitle(entry.title || "");
         const rawTitle = await showConversationRenameDialog(doc, {
           title: t("Rename chat"),
@@ -2832,6 +2848,16 @@ export function openStandaloneChat(options?: {
             findCurrentEntry: () =>
               standaloneSidebarEntriesByKey.get(target.conversationKey),
             toIdentity: getStandaloneRenameIdentity,
+            // The panel's guards, each read from the window's own state. A
+            // sidebar row has no pending-delete flag of its own; the commit
+            // checks the pending-deletion store for every surface.
+            isOrphan: (currentEntry) =>
+              isOrphanHistoryEntry(toStandaloneHistoryEntry(currentEntry)),
+            isRequestPending: (conversationKey) =>
+              isRequestPending(conversationKey),
+            // The window does not hand its sidebar to another owner, so it
+            // stays current until it closes.
+            isStillCurrent: () => !cancelled,
           });
           if (!renamed) return;
           searchDocCache.delete(target.conversationKey);
