@@ -114,6 +114,7 @@ import {
 } from "../../conversationDeletionSurfaceSync";
 import { forgetRecentlyDeletedConversation } from "../../../../core/conversations/recentlyDeletedConversations";
 import {
+  commitConversationRename,
   markCommittedConversationDeletionTombstone,
   shouldSeedConversationCatalogEntry,
 } from "../../conversationLifecycle";
@@ -157,7 +158,6 @@ import { createHistorySearchPopupController } from "./historySearchPopupControll
 import { collapseDuplicateReusableConversationDrafts } from "../../standaloneConversationResolution";
 import { showConversationRenameDialog } from "../../conversationRenameDialog";
 import {
-  canCommitConversationRename,
   isConversationRenameEligible,
   type ConversationRenameIdentity,
 } from "../../conversationRenameEligibility";
@@ -3256,58 +3256,24 @@ export function createHistoryLifecycleController(
       return;
     }
     try {
-      let currentEntry = findHistoryEntryByKey(
-        target.kind,
-        target.conversationKey,
-      );
-      if (
-        !canCommitConversationRename({
-          target,
-          current: currentEntry
-            ? getHistoryEntryRenameIdentity(currentEntry)
-            : null,
-          pendingDelete:
-            Boolean(currentEntry?.isPendingDelete) ||
-            pendingDeletionStore.isConversationPendingDeletion(
-              target.conversationKey,
-            ),
-          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
-          requestPending: isRequestPending(target.conversationKey),
-        })
-      ) {
-        return;
-      }
-      const summary = await conversationRepository.getCatalogEntry(target);
-      if (
-        !isOwnedPanelOperationCurrent(ownership, "rename-conversation-commit")
-      ) {
-        return;
-      }
-      currentEntry = findHistoryEntryByKey(target.kind, target.conversationKey);
-      if (
-        !summary ||
-        summary.kind !== target.kind ||
-        !canCommitConversationRename({
-          target,
-          current: currentEntry
-            ? getHistoryEntryRenameIdentity(currentEntry)
-            : null,
-          pendingDelete:
-            Boolean(currentEntry?.isPendingDelete) ||
-            pendingDeletionStore.isConversationPendingDeletion(
-              target.conversationKey,
-            ),
-          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
-          requestPending: isRequestPending(target.conversationKey),
-        })
-      ) {
-        return;
-      }
-      await conversationRepository.setCatalogTitle({
-        ...target,
-        expectedGeneration: renameGeneration,
+      const renamed = await commitConversationRename({
+        target,
         title: nextTitle,
+        expectedGeneration: renameGeneration,
+        findCurrentEntry: () =>
+          findHistoryEntryByKey(target.kind, target.conversationKey),
+        toIdentity: (currentEntry) =>
+          getHistoryEntryRenameIdentity(currentEntry),
+        // The panel-only guards; the standalone window passes none of them.
+        isEntryPendingDelete: (currentEntry) =>
+          Boolean(currentEntry.isPendingDelete),
+        isOrphan: (currentEntry) => isOrphanHistoryEntry(currentEntry),
+        isRequestPending: (conversationKey) =>
+          isRequestPending(conversationKey),
+        isStillCurrent: () =>
+          isOwnedPanelOperationCurrent(ownership, "rename-conversation-commit"),
       });
+      if (!renamed) return;
       if (
         !isOwnedPanelOperationCurrent(ownership, "rename-conversation-result")
       ) {

@@ -7,9 +7,11 @@ import {
   resetRecentlyDeletedConversationsForTests,
 } from "../src/core/conversations/recentlyDeletedConversations";
 import {
+  commitConversationRename,
   markCommittedConversationDeletionTombstone,
   shouldSeedConversationCatalogEntry,
 } from "../src/modules/contextPanel/conversationLifecycle";
+import type { ConversationRenameIdentity } from "../src/modules/contextPanel/conversationRenameEligibility";
 import type {
   PendingConversationDeletionEntry,
   PendingDeletionEvent,
@@ -208,5 +210,174 @@ describe("conversation lifecycle helpers", function () {
         );
       });
     }
+  });
+
+  describe("commitConversationRename", function () {
+    type Row = ConversationRenameIdentity & {
+      pendingDelete?: boolean;
+      orphan?: boolean;
+    };
+    const target: ConversationRenameIdentity = {
+      system: "upstream",
+      kind: "global",
+      conversationKey: 88,
+    };
+    let originalGetCatalogEntry: typeof conversationRepository.getCatalogEntry;
+    let originalSetCatalogTitle: typeof conversationRepository.setCatalogTitle;
+    let log: string[];
+    let rows: Array<Row | null>;
+    let summary: { kind: "global" | "paper" } | null;
+    let titleWrites: unknown[];
+    let onCatalogRead: () => void;
+
+    beforeEach(function () {
+      originalGetCatalogEntry = conversationRepository.getCatalogEntry;
+      originalSetCatalogTitle = conversationRepository.setCatalogTitle;
+      log = [];
+      rows = [{ ...target }, { ...target }];
+      summary = { kind: "global" };
+      titleWrites = [];
+      onCatalogRead = () => undefined;
+      conversationRepository.getCatalogEntry = (async (read: unknown) => {
+        log.push("read");
+        assert.deepEqual(read, target);
+        onCatalogRead();
+        return summary;
+      }) as typeof conversationRepository.getCatalogEntry;
+      conversationRepository.setCatalogTitle = async (write) => {
+        log.push("write");
+        titleWrites.push(write);
+      };
+    });
+
+    afterEach(function () {
+      conversationRepository.getCatalogEntry = originalGetCatalogEntry;
+      conversationRepository.setCatalogTitle = originalSetCatalogTitle;
+    });
+
+    const lookup = () => {
+      log.push("lookup");
+      return rows.shift() ?? null;
+    };
+    const toIdentity = (row: Row): ConversationRenameIdentity => ({
+      system: row.system,
+      kind: row.kind,
+      conversationKey: row.conversationKey,
+    });
+    const rename = (
+      options: Partial<
+        Parameters<typeof commitConversationRename<Row>>[0]
+      > = {},
+    ) =>
+      commitConversationRename<Row>({
+        target,
+        title: "New name",
+        expectedGeneration: 5,
+        findCurrentEntry: lookup,
+        toIdentity,
+        ...options,
+      });
+
+    it("re-checks the row around the catalog read, then writes the target's title", async function () {
+      assert.isTrue(await rename());
+      assert.deepEqual(log, ["lookup", "read", "lookup", "write"]);
+      assert.deepEqual(titleWrites, [
+        { ...target, expectedGeneration: 5, title: "New name" },
+      ]);
+    });
+
+    it("refuses a row that is gone before the catalog read", async function () {
+      rows = [null];
+      assert.isFalse(await rename());
+      assert.deepEqual(log, ["lookup"]);
+    });
+
+    it("refuses a row replaced during the catalog read", async function () {
+      rows = [{ ...target }, { ...target, conversationKey: 89 }];
+      assert.isFalse(await rename());
+      assert.deepEqual(log, ["lookup", "read", "lookup"]);
+    });
+
+    it("refuses a deletion queued during the catalog read", async function () {
+      onCatalogRead = () => pendingKeys.add(88);
+      assert.isFalse(await rename());
+      assert.deepEqual(titleWrites, []);
+    });
+
+    it("refuses a missing summary or a summary of the other kind", async function () {
+      summary = null;
+      assert.isFalse(await rename());
+      rows = [{ ...target }, { ...target }];
+      summary = { kind: "paper" };
+      assert.isFalse(await rename());
+      assert.deepEqual(titleWrites, []);
+    });
+
+    it("applies no row-level guard unless the caller passes it", async function () {
+      rows = [
+        { ...target, pendingDelete: true, orphan: true },
+        { ...target, pendingDelete: true, orphan: true },
+      ];
+      assert.isTrue(await rename());
+    });
+
+    it("refuses a row the caller marks pending delete, before or after the read", async function () {
+      rows = [{ ...target, pendingDelete: true }];
+      const isEntryPendingDelete = (row: Row) => Boolean(row.pendingDelete);
+      assert.isFalse(await rename({ isEntryPendingDelete }));
+      assert.deepEqual(log, ["lookup"]);
+      log = [];
+      rows = [{ ...target }, { ...target, pendingDelete: true }];
+      assert.isFalse(await rename({ isEntryPendingDelete }));
+      assert.deepEqual(log, ["lookup", "read", "lookup"]);
+    });
+
+    it("refuses an orphan row when the caller checks orphans", async function () {
+      rows = [{ ...target, orphan: true }];
+      assert.isFalse(
+        await rename({ isOrphan: (row: Row) => Boolean(row.orphan) }),
+      );
+      assert.deepEqual(titleWrites, []);
+    });
+
+    it("refuses while the caller reports a pending request for the target", async function () {
+      const asked: number[] = [];
+      let pending = false;
+      onCatalogRead = () => {
+        pending = true;
+      };
+      assert.isFalse(
+        await rename({
+          isRequestPending: (key: number) => {
+            asked.push(key);
+            return pending;
+          },
+        }),
+      );
+      assert.deepEqual(asked, [88, 88]);
+      assert.deepEqual(titleWrites, []);
+    });
+
+    it("checks the caller's ownership right after the catalog read", async function () {
+      let current = true;
+      onCatalogRead = () => {
+        current = false;
+      };
+      assert.isFalse(await rename({ isStillCurrent: () => current }));
+      assert.deepEqual(log, ["lookup", "read"]);
+    });
+
+    it("lets a failed title write reach the caller", async function () {
+      conversationRepository.setCatalogTitle = async () => {
+        throw new Error("write failed");
+      };
+      let caught: unknown = null;
+      try {
+        await rename();
+      } catch (error) {
+        caught = error;
+      }
+      assert.match(String(caught), /write failed/);
+    });
   });
 });

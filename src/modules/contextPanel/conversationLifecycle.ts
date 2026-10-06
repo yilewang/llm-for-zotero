@@ -14,6 +14,10 @@ import {
   isConversationInstanceRecentlyDeleted,
   markConversationInstanceRecentlyDeleted,
 } from "../../core/conversations/recentlyDeletedConversations";
+import {
+  canCommitConversationRename,
+  type ConversationRenameIdentity,
+} from "./conversationRenameEligibility";
 
 export type ConversationSeedTarget = {
   system: ConversationSystem;
@@ -83,4 +87,57 @@ export function markCommittedConversationDeletionTombstone(
     return true;
   }
   return false;
+}
+
+/**
+ * Commit a title the user typed after the rename dialog closed. The row must
+ * still be the same live conversation both before and after the catalog
+ * read; the write carries the generation captured before the dialog, so a
+ * deletion or a fresh write in between drops it. The panel-only guards are
+ * options: the standalone window passes none of them today. Returns true once
+ * the title write ran; a failed write throws to the caller.
+ */
+export async function commitConversationRename<Entry>(params: {
+  target: ConversationRenameIdentity;
+  title: string;
+  expectedGeneration: number;
+  findCurrentEntry: () => Entry | null | undefined;
+  toIdentity: (entry: Entry) => ConversationRenameIdentity;
+  /** Panel: the row itself is flagged as pending deletion. */
+  isEntryPendingDelete?: (entry: Entry) => boolean;
+  /** Panel: the row's source item was deleted. */
+  isOrphan?: (entry: Entry) => boolean;
+  /** Panel: a response is generating in the target conversation. */
+  isRequestPending?: (conversationKey: number) => boolean;
+  /** Panel: the panel still owns this operation after the catalog read. */
+  isStillCurrent?: () => boolean;
+}): Promise<boolean> {
+  const { target } = params;
+  const canCommit = (): boolean => {
+    const currentEntry = params.findCurrentEntry();
+    return canCommitConversationRename({
+      target,
+      current: currentEntry ? params.toIdentity(currentEntry) : null,
+      pendingDelete:
+        Boolean(currentEntry && params.isEntryPendingDelete?.(currentEntry)) ||
+        pendingDeletionStore.isConversationPendingDeletion(
+          target.conversationKey,
+        ),
+      orphan:
+        currentEntry && params.isOrphan ? params.isOrphan(currentEntry) : false,
+      requestPending: params.isRequestPending
+        ? params.isRequestPending(target.conversationKey)
+        : false,
+    });
+  };
+  if (!canCommit()) return false;
+  const summary = await conversationRepository.getCatalogEntry(target);
+  if (params.isStillCurrent && !params.isStillCurrent()) return false;
+  if (!summary || summary.kind !== target.kind || !canCommit()) return false;
+  await conversationRepository.setCatalogTitle({
+    ...target,
+    expectedGeneration: params.expectedGeneration,
+    title: params.title,
+  });
+  return true;
 }

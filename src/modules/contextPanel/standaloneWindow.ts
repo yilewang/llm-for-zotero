@@ -140,7 +140,6 @@ import {
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
 import {
-  canCommitConversationRename,
   isConversationRenameEligible,
   type ConversationRenameIdentity,
 } from "./conversationRenameEligibility";
@@ -169,6 +168,7 @@ import {
 } from "./conversationDeletionSurfaceSync";
 import { forgetRecentlyDeletedConversation } from "../../core/conversations/recentlyDeletedConversations";
 import {
+  commitConversationRename,
   markCommittedConversationDeletionTombstone,
   shouldSeedConversationCatalogEntry,
 } from "./conversationLifecycle";
@@ -2823,46 +2823,15 @@ export function openStandaloneChat(options?: {
           return;
         }
         try {
-          let currentEntry = standaloneSidebarEntriesByKey.get(
-            target.conversationKey,
-          );
-          if (
-            !canCommitConversationRename({
-              target,
-              current: currentEntry
-                ? getStandaloneRenameIdentity(currentEntry)
-                : null,
-              pendingDelete: pendingDeletionStore.isConversationPendingDeletion(
-                target.conversationKey,
-              ),
-            })
-          ) {
-            return;
-          }
-          const summary = await conversationRepository.getCatalogEntry(target);
-          currentEntry = standaloneSidebarEntriesByKey.get(
-            target.conversationKey,
-          );
-          if (
-            !summary ||
-            summary.kind !== target.kind ||
-            !canCommitConversationRename({
-              target,
-              current: currentEntry
-                ? getStandaloneRenameIdentity(currentEntry)
-                : null,
-              pendingDelete: pendingDeletionStore.isConversationPendingDeletion(
-                target.conversationKey,
-              ),
-            })
-          ) {
-            return;
-          }
-          await conversationRepository.setCatalogTitle({
-            ...target,
-            expectedGeneration: renameGeneration,
+          const renamed = await commitConversationRename({
+            target,
             title,
+            expectedGeneration: renameGeneration,
+            findCurrentEntry: () =>
+              standaloneSidebarEntriesByKey.get(target.conversationKey),
+            toIdentity: getStandaloneRenameIdentity,
           });
+          if (!renamed) return;
           searchDocCache.delete(target.conversationKey);
           if (cancelled) return;
           await renderSidebar();

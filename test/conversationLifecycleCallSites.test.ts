@@ -103,4 +103,41 @@ describe("conversation lifecycle call sites", function () {
     );
     assert.notInclude(subscriber, "markCommittedConversationDeletionTombstone");
   });
+
+  const PANEL_ONLY_RENAME_GUARDS = [
+    "isEntryPendingDelete:",
+    "isOrphan:",
+    "isRequestPending:",
+    "isStillCurrent:",
+  ];
+
+  it("the panel rename commit passes the panel-only guards", function () {
+    const call = sliceBetween(
+      panelSource,
+      "const renamed = await commitConversationRename({",
+      "if (!renamed) return;",
+    );
+    for (const guard of PANEL_ONLY_RENAME_GUARDS) {
+      assert.include(call, guard);
+    }
+    assert.include(call, "Boolean(currentEntry.isPendingDelete)");
+    assert.include(call, "isOrphanHistoryEntry(currentEntry)");
+    assert.include(call, "isRequestPending(conversationKey)");
+    assert.include(
+      call,
+      'isOwnedPanelOperationCurrent(ownership, "rename-conversation-commit")',
+    );
+  });
+
+  it("the standalone rename commit passes no panel-only guard", function () {
+    const call = sliceBetween(
+      standaloneSource,
+      "const renamed = await commitConversationRename({",
+      "if (!renamed) return;",
+    );
+    assert.include(call, "toIdentity: getStandaloneRenameIdentity");
+    for (const guard of PANEL_ONLY_RENAME_GUARDS) {
+      assert.notInclude(call, guard);
+    }
+  });
 });
