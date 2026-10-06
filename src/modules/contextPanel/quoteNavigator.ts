@@ -351,26 +351,6 @@ export const attemptCitationParagraphJumpForTests =
   attemptCitationParagraphJump;
 
 /**
- * Resolve the effective page label after a paragraph jump.  If
- * FindController landed on a different page than the text search
- * predicted, use FindController's result — it is authoritative.
- */
-export function resolveJumpedPageLabel(
-  reader: any,
-  paragraphJump: ExactQuoteJumpResult,
-  fallbackPageLabel: string,
-  pageLabelFor: QuoteNavigatorDeps["pageLabelFor"] = getPageLabelForIndex,
-): string {
-  if (paragraphJump.matched && paragraphJump.matchedPageIndex !== undefined) {
-    return (
-      pageLabelFor(reader, paragraphJump.matchedPageIndex) ||
-      `${paragraphJump.matchedPageIndex + 1}`
-    );
-  }
-  return fallbackPageLabel;
-}
-
-/**
  * Said when a trusted click stays on a copy of the paper whose PDF is not
  * the one the answer quoted.
  */
@@ -1116,13 +1096,14 @@ export async function navigateToQuote(
 /**
  * The page a jump left the reader on: the one FindController matched on,
  * which wins over the predicted page, else the predicted page. Its label is
- * the reader's printed label, when it reports one; none is guessed.
+ * the reader's printed label, when it reports one; none is guessed. Show it
+ * with `citationPageDisplayLabel`.
  */
-function jumpedPage(
+export function jumpedPage(
   reader: any,
   jump: ExactQuoteJumpResult,
   predicted: { pageIndex: number; pageLabel?: string },
-  pageLabelFor: QuoteNavigatorDeps["pageLabelFor"],
+  pageLabelFor: QuoteNavigatorDeps["pageLabelFor"] = getPageLabelForIndex,
 ): ReaderPageLocation {
   const matchedPageIndex = jump.matched ? jump.matchedPageIndex : undefined;
   const pageIndex = matchedPageIndex ?? predicted.pageIndex;

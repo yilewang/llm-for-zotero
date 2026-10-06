@@ -82,7 +82,7 @@ import {
   navigateReaderToPage,
   navigateToQuote,
   openReaderForItem,
-  resolveJumpedPageLabel,
+  jumpedPage,
 } from "./quoteNavigator";
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
@@ -2883,10 +2883,11 @@ export async function navigateToTaskPaperPassage(params: {
         if (paragraphJump.matched) {
           report(
             formatStatus("Jumped to the passage (page {page})", {
-              page: resolveJumpedPageLabel(
-                reader,
-                paragraphJump,
-                shownPageLabel,
+              page: citationPageDisplayLabel(
+                jumpedPage(reader, paragraphJump, {
+                  pageIndex,
+                  pageLabel: readerPageLabel,
+                }),
               ),
             }),
             "ready",
