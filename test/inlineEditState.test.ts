@@ -109,25 +109,28 @@ describe("inlineEditState: each chat panel keeps its own message edit", function
     assert.deepEqual(calls, ["sidebar"]);
   });
 
-  it("deleting a conversation forgets every panel's edit of it without running their cleanup", function () {
-    const sidebar = panelBody();
-    const windowPanel = panelBody();
-    const other = panelBody();
+  it("deleting a conversation gives a mounted panel its composer back and drops a detached panel's edit without cleanup", function () {
+    const mounted = { isConnected: true } as unknown as Element;
+    const detached = panelBody();
+    const other = { isConnected: true } as unknown as Element;
     const calls: string[] = [];
-    setInlineEditTarget(sidebar, target(9, 1));
-    setInlineEditTarget(windowPanel, target(9, 2));
+    setInlineEditTarget(mounted, target(9, 1));
+    setInlineEditTarget(detached, target(9, 2));
     setInlineEditTarget(other, target(10, 3));
-    setInlineEditCleanup(sidebar, () => calls.push("sidebar"));
-    setInlineEditCleanup(windowPanel, () => calls.push("window"));
+    setInlineEditCleanup(mounted, () => calls.push("mounted"));
+    setInlineEditCleanup(detached, () => calls.push("detached"));
+    setInlineEditCleanup(other, () => calls.push("other"));
 
     releaseInlineEditsForConversation(9);
 
-    assert.deepEqual(calls, []);
-    assert.isNull(getInlineEditTarget(sidebar));
-    assert.isNull(getInlineEditTarget(windowPanel));
-    assert.isNull(getInlineEditCleanup(windowPanel));
+    assert.deepEqual(calls, ["mounted"]);
+    assert.isNull(getInlineEditTarget(mounted));
+    assert.isNull(getInlineEditCleanup(mounted));
+    assert.isNull(getInlineEditTarget(detached));
+    assert.isNull(getInlineEditCleanup(detached));
     assert.equal(getInlineEditTarget(other)?.conversationKey, 10);
     endInlineEdit(other);
+    assert.deepEqual(calls, ["mounted", "other"]);
   });
 
   it("a panel that never edited reads as not editing", function () {

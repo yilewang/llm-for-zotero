@@ -132,17 +132,18 @@ export function releaseInlineEdit(body: Element): void {
 }
 
 /**
- * A conversation was deleted: forget every panel's edit of it. The deletion
- * may finish with no panel mounted, so the DOM cleanup is not run; dropping
- * the references keeps a stale cleanup from writing the deleted conversation
- * back into a composer.
+ * A conversation was deleted: end every panel's edit of it. A mounted panel
+ * gets its composer back (the cleanup runs); a panel whose DOM is gone, or
+ * a deletion finishing with no panel mounted, only drops the references so a
+ * stale cleanup never writes into a detached composer.
  */
 export function releaseInlineEditsForConversation(
   conversationKey: number,
 ): void {
   for (const body of [...bodiesEditing]) {
     if (sessions.get(body)?.target?.conversationKey === conversationKey) {
-      releaseInlineEdit(body);
+      if (body.isConnected) endInlineEdit(body);
+      else releaseInlineEdit(body);
     }
   }
 }
