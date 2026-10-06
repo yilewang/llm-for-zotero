@@ -55,9 +55,20 @@ type RequestHandler = (
   id: string | number,
   signal: AbortSignal,
 ) => unknown | Promise<unknown>;
+/**
+ * Says whether a request handler owns a server request. Two conversations can
+ * have turns on one process at once, each registering handlers for the same
+ * methods; the request's thread decides which of them answers it.
+ */
+type RequestAcceptor = (params: unknown) => boolean;
+
+type RequestRegistration = {
+  handler: RequestHandler;
+  accepts?: RequestAcceptor;
+};
 
 type ServerRequest = {
-  handler: RequestHandler;
+  registration: RequestRegistration;
   controller: AbortController;
   method: string;
   threadId?: string;
@@ -122,6 +133,20 @@ function createAbortError(): Error {
   return err;
 }
 
+function extractCodexAppServerRequestThreadId(params: unknown): string {
+  if (!params || typeof params !== "object") return "";
+  const record = params as { threadId?: unknown; conversationId?: unknown };
+  if (typeof record.threadId === "string" && record.threadId) {
+    return record.threadId;
+  }
+  // Legacy v1 approvals (applyPatchApproval, execCommandApproval) name the
+  // thread as the conversation.
+  if (typeof record.conversationId === "string" && record.conversationId) {
+    return record.conversationId;
+  }
+  return "";
+}
+
 function extractCodexAppServerNotificationThreadId(rawParams: unknown): string {
   if (!rawParams || typeof rawParams !== "object") return "";
   const params = rawParams as {
@@ -143,7 +168,7 @@ export class CodexAppServerProcess {
   private pendingRequests = new Map<number, PendingRequest>();
   private activityHandlers = new Set<ActivityHandler>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
-  private requestHandlers = new Map<string, Set<RequestHandler>>();
+  private requestHandlers = new Map<string, Set<RequestRegistration>>();
   private serverRequests = new Map<string | number, ServerRequest>();
 
   hasPendingUserInput(threadId?: string, turnId?: string): boolean {
@@ -389,7 +414,11 @@ export class CodexAppServerProcess {
 
       if (typeof msg.method === "string") {
         const handlers = this.requestHandlers.get(msg.method);
-        if (!handlers?.size) {
+        if (this.serverRequests.has(id)) return;
+        const registration = handlers?.size
+          ? selectRequestRegistration(handlers, msg.params)
+          : undefined;
+        if (!registration) {
           try {
             appLogger.warn("Codex app-server: unhandled server request", {
               method: msg.method,
@@ -404,25 +433,23 @@ export class CodexAppServerProcess {
             id,
             error: {
               code: -32601,
-              message: `No handler registered for ${msg.method}`,
+              message: handlers?.size
+                ? `No handler accepted ${msg.method} for its thread`
+                : `No handler registered for ${msg.method}`,
             },
           });
           return;
         }
-        const handler = handlers.values().next().value as
-          | RequestHandler
-          | undefined;
-        if (!handler) return;
-        if (this.serverRequests.has(id)) return;
-        const identity = msg.params as
-          | { threadId?: string; turnId?: string }
-          | undefined;
+        const handler = registration.handler;
+        const identity = msg.params as { turnId?: unknown } | undefined;
         const request: ServerRequest = {
-          handler,
+          registration,
           controller: createAbortController(),
           method: msg.method,
-          threadId: identity?.threadId,
-          turnId: identity?.turnId,
+          threadId:
+            extractCodexAppServerRequestThreadId(msg.params) || undefined,
+          turnId:
+            typeof identity?.turnId === "string" ? identity.turnId : undefined,
           pending: true,
         };
         this.serverRequests.set(id, request);
@@ -593,17 +620,28 @@ export class CodexAppServerProcess {
     };
   }
 
-  onRequest(method: string, handler: RequestHandler): () => void {
+  /**
+   * Registers a server-request handler. With `accepts`, the handler answers
+   * only the requests it accepts; handlers without it answer whatever no
+   * accepting handler claimed. Disposing a handler cancels only the requests
+   * it took.
+   */
+  onRequest(
+    method: string,
+    handler: RequestHandler,
+    accepts?: RequestAcceptor,
+  ): () => void {
     let handlers = this.requestHandlers.get(method);
     if (!handlers) {
       handlers = new Set();
       this.requestHandlers.set(method, handlers);
     }
-    handlers.add(handler);
+    const registration: RequestRegistration = { handler, accepts };
+    handlers.add(registration);
     return () => {
-      this.requestHandlers.get(method)?.delete(handler);
+      this.requestHandlers.get(method)?.delete(registration);
       for (const [id, request] of this.serverRequests) {
-        if (request.handler !== handler) continue;
+        if (request.registration !== registration) continue;
         request.controller.abort();
         this.serverRequests.delete(id);
       }
@@ -709,6 +747,26 @@ export class CodexAppServerProcess {
     }
     this.closeHandlers.clear();
   }
+}
+
+function selectRequestRegistration(
+  handlers: Set<RequestRegistration>,
+  params: unknown,
+): RequestRegistration | undefined {
+  for (const registration of handlers) {
+    if (!registration.accepts) continue;
+    let accepted = false;
+    try {
+      accepted = registration.accepts(params);
+    } catch {
+      accepted = false;
+    }
+    if (accepted) return registration;
+  }
+  for (const registration of handlers) {
+    if (!registration.accepts) return registration;
+  }
+  return undefined;
 }
 
 export function isCodexAppServerInjectItemsUnsupportedError(

@@ -1460,6 +1460,10 @@ function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
 export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
   isDeniedTrustedZoteroMcpGuardianReview;
 
+export const registerNativeGuardianReviewHandlersForTests = (
+  ...args: Parameters<typeof registerNativeGuardianReviewHandlers>
+) => registerNativeGuardianReviewHandlers(...args);
+
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
   threadId: string;
@@ -1470,6 +1474,9 @@ function registerNativeGuardianReviewHandlers(params: {
   return params.proc.onNotification(
     CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
     (rawParams) => {
+      // Another conversation's turn can share this process; its reviews are
+      // not this turn's to override.
+      if (normalizeRecord(rawParams).threadId !== params.threadId) return;
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
         appLogger.debug("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -2545,7 +2552,25 @@ function registerNativeApprovalRequestHandlers(params: {
   getTurnIdentity?: () => Promise<
     { threadId: string; turnId?: string } | undefined
   >;
+  /**
+   * The thread this turn runs on, once known. Requests that name another
+   * thread belong to another conversation's turn on the same process and are
+   * left to its handlers.
+   */
+  getActiveThreadId?: () => string | undefined;
 }): () => void {
+  const acceptsRequest = params.getActiveThreadId
+    ? (rawParams: unknown) => {
+        const record = normalizeRecord(rawParams);
+        const requestThreadId =
+          normalizeNonEmptyString(record.threadId) ||
+          normalizeNonEmptyString(record.conversationId);
+        // A request that names no thread cannot be routed; the first turn
+        // takes it, as before.
+        if (!requestThreadId) return true;
+        return requestThreadId === params.getActiveThreadId?.();
+      }
+    : undefined;
   const disposers = CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS.map((method) =>
     params.proc.onRequest(
       method,
@@ -2634,12 +2659,17 @@ function registerNativeApprovalRequestHandlers(params: {
             signal.removeEventListener("abort", abort);
         }
       },
+      acceptsRequest,
     ),
   );
   return () => {
     for (const dispose of disposers) dispose();
   };
 }
+
+export const registerNativeApprovalRequestHandlersForTests = (
+  ...args: Parameters<typeof registerNativeApprovalRequestHandlers>
+) => registerNativeApprovalRequestHandlers(...args);
 
 export async function listCodexAppServerModels(
   params: {
@@ -3078,6 +3108,7 @@ export async function runCodexAppServerNativeTurn(input: {
           await turnStarted;
           return activeTurnIdentity;
         },
+        getActiveThreadId: () => activeTurnIdentity?.threadId,
       });
       const mcpEnabled = isCodexZoteroMcpToolsEnabled();
       const profileSignature =

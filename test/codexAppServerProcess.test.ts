@@ -708,6 +708,152 @@ describe("codexAppServerProcess", function () {
     assert.deepEqual(order, ["first-start", "first-end", "second-start"]);
   });
 
+  describe("server requests on a shared process", function () {
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    type TestProcess = CodexAppServerProcess & {
+      handleMessage: (msg: Record<string, unknown>) => void;
+    };
+    function createConcurrentProcess(
+      options: {
+        writes?: Array<Record<string, any>>;
+        onKill?: () => void;
+      } = {},
+    ): TestProcess {
+      const proc = CodexAppServerProcess.forTest({
+        stdin: {
+          write: (line: string) => {
+            options.writes?.push(JSON.parse(line));
+          },
+        },
+        kill: () => options.onKill?.(),
+      }) as TestProcess;
+      return proc;
+    }
+    it("routes each server request to the handler that accepts its thread", async function () {
+      const writes: Array<Record<string, any>> = [];
+      const proc = createConcurrentProcess({ writes });
+      const seen: string[] = [];
+      const acceptsThread = (threadId: string) => (params: unknown) =>
+        (params as { threadId?: string })?.threadId === threadId;
+      proc.onRequest(
+        "item/commandExecution/requestApproval",
+        () => {
+          seen.push("A");
+          return { decision: "accept" };
+        },
+        acceptsThread("thread-A"),
+      );
+      proc.onRequest(
+        "item/commandExecution/requestApproval",
+        () => {
+          seen.push("B");
+          return { decision: "decline" };
+        },
+        acceptsThread("thread-B"),
+      );
+      proc.handleMessage({
+        id: 41,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-B", turnId: "turn-B" },
+      });
+      proc.handleMessage({
+        id: 42,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-A", turnId: "turn-A" },
+      });
+      await tick();
+      assert.deepEqual(seen, ["B", "A"]);
+      assert.deepEqual(writes, [
+        { id: 41, result: { decision: "decline" } },
+        { id: 42, result: { decision: "accept" } },
+      ]);
+    });
+
+    it("routes legacy approvals by their conversation id", async function () {
+      const writes: Array<Record<string, any>> = [];
+      const proc = createConcurrentProcess({ writes });
+      proc.onRequest(
+        "applyPatchApproval",
+        () => ({ decision: "approved" }),
+        (params) =>
+          (params as { conversationId?: string }).conversationId === "thread-A",
+      );
+      proc.onRequest(
+        "applyPatchApproval",
+        () => ({ decision: "denied" }),
+        (params) =>
+          (params as { conversationId?: string }).conversationId === "thread-B",
+      );
+      proc.handleMessage({
+        id: 7,
+        method: "applyPatchApproval",
+        params: { conversationId: "thread-B", callId: "call" },
+      });
+      await tick();
+      assert.deepEqual(writes, [{ id: 7, result: { decision: "denied" } }]);
+      assert.isFalse(proc.hasPendingUserInput("thread-B"));
+    });
+
+    it("does not abort another thread's request when one handler is disposed", async function () {
+      const proc = createConcurrentProcess();
+      const signals: Record<string, AbortSignal> = {};
+      const register = (threadId: string) =>
+        proc.onRequest(
+          "item/tool/requestUserInput",
+          (_params, _id, signal) => {
+            signals[threadId] = signal;
+            return new Promise(() => {});
+          },
+          (params) => (params as { threadId?: string }).threadId === threadId,
+        );
+      const disposeA = register("thread-A");
+      register("thread-B");
+      proc.handleMessage({
+        id: "question-A",
+        method: "item/tool/requestUserInput",
+        params: { threadId: "thread-A", turnId: "turn-A" },
+      });
+      proc.handleMessage({
+        id: "question-B",
+        method: "item/tool/requestUserInput",
+        params: { threadId: "thread-B", turnId: "turn-B" },
+      });
+      await tick();
+      disposeA();
+      assert.isTrue(signals["thread-A"]?.aborted);
+      assert.isFalse(signals["thread-B"]?.aborted);
+      assert.isTrue(proc.hasPendingUserInput("thread-B", "turn-B"));
+    });
+
+    it("answers with an error when no handler accepts a request", async function () {
+      const writes: Array<Record<string, any>> = [];
+      const proc = createConcurrentProcess({ writes });
+      let calls = 0;
+      proc.onRequest(
+        "item/fileChange/requestApproval",
+        () => {
+          calls += 1;
+          return { decision: "accept" };
+        },
+        (params) => (params as { threadId?: string }).threadId === "thread-A",
+      );
+      proc.handleMessage({
+        id: 5,
+        method: "item/fileChange/requestApproval",
+        params: { threadId: "thread-gone", turnId: "turn-gone" },
+      });
+      await tick();
+      assert.equal(calls, 0);
+      assert.lengthOf(writes, 1);
+      assert.equal(writes[0].id, 5);
+      assert.equal(writes[0].error?.code, -32601);
+      assert.match(
+        writes[0].error?.message,
+        /item\/fileChange\/requestApproval/,
+      );
+    });
+  });
+
   it("destroys an explicit process when evicting a missing cache entry", function () {
     let killed = false;
     const proc = CodexAppServerProcess.forTest({

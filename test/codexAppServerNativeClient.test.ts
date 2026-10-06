@@ -21,6 +21,8 @@ import {
   compactCodexAppServerThread,
   forkCodexAppServerThread,
   isDeniedTrustedZoteroMcpGuardianReviewForTests,
+  registerNativeApprovalRequestHandlersForTests,
+  registerNativeGuardianReviewHandlersForTests,
   listCodexAppServerModels,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
@@ -4027,5 +4029,124 @@ describe("Codex MCP tool activity bridge", function () {
     assert.equal(event.type, "codex_tool_activity");
     if (event.type !== "codex_tool_activity") return;
     assert.equal(event.workCategory, CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY);
+  });
+});
+
+describe("Codex native requests of two conversations on one process", function () {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  type TestProcess = CodexAppServerProcess & {
+    handleMessage: (msg: Record<string, unknown>) => void;
+  };
+  function createRoutingProcess(writes: Array<Record<string, any>>) {
+    return CodexAppServerProcess.forTest({
+      stdin: { write: (line: string) => writes.push(JSON.parse(line)) },
+      kill: () => {},
+    }) as TestProcess;
+  }
+
+  it("answers each approval from the turn that owns its thread", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    const asked: string[] = [];
+    const register = (threadId: string, decision: string) =>
+      registerNativeApprovalRequestHandlersForTests({
+        proc,
+        onApprovalRequest: async (request) => {
+          asked.push(`${threadId}:${(request.params as any).threadId}`);
+          return { decision };
+        },
+        getTurnIdentity: async () => ({ threadId, turnId: `turn-${threadId}` }),
+        getActiveThreadId: () => threadId,
+      });
+    register("thread-A", "accept");
+    register("thread-B", "decline");
+    proc.handleMessage({
+      id: 1,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-B", turnId: "turn-thread-B", itemId: "b" },
+    });
+    proc.handleMessage({
+      id: 2,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-A", turnId: "turn-thread-A", itemId: "a" },
+    });
+    await tick();
+    await tick();
+    assert.sameMembers(asked, ["thread-A:thread-A", "thread-B:thread-B"]);
+    assert.deepEqual(writes.find((message) => message.id === 1)?.result, {
+      decision: "decline",
+    });
+    assert.deepEqual(writes.find((message) => message.id === 2)?.result, {
+      decision: "accept",
+    });
+  });
+
+  it("keeps another conversation's pending approval when one turn ends", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    const signals: Record<string, AbortSignal> = {};
+    const register = (threadId: string) =>
+      registerNativeApprovalRequestHandlersForTests({
+        proc,
+        onApprovalRequest: (request) => {
+          signals[threadId] = request.signal!;
+          return new Promise(() => {});
+        },
+        getTurnIdentity: async () => ({ threadId, turnId: `turn-${threadId}` }),
+        getActiveThreadId: () => threadId,
+      });
+    const disposeA = register("thread-A");
+    register("thread-B");
+    for (const threadId of ["thread-A", "thread-B"]) {
+      proc.handleMessage({
+        id: `question-${threadId}`,
+        method: "item/fileChange/requestApproval",
+        params: { threadId, turnId: `turn-${threadId}`, itemId: threadId },
+      });
+    }
+    await tick();
+    await tick();
+    disposeA();
+    assert.isTrue(signals["thread-A"]?.aborted);
+    assert.isFalse(signals["thread-B"]?.aborted);
+    assert.isTrue(proc.hasPendingUserInput("thread-B"));
+    proc.destroy();
+  });
+
+  it("overrides a guardian denial only for its own thread", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    registerNativeGuardianReviewHandlersForTests({
+      proc,
+      threadId: "thread-A",
+    });
+    const deniedReview = (threadId: string) => ({
+      method: "item/autoApprovalReview/completed",
+      params: {
+        threadId,
+        turnId: `turn-${threadId}`,
+        review: { status: "denied" },
+        action: {
+          type: "mcp_tool_call",
+          server: "llm_for_zotero_profile_1234",
+          tool_name: "library_search",
+        },
+      },
+    });
+    proc.handleMessage(deniedReview("thread-B"));
+    await tick();
+    assert.notExists(
+      writes.find(
+        (message) => message.method === "thread/approveGuardianDeniedAction",
+      ),
+    );
+    proc.handleMessage(deniedReview("thread-A"));
+    await tick();
+    const approvals = writes.filter(
+      (message) => message.method === "thread/approveGuardianDeniedAction",
+    );
+    assert.lengthOf(approvals, 1);
+    assert.equal(approvals[0].params.threadId, "thread-A");
+    proc.handleMessage({ id: approvals[0].id, result: {} });
   });
 });
