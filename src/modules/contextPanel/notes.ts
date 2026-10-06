@@ -1437,34 +1437,40 @@ export type ChatHistoryNoteResult = {
   createdNoteReceipt?: CreatedZoteroNoteReceipt;
 };
 
-export async function createNoteFromChatHistory(
-  item: Zotero.Item,
-  history: Message[],
-  options: {
-    figureRender?: NoteFigureRenderOptions;
-  } = {},
-): Promise<ChatHistoryNoteResult> {
-  const parentItem = resolveParentItemForNoteTarget(item);
-  const parentId = parentItem?.id;
-  if (!parentItem || !parentId) {
-    throw new Error("No parent item available for note creation");
-  }
-  const normalizedHistory =
-    await normalizeHistoryAttachmentsToSharedBlobs(history);
+type ChatHistoryNoteLogMessages = {
+  savedWithWarnings: (noteId: number) => string;
+  attachmentRefsFailed: string;
+  attachmentGcFailed: string;
+  created: (noteId: number) => string;
+};
+
+/**
+ * Creates one brand-new note from a chat history. The caller validates its
+ * target before this runs, so a rejected target never normalizes attachments.
+ */
+async function createChatHistoryNote(params: {
+  history: Message[];
+  figureRender?: NoteFigureRenderOptions;
+  assignTarget: (note: Zotero.Item) => void;
+  logMessages: ChatHistoryNoteLogMessages;
+}): Promise<ChatHistoryNoteResult> {
+  const { figureRender, logMessages } = params;
+  const normalizedHistory = await normalizeHistoryAttachmentsToSharedBlobs(
+    params.history,
+  );
   const containsVisualFigures =
-    Boolean(options.figureRender?.doc) &&
+    Boolean(figureRender?.doc) &&
     chatHistoryContainsVisualFigures(normalizedHistory);
   const expectedGeneratedImageCount =
     countChatHistoryGeneratedImages(normalizedHistory);
   const initialPayload = buildChatHistoryNotePayload(normalizedHistory);
 
-  // Chat history export always creates a brand-new, standalone note.
+  // Chat history export always creates a brand-new note.
   // It does NOT append to the tracked assistant note and does NOT
   // update the tracked note ID, so single-response "Save as note"
   // keeps its own append chain undisturbed.
   const note = new Zotero.Item("note");
-  note.libraryID = parentItem.libraryID;
-  note.parentID = parentId;
+  params.assignTarget(note);
   const persisted = await createFinalizedZoteroNote({
     note,
     initialHtml: initialPayload.noteHtml,
@@ -1480,7 +1486,7 @@ export async function createNoteFromChatHistory(
         {
           noteId,
           generatedImageHtmlByMessageIndex,
-          figureRender: options.figureRender,
+          figureRender,
           noteSaveOptions: saveOptions,
           timestamp: formatZoteroDateAddedForNote(
             createdNoteMetadata?.system?.dateAdded,
@@ -1514,25 +1520,20 @@ export async function createNoteFromChatHistory(
   });
   const noteId = persisted.noteId;
   if (persisted.warnings.length) {
-    appLogger.warn(
-      `LLM: Chat history note ${noteId} saved with warnings:`,
-      persisted.warnings,
-    );
+    appLogger.warn(logMessages.savedWithWarnings(noteId), persisted.warnings);
   }
   const attachmentHashes = collectAttachmentHashes(normalizedHistory);
   try {
     await replaceOwnerAttachmentRefs("note", noteId, attachmentHashes);
   } catch (err) {
-    appLogger.warn("LLM: Failed to persist note attachment refs", err);
+    appLogger.warn(logMessages.attachmentRefsFailed, err);
   }
   void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
     (err) => {
-      appLogger.warn("LLM: Attachment GC after note export failed", err);
+      appLogger.warn(logMessages.attachmentGcFailed, err);
     },
   );
-  appLogger.info(
-    `LLM: Created chat history note ${noteId} for parent ${parentId}`,
-  );
+  appLogger.info(logMessages.created(noteId));
   return {
     noteId,
     warnings: persisted.warnings.length ? persisted.warnings : undefined,
@@ -1540,6 +1541,36 @@ export async function createNoteFromChatHistory(
       ? { createdNoteReceipt: persisted.createdNoteReceipt }
       : {}),
   };
+}
+
+export async function createNoteFromChatHistory(
+  item: Zotero.Item,
+  history: Message[],
+  options: {
+    figureRender?: NoteFigureRenderOptions;
+  } = {},
+): Promise<ChatHistoryNoteResult> {
+  const parentItem = resolveParentItemForNoteTarget(item);
+  const parentId = parentItem?.id;
+  if (!parentItem || !parentId) {
+    throw new Error("No parent item available for note creation");
+  }
+  return createChatHistoryNote({
+    history,
+    figureRender: options.figureRender,
+    assignTarget: (note) => {
+      note.libraryID = parentItem.libraryID;
+      note.parentID = parentId;
+    },
+    logMessages: {
+      savedWithWarnings: (noteId) =>
+        `LLM: Chat history note ${noteId} saved with warnings:`,
+      attachmentRefsFailed: "LLM: Failed to persist note attachment refs",
+      attachmentGcFailed: "LLM: Attachment GC after note export failed",
+      created: (noteId) =>
+        `LLM: Created chat history note ${noteId} for parent ${parentId}`,
+    },
+  });
 }
 
 export async function createStandaloneNoteFromChatHistory(
@@ -1555,95 +1586,21 @@ export async function createStandaloneNoteFromChatHistory(
   if (normalizedLibraryID <= 0) {
     throw new Error("Invalid library ID for standalone note export");
   }
-  const normalizedHistory =
-    await normalizeHistoryAttachmentsToSharedBlobs(history);
-  const containsVisualFigures =
-    Boolean(options.figureRender?.doc) &&
-    chatHistoryContainsVisualFigures(normalizedHistory);
-  const expectedGeneratedImageCount =
-    countChatHistoryGeneratedImages(normalizedHistory);
-  const initialPayload = buildChatHistoryNotePayload(normalizedHistory);
-  const note = new Zotero.Item("note");
-  note.libraryID = normalizedLibraryID;
-  const persisted = await createFinalizedZoteroNote({
-    note,
-    initialHtml: initialPayload.noteHtml,
-    finalize: async ({ noteId, saveOptions, createdNoteMetadata }) => {
-      const generatedImageHtmlByMessageIndex =
-        await buildGeneratedImageHtmlByMessageIndex(
-          normalizedHistory,
-          noteId,
-          saveOptions,
-        );
-      const payload = await buildChatHistoryNotePayloadForSave(
-        normalizedHistory,
-        {
-          noteId,
-          generatedImageHtmlByMessageIndex,
-          figureRender: options.figureRender,
-          noteSaveOptions: saveOptions,
-          timestamp: formatZoteroDateAddedForNote(
-            createdNoteMetadata?.system?.dateAdded,
-          ),
-        },
-      );
-      const embeddedGeneratedImageCount = Array.from(
-        generatedImageHtmlByMessageIndex.values(),
-      ).reduce(
-        (count, html) =>
-          count + (html.match(/data-attachment-key=/g)?.length || 0),
-        0,
-      );
-      const warnings: string[] = [];
-      if (embeddedGeneratedImageCount < expectedGeneratedImageCount) {
-        warnings.push(
-          `${expectedGeneratedImageCount - embeddedGeneratedImageCount} generated image(s) could not be embedded`,
-        );
-      }
-      if (
-        containsVisualFigures &&
-        /(?:Mermaid diagram|SVG figure) could not be saved as an image/i.test(
-          payload.noteHtml,
-        )
-      ) {
-        warnings.push("One or more visual figures could not be embedded");
-      }
-      return { html: payload.noteHtml, warnings };
+  return createChatHistoryNote({
+    history,
+    figureRender: options.figureRender,
+    assignTarget: (note) => {
+      note.libraryID = normalizedLibraryID;
     },
-    log: (message, error) => appLogger.warn(message, error),
-  });
-  const noteId = persisted.noteId;
-  if (persisted.warnings.length) {
-    appLogger.warn(
-      `LLM: Standalone chat history note ${noteId} saved with warnings:`,
-      persisted.warnings,
-    );
-  }
-  const attachmentHashes = collectAttachmentHashes(normalizedHistory);
-  try {
-    await replaceOwnerAttachmentRefs("note", noteId, attachmentHashes);
-  } catch (err) {
-    appLogger.warn(
-      "LLM: Failed to persist standalone note attachment refs",
-      err,
-    );
-  }
-  void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-    (err) => {
-      appLogger.warn(
+    logMessages: {
+      savedWithWarnings: (noteId) =>
+        `LLM: Standalone chat history note ${noteId} saved with warnings:`,
+      attachmentRefsFailed:
+        "LLM: Failed to persist standalone note attachment refs",
+      attachmentGcFailed:
         "LLM: Attachment GC after standalone note export failed",
-        err,
-      );
+      created: (noteId) =>
+        `LLM: Created standalone chat history note ${noteId} in library ${normalizedLibraryID}`,
     },
-  );
-  appLogger.info(
-    `LLM: Created standalone chat history note ${noteId} in library ${normalizedLibraryID}`,
-  );
-  return {
-    noteId,
-    warnings: persisted.warnings.length ? persisted.warnings : undefined,
-    ...(persisted.createdNoteReceipt
-      ? { createdNoteReceipt: persisted.createdNoteReceipt }
-      : {}),
-  };
+  });
 }
