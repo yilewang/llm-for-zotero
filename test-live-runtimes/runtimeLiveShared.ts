@@ -229,6 +229,57 @@ export function panelElement(panelId: string): HTMLElement {
   throw new Error(`Panel ${panelId} is not in the document`);
 }
 
+/**
+ * Switches a paper panel to library chat and waits until the switch has
+ * finished.
+ *
+ * togglePanelConversationMode resolves as soon as the panel reports the
+ * library kind, but the switch is still loading and rendering the library
+ * conversation. A turn sent in that window is stored, yet the switch then
+ * replaces the panel's history with the one it loaded: the panel shows the
+ * start page and never the answer, and the turn times out on "Ready".
+ *
+ * The switch has finished when the chat box was rendered again for the
+ * library conversation: a new conversation shows the library start page and
+ * the "Started new …" or "Reused existing new …" status; an existing one
+ * shows its messages.
+ */
+export async function switchPanelToLibraryChat(
+  panelId: string,
+): Promise<Awaited<ReturnType<WorkflowTestApi["getDiagnostics"]>>> {
+  const api = workflowApi();
+  const before = await api.getDiagnostics(panelId);
+  if (before.conversationKind === "global") return before;
+  const chatBox = () =>
+    panelElement(panelId).querySelector("#llm-chat-box") as HTMLElement | null;
+  const nodesBefore = new Set(Array.from(chatBox()?.children || []));
+  await api.togglePanelConversationMode(panelId);
+  const settled = (diag: typeof before): boolean => {
+    const box = chatBox();
+    if (diag.conversationKind !== "global" || !box) return false;
+    const nodes = Array.from(box.children);
+    // Still the paper view: its start page or nodes from before the switch.
+    if (!nodes.length || nodes.some((node) => nodesBefore.has(node)))
+      return false;
+    if (box.querySelector(".llm-start-page")) return false;
+    if (box.querySelector(".llm-standalone-start-page"))
+      return /^(Started new|Reused existing new)/.test(diag.statusText || "");
+    return box.querySelectorAll(".llm-message-wrapper").length > 0;
+  };
+  const diag = await waitFor(
+    () => api.getDiagnostics(panelId),
+    settled,
+    15_000,
+    25,
+  );
+  if (!settled(diag)) {
+    throw new Error(
+      `The switch to library chat did not finish: kind ${diag.conversationKind}, status "${diag.statusText}"`,
+    );
+  }
+  return diag;
+}
+
 export type StoredMessageRow = {
   id: number;
   role: string;

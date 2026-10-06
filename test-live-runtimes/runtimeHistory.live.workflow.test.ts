@@ -4,9 +4,9 @@
  * the restart sweep finishes.
  *
  * For each system (upstream, Claude Code, Codex) and each kind (paper,
- * library) the panel sends "Reply with exactly MARK-..." and then "Repeat the
- * word you said before." through the composer. Six cases, two live turns
- * each.
+ * library) the panel sends "Reply with exactly MARK-..." and then "Reply
+ * with exactly the text of your previous reply." through the composer. Six
+ * cases, two live turns each.
  *
  *   LLM_FOR_ZOTERO_TEST_ENTRIES=test-live-runtimes \
  *   LLM_FOR_ZOTERO_LIVE_RUNTIME_TESTS=history \
@@ -33,6 +33,7 @@ import {
   readStoredMessages,
   selectedSystems,
   shortSystemName,
+  switchPanelToLibraryChat,
   waitFor,
   withPrefs,
   workflowApi,
@@ -66,6 +67,14 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
             ReturnType<typeof api.createPaperWithPdfFixture>
           > | null = null;
           const step = { name: "setup" };
+          // A run that fails before its own delete step leaves the
+          // conversation behind, and the Claude Code bridge keeps that
+          // conversation's session hot. Each run starts on a reset DB, so the
+          // next run gets the same conversation key and would resume the old
+          // session with every earlier marker in it. The finally block deletes
+          // such a conversation through the plugin, which also invalidates
+          // the bridge session.
+          const leftover = { key: 0, deleted: false };
           try {
             await withPrefs(
               liveRuntimePrefs(system, credentials!),
@@ -80,8 +89,8 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
                 let panel = await api.renderPanelForItem(fixture.parentItemId);
                 let diag = await api.getDiagnostics(panel.panelId);
                 assert.equal(diag.conversationSystem, system, "panel system");
-                if (kind === "library" && diag.conversationKind !== "global") {
-                  diag = await api.togglePanelConversationMode(panel.panelId);
+                if (kind === "library") {
+                  diag = await switchPanelToLibraryChat(panel.panelId);
                 }
                 assert.equal(
                   diag.conversationKind,
@@ -106,10 +115,11 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
                   (await api.getDiagnostics(panel.panelId)).conversationKey,
                 );
                 assert.isAbove(key, 0, "the turn has a conversation key");
+                leftover.key = key;
                 step.name = "turn 2";
                 const second = await api.sendLiveChatTurn(
                   panel.panelId,
-                  "Repeat the word you said before.",
+                  "Reply with exactly the text of your previous reply.",
                   300_000,
                 );
                 assert.include(
@@ -220,6 +230,7 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
                 await api.startNewPanelConversation(panel.panelId);
                 await api.deletePanelHistoryConversation(panel.panelId, key);
                 await api.sweepPendingDeletionsAsRestart();
+                leftover.deleted = true;
                 const gone = await persistenceSnapshot(system, key);
                 assert.deepInclude(
                   gone,
@@ -239,6 +250,25 @@ const enabled = !selectedTests || selectedTests.split(",").includes("history");
               `${system} ${kind} failed at ${step.name}: ${describeError(error)}`,
             );
           } finally {
+            if (leftover.key && !leftover.deleted && fixture) {
+              const paperItemId = (fixture as { parentItemId: number })
+                .parentItemId;
+              await withPrefs(
+                liveRuntimePrefs(system, credentials!),
+                async () => {
+                  const panel = await api.renderPanelForItem(paperItemId);
+                  if (kind === "library") {
+                    await switchPanelToLibraryChat(panel.panelId);
+                  }
+                  await api.startNewPanelConversation(panel.panelId);
+                  await api.deletePanelHistoryConversation(
+                    panel.panelId,
+                    leftover.key,
+                  );
+                  await api.sweepPendingDeletionsAsRestart();
+                },
+              ).catch(() => undefined); // cleanup only; the failure is reported
+            }
             await api.reset();
             if (fixture) await api.cleanupFixture(fixture);
           }
