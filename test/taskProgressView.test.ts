@@ -1053,6 +1053,7 @@ describe("task progress view", function () {
             toolName: "paper_read",
             granularity: "page",
             label: "p. 3",
+            pageIndex: 2,
           },
           {
             key: "1:2",
@@ -1134,6 +1135,8 @@ describe("task progress view", function () {
       cleanedSnippet: "",
       label: "p. 3",
       granularity: "page",
+      // D5: the read's page index travels with it; the label is display.
+      pageIndex: 2,
     });
   });
 

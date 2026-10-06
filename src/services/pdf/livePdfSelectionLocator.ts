@@ -1169,6 +1169,19 @@ export function getCurrentSelectionPageLocationFromReader(
 }
 
 /**
+ * The viewer's printed page labels, one per page index, when the PDF has
+ * them. Zotero's PDF.js keeps them on `_pageLabels`; other builds expose
+ * `pageLabels`.
+ */
+function getViewerPageLabels(app: any): unknown[] | null {
+  const labels =
+    app?.pdfViewer?.pageLabels ||
+    app?.pdfViewer?._pageLabels ||
+    app?.pdfDocument?._pageLabels;
+  return Array.isArray(labels) && labels.length > 0 ? labels : null;
+}
+
+/**
  * The printed label the reader reports for a page, from the viewer's label
  * array or the page's DOM. Undefined when the reader reports none.
  */
@@ -1180,14 +1193,10 @@ export function getPageLabelForIndex(
   const normalizedPageIndex = Math.floor(pageIndex);
 
   // PDF.js data-page-number is always the internal 1-based index. Prefer
-  // the viewer's pageLabels array so printed labels such as 431 or iv are
+  // the viewer's label array so printed labels such as 431 or iv are
   // preserved instead of being collapsed to the internal page number 4.
-  const app = getPdfViewerApplication(reader);
-  const labels =
-    app?.pdfViewer?.pageLabels ||
-    app?.pdfViewer?._pageLabels ||
-    app?.pdfDocument?._pageLabels;
-  if (Array.isArray(labels) && labels[normalizedPageIndex]) {
+  const labels = getViewerPageLabels(getPdfViewerApplication(reader));
+  if (labels && labels[normalizedPageIndex]) {
     return String(labels[normalizedPageIndex]);
   }
 
@@ -1206,26 +1215,18 @@ export function getPageLabelForIndex(
 }
 
 /**
- * Reverse lookup: resolve a page label (printed page number) to a 0-based
- * page index using the PDF's actual page label array.  Falls back to
- * `parseInt(label) - 1` when the PDF has no custom labels or the label is
- * not found in the array.
+ * Read a label as a page number, never through the PDF's printed labels:
+ * "4" is page index 3, and a roman "iv" is too. For labels that were page
+ * numbers guessed from the index, as every label stored before page text
+ * stopped recording labels was.
  */
-export function resolvePageIndexForLabel(
+export function resolvePageIndexForPageNumberLabel(
   reader: any,
   pageLabel: string,
 ): number | null {
   const clean = sanitizeText(pageLabel || "").trim();
   if (!clean) return null;
-
   const app = getPdfViewerApplication(reader);
-  const labels: unknown = app?.pdfViewer?.pageLabels;
-  if (Array.isArray(labels) && labels.length > 0) {
-    const idx = labels.findIndex(
-      (entry: unknown) => String(entry || "") === clean,
-    );
-    if (idx >= 0) return idx;
-  }
 
   if (/^\d+$/.test(clean)) {
     const parsed = Number.parseInt(clean, 10);
@@ -1985,7 +1986,8 @@ async function extractPageTextsFromPdfWorkerItemId(
         for (let i = 0; i < ffPages.length; i++) {
           const text = sanitizeText(ffPages[i].trim());
           if (text) {
-            pages.push({ pageIndex: i, pageLabel: `${i + 1}`, text });
+            // PDFWorker text carries no printed labels.
+            pages.push({ pageIndex: i, text });
           }
         }
         return pages.length > 0 ? { pages, pageCount: ffPages.length } : null;
@@ -2005,7 +2007,8 @@ async function extractPageTextsFromPdfWorkerItemId(
         const pageText = fullText.slice(offset, offset + charCount);
         const text = sanitizeText(pageText.trim());
         if (text) {
-          pages.push({ pageIndex: i, pageLabel: `${i + 1}`, text });
+          // PDFWorker text carries no printed labels.
+          pages.push({ pageIndex: i, text });
         }
       }
       offset += charCount;
@@ -2132,14 +2135,11 @@ async function extractPageTextsFromViewer(
               .replace(/\s+/g, " ")
               .trim();
         if (text) {
-          let pageLabel = `${i}`;
-          const labels = app?.pdfViewer?.pageLabels;
-          if (Array.isArray(labels) && labels[i - 1]) {
-            pageLabel = String(labels[i - 1]);
-          }
+          // Page text carries no label. The page index is the identity of
+          // a page here; a printed label comes from getPageLabelForIndex at
+          // the place that shows it.
           pages.push({
             pageIndex: i - 1,
-            pageLabel,
             text: options?.pageNative ? text : sanitizeText(text),
           });
         }

@@ -19,7 +19,10 @@ export type TaskPaperPassageTarget = {
   rawSnippet: string;
   /** The snippet as the card shows it. */
   cleanedSnippet: string;
+  /** For display; a page is found by it only when `pageIndex` is absent. */
   label: string;
+  /** The page index the read came from, when the ledger recorded one. */
+  pageIndex?: number;
   granularity: TaskPaperReadGranularity;
 };
 

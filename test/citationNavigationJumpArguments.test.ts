@@ -544,7 +544,8 @@ describe("citation navigation jump arguments per path (D4)", function () {
 
       await navigateToTaskPaperPassage({
         body: r.body,
-        target: passage(QUOTE_MISSING, "p. 103"),
+        // D5: a read now records its page index with its label.
+        target: { ...passage(QUOTE_MISSING, "p. 103"), pageIndex: 2 },
       });
 
       assert.deepEqual(jumps, [

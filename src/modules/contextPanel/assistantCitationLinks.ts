@@ -60,8 +60,9 @@ import {
   lookupCitationPage,
 } from "../../services/pdf/citationNavigationCache";
 import {
+  getPageLabelForIndex,
   lookupCachedQuoteLocationForAttachment,
-  resolvePageIndexForLabel,
+  resolvePageIndexForPageNumberLabel,
   warmPageTextCache,
   warmQuoteLocationCacheForAttachment,
 } from "../../services/pdf/livePdfSelectionLocator";
@@ -2694,6 +2695,19 @@ async function waitForTaskPaperPassageReader(reader: any): Promise<boolean> {
   return true;
 }
 
+/** A Task progress read's recorded page index, when it is a valid one. */
+function normalizeTaskPaperPassagePageIndex(
+  value: unknown,
+): number | undefined {
+  const pageIndex = Number(value);
+  return value !== undefined &&
+    value !== null &&
+    Number.isFinite(pageIndex) &&
+    pageIndex >= 0
+    ? Math.floor(pageIndex)
+    : undefined;
+}
+
 function formatStatus(
   template: string,
   values: Record<string, string | number>,
@@ -2833,14 +2847,30 @@ export async function navigateToTaskPaperPassage(params: {
       return "failed";
     }
     Zotero.getMainWindow()?.focus();
-    if (pageLabel) {
+    const recordedPageIndex = normalizeTaskPaperPassagePageIndex(
+      target.pageIndex,
+    );
+    if (recordedPageIndex !== undefined || pageLabel) {
       const ready = await waitForTaskPaperPassageReader(reader);
-      const pageIndex = ready
-        ? resolvePageIndexForLabel(reader, pageLabel)
-        : null;
+      // A read that recorded its page index goes to that page; its label is
+      // only shown. A read saved before reads recorded one has a label that
+      // was a page number guessed from the index, so it is read as a page
+      // number and never matched against the PDF's printed labels.
+      const pageIndex =
+        recordedPageIndex ??
+        (ready ? resolvePageIndexForPageNumberLabel(reader, pageLabel) : null);
+      // Navigation takes only the reader's own printed label.
+      const readerPageLabel =
+        pageIndex !== null
+          ? getPageLabelForIndex(reader, pageIndex)
+          : undefined;
+      const shownPageLabel =
+        readerPageLabel ||
+        pageLabel ||
+        (pageIndex !== null ? `${pageIndex + 1}` : "");
       if (pageIndex !== null && searchTexts.length) {
         report(t("Locating this passage…"), "sending");
-        await navigateReaderToPage(reader, pageIndex, pageLabel);
+        await navigateReaderToPage(reader, pageIndex, readerPageLabel);
         const paragraphJump = await attemptCitationParagraphJump({
           reader,
           contextItemId: pdfId,
@@ -2848,12 +2878,16 @@ export async function navigateToTaskPaperPassage(params: {
           quoteText: searchTexts[0],
           fallbackQuoteTexts: searchTexts.slice(1),
           pageIndex,
-          pageLabel,
+          ...(readerPageLabel ? { pageLabel: readerPageLabel } : {}),
         });
         if (paragraphJump.matched) {
           report(
             formatStatus("Jumped to the passage (page {page})", {
-              page: resolveJumpedPageLabel(reader, paragraphJump, pageLabel),
+              page: resolveJumpedPageLabel(
+                reader,
+                paragraphJump,
+                shownPageLabel,
+              ),
             }),
             "ready",
           );
@@ -2862,14 +2896,14 @@ export async function navigateToTaskPaperPassage(params: {
       }
       if (
         pageIndex !== null &&
-        (await navigateReaderToPage(reader, pageIndex, pageLabel))
+        (await navigateReaderToPage(reader, pageIndex, readerPageLabel))
       ) {
         report(
           formatStatus(
             searchTexts.length
               ? "Couldn't find this passage in the PDF; opened page {page}"
               : "Opened page {page}",
-            { page: pageLabel },
+            { page: shownPageLabel },
           ),
           searchTexts.length ? "warning" : "ready",
         );

@@ -1884,6 +1884,9 @@ describe("citation navigation characterization", function () {
           rawSnippet: QUOTE_MISSING,
           cleanedSnippet: QUOTE_MISSING,
           label: "p. 103",
+          // D5: a read now records its page index; a label-only read is an
+          // old one, whose label is a page number (see below).
+          pageIndex: 2,
           granularity: "passage",
         },
       });
@@ -1905,6 +1908,109 @@ describe("citation navigation characterization", function () {
         "sending: Locating this passage…",
         "sending: Locating this passage…",
         "warning: Couldn't find this passage in the PDF; opened page 103",
+      ]);
+    });
+
+    it("Task progress: a read that recorded its page index opens that page, whatever its label says (D5)", async function () {
+      const paper = smith();
+      const r = install({ papers: [paper] });
+
+      const outcome = await navigateToTaskPaperPassage({
+        body: r.body,
+        target: {
+          itemId: 10,
+          contextItemId: 11,
+          libraryID: 1,
+          rawSnippet: QUOTE_MISSING,
+          cleanedSnippet: QUOTE_MISSING,
+          // Printed label 101 sits on page index 0; the read recorded index 2.
+          label: "p. 101",
+          pageIndex: 2,
+          granularity: "passage",
+        },
+      });
+
+      assert.equal(outcome, "page");
+      // Was page index 0, found from the label.
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 2, pageLabel: "103" },
+        { pageIndex: 2, pageLabel: "103" },
+      ]);
+      assert.equal(
+        r.status?.text,
+        "Couldn't find this passage in the PDF; opened page 103",
+      );
+    });
+
+    it("Task progress: a read saved before reads recorded a page index still opens the page its label numbers (D5)", async function () {
+      // Every label stored before this change was a page number guessed from
+      // the index, so "p. 2" means physical page 2, not printed page 2.
+      const paper = smith();
+      const r = install({ papers: [paper] });
+
+      const outcome = await navigateToTaskPaperPassage({
+        body: r.body,
+        target: {
+          itemId: 10,
+          contextItemId: 11,
+          libraryID: 1,
+          rawSnippet: QUOTE_MISSING,
+          cleanedSnippet: QUOTE_MISSING,
+          label: "p. 2",
+          granularity: "passage",
+        },
+      });
+
+      assert.equal(outcome, "page");
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 1, pageLabel: "102" },
+        { pageIndex: 1, pageLabel: "102" },
+      ]);
+    });
+
+    it("Task progress: an old read's guessed label is never matched against printed labels (D5)", async function () {
+      // Printed labels i…x, then 1…4: printed "4" sits on page index 13.
+      const printed = [
+        "i",
+        "ii",
+        "iii",
+        "iv",
+        "v",
+        "vi",
+        "vii",
+        "viii",
+        "ix",
+        "x",
+        "1",
+        "2",
+        "3",
+        "4",
+      ];
+      const paper = smith({
+        pageLabels: printed,
+        pages: printed.map((label) => `Page ${label} body text.`),
+      });
+      const r = install({ papers: [paper] });
+
+      const outcome = await navigateToTaskPaperPassage({
+        body: r.body,
+        target: {
+          itemId: 10,
+          contextItemId: 11,
+          libraryID: 1,
+          rawSnippet: QUOTE_MISSING,
+          cleanedSnippet: QUOTE_MISSING,
+          // Saved before reads recorded a page index: a guessed page number.
+          label: "p. 4",
+          granularity: "passage",
+        },
+      });
+
+      assert.equal(outcome, "page");
+      // Physical page 4 (index 3), printed "iv"; not printed "4" (index 13).
+      assert.deepEqual(r.reader(11)!.navigations, [
+        { pageIndex: 3, pageLabel: "iv" },
+        { pageIndex: 3, pageLabel: "iv" },
       ]);
     });
 
@@ -2008,7 +2114,8 @@ describe("citation navigation characterization", function () {
 
         const outcome = await navigateToTaskPaperPassage({
           body: r.body,
-          target: passage(QUOTE_MISSING, "p. 103"),
+          // D5: a read now records its page index with its label.
+          target: { ...passage(QUOTE_MISSING, "p. 103"), pageIndex: 2 },
         });
 
         assert.equal(outcome, "jumped");

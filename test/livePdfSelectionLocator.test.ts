@@ -10,7 +10,7 @@ import {
   locateQuoteInPageTexts,
   locateQuoteInLivePdfReader,
   locateSelectionInPageTexts,
-  resolvePageIndexForLabel,
+  resolvePageIndexForPageNumberLabel,
   getCachedPageTextForAttachment,
   getCurrentSelectionPageLocationFromReader,
   getPageLabelForIndex,
@@ -1541,38 +1541,95 @@ describe("citation page cache warming", function () {
   });
 });
 
-describe("resolvePageIndexForLabel", function () {
-  function createReader(pageLabels?: string[], pagesCount?: number): any {
+describe("page text labels (D5)", function () {
+  function viewerReader(itemID: number, pageLabels?: string[]): any {
+    const pages = ["First page text body.", "Second page text body."];
     return {
+      itemID,
+      _item: { id: itemID },
       _window: {
         PDFViewerApplication: {
-          pdfDocument: { numPages: pagesCount ?? pageLabels?.length ?? 0 },
-          pagesCount: pagesCount ?? pageLabels?.length ?? 0,
-          pdfViewer: pageLabels ? { pageLabels } : {},
+          pdfDocument: {
+            numPages: pages.length,
+            getPage: async (pageNumber: number) => ({
+              getTextContent: async () => ({
+                items: [{ str: pages[pageNumber - 1] }],
+              }),
+            }),
+          },
+          // Zotero's PDF.js keeps its labels on the private field.
+          pdfViewer: pageLabels ? { _pageLabels: pageLabels } : {},
         },
       },
     };
   }
 
-  it("returns null for empty or unknown page labels", function () {
-    const reader = createReader(["i", "ii", "1", "2"], 4);
-
-    assert.isNull(resolvePageIndexForLabel(reader, ""));
-    assert.isNull(resolvePageIndexForLabel(reader, "S1"));
+  it("records no label for PDFWorker page text, which has none", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => ({
+      text: "Alpha page body.Beta page body.",
+      pageChars: [16, 15],
+    }));
+    try {
+      await locateQuoteInLivePdfReader(
+        { _item: { id: 7301 }, itemID: 7301 },
+        "Alpha page body",
+      );
+      const pages = getCachedPageTextForAttachment(7301)?.pages || [];
+      assert.lengthOf(pages, 2);
+      // Was "1" and "2", guessed from the page index.
+      assert.deepEqual(
+        pages.map((page) => page.pageLabel),
+        [undefined, undefined],
+      );
+    } finally {
+      restore();
+    }
   });
 
-  it("resolves numeric page labels without defaulting unknown labels to page 1", function () {
-    const reader = createReader(undefined, 20);
+  it("records no label for viewer page text, even when the PDF has printed labels", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => null);
+    try {
+      // The cache key is shared with the PDFWorker path, and page text feeds
+      // the model's numbering, which is physical. A printed label such as
+      // "iv" comes from getPageLabelForIndex where a page is shown.
+      await warmPageTextCache(viewerReader(7302, ["iv", "v"]));
+      const labelled = getCachedPageTextForAttachment(7302)?.pages || [];
+      assert.deepEqual(
+        labelled.map((page) => page.pageIndex),
+        [0, 1],
+      );
+      assert.deepEqual(
+        labelled.map((page) => page.pageLabel),
+        [undefined, undefined],
+      );
 
-    assert.equal(resolvePageIndexForLabel(reader, "12"), 11);
-    assert.isNull(resolvePageIndexForLabel(reader, "appendix"));
+      await warmPageTextCache(viewerReader(7303));
+      assert.deepEqual(
+        (getCachedPageTextForAttachment(7303)?.pages || []).map(
+          (page) => page.pageLabel,
+        ),
+        [undefined, undefined],
+      );
+    } finally {
+      restore();
+    }
   });
 
-  it("resolves exact custom and roman page labels", function () {
-    const reader = createReader(["i", "ii", "1", "2"], 4);
+  it("reads an old guessed label as a page number, never through printed labels", function () {
+    const reader = {
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: { numPages: 4 },
+          pdfViewer: { _pageLabels: ["i", "ii", "1", "2"] },
+        },
+      },
+    };
 
-    assert.equal(resolvePageIndexForLabel(reader, "ii"), 1);
-    assert.equal(resolvePageIndexForLabel(reader, "2"), 3);
+    assert.equal(resolvePageIndexForPageNumberLabel(reader, "2"), 1);
+    assert.equal(resolvePageIndexForPageNumberLabel(reader, "ii"), 1);
+    assert.isNull(resolvePageIndexForPageNumberLabel(reader, "appendix"));
   });
 });
 
