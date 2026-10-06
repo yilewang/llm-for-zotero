@@ -103,10 +103,11 @@ import {
   getAbortController,
   isRequestPending,
   isRequestOwner,
-  responseMenuTarget,
+  getResponseMenuTarget,
   setResponseMenuTarget,
-  promptMenuTarget,
+  getPromptMenuTarget,
   setPromptMenuTarget,
+  releaseMenuTargets,
   chatHistory,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
@@ -2172,11 +2173,11 @@ export function setupHandlers(
   const menus = createMenuRegistry();
   const closeResponseMenu = () => {
     if (responseMenu) responseMenu.style.display = "none";
-    setResponseMenuTarget(null);
+    setResponseMenuTarget(body, null);
   };
   const closePromptMenu = () => {
     if (promptMenu) promptMenu.style.display = "none";
-    setPromptMenuTarget(null);
+    setPromptMenuTarget(body, null);
   };
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
@@ -2299,8 +2300,8 @@ export function setupHandlers(
     settingsBtn,
     preferencesPaneId: PREFERENCES_PANE_ID,
     getItem: () => item,
-    getResponseMenuTarget: () => responseMenuTarget,
-    getPromptMenuTarget: () => promptMenuTarget,
+    getResponseMenuTarget: () => getResponseMenuTarget(body),
+    getPromptMenuTarget: () => getPromptMenuTarget(body),
     getCurrentLibraryID,
     getConversationSystem,
     getCurrentRuntimeModeForItem: (targetItem) =>
@@ -8274,6 +8275,7 @@ export function setupHandlers(
       unregisterContextPanel(body);
       releaseInlineEdit(body);
     }
+    releaseMenuTargets(body);
     unpublishPanelHandle(body, panelHandle);
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];

@@ -1158,7 +1158,7 @@ export function invokeResponseMenuActionButton(params: {
   if (!target) return false;
   const runner = getResponseActionRunner(body);
   if (!runner) return false;
-  setResponseMenuTarget(target);
+  setResponseMenuTarget(body, target);
   void runner(action, target);
   return true;
 }
@@ -1245,7 +1245,7 @@ function attachAssistantResponseContextMenu(params: {
       retryModelMenu.classList.remove("llm-model-menu-open");
       retryModelMenu.style.display = "none";
     }
-    setPromptMenuTarget(null);
+    setPromptMenuTarget(body, null);
     // If the user has text selected within this bubble, extract just that
     // portion. Otherwise fall back to the full raw markdown source.
     const selectedText = getSelectedTextWithinBubble(doc, bubble);
@@ -1257,7 +1257,7 @@ function attachAssistantResponseContextMenu(params: {
       selectedText,
     });
     if (!menuTarget) return;
-    setResponseMenuTarget(menuTarget);
+    setResponseMenuTarget(body, menuTarget);
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
   });
 }
@@ -9571,7 +9571,7 @@ export function refreshChat(
     if (updatedInPlace) return;
   }
   const doc = body.ownerDocument!;
-  setPromptMenuTarget(null);
+  setPromptMenuTarget(body, null);
   const paperContextDisplayCache: PaperContextDisplayCache = new Map();
   const resolvePaperContextForCardDisplay = (
     paperContext: PaperContextRef,
@@ -10606,8 +10606,8 @@ export function refreshChat(
             retryModelMenu.classList.remove("llm-model-menu-open");
             retryModelMenu.style.display = "none";
           }
-          setResponseMenuTarget(null);
-          setPromptMenuTarget({
+          setResponseMenuTarget(body, null);
+          setPromptMenuTarget(body, {
             item,
             conversationKey,
             userTimestamp: Math.floor(msg.timestamp),

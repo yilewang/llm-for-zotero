@@ -1,6 +1,9 @@
 import { copyTextToClipboard, refreshConversationPanels } from "../../chat";
 import { closeShortcutMenu, isShortcutMenuVisible } from "../../shortcuts";
-import { setPromptMenuTarget, setResponseMenuTarget } from "../../state";
+import {
+  clearPromptMenuTargetsContaining,
+  clearResponseMenuTargetsContaining,
+} from "../../state";
 import {
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
@@ -443,23 +446,19 @@ export function attachFloatingMenuInteractionController(
 
       if (mouseEvent.button !== 0) return;
 
-      let responseMenuClosed = false;
       for (const responseMenuEl of responseMenus) {
         if (responseMenuEl.style.display === "none") continue;
         if (target && responseMenuEl.contains(target)) continue;
         responseMenuEl.style.display = "none";
-        responseMenuClosed = true;
+        clearResponseMenuTargetsContaining(responseMenuEl);
       }
-      if (responseMenuClosed) setResponseMenuTarget(null);
 
-      let promptMenuClosed = false;
       for (const promptMenuEl of promptMenus) {
         if (promptMenuEl.style.display === "none") continue;
         if (target && promptMenuEl.contains(target)) continue;
         promptMenuEl.style.display = "none";
-        promptMenuClosed = true;
+        clearPromptMenuTargetsContaining(promptMenuEl);
       }
-      if (promptMenuClosed) setPromptMenuTarget(null);
 
       for (const exportMenuEl of exportMenus) {
         if (exportMenuEl.style.display === "none") continue;

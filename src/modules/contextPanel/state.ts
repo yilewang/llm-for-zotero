@@ -383,8 +383,7 @@ export function clearConversationOwnedRuntimeState(
     }
   }
 
-  if (promptMenuTarget?.conversationKey === key) promptMenuTarget = null;
-  if (responseMenuTarget?.conversationKey === key) responseMenuTarget = null;
+  clearMenuTargetsForConversation(key);
   // The finalizer may run without a mounted panel, so the panels' DOM cleanup
   // is not run; releasing the references is enough.
   releaseInlineEditsForConversation(key);
@@ -460,9 +459,87 @@ export type ResponseActionRunner = (
   target: ResponseActionTarget | null,
 ) => Promise<void>;
 
-export let responseMenuTarget: ResponseActionTarget | null = null;
-export function setResponseMenuTarget(value: typeof responseMenuTarget) {
-  responseMenuTarget = value;
+/**
+ * The turn each panel's open response / prompt menu acts on, keyed by the
+ * panel body: the window's menu can stay open while a right-click in a sidebar
+ * panel opens its own, and each menu's buttons must act on their own turn.
+ */
+export type PromptMenuTarget = {
+  item: Zotero.Item;
+  conversationKey: number;
+  userTimestamp: number;
+  assistantTimestamp: number;
+  editable?: boolean;
+};
+const responseMenuTargets = new WeakMap<Element, ResponseActionTarget>();
+const promptMenuTargets = new WeakMap<Element, PromptMenuTarget>();
+/** Bodies holding a menu target, so a deleted conversation can clear them. */
+const bodiesWithMenuTarget = new Set<Element>();
+
+function trackMenuTargetBody(body: Element): void {
+  if (responseMenuTargets.has(body) || promptMenuTargets.has(body)) {
+    bodiesWithMenuTarget.add(body);
+  } else {
+    bodiesWithMenuTarget.delete(body);
+  }
+}
+
+export function getResponseMenuTarget(
+  body: Element,
+): ResponseActionTarget | null {
+  return responseMenuTargets.get(body) || null;
+}
+export function setResponseMenuTarget(
+  body: Element,
+  value: ResponseActionTarget | null,
+): void {
+  if (value) responseMenuTargets.set(body, value);
+  else responseMenuTargets.delete(body);
+  trackMenuTargetBody(body);
+}
+export function getPromptMenuTarget(body: Element): PromptMenuTarget | null {
+  return promptMenuTargets.get(body) || null;
+}
+export function setPromptMenuTarget(
+  body: Element,
+  value: PromptMenuTarget | null,
+): void {
+  if (value) promptMenuTargets.set(body, value);
+  else promptMenuTargets.delete(body);
+  trackMenuTargetBody(body);
+}
+/** The panel bodies that hold this menu, from the menu up through its ancestors. */
+function bodiesHoldingMenu(menu: Element): Element[] {
+  const holders: Element[] = [];
+  for (let node: Element | null = menu; node; node = node.parentElement) {
+    if (bodiesWithMenuTarget.has(node)) holders.push(node);
+  }
+  return holders;
+}
+/** Forget the response-menu target of the panel whose DOM holds this menu. */
+export function clearResponseMenuTargetsContaining(menu: Element): void {
+  for (const body of bodiesHoldingMenu(menu)) setResponseMenuTarget(body, null);
+}
+/** Forget the prompt-menu target of the panel whose DOM holds this menu. */
+export function clearPromptMenuTargetsContaining(menu: Element): void {
+  for (const body of bodiesHoldingMenu(menu)) setPromptMenuTarget(body, null);
+}
+/** Forget a panel's menu targets (its teardown, or its menu closing). */
+export function releaseMenuTargets(body: Element): void {
+  responseMenuTargets.delete(body);
+  promptMenuTargets.delete(body);
+  bodiesWithMenuTarget.delete(body);
+}
+function clearMenuTargetsForConversation(conversationKey: number): void {
+  for (const body of [...bodiesWithMenuTarget]) {
+    if (responseMenuTargets.get(body)?.conversationKey === conversationKey) {
+      responseMenuTargets.delete(body);
+    }
+    if (promptMenuTargets.get(body)?.conversationKey === conversationKey) {
+      promptMenuTargets.delete(body);
+    }
+    trackMenuTargetBody(body);
+  }
 }
 
 const responseActionRunners = new WeakMap<Element, ResponseActionRunner>();
@@ -504,17 +581,6 @@ export function getForkSourceNavigationRunner(
   body: Element,
 ): ForkSourceNavigationRunner | null {
   return forkSourceNavigationRunners.get(body) || null;
-}
-
-export let promptMenuTarget: {
-  item: Zotero.Item;
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-  editable?: boolean;
-} | null = null;
-export function setPromptMenuTarget(value: typeof promptMenuTarget) {
-  promptMenuTarget = value;
 }
 
 // Screenshot selection state (per item) — capped to prevent memory growth
