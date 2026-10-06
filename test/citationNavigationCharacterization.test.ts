@@ -29,7 +29,7 @@ import {
   hasCompleteSearchablePageTextForAttachment,
   verifyQuoteLocationForAttachment,
   warmPageTextCache,
-} from "../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../src/services/pdf/livePdfSelectionLocator";
 import type { QuoteCitation } from "../src/modules/contextPanel/types";
 import {
   installCitationNavigationRig,

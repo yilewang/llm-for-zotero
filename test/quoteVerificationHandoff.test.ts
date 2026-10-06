@@ -14,7 +14,7 @@ import {
 import {
   clearPageTextCache,
   verifyCompleteQuoteInLivePdfJs,
-} from "../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../src/services/pdf/livePdfSelectionLocator";
 import { assistantMarkdownNeedsBackgroundQuoteSearch } from "../src/modules/contextPanel/quoteValidation/sourceEvidence";
 import type { Message } from "../src/modules/contextPanel/types";
 

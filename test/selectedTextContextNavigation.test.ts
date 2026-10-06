@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   navigateSelectedTextContextToPage,
   resolveSelectedTextContextTargetItemId,

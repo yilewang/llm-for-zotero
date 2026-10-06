@@ -12,7 +12,7 @@ import type {
 import type { TrustedReadObservation } from "../src/agent/context/readObservationTypes";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { AgentRuntimeRequest } from "../src/agent/types";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import { composePdfReaderText } from "./helpers/hostSurfaces";
 import { ToolInputRejection } from "../src/agent/tools/execution/failure";
 

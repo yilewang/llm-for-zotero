@@ -15,7 +15,7 @@ import {
 } from "../../../services/quotes/quoteCitations";
 import type { QuoteCitation } from "../../../shared/types";
 import { paragraphCitationIds } from "../../../services/quotes/paragraphCitations";
-import { verifyCompleteQuoteInLivePdfJs } from "../livePdfSelectionLocator";
+import { verifyCompleteQuoteInLivePdfJs } from "../../../services/pdf/livePdfSelectionLocator";
 import type { Message } from "../types";
 import { buildQuoteExpandedMarkdown } from "../quoteRenderPlan";
 import {

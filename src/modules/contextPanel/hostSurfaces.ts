@@ -24,7 +24,7 @@ import {
   verifyCompleteQuoteInLivePdfJs,
   warmPageTextCache,
   warmPageTextCacheForAttachment,
-} from "./livePdfSelectionLocator";
+} from "../../services/pdf/livePdfSelectionLocator";
 import { clearRetrievalCandidateCache } from "./multiContextPlanner";
 import {
   createNoteFromAssistantText,

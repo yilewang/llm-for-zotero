@@ -20,7 +20,7 @@ import {
   extractStandalonePaperSourceLabel,
   type AssistantCitationPaperCandidate,
 } from "../../src/modules/contextPanel/assistantCitationLinks";
-import { clearPageTextCache } from "../../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../../src/services/pdf/livePdfSelectionLocator";
 import { clearQuoteEvidenceProvenanceCacheForTests } from "../../src/modules/contextPanel/quoteEvidenceProvenance";
 import { invalidatePaperSearchCache } from "../../src/modules/contextPanel/paperSearch";
 import type {

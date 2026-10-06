@@ -29,7 +29,7 @@ import {
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import * as citationLinks from "../src/modules/contextPanel/assistantCitationLinks";
 import { stripLeadingCitationSeparators } from "../src/services/quotes/citationText";
-import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const testDir = dirname(fileURLToPath(import.meta.url));

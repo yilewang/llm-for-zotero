@@ -14,7 +14,7 @@ import {
   waitForAssistantQuoteValidationForTests,
 } from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   beginQuoteNavigationActivity,
   resetQuoteValidationActivityForTests,

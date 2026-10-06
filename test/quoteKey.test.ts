@@ -3,7 +3,7 @@ import {
   quoteComparisonKey,
   quoteKeyHash,
 } from "../src/services/quotes/quoteKey";
-import { buildCitationQuoteHash } from "../src/modules/contextPanel/citationNavigationCache";
+import { buildCitationQuoteHash } from "../src/services/pdf/citationNavigationCache";
 
 describe("quoteKey", function () {
   it("sanitizes, collapses whitespace, trims, and lowercases", function () {

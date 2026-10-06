@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
-import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
+import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 import { isMineruEnabled, setMineruEnabled } from "../src/utils/mineruConfig";
 import {
   getMineruItemDir,

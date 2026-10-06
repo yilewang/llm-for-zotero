@@ -11,21 +11,21 @@ import {
   stripBoundaryEllipsis,
   summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
-} from "../../services/quotes/quoteTextSearch";
+} from "../quotes/quoteTextSearch";
 import type {
   PdfQuoteCertificate,
   PdfQuoteVerification,
   PdfReaderPageText,
   PdfReaderTextCache,
   PdfReaderTextCoverage,
-} from "../../services/pdf/readerTextBridge";
+} from "./readerTextBridge";
 import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
-} from "../../services/quotes/quoteTextNormalization";
+} from "../quotes/quoteTextNormalization";
 
 export type LivePdfPageText = PdfReaderPageText;
 

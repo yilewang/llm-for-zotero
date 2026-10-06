@@ -3,7 +3,7 @@ import {
   verifyCompleteQuoteInLivePdfJs,
   warmPageTextCache,
   warmPageTextCacheForAttachment,
-} from "../../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../../src/services/pdf/livePdfSelectionLocator";
 import { configureRetrievalCandidateInvalidator } from "../../src/services/retrieval/cacheInvalidation";
 import { configurePdfReaderTextBridge } from "../../src/services/pdf/readerTextBridge";
 

@@ -5,8 +5,8 @@ import type {
   SelectedTextContext,
 } from "../../shared/types";
 import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
-import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
-import type { LivePdfPageText } from "./livePdfSelectionLocator";
+import { warmPageTextCacheForAttachment } from "../../services/pdf/livePdfSelectionLocator";
+import type { LivePdfPageText } from "../../services/pdf/livePdfSelectionLocator";
 import { normalizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   findUniqueQuoteTextSearchMatch,

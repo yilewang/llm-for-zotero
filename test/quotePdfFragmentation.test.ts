@@ -8,7 +8,7 @@ import {
   buildQuoteSourceIndex,
   classifyDisplayedQuoteSource,
 } from "../src/services/quotes/quoteCitations";
-import { resolvePageNativeFindControllerQuery } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { resolvePageNativeFindControllerQuery } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   SUMMERFIELD_QUOTE,
   SUMMERFIELD_SOURCE_PREFIX,

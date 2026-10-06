@@ -31,7 +31,7 @@ import {
   getCachedPageTextForAttachment,
   hasCompleteSearchablePageTextForAttachment,
   warmPageTextCacheForAttachment,
-} from "../livePdfSelectionLocator";
+} from "../../../services/pdf/livePdfSelectionLocator";
 import type { Message, PaperContextRef } from "../types";
 
 function quoteSourcePaperKey(paper: PaperContextRef): string {

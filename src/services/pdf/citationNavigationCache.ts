@@ -1,4 +1,4 @@
-import { quoteKeyHash } from "../../services/quotes/quoteKey";
+import { quoteKeyHash } from "../quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export type CitationPageCacheEntry = {

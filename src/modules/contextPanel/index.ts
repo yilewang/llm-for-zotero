@@ -86,11 +86,11 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
 } from "../../services/paperContent/pdfContext";
-import { getPageLabelForIndex } from "./livePdfSelectionLocator";
+import { getPageLabelForIndex } from "../../services/pdf/livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
-} from "./readerSelection";
+} from "../../services/pdf/readerSelection";
 import {
   createReaderSelectionTrackingLifecycle,
   unregisterReaderSelectionTrackingListener,

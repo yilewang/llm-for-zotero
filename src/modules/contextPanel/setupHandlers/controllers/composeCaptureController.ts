@@ -9,7 +9,7 @@ import {
 } from "../../contextResolution";
 import { getActiveReaderForSelectedTab } from "../../../../services/pdf/zoteroReaderTabs";
 import { resolvePaperContextRefFromAttachment } from "../../../../services/paperContent/paperAttribution";
-import { getCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
+import { getCurrentSelectionPageLocationFromReader } from "../../../../services/pdf/livePdfSelectionLocator";
 import { includeReaderSelectedText } from "../../readerTextInclusion";
 import {
   captureScreenshotSelection,

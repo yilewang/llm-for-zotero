@@ -60,7 +60,7 @@ import {
   clearCitationPageCache,
   lookupCitationPage,
   rememberCitationPage,
-} from "./citationNavigationCache";
+} from "../../services/pdf/citationNavigationCache";
 import {
   type ExactQuoteJumpResult,
   type LivePdfSelectionLocateResult,
@@ -72,7 +72,7 @@ import {
   verifyQuoteLocationForAttachment,
   warmPageTextCache,
   warmQuoteLocationCacheForAttachment,
-} from "./livePdfSelectionLocator";
+} from "../../services/pdf/livePdfSelectionLocator";
 import {
   resolveQuoteEvidenceProvenance,
   type QuoteEvidenceProvenance,

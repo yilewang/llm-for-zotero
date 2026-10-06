@@ -8,7 +8,7 @@ import { createAgentToolResultHandleRecord } from "../src/agent/store/toolResult
 import { buildInstructionInventory } from "../src/agent/model/instructionInventory";
 import { getDefaultClaudeManagedInstructionBlock } from "../src/claudeCode/bootstrap";
 import { buildClaudeProfileSignature } from "../src/claudeCode/projectSkills";
-import { buildCitationQuoteHash } from "../src/modules/contextPanel/citationNavigationCache";
+import { buildCitationQuoteHash } from "../src/services/pdf/citationNavigationCache";
 import { quoteValidationCacheKey } from "../src/modules/contextPanel/quoteValidation/caches";
 import { buildPinnedSelectedTextKey } from "../src/modules/contextPanel/setupHandlers/controllers/pinnedContextController";
 import { buildPdfFigureCropStableHash } from "../src/services/pdf/pdfFigureCropCache";

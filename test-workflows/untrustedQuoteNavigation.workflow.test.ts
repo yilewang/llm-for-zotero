@@ -3,7 +3,7 @@ import type {
   WorkflowTestApi,
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
-import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
+import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 
 /**
  * Library chat discovers its sources at runtime, so an answer's quotes there

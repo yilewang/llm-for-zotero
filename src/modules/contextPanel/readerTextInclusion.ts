@@ -8,7 +8,7 @@ import {
 import {
   getCurrentSelectionPageLocationFromReader,
   resolveCurrentSelectionPageLocationFromReader,
-} from "./livePdfSelectionLocator";
+} from "../../services/pdf/livePdfSelectionLocator";
 import {
   activeContextPanels,
   activeContextPanelStateSync,

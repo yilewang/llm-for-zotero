@@ -25,7 +25,7 @@ import {
   warmPageTextCacheForAttachment,
   warmQuoteLocationCacheForAttachment,
   waitForFindControllerPageMatchesForTests,
-} from "../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../src/services/pdf/livePdfSelectionLocator";
 import {
   splitQuoteAtEllipsis,
   stripBoundaryEllipsis,

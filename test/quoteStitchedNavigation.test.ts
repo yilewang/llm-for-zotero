@@ -6,7 +6,7 @@ import {
   acceptsOpenedQuoteMatchForTests,
   locatedResultIdentifiesQuoteSourceForTests as identifiesQuoteSource,
 } from "../src/modules/contextPanel/assistantCitationLinks";
-import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
 import { summarizeQuoteTextSupport } from "../src/services/quotes/quoteTextSearch";
 
 /**

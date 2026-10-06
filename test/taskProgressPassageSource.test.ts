@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import type { TaskPaperReadEvent } from "../src/agent/context/taskPaperLedger";
 import { navigateToTaskPaperPassage } from "../src/modules/contextPanel/assistantCitationLinks";
-import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
 import { cleanTaskPaperSnippet } from "../src/modules/contextPanel/taskProgress/view";
 import {
   buildTaskPaperPassageSearchTexts,

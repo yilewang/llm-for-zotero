@@ -45,7 +45,7 @@ import { createContextIcon } from "./contextIcons";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
-} from "./readerSelection";
+} from "../../services/pdf/readerSelection";
 import {
   ensureMarkedReaderSelectionTrackingListener,
   type ReaderSelectionTrackingReader,
