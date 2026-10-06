@@ -240,6 +240,7 @@ import {
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelStateSync,
+  draftInputCache,
   getCancelledRequestId,
   getPendingRequestId,
   getAbortController,
@@ -264,10 +265,14 @@ import {
 } from "./state";
 import {
   endInlineEdit,
+  endInlineEditSuperseded,
   getInlineEditBorrowedInputSection,
   getInlineEditCleanup,
   getInlineEditSavedDraft,
   getInlineEditTarget,
+  getLatestUserTurnTimestamp,
+  hasNewerUserTurnThanInlineEdit,
+  isInlineEditSuperseded,
   setInlineEditBorrowedInputSection,
   setInlineEditCleanup,
   setInlineEditSavedDraft,
@@ -3098,7 +3103,7 @@ export function beginPanelRequest(
   const abortController = AbortControllerCtor
     ? new AbortControllerCtor()
     : null;
-  if (!tryBeginRequest(conversationKey, requestId, abortController)) {
+  if (!tryBeginRequest(conversationKey, requestId, abortController, body)) {
     return null;
   }
   syncRequestUIForConversation(conversationKey, body, item);
@@ -9225,6 +9230,41 @@ export async function sendQuestion(
   }
 }
 
+/**
+ * A turn started elsewhere ended this panel's edit. The edited text becomes
+ * the conversation's draft, like anything typed in its composer (every panel
+ * showing the conversation shares that draft), and the panel repaints without
+ * the edit widget. This waits a turn: the panel that started the turn clears
+ * the draft (its sent text) right after its request starts, and the request
+ * start already synced every panel's composer to that draft.
+ */
+function keepSupersededInlineEditText(
+  body: Element,
+  item: Zotero.Item,
+  inputBoxEl: HTMLTextAreaElement | null,
+  conversationKey: number | undefined,
+): void {
+  const win = body.ownerDocument?.defaultView;
+  if (!win) return;
+  const text = inputBoxEl?.value || "";
+  win.setTimeout(() => {
+    if (!body.isConnected || getInlineEditTarget(body)) return;
+    if (
+      text.trim() &&
+      conversationKey &&
+      conversationKey > 0 &&
+      getConversationKey(item) === conversationKey
+    ) {
+      draftInputCache.set(conversationKey, text);
+      if (inputBoxEl && inputBoxEl.value !== text) {
+        inputBoxEl.value = text;
+        resizeTextareaToContent(inputBoxEl);
+      }
+    }
+    refreshConversationPanels(body, item);
+  }, 0);
+}
+
 /** Build the inline edit textarea + action bar that replaces a user bubble. */
 function buildInlineEditWidget(
   doc: Document,
@@ -9286,12 +9326,15 @@ function buildInlineEditWidget(
   // Register cleanup (idempotent — only set once per edit session).
   if (!getInlineEditCleanup(body)) {
     setInlineEditCleanup(body, () => {
+      const editConversationKey = getInlineEditTarget(body)?.conversationKey;
+      const superseded = isInlineEditSuperseded(body);
       // Restore input section to its original position in the panel.
       const { el, parent, nextSib } = getInlineEditBorrowedInputSection(body);
       if (el && parent) {
         parent.insertBefore(el, nextSib);
       }
-      // Restore the draft text.
+      // Restore the draft text (the edited text when a turn started
+      // elsewhere ended the edit).
       if (inputBoxEl) {
         inputBoxEl.value = getInlineEditSavedDraft(body);
         resizeTextareaToContent(inputBoxEl);
@@ -9300,6 +9343,14 @@ function buildInlineEditWidget(
       }
       setInlineEditBorrowedInputSection(body, null, null, null);
       setInlineEditSavedDraft(body, "");
+      if (superseded) {
+        keepSupersededInlineEditText(
+          body,
+          item,
+          inputBoxEl,
+          editConversationKey,
+        );
+      }
     });
   }
 
@@ -9662,12 +9713,22 @@ export function refreshChat(
     }
   }
 
-  // This panel's own open message edit. Its widget stays open while the
-  // conversation streams (another panel showing the same conversation may
-  // have sent into it; the edit's send waits until the conversation is idle).
-  // Once its prompt can no longer be shown here (deleted, or the panel shows
-  // another conversation) the edit ends before the chat box is rebuilt, so
+  // This panel's own open message edit. A turn started in the conversation
+  // from elsewhere (another panel's send, a writer with no panel) ends it as
+  // the turn starts (see tryBeginRequest), keeping the edited text in this
+  // panel's composer; a newer prompt that shows up here without that (a turn
+  // added with no request) ends it the same way. Once its prompt can no
+  // longer be shown here (deleted, or the panel shows another conversation)
+  // the edit ends too. Either way it ends before the chat box is rebuilt, so
   // the composer it borrowed goes back to its place instead of being dropped.
+  const supersededEditTarget = getInlineEditTarget(body);
+  if (
+    supersededEditTarget?.conversationKey === conversationKey &&
+    !useTargetedRerender &&
+    hasNewerUserTurnThanInlineEdit(supersededEditTarget, history)
+  ) {
+    endInlineEditSuperseded(body);
+  }
   const panelEditTarget = getInlineEditTarget(body);
   const panelEditIndex =
     panelEditTarget?.conversationKey === conversationKey
@@ -10551,6 +10612,9 @@ export function refreshChat(
               userTimestamp: msg.timestamp,
               assistantTimestamp: Math.floor(assistantPairMsg!.timestamp),
               currentText: msg.text || "",
+              latestUserTimestamp: getLatestUserTurnTimestamp(
+                chatHistory.get(conversationKey) || [],
+              ),
             });
             win.setTimeout(() => refreshConversationPanels(body, item), 0);
           });

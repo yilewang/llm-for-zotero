@@ -1,10 +1,12 @@
 import { assert } from "chai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { describe, it } from "mocha";
+import { afterEach, describe, it } from "mocha";
 import {
   endInlineEdit,
   getInlineEditBorrowedInputSection,
+  hasNewerUserTurnThanInlineEdit,
+  isInlineEditSuperseded,
   getInlineEditCleanup,
   getInlineEditSavedDraft,
   getInlineEditTarget,
@@ -14,6 +16,10 @@ import {
   setInlineEditSavedDraft,
   setInlineEditTarget,
 } from "../src/modules/contextPanel/inlineEditState";
+import {
+  clearAllState,
+  tryBeginRequest,
+} from "../src/modules/contextPanel/state";
 
 /** Stand-ins for two panel bodies (the sidebar's and the window's). */
 const panelBody = () => ({}) as unknown as Element;
@@ -131,6 +137,101 @@ describe("inlineEditState: each chat panel keeps its own message edit", function
     assert.equal(getInlineEditTarget(other)?.conversationKey, 10);
     endInlineEdit(other);
     assert.deepEqual(calls, ["mounted", "other"]);
+  });
+
+  describe("a turn started in the edited conversation from elsewhere", function () {
+    afterEach(() => {
+      clearAllState();
+    });
+
+    it("ends another panel's edit and puts its edited text in that panel's composer", function () {
+      const editing = { isConnected: true } as unknown as Element;
+      const starter = { isConnected: true } as unknown as Element;
+      const detached = panelBody();
+      const other = { isConnected: true } as unknown as Element;
+      const calls: string[] = [];
+      let restoredDraft = "";
+      let restoredAsSuperseded = false;
+      setInlineEditTarget(editing, {
+        ...target(11, 1),
+        currentText: "half-typed edit",
+      });
+      setInlineEditSavedDraft(editing, "pre-edit draft");
+      setInlineEditCleanup(editing, () => {
+        calls.push("editing");
+        restoredDraft = getInlineEditSavedDraft(editing);
+        restoredAsSuperseded = isInlineEditSuperseded(editing);
+      });
+      // The starting panel is sending its own edit of the conversation.
+      setInlineEditTarget(starter, target(11, 5));
+      setInlineEditCleanup(starter, () => calls.push("starter"));
+      setInlineEditTarget(detached, target(11, 2));
+      setInlineEditCleanup(detached, () => calls.push("detached"));
+      setInlineEditTarget(other, target(12, 3));
+      setInlineEditCleanup(other, () => calls.push("other"));
+
+      assert.isTrue(tryBeginRequest(11, 1, null, starter));
+
+      assert.deepEqual(calls, ["editing"], "only the other mounted edit ends");
+      assert.isNull(getInlineEditTarget(editing));
+      assert.equal(
+        restoredDraft,
+        "half-typed edit",
+        "the composer gets the edited text, not the pre-edit draft",
+      );
+      assert.isTrue(restoredAsSuperseded);
+      assert.isFalse(isInlineEditSuperseded(editing));
+      assert.equal(
+        getInlineEditTarget(starter)?.userTimestamp,
+        5,
+        "the starting panel's own edit is untouched",
+      );
+      assert.isNull(getInlineEditTarget(detached));
+      assert.equal(getInlineEditTarget(other)?.conversationKey, 12);
+    });
+
+    it("a turn started with no panel ends every edit of the conversation", function () {
+      const first = { isConnected: true } as unknown as Element;
+      const second = { isConnected: true } as unknown as Element;
+      setInlineEditTarget(first, target(13, 1));
+      setInlineEditTarget(second, target(13, 2));
+      assert.isTrue(tryBeginRequest(13, 1, null));
+      assert.isNull(getInlineEditTarget(first));
+      assert.isNull(getInlineEditTarget(second));
+    });
+
+    it("a refused start (the conversation is already busy) ends nothing", function () {
+      const editing = { isConnected: true } as unknown as Element;
+      assert.isTrue(tryBeginRequest(14, 1, null));
+      setInlineEditTarget(editing, target(14, 1));
+      assert.isFalse(tryBeginRequest(14, 2, null));
+      assert.equal(getInlineEditTarget(editing)?.conversationKey, 14);
+      endInlineEdit(editing);
+    });
+
+    it("a prompt newer than any the conversation had when the edit opened supersedes it", function () {
+      const edit = { ...target(15, 100), latestUserTimestamp: 300 };
+      const history = [
+        { role: "user", timestamp: 100 },
+        { role: "assistant", timestamp: 101 },
+        { role: "user", timestamp: 300 },
+        { role: "assistant", timestamp: 301 },
+      ];
+      assert.isFalse(hasNewerUserTurnThanInlineEdit(edit, history));
+      assert.isTrue(
+        hasNewerUserTurnThanInlineEdit(edit, [
+          ...history,
+          { role: "user", timestamp: 400 },
+        ]),
+      );
+      assert.isFalse(
+        hasNewerUserTurnThanInlineEdit(target(15, 100), [
+          ...history,
+          { role: "user", timestamp: 400 },
+        ]),
+        "an edit without a recorded latest prompt is never superseded",
+      );
+    });
   });
 
   it("a panel that never edited reads as not editing", function () {

@@ -1335,7 +1335,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   });
 
-  it("T9b: the same conversation in both surfaces shows the edit only where it was opened", async function () {
+  it("T9b: the same conversation in both surfaces shows the edit only where it was opened, and a send from the other surface ends it", async function () {
     const paper = await newFixture("Coexist T9b");
     await openSidebarChat(paper.parentItemId);
     await ensureSidebarPaperChat(paper.parentItemId);
@@ -1367,49 +1367,33 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       "the window's own composer is in its edit widget",
     );
 
-    // The sidebar sends into the shared conversation while the window edits:
-    // the window's edit and composer survive the streaming renders.
+    // The window types into its edit; then the sidebar sends into the shared
+    // conversation. Sending the edit later would cut the sidebar's turn off,
+    // so the window's edit ends as that turn starts, and what the window
+    // typed stays in its composer.
+    const TYPED = "Coexist T9b typed edit EDIT-SHARED-TYPED";
+    const windowInput = windowBody()!.querySelector(
+      "#llm-input",
+    ) as HTMLTextAreaElement;
+    windowInput.value = TYPED;
+    windowInput.dispatchEvent(
+      new (windowInput.ownerDocument.defaultView as any).Event("input", {
+        bubbles: true,
+      }),
+    );
     const SIDEBAR_Q = "Coexist T9b sidebar question EDIT-SHARED-SIDEBAR-Q";
     pressEnter(sidebarBody()!, SIDEBAR_Q);
     const sidebarStream = await provider.waitForStream(SIDEBAR_Q, 10_000);
     sidebarStream.push("T9B-SIDEBAR-PART ");
     await until(
-      () => lastAssistantBubbleText(windowRoot()).includes("T9B-SIDEBAR-PART"),
-      () => "the window mirrors the sidebar's streaming answer",
-    );
-    assert.lengthOf(editWidgets(windowRoot()), 1, "the edit stays open");
-    assert.deepEqual(
-      composerPlacement(windowBody()),
-      { count: 1, inEditWidget: true, sameDocument: true },
-      "the window's composer is not dropped while the conversation streams",
-    );
-    sidebarStream.push("T9B-SIDEBAR-END");
-    sidebarStream.finish();
-    await waitForAnswer(key, "T9B-SIDEBAR-END");
-
-    // The window sends its edit: one retry request, mirrored to the sidebar.
-    const requestsBefore = provider.streams.length;
-    const EDITED = "Coexist T9b edited prompt EDIT-SHARED-EDITED";
-    pressEnter(windowBody()!, EDITED);
-    const editStream = await provider.waitForStream(EDITED, 10_000);
-    editStream.push("T9B-EDITED-ANSWER");
-    editStream.finish();
-    await waitForAnswer(key, "T9B-EDITED-ANSWER");
-    assert.equal(
-      provider.streams.length,
-      requestsBefore + 1,
-      "the edit sends one request",
-    );
-    await until(
       () =>
-        editWidgets(windowRoot()).length === 0 &&
-        Boolean(userBubble(sidebarRoot(), "EDIT-SHARED-EDITED")) &&
-        lastAssistantBubbleText(sidebarRoot()).includes("T9B-EDITED-ANSWER"),
+        lastAssistantBubbleText(windowRoot()).includes("T9B-SIDEBAR-PART") &&
+        editWidgets(windowRoot()).length === 0,
       () =>
-        `the edit closes in the window and its retry shows in the sidebar: ${JSON.stringify(
+        `the window's edit ends and it mirrors the sidebar's streaming answer: ${JSON.stringify(
           {
             window: composerPlacement(windowBody()),
-            sidebar: sidebarState(),
+            widgets: editWidgets(windowRoot()).length,
           },
         )}`,
     );
@@ -1418,6 +1402,55 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       { count: 1, inEditWidget: false, sameDocument: true },
       "the window's composer is back in place",
     );
+    assert.equal(
+      (windowBody()!.querySelector("#llm-input") as HTMLTextAreaElement).value,
+      TYPED,
+      "what the window typed in its edit stays in its composer",
+    );
+    sidebarStream.push("T9B-SIDEBAR-END");
+    sidebarStream.finish();
+    await waitForAnswer(key, "T9B-SIDEBAR-END");
+    await Zotero.Promise.delay(100);
+    assert.equal(
+      (windowBody()!.querySelector("#llm-input") as HTMLTextAreaElement).value,
+      TYPED,
+      "the window's typed text survives the end of the sidebar's turn",
+    );
+
+    // The window sends the kept text as a new message after the sidebar's
+    // turn: one request, and the sidebar's turn is not cut off.
+    const requestsBefore = provider.streams.length;
+    pressEnter(windowBody()!, TYPED);
+    const typedStream = await provider.waitForStream(TYPED, 10_000);
+    typedStream.push("T9B-TYPED-ANSWER");
+    typedStream.finish();
+    await waitForAnswer(key, "T9B-TYPED-ANSWER");
+    assert.equal(
+      provider.streams.length,
+      requestsBefore + 1,
+      "the window's send is one request",
+    );
+    const finalHistory = await history(key);
+    const texts = finalHistory.memory.map((entry) => entry.text);
+    const order = [SEED, SIDEBAR_Q, TYPED].map((text) =>
+      texts.findIndex((entry) => String(entry).includes(text)),
+    );
+    assert.isTrue(
+      order.every(
+        (index, i) => index >= 0 && (i === 0 || index > order[i - 1]),
+      ),
+      `the seed, the sidebar's question and the window's text are all kept, in order: ${JSON.stringify(texts)}`,
+    );
+    await until(
+      () =>
+        Boolean(userBubble(sidebarRoot(), "EDIT-SHARED-TYPED")) &&
+        lastAssistantBubbleText(sidebarRoot()).includes("T9B-TYPED-ANSWER"),
+      () =>
+        `the window's message shows in the sidebar: ${JSON.stringify(
+          sidebarState(),
+        )}`,
+    );
+    assert.lengthOf(editWidgets(windowRoot()), 0, "no edit is open");
     assert.deepEqual(
       composerPlacement(sidebarBody()),
       { count: 1, inEditWidget: false, sameDocument: true },

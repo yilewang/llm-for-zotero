@@ -1208,6 +1208,7 @@ export type AgentEngineDeps = {
     conversationKey: number,
     requestId: number,
     abortController: AbortController | null,
+    startingBody?: Element | null,
   ) => boolean;
   isRequestOwner: (conversationKey: number, requestId: number) => boolean;
   finishRequest: (conversationKey: number, requestId: number) => boolean;
@@ -1568,6 +1569,7 @@ export async function sendAgentTurn(
         conversationKey,
         thisRequestId,
         AbortControllerCtor ? new AbortControllerCtor() : null,
+        body,
       )
     ) {
       return;
@@ -2098,6 +2100,7 @@ export async function retryAgentTurn(
         initialConversationKey,
         thisRequestId,
         AbortControllerCtor ? new AbortControllerCtor() : null,
+        body,
       )
     ) {
       return;

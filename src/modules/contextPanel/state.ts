@@ -15,7 +15,10 @@ import type {
   PaperContentSourceMode,
   GeneratedChatImage,
 } from "./types";
-import { releaseInlineEditsForConversation } from "./inlineEditState";
+import {
+  endInlineEditsForTurnStartedElsewhere,
+  releaseInlineEditsForConversation,
+} from "./inlineEditState";
 import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { TTLMap } from "../../utils/ttlMap";
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
@@ -187,15 +190,22 @@ export function getPendingRequestId(conversationKey: number): number {
   return pendingRequestIds.get(conversationKey) || 0;
 }
 
+/**
+ * Claims the conversation for a request. A turn starting here ends every
+ * other panel's open message edit of the conversation (see
+ * inlineEditState.ts); startingBody is the panel that starts it, if any.
+ */
 export function tryBeginRequest(
   conversationKey: number,
   requestId: number,
   abortController: AbortController | null,
+  startingBody?: Element | null,
 ): boolean {
   const key = normalizeConversationKey(conversationKey);
   if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
   pendingRequestIds.set(key, requestId);
   if (abortController) abortControllers.set(key, abortController);
+  endInlineEditsForTurnStartedElsewhere(key, startingBody);
   notifyRequestActivityChanged(key, false);
   return true;
 }
@@ -256,6 +266,9 @@ export function transferRequest(
   abortControllers.delete(fromKey);
   pendingRequestIds.set(toKey, requestId);
   if (abortController) abortControllers.set(toKey, abortController);
+  // The request's turn now runs in the target conversation. Its own panel's
+  // edit, if any, ended before the request moved.
+  endInlineEditsForTurnStartedElsewhere(toKey);
   notifyRequestActivityChanged(fromKey, true);
   notifyRequestActivityChanged(toKey, false);
   return true;

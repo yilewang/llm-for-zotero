@@ -10,7 +10,10 @@
  *
  * When the same conversation shows in two panels, the widget shows only in
  * the panel where Edit was clicked; the other panel shows the conversation
- * as usual.
+ * as usual. When a turn starts in the conversation from anywhere else (the
+ * other panel sends, or a writer with no panel), the edit ends: sending it
+ * later would cut that newer turn off. What was typed in the edit stays in
+ * the panel's composer.
  */
 
 export type InlineEditTarget = {
@@ -19,6 +22,11 @@ export type InlineEditTarget = {
   assistantTimestamp: number;
   /** Text currently typed in the inline textarea (preserved across refreshes). */
   currentText: string;
+  /**
+   * The newest prompt the conversation had when the edit opened. A newer
+   * prompt (a turn added from elsewhere) ends the edit.
+   */
+  latestUserTimestamp?: number;
 };
 
 export type InlineEditBorrowedInputSection = {
@@ -37,6 +45,11 @@ type InlineEditSession = {
   inputSection: InlineEditBorrowedInputSection;
   /** Draft text that was in the composer when the edit started. */
   savedDraft: string;
+  /**
+   * True while the edit is ended because a turn started elsewhere in its
+   * conversation; the cleanup then gives the composer the edited text.
+   */
+  superseded: boolean;
 };
 
 const sessions = new WeakMap<Element, InlineEditSession>();
@@ -55,6 +68,7 @@ function sessionFor(body: Element): InlineEditSession {
       cleanup: null,
       inputSection: emptySection(),
       savedDraft: "",
+      superseded: false,
     };
     sessions.set(body, session);
   }
@@ -146,4 +160,70 @@ export function releaseInlineEditsForConversation(
       else releaseInlineEdit(body);
     }
   }
+}
+
+/** Whether the edit is ending because a turn started elsewhere (read in its cleanup). */
+export function isInlineEditSuperseded(body: Element): boolean {
+  return Boolean(sessions.get(body)?.superseded);
+}
+
+/**
+ * End the panel's edit because a turn started elsewhere in its conversation.
+ * Its composer comes back holding the text typed in the edit rather than the
+ * draft it held before: the edited text is the user's latest input, and the
+ * pre-edit draft was already set aside once by opening the edit.
+ */
+export function endInlineEditSuperseded(body: Element): void {
+  const session = sessions.get(body);
+  if (!session?.target) return;
+  if (!body.isConnected) {
+    releaseInlineEdit(body);
+    return;
+  }
+  session.savedDraft = session.target.currentText;
+  session.superseded = true;
+  endInlineEdit(body);
+}
+
+/**
+ * A turn started in the conversation: end every edit of it in the other
+ * panels (all of them when no panel started it). The starting panel's own
+ * edit is the one being sent.
+ */
+export function endInlineEditsForTurnStartedElsewhere(
+  conversationKey: number,
+  startingBody?: Element | null,
+): void {
+  for (const body of [...bodiesEditing]) {
+    if (body === startingBody) continue;
+    if (sessions.get(body)?.target?.conversationKey === conversationKey) {
+      endInlineEditSuperseded(body);
+    }
+  }
+}
+
+/** The newest prompt timestamp in a conversation's history, or 0. */
+export function getLatestUserTurnTimestamp(
+  history: ReadonlyArray<{ role: string; timestamp: number }>,
+): number {
+  let latest = 0;
+  for (const message of history) {
+    if (message.role === "user" && message.timestamp > latest) {
+      latest = message.timestamp;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Whether the conversation got a prompt newer than any it had when the edit
+ * opened: a turn added from elsewhere, which sending the edit would cut off.
+ */
+export function hasNewerUserTurnThanInlineEdit(
+  target: InlineEditTarget,
+  history: ReadonlyArray<{ role: string; timestamp: number }>,
+): boolean {
+  const latestAtStart = Number(target.latestUserTimestamp);
+  if (!Number.isFinite(latestAtStart) || latestAtStart <= 0) return false;
+  return getLatestUserTurnTimestamp(history) > latestAtStart;
 }
