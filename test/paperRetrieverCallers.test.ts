@@ -334,11 +334,9 @@ describe("per-paper retrieval callers", function () {
       }
     });
 
-    it("serves the old source's candidates after a source-mode switch", async function () {
-      // pins current behaviour; suspected bug N10
-      // A source-mode switch reloads the paper text but does not invalidate
-      // retrieval candidates, and the panel key ignores the source, so the
-      // panel keeps answering from the previous source's chunks.
+    it("drops the old source's candidates when a source-mode switch reloads the text", async function () {
+      // The panel key ignores the source, so the reload itself must drop the
+      // candidates built from the previous source's chunks.
       const restore = composeRetrievalCandidateInvalidation();
       try {
         const question = "How is calibration drift measured?";
@@ -369,8 +367,8 @@ describe("per-paper retrieval callers", function () {
         const reloaded = paperTextStore.peek(paper.contextItemId)!;
         assert.equal(reloaded.sourceType, "mineru", "the text did reload");
         const after = await retrieve(reloaded, question);
-        assert.include(after.contextText, "PDF-TEXT");
-        assert.notInclude(after.contextText, "MINERU-TEXT");
+        assert.include(after.contextText, "MINERU-TEXT");
+        assert.notInclude(after.contextText, "PDF-TEXT");
       } finally {
         restore();
       }

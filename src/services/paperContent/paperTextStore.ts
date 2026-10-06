@@ -70,6 +70,17 @@ function entryText(itemId: number): string {
   return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
 }
 
+/**
+ * Drops an entry another source mode produced. The reload changes the chunks,
+ * so the retrieval candidates built from the old chunks go too. The on-disk
+ * embeddings stay: their chunk-hash check invalidates them when the chunks
+ * really changed. The in-progress load (if any) is left for its waiters.
+ */
+function dropMismatchedEntry(itemId: number): void {
+  pdfTextCache.delete(itemId);
+  invalidateRetrievalCandidates(itemId);
+}
+
 async function load(
   item: Zotero.Item,
   options: PaperTextLoadOptions | undefined,
@@ -80,7 +91,7 @@ async function load(
     return;
   }
   if (cached) {
-    pdfTextCache.delete(item.id);
+    dropMismatchedEntry(item.id);
   }
   const existingTask = pdfTextLoadingTasks.get(item.id);
   if (existingTask) {
@@ -90,7 +101,7 @@ async function load(
       return;
     }
     if (latest) {
-      pdfTextCache.delete(item.id);
+      dropMismatchedEntry(item.id);
     }
   }
   if (pdfTextCache.has(item.id)) {

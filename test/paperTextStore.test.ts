@@ -63,7 +63,17 @@ describe("paper text store", function () {
   after(function () {
     restoreTestGlobals(globals);
   });
+  // Records the candidate drops of every load; "invalidation" installs its own.
+  let loadInvalidated: Array<number | undefined>;
+  let restoreLoadInvalidator: () => void;
+  beforeEach(function () {
+    loadInvalidated = [];
+    restoreLoadInvalidator = configureRetrievalCandidateInvalidator((id) =>
+      loadInvalidated.push(id),
+    );
+  });
   afterEach(function () {
+    restoreLoadInvalidator();
     pdfTextCache.clear();
     pdfTextLoadingTasks.clear();
   });
@@ -87,12 +97,22 @@ describe("paper text store", function () {
         textEntry,
         "no mode accepts any cached source",
       );
+      assert.deepEqual(
+        loadInvalidated,
+        [],
+        "a reused entry keeps its candidates",
+      );
 
       await ensurePDFTextCached(item, { sourceMode: "mineru" });
       const reloaded = pdfTextCache.get(9001);
       assert.notStrictEqual(reloaded, textEntry, "mismatched entry dropped");
       assert.equal(reloaded?.sourceType, "mineru");
       assert.isAbove(reloaded?.chunks.length || 0, 0);
+      assert.deepEqual(
+        loadInvalidated,
+        [9001],
+        "the dropped entry's retrieval candidates go with it",
+      );
     });
 
     it("concurrent loads share one in-progress task and notify once", async function () {
@@ -172,6 +192,11 @@ describe("paper text store", function () {
       ]);
       assert.deepEqual(modes, ["text", "mineru"]);
       assert.equal(paperTextStore.peek(9520)?.sourceType, "mineru");
+      assert.deepEqual(
+        loadInvalidated,
+        [9520],
+        "the text-mode candidates dropped",
+      );
       assert.isFalse(pdfTextLoadingTasks.has(9520));
     });
 
