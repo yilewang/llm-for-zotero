@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { saveAgentRunTraceSnapshot } from "../src/agent/store/traceStore";
+import type { AgentRunEventRecord } from "../src/agent/types";
 import {
   getModelEntryById,
   setModelProviderGroups,
@@ -1218,6 +1220,115 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       assert.equal(
         storedOf(state, "assistant").document_id,
         "workflow-kept-document",
+      );
+      await settledUsageRows(conversationKey, 1);
+    });
+  });
+
+  it("retry error with no output over an agent answer keeps its run and trace", async function () {
+    await surfacing(async () => {
+      const conversationKey = Number(
+        (await api().getDiagnostics(panel.panelId)).conversationKey,
+      );
+      assert.isAbove(conversationKey, 0, "the panel has a conversation");
+      const runId = `workflow-retry-agent-run-${Date.now()}`;
+      const startedAt = Date.now() - 5_000;
+      const finalText = "Agent answer with a trace.";
+      const events: AgentRunEventRecord[] = [
+        {
+          runId,
+          seq: 1,
+          eventType: "codex_progress",
+          createdAt: startedAt,
+          payload: {
+            type: "codex_progress",
+            itemId: "workflow-retry-progress",
+            text: "Read the page.",
+            status: "completed",
+          },
+        },
+        {
+          runId,
+          seq: 2,
+          eventType: "final",
+          createdAt: startedAt + 3_000,
+          payload: { type: "final", text: finalText },
+        },
+      ];
+      // The trace lives in the run tables, as for an answer loaded from
+      // history: the message holds only the run id, not the events.
+      await saveAgentRunTraceSnapshot(
+        {
+          runId,
+          conversationKey,
+          mode: "agent",
+          model: MODEL,
+          status: "completed",
+          createdAt: startedAt,
+          completedAt: startedAt + 3_000,
+          finalText,
+        },
+        events,
+      );
+      await api().seedPanelStoredTurn(
+        panel.panelId,
+        "Use the agent on this page.",
+        finalText,
+        {
+          runMode: "agent",
+          agentRunId: runId,
+          modelName: MODEL,
+          modelEntryId: ENTRY_ID,
+          modelProviderLabel: providerLabel,
+          waitingAnimationStartedAt: startedAt,
+        },
+      );
+      const traceSummary = () =>
+        (
+          Zotero.getMainWindow().document.querySelector(
+            `[data-workflow-panel-id="${panel.panelId}"] .llm-agent-activity-details summary`,
+          ) as HTMLElement | null
+        )?.textContent || "";
+      const summaryBefore = await waitFor(
+        traceSummary,
+        (text) => /^Worked for /.test(text),
+        "the seeded answer's trace to load",
+      );
+
+      const retry = api().retryLatestPanelResponse(
+        panel.panelId,
+        RETRY_ENTRY_ID,
+      );
+      const stream = await nextStream(0);
+      stream.fail("workflow upstream unavailable");
+      assert.isUndefined(await retry, "a failed retry returns nothing");
+      const state = await read(conversationKey);
+
+      const assistant = lastAssistant(state);
+      assert.equal(assistant.text, finalText);
+      assert.equal(assistant.streaming, false);
+      // The restored answer is still the agent run's answer.
+      assert.equal(assistant.runMode, "agent", "runMode is restored");
+      assert.equal(assistant.agentRunId, runId, "agentRunId is restored");
+      assert.equal(
+        assistant.waitingAnimationStartedAt,
+        startedAt,
+        "the trace's start time is restored",
+      );
+      assert.equal(assistant.modelName, MODEL);
+      const row = storedOf(state, "assistant");
+      assert.equal(row.agent_run_id, runId, "the stored row keeps the run");
+      assert.equal(row.run_mode, "agent");
+      // The trace view reads the restored message, so it shows the same
+      // trace without a panel reload.
+      assert.equal(
+        await waitFor(
+          traceSummary,
+          (text) => text === summaryBefore,
+          "the restored answer's trace",
+          5_000,
+        ),
+        summaryBefore,
       );
       await settledUsageRows(conversationKey, 1);
     });

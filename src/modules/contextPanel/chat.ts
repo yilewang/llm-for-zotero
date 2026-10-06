@@ -4266,10 +4266,15 @@ export type LatestRetryPair = {
   assistantMessage: Message;
 };
 
+// The answer fields a retry can change before it fails and restores the
+// previous answer. `streaming` is not kept: a restored answer is settled.
 type AssistantMessageSnapshot = Pick<
   Message,
   | "text"
   | "timestamp"
+  | "runMode"
+  | "agentRunId"
+  | "waitingAnimationStartedAt"
   | "modelName"
   | "modelEntryId"
   | "modelProviderLabel"
@@ -4308,6 +4313,9 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
   return {
     text: message.text,
     timestamp: message.timestamp,
+    runMode: message.runMode,
+    agentRunId: message.agentRunId,
+    waitingAnimationStartedAt: message.waitingAnimationStartedAt,
     modelName: message.modelName,
     modelEntryId: message.modelEntryId,
     modelProviderLabel: message.modelProviderLabel,
@@ -4350,6 +4358,9 @@ function restoreAssistantSnapshot(
 ): void {
   message.text = snapshot.text;
   message.timestamp = snapshot.timestamp;
+  message.runMode = snapshot.runMode;
+  message.agentRunId = snapshot.agentRunId;
+  message.waitingAnimationStartedAt = snapshot.waitingAnimationStartedAt;
   message.modelName = snapshot.modelName;
   message.modelEntryId = snapshot.modelEntryId;
   message.modelProviderLabel = snapshot.modelProviderLabel;
