@@ -62,14 +62,11 @@ import {
 import { renderShortcuts } from "./shortcuts";
 import { bindTaskProgressToggle } from "./taskProgress/panel";
 import { createTaskProgressToggleButton } from "./taskProgress/toggleButton";
-import { createElement, HTML_NS } from "../../utils/domHelpers";
+import { HTML_NS } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
 import {
   bindStandalonePanelHost,
-  canLifecycleCommitPanelConversation,
-  capturePanelOperationLease,
   clearPanelHostBinding,
-  isPanelOperationLeaseCurrent,
 } from "./panelHostOwnership";
 import type { ConversationSystem } from "../../shared/types";
 import type { ChatRuntimeMode } from "./types";
@@ -295,163 +292,20 @@ export function notifyStandaloneItemChanged(item: Zotero.Item | null): void {
   standaloneItemChangeHandler?.(item);
 }
 
-function isStandaloneTrackedBody(body: Element): boolean {
-  const standaloneWin = getStandaloneSessionWindow();
-  if (standaloneWin && body.ownerDocument === standaloneWin.document) {
-    return true;
-  }
-  return (body as HTMLElement).dataset?.standalone === "true";
-}
-
-function renderStandalonePlaceholdersInEmbeddedPanels(
-  excludedBody?: Element | null,
-): void {
-  const seenBodies = new Set<Element>();
-  const mainWindows = Zotero.getMainWindows?.() || [];
-  for (const win of mainWindows) {
-    const panelRoots = win?.document?.querySelectorAll?.("#llm-main") || [];
-    for (const panelRoot of panelRoots) {
-      const body = (panelRoot as Element).parentElement;
-      if (
-        !body ||
-        !body.isConnected ||
-        body === excludedBody ||
-        isStandaloneTrackedBody(body) ||
-        seenBodies.has(body)
-      ) {
-        continue;
-      }
-      renderStandalonePlaceholder(body);
-      seenBodies.add(body);
-    }
-  }
-  for (const [body] of activeContextPanels) {
-    if (
-      !(body as Element).isConnected ||
-      body === excludedBody ||
-      isStandaloneTrackedBody(body as Element) ||
-      seenBodies.has(body as Element)
-    ) {
-      continue;
-    }
-    renderStandalonePlaceholder(body as Element);
-    seenBodies.add(body as Element);
-  }
-}
-
-function restoreEmbeddedPanelsAfterStandaloneClose(
+/**
+ * The sidebar chat panels stay live while the window is open, so closing it
+ * leaves them alone. Only bodies that went away while it was open are
+ * dropped from panel tracking here.
+ */
+function releaseDisconnectedEmbeddedPanels(
   excludedBody?: Element | null,
 ): void {
   for (const [body] of activeContextPanels) {
     if (excludedBody && body === excludedBody) continue;
-    if (!(body as Element).isConnected) {
-      void releaseClaudeRuntimeForBody(body as Element);
-      unregisterContextPanel(body);
-      continue;
-    }
-    const rawItem = activeContextPanelRawItems.get(body as Element) || null;
-    const resolved = resolveInitialPanelItemState(rawItem, {
-      conversationSystem: resolveConversationSystemForItem(rawItem),
-    });
-    const hostLease = capturePanelOperationLease(body as Element);
-    if (
-      !canLifecycleCommitPanelConversation(
-        body as Element,
-        resolved.item,
-        "restore-embedded-panel",
-        hostLease,
-      )
-    ) {
-      continue;
-    }
-    mountPanelShell({
-      body: body as Element,
-      renderItem: resolved.item,
-      getMountedItem: () => resolved.item,
-      rawItem,
-      setupItem: resolved.item || rawItem,
-    });
-    void (async () => {
-      try {
-        if (resolved.item) await ensureConversationLoaded(resolved.item);
-        if (!isPanelOperationLeaseCurrent(hostLease)) return;
-        await renderShortcuts(
-          body as Element,
-          resolved.item,
-          resolveShortcutMode(resolved.item),
-        );
-        if (!isPanelOperationLeaseCurrent(hostLease)) return;
-        refreshChat(body as Element, resolved.item);
-      } catch (err) {
-        appLogger.warn("LLM: side panel restore failed", err);
-      }
-    })();
+    if ((body as Element).isConnected) continue;
+    void releaseClaudeRuntimeForBody(body as Element);
+    unregisterContextPanel(body);
   }
-}
-
-/**
- * Replace a side-panel body with a placeholder message while the
- * standalone window is open.
- */
-export function renderStandalonePlaceholder(body: Element): void {
-  if (typeof (body as any).replaceChildren === "function") {
-    (body as any).replaceChildren();
-  } else {
-    body.textContent = "";
-  }
-  const doc = body.ownerDocument!;
-  const wrap = createElement(doc, "div", "llm-standalone-placeholder");
-  wrap.style.cssText =
-    "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
-    "height:100%;gap:12px;padding:24px;text-align:center;color:var(--fill-secondary);";
-
-  const msg = createElement(doc, "div", "", {
-    textContent: t("Chat is open in a separate window"),
-  });
-  msg.style.cssText = "font-size:13px;";
-
-  const focusBtn = createElement(doc, "button", "llm-btn llm-btn-primary", {
-    textContent: t("Focus Window"),
-    type: "button",
-  });
-  focusBtn.style.cssText =
-    "display:flex;align-items:center;justify-content:center;" +
-    "padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;" +
-    "background:var(--color-accent,#2563eb);color:#fff;border:none;";
-  focusBtn.addEventListener("click", () => {
-    getStandaloneSessionWindow()?.focus();
-  });
-
-  const closeBtn = createElement(doc, "button", "llm-btn", {
-    textContent: t("Close Window & Return Here"),
-    type: "button",
-  });
-  closeBtn.style.cssText =
-    "display:flex;align-items:center;justify-content:center;" +
-    "padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;" +
-    "background:none;color:var(--fill-secondary);border:1px solid var(--stroke-secondary,#888);";
-  closeBtn.addEventListener("click", () => {
-    try {
-      const win =
-        getStandaloneSessionWindow() ||
-        (addon.data.standaloneWindow as Window | undefined) ||
-        null;
-      appLogger.debug(
-        "LLM: close standalone clicked, win=",
-        Boolean(win),
-        "closed=",
-        win ? (win as any).closed : "N/A",
-      );
-      if (win && !(win as any).closed) {
-        (win as any).close();
-      }
-    } catch (err) {
-      appLogger.warn("LLM: close standalone failed", err);
-    }
-  });
-
-  wrap.append(msg, focusBtn, closeBtn);
-  body.appendChild(wrap);
 }
 
 type SidebarConv = {
@@ -645,8 +499,7 @@ export function openStandaloneChat(options?: {
     : initialPaperItem || globalPortalItem;
 
   // Set flag BEFORE openDialog — keeps isStandaloneWindowActive() true
-  // throughout the entire openDialog + load cycle so any onRender calls
-  // in the sidepanel will show the placeholder.
+  // throughout the entire openDialog + load cycle.
   setStandalonePending(true);
 
   const newWin = mainWin.openDialog(
@@ -658,11 +511,6 @@ export function openStandaloneChat(options?: {
     setStandalonePending(false);
     return;
   }
-
-  if (options?.sourceBody && options.sourceBody.isConnected) {
-    renderStandalonePlaceholder(options.sourceBody);
-  }
-  renderStandalonePlaceholdersInEmbeddedPanels(options?.sourceBody || null);
 
   setStandaloneSessionWindow(newWin);
   // Keep standalonePending = true until initWindow runs — see below
@@ -4133,7 +3981,6 @@ export function openStandaloneChat(options?: {
         "mode=" + standaloneMode,
       );
       scheduleStandaloneSidebarRender();
-      renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
     } catch (err) {
       appLogger.warn("LLM: standalone initWindow failed", err);
       // Show a visible error so the window isn't silently blank
@@ -4208,7 +4055,7 @@ export function openStandaloneChat(options?: {
     if (sessionWin === newWin || sessionWin === null) {
       setStandaloneSessionWindow(null);
     }
-    restoreEmbeddedPanelsAfterStandaloneClose(contentArea as Element | null);
+    releaseDisconnectedEmbeddedPanels(contentArea as Element | null);
   };
 
   newWin.addEventListener("load", initWindow, { once: true });

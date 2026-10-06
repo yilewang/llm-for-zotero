@@ -56,7 +56,6 @@ import {
   beginChatRenderCycle,
   claimAsyncChatRender,
   claimDeferredChatRender,
-  currentChatRenderCycle,
   setPanelRenderClaim,
   takePanelRenderClaim,
 } from "./chatRenderCycle";
@@ -125,10 +124,7 @@ import {
   hasPanelContextOwnerChanged,
   shouldRefreshContextSourceWithoutPanelRebuild,
 } from "./panelContextLifecycle";
-import {
-  retainClaudeRuntimeForBody,
-  releaseClaudeRuntimeForBody,
-} from "../../claudeCode/runtimeRetention";
+import { retainClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import {
   bindEmbeddedPanelHost,
   canLifecycleCommitPanelConversation,
@@ -143,7 +139,6 @@ export { openStandaloneChat } from "./standaloneWindow";
 import {
   isStandaloneWindowActive,
   notifyStandaloneItemChanged,
-  renderStandalonePlaceholder,
 } from "./standaloneWindow";
 
 // =============================================================================
@@ -310,7 +305,6 @@ export function registerReaderContextPanel() {
       try {
         if (resolvedState.item)
           await ensureConversationLoaded(resolvedState.item);
-        if (isStandaloneWindowActive()) return;
         if (!isPanelOperationLeaseCurrent(hostLease)) return;
         if (!claimDeferredChatRender(body, chatRenderCycle)) return;
         refreshChat(body, resolvedState.item);
@@ -359,9 +353,7 @@ export function registerReaderContextPanel() {
         (mountedVerdict === "unresolved" && isPanelBodyInitialized(body))
       ) {
         renderPanelOwnershipBlocked(body, "onItemChange", mountedVerdict);
-        if (!isStandaloneWindowActive()) {
-          rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
-        }
+        rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
       }
       const selectedTabId = refreshLastKnownSelectedTabId();
       const itemChangeSignature = [
@@ -381,30 +373,6 @@ export function registerReaderContextPanel() {
     onRender: ({ body, item, tabType }) => {
       bindEmbeddedPanelHost(body, item || null, tabType);
       const lifecycleLease = capturePanelOperationLease(body);
-      // When standalone window is open, show placeholder instead of full UI
-      if (isStandaloneWindowActive()) {
-        clearCompletedPanelLifecycleSignature(body);
-        void releaseClaudeRuntimeForBody(body);
-        renderStandalonePlaceholder(body);
-        const resolvedState = resolveInitialPanelItemState(item);
-        if (
-          canLifecycleCommitPanelConversation(
-            body,
-            resolvedState.item,
-            "standalone-placeholder-commit",
-            lifecycleLease,
-          )
-        ) {
-          activeContextPanels.set(body, () => resolvedState.item);
-          activeContextPanelRawItems.set(body, item || null);
-        }
-        setPanelRenderClaim(body, {
-          kind: "sync-rendered",
-          itemKey: getPanelItemIdKey(item || null),
-          cycle: currentChatRenderCycle(body),
-        });
-        return;
-      }
       try {
         const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
         // Treat missing panel root as needing a full render — the body may
@@ -541,8 +509,6 @@ export function registerReaderContextPanel() {
     },
     onAsyncRender: async ({ body, item, setEnabled }) => {
       setEnabled(true);
-      // Skip full render when standalone window is active
-      if (isStandaloneWindowActive()) return;
 
       const resolvedInitialState = resolveInitialPanelItemState(item);
       const resolvedItem = resolvedInitialState.item;
@@ -618,10 +584,8 @@ export function registerReaderContextPanel() {
       if (resolvedItem) {
         await ensureConversationLoaded(resolvedItem);
       }
-      // Bail if a newer render has started while we were awaiting,
-      // or if the standalone window was opened during the await.
+      // Bail if a newer render has started while we were awaiting.
       if (renderGeneration !== thisGeneration) return;
-      if (isStandaloneWindowActive()) return;
       if (!isPanelOperationLeaseCurrent(hostLease)) return;
       await renderShortcuts(
         body,
@@ -631,7 +595,6 @@ export function registerReaderContextPanel() {
           : resolveShortcutMode(resolvedItem),
       );
       if (renderGeneration !== thisGeneration) return;
-      if (isStandaloneWindowActive()) return;
       if (!isPanelOperationLeaseCurrent(hostLease)) return;
       if (!syncAlreadyRendered && !contextRefreshOnly) {
         setupEmbeddedPanelHandlers(body, item);

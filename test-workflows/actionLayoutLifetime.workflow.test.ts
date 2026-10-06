@@ -166,33 +166,50 @@ describe("workflow: native action layout lifetime", function () {
     }
   });
 
-  it("releases old layout observers through repeated detach and reattach", async function () {
+  it("keeps the embedded panel and its one layout observer through repeated standalone open and close", async function () {
+    const root = await openPanel();
+    const details = win.document.getElementById("zotero-item-details");
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    await until(
+      () => observers.some((targets) => targets.has(root)),
+      "layout observer owns current root",
+    );
+    const observersOnRoot = () =>
+      observers.filter((targets) => targets.has(root)).length;
+    const baseline = observersOnRoot();
     for (let cycle = 0; cycle < 3; cycle++) {
-      const root = await openPanel();
-      await until(
-        () => observers.some((targets) => targets.has(root)),
-        "layout observer owns current root",
-      );
       await api.openStandaloneForItem(fixture.parentItemId);
-      await until(
-        () => !root.isConnected,
-        "embedded panel is replaced by the detached placeholder",
+      await Zotero.Promise.delay(300);
+      assert.isTrue(
+        root.isConnected,
+        `cycle ${cycle}: the embedded panel stays connected while the window is open`,
       );
-      await until(
-        () => observers.every((targets) => !targets.has(root)),
-        "removed panel releases its layout observer",
+      assert.strictEqual(
+        section.querySelector("#llm-main"),
+        root,
+        `cycle ${cycle}: the embedded panel is not replaced while the window is open`,
       );
+      assert.isOk(root.dataset.handlersInitialized);
       await api.closeStandalone();
-      const restored = await openPanel();
-      assert.notStrictEqual(restored, root);
+      await Zotero.Promise.delay(300);
+      assert.strictEqual(
+        section.querySelector("#llm-main"),
+        root,
+        `cycle ${cycle}: closing the window does not rebuild the embedded panel`,
+      );
+      assert.equal(
+        observersOnRoot(),
+        baseline,
+        `cycle ${cycle}: open and close add no layout observers to the panel`,
+      );
       assert.isAbove(
-        restored.querySelector(".llm-actions")!.getBoundingClientRect().width,
+        root.querySelector(".llm-actions")!.getBoundingClientRect().width,
         0,
       );
     }
   });
 
-  it("restores the embedded panel's conversation and paper shortcuts when the standalone window closes", async function () {
+  it("keeps the embedded panel's conversation and paper shortcuts while the standalone window opens and closes", async function () {
     const root = await openPanel();
     const details = win.document.getElementById("zotero-item-details");
     const section = details.querySelector(".llm-dedicated-chat-pane");
@@ -202,46 +219,39 @@ describe("workflow: native action layout lifetime", function () {
       () => shortcutCount(root) > 0,
       "embedded paper panel renders its shortcuts",
     );
-    const before = {
-      conversationKey: root.dataset.itemId,
-      paperItemId: root.dataset.basePaperItemId,
-      conversationKind: root.dataset.conversationKind,
-      conversationSystem: root.dataset.conversationSystem,
-    };
+    const snapshot = (panel: HTMLElement) => ({
+      conversationKey: panel.dataset.itemId,
+      paperItemId: panel.dataset.basePaperItemId,
+      conversationKind: panel.dataset.conversationKind,
+      conversationSystem: panel.dataset.conversationSystem,
+    });
+    const before = snapshot(root);
     assert.isOk(before.conversationKey, "mounted panel has a conversation");
     assert.equal(before.paperItemId, String(fixture.parentItemId));
     assert.equal(before.conversationKind, "paper");
 
-    await api.openStandaloneForItem(fixture.parentItemId);
-    await until(
-      () => !root.isConnected,
-      "embedded panel is replaced by the detached placeholder",
-    );
-    await api.closeStandalone();
+    const assertUnchanged = (context: string) => {
+      const current = section.querySelector("#llm-main") as HTMLElement | null;
+      assert.strictEqual(current, root, `${context}: same embedded panel`);
+      assert.isTrue(root.isConnected, `${context}: panel stays connected`);
+      assert.isOk(
+        root.dataset.handlersInitialized,
+        `${context}: panel stays initialized`,
+      );
+      assert.isUndefined(root.dataset.standalone);
+      assert.deepEqual(snapshot(root), before, `${context}: same conversation`);
+      assert.isAbove(
+        shortcutCount(root),
+        0,
+        `${context}: paper-mode shortcuts stay rendered`,
+      );
+    };
 
-    // The close path rebuilds the embedded panel itself; no reselect or
-    // sidenav click runs here, so this observes the standalone-close restore.
-    const restoredRoot = () =>
-      section.querySelector("#llm-main") as HTMLElement | null;
-    await until(
-      () => Boolean(restoredRoot()?.dataset.handlersInitialized),
-      "standalone close restores an initialized embedded panel",
-    );
-    const restored = restoredRoot()!;
-    assert.notStrictEqual(restored, root);
-    assert.isUndefined(restored.dataset.standalone);
-    assert.deepEqual(
-      {
-        conversationKey: restored.dataset.itemId,
-        paperItemId: restored.dataset.basePaperItemId,
-        conversationKind: restored.dataset.conversationKind,
-        conversationSystem: restored.dataset.conversationSystem,
-      },
-      before,
-    );
-    await until(
-      () => shortcutCount(restoredRoot()!) > 0,
-      "restored embedded panel renders paper-mode shortcuts",
-    );
+    await api.openStandaloneForItem(fixture.parentItemId);
+    await Zotero.Promise.delay(300);
+    assertUnchanged("while the standalone window is open");
+    await api.closeStandalone();
+    await Zotero.Promise.delay(300);
+    assertUnchanged("after the standalone window closes");
   });
 });
