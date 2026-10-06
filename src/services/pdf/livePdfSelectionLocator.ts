@@ -4243,7 +4243,7 @@ export async function locateCurrentSelectionInLivePdfReader(
 export async function locateQuoteInLivePdfReader(
   reader: any,
   quoteText: string,
-  options?: { skipFindController?: boolean; exactOnly?: boolean },
+  options?: { exactOnly?: boolean },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),

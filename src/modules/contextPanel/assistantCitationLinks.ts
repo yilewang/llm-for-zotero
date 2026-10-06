@@ -2765,9 +2765,12 @@ type ResolvedQuoteCitationMatch = {
   candidate: AssistantCitationPaperCandidate;
   pageIndex: number;
   /**
-   * Only set when a reader actually reported it.  Zotero navigates by label
-   * when one is supplied, and a PDF's printed labels need not track its page
-   * order, so guessing one from the index can land on the wrong page.
+   * Set only by the viewer fallback, from `getPageLabelForIndex`. When the
+   * reader exposes no printed label for the page, that helper returns
+   * `${pageIndex + 1}`, so this label can be a guess rather than one the
+   * reader reported. Zotero navigates by label when one is supplied, and a
+   * PDF's printed labels need not track its page order, so a guessed label
+   * can land on the wrong page.
    */
   pageLabel?: string;
   quoteText: string;
@@ -2925,9 +2928,7 @@ async function locateQuoteByOpeningCitationCandidates(params: {
       continue;
     }
     for (const searchText of params.searchTexts) {
-      const result = await locateQuoteInLivePdfReader(reader, searchText, {
-        skipFindController: true,
-      });
+      const result = await locateQuoteInLivePdfReader(reader, searchText);
       if (
         acceptsOpenedQuoteMatch({
           authoritative: isAuthoritativeCitationCandidate(candidate),
@@ -2938,8 +2939,8 @@ async function locateQuoteByOpeningCitationCandidates(params: {
         matches.push({
           candidate,
           pageIndex,
-          // Left unset when the reader has no printed label for this page;
-          // see ResolvedQuoteCitationMatch.pageLabel.
+          // A guessed `${pageIndex + 1}` when the reader has no printed label
+          // for this page; see ResolvedQuoteCitationMatch.pageLabel.
           pageLabel: getPageLabelForIndex(reader, pageIndex) || undefined,
           quoteText: searchText,
           sourceMatchText: result.sourceMatchText,
@@ -3723,7 +3724,7 @@ async function resolveAndNavigateAssistantCitation(params: {
         const result = await locateQuoteInLivePdfReader(
           activeReader,
           normalizedQuoteText,
-          { skipFindController: true, exactOnly: true },
+          { exactOnly: true },
         );
         markCitationNavigationTiming(timing, "full quote locate", {
           source: "active-reader",
@@ -3819,7 +3820,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       const result = await locateQuoteInLivePdfReader(
         reader,
         normalizedQuoteText,
-        { skipFindController: true, exactOnly: true },
+        { exactOnly: true },
       );
       markCitationNavigationTiming(timing, "full quote locate", {
         source: "candidate",

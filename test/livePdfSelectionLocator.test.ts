@@ -324,9 +324,7 @@ describe("livePdfSelectionLocator", function () {
     };
 
     try {
-      const result = await locateQuoteInLivePdfReader(reader, quote, {
-        skipFindController: true,
-      });
+      const result = await locateQuoteInLivePdfReader(reader, quote);
 
       assert.equal(result.status, "resolved");
       assert.equal(result.confidence, "medium");
@@ -374,9 +372,7 @@ describe("livePdfSelectionLocator", function () {
     };
 
     try {
-      const result = await locateQuoteInLivePdfReader(reader, storedQuote, {
-        skipFindController: true,
-      });
+      const result = await locateQuoteInLivePdfReader(reader, storedQuote);
 
       assert.equal(result.status, "resolved");
       assert.equal(result.computedPageIndex, 1);
@@ -434,9 +430,7 @@ describe("livePdfSelectionLocator", function () {
     };
 
     try {
-      const result = await locateQuoteInLivePdfReader(reader, storedQuote, {
-        skipFindController: true,
-      });
+      const result = await locateQuoteInLivePdfReader(reader, storedQuote);
 
       assert.equal(result.status, "resolved");
       assert.equal(result.computedPageIndex, 10);
@@ -464,7 +458,6 @@ describe("livePdfSelectionLocator", function () {
       const result = await locateQuoteInLivePdfReader(
         reader,
         "The prediction index is the change in spread",
-        { skipFindController: true },
       );
 
       assert.equal(result.status, "unavailable");
