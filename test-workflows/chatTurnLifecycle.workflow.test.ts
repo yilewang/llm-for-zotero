@@ -60,6 +60,8 @@ type Row = Record<string, unknown>;
 /** One streamed chat completion that the test controls chunk by chunk. */
 type HeldStream = {
   url: string;
+  /** The JSON request body the panel sent. */
+  requestBody: string;
   push: (text: string) => void;
   reason: (text: string) => void;
   usage: (promptTokens: number, completionTokens: number) => void;
@@ -106,7 +108,11 @@ async function waitFor<T>(
   return value;
 }
 
-function createHeldStream(url: string, signal?: AbortSignal): HeldStream {
+function createHeldStream(
+  url: string,
+  requestBody: string,
+  signal?: AbortSignal,
+): HeldStream {
   const encoder = new TextEncoder();
   const queue: Uint8Array[] = [];
   let ended = false;
@@ -148,6 +154,7 @@ function createHeldStream(url: string, signal?: AbortSignal): HeldStream {
   }, 20);
   const stream: HeldStream = {
     url,
+    requestBody,
     push: (text) => send({ choices: [{ delta: { content: text } }] }),
     reason: (text) =>
       send({ choices: [{ delta: { reasoning_content: text } }] }),
@@ -318,7 +325,11 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
           }
         })();
         if (target === `${API_BASE}/chat/completions` && payload.stream) {
-          const stream = createHeldStream(target, init?.signal || undefined);
+          const stream = createHeldStream(
+            target,
+            String(init?.body || ""),
+            init?.signal || undefined,
+          );
           streams.push(stream);
           return {
             ok: true,
@@ -542,6 +553,34 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
+  it("send with a tag chip: the request carries the tag's papers", async function () {
+    const tagged = await api().createPaperWithPdfFixture({
+      title: "Chat turn lifecycle tagged paper",
+      pdfTitle: "chat-turn-lifecycle-tagged.pdf",
+      pages: ["A tagged page that only the tag scope brings in."],
+    });
+    try {
+      await surfacing(async () => {
+        const taggedItem = Zotero.Items.get(tagged.parentItemId);
+        taggedItem.addTag(TAG_NAME);
+        await taggedItem.saveTx();
+
+        const started = await startSend("What do the tagged papers say?");
+        const stream = await nextStream(0);
+        // The plain-chat planner resolves the tag chip to its papers, so the
+        // request names the tag scope and the tagged paper.
+        assert.include(stream.requestBody, `tag=${TAG_NAME}`);
+        assert.include(stream.requestBody, "papers=1");
+        assert.include(stream.requestBody, "Chat turn lifecycle tagged paper");
+        stream.push("Tagged answer.");
+        stream.finish();
+        await waitForSendSettled(started);
+      });
+    } finally {
+      await api().cleanupFixture(tagged);
+    }
+  });
+
   it("send cancelled while the stream is held: partial text kept, not interrupted", async function () {
     await surfacing(async () => {
       const started = await startSend("Start an answer, then stop.");
@@ -756,6 +795,8 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
         RETRY_ENTRY_ID,
       );
       const stream = await nextStream(1);
+      // The retry's planner also gets the stored tag chip.
+      assert.include(stream.requestBody, `tag=${TAG_NAME}`);
       stream.reason("Reading again.");
       stream.push("Retried ");
       stream.push("answer.");
