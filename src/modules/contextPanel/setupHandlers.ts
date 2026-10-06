@@ -180,6 +180,7 @@ import {
   refreshChat,
   syncUserContextAlignmentWidths,
   getConversationKey,
+  canIsolateConversationForWebChat,
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   requestChatScrollFollowBottom,
@@ -1540,7 +1541,7 @@ export function setupHandlers(
         await createAndSwitchPaperConversation(true);
         return;
       }
-      await ensureConversationLoaded(item);
+      await ensureConversationLoaded(item, { body });
       restoreDraftInputForCurrentConversation();
       refreshChatPreservingScroll();
       resetComposePreviewUI();
@@ -1664,7 +1665,7 @@ export function setupHandlers(
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
     await renderShortcuts(
       body,
@@ -2307,7 +2308,8 @@ export function setupHandlers(
     getCurrentRuntimeModeForItem: (targetItem) =>
       selectedRuntimeModeCache.get(getConversationKey(targetItem)) || null,
     isGlobalMode,
-    ensureConversationLoaded,
+    ensureConversationLoaded: (targetItem) =>
+      ensureConversationLoaded(targetItem, { body }),
     getConversationKey,
     getHistory: (conversationKey) => chatHistory.get(conversationKey) || [],
     captureOwnership: (operation, targetConversationKey) => {
@@ -2785,7 +2787,7 @@ export function setupHandlers(
   );
   const getLatestEditablePair = async () => {
     if (!item) return null;
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     const key = getConversationKey(item);
     const history = chatHistory.get(key) || [];
     const pair = findLatestRetryPair(history);
@@ -4967,6 +4969,7 @@ export function setupHandlers(
     getSelectedModelInfo: () => getSelectedModelInfo(),
     markNextWebChatSendAsNewChat: () => markNextWebChatSendAsNewChat(),
     primeFreshWebChatPaperChipState: () => primeFreshWebChatPaperChipState(),
+    moveToOwnWebChatSession: () => moveToOwnWebChatSession(),
     updateImagePreviewPreservingScroll,
     switchConversationSystem,
     setActiveEditSession: (value) => {
@@ -6032,11 +6035,46 @@ export function setupHandlers(
     }
   };
 
+  // In WebChat a paper chat panel is only ever on the paper's WebChat session,
+  // never on its ordinary chat: WebChat empties the chat it is on, and the
+  // other surface (on an API model) may show that chat. A panel that opens in
+  // WebChat on an ordinary chat moves to the WebChat session, as picking a
+  // WebChat model does.
+  let movingToOwnWebChatSession = false;
+  async function moveToOwnWebChatSession(): Promise<void> {
+    // The move itself switches the panel; it never starts a second move.
+    if (movingToOwnWebChatSession) return;
+    movingToOwnWebChatSession = true;
+    let anchored = false;
+    try {
+      anchored = (await ensureWebChatSessionPaperConversation()) === true;
+    } finally {
+      movingToOwnWebChatSession = false;
+    }
+    if (!isWebChatMode()) return;
+    if (!anchored) {
+      await leaveWebChatMode({ restoreConversation: false });
+      if (status) setStatus(status, t("Failed to create paper chat"), "error");
+      return;
+    }
+    resetCurrentWebChatConversation();
+    refreshChatPreservingScroll();
+  }
+
   const initializeWebChatConversationForCurrentItem = () => {
     if (!item) return;
     const key = getConversationKey(item);
     const hadWebChatSession =
       webChatIsolatedConversationKeys.has(key) && chatHistory.has(key);
+    if (
+      !hadWebChatSession &&
+      (isPaperMode() || !canIsolateConversationForWebChat(key, body))
+    ) {
+      void moveToOwnWebChatSession().catch((err) => {
+        appLogger.warn("LLM: Failed to open the WebChat session", err);
+      });
+      return;
+    }
     webChatIsolatedConversationKeys.add(key);
     if (!hadWebChatSession) {
       chatHistory.set(key, []);

@@ -301,7 +301,7 @@ export function registerReaderContextPanel() {
     void (async () => {
       try {
         if (resolvedState.item)
-          await ensureConversationLoaded(resolvedState.item);
+          await ensureConversationLoaded(resolvedState.item, { body });
         if (!isPanelOperationLeaseCurrent(hostLease)) return;
         if (!claimDeferredChatRender(body, chatRenderCycle)) return;
         refreshChat(body, resolvedState.item);
@@ -579,7 +579,7 @@ export function registerReaderContextPanel() {
       }
 
       if (resolvedItem) {
-        await ensureConversationLoaded(resolvedItem);
+        await ensureConversationLoaded(resolvedItem, { body });
       }
       // Bail if a newer render has started while we were awaiting.
       if (renderGeneration !== thisGeneration) return;

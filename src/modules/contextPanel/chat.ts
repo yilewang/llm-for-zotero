@@ -528,9 +528,17 @@ function resolveSurfaceForMountedItem(
   return shownInWindow ? "standalone" : "embedded";
 }
 
-function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
+/**
+ * Whether `item`'s chat goes to WebChat for the given surface's choices.
+ * Callers with a panel body pass its surface: both surfaces can show the same
+ * item, and only one of them may be in WebChat.
+ */
+function isEffectiveWebChatRequest(
+  item: Zotero.Item,
+  surface?: SelectionSurface,
+): boolean {
   try {
-    const requestConfig = resolveEffectiveRequestConfig({ item });
+    const requestConfig = resolveEffectiveRequestConfig({ item, surface });
     return (
       requestConfig.authMode === "webchat" ||
       requestConfig.providerProtocol === "web_sync"
@@ -538,6 +546,45 @@ function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a live panel other than `exceptBody` shows the conversation outside
+ * WebChat (the other surface still on an API model, say).
+ */
+export function isConversationShownOutsideWebChat(
+  conversationKey: number,
+  exceptBody?: Element | null,
+  isWebChatPanel: (body: Element, item: Zotero.Item) => boolean = (
+    body,
+    item,
+  ) => isEffectiveWebChatRequest(item, resolveSelectionSurfaceForBody(body)),
+): boolean {
+  for (const [body, getItem] of activeContextPanels) {
+    if (body === exceptBody || !body.isConnected) continue;
+    const item = getItem?.() || null;
+    if (!item) continue;
+    if (getPanelBodyConversationKey(body, item) !== conversationKey) continue;
+    if (!isWebChatPanel(body, item)) return true;
+  }
+  return false;
+}
+
+/**
+ * WebChat isolation empties a conversation's shared in-memory history. It
+ * never touches a conversation another panel shows outside WebChat: the panel
+ * entering WebChat moves to its own WebChat session instead. A conversation
+ * already isolated stays isolated.
+ */
+export function canIsolateConversationForWebChat(
+  conversationKey: number,
+  body?: Element | null,
+  isWebChatPanel?: (body: Element, item: Zotero.Item) => boolean,
+): boolean {
+  return (
+    webChatIsolatedConversationKeys.has(conversationKey) ||
+    !isConversationShownOutsideWebChat(conversationKey, body, isWebChatPanel)
+  );
 }
 
 function isolateWebChatConversationKey(
@@ -2311,7 +2358,15 @@ function toPanelMessage(message: StoredChatMessage): Message {
 
 export async function ensureConversationLoaded(
   item: Zotero.Item,
+  options: {
+    /** The panel loading it; its surface decides whether it is in WebChat. */
+    body?: Element | null;
+  } = {},
 ): Promise<void> {
+  const surface = options.body
+    ? resolveSelectionSurfaceForBody(options.body)
+    : undefined;
+  const isWebChatForCaller = () => isEffectiveWebChatRequest(item, surface);
   // Provision first.  A paper's historical default key may have been
   // permanently retired; provisioning then allocates a fresh key and updates
   // the active scope before this function captures the key used by all load,
@@ -2344,7 +2399,12 @@ export async function ensureConversationLoaded(
     conversationForkLinks.delete(conversationKey);
     return;
   }
-  if (isEffectiveWebChatRequest(item)) {
+  if (isWebChatForCaller()) {
+    // Another panel shows this chat outside WebChat: leave its history
+    // alone. The panel entering WebChat moves to its own WebChat session.
+    if (!canIsolateConversationForWebChat(conversationKey, options.body)) {
+      return;
+    }
     isolateWebChatConversationKey(
       conversationKey,
       !webChatIsolatedConversationKeys.has(conversationKey),
@@ -2460,7 +2520,8 @@ export async function ensureConversationLoaded(
       }
       if (
         webChatIsolatedConversationKeys.has(conversationKey) ||
-        isEffectiveWebChatRequest(item)
+        (isWebChatForCaller() &&
+          canIsolateConversationForWebChat(conversationKey, options.body))
       ) {
         isolateWebChatConversationKey(conversationKey, false);
         shouldMarkLoaded = true;
@@ -5255,7 +5316,7 @@ export async function editLatestUserMessageAndRetry(
   if (requestId !== undefined) {
     if (!isRequestOwner(initialConversationKey, requestId)) return "stale";
   }
-  await ensureConversationLoaded(item);
+  await ensureConversationLoaded(item, { body });
   const conversationKey = getConversationKey(item);
   if (requestId !== undefined) {
     if (
@@ -5643,7 +5704,7 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
-    await ensureConversationLoaded(item);
+    await ensureConversationLoaded(item, { body });
   } catch (error) {
     finishPanelRequest(body, item, initialConversationKey, thisRequestId);
     throw error;
@@ -6635,7 +6696,7 @@ export async function editUserTurnAndRetry(opts: {
   if (requestId !== undefined) {
     if (!isRequestOwner(initialConversationKey, requestId)) return false;
   }
-  await ensureConversationLoaded(item);
+  await ensureConversationLoaded(item, { body });
   const conversationKey = getConversationKey(item);
   if (requestId !== undefined) {
     if (
@@ -7560,7 +7621,8 @@ function buildAgentEngineDeps(
       scheduleQueuedInputDrain(body, scope);
     },
     createPanelUpdateHelpers,
-    ensureConversationLoaded,
+    ensureConversationLoaded: (targetItem) =>
+      ensureConversationLoaded(targetItem, { body: panelBody }),
     getConversationKey,
     buildLLMHistoryMessages,
     buildAgentRuntimeRequest: (requestParams) =>
@@ -8103,7 +8165,7 @@ export async function sendQuestion(
 
   const shownQuestion = displayQuestion || question;
   try {
-    await ensureConversationLoaded(item);
+    await ensureConversationLoaded(item, { body });
   } catch (error) {
     finishBeforeDispatch();
     throw error;

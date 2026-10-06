@@ -82,7 +82,7 @@ describe("webchat isolation", function () {
     const switchStart = source.indexOf("const switchPaperConversation = async");
     const webchatBranch = source.indexOf("if (isWebChatMode()) {", switchStart);
     const webchatBlockEnd = source.indexOf(
-      "} else {\n      await ensureConversationLoaded(item as Zotero.Item);",
+      "} else {\n      await ensureConversationLoaded(item as Zotero.Item, { body });",
       webchatBranch,
     );
     const webchatBlock = source.slice(webchatBranch, webchatBlockEnd);
@@ -115,7 +115,7 @@ describe("webchat isolation", function () {
       webchatBranch,
     );
     const normalLoad = source.indexOf(
-      "await ensureConversationLoaded(item as Zotero.Item);",
+      "await ensureConversationLoaded(item as Zotero.Item, { body });",
       webchatBranch,
     );
 
@@ -142,7 +142,7 @@ describe("webchat isolation", function () {
       "export async function ensureConversationLoaded",
     );
     const webchatGuard = source.indexOf(
-      "isEffectiveWebChatRequest(item)",
+      "if (isWebChatForCaller()) {",
       ensureStart,
     );
     const isolateCall = source.indexOf(

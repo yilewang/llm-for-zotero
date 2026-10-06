@@ -47,6 +47,7 @@ import {
 } from "../../menuPositioning";
 import { renderShortcuts } from "../../shortcuts";
 import {
+  canIsolateConversationForWebChat,
   ensureConversationLoaded,
   getConversationKey,
   refreshConversationPanels,
@@ -327,6 +328,11 @@ export type HistoryLifecycleControllerDeps = {
   };
   markNextWebChatSendAsNewChat: () => void;
   primeFreshWebChatPaperChipState: () => void;
+  /**
+   * Moves the panel (in WebChat) to the paper's own WebChat session; leaves
+   * WebChat if there is none.
+   */
+  moveToOwnWebChatSession: () => Promise<void>;
   updateImagePreviewPreservingScroll: () => void;
   switchConversationSystem: (
     nextSystem: ConversationSystem,
@@ -2335,7 +2341,7 @@ export function createHistoryLifecycleController(
     closeExportMenu();
     closeHistoryNewMenu();
     closeHistoryMenu();
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (!isPanelOperationLeaseCurrent(hostLease)) return false;
     invalidateHistorySearchDocument(normalizedConversationKey);
     restoreDraftInputForCurrentConversation();
@@ -2565,7 +2571,17 @@ export function createHistoryLifecycleController(
     syncConversationIdentity();
     refreshAutoLoadedPaperContextForCurrentItem();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
-    if (isWebChatMode()) {
+    // In WebChat the panel is only ever on a WebChat session row (isolated
+    // above), never on the paper's ordinary chat: WebChat empties the chat it
+    // is on, and the other surface (on an API model) may show that chat. On
+    // an ordinary chat the panel shows it as it is for a moment and moves to
+    // the paper's own WebChat session.
+    const moveToOwnWebChatSession =
+      isWebChatMode() &&
+      !webChatIsolatedConversationKeys.has(resolvedConversationKey);
+    if (moveToOwnWebChatSession) {
+      // The chat's history stays as it is.
+    } else if (isWebChatMode()) {
       const hadWebChatSession =
         webChatIsolatedConversationKeys.has(resolvedConversationKey) &&
         chatHistory.has(resolvedConversationKey);
@@ -2577,7 +2593,7 @@ export function createHistoryLifecycleController(
       }
       loadedConversationKeys.add(resolvedConversationKey);
     } else {
-      await ensureConversationLoaded(item as Zotero.Item);
+      await ensureConversationLoaded(item as Zotero.Item, { body });
     }
     if (!isPanelOperationLeaseCurrent(hostLease)) return false;
     setActiveEditSession(null);
@@ -2597,6 +2613,11 @@ export function createHistoryLifecycleController(
     updateModelButton();
     updateReasoningButton();
     void refreshGlobalHistoryHeader();
+    if (moveToOwnWebChatSession) {
+      void deps.moveToOwnWebChatSession().catch((error) => {
+        appLogger.warn("LLM: Failed to open the WebChat session", error);
+      });
+    }
     return true;
   };
 
@@ -3104,7 +3125,7 @@ export function createHistoryLifecycleController(
       if (status) setStatus(status, t("Delete target changed"), "error");
       return;
     }
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (
       !isOwnedPanelOperationCurrent(ownership, "delete-turn-load") ||
       !item ||
@@ -3902,9 +3923,13 @@ export function createHistoryLifecycleController(
           }
         })();
         const key = getConversationKey(item);
-        webChatIsolatedConversationKeys.add(key);
-        chatHistory.set(key, []);
-        loadedConversationKeys.add(key);
+        // Never empty a chat another panel shows outside WebChat (this panel
+        // is still moving to its own WebChat session).
+        if (canIsolateConversationForWebChat(key, body)) {
+          webChatIsolatedConversationKeys.add(key);
+          chatHistory.set(key, []);
+          loadedConversationKeys.add(key);
+        }
         refreshChatPreservingScroll();
         if (status)
           setStatus(status, t("New chat — send a message to start"), "ready");

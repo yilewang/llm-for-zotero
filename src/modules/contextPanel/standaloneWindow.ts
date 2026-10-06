@@ -1695,7 +1695,9 @@ export function openStandaloneChat(options?: {
         void (async () => {
           try {
             if (!isCurrentMount()) return;
-            await ensureConversationLoaded(mountedItem);
+            await ensureConversationLoaded(mountedItem, {
+              body: contentArea,
+            });
             if (!isCurrentMount()) return;
             refreshChat(contentArea, mountedItem);
             // Refresh sidebar after conversation is confirmed loaded

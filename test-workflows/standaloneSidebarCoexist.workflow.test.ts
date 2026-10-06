@@ -1891,6 +1891,285 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
    * (externalBackendBridge.conversationSystemGate.test.ts), since the test
    * profile has no bridge to answer.
    */
+  // ── T13 ──────────────────────────────────────────────────────────────────
+
+  const WEBCHAT_GROUP_ID = "workflow-coexist-webchat-group";
+  const WEBCHAT_ENTRY = "workflow-coexist-webchat-model";
+  const apiModelGroup = () => ({
+    id: GROUP_ID,
+    authMode: "api_key",
+    apiBase: API_BASE,
+    apiKey: "workflow-dummy-key",
+    providerProtocol: "openai_chat_compat",
+    models: [
+      {
+        id: ENTRY_A,
+        model: MODEL_A,
+        temperature: 0.3,
+        outputTokenLimit: { mode: "auto" },
+      },
+      {
+        id: ENTRY_B,
+        model: MODEL_B,
+        temperature: 0.3,
+        outputTokenLimit: { mode: "auto" },
+      },
+    ],
+  });
+
+  /** Offers a ChatGPT WebChat model (as webchatModeSwitching does; no account needed). */
+  function offerWebChatModel(): void {
+    setModelProviderGroups([
+      apiModelGroup(),
+      {
+        id: WEBCHAT_GROUP_ID,
+        apiBase: "",
+        apiKey: "",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+        models: [
+          {
+            id: WEBCHAT_ENTRY,
+            model: "chatgpt.com",
+            temperature: 0.7,
+            maxTokens: 4096,
+          },
+        ],
+      },
+    ] as any);
+  }
+
+  async function pickSidebarWebChat(): Promise<void> {
+    const body = sidebarBody()!;
+    (body.querySelector("#llm-model-toggle") as HTMLButtonElement).click();
+    const selector = `#llm-model-menu .llm-model-option[data-entry-id="${WEBCHAT_ENTRY}"]`;
+    let option: HTMLElement | null = null;
+    await until(
+      () => {
+        option =
+          body.querySelector<HTMLElement>(selector) ||
+          body.ownerDocument.querySelector<HTMLElement>(selector);
+        return Boolean(option);
+      },
+      () => "the sidebar's model menu offers the WebChat model",
+    );
+    option!.click();
+  }
+
+  async function leaveSidebarWebChatAndForgetModel(): Promise<void> {
+    const clear = sidebarBody()?.querySelector(
+      "#llm-clear",
+    ) as HTMLButtonElement | null;
+    if (sidebarRoot()?.dataset.webchatMode === "true") clear?.click();
+    await until(
+      () => sidebarRoot()?.dataset.webchatMode !== "true",
+      () => "the sidebar leaves WebChat",
+    ).catch(() => undefined);
+    setModelProviderGroups([apiModelGroup()] as any);
+  }
+
+  async function sessionRowFlag(conversationKey: number, query: any) {
+    const rows = (await query.call(
+      Zotero.DB,
+      "SELECT webchat_session AS webchatSession FROM llm_for_zotero_paper_conversations WHERE conversation_key = ?",
+      [conversationKey],
+    )) as Array<{ webchatSession: number }>;
+    return rows[0]?.webchatSession;
+  }
+
+  /** One API turn in the window, asserting the request carries `carried`. */
+  async function windowTurnCarrying(
+    question: string,
+    answer: string,
+    carried: string[],
+    key: number,
+  ): Promise<void> {
+    typeAndSend(windowBody()!, question);
+    const stream = await provider.waitForStream(question, 10_000);
+    for (const text of carried) {
+      assert.include(
+        stream.requestBody,
+        text,
+        `the window's API request carries the chat's earlier "${text}"`,
+      );
+    }
+    stream.push(answer);
+    stream.finish();
+    await waitForAnswer(key, answer);
+  }
+
+  it("T13a: WebChat picked in the sidebar leaves the window's API chat of the same paper intact", async function () {
+    const paper = await newFixture("Coexist T13a");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const SEED = "Coexist T13a shared seed WEBCHAT-SHARED-SEED";
+    const key = await completeSidebarTurn(SEED, "T13A-SEED-ANSWER");
+    await api.openStandaloneForItem(paper.parentItemId);
+    await ensureWindowShowsConversation(key);
+    await until(
+      () => Boolean(userBubble(windowRoot(), "WEBCHAT-SHARED-SEED")),
+      () =>
+        `the window shows the shared chat: ${JSON.stringify(windowState())}`,
+    );
+    offerWebChatModel();
+    // Hold the sidebar's WebChat session lookup, so the window acts while
+    // the sidebar is in WebChat but still on the shared chat.
+    const originalQuery = Zotero.DB.queryAsync;
+    let releaseSessionLookup!: () => void;
+    const sessionLookupGate = new Promise<void>((resolve) => {
+      releaseSessionLookup = resolve;
+    });
+    let lookupStarted = false;
+    Zotero.DB.queryAsync = async function (sql: string, ...args: unknown[]) {
+      if (
+        sql.includes("FROM llm_for_zotero_paper_conversations") &&
+        sql.includes("COALESCE(webchat_session, 0) = 1")
+      ) {
+        lookupStarted = true;
+        await sessionLookupGate;
+      }
+      return Reflect.apply(originalQuery, Zotero.DB, [sql, ...args]);
+    };
+    try {
+      await pickSidebarWebChat();
+      await until(
+        () => lookupStarted && sidebarRoot()?.dataset.webchatMode === "true",
+        () =>
+          `the sidebar is in WebChat, looking up its session: ${JSON.stringify({
+            lookupStarted,
+            sidebar: sidebarState(),
+          })}`,
+      );
+
+      // The window, still on the API model, sends into the shared chat.
+      assert.notEqual(windowRoot()?.dataset.webchatMode, "true");
+      await windowTurnCarrying(
+        "Coexist T13a window follow-up WEBCHAT-WINDOW-Q",
+        "T13A-WINDOW-ANSWER",
+        ["WEBCHAT-SHARED-SEED", "T13A-SEED-ANSWER"],
+        key,
+      );
+
+      // The sidebar moves to its own WebChat session.
+      releaseSessionLookup();
+      await until(
+        () =>
+          sidebarRoot()?.dataset.webchatMode === "true" &&
+          toKey(sidebarRoot()?.dataset.itemId) > 0 &&
+          toKey(sidebarRoot()?.dataset.itemId) !== key,
+        () =>
+          `the sidebar is in WebChat on its own session: ${JSON.stringify(
+            sidebarState(),
+          )}`,
+      );
+      const sessionKey = toKey(sidebarRoot()?.dataset.itemId);
+      assert.equal(
+        await sessionRowFlag(sessionKey, originalQuery),
+        1,
+        "the sidebar's WebChat session is a WebChat session row",
+      );
+      await Zotero.Promise.delay(400);
+
+      // The window keeps the chat and its whole history.
+      assert.equal(toKey(windowRoot()?.dataset.itemId), key);
+      for (const marker of ["WEBCHAT-SHARED-SEED", "WEBCHAT-WINDOW-Q"]) {
+        assert.isOk(
+          userBubble(windowRoot(), marker),
+          `the window still shows "${marker}": ${JSON.stringify(windowState())}`,
+        );
+      }
+      await windowTurnCarrying(
+        "Coexist T13a window second WEBCHAT-WINDOW-Q2",
+        "T13A-WINDOW-ANSWER-2",
+        ["WEBCHAT-SHARED-SEED", "T13A-WINDOW-ANSWER"],
+        key,
+      );
+      assert.equal(
+        sidebarRoot()?.dataset.webchatMode,
+        "true",
+        "the sidebar stays in WebChat",
+      );
+      assert.equal(toKey(sidebarRoot()?.dataset.itemId), sessionKey);
+    } finally {
+      Zotero.DB.queryAsync = originalQuery;
+      releaseSessionLookup();
+      await leaveSidebarWebChatAndForgetModel();
+    }
+  });
+
+  it("T13b: selecting a paper while the sidebar is in WebChat puts the sidebar on the paper's WebChat session and leaves the window's API chat intact", async function () {
+    const paper = await newFixture("Coexist T13b");
+    const other = await newFixture("Coexist T13b other paper");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    const SEED = "Coexist T13b window chat seed WEBCHAT-MOUNT-SEED";
+    const key = await completeSidebarTurn(SEED, "T13B-SEED-ANSWER");
+    await api.openStandaloneForItem(paper.parentItemId);
+    await ensureWindowShowsConversation(key);
+    await until(
+      () => Boolean(userBubble(windowRoot(), "WEBCHAT-MOUNT-SEED")),
+      () => `the window shows the paper chat: ${JSON.stringify(windowState())}`,
+    );
+    offerWebChatModel();
+    try {
+      // The sidebar goes into WebChat on another paper ...
+      await openSidebarChat(other.parentItemId);
+      await ensureSidebarPaperChat(other.parentItemId);
+      await pickSidebarWebChat();
+      await until(
+        () =>
+          sidebarRoot()?.dataset.webchatMode === "true" &&
+          toKey(sidebarRoot()?.dataset.itemId) !== other.parentItemId,
+        () =>
+          `the sidebar is in WebChat on the other paper's session: ${JSON.stringify(
+            sidebarState(),
+          )}`,
+      );
+      // ... then the user selects the paper again: the window (which follows
+      // the selection in Paper chat) shows its API chat, and the sidebar
+      // opens in WebChat on that paper without emptying the window's chat.
+      await openSidebarChat(paper.parentItemId);
+      await until(
+        () => toKey(windowRoot()?.dataset.itemId) === key,
+        () =>
+          `the window shows the paper's chat again: ${JSON.stringify(windowState())}`,
+      );
+      await until(
+        () =>
+          sidebarRoot()?.dataset.webchatMode === "true" &&
+          toKey(sidebarRoot()?.dataset.itemId) > 0 &&
+          toKey(sidebarRoot()?.dataset.itemId) !== key,
+        () =>
+          `the sidebar is in WebChat on the paper's own WebChat session: ${JSON.stringify(
+            sidebarState(),
+          )}`,
+      );
+      assert.equal(
+        await sessionRowFlag(
+          toKey(sidebarRoot()?.dataset.itemId),
+          Zotero.DB.queryAsync,
+        ),
+        1,
+        "the sidebar's WebChat session is a WebChat session row",
+      );
+      await Zotero.Promise.delay(400);
+      const memory = (await history(key)).memory.map((entry) => entry.text);
+      assert.isTrue(
+        memory.some((text) => String(text).includes("WEBCHAT-MOUNT-SEED")),
+        `the window's chat keeps its history: ${JSON.stringify(memory)}`,
+      );
+      await windowTurnCarrying(
+        "Coexist T13b window follow-up WEBCHAT-MOUNT-Q",
+        "T13B-WINDOW-ANSWER",
+        ["WEBCHAT-MOUNT-SEED", "T13B-SEED-ANSWER"],
+        key,
+      );
+      assert.isOk(userBubble(windowRoot(), "WEBCHAT-MOUNT-SEED"));
+    } finally {
+      await leaveSidebarWebChatAndForgetModel();
+    }
+  });
+
   it("T8: the window keeps its own backend while the sidebar switches back to the API", async function () {
     const CODEX_TOGGLE =
       ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
