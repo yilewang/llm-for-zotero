@@ -67,6 +67,15 @@ type RequestRegistration = {
   accepts?: RequestAcceptor;
 };
 
+type SendRequestOptions = {
+  /**
+   * A request that times out marks the whole process unusable by default.
+   * Turn interrupts opt out: the turn's own failure handling decides whether
+   * the process can go, because another conversation may still be using it.
+   */
+  failProcessOnTimeout?: boolean;
+};
+
 type ServerRequest = {
   registration: RequestRegistration;
   controller: AbortController;
@@ -221,6 +230,8 @@ export class CodexAppServerProcess {
   private readLoopPromise: Promise<void> | null = null;
   private stderrLoopPromise: Promise<void> | null = null;
   private turnQueues = new Map<string, Promise<void>>();
+  private activeTurnCount = 0;
+  private destroyWhenIdleRequested = false;
   private serverVersion: [number, number, number] | null = null;
   private lineBuffer = "";
   private diagnosticBuffer = "";
@@ -551,6 +562,7 @@ export class CodexAppServerProcess {
     method: string,
     params?: unknown,
     timeoutMs = DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+    options: SendRequestOptions = {},
   ): Promise<unknown> {
     if (this.destroyed) {
       return Promise.reject(new Error("CodexAppServerProcess destroyed"));
@@ -578,7 +590,8 @@ export class CodexAppServerProcess {
                 `Timed out waiting for codex app-server response to ${method} after ${timeoutMs}ms`,
               );
               activePending.reject(error);
-              this.fail(error, true);
+              if (options.failProcessOnTimeout !== false)
+                this.fail(error, true);
             }, timeoutMs)
           : null;
       try {
@@ -619,7 +632,12 @@ export class CodexAppServerProcess {
       if (this.destroyed) {
         throw new Error("CodexAppServerProcess destroyed");
       }
-      return await callback();
+      const release = this.holdActiveTurn();
+      try {
+        return await callback();
+      } finally {
+        release();
+      }
     });
   }
 
@@ -662,6 +680,37 @@ export class CodexAppServerProcess {
         CODEX_APP_SERVER_CONCURRENT_TURNS_MIN_VERSION,
       ),
     );
+  }
+
+  /**
+   * Marks a turn as live on this process until the returned release is
+   * called. A process that was retired while turns were live is destroyed
+   * when the last of them releases.
+   */
+  holdActiveTurn(): () => void {
+    this.activeTurnCount++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeTurnCount--;
+      if (this.activeTurnCount <= 0 && this.destroyWhenIdleRequested) {
+        this.destroy();
+      }
+    };
+  }
+
+  getActiveTurnCount(): number {
+    return this.activeTurnCount;
+  }
+
+  /** Destroys the process now, or as soon as its last live turn ends. */
+  destroyWhenIdle(): void {
+    if (this.activeTurnCount <= 0) {
+      this.destroy();
+      return;
+    }
+    this.destroyWhenIdleRequested = true;
   }
 
   onNotification(method: string, handler: NotificationHandler): () => void {
@@ -1517,6 +1566,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
         // Ignore downstream consumer errors so the transport can finish cleanly.
       });
     };
+    // This turn is normally counted as live by the runTurnExclusive call
+    // around it; every other live turn belongs to another conversation.
+    const otherLiveTurns = () => Math.max(0, proc.getActiveTurnCount() - 1);
+    const retireProcess = () => {
+      if (!cacheKey) return;
+      retireCodexAppServerProcessAfterTurnFailure({
+        cacheKey,
+        proc,
+        processOptions: params.processOptions,
+        otherLiveTurns: otherLiveTurns(),
+      });
+    };
     const scheduleTimeout = () => {
       if (timeoutMs <= 0 || settled) return;
       if (timeoutId !== null) {
@@ -1527,13 +1588,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
           scheduleTimeout();
           return;
         }
-        if (cacheKey) {
-          destroyCachedCodexAppServerProcess(
-            cacheKey,
-            proc,
-            params.processOptions,
-          );
+        if (otherLiveTurns() > 0 && params.threadId && turnId) {
+          // Stop only this turn; the process stays up for the others.
+          void proc
+            .sendRequest(
+              "turn/interrupt",
+              { threadId: params.threadId, turnId },
+              5000,
+              { failProcessOnTimeout: false },
+            )
+            .catch(() => undefined);
         }
+        retireProcess();
         settle(() =>
           reject(
             new Error(
@@ -1545,35 +1611,30 @@ export function waitForCodexAppServerTurnCompletion(params: {
     };
     const abortHandler = () => {
       if (params.interruptOnAbort && params.threadId) {
+        // The interrupted turn stays live on the server until the interrupt
+        // answers, so it keeps its own hold for the decision below.
+        const releaseHold = proc.holdActiveTurn();
         void proc
           .sendRequest(
             "turn/interrupt",
             { threadId: params.threadId, turnId },
             5000,
+            { failProcessOnTimeout: false },
           )
           .catch((error) => {
             appLogger.warn(
-              "Codex app-server: turn/interrupt failed; destroying process",
+              "Codex app-server: turn/interrupt failed; retiring process",
               new Error(
                 redactAllRememberedLocalDocumentPathsFromTerminalText(
                   error instanceof Error ? error.message : String(error),
                 ),
               ),
             );
-            if (cacheKey) {
-              destroyCachedCodexAppServerProcess(
-                cacheKey,
-                proc,
-                params.processOptions,
-              );
-            }
-          });
-      } else if (cacheKey) {
-        destroyCachedCodexAppServerProcess(
-          cacheKey,
-          proc,
-          params.processOptions,
-        );
+            retireProcess();
+          })
+          .finally(releaseHold);
+      } else {
+        retireProcess();
       }
       settle(() => reject(createAbortError()));
     };
@@ -2757,6 +2818,58 @@ export function destroyCachedCodexAppServerProcess(
         proc.destroy();
       }
     });
+}
+
+/**
+ * Removes a process from the cache without destroying it, so new turns start
+ * on a fresh process while the turns already on this one finish.
+ */
+export function detachCachedCodexAppServerProcess(
+  cacheKey: string,
+  proc: CodexAppServerProcess,
+  options: CodexAppServerProcessOptions = {},
+): void {
+  const effectiveCacheKey = buildProcessCacheKey(cacheKey, options);
+  const existing = processCache.get(effectiveCacheKey);
+  if (!existing) return;
+  void existing
+    .then((cachedProc) => {
+      if (
+        cachedProc === proc &&
+        processCache.get(effectiveCacheKey) === existing
+      ) {
+        processCache.delete(effectiveCacheKey);
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * After a turn timed out or could not be stopped, its process is suspect. With
+ * no other live turn it is destroyed at once, as it always was. While another
+ * conversation still has a turn on it, it is taken out of the cache and
+ * destroyed when that turn ends, so the failure never kills a sibling turn.
+ */
+export function retireCodexAppServerProcessAfterTurnFailure(params: {
+  cacheKey: string;
+  proc: CodexAppServerProcess;
+  processOptions?: CodexAppServerProcessOptions;
+  otherLiveTurns: number;
+}): void {
+  if (params.otherLiveTurns <= 0) {
+    destroyCachedCodexAppServerProcess(
+      params.cacheKey,
+      params.proc,
+      params.processOptions,
+    );
+    return;
+  }
+  detachCachedCodexAppServerProcess(
+    params.cacheKey,
+    params.proc,
+    params.processOptions,
+  );
+  params.proc.destroyWhenIdle();
 }
 
 export async function getOrCreateCodexAppServerProcess(

@@ -740,6 +740,7 @@ describe("codexAppServerProcess", function () {
       assert.deepEqual(order.slice(-2), ["a1-end", "a2-start"]);
       secondA.release();
       assert.equal(await secondA.done, "a2");
+      assert.equal(proc.getActiveTurnCount(), 0);
     });
 
     it("keeps every turn on one queue when the Codex version is unknown or too old", async function () {
@@ -892,6 +893,180 @@ describe("codexAppServerProcess", function () {
         writes[0].error?.message,
         /item\/fileChange\/requestApproval/,
       );
+    });
+
+    it("keeps the process alive for a sibling turn when one turn times out", async function () {
+      let killed = false;
+      const writes: Array<Record<string, any>> = [];
+      const proc = createConcurrentProcess({
+        userAgent: CURRENT_USER_AGENT,
+        writes,
+        onKill: () => {
+          killed = true;
+        },
+      });
+      let releaseB!: () => void;
+      let bCompleted: Promise<string> | undefined;
+      const turnB = proc.runTurnExclusive(async () => {
+        bCompleted = waitForCodexAppServerTurnCompletion({
+          proc,
+          threadId: "thread-B",
+          turnId: "turn-B",
+          cacheKey: "concurrent-timeout-missing-cache-entry",
+          timeoutMs: 1000,
+        });
+        await new Promise<void>((resolve) => {
+          releaseB = resolve;
+        });
+        return bCompleted;
+      }, "conversation:B");
+      const turnA = proc.runTurnExclusive(
+        () =>
+          waitForCodexAppServerTurnCompletion({
+            proc,
+            threadId: "thread-A",
+            turnId: "turn-A",
+            cacheKey: "concurrent-timeout-missing-cache-entry",
+            timeoutMs: 10,
+          }),
+        "conversation:A",
+      );
+      let failure: unknown;
+      try {
+        await turnA;
+      } catch (error) {
+        failure = error;
+      }
+      assert.match(
+        String(failure),
+        /Timed out waiting for codex app-server turn completion/,
+      );
+      assert.isFalse(killed, "a sibling turn is still running on the process");
+      assert.isTrue(
+        writes.some(
+          (message) =>
+            message.method === "turn/interrupt" &&
+            message.params?.threadId === "thread-A" &&
+            message.params?.turnId === "turn-A",
+        ),
+        "the timed-out turn is interrupted on its own",
+      );
+      proc.handleMessage({
+        method: "item/agentMessage/delta",
+        params: { threadId: "thread-B", turnId: "turn-B", delta: "B answer" },
+      });
+      proc.handleMessage({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-B",
+          turn: { id: "turn-B", status: "completed" },
+        },
+      });
+      releaseB();
+      assert.equal(await turnB, "B answer");
+      assert.isTrue(killed, "the retired process goes once its last turn ends");
+    });
+
+    it("still destroys the process when a lone turn times out", async function () {
+      let killed = false;
+      const proc = createConcurrentProcess({
+        userAgent: CURRENT_USER_AGENT,
+        onKill: () => {
+          killed = true;
+        },
+      });
+      let failure: unknown;
+      try {
+        await proc.runTurnExclusive(
+          () =>
+            waitForCodexAppServerTurnCompletion({
+              proc,
+              threadId: "thread-A",
+              turnId: "turn-A",
+              cacheKey: "lone-timeout-missing-cache-entry",
+              timeoutMs: 10,
+            }),
+          "conversation:A",
+        );
+      } catch (error) {
+        failure = error;
+      }
+      assert.match(String(failure), /Timed out/);
+      assert.isTrue(killed);
+    });
+
+    it("keeps the process alive for a sibling turn when interrupting an aborted turn fails", async function () {
+      let killed = false;
+      const writes: Array<Record<string, any>> = [];
+      const proc = createConcurrentProcess({
+        userAgent: CURRENT_USER_AGENT,
+        writes,
+        onKill: () => {
+          killed = true;
+        },
+      });
+      let releaseB!: () => void;
+      const turnB = proc.runTurnExclusive(async () => {
+        await new Promise<void>((resolve) => {
+          releaseB = resolve;
+        });
+      }, "conversation:B");
+      const controller = new AbortController();
+      const turnA = proc.runTurnExclusive(
+        () =>
+          waitForCodexAppServerTurnCompletion({
+            proc,
+            threadId: "thread-A",
+            turnId: "turn-A",
+            signal: controller.signal,
+            interruptOnAbort: true,
+            cacheKey: "abort-sibling-missing-cache-entry",
+            timeoutMs: 1000,
+          }),
+        "conversation:A",
+      );
+      await tick();
+      controller.abort();
+      let failure: unknown;
+      try {
+        await turnA;
+      } catch (error) {
+        failure = error;
+      }
+      assert.equal((failure as Error)?.name, "AbortError");
+      const interrupt = writes.find(
+        (message) => message.method === "turn/interrupt",
+      );
+      assert.exists(interrupt);
+      proc.handleMessage({
+        id: interrupt!.id,
+        error: { code: -32000, message: "turn not found" },
+      });
+      await tick();
+      assert.isFalse(killed, "the sibling turn keeps its process");
+      releaseB();
+      await turnB;
+      await tick();
+      assert.isTrue(killed, "the retired process goes once its last turn ends");
+    });
+
+    it("does not kill the process when an interrupt times out", async function () {
+      let killed = false;
+      const proc = createConcurrentProcess({
+        onKill: () => {
+          killed = true;
+        },
+      });
+      let failure: unknown;
+      try {
+        await proc.sendRequest("turn/interrupt", { threadId: "t" }, 5, {
+          failProcessOnTimeout: false,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      assert.match(String(failure), /Timed out waiting/);
+      assert.isFalse(killed);
     });
   });
 

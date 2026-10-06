@@ -4293,4 +4293,63 @@ describe("Codex native turns of two conversations on one process", function () {
     assert.equal(resultA.text, `answer ${resultA.turnId}`);
     assert.equal(resultB.text, `answer ${resultB.turnId}`);
   });
+
+  it("stops one conversation without stopping the other", async function () {
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const controllerA = new AbortController();
+    const turns: Array<{
+      threadId: string;
+      turnId: string;
+      emit: (message: Record<string, unknown>) => void;
+    }> = [];
+    let markAStarted!: () => void;
+    const aStarted = new Promise<void>((resolve) => {
+      markAStarted = resolve;
+    });
+    const results = await runTwoConversations({
+      requests,
+      onTurn: (turn) => {
+        turns.push(turn);
+        if (turns.length === 2) markAStarted();
+      },
+      runA: (run) => run({ signal: controllerA.signal }),
+      runB: async (run) => {
+        const pending = run({});
+        await aStarted;
+        const [first, second] = turns;
+        // Whichever turn started first, the one not on A's signal is B's.
+        controllerA.abort();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const interrupted = requests.find(
+          (request) => request.method === "turn/interrupt",
+        );
+        const turnB = [first, second].find(
+          (turn) => turn.turnId !== interrupted?.params.turnId,
+        )!;
+        turnB.emit({
+          method: "item/agentMessage/delta",
+          params: { turnId: turnB.turnId, delta: "B still answers" },
+        });
+        turnB.emit({
+          method: "turn/completed",
+          params: { turn: { id: turnB.turnId, status: "completed" } },
+        });
+        return pending;
+      },
+    });
+    assert.equal(results[0].status, "rejected");
+    assert.equal(
+      ((results[0] as PromiseRejectedResult).reason as Error)?.name,
+      "AbortError",
+    );
+    assert.equal(results[1].status, "fulfilled", JSON.stringify(results[1]));
+    assert.equal(
+      (results[1] as PromiseFulfilledResult<any>).value.text,
+      "B still answers",
+    );
+    const interrupts = requests.filter(
+      (request) => request.method === "turn/interrupt",
+    );
+    assert.lengthOf(interrupts, 1);
+  });
 });
