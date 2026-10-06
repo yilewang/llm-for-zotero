@@ -123,6 +123,11 @@ import type {
   TagContextRef,
 } from "../../../shared/types";
 import type { ResolvedContextSource } from "../types";
+import {
+  toAgentRuntimeRequestParams,
+  type BuildAgentRuntimeRequestParams,
+  type EffectiveRequestConfig,
+} from "../requestContext";
 import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
 import type { ChatMessage } from "../../../utils/llmClient";
@@ -1181,57 +1186,6 @@ function extractPaperContextCandidatesFromToolContent(
 export const extractPaperContextCandidatesFromToolContentForTests =
   extractPaperContextCandidatesFromToolContent;
 
-type EffectiveRequestConfigShape = {
-  model: string;
-  apiBase: string;
-  apiKey: string;
-  authMode:
-    | "api_key"
-    | "codex_auth"
-    | "codex_app_server"
-    | "copilot_auth"
-    | "webchat";
-  providerProtocol?:
-    | "codex_responses"
-    | "responses_api"
-    | "openai_chat_compat"
-    | "anthropic_messages"
-    | "gemini_native"
-    | "ollama_native"
-    | "web_sync";
-  modelEntryId?: string;
-  modelProviderLabel?: string;
-  reasoning: LLMReasoningConfig | undefined;
-  advanced: AdvancedModelParams | undefined;
-};
-
-type BuildAgentRuntimeRequestParamsShape = {
-  conversationKey: number;
-  conversationGeneration?: number;
-  sourceMessageTimestamp?: number;
-  item: Zotero.Item;
-  activePaperContext?: PaperContextRef;
-  userText: string;
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts: PaperContextRef[];
-  citationPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  attachments: ChatAttachment[] | undefined;
-  localDocuments?: readonly LocalDocumentResource[];
-  screenshots: string[] | undefined;
-  forcedSkillIds?: string[];
-  effectiveRequestConfig: EffectiveRequestConfigShape;
-  history: ChatMessage[];
-};
-
 type LatestRetryPairShape = {
   userIndex: number;
   userMessage: Message;
@@ -1357,7 +1311,7 @@ export type AgentEngineDeps = {
   getConversationKey: (item: Zotero.Item) => number;
   buildLLMHistoryMessages: (history: Message[]) => ChatMessage[];
   buildAgentRuntimeRequest: (
-    params: BuildAgentRuntimeRequestParamsShape,
+    params: BuildAgentRuntimeRequestParams,
   ) => AgentRuntimeRequest | Promise<AgentRuntimeRequest>;
   resolveLocalPdfResources: (
     paperContexts: PaperContextRef[],
@@ -1386,7 +1340,7 @@ export type AgentEngineDeps = {
     modelProviderLabel?: string;
     reasoning?: LLMReasoningConfig;
     advanced?: AdvancedModelParams;
-  }) => EffectiveRequestConfigShape;
+  }) => EffectiveRequestConfig;
   normalizeSelectedTexts: (
     selectedTexts: unknown,
     legacySelectedText?: unknown,
@@ -1910,32 +1864,38 @@ export async function sendAgentTurn(
       modelProviderLabel: userMessage.modelProviderLabel,
     });
   }
-  const runtimeRequest = await deps.buildAgentRuntimeRequest({
-    conversationKey,
-    conversationGeneration: deps.conversationGeneration,
-    sourceMessageTimestamp: userMessage.timestamp,
-    item,
-    activePaperContext,
-    userText: question,
-    selectedTextContexts: selectedTextContextsForMessage,
-    resolvedSelectedTextAnchors,
-    selectedTexts: selectedTextsForMessage,
-    selectedTextSources: selectedTextSourcesForMessage,
-    selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-    selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-    paperContexts: paperContextsForMessage,
-    pdfPaperContexts: pdfPaperContextsForMessage,
-    fullTextPaperContexts: fullTextPaperContextsForMessage,
-    citationPaperContexts: userMessage.citationPaperContexts,
-    selectedCollectionContexts,
-    selectedTagContexts,
-    attachments: modelAttachments ?? attachments,
-    localDocuments,
-    screenshots: images,
-    forcedSkillIds,
-    effectiveRequestConfig,
-    history: llmHistory,
-  });
+  const runtimeRequest = await deps.buildAgentRuntimeRequest(
+    toAgentRuntimeRequestParams(
+      {
+        activePaperContext,
+        selectedTextContexts: selectedTextContextsForMessage,
+        resolvedSelectedTextAnchors,
+        selectedTexts: selectedTextsForMessage,
+        selectedTextSources: selectedTextSourcesForMessage,
+        selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+        selectedTextNoteContexts: selectedTextNoteContextsForMessage,
+        selectedPaperContexts: paperContextsForMessage,
+        pdfPaperContexts: pdfPaperContextsForMessage,
+        fullTextPaperContexts: fullTextPaperContextsForMessage,
+        citationPaperContexts: userMessage.citationPaperContexts,
+        selectedCollectionContexts,
+        selectedTagContexts,
+        attachments: modelAttachments ?? attachments,
+        localDocuments,
+        screenshots: images,
+        forcedSkillIds,
+      },
+      {
+        conversationKey,
+        conversationGeneration: deps.conversationGeneration,
+        sourceMessageTimestamp: userMessage.timestamp,
+        item,
+        userText: question,
+        effectiveRequestConfig,
+        history: llmHistory,
+      },
+    ),
+  );
   const agentRuntime = deps.getAgentRuntime();
   const capabilities = agentRuntime.getCapabilities(runtimeRequest);
   if (!capabilities.toolCalls) {
@@ -2483,32 +2443,40 @@ export async function retryAgentTurn(
     retryPair.userMessage.modelAttachments ??
     retryPair.userMessage.attachments?.filter((a) => a.category !== "image");
 
-  const runtimeRequest = await deps.buildAgentRuntimeRequest({
-    conversationKey,
-    conversationGeneration: deps.conversationGeneration,
-    sourceMessageTimestamp: retryPair.userMessage.timestamp,
-    item,
-    activePaperContext:
-      activePaperContextOverride ?? retryPaperContext.activePaperContext,
-    userText: question,
-    selectedTextContexts: selectedTextContextsRaw,
-    resolvedSelectedTextAnchors,
-    selectedTexts: selectedTextsRaw,
-    selectedTextSources: selectedTextSourcesRaw,
-    selectedTextPaperContexts: selectedTextPaperContextsRaw,
-    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
-    paperContexts,
-    pdfPaperContexts,
-    fullTextPaperContexts,
-    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
-    selectedCollectionContexts,
-    selectedTagContexts,
-    attachments: retryModelAttachments,
-    localDocuments: retryLocalDocuments,
-    screenshots: screenshotImages,
-    effectiveRequestConfig,
-    history: historyForLLM,
-  });
+  // The retry hands over no forced skills: the field stays absent.
+  const runtimeRequest = await deps.buildAgentRuntimeRequest(
+    toAgentRuntimeRequestParams(
+      {
+        activePaperContext:
+          activePaperContextOverride ?? retryPaperContext.activePaperContext,
+        selectedTextContexts: selectedTextContextsRaw,
+        resolvedSelectedTextAnchors,
+        selectedTexts: selectedTextsRaw,
+        selectedTextSources: selectedTextSourcesRaw,
+        selectedTextPaperContexts: selectedTextPaperContextsRaw,
+        selectedTextNoteContexts:
+          retryPair.userMessage.selectedTextNoteContexts,
+        selectedPaperContexts: paperContexts,
+        pdfPaperContexts,
+        fullTextPaperContexts,
+        citationPaperContexts: retryPair.userMessage.citationPaperContexts,
+        selectedCollectionContexts,
+        selectedTagContexts,
+        attachments: retryModelAttachments,
+        localDocuments: retryLocalDocuments,
+        screenshots: screenshotImages,
+      },
+      {
+        conversationKey,
+        conversationGeneration: deps.conversationGeneration,
+        sourceMessageTimestamp: retryPair.userMessage.timestamp,
+        item,
+        userText: question,
+        effectiveRequestConfig,
+        history: historyForLLM,
+      },
+    ),
+  );
   if (!requestIsActive()) {
     restorePreviousAssistant();
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);

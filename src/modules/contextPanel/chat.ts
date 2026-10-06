@@ -75,6 +75,17 @@ import {
   type CodexNativeConversationScope,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
+import {
+  toAgentRuntimeRequestParams,
+  toCodexNativeSkillContext,
+  type BuildAgentRuntimeRequestParams,
+  type EffectiveRequestConfig,
+  type TurnRequestContext,
+} from "./requestContext";
+export type {
+  BuildAgentRuntimeRequestParams,
+  EffectiveRequestConfig,
+} from "./requestContext";
 import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
@@ -3318,23 +3329,6 @@ function createPanelUpdateHelpers(
   };
 }
 
-export type EffectiveRequestConfig = {
-  model: string;
-  apiBase: string;
-  apiKey: string;
-  authMode:
-    | "api_key"
-    | "codex_auth"
-    | "codex_app_server"
-    | "copilot_auth"
-    | "webchat";
-  providerProtocol?: ProviderProtocol;
-  modelEntryId?: string;
-  modelProviderLabel?: string;
-  reasoning: LLMReasoningConfig | undefined;
-  advanced: AdvancedModelParams | undefined;
-};
-
 function resolveEffectiveProviderCapabilities(config: EffectiveRequestConfig) {
   return resolveProviderCapabilities({
     model: config.model || "",
@@ -3597,71 +3591,203 @@ function resolveCodexNativeConversationScope(params: {
   };
 }
 
-function buildCodexNativeSkillContext(params: {
-  forcedSkillIds?: string[];
-  selectedTextContexts?: SelectedTextContext[];
+/**
+ * The locals of the Codex send flow that its agent request and its native
+ * skill context read, under the flow's own names. The send and the retry
+ * each keep their own field values (they differ on purpose or by an open
+ * product decision); golden tests in test/requestContext.test.ts pin them.
+ */
+type CodexSendRequestSite = {
+  conversationKey: number;
+  conversationGeneration?: number;
+  userMessage: Pick<
+    Message,
+    "timestamp" | "citationPaperContexts" | "pinnedPaperContexts"
+  >;
+  item: Zotero.Item;
+  shownQuestion: string;
+  selectedTextContextsForMessage: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts?: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts?: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
-  fullTextPaperContexts?: PaperContextRef[];
-  pinnedPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  screenshots?: string[];
+  selectedTextsForMessage: string[];
+  selectedTextSourcesForMessage: SelectedTextSource[];
+  selectedTextPaperContextsForMessage: (PaperContextRef | undefined)[];
+  selectedTextNoteContextsForMessage: (NoteContextRef | undefined)[];
+  contextPlan: Pick<
+    ContextPlanForRequest,
+    "paperContexts" | "fullTextPaperContexts"
+  >;
+  normalizedPdfPaperContexts: PaperContextRef[];
+  selectedCollectionContextsForMessage: CollectionContextRef[];
+  selectedTagContextsForMessage: TagContextRef[];
+  modelAttachments?: ChatAttachment[];
   attachments?: ChatAttachment[];
-}): CodexNativeSkillContext {
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
+  allSendImages: string[];
+  opts: { forcedSkillIds?: string[] };
+  effectiveRequestConfig: EffectiveRequestConfig;
+  llmHistory: ChatMessage[];
+};
+
+/**
+ * The Codex send's request context. The send asks the model for
+ * `modelAttachments || attachments` but routes skills on the visible
+ * attachments.
+ */
+function codexSendRequestContext({
+  userMessage,
+  selectedTextContextsForMessage,
+  resolvedSelectedTextAnchors,
+  selectedTextsForMessage,
+  selectedTextSourcesForMessage,
+  selectedTextPaperContextsForMessage,
+  selectedTextNoteContextsForMessage,
+  contextPlan,
+  normalizedPdfPaperContexts,
+  selectedCollectionContextsForMessage,
+  selectedTagContextsForMessage,
+  modelAttachments,
+  attachments,
+  localDocuments,
+  allSendImages,
+  opts,
+}: CodexSendRequestSite): TurnRequestContext {
   return {
-    forcedSkillIds: params.forcedSkillIds?.length
-      ? params.forcedSkillIds
-      : undefined,
-    selectedTextContexts: params.selectedTextContexts?.length
-      ? params.selectedTextContexts
-      : undefined,
-    resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors?.length
-      ? params.resolvedSelectedTextAnchors
-      : undefined,
-    selectedTexts: params.selectedTexts?.length
-      ? params.selectedTexts
-      : undefined,
-    selectedTextSources: params.selectedTextSources?.length
-      ? params.selectedTextSources
-      : undefined,
-    selectedTextPaperContexts: params.selectedTextPaperContexts?.some(Boolean)
-      ? params.selectedTextPaperContexts
-      : undefined,
-    selectedTextNoteContexts: params.selectedTextNoteContexts?.some(Boolean)
-      ? params.selectedTextNoteContexts
-      : undefined,
-    selectedPaperContexts: params.paperContexts?.length
-      ? params.paperContexts
-      : undefined,
-    pdfPaperContexts: params.pdfPaperContexts?.length
-      ? params.pdfPaperContexts
-      : undefined,
-    localDocuments: params.localDocuments?.length
-      ? params.localDocuments
-      : undefined,
-    fullTextPaperContexts: params.fullTextPaperContexts?.length
-      ? params.fullTextPaperContexts
-      : undefined,
-    pinnedPaperContexts: params.pinnedPaperContexts?.length
-      ? params.pinnedPaperContexts
-      : undefined,
-    selectedCollectionContexts: params.selectedCollectionContexts?.length
-      ? params.selectedCollectionContexts
-      : undefined,
-    selectedTagContexts: params.selectedTagContexts?.length
-      ? params.selectedTagContexts
-      : undefined,
-    screenshots: params.screenshots?.length ? params.screenshots : undefined,
-    attachments: params.attachments?.length ? params.attachments : undefined,
+    selectedTextContexts: selectedTextContextsForMessage,
+    resolvedSelectedTextAnchors,
+    selectedTexts: selectedTextsForMessage,
+    selectedTextSources: selectedTextSourcesForMessage,
+    selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+    selectedTextNoteContexts: selectedTextNoteContextsForMessage,
+    selectedPaperContexts: contextPlan.paperContexts,
+    pdfPaperContexts: normalizedPdfPaperContexts,
+    fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+    pinnedPaperContexts: userMessage.pinnedPaperContexts,
+    citationPaperContexts: userMessage.citationPaperContexts,
+    selectedCollectionContexts: selectedCollectionContextsForMessage,
+    selectedTagContexts: selectedTagContextsForMessage,
+    attachments: modelAttachments || attachments,
+    skillAttachments: attachments,
+    localDocuments,
+    screenshots: allSendImages,
+    forcedSkillIds: opts.forcedSkillIds,
   };
 }
+
+function codexSendRequestParams(
+  site: CodexSendRequestSite,
+): BuildAgentRuntimeRequestParams {
+  return toAgentRuntimeRequestParams(codexSendRequestContext(site), {
+    conversationKey: site.conversationKey,
+    conversationGeneration: site.conversationGeneration,
+    sourceMessageTimestamp: site.userMessage.timestamp,
+    item: site.item,
+    userText: site.shownQuestion,
+    effectiveRequestConfig: site.effectiveRequestConfig,
+    history: site.llmHistory,
+  });
+}
+
+function codexSendSkillContext(
+  site: CodexSendRequestSite,
+): CodexNativeSkillContext {
+  return toCodexNativeSkillContext(codexSendRequestContext(site));
+}
+
+/** The locals of the Codex retry flow; see `CodexSendRequestSite`. */
+type CodexRetryRequestSite = {
+  conversationKey: number;
+  conversationGeneration?: number;
+  retryPair: {
+    userMessage: Pick<
+      Message,
+      | "timestamp"
+      | "selectedTexts"
+      | "selectedTextSources"
+      | "selectedTextPaperContexts"
+      | "selectedTextNoteContexts"
+      | "pdfPaperContexts"
+      | "citationPaperContexts"
+      | "forcedSkillIds"
+      | "pinnedPaperContexts"
+    >;
+  };
+  item: Zotero.Item;
+  question: string;
+  retrySelectedTextContexts: SelectedTextContext[];
+  retryResolvedSelectedTextAnchors: ResolvedSelectedTextAnchor[];
+  contextPlan: Pick<
+    ContextPlanForRequest,
+    "paperContexts" | "fullTextPaperContexts"
+  >;
+  selectedCollectionContexts: CollectionContextRef[];
+  selectedTagContexts: TagContextRef[];
+  attachments: ChatAttachment[] | undefined;
+  retryLocalDocuments:
+    | readonly import("../../shared/types").LocalDocumentResource[]
+    | undefined;
+  allImages: string[];
+  effectiveRequestConfig: EffectiveRequestConfig;
+  llmHistory: ChatMessage[];
+};
+
+/** The Codex retry's request context, read from the stored user message. */
+function codexRetryRequestContext({
+  retryPair,
+  retrySelectedTextContexts,
+  retryResolvedSelectedTextAnchors,
+  contextPlan,
+  selectedCollectionContexts,
+  selectedTagContexts,
+  attachments,
+  retryLocalDocuments,
+  allImages,
+}: CodexRetryRequestSite): TurnRequestContext {
+  return {
+    selectedTextContexts: retrySelectedTextContexts,
+    resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
+    selectedTexts: retryPair.userMessage.selectedTexts || [],
+    selectedTextSources: retryPair.userMessage.selectedTextSources,
+    selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
+    selectedPaperContexts: contextPlan.paperContexts,
+    pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+    fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+    pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
+    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
+    selectedCollectionContexts,
+    selectedTagContexts,
+    attachments,
+    skillAttachments: attachments,
+    localDocuments: retryLocalDocuments,
+    screenshots: allImages,
+    forcedSkillIds: retryPair.userMessage.forcedSkillIds,
+  };
+}
+
+function codexRetryRequestParams(
+  site: CodexRetryRequestSite,
+): BuildAgentRuntimeRequestParams {
+  return toAgentRuntimeRequestParams(codexRetryRequestContext(site), {
+    conversationKey: site.conversationKey,
+    conversationGeneration: site.conversationGeneration,
+    sourceMessageTimestamp: site.retryPair.userMessage.timestamp,
+    item: site.item,
+    userText: site.question,
+    effectiveRequestConfig: site.effectiveRequestConfig,
+    history: site.llmHistory,
+  });
+}
+
+function codexRetrySkillContext(
+  site: CodexRetryRequestSite,
+): CodexNativeSkillContext {
+  return toCodexNativeSkillContext(codexRetryRequestContext(site));
+}
+
+export const codexSendRequestParamsForTests = codexSendRequestParams;
+export const codexSendSkillContextForTests = codexSendSkillContext;
+export const codexRetryRequestParamsForTests = codexRetryRequestParams;
+export const codexRetrySkillContextForTests = codexRetrySkillContext;
 
 type ContextPlanForRequest = {
   combinedContext: string;
@@ -5997,37 +6123,31 @@ export async function retryLatestAssistantResponse(
           }),
         )
       : null;
+    // Read at each use, so the request and the skill context see the flow's
+    // locals when they are built, as the inline literals did.
+    const codexRetryRequestSite = (): CodexRetryRequestSite => ({
+      conversationKey,
+      conversationGeneration,
+      retryPair,
+      item,
+      question,
+      retrySelectedTextContexts,
+      retryResolvedSelectedTextAnchors,
+      contextPlan,
+      selectedCollectionContexts,
+      selectedTagContexts,
+      attachments,
+      retryLocalDocuments,
+      allImages,
+      effectiveRequestConfig,
+      llmHistory,
+    });
     const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) =>
           runtime.prepareExecutionRequest(
-            await buildAgentRuntimeRequest({
-              conversationKey,
-              conversationGeneration,
-              sourceMessageTimestamp: retryPair.userMessage.timestamp,
-              item,
-              userText: question,
-              selectedTextContexts: retrySelectedTextContexts,
-              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-              selectedTexts: retryPair.userMessage.selectedTexts || [],
-              selectedTextSources: retryPair.userMessage.selectedTextSources,
-              selectedTextPaperContexts:
-                retryPair.userMessage.selectedTextPaperContexts,
-              selectedTextNoteContexts:
-                retryPair.userMessage.selectedTextNoteContexts,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              citationPaperContexts:
-                retryPair.userMessage.citationPaperContexts,
-              selectedCollectionContexts,
-              selectedTagContexts,
-              attachments,
-              localDocuments: retryLocalDocuments,
-              screenshots: allImages,
-              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
-              effectiveRequestConfig,
-              history: llmHistory,
-            }),
+            await buildAgentRuntimeRequest(
+              codexRetryRequestParams(codexRetryRequestSite()),
+            ),
             {
               signal: getAbortController(conversationKey)?.signal,
               permissionOwner: "external_runtime",
@@ -6062,26 +6182,7 @@ export async function retryLatestAssistantResponse(
             codexPath: getEffectiveCodexAppServerBinaryPath(
               effectiveRequestConfig.apiBase,
             ),
-            skillContext: buildCodexNativeSkillContext({
-              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
-              selectedTextContexts: retrySelectedTextContexts,
-              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-              selectedTexts: retryPair.userMessage.selectedTexts || [],
-              selectedTextSources: retryPair.userMessage.selectedTextSources,
-              selectedTextPaperContexts:
-                retryPair.userMessage.selectedTextPaperContexts,
-              selectedTextNoteContexts:
-                retryPair.userMessage.selectedTextNoteContexts,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-              localDocuments: retryLocalDocuments,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
-              selectedCollectionContexts,
-              selectedTagContexts,
-              screenshots: allImages,
-              attachments,
-            }),
+            skillContext: codexRetrySkillContext(codexRetryRequestSite()),
           },
           {
             body,
@@ -6863,33 +6964,6 @@ export async function editUserTurnAndRetry(opts: {
       );
   return retrySucceeded === true;
 }
-
-export type BuildAgentRuntimeRequestParams = {
-  conversationKey: number;
-  conversationGeneration?: number;
-  sourceMessageTimestamp?: number;
-  item: Zotero.Item;
-  activePaperContext?: PaperContextRef;
-  userText: string;
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts: PaperContextRef[];
-  citationPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  attachments: ChatAttachment[] | undefined;
-  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
-  screenshots: string[] | undefined;
-  forcedSkillIds?: string[];
-  effectiveRequestConfig: EffectiveRequestConfig;
-  history: ChatMessage[];
-};
 
 function buildActiveNoteRuntimeContext(
   item: Zotero.Item,
@@ -8836,33 +8910,37 @@ export async function sendQuestion(
           }),
         )
       : null;
+    // Read at each use, so the request and the skill context see the flow's
+    // locals when they are built, as the inline literals did.
+    const codexSendRequestSite = (): CodexSendRequestSite => ({
+      conversationKey,
+      conversationGeneration,
+      userMessage,
+      item,
+      shownQuestion,
+      selectedTextContextsForMessage,
+      resolvedSelectedTextAnchors,
+      selectedTextsForMessage,
+      selectedTextSourcesForMessage,
+      selectedTextPaperContextsForMessage,
+      selectedTextNoteContextsForMessage,
+      contextPlan,
+      normalizedPdfPaperContexts,
+      selectedCollectionContextsForMessage,
+      selectedTagContextsForMessage,
+      modelAttachments,
+      attachments,
+      localDocuments,
+      allSendImages,
+      opts,
+      effectiveRequestConfig,
+      llmHistory,
+    });
     const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) => {
-          const planRequest = await buildAgentRuntimeRequest({
-            conversationKey,
-            conversationGeneration,
-            sourceMessageTimestamp: userMessage.timestamp,
-            item,
-            userText: shownQuestion,
-            selectedTextContexts: selectedTextContextsForMessage,
-            resolvedSelectedTextAnchors,
-            selectedTexts: selectedTextsForMessage,
-            selectedTextSources: selectedTextSourcesForMessage,
-            selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-            selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-            paperContexts: contextPlan.paperContexts,
-            pdfPaperContexts: normalizedPdfPaperContexts,
-            fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-            citationPaperContexts: userMessage.citationPaperContexts,
-            selectedCollectionContexts: selectedCollectionContextsForMessage,
-            selectedTagContexts: selectedTagContextsForMessage,
-            attachments: modelAttachments || attachments,
-            localDocuments,
-            screenshots: allSendImages,
-            forcedSkillIds: opts.forcedSkillIds,
-            effectiveRequestConfig,
-            history: llmHistory,
-          });
+          const planRequest = await buildAgentRuntimeRequest(
+            codexSendRequestParams(codexSendRequestSite()),
+          );
           return runtime.prepareExecutionRequest(planRequest, {
             signal: getAbortController(conversationKey)?.signal,
             permissionOwner: "external_runtime",
@@ -8897,24 +8975,7 @@ export async function sendQuestion(
             codexPath: getEffectiveCodexAppServerBinaryPath(
               effectiveRequestConfig.apiBase,
             ),
-            skillContext: buildCodexNativeSkillContext({
-              forcedSkillIds: opts.forcedSkillIds,
-              selectedTextContexts: selectedTextContextsForMessage,
-              resolvedSelectedTextAnchors,
-              selectedTexts: selectedTextsForMessage,
-              selectedTextSources: selectedTextSourcesForMessage,
-              selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-              selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: normalizedPdfPaperContexts,
-              localDocuments,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              pinnedPaperContexts: userMessage.pinnedPaperContexts,
-              selectedCollectionContexts: selectedCollectionContextsForMessage,
-              selectedTagContexts: selectedTagContextsForMessage,
-              screenshots: allSendImages,
-              attachments,
-            }),
+            skillContext: codexSendSkillContext(codexSendRequestSite()),
           },
           {
             body,

@@ -2940,3 +2940,357 @@ describe("agent turn endings from the real runtime", function () {
     );
   });
 });
+
+// Golden records of the exact parameter object each agent request site hands
+// deps.buildAgentRuntimeRequest. They pin today's per-site differences (the
+// retry omits forcedSkillIds, reuses the stored citation papers and uses the
+// stored selected-passage note contexts); unifying any of them is a product
+// decision, not a refactor.
+describe("agent request sites (golden)", function () {
+  const paperA = {
+    libraryID: 1,
+    itemId: 11,
+    contextItemId: 111,
+    title: "Paper A",
+  };
+  const paperB = {
+    libraryID: 1,
+    itemId: 12,
+    contextItemId: 121,
+    title: "Paper B",
+  };
+  const pdfPaper = {
+    libraryID: 1,
+    itemId: 13,
+    contextItemId: 131,
+    title: "Paper C",
+  };
+  const activePaper = {
+    libraryID: 1,
+    itemId: 14,
+    contextItemId: 141,
+    title: "Active paper",
+  };
+  const normalized = (paper: typeof paperA) => ({
+    ...paper,
+    attachmentTitle: undefined,
+    citationKey: undefined,
+    firstCreator: undefined,
+    year: undefined,
+  });
+  const completedRuntime = () =>
+    ({
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async () =>
+        ({
+          kind: "completed",
+          runId: "run-golden",
+          text: "Done.",
+          usedFallback: false,
+        }) as AgentRuntimeOutcome,
+    }) as unknown as AgentRuntime;
+  const effectiveRequestConfig = {
+    model: "deepseek-v4-pro",
+    apiBase: "https://example.invalid/v1",
+    apiKey: "test",
+    authMode: "api_key",
+    providerProtocol: "openai_chat_compat",
+    modelEntryId: "deepseek-v4-pro",
+    modelProviderLabel: "DeepSeek",
+  };
+
+  it("send passes the composed turn context to the request builder", async function () {
+    const deps = createDeps({
+      runtime: completedRuntime(),
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.includeAutoLoadedPaperContext = (
+      _item,
+      paperContexts,
+      fullTextPaperContexts,
+    ) => ({
+      paperContexts: paperContexts || [],
+      fullTextPaperContexts: fullTextPaperContexts || [],
+      activePaperContext: activePaper,
+    });
+    const captured: any[] = [];
+    const buildRequest = deps.buildAgentRuntimeRequest;
+    deps.buildAgentRuntimeRequest = async (params) => {
+      captured.push(params);
+      return await buildRequest(params);
+    };
+    const item = fakeItem(130);
+    deps.chatHistory.set(130, []);
+    const anchors = [{ contextIndex: 0, golden: "anchor" }] as any[];
+    const collections = [
+      { collectionId: 5, name: "Col", libraryID: 1 },
+    ] as any[];
+    const tags = [{ name: "tag-a", libraryID: 1 }] as any[];
+    const attachments = [
+      { id: "a1", name: "shot.png", mimeType: "image/png", category: "image" },
+    ] as any[];
+    const modelAttachments = [
+      { id: "m1", name: "doc.txt", mimeType: "text/plain", category: "text" },
+    ] as any[];
+    const localDocuments = [
+      { kind: "pdf", itemId: 13, contextItemId: 131, path: "/tmp/c.pdf" },
+    ] as any[];
+    const images = ["data:image/png;base64,AAA"];
+    const forcedSkillIds = ["skill-x"];
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item,
+        question: "Compare these papers",
+        images,
+        selectedTextContexts: [
+          {
+            text: "Passage one.",
+            source: "pdf",
+            paperContext: paperA,
+            contextItemId: 111,
+          },
+        ],
+        resolvedSelectedTextAnchors: anchors,
+        paperContexts: [paperA],
+        pdfPaperContexts: [pdfPaper],
+        fullTextPaperContexts: [paperB],
+        selectedCollectionContexts: collections,
+        selectedTagContexts: tags,
+        attachments,
+        modelAttachments,
+        localDocuments,
+        forcedSkillIds,
+      },
+      deps,
+    );
+
+    assert.lengthOf(captured, 1);
+    const params = captured[0];
+    const storedUser = deps.chatHistory.get(130)![0];
+    assert.deepStrictEqual(params, {
+      conversationKey: 130,
+      conversationGeneration: undefined,
+      sourceMessageTimestamp: storedUser.timestamp,
+      item,
+      activePaperContext: activePaper,
+      userText: "Compare these papers",
+      selectedTextContexts: [
+        {
+          text: "Passage one.",
+          source: "pdf",
+          paperContext: normalized(paperA),
+          noteContext: undefined,
+          contextItemId: 111,
+          pageIndex: undefined,
+          pageLabel: undefined,
+        },
+      ],
+      resolvedSelectedTextAnchors: anchors,
+      selectedTexts: ["Passage one."],
+      selectedTextSources: ["pdf"],
+      selectedTextPaperContexts: [normalized(paperA)],
+      selectedTextNoteContexts: [undefined],
+      paperContexts: [paperA],
+      pdfPaperContexts: [{ ...pdfPaper, contentSourceMode: "pdf" }],
+      fullTextPaperContexts: [paperB],
+      citationPaperContexts: [normalized(paperA), normalized(paperB)],
+      selectedCollectionContexts: collections,
+      selectedTagContexts: tags,
+      attachments: modelAttachments,
+      localDocuments,
+      screenshots: images,
+      forcedSkillIds,
+      effectiveRequestConfig,
+      history: [],
+    });
+    // The site passes these through by reference.
+    assert.strictEqual(
+      params.selectedTextContexts,
+      storedUser.selectedTextContexts,
+    );
+    assert.strictEqual(
+      params.citationPaperContexts,
+      storedUser.citationPaperContexts,
+    );
+    assert.strictEqual(params.resolvedSelectedTextAnchors, anchors);
+    assert.strictEqual(params.attachments, modelAttachments);
+    assert.strictEqual(params.screenshots, images);
+    assert.strictEqual(params.forcedSkillIds, forcedSkillIds);
+    assert.strictEqual(params.localDocuments, localDocuments);
+  });
+
+  it("send falls back to the visible attachments only when no model attachments are given", async function () {
+    const deps = createDeps({
+      runtime: completedRuntime(),
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    const captured: any[] = [];
+    deps.buildAgentRuntimeRequest = (params) => {
+      captured.push(params);
+      return { conversationKey: params.conversationKey } as any;
+    };
+    deps.chatHistory.set(131, []);
+    const attachments = [{ id: "a1", category: "text" }] as any[];
+    const emptyModelAttachments: any[] = [];
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(131),
+        question: "q",
+        attachments,
+      },
+      deps,
+    ).catch(() => undefined);
+    deps.chatHistory.set(132, []);
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(132),
+        question: "q",
+        attachments,
+        modelAttachments: emptyModelAttachments,
+      },
+      deps,
+    ).catch(() => undefined);
+    assert.strictEqual(captured[0].attachments, attachments);
+    // `??`: an empty model list is kept, not replaced by the visible list.
+    assert.strictEqual(captured[1].attachments, emptyModelAttachments);
+  });
+
+  it("retry passes the stored turn context to the request builder", async function () {
+    const conversationKey = 133;
+    const storedNoteContexts = [undefined];
+    const storedCitationPapers = [paperA];
+    const userMessage: any = {
+      role: "user",
+      text: "summarize",
+      timestamp: 100,
+      runMode: "agent",
+      selectedTexts: ["Stored passage."],
+      selectedTextSources: ["note"],
+      selectedTextNoteContexts: storedNoteContexts,
+      citationPaperContexts: storedCitationPapers,
+      forcedSkillIds: ["skill-stored"],
+      modelAttachments: [{ id: "m-stored", category: "text" }],
+      attachments: [{ id: "a-stored", category: "image" }],
+    };
+    const assistantMessage: any = {
+      role: "assistant",
+      text: "previous",
+      timestamp: 200,
+      runMode: "agent",
+    };
+    const deps = createDeps({
+      runtime: completedRuntime(),
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    const screenshotImages = ["data:image/png;base64,BBB"];
+    const collections = [
+      { collectionId: 6, name: "Col", libraryID: 1 },
+    ] as any[];
+    const tags = [{ name: "tag-b", libraryID: 1 }] as any[];
+    deps.reconstructRetryPayload = () => ({
+      question: "summarize",
+      screenshotImages,
+      paperContexts: [paperA],
+      pdfPaperContexts: [],
+      fullTextPaperContexts: [paperB],
+      selectedCollectionContexts: collections,
+      selectedTagContexts: tags,
+    });
+    const autoPapers = [paperA, pdfPaper];
+    const autoFullText = [paperB];
+    deps.includeAutoLoadedPaperContext = () => ({
+      paperContexts: autoPapers,
+      fullTextPaperContexts: autoFullText,
+      activePaperContext: activePaper,
+    });
+    const captured: any[] = [];
+    const buildRequest = deps.buildAgentRuntimeRequest;
+    deps.buildAgentRuntimeRequest = async (params) => {
+      captured.push(params);
+      return await buildRequest(params);
+    };
+    const item = fakeItem(conversationKey);
+
+    await retryAgentTurn(
+      {} as Element,
+      item,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.lengthOf(captured, 1);
+    const params = captured[0];
+    assert.deepStrictEqual(params, {
+      conversationKey,
+      conversationGeneration: undefined,
+      sourceMessageTimestamp: 100,
+      item,
+      activePaperContext: activePaper,
+      userText: "summarize",
+      selectedTextContexts: [
+        {
+          text: "Stored passage.",
+          source: "note",
+          paperContext: undefined,
+          noteContext: undefined,
+          contextItemId: undefined,
+        },
+      ],
+      // A note passage with no paper resolves no anchor.
+      resolvedSelectedTextAnchors: [],
+      selectedTexts: ["Stored passage."],
+      selectedTextSources: ["note"],
+      selectedTextPaperContexts: [undefined],
+      selectedTextNoteContexts: storedNoteContexts,
+      paperContexts: autoPapers,
+      pdfPaperContexts: [],
+      fullTextPaperContexts: autoFullText,
+      citationPaperContexts: storedCitationPapers,
+      selectedCollectionContexts: collections,
+      selectedTagContexts: tags,
+      attachments: userMessage.modelAttachments,
+      localDocuments: undefined,
+      screenshots: screenshotImages,
+      effectiveRequestConfig,
+      history: [],
+    });
+    // The retry hands over no forced skills at all (not even an undefined key).
+    assert.notProperty(params, "forcedSkillIds");
+    assert.strictEqual(params.selectedTextNoteContexts, storedNoteContexts);
+    assert.strictEqual(params.citationPaperContexts, storedCitationPapers);
+    assert.strictEqual(
+      params.selectedTextContexts,
+      userMessage.selectedTextContexts,
+    );
+    assert.strictEqual(params.screenshots, screenshotImages);
+  });
+});
