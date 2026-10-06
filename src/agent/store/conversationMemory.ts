@@ -1,4 +1,5 @@
 import { appLogger } from "../../core/logging";
+import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 import {
   installConversationKeyLedgerAgentTriggers,
   isConversationKeyRetiredInMemory,
@@ -266,4 +267,19 @@ export async function clearAgentMemory(conversationKey: number): Promise<void> {
   } catch (error) {
     appLogger.warn("LLM Agent: Failed to clear conversation memory", error);
   }
+}
+
+/**
+ * Delete a conversation's memory rows inside the conversation's deletion
+ * transaction (the agent row purge).  An absent table means no rows.
+ */
+export async function deleteAgentMemoryRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${MEMORY_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

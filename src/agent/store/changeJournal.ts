@@ -10,6 +10,7 @@
 
 import { sweepOrphanRecoveryBlobs } from "./journalRecoveryBlobStore";
 import { appLogger } from "../../core/logging";
+import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 
 export const LEGACY_JOURNAL_TABLE = "llm_for_zotero_agent_change_journal";
 export const JOURNAL_ACTIONS_TABLE = "llm_for_zotero_agent_journal_actions_v2";
@@ -1270,4 +1271,40 @@ export async function clearAgentChangeJournal(): Promise<void> {
     }
   });
   await removeRecoveryBlobPaths(blobPaths);
+}
+
+/**
+ * Delete a conversation's change-journal rows inside the conversation's
+ * deletion transaction (the agent row purge): the observations, payloads and
+ * steps of its actions, the actions, then the legacy journal.  Each statement
+ * treats an absent table as no rows.
+ */
+export async function deleteJournalRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  for (const table of [
+    JOURNAL_OBSERVATIONS_TABLE,
+    JOURNAL_PAYLOADS_TABLE,
+    JOURNAL_STEPS_TABLE,
+  ]) {
+    await deleteIfPresent(
+      db,
+      `DELETE FROM ${table} WHERE action_id IN (
+         SELECT action_id FROM ${JOURNAL_ACTIONS_TABLE}
+         WHERE conversation_key = ?
+       )`,
+      [conversationKey],
+    );
+  }
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${JOURNAL_ACTIONS_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${LEGACY_JOURNAL_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

@@ -14,6 +14,10 @@ import {
 import type { PaperContextRef } from "../../shared/types";
 import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import { isPaperEvidenceToolName } from "./toolNames";
+import {
+  deleteIfPresent,
+  type AgentPurgeDb,
+} from "../store/inTransactionDelete";
 import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 
 export type AgentCacheEvidenceActivity = {
@@ -1073,4 +1077,19 @@ export function planAgentContextCache(params: {
       .filter((entry) => entry.roles.includes("full_text"))
       .map((entry) => entry.paper),
   });
+}
+
+/**
+ * Delete a conversation's evidence rows inside the conversation's deletion
+ * transaction (the agent row purge).  An absent table means no rows.
+ */
+export async function deleteAgentEvidenceRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${EVIDENCE_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

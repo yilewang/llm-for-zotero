@@ -6,6 +6,10 @@ import {
 import type { AgentRuntimeRequest } from "../types";
 import type { AgentCacheEvidenceActivity } from "./cacheManagement";
 import { isCatalogToolName } from "./toolNames";
+import {
+  deleteIfPresent,
+  type AgentPurgeDb,
+} from "../store/inTransactionDelete";
 
 export type AgentCoverageSourceKind =
   | "zotero_metadata"
@@ -1301,4 +1305,21 @@ export function buildAgentCoverageContextBlock(params: {
     "Use this as source-aware read-state, not as a substitute for unread source content. Reuse preserved evidence when enough; call tools when the requested evidence or coverage layer is missing.",
     ...entries.map(formatCoverageEntry),
   ].join("\n");
+}
+
+/**
+ * Delete the coverage rows a conversation owns or originated inside the
+ * conversation's deletion transaction (the agent row purge).  An absent table
+ * means no rows.
+ */
+export async function deleteAgentCoverageRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${COVERAGE_TABLE}
+     WHERE scope_key = ? OR origin_conversation_key = ?`,
+    [`conversation:${conversationKey}`, conversationKey],
+  );
 }
