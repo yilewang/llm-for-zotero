@@ -675,11 +675,21 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     await openSidebarChat(paper.parentItemId);
     await ensureSidebarPaperChat(paper.parentItemId);
     await api.openStandaloneForItem(paper.parentItemId);
-    await api.clickStandaloneTab("open");
-    // A fresh Library chat, so earlier files' turns in the library's default
-    // conversation do not count against this test's stored questions.
-    const library = await api.startNewStandaloneConversation();
+    let library = await api.clickStandaloneTab("open");
+    // An empty Library chat, so earlier files' turns in the library's default
+    // conversation do not count against this test's stored questions. "+"
+    // reuses a Library chat that is already empty (it does not start another
+    // one), so it is pressed only when the current one has turns.
+    const opened = await history(toKey(windowRoot()?.dataset.itemId));
+    if (opened.memory.length > 0 || opened.stored.length > 0) {
+      library = await api.startNewStandaloneConversation();
+    }
     assert.equal(library.conversationKind, "global", JSON.stringify(library));
+    const emptyLibrary = await history(toKey(windowRoot()?.dataset.itemId));
+    assert.isEmpty(
+      [...emptyLibrary.memory, ...emptyLibrary.stored],
+      `the window's Library chat starts empty: ${JSON.stringify(emptyLibrary)}`,
+    );
     await Zotero.Promise.delay(300);
     assertSidebarLive("before the sidebar send");
 
