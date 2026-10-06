@@ -10,6 +10,7 @@
     "test-workflows",
     "test-live-loop",
     "test-live-mineru",
-    "test-live-runtimes"
+    "test-live-runtimes",
+    "test-db-upgrade"
   ]
 }
