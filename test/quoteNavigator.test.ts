@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildParagraphJumpSuccessStatus,
   navigateToQuote,
   type QuoteNavigationRequest,
   type QuoteNavigatorDeps,
@@ -80,6 +81,9 @@ function fakeDeps(options: {
       return {
         matched: options.jumpMatches ?? true,
         matchedPageIndex: options.jumpMatches === false ? undefined : 4,
+        ...(options.jumpMatches === false
+          ? {}
+          : { wordingUsed: rest.preferredFullQuoteText || rest.quoteText }),
         queries: [],
       } as unknown as ExactQuoteJumpResult;
     },
@@ -530,5 +534,98 @@ describe("navigateToQuote with a trusted quote's record", function () {
       [1, 2, 2, 3, 3],
     );
     assert.include(outcome as object, { kind: "jumped", contextItemId: 3 });
+  });
+
+  it("says when a page tie was settled on the first copy, and only then", async function () {
+    const { deps, calls } = fakeDeps({ texts: { 1: ["the quote"] } });
+    const verify = deps.verifyInBackground;
+    deps.verifyInBackground = async (candidate, quoteText, recorded) => ({
+      ...(await verify(candidate, quoteText, recorded)),
+      samePageCopyCount: 2,
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+        certificate: { ...certificate, pageIndex: 0 },
+      }),
+      deps,
+    );
+
+    assert.include(outcome as object, { kind: "jumped", samePageCopyCount: 2 });
+    const jump = calls.find((call) => call[0] === "jump")![1] as {
+      sourceMatchPageOccurrence?: number;
+    };
+    assert.equal(jump.sourceMatchPageOccurrence, 0, "the first copy");
+
+    const plain = fakeDeps({ texts: { 1: ["the quote"] } });
+    const unique = await navigateToQuote(
+      request({
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+        certificate,
+      }),
+      plain.deps,
+    );
+    assert.notProperty(unique, "samePageCopyCount");
+  });
+
+  it("says nothing about copies when the jump matched the fuller passage", async function () {
+    // The fuller passage can occur once and hold the second copy, so the
+    // first-copy note would be wrong.
+    const { deps } = fakeDeps({ texts: { 1: ["the quote"] } });
+    const verify = deps.verifyInBackground;
+    deps.verifyInBackground = async (candidate, quoteText, recorded) => ({
+      ...(await verify(candidate, quoteText, recorded)),
+      samePageCopyCount: 2,
+    });
+
+    const outcome = await navigateToQuote(
+      request({
+        candidates: [{ contextItemId: 1, authoritative: true, labelRank: 0 }],
+        certificate: { ...certificate, pageIndex: 0 },
+        preferredFullQuoteText: "Replication. the quote",
+      }),
+      deps,
+    );
+
+    assert.equal(outcome.kind, "jumped");
+    assert.notProperty(outcome, "samePageCopyCount");
+  });
+});
+
+describe("buildParagraphJumpSuccessStatus", function () {
+  const selected = {
+    matched: true,
+    navigationStatus: "paragraph-selected",
+  } as unknown as ExactQuoteJumpResult;
+
+  it("adds which copy is highlighted when the page holds the quote more than once", function () {
+    assert.equal(
+      buildParagraphJumpSuccessStatus("5", selected, 2),
+      "Jumped to cited source (page 5, paragraph matched). This quote appears twice on the page; the first copy is highlighted.",
+    );
+    assert.equal(
+      buildParagraphJumpSuccessStatus("5", selected, 3),
+      "Jumped to cited source (page 5, paragraph matched). This quote appears 3 times on the page; the first copy is highlighted.",
+    );
+  });
+
+  it("keeps the plain status otherwise", function () {
+    assert.equal(
+      buildParagraphJumpSuccessStatus("5", selected),
+      "Jumped to cited source (page 5, paragraph matched)",
+    );
+  });
+
+  it("adds no copy note when the jump selected no occurrence", function () {
+    const pageOnly = {
+      matched: true,
+      navigationStatus: "page-only",
+    } as unknown as ExactQuoteJumpResult;
+
+    assert.equal(
+      buildParagraphJumpSuccessStatus("5", pageOnly, 2),
+      "Jumped to cited source (page 5, quote found; exact occurrence not selected)",
+    );
   });
 });

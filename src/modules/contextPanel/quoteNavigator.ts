@@ -383,10 +383,28 @@ export function buildParagraphJumpFailureStatus(
 export function buildParagraphJumpSuccessStatus(
   pageLabel: string,
   paragraphJump: ExactQuoteJumpResult,
+  samePageCopyCount?: number,
 ): string {
-  return paragraphJump.navigationStatus === "paragraph-selected"
-    ? `Jumped to cited source (page ${pageLabel}, paragraph matched)`
-    : `Jumped to cited source (page ${pageLabel}, quote found; exact occurrence not selected)`;
+  const jumped =
+    paragraphJump.navigationStatus === "paragraph-selected"
+      ? `Jumped to cited source (page ${pageLabel}, paragraph matched)`
+      : `Jumped to cited source (page ${pageLabel}, quote found; exact occurrence not selected)`;
+  // Only a jump that selected an occurrence highlighted the first copy.
+  return paragraphJump.navigationStatus === "paragraph-selected" &&
+    samePageCopyCount !== undefined &&
+    samePageCopyCount > 1
+    ? `${jumped}. ${buildFirstOfSamePageCopiesNote(samePageCopyCount)}`
+    : jumped;
+}
+
+/**
+ * Said after a jump to a page that holds the quote more than once, when
+ * nothing recorded which copy the answer quoted.
+ */
+function buildFirstOfSamePageCopiesNote(samePageCopyCount: number): string {
+  const times =
+    samePageCopyCount === 2 ? "twice" : `${samePageCopyCount} times`;
+  return `This quote appears ${times} on the page; the first copy is highlighted.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +489,8 @@ type ResolvedQuoteCitationMatch = {
   quoteText: string;
   sourceMatchText?: string;
   sourceMatchPageOccurrence?: number;
+  /** See QuoteTargetVerification.samePageCopyCount. */
+  samePageCopyCount?: number;
 };
 
 /**
@@ -560,27 +580,40 @@ export type RecordedQuoteLocation = {
 function settleCopiesOnOnePage(
   result: LivePdfSelectionLocateResult,
   recorded: RecordedQuoteLocation | undefined,
-): LivePdfSelectionLocateResult {
+): SettledLocateResult {
   if (result.status !== "ambiguous" || !recorded) return result;
   const pages = new Set(result.matchedPageIndexes);
   if (pages.size !== 1) return result;
   const [pageIndex] = pages;
-  // Without a recorded copy, only the recorded page may settle the tie;
-  // the jump then picks the copy, as the old page-hint path did.
+  // Without a recorded copy, only the recorded page may settle the tie.
   if (recorded.occurrence === undefined && recorded.pageIndex !== pageIndex) {
     return result;
   }
-  return {
+  const settled = {
     ...result,
-    status: "resolved",
+    status: "resolved" as const,
     computedPageIndex: pageIndex,
-    ...(recorded.occurrence !== undefined
-      ? { sourceMatchPageOccurrence: recorded.occurrence }
-      : {}),
     reason:
       "The complete quote occurs more than once on one PDF page; the recorded page or occurrence picks it.",
   };
+  if (recorded.occurrence !== undefined) {
+    return { ...settled, sourceMatchPageOccurrence: recorded.occurrence };
+  }
+  // Nothing says which copy the answer quoted. Without an occurrence the
+  // jump cannot align one of identical copies, so it highlights the first
+  // and the status line says so.
+  return {
+    ...settled,
+    sourceMatchPageOccurrence: 0,
+    samePageCopyCount: Math.max(2, Math.floor(result.totalMatches) || 0),
+  };
 }
+
+/** A located result, plus how many copies a settled tie left unpicked. */
+type SettledLocateResult = LivePdfSelectionLocateResult & {
+  /** See QuoteTargetVerification.samePageCopyCount. */
+  samePageCopyCount?: number;
+};
 
 /**
  * Read a candidate's PDF text in the background to decide whether it really
@@ -630,6 +663,9 @@ async function verifyQuoteInCitationCandidate(
     pageIndex: result.computedPageIndex,
     sourceMatchText: result.sourceMatchText,
     sourceMatchPageOccurrence: result.sourceMatchPageOccurrence,
+    ...(result.samePageCopyCount !== undefined
+      ? { samePageCopyCount: result.samePageCopyCount }
+      : {}),
     reason: result.reason,
   };
 }
@@ -707,6 +743,9 @@ async function locateQuoteByOpeningCitationCandidates(
           quoteText: searchText,
           sourceMatchText: result.sourceMatchText,
           sourceMatchPageOccurrence: result.sourceMatchPageOccurrence,
+          ...(result.samePageCopyCount !== undefined
+            ? { samePageCopyCount: result.samePageCopyCount }
+            : {}),
         });
         break;
       }
@@ -833,6 +872,11 @@ export type QuoteNavigationOutcome =
       pageIndex: number;
       pageLabel: string;
       jump: ExactQuoteJumpResult;
+      /**
+       * Set when the page holds the quote this many times and nothing
+       * recorded which copy the answer quoted; the first is highlighted.
+       */
+      samePageCopyCount?: number;
     }
   /** The reader is on the verified page, but the highlight failed. */
   | {
@@ -948,6 +992,9 @@ export async function navigateToQuote(
           quoteText: resolution.quoteText,
           sourceMatchText: resolution.sourceMatchText,
           sourceMatchPageOccurrence: resolution.sourceMatchPageOccurrence,
+          ...(resolution.samePageCopyCount !== undefined
+            ? { samePageCopyCount: resolution.samePageCopyCount }
+            : {}),
         };
       }
     } else if (resolution.status === "unverifiable") {
@@ -1051,6 +1098,13 @@ export async function navigateToQuote(
       pageIndex: jumpedPageIndex,
       pageLabel: jumpedLabel,
       jump,
+      // The copy count describes the duplicated quote. When the jump matched
+      // a fuller passage instead, occurrence 0 picked that passage, which
+      // may hold any of the copies.
+      ...(match.samePageCopyCount !== undefined &&
+      jump.wordingUsed === sanitizeText(match.quoteText || "").trim()
+        ? { samePageCopyCount: match.samePageCopyCount }
+        : {}),
     };
   }
 }

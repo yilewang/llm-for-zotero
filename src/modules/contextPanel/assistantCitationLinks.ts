@@ -2388,7 +2388,11 @@ async function navigateUntrustedQuoteCitation(params: {
   if (params.status) {
     const statusMessage =
       outcome.kind === "jumped"
-        ? buildParagraphJumpSuccessStatus(outcome.pageLabel, outcome.jump)
+        ? buildParagraphJumpSuccessStatus(
+            outcome.pageLabel,
+            outcome.jump,
+            outcome.samePageCopyCount,
+          )
         : buildParagraphJumpFailureStatus(outcome.pageLabel, outcome.jump);
     setStatus(
       params.status,
@@ -2601,7 +2605,11 @@ async function resolveAndNavigateAssistantCitation(params: {
       if (status) {
         setStatus(
           status,
-          buildParagraphJumpSuccessStatus(outcome.pageLabel, outcome.jump),
+          buildParagraphJumpSuccessStatus(
+            outcome.pageLabel,
+            outcome.jump,
+            outcome.samePageCopyCount,
+          ),
           "ready",
         );
       }

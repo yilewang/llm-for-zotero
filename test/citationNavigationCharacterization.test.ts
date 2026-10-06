@@ -491,7 +491,7 @@ describe("citation navigation characterization", function () {
         assert.equal(r.status?.variant, "ready");
       });
 
-      it("on one page, the stored page hint naming that page settles the tie and opens that page", async function () {
+      it("on one page, the stored page hint naming that page settles the tie and highlights the first copy", async function () {
         const paper = samePage();
         const r = install({ papers: [paper] });
         const button = trustedButton(r, paper, {
@@ -501,18 +501,59 @@ describe("citation navigation characterization", function () {
         await r.click(button);
 
         // No recorded occurrence: the hinted page is verified and opened, and
-        // the jump is left to pick a copy. Without an occurrence the jump
-        // cannot align one of two identical copies, so the click ends on the
-        // page. The old page-hint path also opened this page, and then
-        // reported "matched more than one occurrence" without a highlight.
+        // the jump highlights the first copy (D4). The status says that the
+        // page holds the quote twice.
         assert.deepEqual(r.timeline, ["read 11", "open 11", "navigate 11"]);
         assert.deepEqual(r.opened, [
           { itemId: 11, location: { pageIndex: 1 } },
         ]);
-        assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
+        assert.deepEqual(failedJumpStages(r), []);
+        assert.equal(agains(r), 0, "the jump selects the first copy");
         assert.deepEqual(statusTexts(r), [
           "sending: Locating cited quote...",
-          "error: Jumped to page 102. Paragraph jump failed: Neither the complete quote nor a strong unique partial source span could be aligned to the cited PDF page.",
+          "ready: Jumped to cited source (page 102, paragraph matched). This quote appears twice on the page; the first copy is highlighted.",
+        ]);
+      });
+
+      it("on one page holding three copies, the hint settles the tie and the status counts them", async function () {
+        const paper = smith({
+          pages: [
+            "Introduction. Neural populations in the hippocampus encode spatial context over many days.",
+            `Results. ${QUOTE_A}. Replication. ${QUOTE_A}. Second replication. ${QUOTE_A}.`,
+            "Discussion. These findings constrain models of memory consolidation.",
+          ],
+          findMatchCount: 3,
+        });
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({ pageHintIndex: 1 }),
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(failedJumpStages(r), []);
+        assert.equal(agains(r), 0, "the jump selects the first copy");
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "ready: Jumped to cited source (page 102, paragraph matched). This quote appears 3 times on the page; the first copy is highlighted.",
+        ]);
+      });
+
+      it("on one page, a fuller passage that occurs once is highlighted without the first-copy note", async function () {
+        const paper = samePage();
+        const r = install({ papers: [paper] });
+        const button = trustedButton(r, paper, {
+          quoteCitation: quoteCitation({ pageHintIndex: 1 }),
+          // Occurs once on the page, and holds the second copy.
+          paragraphQuoteText: `Replication. ${QUOTE_A}`,
+        });
+
+        await r.click(button);
+
+        assert.deepEqual(failedJumpStages(r), []);
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "ready: Jumped to cited source (page 102, paragraph matched)",
         ]);
       });
 
@@ -556,13 +597,17 @@ describe("citation navigation characterization", function () {
         await r.click(button);
 
         // The viewer verifies the page and the reader moves there; as above,
-        // the jump without an occurrence ends on the page.
+        // the jump highlights the first copy (D4).
         assert.deepEqual(r.opened, [{ itemId: 11, location: undefined }]);
         assert.deepEqual(r.reader(11)!.navigations, [
           { pageIndex: 1, pageLabel: "102" },
         ]);
-        assert.deepEqual(failedJumpStages(r), ["full-quote-not-on-page"]);
-        assert.equal(r.status?.variant, "error");
+        assert.deepEqual(failedJumpStages(r), []);
+        assert.equal(agains(r), 0);
+        assert.deepEqual(statusTexts(r), [
+          "sending: Locating cited quote...",
+          "ready: Jumped to cited source (page 102, paragraph matched). This quote appears twice on the page; the first copy is highlighted.",
+        ]);
       });
 
       it("on two pages, the first copy wins", async function () {

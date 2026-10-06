@@ -30,6 +30,11 @@ export type QuoteTargetVerification = {
   pageIndex?: number | null;
   sourceMatchText?: string;
   sourceMatchPageOccurrence?: number;
+  /**
+   * Set only when the page holds the quote this many times and nothing
+   * recorded which copy the answer quoted: the jump highlights the first.
+   */
+  samePageCopyCount?: number;
   reason?: string;
 };
 
@@ -60,6 +65,8 @@ export type QuoteTargetResolution =
       quoteText: string;
       sourceMatchText?: string;
       sourceMatchPageOccurrence?: number;
+      /** See QuoteTargetVerification.samePageCopyCount. */
+      samePageCopyCount?: number;
       authoritative: boolean;
       /** PDFs read to reach this answer; 1 on the common path. */
       readCount: number;
@@ -306,6 +313,9 @@ export async function resolveVerifiedQuoteTarget(params: {
           quoteText,
           sourceMatchText: verification.sourceMatchText,
           sourceMatchPageOccurrence: verification.sourceMatchPageOccurrence,
+          ...(verification.samePageCopyCount !== undefined
+            ? { samePageCopyCount: verification.samePageCopyCount }
+            : {}),
           authoritative: candidate.authoritative,
           readCount: spent,
         };

@@ -141,6 +141,11 @@ export type ExactQuoteJumpResult = {
   expectedPageIndex: number | null;
   matchedPageIndex?: number;
   queryUsed?: string;
+  /**
+   * Which of the wordings handed to the jump (sanitized and trimmed) this
+   * match came from. Set only on a match.
+   */
+  wordingUsed?: string;
   highlightCoverage?: number;
   queries: ExactQuoteJumpQueryAttempt[];
   debugSummary: string[];
@@ -4840,7 +4845,7 @@ export async function scrollToExactQuoteInReader(
       queryRole: candidateIndex === 0 ? "displayed-quote" : "source-locator",
       normalizationHintText: quoteTexts[0],
     });
-    if (result.matched) return result;
+    if (result.matched) return { ...result, wordingUsed: candidate };
     lastResult = result;
     if (
       result.matchStatus === "deferred" ||
