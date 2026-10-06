@@ -27,7 +27,6 @@ import { conversationRepository } from "../../core/conversations/repository";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
 import { filterMessagesInPendingTurns } from "./turnMessageUtils";
-import { clearAgentConversationState } from "./agentConversationCleanup";
 import { deleteTrailingTurnPairs } from "./editTruncation";
 import {
   appendCodexMessage,
@@ -6717,19 +6716,9 @@ export async function editUserTurnAndRetry(opts: {
     return false;
   }
   // The edit path deletes trailing message rows directly rather than through
-  // the queued-turn coordinator.  Persistent agent state is conversation-key
-  // scoped, so clear its in-memory/trace participants after the atomic row
-  // purge before the edited retry can build a prompt.
-  if (subsequentPairs.length) {
-    try {
-      await clearAgentConversationState(conversationKey);
-    } catch (err) {
-      appLogger.warn(
-        "LLM: Failed to clear agent state after edit truncation",
-        err,
-      );
-    }
-  }
+  // the queued-turn coordinator; deleteTrailingTurnPairs has already cleared
+  // the agent state's in-memory/trace participants after the atomic row
+  // purge, before the edited retry can build a prompt.
 
   // Update user message text + timestamp
   const userMsg = history[userIndex]!;

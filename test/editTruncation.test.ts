@@ -109,6 +109,18 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     assert.isTrue(ok);
     assert.deepEqual(messageTexts(key), ["user-0", "assistant-1"]);
     assert.deepEqual(runIDs(key), [], "the agent rows were purged");
+    await createAgentRun({
+      runId: "next-run",
+      conversationKey: key,
+      mode: "agent",
+      status: "running",
+      createdAt: 2,
+    } as Parameters<typeof createAgentRun>[0]);
+    assert.deepEqual(
+      runIDs(key),
+      ["next-run"],
+      "a later agent run of the conversation survives",
+    );
   });
 
   it("stops without deleting when the conversation changed", async function () {
@@ -122,6 +134,55 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     assert.isFalse(ok);
     assert.lengthOf(messageTexts(key), 6);
     assert.deepEqual(runIDs(key), ["run-1"]);
+  });
+
+  it("a later pair that fails does not leave the committed purge's mark behind", async function () {
+    const key = await seedConversation();
+    // Fail the second pair's delete, after the first pair has committed.
+    const db = globalScope.Zotero!.DB as {
+      queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
+    };
+    const realQuery = db.queryAsync;
+    db.queryAsync = async (sql, params = []) => {
+      if (
+        sql
+          .trimStart()
+          .startsWith("DELETE FROM llm_for_zotero_chat_messages") &&
+        params.includes(5_000)
+      ) {
+        throw new Error("simulated write failure");
+      }
+      return realQuery(sql, params);
+    };
+    const ok = await deleteTrailingTurnPairs({
+      conversationKey: key,
+      pairs: [
+        { userTs: 3_000, assistantTs: 4_000 },
+        { userTs: 5_000, assistantTs: 6_000 },
+      ],
+      conversationGeneration: getConversationWriteGeneration(key),
+      conversationSystem: "upstream",
+    });
+    db.queryAsync = realQuery;
+    assert.isFalse(ok);
+    assert.deepEqual(
+      messageTexts(key),
+      ["user-0", "assistant-1", "user-4", "assistant-5"],
+      "the first pair committed, the second rolled back",
+    );
+    assert.deepEqual(runIDs(key), [], "the committed purge removed the run");
+    await createAgentRun({
+      runId: "next-run",
+      conversationKey: key,
+      mode: "agent",
+      status: "running",
+      createdAt: 2,
+    } as Parameters<typeof createAgentRun>[0]);
+    assert.deepEqual(
+      runIDs(key),
+      ["next-run"],
+      "a later agent run of the conversation survives",
+    );
   });
 
   it("is what editUserTurnAndRetry uses for the trailing turns", function () {
