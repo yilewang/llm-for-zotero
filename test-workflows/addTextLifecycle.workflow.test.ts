@@ -207,9 +207,15 @@ describe("workflow: Add Text lifecycle", function () {
         diagnosticMessage,
       );
       assert.equal(diagnostics.selectedContext.pageIndex, 1, diagnosticMessage);
-      assert.equal(
+      // The fixture PDF has no printed labels, so the selection stores none;
+      // the prompt still numbers the page for the model.
+      assert.isUndefined(
         diagnostics.selectedContext.pageLabel,
-        "2",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.prompt,
+        "page_label=2, page_index=1",
         diagnosticMessage,
       );
       assert.equal(
