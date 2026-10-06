@@ -1148,4 +1148,118 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       cleanup();
     }
   });
+
+  // ── T8 ───────────────────────────────────────────────────────────────────
+
+  /**
+   * D1 for the backend. Codex runs here without an account: switching only
+   * changes the panel's conversation system and model menu, and no Codex turn
+   * is sent. The Claude Code bridge gates are covered by unit tests
+   * (externalBackendBridge.conversationSystemGate.test.ts), since the test
+   * profile has no bridge to answer.
+   */
+  it("T8: the window keeps its own backend while the sidebar switches back to the API", async function () {
+    const CODEX_TOGGLE =
+      ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
+    const savedSystem = () =>
+      Zotero.Prefs.get(PREF_PREFIX + "conversationSystem", true);
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
+    try {
+      const paper = await newFixture("Coexist T8");
+      await openSidebarChat(paper.parentItemId);
+      await ensureSidebarPaperChat(paper.parentItemId);
+      await until(
+        () => sidebarState().modelLabel.includes(MODEL_A),
+        () =>
+          `the sidebar starts on ${MODEL_A}: ${JSON.stringify(sidebarState())}`,
+      );
+
+      await api.openStandaloneForItem(paper.parentItemId);
+      await api.clickStandaloneTab("open");
+      const codex = await api.clickStandaloneSystemToggle("codex");
+      assert.equal(codex.conversationSystem, "codex", JSON.stringify(codex));
+      await until(
+        () => windowState().conversationSystem === "codex",
+        () =>
+          `the window's panel is on Codex: ${JSON.stringify(windowState())}`,
+      );
+      assert.equal(
+        savedSystem(),
+        "upstream",
+        "the window's backend is its own and is not saved as the sidebar's",
+      );
+      assert.equal(
+        sidebarState().conversationSystem,
+        "upstream",
+        JSON.stringify(sidebarState()),
+      );
+      const windowModelLabel = windowState().modelLabel;
+      assert.isOk(windowModelLabel, JSON.stringify(windowState()));
+      assert.notInclude(
+        windowModelLabel,
+        MODEL_A,
+        JSON.stringify(windowState()),
+      );
+
+      // The sidebar enters Codex and comes back to the API.
+      const sidebarToggle = () =>
+        sidebarBody()!.querySelector(CODEX_TOGGLE) as HTMLElement | null;
+      assert.isOk(sidebarToggle(), "the sidebar shows the Codex toggle");
+      // A toggle is disabled while its switch runs; a click then is dropped.
+      const sidebarToggleIdle = () => {
+        const toggle = sidebarToggle() as HTMLButtonElement | null;
+        return Boolean(toggle && !toggle.disabled);
+      };
+      sidebarToggle()!.click();
+      await until(
+        () =>
+          sidebarState().conversationSystem === "codex" &&
+          sidebarState().conversationKey > 0 &&
+          sidebarToggleIdle(),
+        () => `the sidebar enters Codex: ${JSON.stringify(sidebarState())}`,
+      );
+      sidebarToggle()!.click();
+      await until(
+        () =>
+          sidebarState().conversationSystem === "upstream" &&
+          sidebarState().conversationKey > 0 &&
+          sidebarState().modelLabel.includes(MODEL_A),
+        () =>
+          `the sidebar returns to the API on ${MODEL_A}: ${JSON.stringify(sidebarState())}`,
+      );
+      assert.equal(savedSystem(), "upstream");
+      await Zotero.Promise.delay(300);
+
+      const windowAfter = windowState();
+      assert.equal(
+        windowAfter.conversationSystem,
+        "codex",
+        `the window stays on Codex after the sidebar chose the API: ${JSON.stringify(windowAfter)}`,
+      );
+      assert.equal(
+        windowAfter.modelLabel,
+        windowModelLabel,
+        `the window's Codex model menu keeps its model: ${JSON.stringify(windowAfter)}`,
+      );
+
+      const QUESTION = "Coexist T8 sidebar question BACKEND-Q";
+      typeAndSend(sidebarBody()!, QUESTION);
+      const stream = await provider.waitForStream(QUESTION);
+      const requestedModel = stream.model;
+      stream.push("BACKEND-ANSWER");
+      stream.finish();
+      assert.equal(
+        requestedModel,
+        MODEL_A,
+        "the sidebar's next send goes to its API model",
+      );
+      await waitForAnswer(
+        toKey(sidebarRoot()?.dataset.itemId),
+        "BACKEND-ANSWER",
+      );
+      assert.equal(windowState().conversationSystem, "codex");
+    } finally {
+      Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", false, true);
+    }
+  });
 });
