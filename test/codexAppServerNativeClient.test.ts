@@ -4083,6 +4083,48 @@ describe("Codex native turns of two conversations on one process", function () {
     });
   });
 
+  it("an unanswered question's interrupt never fails the shared process on timeout and retires it only when the turn cannot be stopped", async function () {
+    const proc = createRoutingProcess([]);
+    const interrupts: Array<{ options: unknown }> = [];
+    (proc as any).sendRequest = (
+      method: string,
+      _params: unknown,
+      _timeoutMs?: number,
+      options?: unknown,
+    ) => {
+      if (method === "turn/interrupt") interrupts.push({ options });
+      return Promise.reject(new Error("interrupt timed out"));
+    };
+    let retired = 0;
+    registerNativeApprovalRequestHandlersForTests({
+      proc,
+      onApprovalRequest: async () => ({ answers: {} }),
+      getTurnIdentity: async () => ({
+        threadId: "thread-A",
+        turnId: "turn-A",
+      }),
+      getActiveThreadId: () => "thread-A",
+      retireProcessAfterInterruptFailure: () => {
+        retired += 1;
+      },
+    });
+    proc.handleMessage({
+      id: 1,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread-A",
+        turnId: "turn-A",
+        itemId: "q",
+        questions: [{ id: "q1", question: "Which?", header: "Pick" }],
+      },
+    });
+    await tick();
+    await tick();
+    assert.lengthOf(interrupts, 1);
+    assert.deepEqual(interrupts[0].options, { failProcessOnTimeout: false });
+    assert.equal(retired, 1);
+  });
+
   it("keeps another conversation's pending approval when one turn ends", async function () {
     const writes: Array<Record<string, any>> = [];
     const proc = createRoutingProcess(writes);

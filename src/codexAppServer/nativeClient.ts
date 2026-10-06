@@ -52,6 +52,7 @@ import {
   resolveCodexAppServerBinaryPath,
   resolveCodexAppServerReasoningParams,
   resolveCodexAppServerTurnInputWithFallback,
+  retireCodexAppServerProcessAfterTurnFailure,
   waitForCodexAppServerThreadCompacted,
   waitForCodexAppServerTurnCompletion,
   type CodexAppServerAgentMessageDeltaEvent,
@@ -2558,6 +2559,12 @@ function registerNativeApprovalRequestHandlers(params: {
    * left to its handlers.
    */
   getActiveThreadId?: () => string | undefined;
+  /**
+   * Called when stopping the turn after an unanswered question failed (the
+   * interrupt timed out), so the process is retired the way a timed-out turn
+   * retires it: at once when no other turn is live, else once they end.
+   */
+  retireProcessAfterInterruptFailure?: () => void;
 }): () => void {
   const acceptsRequest = params.getActiveThreadId
     ? (rawParams: unknown) => {
@@ -2634,10 +2641,22 @@ function registerNativeApprovalRequestHandlers(params: {
               .length &&
             identity?.turnId
           ) {
-            await params.proc.sendRequest("turn/interrupt", {
-              threadId: identity.threadId,
-              turnId: identity.turnId,
-            });
+            // A timeout here must not fail the shared process under other
+            // conversations' turns; retiring it is decided below.
+            try {
+              await params.proc.sendRequest(
+                "turn/interrupt",
+                {
+                  threadId: identity.threadId,
+                  turnId: identity.turnId,
+                },
+                undefined,
+                { failProcessOnTimeout: false },
+              );
+            } catch (error) {
+              params.retireProcessAfterInterruptFailure?.();
+              throw error;
+            }
           }
           if (!questions) {
             await reportApprovalEffect(response);
@@ -3087,6 +3106,14 @@ export async function runCodexAppServerNativeTurn(input: {
         redactText,
         isTurnStillLive: assertApprovalTurnStillLive,
         signal: params.signal,
+        retireProcessAfterInterruptFailure: () =>
+          retireCodexAppServerProcessAfterTurnFailure({
+            cacheKey: processKey,
+            proc,
+            processOptions: { codexPath },
+            // This turn is counted as live by the runTurnExclusive around it.
+            otherLiveTurns: Math.max(0, proc.getActiveTurnCount() - 1),
+          }),
         onApprovalEffect: async (decision) => {
           const receipt = await recordExternalRuntimeEffect({
             ...decision,
