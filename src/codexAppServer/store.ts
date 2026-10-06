@@ -4,20 +4,10 @@ import type {
   CodexConversationSummary,
   CodexConversationKind,
 } from "../shared/types";
-import { normalizeGeneratedChatImages } from "../shared/generatedImages";
-import {
-  synthesizeSelectedTextContexts,
-  normalizePaperContextRefs,
-  normalizeCollectionContextRefs,
-  normalizeTagContextRefs,
-} from "../services/context/normalizers";
-import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
-import type { StoredChatMessage } from "../utils/chatStore";
 import {
   copyConversationMessagesThroughAssistantAnchor,
   type ForkConversationMessagesResult,
 } from "../shared/conversationMessageForkCopy";
-import { serializeForcedSkillIds } from "../shared/skillIds";
 import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
@@ -75,7 +65,6 @@ import {
 } from "../shared/startupSchemaFingerprint";
 import {
   allocateConversationKeyInTransaction,
-  withRetiredKeyErrorMapping,
   nextUnissuedConversationKeyInRange,
   ConversationRetiredError,
   ensureConversationKeyLedgerEntry,
@@ -108,7 +97,6 @@ import {
   normalizeCatalogTimestamp,
   normalizeConversationKey,
   normalizeLibraryID,
-  normalizeLimit,
   normalizePaperItemID,
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
@@ -157,6 +145,9 @@ const store = createRuntimeConversationStore({
   summaryExtraColumns: [
     { sql: "c.provider_permission_state", alias: "providerPermissionState" },
   ],
+  hooks: {
+    afterMessageWriteInTransaction: touchCodexConversationActivity,
+  },
   sessionResetColumns: [
     "provider_permission_state",
     "provider_session_path_state",
@@ -172,7 +163,6 @@ const isCodexStoreConversationKey = store.isStoreConversationKey;
 const isCodexStoreConversationKeyForKind = store.isStoreConversationKeyForKind;
 const buildCodexConversationID = store.buildConversationID;
 const resolveRegisteredConversationID = store.resolveRegisteredConversationID;
-const resolveCodexAppendIdentity = store.resolveAppendIdentity;
 const resolveRepairingMessageConversationSelector =
   store.resolveRepairingMessageConversationSelector;
 const refreshCodexConversationSearchIndex = store.refreshSearchIndex;
@@ -1330,174 +1320,9 @@ export async function initCodexAppServerStore(): Promise<void> {
 export const initCodexCodeStore = initCodexAppServerStore;
 
 export async function appendCodexMessage(
-  conversationKey: number,
-  message: StoredChatMessage,
-  instanceID?: string,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  if (pendingDeletionStore.isConversationPendingDeletion(normalizedKey)) {
-    throw new Error(
-      `Conversation ${normalizedKey} is frozen by a pending deletion`,
-    );
-  }
-
-  const selectedTextContexts = synthesizeSelectedTextContexts({
-    selectedTextContexts: message.selectedTextContexts,
-    selectedTexts: message.selectedTexts,
-    legacySelectedText: message.selectedText,
-    selectedTextSources: message.selectedTextSources,
-    selectedTextPaperContexts: message.selectedTextPaperContexts,
-    selectedTextNoteContexts: message.selectedTextNoteContexts,
-  });
-  const selectedTexts = selectedTextContexts.map((context) => context.text);
-  const selectedTextSources = selectedTextContexts.map(
-    (context) => context.source,
-  );
-  const selectedTextPaperContexts = selectedTextContexts.map(
-    (context) => context.paperContext,
-  );
-  const selectedTextNoteContexts = selectedTextContexts.map(
-    (context) => context.noteContext,
-  );
-  const paperContexts = normalizePaperContextRefs(message.paperContexts);
-  const pdfPaperContexts = normalizePaperContextRefs(
-    message.pdfPaperContexts,
-  ).map((context) => ({ ...context, contentSourceMode: "pdf" as const }));
-  const fullTextPaperContexts = normalizePaperContextRefs(
-    message.fullTextPaperContexts,
-  );
-  const citationPaperContexts = normalizePaperContextRefs(
-    message.citationPaperContexts,
-  );
-  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
-  const selectedCollectionContexts = normalizeCollectionContextRefs(
-    message.selectedCollectionContexts,
-  );
-  const selectedTagContexts = normalizeTagContextRefs(
-    message.selectedTagContexts,
-  );
-  const screenshotImages = Array.isArray(message.screenshotImages)
-    ? message.screenshotImages.filter(
-        (entry): entry is string =>
-          typeof entry === "string" && Boolean(entry.trim()),
-      )
-    : [];
-  const attachments = Array.isArray(message.attachments)
-    ? message.attachments.filter(
-        (entry) => entry && typeof entry.id === "string" && entry.id.trim(),
-      )
-    : [];
-  const generatedImages = normalizeGeneratedChatImages(message.generatedImages);
-  const messageTimestamp = Number.isFinite(message.timestamp)
-    ? Math.floor(message.timestamp)
-    : Date.now();
-  const appendIdentity = await resolveCodexAppendIdentity(
-    normalizedKey,
-    instanceID,
-  );
-  const conversationID = appendIdentity.conversationID;
-
-  // The database fence is the authority on retirement; translate its abort
-  // so callers keep the typed error the removed pre-check used to raise.
-  await withRetiredKeyErrorMapping(
-    normalizedKey,
-    appendIdentity.instanceID || "",
-    () =>
-      Zotero.DB.executeTransaction(async () => {
-        if (appendIdentity.ledgerAvailable) {
-          const catalogRows = (await Zotero.DB.queryAsync(
-            `SELECT conversation_id AS conversationID
-         FROM ${CODEX_CONVERSATIONS_TABLE}
-         WHERE conversation_key = ?
-           AND conversation_instance_id = ?
-         LIMIT 1`,
-            [normalizedKey, appendIdentity.instanceID],
-          )) as Array<{ conversationID?: unknown }> | undefined;
-          if (!catalogRows?.length) {
-            throw new ConversationRetiredError(
-              normalizedKey,
-              appendIdentity.instanceID || "",
-            );
-          }
-        }
-        const identityAvailable =
-          appendIdentity.ledgerAvailable || Boolean(appendIdentity.instanceID);
-        const identityColumn = identityAvailable
-          ? ", conversation_instance_id"
-          : "";
-        const identityPlaceholder = identityAvailable ? ", ?" : "";
-        await Zotero.DB.queryAsync(
-          `INSERT INTO ${CODEX_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window, document_id${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
-          [
-            conversationID,
-            normalizedKey,
-            message.role,
-            message.text || "",
-            messageTimestamp,
-            message.runMode || null,
-            message.agentRunId || null,
-            selectedTexts[0] || message.selectedText || null,
-            selectedTextContexts.length
-              ? JSON.stringify(selectedTextContexts)
-              : null,
-            selectedTexts.length ? JSON.stringify(selectedTexts) : null,
-            selectedTextSources.length
-              ? JSON.stringify(selectedTextSources)
-              : null,
-            selectedTextPaperContexts.some((entry) => Boolean(entry))
-              ? JSON.stringify(selectedTextPaperContexts)
-              : null,
-            selectedTextNoteContexts.some((entry) => Boolean(entry))
-              ? JSON.stringify(selectedTextNoteContexts)
-              : null,
-            message.role === "user"
-              ? serializeForcedSkillIds(message.forcedSkillIds)
-              : null,
-            paperContexts.length ? JSON.stringify(paperContexts) : null,
-            pdfPaperContexts.length ? JSON.stringify(pdfPaperContexts) : null,
-            fullTextPaperContexts.length
-              ? JSON.stringify(fullTextPaperContexts)
-              : null,
-            citationPaperContexts.length
-              ? JSON.stringify(citationPaperContexts)
-              : null,
-            quoteCitations.length ? JSON.stringify(quoteCitations) : null,
-            selectedCollectionContexts.length
-              ? JSON.stringify(selectedCollectionContexts)
-              : null,
-            selectedTagContexts.length
-              ? JSON.stringify(selectedTagContexts)
-              : null,
-            screenshotImages.length ? JSON.stringify(screenshotImages) : null,
-            attachments.length ? JSON.stringify(attachments) : null,
-            generatedImages.length ? JSON.stringify(generatedImages) : null,
-            message.modelName || null,
-            message.modelEntryId || null,
-            message.modelProviderLabel || null,
-            message.interrupted ? 1 : null,
-            message.webchatRunState || null,
-            message.webchatCompletionReason || null,
-            message.reasoningSummary || null,
-            message.reasoningDetails || null,
-            message.compactMarker ? 1 : 0,
-            Number.isFinite(Number(message.contextTokens))
-              ? Math.floor(Number(message.contextTokens))
-              : null,
-            Number.isFinite(Number(message.contextWindow))
-              ? Math.floor(Number(message.contextWindow))
-              : null,
-            message.documentId || message.planDocumentId || null,
-            ...(identityAvailable ? [appendIdentity.instanceID] : []),
-          ],
-        );
-        await touchCodexConversationActivity(normalizedKey, messageTimestamp);
-        await refreshCodexConversationCatalogSummary(normalizedKey);
-      }),
-  );
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.appendMessage>
+) {
+  return store.appendMessage(...args);
 }
 
 export async function forkCodexConversationMessages(params: {
@@ -1557,457 +1382,33 @@ export async function loadCodexConversation(
 }
 
 export async function clearCodexConversation(
-  conversationKey: number,
-  identity?: { instanceID?: string; conversationID?: string },
-  onBeforeCommit?: () => Promise<void>,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const catalogIdentityClause = identity?.instanceID
-    ? `AND conversation_instance_id = ?`
-    : "";
-  const catalogIdentityParams = identity?.instanceID
-    ? [identity.instanceID]
-    : [];
-  const messageIdentityClause = identity?.instanceID
-    ? `AND EXISTS (
-         SELECT 1
-         FROM ${CODEX_CONVERSATIONS_TABLE} c
-         WHERE c.conversation_key = ?
-           ${catalogIdentityClause.replaceAll(
-             "conversation_instance_id",
-             "c.conversation_instance_id",
-           )}
-       )`
-    : "";
-  const messageIdentityParams = identity?.instanceID
-    ? [normalizedKey, ...catalogIdentityParams]
-    : [];
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
-  );
-  // Remove the old indexed body in the same transaction as pruning.  The
-  // post-commit refresh is best-effort, but it must never leave deleted text
-  // searchable if that refresh is interrupted or the database is transiently
-  // unavailable.
-  const searchIndexReady = await initConversationSearchIndexStore();
-  await Zotero.DB.executeTransaction(async () => {
-    if (identity?.instanceID) {
-      const witnessRows = (await Zotero.DB.queryAsync(
-        `SELECT 1 AS present
-         FROM ${CODEX_CONVERSATIONS_TABLE}
-         WHERE conversation_key = ?
-           ${catalogIdentityClause}
-         LIMIT 1`,
-        [normalizedKey, ...catalogIdentityParams],
-      )) as Array<{ present?: unknown }> | undefined;
-      if (!witnessRows?.length) {
-        throw new Error(
-          `Refused to clear Codex conversation ${normalizedKey}: catalog identity changed`,
-        );
-      }
-    }
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CODEX_MESSAGES_TABLE}
-       WHERE ${selector.whereSql}
-         ${messageIdentityClause}`,
-      [...selector.params, ...messageIdentityParams],
-    );
-    await refreshCodexConversationCatalogSummary(normalizedKey);
-    // Clear is content-authoritative.  Detach the exact native session in the
-    // same transaction so a provider-resume path cannot reintroduce the
-    // cleared turns if the app-server is unavailable after commit.
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-       SET provider_session_id = NULL,
-           provider_permission_state = NULL,
-           provider_session_path_state = NULL,
-           scoped_conversation_key = NULL,
-           scope_type = NULL,
-           scope_id = NULL,
-           scope_label = NULL,
-           cwd = NULL,
-           updated_at = ?
-       WHERE conversation_key = ?
-         ${catalogIdentityClause}`,
-      [Date.now(), normalizedKey, ...catalogIdentityParams],
-    );
-    await onBeforeCommit?.();
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.clearConversation>
+) {
+  return store.clearConversation(...args);
 }
 
 export async function deleteCodexTurnMessages(
-  conversationKey: number,
-  userTimestamp: number,
-  assistantTimestamp: number,
-  userMessageID?: number,
-  assistantMessageID?: number,
-  onBeforeCommit?: () => Promise<void>,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const normalizedUserTimestamp = Number.isFinite(userTimestamp)
-    ? Math.floor(userTimestamp)
-    : 0;
-  const normalizedAssistantTimestamp = Number.isFinite(assistantTimestamp)
-    ? Math.floor(assistantTimestamp)
-    : 0;
-  if (normalizedUserTimestamp <= 0 || normalizedAssistantTimestamp <= 0) return;
-  const normalizedUserMessageID =
-    Number.isFinite(Number(userMessageID)) && Number(userMessageID) > 0
-      ? Math.floor(Number(userMessageID))
-      : 0;
-  const normalizedAssistantMessageID =
-    Number.isFinite(Number(assistantMessageID)) &&
-    Number(assistantMessageID) > 0
-      ? Math.floor(Number(assistantMessageID))
-      : 0;
-
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
-  );
-  const searchIndexReady = await initConversationSearchIndexStore();
-  await Zotero.DB.executeTransaction(async () => {
-    if (normalizedUserMessageID > 0) {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CODEX_MESSAGES_TABLE}
-         WHERE id = ? AND ${selector.whereSql} AND role = 'user'`,
-        [normalizedUserMessageID, ...selector.params],
-      );
-    } else {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CODEX_MESSAGES_TABLE}
-         WHERE id = (
-           SELECT id
-           FROM ${CODEX_MESSAGES_TABLE}
-           WHERE ${selector.whereSql}
-             AND role = 'user'
-             AND timestamp = ?
-           ORDER BY id DESC
-           LIMIT 1
-         )`,
-        [...selector.params, normalizedUserTimestamp],
-      );
-    }
-    if (normalizedAssistantMessageID > 0) {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CODEX_MESSAGES_TABLE}
-         WHERE id = ? AND ${selector.whereSql} AND role = 'assistant'`,
-        [normalizedAssistantMessageID, ...selector.params],
-      );
-    } else {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CODEX_MESSAGES_TABLE}
-         WHERE id = (
-           SELECT id
-           FROM ${CODEX_MESSAGES_TABLE}
-           WHERE ${selector.whereSql}
-             AND role = 'assistant'
-             AND timestamp = ?
-           ORDER BY id DESC
-           LIMIT 1
-         )`,
-        [...selector.params, normalizedAssistantTimestamp],
-      );
-    }
-    await refreshCodexConversationCatalogSummary(normalizedKey);
-    if (searchIndexReady) {
-      await deleteConversationSearchIndexRowInTransaction({
-        system: "codex",
-        conversationKey: normalizedKey,
-      });
-    }
-    await onBeforeCommit?.();
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.deleteTurnMessages>
+) {
+  return store.deleteTurnMessages(...args);
 }
 
 export async function pruneCodexConversation(
-  conversationKey: number,
-  keep = CODEX_HISTORY_LIMIT,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
-  );
-  const searchIndexReady = await initConversationSearchIndexStore();
-  await Zotero.DB.executeTransaction(async () => {
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CODEX_MESSAGES_TABLE}
-       WHERE id IN (
-         SELECT id
-         FROM ${CODEX_MESSAGES_TABLE}
-         WHERE ${selector.whereSql}
-         ORDER BY ${storedMessageDisplayOrderSql({ direction: "desc" })}
-         LIMIT -1 OFFSET ?
-      )`,
-      [...selector.params, normalizeLimit(keep, CODEX_HISTORY_LIMIT)],
-    );
-    await refreshCodexConversationCatalogSummary(normalizedKey);
-    if (searchIndexReady) {
-      await deleteConversationSearchIndexRowInTransaction({
-        system: "codex",
-        conversationKey: normalizedKey,
-      });
-    }
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.pruneConversation>
+) {
+  return store.pruneConversation(...args);
 }
 
 export async function updateLatestCodexUserMessage(
-  conversationKey: number,
-  message: Pick<
-    StoredChatMessage,
-    | "text"
-    | "timestamp"
-    | "runMode"
-    | "agentRunId"
-    | "documentId"
-    | "planDocumentId"
-    | "selectedText"
-    | "selectedTextContexts"
-    | "selectedTexts"
-    | "selectedTextSources"
-    | "selectedTextPaperContexts"
-    | "selectedTextNoteContexts"
-    | "forcedSkillIds"
-    | "paperContexts"
-    | "pdfPaperContexts"
-    | "fullTextPaperContexts"
-    | "citationPaperContexts"
-    | "selectedCollectionContexts"
-    | "selectedTagContexts"
-    | "screenshotImages"
-    | "attachments"
-  >,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const selectedTextContexts = synthesizeSelectedTextContexts({
-    selectedTextContexts: message.selectedTextContexts,
-    selectedTexts: message.selectedTexts,
-    legacySelectedText: message.selectedText,
-    selectedTextSources: message.selectedTextSources,
-    selectedTextPaperContexts: message.selectedTextPaperContexts,
-    selectedTextNoteContexts: message.selectedTextNoteContexts,
-  });
-  const selectedTexts = selectedTextContexts.map((context) => context.text);
-  const selectedTextSources = selectedTextContexts.map(
-    (context) => context.source,
-  );
-  const selectedTextPaperContexts = selectedTextContexts.map(
-    (context) => context.paperContext,
-  );
-  const selectedTextNoteContexts = selectedTextContexts.map(
-    (context) => context.noteContext,
-  );
-  const selectedCollectionContexts = normalizeCollectionContextRefs(
-    message.selectedCollectionContexts,
-  );
-  const selectedTagContexts = normalizeTagContextRefs(
-    message.selectedTagContexts,
-  );
-  const messageTimestamp = Number.isFinite(message.timestamp)
-    ? Math.floor(message.timestamp)
-    : Date.now();
-  const selector =
-    await resolveRepairingMessageConversationSelector(normalizedKey);
-  await Zotero.DB.executeTransaction(async () => {
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_MESSAGES_TABLE}
-       SET text = ?,
-           timestamp = ?,
-           run_mode = ?,
-           agent_run_id = ?,
-           document_id = ?,
-           selected_text = ?,
-           selected_text_contexts_json = ?,
-           selected_texts_json = ?,
-           selected_text_sources_json = ?,
-           selected_text_paper_contexts_json = ?,
-           selected_text_note_contexts_json = ?,
-           forced_skill_ids_json = ?,
-           paper_contexts_json = ?,
-           pdf_paper_contexts_json = ?,
-           full_text_paper_contexts_json = ?,
-           citation_paper_contexts_json = ?,
-           collection_contexts_json = ?,
-           tag_contexts_json = ?,
-           screenshot_images = ?,
-           attachments_json = ?
-       WHERE id = (
-         SELECT id
-         FROM ${CODEX_MESSAGES_TABLE}
-         WHERE ${selector.whereSql} AND role = 'user'
-         ORDER BY timestamp DESC, id DESC
-         LIMIT 1
-       )`,
-      [
-        message.text || "",
-        messageTimestamp,
-        message.runMode || null,
-        message.agentRunId || null,
-        message.documentId || message.planDocumentId || null,
-        selectedTexts[0] || null,
-        selectedTextContexts.length
-          ? JSON.stringify(selectedTextContexts)
-          : null,
-        selectedTexts.length ? JSON.stringify(selectedTexts) : null,
-        selectedTextSources.length ? JSON.stringify(selectedTextSources) : null,
-        selectedTextPaperContexts.some((entry) => Boolean(entry))
-          ? JSON.stringify(selectedTextPaperContexts)
-          : null,
-        selectedTextNoteContexts.some((entry) => Boolean(entry))
-          ? JSON.stringify(selectedTextNoteContexts)
-          : null,
-        serializeForcedSkillIds(message.forcedSkillIds),
-        message.paperContexts?.length
-          ? JSON.stringify(normalizePaperContextRefs(message.paperContexts))
-          : null,
-        message.pdfPaperContexts?.length
-          ? JSON.stringify(
-              normalizePaperContextRefs(message.pdfPaperContexts).map(
-                (context) => ({
-                  ...context,
-                  contentSourceMode: "pdf" as const,
-                }),
-              ),
-            )
-          : null,
-        message.fullTextPaperContexts?.length
-          ? JSON.stringify(
-              normalizePaperContextRefs(message.fullTextPaperContexts),
-            )
-          : null,
-        message.citationPaperContexts?.length
-          ? JSON.stringify(
-              normalizePaperContextRefs(message.citationPaperContexts),
-            )
-          : null,
-        selectedCollectionContexts.length
-          ? JSON.stringify(selectedCollectionContexts)
-          : null,
-        selectedTagContexts.length ? JSON.stringify(selectedTagContexts) : null,
-        message.screenshotImages?.length
-          ? JSON.stringify(message.screenshotImages)
-          : null,
-        message.attachments?.length
-          ? JSON.stringify(message.attachments)
-          : null,
-        ...selector.params,
-      ],
-    );
-    await touchCodexConversationActivity(normalizedKey, messageTimestamp);
-    await refreshCodexConversationCatalogSummary(normalizedKey);
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.updateLatestUserMessage>
+) {
+  return store.updateLatestUserMessage(...args);
 }
 
 export async function updateLatestCodexAssistantMessage(
-  conversationKey: number,
-  message: Pick<
-    StoredChatMessage,
-    | "text"
-    | "timestamp"
-    | "runMode"
-    | "agentRunId"
-    | "documentId"
-    | "planDocumentId"
-    | "modelName"
-    | "modelEntryId"
-    | "modelProviderLabel"
-    | "interrupted"
-    | "webchatRunState"
-    | "webchatCompletionReason"
-    | "reasoningSummary"
-    | "reasoningDetails"
-    | "compactMarker"
-    | "contextTokens"
-    | "contextWindow"
-    | "quoteCitations"
-    | "generatedImages"
-  >,
-): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return;
-  const messageTimestamp = Number.isFinite(message.timestamp)
-    ? Math.floor(message.timestamp)
-    : Date.now();
-  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
-  const generatedImages = normalizeGeneratedChatImages(message.generatedImages);
-  const selector =
-    await resolveRepairingMessageConversationSelector(normalizedKey);
-  await Zotero.DB.executeTransaction(async () => {
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_MESSAGES_TABLE}
-       SET text = ?,
-           timestamp = ?,
-           run_mode = ?,
-           agent_run_id = ?,
-           document_id = ?,
-           model_name = ?,
-           model_entry_id = ?,
-           model_provider_label = ?,
-           interrupted = ?,
-           webchat_run_state = ?,
-           webchat_completion_reason = ?,
-           reasoning_summary = ?,
-           reasoning_details = ?,
-           compact_marker = ?,
-           quote_citations_json = ?,
-           generated_images_json = ?,
-           context_tokens = COALESCE(?, context_tokens),
-           context_window = COALESCE(?, context_window)
-       WHERE id = (
-         SELECT id
-         FROM ${CODEX_MESSAGES_TABLE}
-         WHERE ${selector.whereSql} AND role = 'assistant'
-         ORDER BY timestamp DESC, id DESC
-         LIMIT 1
-       )`,
-      [
-        message.text || "",
-        messageTimestamp,
-        message.runMode || null,
-        message.agentRunId || null,
-        message.documentId || message.planDocumentId || null,
-        message.modelName || null,
-        message.modelEntryId || null,
-        message.modelProviderLabel || null,
-        message.interrupted ? 1 : null,
-        message.webchatRunState || null,
-        message.webchatCompletionReason || null,
-        message.reasoningSummary || null,
-        message.reasoningDetails || null,
-        message.compactMarker ? 1 : 0,
-        quoteCitations.length ? JSON.stringify(quoteCitations) : null,
-        generatedImages.length ? JSON.stringify(generatedImages) : null,
-        Number.isFinite(Number(message.contextTokens)) &&
-        Number(message.contextTokens) > 0
-          ? Math.floor(Number(message.contextTokens))
-          : null,
-        Number.isFinite(Number(message.contextWindow)) &&
-        Number(message.contextWindow) > 0
-          ? Math.floor(Number(message.contextWindow))
-          : null,
-        ...selector.params,
-      ],
-    );
-    await touchCodexConversationActivity(normalizedKey, messageTimestamp);
-    await refreshCodexConversationCatalogSummary(normalizedKey);
-  });
-  await refreshCodexConversationSearchIndex(normalizedKey);
+  ...args: Parameters<typeof store.updateLatestAssistantMessage>
+) {
+  return store.updateLatestAssistantMessage(...args);
 }
 
 type CodexConversationRow = Parameters<typeof store.toSummary>[0];
