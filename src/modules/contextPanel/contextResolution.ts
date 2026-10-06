@@ -845,12 +845,12 @@ function normalizeSelectedTextPageLocation(
     Number.isFinite(rawPageIndex) && rawPageIndex >= 0
       ? Math.floor(rawPageIndex)
       : undefined;
+  // Only a label the reader reported; display falls back to the page number
+  // (formatSelectedTextContextPageLabel).
   const pageLabel =
     typeof location.pageLabel === "string" && location.pageLabel.trim()
       ? location.pageLabel.trim()
-      : pageIndex !== undefined
-        ? `${pageIndex + 1}`
-        : undefined;
+      : undefined;
   if (
     contextItemId === undefined &&
     pageIndex === undefined &&
@@ -1060,12 +1060,11 @@ export function updateSelectedTextContextLocationForItem(
     Number.isFinite(rawPageIndex) && rawPageIndex >= 0
       ? Math.floor(rawPageIndex)
       : undefined;
+  // Only a label the reader reported; none is guessed from the index.
   const pageLabel =
     typeof location?.pageLabel === "string" && location.pageLabel.trim()
       ? location.pageLabel.trim()
-      : pageIndex !== undefined
-        ? `${pageIndex + 1}`
-        : undefined;
+      : undefined;
   if (!contextItemId && pageIndex === undefined && !pageLabel) return false;
 
   const paperIdentity = (context?: PaperContextRef | null): string =>

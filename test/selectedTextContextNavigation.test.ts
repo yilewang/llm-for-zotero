@@ -174,6 +174,21 @@ describe("selected text context reader navigation", function () {
     assert.isNotEmpty(dispatchedQueries);
   });
 
+  it("navigates by page index only when the context has no printed label (D5)", async function () {
+    const reader = createReader(101, []);
+    const context = createContext(101);
+    delete context.pageLabel;
+
+    const navigated = await navigateSelectedTextContextToPage(
+      context,
+      createNavigationDeps({ getActiveReaderForSelectedTab: () => reader }),
+    );
+
+    assert.isTrue(navigated);
+    // Was { pageIndex: 1, pageLabel: "2" }.
+    assert.deepEqual(reader.navigatedLocations, [{ pageIndex: 1 }]);
+  });
+
   it("uses the reader returned by opening the target attachment", async function () {
     const unrelatedQueries: string[] = [];
     const openedQueries: string[] = [];

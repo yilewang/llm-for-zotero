@@ -258,9 +258,10 @@ function buildProvisionalAnchor(params: {
     contextIndex,
     contextItemId,
     pageIndex,
+    // Only a printed label; formatting numbers an unlabelled page itself.
     pageLabel:
       sanitizeText(context.pageLabel || selectedPage?.pageLabel || "").trim() ||
-      (pageIndex !== undefined ? `${pageIndex + 1}` : undefined),
+      undefined,
     paperContext,
     resolution,
     primaryChunkIndex: primaryChunkIndex ?? undefined,

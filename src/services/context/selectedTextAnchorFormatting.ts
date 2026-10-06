@@ -88,7 +88,9 @@ export function renderSelectedTextPageFallbackContext(params: {
     ) {
       return [];
     }
-    const pageLabel = cleanText(anchor.pageLabel);
+    const pageLabel =
+      cleanText(anchor.pageLabel) ||
+      (anchor.pageIndex !== undefined ? `${anchor.pageIndex + 1}` : "");
     const fields = [
       `attachment_id=${anchor.contextItemId}`,
       pageLabel ? `page_label=${pageLabel}` : "",
