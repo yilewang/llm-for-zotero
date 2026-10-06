@@ -665,7 +665,10 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     await openSidebarChat(paper.parentItemId);
     await ensureSidebarPaperChat(paper.parentItemId);
     await api.openStandaloneForItem(paper.parentItemId);
-    const library = await api.clickStandaloneTab("open");
+    await api.clickStandaloneTab("open");
+    // A fresh Library chat, so earlier files' turns in the library's default
+    // conversation do not count against this test's stored questions.
+    const library = await api.startNewStandaloneConversation();
     assert.equal(library.conversationKind, "global", JSON.stringify(library));
     await Zotero.Promise.delay(300);
     assertSidebarLive("before the sidebar send");
