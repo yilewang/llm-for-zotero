@@ -36,7 +36,6 @@ import {
   getCurrentProfileSignature,
   generateConversationInstanceID,
   initConversationRegistryStore,
-  deleteRegisteredConversationScopeInTransaction,
   repairRegisteredConversationScope,
   registerConversationScope,
   type PaperContextJsonColumns,
@@ -71,12 +70,10 @@ import {
   isConversationKeyLedgerStoreInitialized,
   installConversationKeyLedgerCatalogTriggers,
   installConversationKeyLedgerMessageTriggers,
-  retireConversationKeyInTransaction,
   seedConversationKeyLedgerFromCatalogs,
   seedConversationKeyLedgerFromTombstones,
   reserveOrphanConversationMessageKeys,
   retireOrphanedConversationLedgerEntries,
-  rememberConversationKeyRetired,
   updateConversationKeyLedgerConversationIDInTransaction,
 } from "../shared/conversationKeyLedger";
 import {
@@ -94,14 +91,7 @@ import {
 } from "../services/context/normalizers";
 import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import { pendingDeletionStore } from "../core/conversations/pendingDeletionStore";
-import {
-  initRecentlyDeletedConversationTombstones,
-  persistConversationInstanceTombstoneInTransaction,
-} from "../core/conversations/recentlyDeletedConversations";
-import {
-  deleteConversationForkLinksForInstanceInTransaction,
-  initConversationForkLinksStore,
-} from "../shared/conversationForkLinks";
+import { initRecentlyDeletedConversationTombstones } from "../core/conversations/recentlyDeletedConversations";
 import {
   normalizeCatalogTimestamp,
   normalizeConversationKey,
@@ -123,10 +113,13 @@ import {
 } from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import {
-  deleteUsageEventsForConversation,
-  deleteUsageEventsForConversationInTransaction,
-} from "./usageStore";
-import { clearOwnerAttachmentRefsInTransaction } from "./attachmentRefStore";
+  deleteConversationLocalRows,
+  deleteConversationTurnMessages,
+  preflightDeleteConversationLocalRows,
+  type ConversationLocalRowDeletionIdentity,
+  type ConversationLocalRowStore,
+} from "../shared/conversationStore/localRowDeletion";
+import { deleteUsageEventsForConversation } from "./usageStore";
 import {
   areConversationWritesFrozen,
   isConversationWriteGenerationCurrent,
@@ -808,6 +801,22 @@ function isUpstreamPaperConversationKey(conversationKey: number): boolean {
 function isUpstreamStoreConversationKey(conversationKey: number): boolean {
   return isConversationKeyFor("upstream", conversationKey);
 }
+
+/** The upstream store as the shared deletion kernel sees it. */
+const UPSTREAM_LOCAL_ROW_STORE: ConversationLocalRowStore = {
+  system: "upstream",
+  storeLabel: "upstream",
+  messagesTable: CHAT_MESSAGES_TABLE,
+  isStoreConversationKey: isUpstreamStoreConversationKey,
+  repairRecoverableCatalogMessageConversationIDs:
+    repairRecoverableUpstreamCatalogMessageConversationIDs,
+  resolveRepairingMessageConversationSelector,
+  // Read at call time: the agent purge module may load after this one.
+  clearAgentConversationRowsInTransaction: (conversationKey) =>
+    clearPersistedAgentConversationRowsInTransaction(conversationKey),
+  refreshCatalogSummary: refreshUpstreamConversationCatalogSummary,
+  refreshSearchIndex: refreshUpstreamConversationSearchIndex,
+};
 
 async function purgeInvalidGlobalConversationCatalog(): Promise<void> {
   await Zotero.DB.queryAsync(
@@ -3050,85 +3059,15 @@ export async function deleteTurnMessages(
   assistantMessageID?: number,
   onBeforeCommit?: () => Promise<void>,
 ): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
-  const normalizedUserTimestamp = Number.isFinite(userTimestamp)
-    ? Math.floor(userTimestamp)
-    : 0;
-  const normalizedAssistantTimestamp = Number.isFinite(assistantTimestamp)
-    ? Math.floor(assistantTimestamp)
-    : 0;
-  if (normalizedUserTimestamp <= 0 || normalizedAssistantTimestamp <= 0) return;
-  const normalizedUserMessageID =
-    Number.isFinite(Number(userMessageID)) && Number(userMessageID) > 0
-      ? Math.floor(Number(userMessageID))
-      : 0;
-  const normalizedAssistantMessageID =
-    Number.isFinite(Number(assistantMessageID)) &&
-    Number(assistantMessageID) > 0
-      ? Math.floor(Number(assistantMessageID))
-      : 0;
-
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
+  await deleteConversationTurnMessages(
+    UPSTREAM_LOCAL_ROW_STORE,
+    conversationKey,
+    userTimestamp,
+    assistantTimestamp,
+    userMessageID,
+    assistantMessageID,
+    onBeforeCommit,
   );
-  const searchIndexReady = await initConversationSearchIndexStore();
-  await Zotero.DB.executeTransaction(async () => {
-    if (normalizedUserMessageID > 0) {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CHAT_MESSAGES_TABLE}
-         WHERE id = ? AND ${selector.whereSql} AND role = 'user'`,
-        [normalizedUserMessageID, ...selector.params],
-      );
-    } else {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CHAT_MESSAGES_TABLE}
-         WHERE id = (
-           SELECT id
-           FROM ${CHAT_MESSAGES_TABLE}
-           WHERE ${selector.whereSql}
-             AND role = 'user'
-             AND timestamp = ?
-           ORDER BY id DESC
-           LIMIT 1
-         )`,
-        [...selector.params, normalizedUserTimestamp],
-      );
-    }
-    if (normalizedAssistantMessageID > 0) {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CHAT_MESSAGES_TABLE}
-         WHERE id = ? AND ${selector.whereSql} AND role = 'assistant'`,
-        [normalizedAssistantMessageID, ...selector.params],
-      );
-    } else {
-      await Zotero.DB.queryAsync(
-        `DELETE FROM ${CHAT_MESSAGES_TABLE}
-         WHERE id = (
-           SELECT id
-           FROM ${CHAT_MESSAGES_TABLE}
-           WHERE ${selector.whereSql}
-             AND role = 'assistant'
-             AND timestamp = ?
-           ORDER BY id DESC
-           LIMIT 1
-         )`,
-        [...selector.params, normalizedAssistantTimestamp],
-      );
-    }
-    await refreshUpstreamConversationCatalogSummary(normalizedKey);
-    if (searchIndexReady) {
-      await deleteConversationSearchIndexRowInTransaction({
-        system: "upstream",
-        conversationKey: normalizedKey,
-      });
-    }
-    await onBeforeCommit?.();
-  });
-  await refreshUpstreamConversationSearchIndex(normalizedKey);
 }
 
 export async function pruneConversation(
@@ -4112,179 +4051,24 @@ export async function deleteGlobalConversation(
 export async function preflightDeleteUpstreamConversationLocalRows(
   conversationKey: number,
 ): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
-  const repair =
-    await repairRecoverableUpstreamCatalogMessageConversationIDs(normalizedKey);
-  if (repair.refused > 0) {
-    throw new Error(
-      `Refused to delete upstream conversation ${normalizedKey}: ambiguous stale message ids found.`,
-    );
-  }
-  await resolveRepairingMessageConversationSelector(normalizedKey, {
-    destructive: true,
-  });
+  await preflightDeleteConversationLocalRows(
+    UPSTREAM_LOCAL_ROW_STORE,
+    conversationKey,
+  );
 }
 
 export async function deleteUpstreamConversationLocalRows(
   conversationKey: number,
   kind?: "global" | "paper",
-  identity?: {
-    instanceID?: string;
-    conversationID?: string;
-    onBeforeCommit?: () => Promise<void>;
-    onCommit?: () => Promise<void>;
-  },
+  identity?: ConversationLocalRowDeletionIdentity,
 ): Promise<void> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
-  let ledgerAvailable = isConversationKeyLedgerStoreInitialized();
-  let ledgerEntry;
-  if (ledgerAvailable) {
-    try {
-      ledgerEntry = await getConversationKeyLedgerEntry(normalizedKey);
-    } catch (error) {
-      if (!/no such table|no table/i.test(String(error))) throw error;
-      ledgerAvailable = false;
-    }
-  }
-  if (ledgerAvailable && !ledgerEntry) {
-    throw new ConversationRetiredError(
-      normalizedKey,
-      identity?.instanceID || "",
-    );
-  }
-  if (
-    ledgerEntry?.retiredAt &&
-    identity?.instanceID !== ledgerEntry.instanceID
-  ) {
-    throw new ConversationRetiredError(
-      normalizedKey,
-      identity?.instanceID || "",
-    );
-  }
-  if (
-    ledgerEntry &&
-    identity?.instanceID &&
-    identity.instanceID !== ledgerEntry.instanceID
-  ) {
-    throw new Error(
-      `Refused to delete upstream conversation ${normalizedKey}: identity mismatch`,
-    );
-  }
-  const deletionIdentity = ledgerEntry
-    ? { ...(identity || {}), instanceID: ledgerEntry.instanceID }
-    : identity;
-  await preflightDeleteUpstreamConversationLocalRows(normalizedKey);
-  const catalogKind =
-    kind === "paper" || isUpstreamPaperConversationKey(normalizedKey)
-      ? "paper"
-      : "global";
-  const catalogTable =
-    catalogKind === "paper"
-      ? PAPER_CONVERSATIONS_TABLE
-      : GLOBAL_CONVERSATIONS_TABLE;
-  const selector = await resolveRepairingMessageConversationSelector(
-    normalizedKey,
-    {
-      destructive: true,
-    },
+  await deleteConversationLocalRows(
+    UPSTREAM_LOCAL_ROW_STORE,
+    conversationKey,
+    (normalizedKey) =>
+      kind === "paper" || isUpstreamPaperConversationKey(normalizedKey)
+        ? PAPER_CONVERSATIONS_TABLE
+        : GLOBAL_CONVERSATIONS_TABLE,
+    identity,
   );
-  const catalogIdentityClause = deletionIdentity?.instanceID
-    ? `AND conversation_instance_id = ?`
-    : "";
-  const catalogIdentityParams = deletionIdentity?.instanceID
-    ? [deletionIdentity.instanceID]
-    : [];
-  const messageIdentityClause = deletionIdentity?.instanceID
-    ? `AND EXISTS (
-         SELECT 1
-         FROM ${catalogTable} c
-         WHERE c.conversation_key = ?
-           AND c.conversation_instance_id = ?
-       )`
-    : "";
-  const messageIdentityParams = deletionIdentity?.instanceID
-    ? [normalizedKey, deletionIdentity.instanceID]
-    : [];
-  await initConversationForkLinksStore();
-  await initConversationRegistryStore();
-  await initConversationSearchIndexStore();
-  await initRecentlyDeletedConversationTombstones();
-  await Zotero.DB.executeTransaction(async () => {
-    if (deletionIdentity?.instanceID) {
-      const witnessRows = (await Zotero.DB.queryAsync(
-        `SELECT 1 AS present
-         FROM ${catalogTable}
-         WHERE conversation_key = ?
-           ${catalogIdentityClause}
-         LIMIT 1`,
-        [normalizedKey, ...catalogIdentityParams],
-      )) as Array<{ present?: unknown }> | undefined;
-      if (!witnessRows?.length) {
-        throw new Error(
-          `Refused to delete upstream conversation ${normalizedKey}: catalog identity changed`,
-        );
-      }
-    }
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CHAT_MESSAGES_TABLE}
-       WHERE ${selector.whereSql}
-         ${messageIdentityClause}
-         ${deletionIdentity?.conversationID ? "AND conversation_id = ?" : ""}`,
-      deletionIdentity?.conversationID
-        ? [
-            ...selector.params,
-            ...messageIdentityParams,
-            deletionIdentity.conversationID,
-          ]
-        : [...selector.params, ...messageIdentityParams],
-    );
-    await clearPersistedAgentConversationRowsInTransaction(normalizedKey);
-    await clearOwnerAttachmentRefsInTransaction("conversation", normalizedKey);
-    // A deleted conversation leaves no usage rows behind: the local usage
-    // ledger is scoped to conversations the user can still see.
-    await deleteUsageEventsForConversationInTransaction(normalizedKey);
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${catalogTable}
-       WHERE conversation_key = ?
-         ${catalogIdentityClause}`,
-      [normalizedKey, ...catalogIdentityParams],
-    );
-    await deleteConversationForkLinksForInstanceInTransaction({
-      conversationKey: normalizedKey,
-      conversationID: deletionIdentity?.conversationID,
-      system: "upstream",
-    });
-    if (deletionIdentity?.instanceID) {
-      await deleteRegisteredConversationScopeInTransaction(
-        deletionIdentity.instanceID,
-        normalizedKey,
-        deletionIdentity.conversationID,
-        "upstream",
-      );
-    }
-    if (deletionIdentity?.instanceID) {
-      await persistConversationInstanceTombstoneInTransaction({
-        conversationKey: normalizedKey,
-        instanceID: deletionIdentity.instanceID,
-        conversationID: deletionIdentity.conversationID,
-      });
-    }
-    await deleteConversationSearchIndexRowInTransaction({
-      system: "upstream",
-      conversationKey: normalizedKey,
-    });
-    if (ledgerAvailable && deletionIdentity?.instanceID) {
-      await retireConversationKeyInTransaction({
-        conversationKey: normalizedKey,
-        instanceID: deletionIdentity.instanceID,
-      });
-    }
-    await deletionIdentity?.onBeforeCommit?.();
-    await deletionIdentity?.onCommit?.();
-  });
-  if (deletionIdentity?.instanceID) {
-    rememberConversationKeyRetired(normalizedKey);
-  }
 }
