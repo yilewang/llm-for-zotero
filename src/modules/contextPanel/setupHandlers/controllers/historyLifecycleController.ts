@@ -116,6 +116,7 @@ import { forgetRecentlyDeletedConversation } from "../../../../core/conversation
 import {
   commitConversationRename,
   markCommittedConversationDeletionTombstone,
+  queueWitnessedConversationDeletion,
   shouldSeedConversationCatalogEntry,
 } from "../../conversationLifecycle";
 import {
@@ -3373,45 +3374,34 @@ export function createHistoryLifecycleController(
     }
 
     const wasActive = isHistoryEntryActive(targetEntry, conversationSystem);
-    // Capture the catalog row's identity witness BEFORE queueing: keys are
-    // recycled, so this is the only value that lets the finalizer prove it is
-    // still deleting this conversation. A missing witness is persisted as a
-    // durable intent and moves to identity quarantine after the Undo window.
-    const identityWitness =
-      await conversationRepository.getCatalogIdentityWitness({
-        system: conversationSystem,
-        kind: targetEntry.kind,
+    const queueResult = await queueWitnessedConversationDeletion({
+      intent: {
+        conversationKind: targetEntry.kind,
+        conversationID: targetEntry.conversationID,
         conversationKey: targetEntry.conversationKey,
-      });
-    // No await may separate this final check from queueConversationDeletion:
-    // that call freezes writes synchronously at the durable intent boundary.
-    if (
-      !isOwnedPanelOperationCurrent(ownership, "delete-conversation-commit") ||
-      rejectConversationDeletionWhileGenerating(targetEntry.conversationKey)
-    ) {
-      return false;
-    }
-    const queued = await pendingDeletionStore.queueConversationDeletion({
-      conversationKind: targetEntry.kind,
-      instanceID: identityWitness?.instanceID || "",
-      conversationID:
-        identityWitness?.conversationID || targetEntry.conversationID,
-      catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
-      conversationKey: targetEntry.conversationKey,
-      libraryID,
-      system: conversationSystem,
-      paperItemID: targetEntry.paperItemID,
-      providerSessionId: targetEntry.providerSessionId || undefined,
-      title: targetEntry.title,
-      wasActive,
+        libraryID,
+        system: conversationSystem,
+        paperItemID: targetEntry.paperItemID,
+        providerSessionId: targetEntry.providerSessionId || undefined,
+        title: targetEntry.title,
+        wasActive,
+      },
+      // The panel's final check: it still owns the operation and the
+      // conversation is not generating. It runs after the witness read with
+      // no await before the queue call.
+      finalCheck: () =>
+        isOwnedPanelOperationCurrent(ownership, "delete-conversation-commit") &&
+        !rejectConversationDeletionWhileGenerating(targetEntry.conversationKey),
     });
-    if (!queued) {
+    if (queueResult.status === "refused") return false;
+    if (queueResult.status === "failed") {
       if (status) {
         setStatus(status, t("Failed to queue deletion. Check logs."), "error");
       }
       await refreshGlobalHistoryHeader();
       return false;
     }
+    const queued = queueResult.entry;
     if (
       !isOwnedPanelOperationCurrent(ownership, "delete-conversation-result")
     ) {

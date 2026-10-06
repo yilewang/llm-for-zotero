@@ -9,6 +9,7 @@ import {
 import {
   commitConversationRename,
   markCommittedConversationDeletionTombstone,
+  queueWitnessedConversationDeletion,
   shouldSeedConversationCatalogEntry,
 } from "../src/modules/contextPanel/conversationLifecycle";
 import type { ConversationRenameIdentity } from "../src/modules/contextPanel/conversationRenameEligibility";
@@ -378,6 +379,125 @@ describe("conversation lifecycle helpers", function () {
         caught = error;
       }
       assert.match(String(caught), /write failed/);
+    });
+  });
+
+  describe("queueWitnessedConversationDeletion", function () {
+    let originalQueue: typeof pendingDeletionStore.queueConversationDeletion;
+    let log: string[];
+    let queueInputs: unknown[];
+    let queueResult: PendingConversationDeletionEntry | null;
+    const intent = {
+      conversationKind: "paper" as const,
+      conversationID: "row-conversation-id",
+      conversationKey: 99,
+      libraryID: 3,
+      system: "codex" as const,
+      paperItemID: 501,
+      providerSessionId: "thread-1",
+      title: "Doomed paper chat",
+      wasActive: true,
+    };
+    const queuedEntry = {
+      id: "pending-99",
+    } as PendingConversationDeletionEntry;
+
+    beforeEach(function () {
+      originalQueue = pendingDeletionStore.queueConversationDeletion;
+      log = [];
+      queueInputs = [];
+      queueResult = queuedEntry;
+      conversationRepository.getCatalogIdentityWitness = async (target) => {
+        log.push("witness");
+        witnessCalls.push(target);
+        await Promise.resolve();
+        log.push("witness-resolved");
+        return witness;
+      };
+      pendingDeletionStore.queueConversationDeletion = (input) => {
+        log.push("queue");
+        queueInputs.push(input);
+        return Promise.resolve(queueResult);
+      };
+    });
+
+    afterEach(function () {
+      pendingDeletionStore.queueConversationDeletion = originalQueue;
+    });
+
+    it("captures the identity witness and queues the intent with it", async function () {
+      witness = {
+        instanceID: "instance-99",
+        catalogCreatedAt: 1234,
+        conversationID: "witness-conversation-id",
+      };
+      const result = await queueWitnessedConversationDeletion({ intent });
+      assert.deepEqual(result, { status: "queued", entry: queuedEntry });
+      assert.deepEqual(witnessCalls, [
+        { system: "codex", kind: "paper", conversationKey: 99 },
+      ]);
+      assert.deepEqual(queueInputs, [
+        {
+          conversationKind: "paper",
+          instanceID: "instance-99",
+          conversationID: "witness-conversation-id",
+          catalogCreatedAt: 1234,
+          conversationKey: 99,
+          libraryID: 3,
+          system: "codex",
+          paperItemID: 501,
+          providerSessionId: "thread-1",
+          title: "Doomed paper chat",
+          wasActive: true,
+        },
+      ]);
+    });
+
+    it("queues a witnessless intent with empty identity and the row's ID", async function () {
+      witness = null;
+      await queueWitnessedConversationDeletion({ intent });
+      const input = queueInputs[0] as Record<string, unknown>;
+      assert.equal(input.instanceID, "");
+      assert.equal(input.conversationID, "row-conversation-id");
+      assert.equal(input.catalogCreatedAt, 0);
+    });
+
+    it("runs the final check after the witness read and refuses without queueing", async function () {
+      const result = await queueWitnessedConversationDeletion({
+        intent,
+        finalCheck: () => {
+          log.push("final-check");
+          return false;
+        },
+      });
+      assert.deepEqual(result, { status: "refused" });
+      assert.deepEqual(log, ["witness", "witness-resolved", "final-check"]);
+      assert.deepEqual(queueInputs, []);
+    });
+
+    it("lets no await separate the final check from the queue call", async function () {
+      const result = await queueWitnessedConversationDeletion({
+        intent,
+        finalCheck: () => {
+          log.push("final-check");
+          void Promise.resolve().then(() => log.push("next-microtask"));
+          return true;
+        },
+      });
+      assert.equal(result.status, "queued");
+      assert.deepEqual(log, [
+        "witness",
+        "witness-resolved",
+        "final-check",
+        "queue",
+        "next-microtask",
+      ]);
+    });
+
+    it("reports a queue that returned no entry as failed", async function () {
+      queueResult = null;
+      const result = await queueWitnessedConversationDeletion({ intent });
+      assert.deepEqual(result, { status: "failed" });
     });
   });
 });

@@ -7,6 +7,7 @@ import type { ConversationSystem } from "../../shared/types";
 import { conversationRepository } from "../../core/conversations/repository";
 import {
   pendingDeletionStore,
+  type PendingConversationDeletionEntry,
   type PendingDeletionEvent,
 } from "../../core/conversations/pendingDeletionStore";
 import {
@@ -140,4 +141,62 @@ export async function commitConversationRename<Entry>(params: {
     title: params.title,
   });
   return true;
+}
+
+/** What the surface knows about the conversation it is about to delete. */
+export type ConversationDeletionIntent = {
+  conversationKind: "global" | "paper";
+  /** Used only when the identity witness carries no conversation ID. */
+  conversationID?: string;
+  conversationKey: number;
+  libraryID: number;
+  system: ConversationSystem;
+  paperItemID?: number;
+  providerSessionId?: string;
+  title: string;
+  wasActive: boolean;
+};
+
+export type WitnessedConversationDeletionResult =
+  | { status: "refused" }
+  | { status: "failed" }
+  | { status: "queued"; entry: PendingConversationDeletionEntry };
+
+/**
+ * Capture the catalog row's identity witness, then queue the durable deletion
+ * intent with it. Keys are recycled, so the witness is the only value that
+ * lets the finalizer prove it still deletes this conversation; a missing
+ * witness is persisted as a durable intent and moves to identity quarantine
+ * after the Undo window.
+ *
+ * finalCheck runs after the witness read. No await separates it from
+ * queueConversationDeletion, which freezes writes synchronously at the
+ * durable intent boundary. A surface without a final check passes none.
+ */
+export async function queueWitnessedConversationDeletion(params: {
+  intent: ConversationDeletionIntent;
+  finalCheck?: () => boolean;
+}): Promise<WitnessedConversationDeletionResult> {
+  const { intent } = params;
+  const identityWitness =
+    await conversationRepository.getCatalogIdentityWitness({
+      system: intent.system,
+      kind: intent.conversationKind,
+      conversationKey: intent.conversationKey,
+    });
+  if (params.finalCheck && !params.finalCheck()) return { status: "refused" };
+  const queued = await pendingDeletionStore.queueConversationDeletion({
+    conversationKind: intent.conversationKind,
+    instanceID: identityWitness?.instanceID || "",
+    conversationID: identityWitness?.conversationID || intent.conversationID,
+    catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
+    conversationKey: intent.conversationKey,
+    libraryID: intent.libraryID,
+    system: intent.system,
+    paperItemID: intent.paperItemID,
+    providerSessionId: intent.providerSessionId,
+    title: intent.title,
+    wasActive: intent.wasActive,
+  });
+  return queued ? { status: "queued", entry: queued } : { status: "failed" };
 }

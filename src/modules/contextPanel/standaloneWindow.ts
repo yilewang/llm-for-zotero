@@ -170,6 +170,7 @@ import { forgetRecentlyDeletedConversation } from "../../core/conversations/rece
 import {
   commitConversationRename,
   markCommittedConversationDeletionTombstone,
+  queueWitnessedConversationDeletion,
   shouldSeedConversationCatalogEntry,
 } from "./conversationLifecycle";
 import {
@@ -3158,39 +3159,33 @@ export function openStandaloneChat(options?: {
           // Persist the write-ahead intent before moving an active window.
           // The queued event performs the move after the row is durable, so a
           // crash cannot strand the user in a new chat without an obligation.
-          // Same identity witness the panel path captures: without it the
-          // durable intent is retained and later moved to identity quarantine.
-          const identityWitness =
-            await conversationRepository.getCatalogIdentityWitness({
-              system: deletionConversationSystem,
-              kind: conversationKind,
+          // The window's only guard is the pending-deletion check above, made
+          // before the witness read; it passes no final check.
+          const queueResult = await queueWitnessedConversationDeletion({
+            intent: {
+              conversationKind,
+              conversationID: entry.conversationID,
               conversationKey: key,
-            });
-          const queued = await pendingDeletionStore.queueConversationDeletion({
-            conversationKind,
-            instanceID: identityWitness?.instanceID || "",
-            conversationID:
-              identityWitness?.conversationID || entry.conversationID,
-            catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
-            conversationKey: key,
-            libraryID:
-              Number(entry.libraryID || 0) ||
-              (entry.kind === "paper"
-                ? getCurrentPaperLibraryID()
-                : getCurrentLibraryScopeID()),
-            system: deletionConversationSystem,
-            paperItemID: entry.paperItemID,
-            providerSessionId: entry.providerSessionId || undefined,
-            title: entry.title || "",
-            wasActive: isActive,
+              libraryID:
+                Number(entry.libraryID || 0) ||
+                (entry.kind === "paper"
+                  ? getCurrentPaperLibraryID()
+                  : getCurrentLibraryScopeID()),
+              system: deletionConversationSystem,
+              paperItemID: entry.paperItemID,
+              providerSessionId: entry.providerSessionId || undefined,
+              title: entry.title || "",
+              wasActive: isActive,
+            },
           });
-          if (!queued) {
+          if (queueResult.status !== "queued") {
             setStandaloneHistoryStatus(
               t("Failed to queue deletion. Check logs."),
               "error",
             );
             return;
           }
+          const queued = queueResult.entry;
           if (isActive) {
             // We already stepped off this chat above; remember where we came
             // from so an undo or an abandoned deletion can put the user back.

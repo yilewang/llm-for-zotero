@@ -140,4 +140,39 @@ describe("conversation lifecycle call sites", function () {
       assert.notInclude(call, guard);
     }
   });
+
+  it("the panel deletion passes its ownership and generating check as the final check", function () {
+    const fn = sliceBetween(
+      panelSource,
+      "const queueHistoryDeletion = async (",
+      'if (queueResult.status === "refused") return false;',
+    );
+    const call = fn.slice(
+      fn.indexOf("await queueWitnessedConversationDeletion({"),
+    );
+    assert.match(
+      call,
+      /finalCheck: \(\) =>\s+isOwnedPanelOperationCurrent\(ownership, "delete-conversation-commit"\) &&\s+!rejectConversationDeletionWhileGenerating\(targetEntry\.conversationKey\)/,
+    );
+    assert.notInclude(fn, "getCatalogIdentityWitness");
+    assert.notInclude(fn, "pendingDeletionStore.queueConversationDeletion");
+  });
+
+  it("the standalone deletion checks pending deletion before the witness read and passes no final check", function () {
+    const fn = sliceBetween(
+      standaloneSource,
+      "const queueStandaloneHistoryDeletion = async (",
+      "// Sidebar click handler",
+    );
+    const pendingCheck = fn.indexOf(
+      "if (pendingDeletionStore.isConversationPendingDeletion(key)) {",
+    );
+    const call = fn.indexOf("await queueWitnessedConversationDeletion({");
+    assert.isAtLeast(pendingCheck, 0);
+    assert.isAbove(call, pendingCheck);
+    assert.notInclude(fn, "finalCheck");
+    assert.notInclude(fn, "isRequestPending");
+    assert.notInclude(fn, "getCatalogIdentityWitness");
+    assert.notInclude(fn, "pendingDeletionStore.queueConversationDeletion");
+  });
 });
