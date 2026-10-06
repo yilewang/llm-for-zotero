@@ -477,7 +477,7 @@ describe("citation navigation characterization", function () {
     });
 
     describe("page occurrence (D4)", function () {
-      // Not pinned: the T5 and T6 fallbacks to the located result's occurrence (assistantCitationLinks.ts ~3746, ~3843). This doubled viewer text makes the exact-only live locate report "ambiguous", so those tiers never jump here. S4 must add an argument spy on deps.jump that covers them before S6 adopts the trusted ladder.
+      // Not pinned here: the T5 and T6 fallbacks to the located result's occurrence. This doubled viewer text makes the exact-only live locate report "ambiguous", so those tiers never jump here. The argument spy in citationNavigationJumpArguments.test.ts pins them.
       // The background worker reads the quote once on page index 1, but the
       // viewer's page text holds it twice and FindController reports two
       // matches. Only a recorded occurrence can pick between them.

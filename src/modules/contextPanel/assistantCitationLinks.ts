@@ -1683,7 +1683,7 @@ function logParagraphJumpFailure(params: {
   });
 }
 
-async function attemptCitationParagraphJump(params: {
+type CitationParagraphJumpParams = {
   reader: any;
   contextItemId: number;
   displayCitationLabel: string;
@@ -1698,7 +1698,27 @@ async function attemptCitationParagraphJump(params: {
   verifiedFullSpan?: boolean;
   /** More wordings of the same passage, tried after the ones above. */
   fallbackQuoteTexts?: string[];
-}): Promise<ExactQuoteJumpResult> {
+};
+
+let citationParagraphJumpObserverForTests:
+  | ((params: CitationParagraphJumpParams) => void)
+  | null = null;
+
+/**
+ * Test-only: hand every paragraph jump's arguments to `observer` before the
+ * jump runs (null stops observing). Lets the characterization tests pin what
+ * each navigation tier asks the jump for. Not used by production code.
+ */
+export function observeCitationParagraphJumpsForTests(
+  observer: ((params: CitationParagraphJumpParams) => void) | null,
+): void {
+  citationParagraphJumpObserverForTests = observer;
+}
+
+async function attemptCitationParagraphJump(
+  params: CitationParagraphJumpParams,
+): Promise<ExactQuoteJumpResult> {
+  citationParagraphJumpObserverForTests?.(params);
   // Source navigation is user-initiated. Raise an existing PDF above standalone
   // chat/document windows too, even if its paragraph cannot be highlighted.
   Zotero.getMainWindow()?.focus();
