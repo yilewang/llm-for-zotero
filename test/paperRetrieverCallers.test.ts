@@ -210,6 +210,30 @@ describe("per-paper retrieval callers", function () {
       assert.include(other.contextText, "SECOND-SOURCE");
     });
 
+    it("keys non-ASCII questions by their letters, so different CJK questions miss", async function () {
+      const first = await retrieve(
+        buildPdfContext("Panel Cache Paper", [
+          "结论 FIRST-CJK 校准漂移 在 各 会话 中 测量。",
+        ]),
+        "这篇论文的主要结论是什么？",
+      );
+      assert.include(first.contextText, "FIRST-CJK");
+      const other = await retrieve(
+        buildPdfContext("Panel Cache Paper", [
+          "方法 SECOND-CJK 作者 使用 了 新 方法。",
+        ]),
+        "作者使用了什么方法？",
+      );
+      assert.include(other.contextText, "SECOND-CJK");
+      assert.notInclude(other.contextText, "FIRST-CJK");
+      // The same question up to punctuation still hits.
+      const repeated = await retrieve(
+        buildPdfContext("Panel Cache Paper", ["THIRD-CJK 无关 文本。"]),
+        "作者使用了什么方法?",
+      );
+      assert.include(repeated.contextText, "SECOND-CJK");
+    });
+
     it("bypasses the cache, for reads and writes, when the paper has locked chunks", async function () {
       const question = "How is calibration drift measured?";
       const locked = await retrieve(FIRST, question, [0]);

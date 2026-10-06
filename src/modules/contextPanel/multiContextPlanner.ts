@@ -106,7 +106,9 @@ function buildRetrievalCacheKey(paperKey: string, question: string): string {
   const normQ = question
     .trim()
     .toLowerCase()
-    .replace(/[^\w\s]/g, " ")
+    // Unicode-aware: an ASCII-only class strips every CJK letter, so
+    // different non-English questions would share one key.
+    .replace(/[^\p{L}\p{M}\p{N}_\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
