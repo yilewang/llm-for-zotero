@@ -340,6 +340,29 @@ describe("portalScope remembered selection", function () {
       );
     });
 
+    it("applies the upstream library lock to the sidebar only", function () {
+      const base = buildDefaultUpstreamGlobalConversationKey(7);
+      activeGlobalConversationByLibrary.set(7, base + 2);
+      setLockedGlobalConversationKey(7, base + 4);
+      assert.equal(
+        resolveRememberedGlobalPanelItem(7, "upstream")?.id,
+        base + 4,
+      );
+      assert.equal(
+        resolveRememberedGlobalPanelItem(7, "upstream", "standalone")?.id,
+        base + 2,
+      );
+      assert.isTrue(
+        isGlobalPortalItem(resolveInitialPanelItemState(paperItem).item),
+        "the sidebar follows its lock into Library chat",
+      );
+      assert.equal(
+        resolveInitialPanelItemState(paperItem, { surface: "standalone" }).item,
+        paperItem,
+        "the window has no lock",
+      );
+    });
+
     it("keeps the window's Library mode out of the sidebar's mode", function () {
       rememberMode("upstream", 7, "global", { surface: "standalone" });
       assert.isNull(getLastUsedUpstreamConversationMode(7));

@@ -20,7 +20,8 @@ function functionBody(text: string, name: string): string {
 }
 
 // The standalone window and the sidebar each remember their own selection;
-// only the sidebar writes the conversation restore prefs. The source cannot be
+// only the sidebar writes the conversation restore prefs, and only the
+// sidebar takes or releases the library chat lock. The source cannot be
 // imported under the node test setup (it pulls in Zotero and DOM modules), so
 // these tests pin the exact expressions in the source text.
 describe("conversation selection persist policy", function () {
@@ -93,6 +94,29 @@ describe("conversation selection persist policy", function () {
       assert.include(
         setupHandlers,
         `rememberMode("${system}", libraryID, mode, { surface });`,
+      );
+    }
+  });
+
+  it("only a sidebar panel releases the library lock on Paper chat", function () {
+    const start = setupHandlers.indexOf('if (surface !== "standalone") {');
+    assert.isAtLeast(start, 0);
+    const guarded = setupHandlers.slice(
+      start,
+      setupHandlers.indexOf("remember(", start),
+    );
+    assert.include(guarded, "setLockedGlobalConversationKey(libraryID, null)");
+  });
+
+  it("a standalone send neither takes nor releases the library lock", function () {
+    for (const hook of ["autoLockGlobalChat", "autoUnlockGlobalChat"]) {
+      const start = setupHandlers.indexOf(`${hook}: () => {`);
+      assert.isAtLeast(start, 0, `${hook} must exist`);
+      const firstLines = setupHandlers.slice(start, start + 200);
+      assert.include(
+        firstLines,
+        "if (isStandaloneSelectionSurface()) return;",
+        hook,
       );
     }
   });

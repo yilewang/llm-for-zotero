@@ -312,6 +312,21 @@ export function resolveNoteFocusSystemSwitch(params: {
   });
 }
 
+/**
+ * The library chat lock (a pref) belongs to the sidebar panels: it keeps them
+ * on a Library chat while it answers, across paper selections. The standalone
+ * window does not follow the selection in Library chat, so it has no lock and
+ * never reads this one.
+ */
+function readSurfaceLockedGlobalConversationKey(
+  libraryID: number,
+  surface: SelectionSurface | undefined,
+): number | null {
+  return surface === "standalone"
+    ? null
+    : getLockedGlobalConversationKey(libraryID);
+}
+
 function resolvePreferredConversationMode(
   libraryID: number,
   system: ConversationSystem,
@@ -332,7 +347,7 @@ function resolvePreferredConversationMode(
     return "paper";
   }
   // Upstream only: a locked library chat implies global mode by default.
-  if (getLockedGlobalConversationKey(libraryID) !== null) {
+  if (readSurfaceLockedGlobalConversationKey(libraryID, surface) !== null) {
     return "global";
   }
   return rememberedMode === "global" ? "global" : "paper";
@@ -361,7 +376,7 @@ function resolveGlobalConversationKey(
   }
   // Upstream only: the lock wins, then the remembered key filtered to the
   // upstream global key band, with the sentinel base mapped to the default.
-  const lockedKey = getLockedGlobalConversationKey(libraryID);
+  const lockedKey = readSurfaceLockedGlobalConversationKey(libraryID, surface);
   if (lockedKey !== null) {
     return lockedKey === GLOBAL_CONVERSATION_KEY_BASE
       ? buildDefaultUpstreamGlobalConversationKey(libraryID)

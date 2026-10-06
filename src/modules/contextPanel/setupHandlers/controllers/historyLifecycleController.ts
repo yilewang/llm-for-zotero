@@ -4133,6 +4133,7 @@ export function createHistoryLifecycleController(
   // --- Paper chat | Library chat toggle ---
   // A tab click navigates exactly like picking a conversation in the history
   // menu: prime the target mode, switch, and roll the priming back on failure.
+  // The library lock is the sidebar's; the standalone window has none.
   const resolveRememberedGlobalConversationKey = (libraryID: number): number =>
     isClaudeConversationSystem()
       ? recall({
@@ -4149,7 +4150,10 @@ export function createHistoryLifecycleController(
             surface: selectionSurface(),
           })
         : (() => {
-            const lockedKey = getLockedGlobalConversationKey(libraryID);
+            const lockedKey =
+              selectionSurface() === "standalone"
+                ? null
+                : getLockedGlobalConversationKey(libraryID);
             if (lockedKey !== null) return lockedKey;
             const activeKey = Number(
               recall({

@@ -687,6 +687,8 @@ export function setupHandlers(
   // standalone window's own, or the one every sidebar panel shares.
   const selectionSurface = (): SelectionSurface =>
     resolveSelectionSurfaceForBody(body);
+  const isStandaloneSelectionSurface = () =>
+    selectionSurface() === "standalone";
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
     conversationMode: preferredConversationMode,
@@ -1580,7 +1582,11 @@ export function setupHandlers(
           : nextSystem === "codex"
             ? recall({ system: "codex", libraryID, kind: "global", surface })
             : (() => {
-                const lockedKey = getLockedGlobalConversationKey(libraryID);
+                // The library lock is the sidebar's; the window has none.
+                const lockedKey =
+                  surface === "standalone"
+                    ? null
+                    : getLockedGlobalConversationKey(libraryID);
                 if (lockedKey !== null) return lockedKey;
                 // Upstream reads the active map only here, not the pref.
                 const activeKey = recallActive({
@@ -1893,10 +1899,14 @@ export function setupHandlers(
           Number.isFinite(currentBasePaperItemID) &&
           currentBasePaperItemID > 0
         ) {
-          const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
-          if (lockedGlobalKey !== null) {
-            setLockedGlobalConversationKey(libraryID, null);
-            removeAutoLockedGlobalConversationKey(lockedGlobalKey);
+          // A sidebar panel back in Paper chat releases the sidebar's library
+          // lock. The window has no lock and must not release the sidebar's.
+          if (surface !== "standalone") {
+            const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
+            if (lockedGlobalKey !== null) {
+              setLockedGlobalConversationKey(libraryID, null);
+              removeAutoLockedGlobalConversationKey(lockedGlobalKey);
+            }
           }
           remember(
             {
@@ -7259,8 +7269,12 @@ export function setupHandlers(
       void refreshGlobalHistoryHeader();
     },
     persistDraftInput: persistDraftInputForCurrentConversation,
+    // The library lock keeps the sidebar panels on a Library chat while it
+    // answers. The standalone window does not follow the selection in Library
+    // chat, so its sends neither take nor release that lock.
     autoLockGlobalChat: () => {
       if (isRuntimeConversationSystem()) return;
+      if (isStandaloneSelectionSurface()) return;
       if (!item || !isGlobalMode() || isNoteSession()) return;
       const ck = conversationKey;
       if (ck === null) return;
@@ -7273,6 +7287,7 @@ export function setupHandlers(
     },
     autoUnlockGlobalChat: () => {
       if (isRuntimeConversationSystem()) return;
+      if (isStandaloneSelectionSurface()) return;
       const ck = conversationKey;
       if (ck === null || !isAutoLockedGlobalConversation(ck)) return;
       removeAutoLockedGlobalConversationKey(ck);
