@@ -371,7 +371,21 @@ export function removeLastUsedClaudeGlobalConversationKey(
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   const map = getJsonPref("claudeCodeGlobalConversationMap");
-  delete map[buildGlobalConversationMapKey(libraryID)];
+  const scopedKey = buildGlobalConversationMapKey(libraryID);
+  const removed = Number(map[scopedKey]);
+  delete map[scopedKey];
+  // The getter falls back to the pre-scope entry when the scoped one is
+  // gone, so the entry it would read must go too. A pre-scope entry that
+  // names a different chat is left alone, as is another profile's key
+  // (outside this range).
+  const legacyKey = buildLegacyGlobalConversationMapKey(libraryID);
+  const legacy = Number(map[legacyKey]);
+  if (
+    isConversationKeyInRange(legacy, "global") &&
+    (!(removed > 0) || legacy === removed)
+  ) {
+    delete map[legacyKey];
+  }
   setJsonPref("claudeCodeGlobalConversationMap", map);
 }
 

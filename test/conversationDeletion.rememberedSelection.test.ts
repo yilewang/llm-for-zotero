@@ -196,7 +196,7 @@ describe("conversationDeletion remembered selection cleanup", function () {
       assert.equal(getLastUsedClaudeGlobalConversationKey(3), survivingKey);
     });
 
-    it("leaves a legacy unscoped Claude pref readable after delete (pre-existing D7 gap)", async function () {
+    it("clears a legacy unscoped Claude pref that names the deleted key", async function () {
       const key = buildDefaultClaudeGlobalConversationKey(3);
       prefStore.set(
         `${config.prefsPrefix}.claudeCodeGlobalConversationMap`,
@@ -211,7 +211,7 @@ describe("conversationDeletion remembered selection cleanup", function () {
         libraryID: 3,
       });
 
-      assert.equal(getLastUsedClaudeGlobalConversationKey(3), key);
+      assert.isNull(getLastUsedClaudeGlobalConversationKey(3));
     });
 
     it("clears the Codex map entry and pref that name the deleted key", async function () {

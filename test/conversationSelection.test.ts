@@ -444,7 +444,7 @@ describe("conversationSelection", function () {
     assert.equal(activeGlobalConversationByLibrary.get(LIBRARY_ID), key);
   });
 
-  it("leaves a legacy unscoped Claude global pref readable after forget (pre-existing D7 gap)", function () {
+  it("forgets a legacy unscoped Claude global pref", function () {
     const key = buildDefaultClaudeGlobalConversationKey(LIBRARY_ID);
     prefStore.set(
       `${config.prefsPrefix}.claudeCodeGlobalConversationMap`,
@@ -456,7 +456,42 @@ describe("conversationSelection", function () {
       kind: "global",
     };
     forget(scope, { expectedKey: key });
-    assert.equal(recallPersisted(scope), key);
+    assert.isNull(recallPersisted(scope));
+  });
+
+  it("keeps another profile's legacy unscoped Claude entry when forgetting", function () {
+    const key = buildDefaultClaudeGlobalConversationKey(LIBRARY_ID);
+    // An upstream key is outside this profile's Claude range.
+    const foreign = buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID);
+    const prefKey = `${config.prefsPrefix}.claudeCodeGlobalConversationMap`;
+    prefStore.set(prefKey, JSON.stringify({ [String(LIBRARY_ID)]: foreign }));
+    const scope: SelectionScope = {
+      system: "claude_code",
+      libraryID: LIBRARY_ID,
+      kind: "global",
+    };
+    remember(scope, key);
+    forget(scope, { expectedKey: key });
+    assert.isNull(recallPersisted(scope));
+    assert.equal(
+      JSON.parse(String(prefStore.get(prefKey)))[String(LIBRARY_ID)],
+      foreign,
+    );
+  });
+
+  it("keeps a legacy unscoped Claude entry that names a different live chat when forgetting", function () {
+    const key = buildDefaultClaudeGlobalConversationKey(LIBRARY_ID);
+    const other = key + 1;
+    const prefKey = `${config.prefsPrefix}.claudeCodeGlobalConversationMap`;
+    prefStore.set(prefKey, JSON.stringify({ [String(LIBRARY_ID)]: other }));
+    const scope: SelectionScope = {
+      system: "claude_code",
+      libraryID: LIBRARY_ID,
+      kind: "global",
+    };
+    remember(scope, key);
+    forget(scope, { expectedKey: key });
+    assert.equal(recallPersisted(scope), other);
   });
 
   it("primes the persisted mode pref before restoring a previous one", function () {
