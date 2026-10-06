@@ -27,10 +27,8 @@ import { conversationRepository } from "../../core/conversations/repository";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
 import { filterMessagesInPendingTurns } from "./turnMessageUtils";
-import {
-  clearAgentConversationState,
-  withAgentConversationPurge,
-} from "./agentConversationCleanup";
+import { clearAgentConversationState } from "./agentConversationCleanup";
+import { deleteTrailingTurnPairs } from "./editTruncation";
 import {
   appendCodexMessage,
   clearCodexConversationSessionMetadata,
@@ -6693,48 +6691,12 @@ export async function editUserTurnAndRetry(opts: {
   history.splice(assistantIndex + 1);
 
   // Delete persisted subsequent turns
-  let trailingDeleteFailed = false;
-  for (const p of subsequentPairs) {
-    try {
-      const deleted = await withConversationWriteLock(
-        conversationKey,
-        async () => {
-          if (
-            !isConversationWriteGenerationCurrent(
-              conversationKey,
-              conversationGeneration,
-            ) ||
-            areConversationWritesFrozen(conversationKey)
-          ) {
-            return false;
-          }
-          const storageSystem = resolveConversationStorageSystem({
-            conversationKey,
-            conversationSystem: retryStorageSystem,
-          });
-          if (!storageSystem) return false;
-          await withAgentConversationPurge(conversationKey, (onBeforeCommit) =>
-            conversationRepository.deleteTurnMessages({
-              system: storageSystem,
-              conversationKey,
-              userTimestamp: p.userTs,
-              assistantTimestamp: p.assistantTs,
-              onBeforeCommit,
-            }),
-          );
-          return true;
-        },
-      );
-      if (!deleted) {
-        trailingDeleteFailed = true;
-        break;
-      }
-    } catch (err) {
-      appLogger.warn("LLM: Failed to delete subsequent stored turn", err);
-      trailingDeleteFailed = true;
-      break;
-    }
-  }
+  const trailingDeleteFailed = !(await deleteTrailingTurnPairs({
+    conversationKey,
+    pairs: subsequentPairs,
+    conversationGeneration,
+    conversationSystem: retryStorageSystem,
+  }));
   if (trailingDeleteFailed) {
     try {
       const restored = await loadStoredConversationByKey(
