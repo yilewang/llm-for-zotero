@@ -9,6 +9,7 @@
     "typings",
     "test-workflows",
     "test-live-loop",
-    "test-live-mineru"
+    "test-live-mineru",
+    "test-live-runtimes"
   ]
 }

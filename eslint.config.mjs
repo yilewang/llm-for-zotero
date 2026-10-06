@@ -81,6 +81,7 @@ export default zotero({
         "test-workflows/**/*.test.ts",
         "test-live-workflows/**/*.test.ts",
         "test-live-agent/**/*.test.ts",
+        "test-live-runtimes/**/*.test.ts",
       ],
       rules: {
         // Static fixture construction at module scope is deliberate in these tests.
