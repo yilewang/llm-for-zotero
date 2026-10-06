@@ -1589,7 +1589,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   });
 
-  // ── T11: the same chat in both surfaces ────────────────────────────────
+  // ── T11 / T12: the same chat in both surfaces ──────────────────────────
 
   /** A paper chat seeded in the sidebar, shown in the window and the sidebar. */
   async function openSharedConversation(
@@ -1778,6 +1778,75 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       handle.finish();
       await folder.eraseTx().catch(() => undefined);
     }
+  });
+
+  it("T12: while the window streams into a chat the sidebar also shows, the sidebar keeps its scroll and focus", async function () {
+    const longAnswer = Array.from(
+      { length: 60 },
+      (_, index) =>
+        `Paragraph ${index + 1} SHARED-LONG: enough text to make both chats scroll.`,
+    ).join("\n\n");
+    const { key } = await openSharedConversation("Coexist T12", longAnswer);
+    const body = sidebarBody()!;
+    const chatBox = body.querySelector("#llm-chat-box") as HTMLElement;
+    const input = body.querySelector("#llm-input") as HTMLTextAreaElement;
+    assert.isAbove(
+      chatBox.scrollHeight,
+      chatBox.clientHeight + 100,
+      "the sidebar chat is scrollable",
+    );
+    chatBox.scrollTop = Math.floor(
+      (chatBox.scrollHeight - chatBox.clientHeight) / 2,
+    );
+    chatBox.dispatchEvent(
+      new (body.ownerDocument.defaultView as any).Event("scroll"),
+    );
+    input.focus();
+    await Zotero.Promise.delay(400);
+    const scrollBefore = chatBox.scrollTop;
+    const mainDoc = mainWin().document;
+    assert.strictEqual(
+      mainDoc.activeElement,
+      input,
+      "the sidebar composer has the focus",
+    );
+
+    const QUESTION = "Coexist T12 window question SCROLL-Q";
+    typeAndSend(windowBody()!, QUESTION);
+    const stream = await provider.waitForStream(QUESTION);
+    for (let n = 0; n < 8; n++) {
+      stream.push(`Streamed paragraph ${n} SCROLL-PART with more words.\n\n`);
+      await Zotero.Promise.delay(120);
+      assert.closeTo(
+        chatBox.scrollTop,
+        scrollBefore,
+        2,
+        `the sidebar does not move while the window streams (chunk ${n})`,
+      );
+    }
+    await until(
+      () => lastAssistantBubbleText(sidebarRoot()).includes("SCROLL-PART"),
+      () => "the sidebar mirrors the streaming answer",
+    );
+    stream.finish();
+    await waitForAnswer(key, "SCROLL-PART");
+    await Zotero.Promise.delay(400);
+    assert.closeTo(
+      chatBox.scrollTop,
+      scrollBefore,
+      2,
+      "the sidebar keeps its reading place after the answer ends",
+    );
+    assert.strictEqual(
+      mainDoc.activeElement,
+      input,
+      "the sidebar composer keeps the focus",
+    );
+    assert.strictEqual(
+      body.querySelector("#llm-chat-box"),
+      chatBox,
+      "the sidebar chat box is the same element",
+    );
   });
 
   // ── T8 ───────────────────────────────────────────────────────────────────
