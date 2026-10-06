@@ -44,6 +44,7 @@ import {
   remember,
   rememberMode,
 } from "./conversationSelection";
+import { clearStandaloneSurfaceChoices } from "./surfaceChoices";
 import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
@@ -355,9 +356,11 @@ export function openStandaloneChat(options?: {
   const mainWin = Zotero.getMainWindow();
   if (!mainWin) return;
 
-  // A new window starts from the sidebar's selection (read below) and keeps
-  // its own from here on; nothing a previous window chose carries over.
+  // A new window starts from the sidebar's selection (read below), model and
+  // backend, and keeps its own from here on; nothing a previous window chose
+  // carries over.
   clearStandaloneSelection();
+  clearStandaloneSurfaceChoices();
 
   const sourceRawContextItem =
     options?.sourceBody && options.sourceBody.isConnected

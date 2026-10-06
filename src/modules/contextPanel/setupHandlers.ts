@@ -24,10 +24,10 @@ import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
 import {
-  getLastUsedModelEntryId,
   getModelEntryById,
   getModelProviderGroups,
 } from "../../utils/modelProviders";
+import { bindSurfaceChoices } from "./surfaceChoices";
 import {
   buildQueuedFollowUpThreadKey,
   enqueueQueuedFollowUp,
@@ -154,10 +154,8 @@ import {
   getStringPref,
   getAgentModeEnabled,
   getClaudeCodeModeEnabled,
-  getSelectedModelEntry,
   applyPanelFontScale,
   getAdvancedModelParamsForEntry,
-  setSelectedModelEntry,
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
   getLastUsedRuntimeMode,
@@ -689,6 +687,9 @@ export function setupHandlers(
     resolveSelectionSurfaceForBody(body);
   const isStandaloneSelectionSurface = () =>
     selectionSurface() === "standalone";
+  // The model and backend this panel's surface has chosen (surfaceChoices.ts):
+  // the sidebar's are the saved prefs; the window's live in memory.
+  const panelChoices = bindSurfaceChoices(selectionSurface);
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
     conversationMode: preferredConversationMode,
@@ -5103,7 +5104,7 @@ export function setupHandlers(
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
         : item
-          ? getSelectedModelEntry()
+          ? panelChoices.getSelectedModelEntry()
           : null;
     const currentModel =
       selectedEntry?.model ||
@@ -5463,7 +5464,7 @@ export function setupHandlers(
             webChatModeController.rememberModelBeforeEnteringWebChat();
           }
 
-          setSelectedModelEntry(entry.entryId);
+          panelChoices.setSelectedModelEntry(entry.entryId);
 
           // Keep the relay target synchronized when switching between webchat
           // providers as well as when entering webchat from a local/API model.
@@ -5883,7 +5884,7 @@ export function setupHandlers(
         activeThinking: directSelection.mode !== "none",
       };
     }
-    const selectedProfile = getSelectedModelEntry();
+    const selectedProfile = panelChoices.getSelectedModelEntry();
     const provider = detectReasoningProvider(
       currentModel,
       selectedProfile?.apiBase,
@@ -6065,7 +6066,7 @@ export function setupHandlers(
     getAvailableModelEntries,
     getSelectedModelEntryId: () =>
       getSelectedModelInfo().selectedEntryId || null,
-    setSelectedModelEntry,
+    setSelectedModelEntry: panelChoices.setSelectedModelEntry,
     abortPreload: () => webChatFeature.abortPreload(),
     removePreloadOverlay: () => {
       body.querySelector(".llm-webchat-preload")?.remove();
@@ -6432,7 +6433,8 @@ export function setupHandlers(
     syncModelFromPrefs();
   });
   codexDirectController = createCodexDirectModelReasoningController({
-    getSelectedEntry: () => (item ? getSelectedModelEntry() : null),
+    getSelectedEntry: () =>
+      item ? panelChoices.getSelectedModelEntry() : null,
     isRuntimeConversationSystem,
     onStateChange: syncModelFromPrefs,
   });
@@ -6499,7 +6501,7 @@ export function setupHandlers(
       // getSelectedModelInfo may not be ready during initial render —
       // fall back to checking the last-used model entry directly.
       try {
-        const lastId = getLastUsedModelEntryId();
+        const lastId = panelChoices.getModelEntryId();
         const entry = lastId ? getModelEntryById(lastId) : null;
         isWebChat = entry?.authMode === "webchat";
       } catch {
@@ -6676,7 +6678,7 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : getSelectedModelEntry();
+        : panelChoices.getSelectedModelEntry();
     if (!selected) return null;
     return {
       ...selected,

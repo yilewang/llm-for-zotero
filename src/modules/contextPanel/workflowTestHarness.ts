@@ -1,4 +1,8 @@
 import { clearStandaloneSelection } from "./conversationSelection";
+import {
+  clearStandaloneSurfaceChoices,
+  getSelectedModelEntryForSurface,
+} from "./surfaceChoices";
 import { callLLM, callLLMStream } from "../../utils/llmClient";
 import { appLogger } from "../../core/logging";
 import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
@@ -145,10 +149,7 @@ import {
   setAgentRunTraceLoaderForTests,
   updateContextUsageSnapshotFromProvider,
 } from "./chat";
-import {
-  getAdvancedModelParamsForEntry,
-  getSelectedModelEntry,
-} from "./prefHelpers";
+import { getAdvancedModelParamsForEntry } from "./prefHelpers";
 import { loadUsageEventsForConversation } from "../../utils/usageStore";
 import {
   applySelectedTextPreview,
@@ -208,6 +209,7 @@ import {
   bindEmbeddedPanelHost,
   bindTestPanelHost,
   capturePanelOperationLease,
+  resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
 import {
   getConversationWriteGeneration,
@@ -1152,6 +1154,7 @@ function clearWorkflowConversationRuntimeState(): void {
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
   clearStandaloneSelection();
+  clearStandaloneSurfaceChoices();
   selectedPaperContextCache.clear();
   selectedCollectionContextCache.clear();
   selectedTagContextCache.clear();
@@ -2790,7 +2793,11 @@ async function retryLatestPanelResponse(
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
   const item = activeContextPanels.get(panel.body)?.() || panel.item;
-  const entry = entryId ? getModelEntryById(entryId) : getSelectedModelEntry();
+  const entry = entryId
+    ? getModelEntryById(entryId)
+    : getSelectedModelEntryForSurface(
+        resolveSelectionSurfaceForBody(panel.body),
+      );
   if (!entry) throw new Error("Workflow retry needs a model entry");
   // The retry menu passes these arguments for upstream api_key entries only;
   // Codex-auth entries take a different reasoning source.

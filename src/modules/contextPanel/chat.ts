@@ -188,7 +188,10 @@ import {
   type PanelOperationLease,
   renderPanelOwnershipBlocked,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
+import type { SelectionSurface } from "./conversationSelection";
+import { getSelectedModelEntryForSurface } from "./surfaceChoices";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -302,7 +305,6 @@ import {
   getLastReasoningExpanded,
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
-  getSelectedModelEntry,
   getStringPref,
   setLastReasoningExpanded,
   setLastUsedReasoningLevelForProvider,
@@ -496,6 +498,26 @@ export function setAgentRunTraceLoaderForTests(
 
 export function hasAgentRunTraceForTests(runId: string): boolean {
   return agentRunTraceCache.has((runId || "").trim());
+}
+
+/**
+ * The surface showing `item`, for paths that act for a panel but were handed
+ * only its item. Both surfaces can show the same item object; the window's
+ * choices apply only when no sidebar panel shows it.
+ */
+function resolveSurfaceForMountedItem(
+  item: Zotero.Item | null | undefined,
+): SelectionSurface {
+  if (!item) return "embedded";
+  let shownInWindow = false;
+  for (const [body, getItem] of activeContextPanels) {
+    if (getItem() !== item) continue;
+    if (resolveSelectionSurfaceForBody(body) !== "standalone") {
+      return "embedded";
+    }
+    shownInWindow = true;
+  }
+  return shownInWindow ? "standalone" : "embedded";
 }
 
 function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
@@ -1523,9 +1545,13 @@ function renderContextUsageSnapshot(
 function estimateHistoryContextUsageSnapshot(
   item: Zotero.Item,
   history: Message[],
+  surface?: SelectionSurface,
 ): ContextUsageSnapshot | undefined {
   if (!history.length) return undefined;
-  const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
+  const effectiveRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    surface,
+  });
   const messages = buildLLMHistoryMessages(history);
   const inputCap = applyModelInputTokenCap(
     messages,
@@ -3444,7 +3470,15 @@ export function resolveEffectiveRequestConfig(params: {
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
+  /**
+   * Whose model choices fill what the caller left out (surfaceChoices.ts).
+   * Callers with a panel body pass its surface; otherwise it is the surface
+   * showing `item`.
+   */
+  surface?: SelectionSurface;
 }): EffectiveRequestConfig {
+  const resolveSurface = (): SelectionSurface =>
+    params.surface || resolveSurfaceForMountedItem(params.item);
   if (params.authMode === "webchat" || params.providerProtocol === "web_sync") {
     return {
       model: (params.model || "chatgpt.com").trim() || "chatgpt.com",
@@ -3486,7 +3520,7 @@ export function resolveEffectiveRequestConfig(params: {
   );
   const fallbackEntry = hasExplicitProviderMetadata
     ? null
-    : getSelectedModelEntry();
+    : getSelectedModelEntryForSurface(resolveSurface());
   const explicitEntry =
     hasExplicitProviderMetadata && params.modelProviderLabel === "Claude Code"
       ? {
@@ -5259,6 +5293,7 @@ export async function editLatestUserMessageAndRetry(
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const retryConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -5717,6 +5752,7 @@ export async function retryLatestAssistantResponse(
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const effectiveConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -6654,6 +6690,7 @@ export async function editUserTurnAndRetry(opts: {
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const retryConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -8167,6 +8204,7 @@ export async function sendQuestion(
     modelProviderLabel: opts.modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const shouldPersistTurn =
     effectiveRequestConfig.providerProtocol !== "web_sync";
@@ -9566,6 +9604,7 @@ export function refreshChat(
     const recomputedSnapshot = estimateHistoryContextUsageSnapshot(
       item,
       history,
+      resolveSelectionSurfaceForBody(body),
     );
     const configuredLimitIsUserAuthoritative =
       recomputedSnapshot?.inputLimitSource === "advanced" ||
@@ -9601,7 +9640,10 @@ export function refreshChat(
 
   if (history.length === 0) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
-    const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
+    const effectiveRequestConfig = resolveEffectiveRequestConfig({
+      item,
+      surface: resolveSelectionSurfaceForBody(body),
+    });
     if (effectiveRequestConfig.providerProtocol === "web_sync") {
       const targetEntry = getWebChatTargetByModelName(
         effectiveRequestConfig.model || "",
@@ -9658,6 +9700,7 @@ export function refreshChat(
   // [webchat] Resolve provider protocol once for editability checks
   const renderProviderProtocol = resolveEffectiveRequestConfig({
     item,
+    surface: resolveSelectionSurfaceForBody(body),
   }).providerProtocol;
   const conversationIsIdle = !history.some((m) => m.streaming);
   const canEditPromptAt = (index: number) =>
