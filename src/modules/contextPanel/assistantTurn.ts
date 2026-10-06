@@ -187,10 +187,17 @@ export type AssistantTurn = {
   end: () => void;
 };
 
+/**
+ * What a cancelled answer with no text shows. The Cancel button also writes
+ * it into a bubble that shows nothing yet (`setupHandlers.ts`), and Task
+ * progress reads it as "cancelled".
+ */
+const CANCELLED_TEXT = "[Cancelled]";
+
 /** A cancelled answer: whatever streamed, or the fallback text. */
 export function finalizeCancelledAssistantMessage(
   message: Message,
-  fallbackText = "[Cancelled]",
+  fallbackText = CANCELLED_TEXT,
 ): void {
   const text = sanitizeText(message.text || "");
   const reasoningSummary = sanitizeText(message.reasoningSummary || "");
@@ -270,6 +277,11 @@ export function createAssistantTurn(deps: AssistantTurnDeps): AssistantTurn {
     },
 
     async cancel({ order, persist }): Promise<void> {
+      // A Cancel before the first released block leaves the placeholder in
+      // the bubble; the buffered text replaces it rather than following it.
+      if (message.text === CANCELLED_TEXT && stream.getStreamedText()) {
+        message.text = "";
+      }
       stream.flush("cancel");
       // The turn never reached finish(), so the trace's own buffers are still
       // holding commentary the model sent. Deliver it before the store write.

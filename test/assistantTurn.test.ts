@@ -325,6 +325,28 @@ describe("assistant turn owner", function () {
       assert.isEmpty(traceCalls.filter((call) => call.name === "persist"));
     });
 
+    it("replaces the Cancel button's placeholder with the buffered text that streamed", async function () {
+      const { turn, message } = harness();
+      turn.start();
+      turn.push("Only buffered text");
+      // The Cancel button marks a bubble that shows nothing yet.
+      message.text = "[Cancelled]";
+
+      await turn.cancel({ order: "trace-first", persist: async () => {} });
+
+      assert.equal(message.text, "Only buffered text");
+    });
+
+    it("keeps the placeholder when nothing streamed", async function () {
+      const { turn, message } = harness();
+      turn.start();
+      message.text = "[Cancelled]";
+
+      await turn.cancel({ order: "refresh-first", persist: async () => {} });
+
+      assert.equal(message.text, "[Cancelled]");
+    });
+
     it("propagates a failed row write and reports no Cancelled status", async function () {
       const { turn, log } = harness();
       turn.start();

@@ -592,7 +592,7 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
-  it("send cancelled before the first block is released: [Cancelled] prefixes the buffered text (B6)", async function () {
+  it("send cancelled before the first block is released keeps just the buffered text", async function () {
     await surfacing(async () => {
       const started = await startSend("Cancel before any block is released.");
       const stream = await nextStream(0);
@@ -603,12 +603,10 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
 
       const assistant = lastAssistant(state);
       const row = storedOf(state, "assistant");
-      // Pins current behaviour; suspected bug B6: Cancel before the first
-      // released block prefixes [Cancelled] to the buffered text, see design
-      // review. The Cancel click handler writes it into the empty streaming
-      // message before the flow flushes the buffered text.
-      assert.equal(assistant.text, "[Cancelled]Only buffered text");
-      assert.equal(row.text, "[Cancelled]Only buffered text");
+      // The Cancel click handler writes [Cancelled] into the empty streaming
+      // message; the buffered text that the flow flushes replaces it.
+      assert.equal(assistant.text, "Only buffered text");
+      assert.equal(row.text, "Only buffered text");
       assert.equal(assistant.streaming, false);
       assert.equal(await statusText(), "Cancelled");
     });
@@ -980,7 +978,7 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
     });
   });
 
-  it("retry cancelled before the first block is released: [Cancelled] prefixes the buffered text (B6)", async function () {
+  it("retry cancelled before the first block is released keeps just the buffered text", async function () {
     await surfacing(async () => {
       const conversationKey = await completedSend(
         "Answer once.",
@@ -1000,12 +998,10 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
 
       const assistant = lastAssistant(state);
       const row = storedOf(state, "assistant");
-      // Pins current behaviour; suspected bug B6: Cancel before the first
-      // released block prefixes [Cancelled] to the buffered text, see design
-      // review. The Cancel click handler writes it into the empty streaming
-      // message before the flow flushes the buffered text.
-      assert.equal(assistant.text, "[Cancelled]Only buffered retry text");
-      assert.equal(row.text, "[Cancelled]Only buffered retry text");
+      // The Cancel click handler writes [Cancelled] into the empty streaming
+      // message; the buffered text that the flow flushes replaces it.
+      assert.equal(assistant.text, "Only buffered retry text");
+      assert.equal(row.text, "Only buffered retry text");
       assert.equal(assistant.streaming, false);
       assert.equal(await statusText(), "Cancelled");
     });
