@@ -128,7 +128,11 @@ function oldRetryInterruptedRow(
 
 // --- The four sites as chat.ts now writes them (builder + extension). ---
 
-function newSendRow(m: Message, conversationGeneration: number) {
+function newSendRow(
+  m: Message,
+  conversationGeneration: number,
+  latestContextSnapshot: ContextSnapshot | undefined,
+) {
   return {
     ...toStoredAssistantRow(m, conversationGeneration),
     role: "assistant" as const,
@@ -140,6 +144,8 @@ function newSendRow(m: Message, conversationGeneration: number) {
     webchatCompletionReason: m.webchatCompletionReason,
     webchatChatUrl: m.webchatChatUrl,
     webchatChatId: m.webchatChatId,
+    contextTokens: latestContextSnapshot?.contextTokens,
+    contextWindow: latestContextSnapshot?.contextWindow,
   };
 }
 
@@ -275,7 +281,7 @@ describe("toStoredAssistantRow", function () {
 
   it("does not write modelAttachments (no assistant site wrote it before)", function () {
     for (const row of [
-      newSendRow(fullMessage, 7),
+      newSendRow(fullMessage, 7, snapshot),
       newRetryCompleteRow(fullMessage, 7, snapshot),
       newRetryCancelRow(fullMessage, 7, snapshot),
       newRetryInterruptedRow(fullMessage, 7, snapshot),
@@ -291,12 +297,18 @@ describe("toStoredAssistantRow", function () {
     ["a sparse message", sparseMessage],
   ] as const) {
     describe(`for ${label}`, function () {
-      it("send row equals the old send literal", function () {
-        assertSameRow(newSendRow(message, 7), oldSendRow(message, 7));
-      });
-
       for (const snap of [snapshot, undefined]) {
         const snapLabel = snap ? "with" : "without";
+        it(`send row equals the old send literal plus the context snapshot (${snapLabel} one)`, function () {
+          // The old send literal omitted the snapshot, so a reopened chat
+          // showed an older turn's context count (B2).
+          assertSameRow(newSendRow(message, 7, snap), {
+            ...oldSendRow(message, 7),
+            contextTokens: snap?.contextTokens,
+            contextWindow: snap?.contextWindow,
+          });
+        });
+
         it(`retry completion row equals the old literal (${snapLabel} a context snapshot)`, function () {
           assertSameRow(
             newRetryCompleteRow(message, 7, snap),
@@ -395,6 +407,8 @@ describe("chat.ts assistant-row sites", function () {
       [
         "completionReason",
         "completionStatus",
+        "contextTokens",
+        "contextWindow",
         "documentId",
         "planDocumentId",
         "role",

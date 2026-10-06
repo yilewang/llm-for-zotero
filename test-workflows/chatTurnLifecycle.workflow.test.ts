@@ -521,10 +521,10 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       assert.isNull(row.interrupted);
       assert.equal(row.completion_status, "complete");
       assert.isNull(row.completion_reason);
-      // Pins current behaviour; suspected bug B2, see design review: send
-      // rows never carry the context-usage snapshot (retry rows do).
-      assert.isNull(row.context_tokens, "B2: send row has no context tokens");
-      assert.isNull(row.context_window, "B2: send row has no context window");
+      // Like retry rows, send rows carry the context-usage snapshot (the
+      // provider's prompt tokens), so a reopened chat shows this turn's count.
+      assert.equal(row.context_tokens, 11, "send row stores context tokens");
+      assert.isNumber(row.context_window, "send row stores context window");
       assert.notProperty(assistant, "contextTokens");
       assertSendUserRow(state);
 
@@ -578,7 +578,8 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       assert.isNull(row.interrupted);
       assert.isNull(row.completion_status);
       assert.isNull(row.completion_reason);
-      assert.isNull(row.context_tokens, "B2: send row has no context tokens");
+      // Without a usage report the row keeps the send's estimate.
+      assert.isNumber(row.context_tokens, "send row stores context tokens");
       assertSendUserRow(state);
 
       const usage = await settledUsageRows(started.conversationKey, 1);
@@ -643,7 +644,8 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       assertReasoning(assistant, row, "Thinking before the drop.");
       assert.equal(row.interrupted, 1);
       assert.isNull(row.completion_status);
-      assert.isNull(row.context_tokens, "B2: send row has no context tokens");
+      // Without a usage report the row keeps the send's estimate.
+      assert.isNumber(row.context_tokens, "send row stores context tokens");
       assertSendUserRow(state);
 
       const usage = await settledUsageRows(started.conversationKey, 1);
@@ -778,7 +780,7 @@ describe("workflow: plain-chat turn lifecycle (send and retry)", function () {
       assert.isNull(row.interrupted);
       assert.equal(row.completion_status, "complete");
       // Retry rows carry the context-usage snapshot (the provider's prompt
-      // tokens); send rows do not (B2).
+      // tokens), as send rows do.
       assert.equal(row.context_tokens, 13, "retry row stores context tokens");
       assert.isNumber(row.context_window, "retry row stores context window");
       assertRetryUserRow(state);

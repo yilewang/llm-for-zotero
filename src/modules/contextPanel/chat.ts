@@ -8549,6 +8549,9 @@ export async function sendQuestion(
     assistantPersisted = true;
     if (!shouldPersistTurn) return;
     await assistantTurn.persistTrace(status);
+    // Like the retry rows, the send row stores the context-usage snapshot,
+    // so a reopened chat shows this turn's context count.
+    const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
     await persistConversationMessage(
       conversationKey,
       {
@@ -8562,6 +8565,8 @@ export async function sendQuestion(
         webchatCompletionReason: assistantMessage.webchatCompletionReason,
         webchatChatUrl: assistantMessage.webchatChatUrl,
         webchatChatId: assistantMessage.webchatChatId,
+        contextTokens: latestContextSnapshot?.contextTokens,
+        contextWindow: latestContextSnapshot?.contextWindow,
       },
       effectiveStorageSystem,
     );
