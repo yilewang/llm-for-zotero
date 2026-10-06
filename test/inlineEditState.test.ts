@@ -7,6 +7,7 @@ import {
   getInlineEditBorrowedInputSection,
   hasNewerUserTurnThanInlineEdit,
   isInlineEditSuperseded,
+  mergeSupersededEditIntoDraft,
   getInlineEditCleanup,
   getInlineEditSavedDraft,
   getInlineEditTarget,
@@ -271,5 +272,18 @@ describe("inlineEditState: each chat panel keeps its own message edit", function
         );
       }
     }
+  });
+
+  it("a superseded edit's text never overwrites another panel's typed draft", function () {
+    assert.equal(mergeSupersededEditIntoDraft("", "edited"), "edited");
+    assert.equal(mergeSupersededEditIntoDraft("  ", "edited"), "edited");
+    assert.equal(
+      mergeSupersededEditIntoDraft("typed elsewhere", "edited"),
+      "typed elsewhere\n\nedited",
+    );
+    assert.equal(
+      mergeSupersededEditIntoDraft("already has edited text", "edited"),
+      "already has edited text",
+    );
   });
 });

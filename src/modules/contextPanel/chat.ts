@@ -273,6 +273,7 @@ import {
   getLatestUserTurnTimestamp,
   hasNewerUserTurnThanInlineEdit,
   isInlineEditSuperseded,
+  mergeSupersededEditIntoDraft,
   setInlineEditBorrowedInputSection,
   setInlineEditCleanup,
   setInlineEditSavedDraft,
@@ -9317,9 +9318,13 @@ function keepSupersededInlineEditText(
       conversationKey > 0 &&
       getConversationKey(item) === conversationKey
     ) {
-      draftInputCache.set(conversationKey, text);
-      if (inputBoxEl && inputBoxEl.value !== text) {
-        inputBoxEl.value = text;
+      const nextDraft = mergeSupersededEditIntoDraft(
+        draftInputCache.get(conversationKey) || "",
+        text,
+      );
+      draftInputCache.set(conversationKey, nextDraft);
+      if (inputBoxEl && inputBoxEl.value !== nextDraft) {
+        inputBoxEl.value = nextDraft;
         resizeTextareaToContent(inputBoxEl);
       }
     }

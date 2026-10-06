@@ -227,3 +227,20 @@ export function hasNewerUserTurnThanInlineEdit(
   if (!Number.isFinite(latestAtStart) || latestAtStart <= 0) return false;
   return getLatestUserTurnTimestamp(history) > latestAtStart;
 }
+
+/**
+ * The draft a superseded edit leaves behind. The edited text normally lands
+ * in an empty draft (the panel that started the turn just cleared it). A turn
+ * started by no panel (the agent API) can leave another panel's typed draft in
+ * place; both texts are kept rather than one overwriting the other.
+ */
+export function mergeSupersededEditIntoDraft(
+  existingDraft: string,
+  editedText: string,
+): string {
+  if (!existingDraft.trim()) return editedText;
+  if (!editedText.trim() || existingDraft.includes(editedText)) {
+    return existingDraft;
+  }
+  return `${existingDraft}\n\n${editedText}`;
+}
