@@ -13,7 +13,6 @@ import type { TrustedReadObservation } from "../src/agent/context/readObservatio
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { AgentRuntimeRequest } from "../src/agent/types";
 import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
-import { composePdfReaderText } from "./helpers/hostSurfaces";
 import { ToolInputRejection } from "../src/agent/tools/execution/failure";
 
 const observation: TrustedReadObservation = {
@@ -106,17 +105,12 @@ describe("DirectDocumentFinalizer", function () {
   let originalZotero: unknown;
   let originalZtoolkit: unknown;
   let finalizer: DirectDocumentFinalizer;
-  let restorePdfReaderTextBridge: (() => void) | null = null;
   const queries: Array<{ sql: string; params: unknown[] }> = [];
 
   before(function () {
     originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
       .Zotero;
     originalZtoolkit = (globalThis as any).ztoolkit;
-    // Quote verification reaches the live PDF through a host surface bridge.
-    // This suite stands in for the plugin surface, so it composes the same
-    // reader adapter the panel composes at startup.
-    restorePdfReaderTextBridge = composePdfReaderText();
   });
 
   beforeEach(function () {
@@ -174,8 +168,6 @@ describe("DirectDocumentFinalizer", function () {
   });
 
   after(function () {
-    restorePdfReaderTextBridge?.();
-    restorePdfReaderTextBridge = null;
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;
     (globalThis as any).ztoolkit = originalZtoolkit;

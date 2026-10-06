@@ -7,7 +7,7 @@ import type {
 } from "./types";
 import { ToolInputRejection } from "../tools/execution/failure";
 import { getAllOpenReaders } from "../../services/pdf/zoteroReaderTabs";
-import { verifyCompleteQuoteInLivePdf } from "../../services/pdf/readerTextBridge";
+import { verifyCompleteQuoteInLivePdfJs } from "../../services/pdf/livePdfSelectionLocator";
 const QUOTE_TOKEN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
 const CITE_TOKEN = /\[\[cite:([A-Za-z0-9._:-]+)\]\]/g;
 /** Opening and closing quotation marks: straight, curly, CJK corner brackets, guillemets. */
@@ -171,7 +171,7 @@ export async function resolveVerifiedQuotes(params: {
       downgraded.push({ quote, reason: "PDF not open" });
       continue;
     }
-    const verification = await verifyCompleteQuoteInLivePdf(
+    const verification = await verifyCompleteQuoteInLivePdfJs(
       reader,
       Number(attachment.id),
       quote.text,

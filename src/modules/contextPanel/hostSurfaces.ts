@@ -14,17 +14,11 @@
  */
 import { configureContextSelectionBridge } from "../../services/context/contextSelectionBridge";
 import { configureAssistantNoteWriter } from "../../services/notes/assistantNoteWriterBridge";
-import { configurePdfReaderTextBridge } from "../../services/pdf/readerTextBridge";
 import { configureRetrievalCandidateInvalidator } from "../../services/retrieval/cacheInvalidation";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
 } from "./contextResolution";
-import {
-  verifyCompleteQuoteInLivePdfJs,
-  warmPageTextCache,
-  warmPageTextCacheForAttachment,
-} from "../../services/pdf/livePdfSelectionLocator";
 import { clearRetrievalCandidateCache } from "./multiContextPlanner";
 import {
   createNoteFromAssistantText,
@@ -37,11 +31,6 @@ import {
  */
 export function composeHostSurfaces(): () => void {
   const disposers = [
-    configurePdfReaderTextBridge({
-      warmPageTextCache,
-      warmPageTextCacheForAttachment,
-      verifyCompleteQuote: verifyCompleteQuoteInLivePdfJs,
-    }),
     configureContextSelectionBridge({
       getActiveAttachment: getActiveContextAttachmentFromTabs,
       resolveContextItem: (item) => resolveContextSourceItem(item).contextItem,

@@ -12,13 +12,6 @@ import {
   summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
 } from "../quotes/quoteTextSearch";
-import type {
-  PdfQuoteCertificate,
-  PdfQuoteVerification,
-  PdfReaderPageText,
-  PdfReaderTextCache,
-  PdfReaderTextCoverage,
-} from "./readerTextBridge";
 import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
@@ -26,6 +19,45 @@ import {
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "../quotes/quoteTextNormalization";
+
+type PdfReaderPageText = {
+  pageIndex: number;
+  pageLabel?: string;
+  text: string;
+};
+
+type PdfReaderTextCoverage = "full-pdfworker" | "full-viewer" | "partial-dom";
+
+type PdfReaderTextCache = {
+  pages: PdfReaderPageText[];
+  /** Pre-computed normalised text per page for O(1) reuse. */
+  normalised: Array<{
+    pageIndex: number;
+    pageLabel?: string;
+    normalizedText: string;
+    textIndex: QuoteTextIndex;
+  }>;
+  coverage: PdfReaderTextCoverage;
+  pageCount?: number;
+  sourceFingerprint?: string;
+};
+
+type PdfQuoteCertificate = {
+  contextItemId: number;
+  documentFingerprint: string;
+  pageIndex: number;
+  pageLabel?: string;
+  sourceMatchText: string;
+  sourceMatchKind: "exact" | "normalized-span";
+  /** What was established, independently of formatting normalization. */
+  verificationMode?: "complete-quote" | "inline-math-locator";
+  sourceMatchPageOccurrence: number;
+};
+
+type PdfQuoteVerification =
+  | { status: "matched"; certificate: PdfQuoteCertificate }
+  | { status: "literal-not-found"; documentFingerprint: string }
+  | { status: "defer"; reason: string };
 
 export type LivePdfPageText = PdfReaderPageText;
 
