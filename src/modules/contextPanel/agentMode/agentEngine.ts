@@ -2420,7 +2420,8 @@ export async function retryAgentTurn(
     retryPair.userMessage.modelAttachments ??
     retryPair.userMessage.attachments?.filter((a) => a.category !== "image");
 
-  // The retry hands over no forced skills: the field stays absent.
+  // The retry hands over the forced skills the turn stored, as the plain-chat
+  // retry does.
   const runtimeRequest = await deps.buildAgentRuntimeRequest(
     toAgentRuntimeRequestParams(
       {
@@ -2442,6 +2443,7 @@ export async function retryAgentTurn(
         attachments: retryModelAttachments,
         localDocuments: retryLocalDocuments,
         screenshots: screenshotImages,
+        forcedSkillIds: retryPair.userMessage.forcedSkillIds,
       },
       {
         conversationKey,

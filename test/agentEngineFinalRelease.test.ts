@@ -3006,9 +3006,10 @@ describe("agent turn endings from the real runtime", function () {
 
 // Golden records of the exact parameter object each agent request site hands
 // deps.buildAgentRuntimeRequest. They pin today's per-site differences (the
-// retry omits forcedSkillIds, reuses the stored citation papers and uses the
-// stored selected-passage note contexts); unifying any of them is a product
-// decision, not a refactor.
+// retry reuses the stored citation papers and uses the stored selected-passage
+// note contexts); unifying any of them is a product decision, not a refactor.
+// Like the plain-chat retry, the agent retry hands over the stored forced
+// skills.
 describe("agent request sites (golden)", function () {
   const paperA = {
     libraryID: 1,
@@ -3343,11 +3344,12 @@ describe("agent request sites (golden)", function () {
       attachments: userMessage.modelAttachments,
       localDocuments: undefined,
       screenshots: screenshotImages,
+      forcedSkillIds: userMessage.forcedSkillIds,
       effectiveRequestConfig,
       history: [],
     });
-    // The retry hands over no forced skills at all (not even an undefined key).
-    assert.notProperty(params, "forcedSkillIds");
+    // The retry hands over the forced skills the user row stored.
+    assert.strictEqual(params.forcedSkillIds, userMessage.forcedSkillIds);
     assert.strictEqual(params.selectedTextNoteContexts, storedNoteContexts);
     assert.strictEqual(params.citationPaperContexts, storedCitationPapers);
     assert.strictEqual(
