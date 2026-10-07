@@ -210,7 +210,10 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
     let failure = "";
     await withAgentTurnPurge(key, (onBeforeCommit) =>
       db.executeTransaction(async () => {
-        await onBeforeCommit({ agentRunIds: ["old-run", "stray-run"] });
+        await onBeforeCommit({
+          agentRunIds: ["old-run", "stray-run"],
+          documentIds: [],
+        });
         throw new Error("simulated rollback");
       }),
     ).catch((error) => {
@@ -292,7 +295,10 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
     let failure = "";
     await withAgentTurnPurge(key, (onBeforeCommit) =>
       db.executeTransaction(async () => {
-        await onBeforeCommit({ agentRunIds: ["old-run", "stray-run"] });
+        await onBeforeCommit({
+          agentRunIds: ["old-run", "stray-run"],
+          documentIds: [],
+        });
         throw new Error("simulated rollback");
       }),
     ).catch((error) => {

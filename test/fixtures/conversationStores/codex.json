@@ -2673,7 +2673,7 @@
       "trace": [
         { "sql": "BEGIN", "params": [] },
         {
-          "sql": "SELECT agent_run_id AS agentRunId FROM llm_for_zotero_codex_messages WHERE id = ( SELECT id FROM llm_for_zotero_codex_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' AND timestamp = ? ORDER BY id DESC LIMIT 1 )",
+          "sql": "SELECT agent_run_id AS agentRunId, document_id AS documentId FROM llm_for_zotero_codex_messages WHERE id = ( SELECT id FROM llm_for_zotero_codex_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' AND timestamp = ? ORDER BY id DESC LIMIT 1 )",
           "params": [
             "lfz:profile-892394bd:codex:global:lib-1:paper-0:legacy-5812730500000000",
             5812730500000000,
@@ -2681,7 +2681,7 @@
           ]
         },
         {
-          "sql": "SELECT agent_run_id AS agentRunId FROM llm_for_zotero_codex_messages WHERE id = ( SELECT id FROM llm_for_zotero_codex_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'assistant' AND timestamp = ? ORDER BY id DESC LIMIT 1 )",
+          "sql": "SELECT agent_run_id AS agentRunId, document_id AS documentId FROM llm_for_zotero_codex_messages WHERE id = ( SELECT id FROM llm_for_zotero_codex_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'assistant' AND timestamp = ? ORDER BY id DESC LIMIT 1 )",
           "params": [
             "lfz:profile-892394bd:codex:global:lib-1:paper-0:legacy-5812730500000000",
             5812730500000000,

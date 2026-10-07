@@ -40,8 +40,9 @@ export async function clearPersistedAgentConversationRowsInTransaction(
 
 /**
  * Run a turn-row deletion whose transaction purges the turn's agent rows in
- * its onBeforeCommit (turn deletion, edit truncation): the trace of the runs
- * the deleted rows named, and the conversation's other agent rows (see
+ * its onBeforeCommit (turn deletion, edit truncation): the trace and undo
+ * history of the runs the deleted rows named, the plan documents only they
+ * named, and the conversation's other agent rows (see
  * purgeAgentConversationTurn).  When that transaction fails, the purge's
  * in-memory part is rolled back with it.
  */
@@ -51,8 +52,8 @@ export async function withAgentTurnPurge(
 ): Promise<void> {
   let purge: AgentConversationPurge | undefined;
   try {
-    await deleteRows(async ({ agentRunIds }) => {
-      purge = await purgeAgentConversationTurn(conversationKey, agentRunIds, {
+    await deleteRows(async (deleted) => {
+      purge = await purgeAgentConversationTurn(conversationKey, deleted, {
         clearTaskProgress,
       });
     });
