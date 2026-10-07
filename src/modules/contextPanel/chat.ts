@@ -22,6 +22,7 @@ import {
   updateLatestUserMessage as updateStoredLatestUserMessage,
   updateLatestAssistantMessage as updateStoredLatestAssistantMessage,
   StoredChatMessage,
+  type UpdateLatestAssistantMessageOptions,
   type UpdateLatestUserMessageOptions,
 } from "../../utils/chatStore";
 import { conversationRepository } from "../../core/conversations/repository";
@@ -1785,6 +1786,12 @@ async function announceFinalizedMaterialForRun(
 export const announceFinalizedMaterialForRunForTests =
   announceFinalizedMaterialForRun;
 
+/**
+ * Writes an assistant row through its system's store. Without `options` the
+ * write targets the conversation's latest assistant row; with an expected
+ * timestamp it targets that row only and writes nothing when the row is gone.
+ * Returns whether a row was written.
+ */
 async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationKey: number,
   message: Parameters<typeof updateStoredLatestAssistantMessage>[1] &
@@ -1792,7 +1799,8 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
       conversationGeneration?: number;
     },
   conversationSystem?: ConversationSystem | null,
-): Promise<void> {
+  options?: UpdateLatestAssistantMessageOptions,
+): Promise<boolean> {
   const expectedGeneration = Number(
     (message as StoredChatMessage).conversationGeneration,
   );
@@ -1800,45 +1808,17 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
     Number.isFinite(expectedGeneration) &&
     !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
   ) {
-    return;
+    return false;
   }
-  if (areConversationWritesFrozen(conversationKey)) return;
+  if (areConversationWritesFrozen(conversationKey)) return false;
   const storageSystem = resolveConversationStorageSystem({
     conversationKey,
     conversationSystem,
   });
-  if (!storageSystem) return;
-  if (storageSystem === "claude_code") {
+  if (!storageSystem) return false;
+  const withContextUsage = () => {
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
-      conversationKey,
-      {
-        ...message,
-        contextTokens:
-          Number.isFinite(Number(message.contextTokens)) &&
-          Number(message.contextTokens) > 0
-            ? Math.floor(Number(message.contextTokens))
-            : latestContextSnapshot?.contextTokens,
-        contextWindow:
-          Number.isFinite(Number(message.contextWindow)) &&
-          Number(message.contextWindow) > 0
-            ? Math.floor(Number(message.contextWindow))
-            : latestContextSnapshot?.contextWindow,
-      },
-    );
-    await publishPersistedPlanDocumentIfPresent({
-      conversationKey,
-      text: message.text,
-      timestamp: message.timestamp,
-      agentRunId: message.agentRunId,
-      documentId: message.documentId,
-      planDocumentId: message.planDocumentId,
-    });
-    return;
-  }
-  if (storageSystem === "codex") {
-    const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateLatestCodexAssistantMessage(conversationKey, {
+    return {
       ...message,
       contextTokens:
         Number.isFinite(Number(message.contextTokens)) &&
@@ -1850,18 +1830,35 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
         Number(message.contextWindow) > 0
           ? Math.floor(Number(message.contextWindow))
           : latestContextSnapshot?.contextWindow,
-    });
-    await publishPersistedPlanDocumentIfPresent({
-      conversationKey,
-      text: message.text,
-      timestamp: message.timestamp,
-      agentRunId: message.agentRunId,
-      documentId: message.documentId,
-      planDocumentId: message.planDocumentId,
-    });
-    return;
+    };
+  };
+  const written =
+    storageSystem === "claude_code"
+      ? await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+          conversationKey,
+          withContextUsage(),
+          options,
+        )
+      : storageSystem === "codex"
+        ? await updateLatestCodexAssistantMessage(
+            conversationKey,
+            withContextUsage(),
+            options,
+          )
+        : await updateStoredLatestAssistantMessage(
+            conversationKey,
+            message,
+            options,
+          );
+  if (!written && options?.expectedTimestamp !== undefined) {
+    // The row is gone (for example, the turn was deleted), so nothing was
+    // written, and there is no answer to publish a plan document for.
+    appLogger.warn(
+      "LLM: The assistant row to rewrite is gone; nothing written",
+      { conversationKey, expectedTimestamp: options.expectedTimestamp },
+    );
+    return false;
   }
-  await updateStoredLatestAssistantMessage(conversationKey, message);
   await publishPersistedPlanDocumentIfPresent({
     conversationKey,
     text: message.text,
@@ -1870,6 +1867,7 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
     documentId: message.documentId,
     planDocumentId: message.planDocumentId,
   });
+  return written;
 }
 
 async function updateStoredLatestUserMessageByConversation(
@@ -1896,12 +1894,14 @@ async function updateStoredLatestAssistantMessageByConversation(
     conversationGeneration?: number;
   },
   conversationSystem?: ConversationSystem | null,
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, () =>
+  options?: UpdateLatestAssistantMessageOptions,
+): Promise<boolean> {
+  return withConversationWriteLock(conversationKey, () =>
     updateStoredLatestAssistantMessageByConversationUnlocked(
       conversationKey,
       message,
       conversationSystem,
+      options,
     ),
   );
 }
@@ -5372,6 +5372,12 @@ export async function editLatestUserMessageAndRetry(
       enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
   }
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
+  // The edit rewrites the edited row by its stored timestamp, taken before the
+  // edit gives it a new one. A send that lands meanwhile appends a later user
+  // row, and an exact-row write can never land on it.
+  const editedUserRowTarget: UpdateLatestUserMessageOptions = {
+    expectedTimestamp: retryPair.userMessage.timestamp,
+  };
   const updatedTimestamp = Date.now();
   const nextDisplayQuestion = sanitizeText(displayQuestion || "");
 
@@ -5482,6 +5488,7 @@ export async function editLatestUserMessageAndRetry(
         modelProviderLabel: retryPair.userMessage.modelProviderLabel,
       },
       retryStorageSystem,
+      editedUserRowTarget,
     );
 
     const storedMessages = await loadStoredConversationByKey(
@@ -5913,6 +5920,35 @@ export async function retryLatestAssistantResponse(
       retryUserRowTarget,
     );
   };
+  // The answer writes target the retried pair's own assistant row in the same
+  // way. Unlike the user row, the answer row takes a new timestamp when it is
+  // written, so the target follows the row after each write. A save that
+  // committed but then failed (and is retried) finds its row at the new
+  // timestamp instead.
+  let retryAssistantRowTimestamp = assistantSnapshot.timestamp;
+  const writeRetryAssistantRow = async (
+    row: Parameters<typeof updateStoredLatestAssistantMessageByConversation>[1],
+  ) => {
+    let written = await updateStoredLatestAssistantMessageByConversation(
+      conversationKey,
+      row,
+      effectiveStorageSystem,
+      { expectedTimestamp: retryAssistantRowTimestamp },
+    );
+    if (
+      !written &&
+      Number.isFinite(row.timestamp) &&
+      row.timestamp !== retryAssistantRowTimestamp
+    ) {
+      written = await updateStoredLatestAssistantMessageByConversation(
+        conversationKey,
+        row,
+        effectiveStorageSystem,
+        { expectedTimestamp: row.timestamp },
+      );
+    }
+    if (written) retryAssistantRowTimestamp = row.timestamp;
+  };
   let retryUserRowWritten = false;
   let retryDispatched = false;
   // The one way a retry that never reached the provider ends: put the
@@ -5943,17 +5979,13 @@ export async function retryLatestAssistantResponse(
       persist: async () => {
         const latestContextSnapshot =
           contextUsageSnapshots.get(conversationKey);
-        await updateStoredLatestAssistantMessageByConversation(
-          conversationKey,
-          {
-            ...toStoredAssistantRow(assistantMessage, conversationGeneration),
-            documentId: assistantMessage.documentId,
-            planDocumentId: assistantMessage.planDocumentId,
-            contextTokens: latestContextSnapshot?.contextTokens,
-            contextWindow: latestContextSnapshot?.contextWindow,
-          },
-          effectiveStorageSystem,
-        );
+        await writeRetryAssistantRow({
+          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+          documentId: assistantMessage.documentId,
+          planDocumentId: assistantMessage.planDocumentId,
+          contextTokens: latestContextSnapshot?.contextTokens,
+          contextWindow: latestContextSnapshot?.contextWindow,
+        });
       },
     });
   };
@@ -6329,19 +6361,15 @@ export async function retryLatestAssistantResponse(
     // The answer is complete: a failed save is the turn owner's to handle,
     // not a stream failure. The row UPDATE is safe to run a second time.
     const saved = await assistantTurn.saveCompletion(() =>
-      updateStoredLatestAssistantMessageByConversation(
-        conversationKey,
-        {
-          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
-          documentId: assistantMessage.documentId,
-          planDocumentId: assistantMessage.planDocumentId,
-          completionStatus: assistantMessage.completionStatus,
-          completionReason: assistantMessage.completionReason,
-          contextTokens: latestContextSnapshot?.contextTokens,
-          contextWindow: latestContextSnapshot?.contextWindow,
-        },
-        effectiveStorageSystem,
-      ),
+      writeRetryAssistantRow({
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+        documentId: assistantMessage.documentId,
+        planDocumentId: assistantMessage.planDocumentId,
+        completionStatus: assistantMessage.completionStatus,
+        completionReason: assistantMessage.completionReason,
+        contextTokens: latestContextSnapshot?.contextTokens,
+        contextWindow: latestContextSnapshot?.contextWindow,
+      }),
     );
 
     if (saved) setStatusSafely("Ready", "ready");
@@ -6384,17 +6412,13 @@ export async function retryLatestAssistantResponse(
       await assistantTurn.persistTrace();
       refreshChatSafely();
       const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-      await updateStoredLatestAssistantMessageByConversation(
-        conversationKey,
-        {
-          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
-          // The interrupted row keeps omitting documentId, planDocumentId,
-          // and the completion fields, as it always has.
-          contextTokens: latestContextSnapshot?.contextTokens,
-          contextWindow: latestContextSnapshot?.contextWindow,
-        },
-        effectiveStorageSystem,
-      );
+      await writeRetryAssistantRow({
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+        // The interrupted row keeps omitting documentId, planDocumentId,
+        // and the completion fields, as it always has.
+        contextTokens: latestContextSnapshot?.contextTokens,
+        contextWindow: latestContextSnapshot?.contextWindow,
+      });
     } else {
       restoreOriginalTurn();
       // The user row was already persisted with the failed retry's model and
@@ -6774,6 +6798,11 @@ export async function editUserTurnAndRetry(opts: {
 
   // Update user message text + timestamp
   const userMsg = history[userIndex]!;
+  // The edited row is rewritten by the timestamp it was found by, before the
+  // edit gives it a new one, never as "the latest user row".
+  const editedUserRowTarget: UpdateLatestUserMessageOptions = {
+    expectedTimestamp: userMsg.timestamp,
+  };
   userMsg.text = sanitizeText(newText) || newText;
   userMsg.timestamp = Date.now();
   userMsg.runMode = retryRuntimeMode;
@@ -6929,6 +6958,7 @@ export async function editUserTurnAndRetry(opts: {
         modelProviderLabel: userMsg.modelProviderLabel,
       },
       retryStorageSystem,
+      editedUserRowTarget,
     );
   } catch (err) {
     appLogger.warn("LLM: Failed to persist edited user message", err);

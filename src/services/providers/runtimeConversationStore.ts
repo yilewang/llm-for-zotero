@@ -15,6 +15,7 @@ import {
   buildUserRowExistsQuery,
   latestUserRowFilter,
   storedMessageDisplayOrderSql,
+  type UpdateLatestAssistantMessageOptions,
   type UpdateLatestUserMessageOptions,
 } from "../../shared/conversationMessageSql";
 import {
@@ -1519,6 +1520,12 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     return true;
   }
 
+  /**
+   * Rewrite the conversation's latest assistant row, or, with
+   * `options.expectedTimestamp`, the assistant row stored at that timestamp.
+   * Returns false when nothing was written: the key is not this store's, or
+   * no assistant row has the expected timestamp.
+   */
   async function updateLatestAssistantMessage(
     conversationKey: number,
     message: Pick<
@@ -1543,9 +1550,11 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       | "quoteCitations"
       | "generatedImages"
     >,
-  ): Promise<void> {
+    options: UpdateLatestAssistantMessageOptions = {},
+  ): Promise<boolean> {
     const normalizedKey = normalizeConversationKey(conversationKey);
-    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return;
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return false;
+    const rowFilter = latestUserRowFilter(options);
     const messageTimestamp = Number.isFinite(message.timestamp)
       ? Math.floor(message.timestamp)
       : Date.now();
@@ -1555,7 +1564,21 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     );
     const selector =
       await resolveRepairingMessageConversationSelector(normalizedKey);
+    let matched = true;
     await Zotero.DB.executeTransaction(async () => {
+      if (rowFilter.exact) {
+        const rows = (await Zotero.DB.queryAsync(
+          buildUserRowExistsQuery({
+            tableName: tables.messages,
+            whereSql: selector.whereSql,
+            filterSql: rowFilter.sql,
+            role: "assistant",
+          }),
+          [...selector.params, ...rowFilter.params],
+        )) as unknown[] | undefined;
+        matched = Boolean(rows?.length);
+        if (!matched) return;
+      }
       await Zotero.DB.queryAsync(
         `UPDATE ${tables.messages}
        SET text = ?,
@@ -1579,7 +1602,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
        WHERE id = (
          SELECT id
          FROM ${tables.messages}
-         WHERE ${selector.whereSql} AND role = 'assistant'
+         WHERE ${selector.whereSql} AND role = 'assistant'${rowFilter.sql}
          ORDER BY timestamp DESC, id DESC
          LIMIT 1
        )`,
@@ -1609,6 +1632,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
             ? Math.floor(Number(message.contextWindow))
             : null,
           ...selector.params,
+          ...rowFilter.params,
         ],
       );
       await config.hooks?.afterMessageWriteInTransaction?.(
@@ -1617,7 +1641,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       );
       await refreshCatalogSummary(normalizedKey);
     });
+    if (!matched) return false;
     await refreshSearchIndex(normalizedKey);
+    return true;
   }
 
   async function upsertSummary(params: {
