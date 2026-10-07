@@ -289,6 +289,14 @@ describe("chat streaming-response wiring", function () {
         "only the helper calls the store",
       );
       assert.lengthOf(retry.match(/writeRetryAssistantRow\(\{/g) || [], 3);
+      // A completed answer whose row was not found is reported as not saved.
+      const completion = sliceBetween(
+        retry,
+        "const saved = await assistantTurn.saveCompletion(",
+        "if (saved)",
+      );
+      assert.include(completion, "if (\n        !written &&");
+      assert.include(completion, "throw new Error(");
     });
   });
 

@@ -5948,6 +5948,7 @@ export async function retryLatestAssistantResponse(
       );
     }
     if (written) retryAssistantRowTimestamp = row.timestamp;
+    return written;
   };
   let retryUserRowWritten = false;
   let retryDispatched = false;
@@ -6360,8 +6361,8 @@ export async function retryLatestAssistantResponse(
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
     // The answer is complete: a failed save is the turn owner's to handle,
     // not a stream failure. The row UPDATE is safe to run a second time.
-    const saved = await assistantTurn.saveCompletion(() =>
-      writeRetryAssistantRow({
+    const saved = await assistantTurn.saveCompletion(async () => {
+      const written = await writeRetryAssistantRow({
         ...toStoredAssistantRow(assistantMessage, conversationGeneration),
         documentId: assistantMessage.documentId,
         planDocumentId: assistantMessage.planDocumentId,
@@ -6369,8 +6370,22 @@ export async function retryLatestAssistantResponse(
         completionReason: assistantMessage.completionReason,
         contextTokens: latestContextSnapshot?.contextTokens,
         contextWindow: latestContextSnapshot?.contextWindow,
-      }),
-    );
+      });
+      // A deleted or reset conversation skips the write on purpose. Any other
+      // miss (the stored row no longer has the answer's timestamp, as after
+      // an earlier failed save) is a lost answer, so the owner reports it
+      // instead of calling the turn saved.
+      if (
+        !written &&
+        !areConversationWritesFrozen(conversationKey) &&
+        isConversationWriteGenerationCurrent(
+          conversationKey,
+          conversationGeneration,
+        )
+      ) {
+        throw new Error("The retried answer's stored row was not found");
+      }
+    });
 
     if (saved) setStatusSafely("Ready", "ready");
     return true;
