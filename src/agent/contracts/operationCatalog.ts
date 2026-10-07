@@ -184,6 +184,33 @@ export function operationLabel(operation: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Action";
 }
 
+/**
+ * What one receipt did, in the reader's words.
+ *
+ * A collection operation adds an item to its destination by default.
+ * A move also names the collection that the item leaves.
+ * Calling an add "Moved to collection" told the reader, and the model
+ * reading its own trace, that the paper had left its old folder.
+ */
+export function receiptOperationLabel(receipt: {
+  operation: string;
+  normalizedParameters?: { sourceCollectionId?: number | "all" };
+}): string {
+  if (collectionAddOnly(receipt)) return "Added to collection";
+  return operationLabel(receipt.operation);
+}
+
+/** Whether a collection receipt added items without moving them. */
+export function collectionAddOnly(receipt: {
+  operation: string;
+  normalizedParameters?: { sourceCollectionId?: number | "all" };
+}): boolean {
+  return (
+    receipt.operation === "move_to_collection" &&
+    receipt.normalizedParameters?.sourceCollectionId === undefined
+  );
+}
+
 export function operationCatalogEntry(
   operation: string,
 ): (OperationCatalogEntry & { operation: AgentActionOperation }) | null {

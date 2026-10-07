@@ -9,8 +9,27 @@ import type {
 } from "./types";
 import { stripHandwrittenReferences } from "./draftValidation";
 import { ToolInputRejection } from "../tools/execution/failure";
+import {
+  isQuoteTokenId,
+  quoteTokenPattern,
+  quoteTokenSource,
+} from "../../services/quotes/quoteTokenIds";
 
-const CITATION_TOKEN = /\[\[cite:([A-Za-z0-9._:-]+)\]\]/g;
+const CITATION_TOKEN = quoteTokenPattern("cite");
+/** One `[[cite:ID]]` token, without a capture group. */
+const CITATION_TOKEN_SOURCE = quoteTokenSource("cite", { capture: false });
+const WHOLE_CITATION_TOKEN = new RegExp(`^${CITATION_TOKEN_SOURCE}$`);
+const PARENTHETICAL_CITATION = new RegExp(
+  `\\(([^()\\r\\n]*${CITATION_TOKEN_SOURCE}[^()\\r\\n]*)\\)`,
+  "g",
+);
+const PARENTHETICAL_CITATION_SLOT = new RegExp(
+  `^(.*?)\\s*${quoteTokenSource("cite")}$`,
+);
+const CITATION_TOKEN_RUN = new RegExp(
+  `(\\([^()\\r\\n]*\\)[\\t ]*)?(${CITATION_TOKEN_SOURCE}(?:[\\t ]*${CITATION_TOKEN_SOURCE})*)`,
+  "g",
+);
 
 export type DocumentCitationEvidence = Pick<
   ResearchEvidenceRecord,
@@ -246,8 +265,6 @@ export function bindCitationEvidenceRefs(
   }));
 }
 
-const CITATION_ID = /^[A-Za-z0-9._:-]+$/;
-
 /**
  * Split each `[[cite:A,B,C]]` token into adjacent single tokens
  * `[[cite:A]][[cite:B]][[cite:C]]`, the form consecutive citations take: the
@@ -261,7 +278,7 @@ function splitCommaJoinedTokens(markdown: string, repairs: string[]): string {
     const ids = String(body)
       .split(",")
       .map((id) => id.trim());
-    if (!ids.every((id) => CITATION_ID.test(id))) return token;
+    if (!ids.every(isQuoteTokenId)) return token;
     repairs.push(`split comma-joined citation token ${token}`);
     return ids.map((id) => `[[cite:${id}]]`).join("");
   });
@@ -369,7 +386,7 @@ export async function formatDocumentCitations(params: {
   // A token the strict form does not match would otherwise ship as literal
   // text while its clusters are dropped as unused.
   for (const [token] of draftMarkdown.matchAll(/\[\[cite:[^\]]*\]\]/g)) {
-    if (!/^\[\[cite:[A-Za-z0-9._:-]+\]\]$/.test(token)) {
+    if (!WHOLE_CITATION_TOKEN.test(token)) {
       throw new ToolInputRejection(
         `Document contains malformed citation token ${token}; use one [[cite:ID]] token per citation`,
       );
@@ -462,13 +479,11 @@ export async function formatDocumentCitations(params: {
   // whole reference only when every literal label exactly matches its CSL
   // author or full label. Unrelated parenthetical prose is left untouched.
   const boundParentheses = draftMarkdown.replace(
-    /\(([^()\r\n]*\[\[cite:[A-Za-z0-9._:-]+\]\][^()\r\n]*)\)/g,
+    PARENTHETICAL_CITATION,
     (original, body: string) => {
       const rendered: string[] = [];
       for (const part of body.split(/;\s*/)) {
-        const slot = part
-          .trim()
-          .match(/^(.*?)\s*\[\[cite:([A-Za-z0-9._:-]+)\]\]$/);
+        const slot = part.trim().match(PARENTHETICAL_CITATION_SLOT);
         const cluster = slot && clusterById.get(slot[2]);
         if (!slot || !cluster || !/^\([^()]+\)$/.test(cluster.text))
           return original;
@@ -481,7 +496,7 @@ export async function formatDocumentCitations(params: {
     },
   );
   let visibleMarkdown = boundParentheses.replace(
-    /(\([^()\r\n]*\)[\t ]*)?(\[\[cite:[A-Za-z0-9._:-]+\]\](?:[\t ]*\[\[cite:[A-Za-z0-9._:-]+\]\])*)/g,
+    CITATION_TOKEN_RUN,
     (_token, literalLabel: string | undefined, tokens: string) => {
       const group = [...tokens.matchAll(CITATION_TOKEN)].map((match) => {
         const cluster = clusterById.get(match[1]);

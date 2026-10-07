@@ -48,8 +48,18 @@ export function createCodexDirectModelReasoningController(params: {
   getSelectedEntry: () => RuntimeModelEntry | null;
   isRuntimeConversationSystem: () => boolean;
   onStateChange: () => void;
+  /**
+   * The reasoning selection per model of the panel's chat surface
+   * (surfaceChoices.ts); the saved one when omitted.
+   */
+  getReasoningSelection?: (model: string) => string;
+  setReasoningSelection?: (model: string, selection: string) => void;
 }) {
   let disposed = false;
+  const getReasoningSelection =
+    params.getReasoningSelection || getCodexDirectReasoningSelection;
+  const setReasoningSelection =
+    params.setReasoningSelection || setCodexDirectReasoningSelection;
 
   const hasConfiguredProvider = () =>
     getModelProviderGroups().some(
@@ -67,11 +77,11 @@ export function createCodexDirectModelReasoningController(params: {
   const resolveReasoningSelection = (): CodexDirectReasoningSelection => {
     const selected = getSelectedEntry();
     if (!selected) return { mode: "auto", choices: [] };
-    const stored = getCodexDirectReasoningSelection(selected.model);
+    const stored = getReasoningSelection(selected.model);
     const choices = getCodexDirectReasoningChoices(selected.model);
     const mode = reconcileCodexDirectReasoningChoice(selected.model, stored);
     if (getCodexDirectCatalogSnapshot().status === "ready" && mode !== stored) {
-      setCodexDirectReasoningSelection(selected.model, mode);
+      setReasoningSelection(selected.model, mode);
     }
     return { mode, choices };
   };
@@ -140,7 +150,7 @@ export function createCodexDirectModelReasoningController(params: {
       choices: selection.choices,
       currentValue: selection.mode,
       onSelect: (value) => {
-        setCodexDirectReasoningSelection(entry.model, value);
+        setReasoningSelection(entry.model, value);
         args.closeMenu();
         params.onStateChange();
       },
@@ -155,7 +165,7 @@ export function createCodexDirectModelReasoningController(params: {
     return buildCodexReasoningConfig(
       reconcileCodexDirectReasoningChoice(
         entry.model,
-        getCodexDirectReasoningSelection(entry.model),
+        getReasoningSelection(entry.model),
       ),
     );
   };

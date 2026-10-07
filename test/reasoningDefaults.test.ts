@@ -12,6 +12,7 @@ import {
   getSelectedReasoningForItem,
 } from "../src/modules/contextPanel/chat";
 import {
+  reasoningCacheKey,
   selectedReasoningCache,
   selectedReasoningProviderCache,
 } from "../src/modules/contextPanel/state";
@@ -46,21 +47,27 @@ describe("model-aware reasoning defaults", function () {
       choices.map((choice) => choice.level),
       ["auto", "low", "medium", "high", "xhigh", "max"],
     );
-    selectedReasoningProviderCache.set(1, provider);
-    selectedReasoningCache.set(1, "none");
+    selectedReasoningProviderCache.set(
+      reasoningCacheKey(undefined, 1),
+      provider,
+    );
+    selectedReasoningCache.set(reasoningCacheKey(undefined, 1), "none");
     const selection = getSelectedReasoningForItem(
       1,
       model,
       base,
       "responses_api",
     );
-    assert.equal(selectedReasoningCache.get(1), "auto");
+    assert.equal(
+      selectedReasoningCache.get(reasoningCacheKey(undefined, 1)),
+      "auto",
+    );
     assert.deepEqual(
       buildReasoningPayload(selection, true, model, base, "responses_api")
         .extra,
       {},
     );
-    selectedReasoningCache.set(1, "max");
+    selectedReasoningCache.set(reasoningCacheKey(undefined, 1), "max");
     const explicit = getSelectedReasoningForItem(
       1,
       model,

@@ -1848,6 +1848,7 @@ export function mountTaskProgressView(params: {
         rawSnippet: read.snippet || "",
         cleanedSnippet,
         label: read.label || "",
+        ...(read.pageIndex !== undefined ? { pageIndex: read.pageIndex } : {}),
         granularity: read.granularity,
       });
     });

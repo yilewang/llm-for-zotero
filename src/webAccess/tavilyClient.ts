@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import type {
   WebAccessProvider,
   WebAccessUsage,
@@ -186,12 +187,7 @@ export function normalizePublicWebUrl(value: unknown): string {
 }
 
 export function buildWebSourceId(url: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < url.length; index += 1) {
-    hash ^= url.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `web_${(hash >>> 0).toString(36).padStart(7, "0")}`;
+  return `web_${fnv1a32Raw(url).toString(36).padStart(7, "0")}`;
 }
 
 function hostnameForUrl(url: string): string {
@@ -365,6 +361,12 @@ export class TavilyClient implements WebAccessProvider {
   }
 
   async search(request: WebSearchRequest): Promise<WebSearchResponse> {
+    if (!request.depth || !request.topic) {
+      throw new WebAccessError(
+        "Tavily requires depth and topic.",
+        "validation",
+      );
+    }
     const body = await this.request(
       "POST",
       TAVILY_SEARCH_URL,
@@ -414,6 +416,12 @@ export class TavilyClient implements WebAccessProvider {
   }
 
   async read(request: WebReadRequest): Promise<WebReadResponse> {
+    if (!request.query || !request.depth || !request.chunksPerSource) {
+      throw new WebAccessError(
+        "Tavily requires query, depth, and chunksPerSource.",
+        "validation",
+      );
+    }
     const urls = request.urls.map(normalizePublicWebUrl);
     const body = await this.request(
       "POST",

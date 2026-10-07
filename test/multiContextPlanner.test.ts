@@ -20,6 +20,7 @@ import { tokenizeRetrievalText } from "../src/services/retrieval/retrievalTokeni
 import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import { SECTION_INTENT_EXAMPLES } from "../src/services/retrieval/sectionIntent";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import { libraryIndexService } from "../src/services/libraryIndexService";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 import type { ChunkStat, PdfContext } from "../src/services/paperContent/types";
 
@@ -230,10 +231,16 @@ describe("multiContextPlanner", function () {
       originalZtoolkit;
   });
 
+  beforeEach(function () {
+    // Tag scopes read the library index; build it from this test's items.
+    libraryIndexService.clearForTests();
+  });
+
   afterEach(function () {
     pdfTextCache.clear();
     zoteroItems.clear();
     zoteroCollections.clear();
+    libraryIndexService.clearForTests();
   });
 
   it("selects full mode when full text fits context budget", function () {

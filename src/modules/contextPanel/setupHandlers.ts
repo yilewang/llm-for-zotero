@@ -1,6 +1,7 @@
 import { appLogger } from "../../core/logging";
 import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
 import {
+  bindTaskProgressToggle,
   disposeTaskProgressPanel,
   syncTaskProgressPanel,
 } from "./taskProgress/panel";
@@ -23,10 +24,13 @@ import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
 import {
-  getLastUsedModelEntryId,
   getModelEntryById,
   getModelProviderGroups,
 } from "../../utils/modelProviders";
+import {
+  bindSurfaceChoices,
+  demoteConversationSystemOnEverySurface,
+} from "./surfaceChoices";
 import {
   buildQueuedFollowUpThreadKey,
   enqueueQueuedFollowUp,
@@ -75,6 +79,8 @@ import { createContextIcon } from "./contextIcons";
 import {
   selectedReasoningCache,
   selectedReasoningProviderCache,
+  reasoningCacheKey,
+  clearSelectedReasoningForSurface,
   selectedRuntimeModeCache,
   selectedImageCache,
   selectedFileAttachmentCache,
@@ -97,10 +103,11 @@ import {
   getAbortController,
   isRequestPending,
   isRequestOwner,
-  responseMenuTarget,
+  getResponseMenuTarget,
   setResponseMenuTarget,
-  promptMenuTarget,
+  getPromptMenuTarget,
   setPromptMenuTarget,
+  releaseMenuTargets,
   chatHistory,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
@@ -108,27 +115,18 @@ import {
   clearWebChatConversationForceNewChat,
   consumeWebChatConversationForceNewChat,
   currentRequestId,
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
   draftInputCache,
   webChatDraftInputCache,
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
-  inlineEditTarget,
-  setInlineEditTarget,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   addAutoLockedGlobalConversationKey,
   removeAutoLockedGlobalConversationKey,
   isAutoLockedGlobalConversation,
   getConversationWriteGeneration,
 } from "./state";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import {
   setStatus,
   buildQuestionWithSelectedTextContexts,
@@ -156,24 +154,20 @@ import {
   getStringPref,
   getAgentModeEnabled,
   getClaudeCodeModeEnabled,
-  getSelectedModelEntry,
   applyPanelFontScale,
   getAdvancedModelParamsForEntry,
-  setSelectedModelEntry,
-  getLastUsedReasoningLevel,
-  getLastUsedReasoningLevelForProvider,
-  getLastUsedRuntimeMode,
-  setLastUsedReasoningLevel,
-  setLastUsedReasoningLevelForProvider,
-  setLastUsedRuntimeMode,
-  setLastUsedUpstreamConversationMode,
-  setLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   removeLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
   setLockedGlobalConversationKey,
-  buildPaperStateKey,
 } from "./prefHelpers";
+import {
+  recall,
+  recallActive,
+  remember,
+  rememberMode,
+  type SelectionSurface,
+} from "./conversationSelection";
 import { refreshConfiguredProviderModelCatalogs } from "../../utils/modelProviders";
 import {
   refreshModelCapabilityRegistry,
@@ -186,6 +180,7 @@ import {
   refreshChat,
   syncUserContextAlignmentWidths,
   getConversationKey,
+  shouldMoveToOwnWebChatSession,
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   requestChatScrollFollowBottom,
@@ -221,8 +216,14 @@ import {
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
   shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
+import {
+  publishPanelHandle,
+  unpublishPanelHandle,
+  type PanelHandle,
+} from "./panelHandle";
 import {
   getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
@@ -257,6 +258,7 @@ import {
 } from "./slashMenuBehavior";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { ownerScopedPaperKey } from "../../shared/paperKey";
 import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
 import {
@@ -295,6 +297,7 @@ import {
   clearSelectedTextState as clearSelectedTextState_,
   retainPinnedTextState as retainPinnedTextState_,
 } from "./contexts/textContextState";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { optimizeImageDataUrl } from "./screenshot";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
@@ -412,6 +415,12 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  MENUS_CLOSED_BY_MODEL_MENU,
+  MENUS_CLOSED_BY_REASONING_MENU,
+  MENUS_CLOSED_BY_RETRY_MODEL_MENU,
+  createMenuRegistry,
+} from "./setupHandlers/controllers/menuRegistry";
 import { createActionLayoutController } from "./setupHandlers/controllers/actionLayoutController";
 import {
   getReasoningLevelDisplayLabel,
@@ -459,10 +468,6 @@ import {
   prunePinnedImageKeys,
   removePinnedFile,
   removePinnedImage,
-  removePinnedSelectedText,
-  togglePinnedFile,
-  togglePinnedImage,
-  togglePinnedSelectedText,
 } from "./setupHandlers/controllers/pinnedContextController";
 import {
   createFileIntakeController,
@@ -477,6 +482,11 @@ import {
 } from "./setupHandlers/controllers/sendFlowController";
 import { cancelVisiblePendingConfirmationCards } from "./setupHandlers/controllers/cancelPendingConfirmationController";
 import { buildInlineEditRetryContextSnapshot } from "./setupHandlers/controllers/inlineEditRetryController";
+import {
+  endInlineEdit,
+  getInlineEditTarget,
+  releaseInlineEdit,
+} from "./inlineEditState";
 import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assistantSelectionPopupController";
 import { attachMenuActionController } from "./setupHandlers/controllers/menuActionController";
 import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pdfPaperAttachmentResolver";
@@ -491,6 +501,7 @@ import { createWebChatHistoryController } from "./setupHandlers/controllers/webC
 import {
   createHistoryLifecycleController,
   disposePendingDeletionSubscriptionForBody,
+  disposeConversationCatalogSubscriptionForBody,
 } from "./setupHandlers/controllers/historyLifecycleController";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
@@ -526,25 +537,16 @@ import {
   listClaudeEfforts,
   listClaudeModels,
   rememberClaudeConversationSelection,
-  resolveRememberedClaudeConversationKey,
   refreshClaudeSlashCommands,
   touchClaudeConversation,
 } from "../../claudeCode/runtime";
 import {
   getClaudeBridgeUrl,
-  getClaudeReasoningModePref,
-  getClaudeRuntimeModelPref,
   getClaudeSettingSourcesCsvByPref,
-  getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
   setClaudeCodeModeEnabled,
-  setConversationSystemPref,
   getLastUsedClaudePaperConversationKey,
   removeLastUsedClaudeGlobalConversationKey,
   removeLastUsedClaudePaperConversationKey,
-  setClaudeReasoningModePref,
-  setClaudeRuntimeModelPref,
-  setLastUsedClaudeConversationMode,
 } from "../../claudeCode/prefs";
 import {
   buildClaudeRuntimeModelEntries,
@@ -552,18 +554,11 @@ import {
   type ClaudeModelCatalogRequestContext,
 } from "../../claudeCode/modelCatalog";
 import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
   getLastUsedCodexConversationMode,
-  getLastUsedCodexGlobalConversationKey,
   getLastUsedCodexPaperConversationKey,
   isCodexAppServerModeEnabled,
   removeLastUsedCodexGlobalConversationKey,
   removeLastUsedCodexPaperConversationKey,
-  setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexConversationMode,
-  setCodexReasoningModePref,
-  setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
@@ -575,19 +570,10 @@ import {
   type CodexAppServerModelCatalogEntry,
 } from "../../codexAppServer/modelCatalog";
 import {
-  activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
-import {
-  activeCodexConversationModeByLibrary,
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
 import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
@@ -686,9 +672,19 @@ export function setupHandlers(
       : existingPanelRoot?.dataset?.conversationKind === "paper"
         ? "paper"
         : undefined;
+  // Which surface's remembered selection this panel reads and writes: the
+  // standalone window's own, or the one every sidebar panel shares.
+  const selectionSurface = (): SelectionSurface =>
+    resolveSelectionSurfaceForBody(body);
+  const isStandaloneSelectionSurface = () =>
+    selectionSurface() === "standalone";
+  // The model and backend this panel's surface has chosen (surfaceChoices.ts):
+  // the sidebar's are the saved prefs; the window's live in memory.
+  const panelChoices = bindSurfaceChoices(selectionSurface);
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
     conversationMode: preferredConversationMode,
+    surface: selectionSurface(),
   });
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
@@ -709,8 +705,6 @@ export function setupHandlers(
   let basePaperItem =
     resolvedInitialState.basePaperItem ||
     resolveConversationBaseItem(rawPanelItem);
-  const buildPaperStateKey = (libraryID: number, paperItemID: number): string =>
-    `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
   const resolveLibraryIdFromItem = (
     targetItem: Zotero.Item | null | undefined,
   ): number => {
@@ -826,6 +820,15 @@ export function setupHandlers(
   const panelLifecycle = new PanelLifecycle();
 
   const isStandalonePanel = panelRoot.dataset.standalone === "true";
+  // The header's Task progress button. The standalone window binds its own
+  // title-bar button to this body, so its hidden header button stays unbound.
+  const taskProgressToggleBtn = body.querySelector(
+    "#llm-task-progress-toggle",
+  ) as HTMLButtonElement | null;
+  const unbindTaskProgressToggle =
+    taskProgressToggleBtn && !isStandalonePanel
+      ? bindTaskProgressToggle(body, taskProgressToggleBtn)
+      : null;
   const chatShell = body.querySelector(
     "#llm-chat-shell",
   ) as HTMLDivElement | null;
@@ -977,11 +980,15 @@ export function setupHandlers(
       ? "claude_code"
       : panelRoot.dataset.conversationSystem === "codex"
         ? "codex"
-        : resolvePreferredConversationSystem({ item });
+        : resolvePreferredConversationSystem({
+            item,
+            surface: selectionSurface(),
+          });
   let currentConversationSystem: ConversationSystem =
     resolvePreferredConversationSystem({
       item,
       preferredSystem: initialConversationSystem,
+      surface: selectionSurface(),
     });
   const getConversationSystem = (): ConversationSystem =>
     currentConversationSystem;
@@ -1112,7 +1119,11 @@ export function setupHandlers(
     const requestId = ++claudeModelCatalogRequestId;
     refreshOpenClaudeModelMenu();
     claudeModelCatalogInFlight = initAgentSubsystem()
-      .then((coreRuntime) => listClaudeModels(coreRuntime, force, context))
+      .then((coreRuntime) =>
+        listClaudeModels(coreRuntime, force, context, {
+          conversationSystem: getConversationSystem(),
+        }),
+      )
       .then((catalog) => {
         if (
           requestId !== claudeModelCatalogRequestId ||
@@ -1149,10 +1160,10 @@ export function setupHandlers(
   const getClaudeRuntimeModelEntries = (): RuntimeModelEntry[] =>
     buildClaudeRuntimeModelEntries({
       models: claudeModelCatalogModels,
-      selectedModel: getClaudeRuntimeModelPref(),
+      selectedModel: panelChoices.getClaudeRuntimeModel(),
     });
   const getSelectedClaudeRuntimeEntry = (): RuntimeModelEntry => {
-    const selectedModel = getClaudeRuntimeModelPref();
+    const selectedModel = panelChoices.getClaudeRuntimeModel();
     const entries = getClaudeRuntimeModelEntries();
     return (
       entries.find((entry) => entry.model === selectedModel) ||
@@ -1162,20 +1173,20 @@ export function setupHandlers(
   };
   const resolveCurrentCodexReasoningSelection = () =>
     resolveCodexAppServerReasoningSelection({
-      mode: getCodexReasoningModePref(),
+      mode: panelChoices.getCodexReasoningMode(),
       choices: getCodexAppServerReasoningChoices({
         models: codexModelCatalogModels,
-        selectedModel: getCodexRuntimeModelPref(),
+        selectedModel: panelChoices.getCodexRuntimeModel(),
       }),
       catalogReady: codexModelCatalogStatus === "ready",
     });
   const getCodexReasoningChoices = () =>
     resolveCurrentCodexReasoningSelection().choices;
   const reconcileSelectedCodexReasoningMode = () => {
-    const currentMode = getCodexReasoningModePref();
+    const currentMode = panelChoices.getCodexReasoningMode();
     const reconciledMode = resolveCurrentCodexReasoningSelection().mode;
     if (codexModelCatalogStatus === "ready" && reconciledMode !== currentMode) {
-      setCodexReasoningModePref(reconciledMode);
+      panelChoices.setCodexReasoningMode(reconciledMode);
     }
     return reconciledMode;
   };
@@ -1229,7 +1240,7 @@ export function setupHandlers(
     return codexModelCatalogInFlight;
   };
   const getCodexRuntimeModelEntries = (): RuntimeModelEntry[] => {
-    const model = getCodexRuntimeModelPref();
+    const model = panelChoices.getCodexRuntimeModel();
     return buildCodexRuntimeModelEntries({
       models: codexModelCatalogModels,
       selectedModel: model,
@@ -1237,7 +1248,7 @@ export function setupHandlers(
     });
   };
   const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry => {
-    const selectedModel = getCodexRuntimeModelPref().toLowerCase();
+    const selectedModel = panelChoices.getCodexRuntimeModel().toLowerCase();
     const entries = getCodexRuntimeModelEntries();
     return (
       entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
@@ -1264,7 +1275,7 @@ export function setupHandlers(
       agentModeEnabled: getAgentModeEnabled(),
       displayConversationKind: resolveDisplayConversationKind(item),
       noteKind: noteSession?.noteKind || null,
-      lastUsedRuntimeMode: getLastUsedRuntimeMode(),
+      lastUsedRuntimeMode: panelChoices.getLastUsedRuntimeMode(),
     });
   };
   let syncFooterPermissionControl = () => Promise.resolve();
@@ -1389,14 +1400,17 @@ export function setupHandlers(
     claudeWarmupInFlight = initAgentSubsystem()
       .then((coreRuntime) => {
         const context = resolveClaudeModelCatalogContext();
+        // This panel's own system gates the lists, not the saved one.
+        const gate = { conversationSystem: getConversationSystem() };
         return Promise.allSettled([
           refreshClaudeSlashCommands(coreRuntime, false),
           listClaudeEfforts(
             coreRuntime,
             getSelectedClaudeRuntimeEntry().model,
             context,
+            gate,
           ),
-          listClaudeModels(coreRuntime, false, context),
+          listClaudeModels(coreRuntime, false, context, gate),
         ]);
       })
       .catch((err: unknown) => {
@@ -1514,7 +1528,7 @@ export function setupHandlers(
       )
         return;
       item = nextItem;
-      setConversationSystemPref(resolvedNextSystem);
+      panelChoices.setConversationSystem(resolvedNextSystem);
       currentConversationSystem = resolvedNextSystem;
       syncConversationIdentity();
       syncQueuedFollowUpRegistration();
@@ -1527,7 +1541,7 @@ export function setupHandlers(
         await createAndSwitchPaperConversation(true);
         return;
       }
-      await ensureConversationLoaded(item);
+      await ensureConversationLoaded(item, { body });
       restoreDraftInputForCurrentConversation();
       refreshChatPreservingScroll();
       resetComposePreviewUI();
@@ -1540,7 +1554,7 @@ export function setupHandlers(
     if (!libraryID) return;
     const forceFresh = options?.forceFresh === true;
     persistDraftInputForCurrentConversation();
-    setConversationSystemPref(nextSystem);
+    panelChoices.setConversationSystem(nextSystem);
     currentConversationSystem = nextSystem;
     // The mounted DOM scope must keep describing the conversation the panel is
     // actually on. `dataset.conversationSystem` is half of that scope, so
@@ -1559,26 +1573,31 @@ export function setupHandlers(
         await createAndSwitchGlobalConversation(true);
         return;
       }
+      const surface = selectionSurface();
       const nextConversationKey =
         nextSystem === "claude_code"
-          ? resolveRememberedClaudeConversationKey({
+          ? recall({
+              system: "claude_code",
               libraryID,
               kind: "global",
-            }) ||
-            getLastUsedClaudeGlobalConversationKey(libraryID) ||
-            0
+              surface,
+            })
           : nextSystem === "codex"
-            ? activeCodexGlobalConversationByLibrary.get(
-                buildCodexLibraryStateKey(libraryID),
-              ) ||
-              getLastUsedCodexGlobalConversationKey(libraryID) ||
-              0
+            ? recall({ system: "codex", libraryID, kind: "global", surface })
             : (() => {
-                const lockedKey = getLockedGlobalConversationKey(libraryID);
+                // The library lock is the sidebar's; the window has none.
+                const lockedKey =
+                  surface === "standalone"
+                    ? null
+                    : getLockedGlobalConversationKey(libraryID);
                 if (lockedKey !== null) return lockedKey;
-                const activeKey = Number(
-                  activeGlobalConversationByLibrary.get(libraryID) || 0,
-                );
+                // Upstream reads the active map only here, not the pref.
+                const activeKey = recallActive({
+                  system: "upstream",
+                  libraryID,
+                  kind: "global",
+                  surface,
+                });
                 if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
                 return activeKey === GLOBAL_CONVERSATION_KEY_BASE
                   ? buildDefaultUpstreamGlobalConversationKey(libraryID)
@@ -1596,6 +1615,7 @@ export function setupHandlers(
       if (!rawBaseItem) return;
       const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
         conversationSystem: nextSystem,
+        surface: selectionSurface(),
       });
       const nextItem = resolvedState.item || item;
       const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
@@ -1622,6 +1642,7 @@ export function setupHandlers(
     if (!rawBaseItem) return;
     const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
       conversationSystem: nextSystem,
+      surface: selectionSurface(),
     });
     const nextItem = resolvedState.item || item;
     const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
@@ -1644,7 +1665,7 @@ export function setupHandlers(
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
     await renderShortcuts(
       body,
@@ -1809,6 +1830,7 @@ export function setupHandlers(
     currentConversationSystem = resolvePreferredConversationSystem({
       item,
       preferredSystem: currentConversationSystem,
+      surface: selectionSurface(),
     });
     panelRoot.dataset.conversationSystem = currentConversationSystem;
     syncQueuedFollowUpRegistration();
@@ -1836,69 +1858,70 @@ export function setupHandlers(
       historyToggleBtn.style.display = "";
     }
     if (item && libraryID > 0 && mode && !noteSession) {
+      // Each runtime writes a different set here: Claude Code only the mode;
+      // Codex and upstream also the library chat (map and pref) and the
+      // paper chat (map only). All of it goes to this panel's own surface:
+      // the standalone window's writes stay in its own slots.
+      const surface = selectionSurface();
       if (isClaudeConversationSystem()) {
-        activeClaudeConversationModeByLibrary.set(
-          buildClaudeLibraryStateKey(libraryID),
-          mode,
-        );
-        setLastUsedClaudeConversationMode(libraryID, mode);
+        rememberMode("claude_code", libraryID, mode, { surface });
       } else if (isCodexConversationSystem()) {
-        activeCodexConversationModeByLibrary.set(
-          buildCodexLibraryStateKey(libraryID),
-          mode,
-        );
-        setLastUsedCodexConversationMode(libraryID, mode);
+        rememberMode("codex", libraryID, mode, { surface });
         if (mode === "global") {
-          activeCodexGlobalConversationByLibrary.set(
-            buildCodexLibraryStateKey(libraryID),
+          remember(
+            { system: "codex", libraryID, kind: "global", surface },
             item.id,
           );
-          setLastUsedCodexGlobalConversationKey(libraryID, item.id);
         } else if (
           Number.isFinite(conversationKey) &&
           (conversationKey as number) > 0 &&
           Number.isFinite(currentBasePaperItemID) &&
           currentBasePaperItemID > 0
         ) {
-          const normalizedConversationKey = Math.floor(
-            conversationKey as number,
-          );
-          const paperStateKey = buildCodexPaperStateKey(
-            libraryID,
-            Math.floor(currentBasePaperItemID),
-          );
-          activeCodexPaperConversationByPaper.set(
-            paperStateKey,
-            normalizedConversationKey,
+          remember(
+            {
+              system: "codex",
+              libraryID,
+              kind: "paper",
+              paperItemID: Math.floor(currentBasePaperItemID),
+              surface,
+            },
+            Math.floor(conversationKey as number),
+            { persist: false },
           );
         }
       } else {
-        activeConversationModeByLibrary.set(libraryID, mode);
-        setLastUsedUpstreamConversationMode(libraryID, mode);
+        rememberMode("upstream", libraryID, mode, { surface });
         if (mode === "global") {
-          activeGlobalConversationByLibrary.set(libraryID, item.id);
-          setLastUsedUpstreamGlobalConversationKey(libraryID, item.id);
+          remember(
+            { system: "upstream", libraryID, kind: "global", surface },
+            item.id,
+          );
         } else if (
           Number.isFinite(conversationKey) &&
           (conversationKey as number) > 0 &&
           Number.isFinite(currentBasePaperItemID) &&
           currentBasePaperItemID > 0
         ) {
-          const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
-          if (lockedGlobalKey !== null) {
-            setLockedGlobalConversationKey(libraryID, null);
-            removeAutoLockedGlobalConversationKey(lockedGlobalKey);
+          // A sidebar panel back in Paper chat releases the sidebar's library
+          // lock. The window has no lock and must not release the sidebar's.
+          if (surface !== "standalone") {
+            const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
+            if (lockedGlobalKey !== null) {
+              setLockedGlobalConversationKey(libraryID, null);
+              removeAutoLockedGlobalConversationKey(lockedGlobalKey);
+            }
           }
-          const normalizedConversationKey = Math.floor(
-            conversationKey as number,
-          );
-          const paperStateKey = buildPaperStateKey(
-            libraryID,
-            Math.floor(currentBasePaperItemID),
-          );
-          activePaperConversationByPaper.set(
-            paperStateKey,
-            normalizedConversationKey,
+          remember(
+            {
+              system: "upstream",
+              libraryID,
+              kind: "paper",
+              paperItemID: Math.floor(currentBasePaperItemID),
+              surface,
+            },
+            Math.floor(conversationKey as number),
+            { persist: false },
           );
         }
       }
@@ -2010,9 +2033,7 @@ export function setupHandlers(
               err,
             );
           });
-        if (getConversationSystemPref() === "claude_code") {
-          setConversationSystemPref("upstream");
-        }
+        demoteConversationSystemOnEverySurface("claude_code");
         if (isClaudeConversationSystem()) {
           void switchConversationSystem("upstream");
           return;
@@ -2026,9 +2047,7 @@ export function setupHandlers(
         return;
       }
       if (!isCodexAppServerModeEnabled()) {
-        if (getConversationSystemPref() === "codex") {
-          setConversationSystemPref("upstream");
-        }
+        demoteConversationSystemOnEverySurface("codex");
         if (isCodexConversationSystem()) {
           void switchConversationSystem("upstream");
           return;
@@ -2152,13 +2171,14 @@ export function setupHandlers(
   // scroll changes.
 
   let retryMenuAnchor: HTMLButtonElement | null = null;
+  const menus = createMenuRegistry();
   const closeResponseMenu = () => {
     if (responseMenu) responseMenu.style.display = "none";
-    setResponseMenuTarget(null);
+    setResponseMenuTarget(body, null);
   };
   const closePromptMenu = () => {
     if (promptMenu) promptMenu.style.display = "none";
-    setPromptMenuTarget(null);
+    setPromptMenuTarget(body, null);
   };
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
@@ -2220,6 +2240,16 @@ export function setupHandlers(
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, false);
     retryMenuAnchor = null;
   };
+  menus.register("response", closeResponseMenu);
+  menus.register("prompt", closePromptMenu);
+  menus.register("export", closeExportMenu);
+  menus.register("historyRow", closeHistoryRowMenu);
+  menus.register("historyNew", closeHistoryNewMenu, isHistoryNewMenuOpen);
+  menus.register("history", closeHistoryMenu, isHistoryMenuOpen);
+  menus.register("slash", closeSlashMenu);
+  menus.register("model", closeModelMenu);
+  menus.register("reasoning", closeReasoningMenu);
+  menus.register("retryModel", closeRetryModelMenu);
 
   const handlerContext: SetupHandlersContext = {
     body,
@@ -2271,14 +2301,15 @@ export function setupHandlers(
     settingsBtn,
     preferencesPaneId: PREFERENCES_PANE_ID,
     getItem: () => item,
-    getResponseMenuTarget: () => responseMenuTarget,
-    getPromptMenuTarget: () => promptMenuTarget,
+    getResponseMenuTarget: () => getResponseMenuTarget(body),
+    getPromptMenuTarget: () => getPromptMenuTarget(body),
     getCurrentLibraryID,
     getConversationSystem,
     getCurrentRuntimeModeForItem: (targetItem) =>
       selectedRuntimeModeCache.get(getConversationKey(targetItem)) || null,
     isGlobalMode,
-    ensureConversationLoaded,
+    ensureConversationLoaded: (targetItem) =>
+      ensureConversationLoaded(targetItem, { body }),
     getConversationKey,
     getHistory: (conversationKey) => chatHistory.get(conversationKey) || [],
     captureOwnership: (operation, targetConversationKey) => {
@@ -2484,8 +2515,8 @@ export function setupHandlers(
 
   const isPaperContextMineru = (paperContext: PaperContextRef): boolean => {
     if (mineruAvailableIds.has(paperContext.contextItemId)) return true;
-    // Check in-memory pdfTextCache (populated after ensurePDFTextCached)
-    const cached = pdfTextCache.get(paperContext.contextItemId);
+    // Check the in-memory paper text (populated after ensurePDFTextCached)
+    const cached = paperTextStore.peek(paperContext.contextItemId);
     if (cached?.sourceType === "mineru") {
       mineruAvailableIds.add(paperContext.contextItemId);
       return true;
@@ -2676,17 +2707,17 @@ export function setupHandlers(
     // Most programmatic composer updates already persist immediately. Keeping
     // sizing here makes those paths share the same behavior as typed input.
     resizeTextareaToContent(inputBox);
-    // Don't persist the edit-mode text as a draft; the real draft was saved in
-    // inlineEditSavedDraft when edit mode was entered.
-    if (!item || !inputBox || inlineEditTarget) return;
+    // Don't persist the edit-mode text as a draft; the real draft was saved
+    // with this panel's edit when edit mode was entered.
+    if (!item || !inputBox || getInlineEditTarget(body)) return;
     setDraftInputForConversation(getConversationKey(item), inputBox.value);
   };
   const restoreDraftInputForCurrentConversation = () => {
     if (!item || !inputBox) return;
     // Don't overwrite the user's in-progress edit text; the real draft was saved
-    // in inlineEditSavedDraft when edit mode was entered and will be restored by
-    // inlineEditCleanup when the edit session ends.
-    if (inlineEditTarget) return;
+    // with this panel's edit when edit mode was entered and is restored when
+    // the edit ends.
+    if (getInlineEditTarget(body)) return;
     const cache = isWebChatModeActive()
       ? webChatDraftInputCache
       : draftInputCache;
@@ -2756,7 +2787,7 @@ export function setupHandlers(
   );
   const getLatestEditablePair = async () => {
     if (!item) return null;
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     const key = getConversationKey(item);
     const history = chatHistory.get(key) || [];
     const pair = findLatestRetryPair(history);
@@ -4755,7 +4786,7 @@ export function setupHandlers(
     let changed = false;
     if (removed.length) {
       for (const paper of removed) {
-        paperContextModeOverrides.delete(`${item.id}:${buildPaperKey(paper)}`);
+        paperContextModeOverrides.delete(ownerScopedPaperKey(item.id, paper));
       }
       const next = papers.filter((paper) => paper.itemId !== itemId);
       if (next.length) selectedPaperContextCache.set(item.id, next);
@@ -4938,6 +4969,7 @@ export function setupHandlers(
     getSelectedModelInfo: () => getSelectedModelInfo(),
     markNextWebChatSendAsNewChat: () => markNextWebChatSendAsNewChat(),
     primeFreshWebChatPaperChipState: () => primeFreshWebChatPaperChipState(),
+    moveToOwnWebChatSession: () => moveToOwnWebChatSession(),
     updateImagePreviewPreservingScroll,
     switchConversationSystem,
     setActiveEditSession: (value) => {
@@ -5073,7 +5105,7 @@ export function setupHandlers(
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
         : item
-          ? getSelectedModelEntry()
+          ? panelChoices.getSelectedModelEntry()
           : null;
     const currentModel =
       selectedEntry?.model ||
@@ -5394,7 +5426,7 @@ export function setupHandlers(
           if (!item) return;
           if (isClaudeConversationSystem()) {
             clearClaudeReasoningDisplayOverride();
-            setClaudeRuntimeModelPref(entry.model);
+            panelChoices.setClaudeRuntimeModel(entry.model);
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
             setFloatingMenuOpen(
               reasoningMenu,
@@ -5406,7 +5438,7 @@ export function setupHandlers(
             return;
           }
           if (isCodexConversationSystem()) {
-            setCodexRuntimeModelPref(entry.model);
+            panelChoices.setCodexRuntimeModel(entry.model);
             reconcileSelectedCodexReasoningMode();
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
             setFloatingMenuOpen(
@@ -5433,7 +5465,7 @@ export function setupHandlers(
             webChatModeController.rememberModelBeforeEnteringWebChat();
           }
 
-          setSelectedModelEntry(entry.entryId);
+          panelChoices.setSelectedModelEntry(entry.entryId);
 
           // Keep the relay target synchronized when switching between webchat
           // providers as well as when entering webchat from a local/API model.
@@ -5654,6 +5686,7 @@ export function setupHandlers(
                   entry.apiBase,
                   entry.providerProtocol,
                   entry.advanced?.profileOverride,
+                  selectionSurface(),
                 );
           const retryAdvanced = getAdvancedModelParams(entry.entryId);
           await retryLatestAssistantResponse(
@@ -5725,7 +5758,7 @@ export function setupHandlers(
       }
       claudeReasoningDisplayOverride = null;
     }
-    return getClaudeReasoningModePref();
+    return panelChoices.getClaudeReasoningMode();
   };
 
   const getClaudeReasoningDisplayLabel = (mode: ClaudeReasoningDisplayMode) => {
@@ -5756,7 +5789,7 @@ export function setupHandlers(
     if (!isClaudeConversationSystem()) return;
     const mode = normalizeClaudeReasoningDisplayMode(effort);
     if (!mode) return;
-    if (mode === getClaudeReasoningModePref()) {
+    if (mode === panelChoices.getClaudeReasoningMode()) {
       claudeReasoningDisplayOverride = null;
     } else {
       claudeReasoningDisplayOverride = {
@@ -5809,7 +5842,7 @@ export function setupHandlers(
       };
     }
     if (isCodexConversationSystem()) {
-      const selectedMode = getCodexReasoningModePref();
+      const selectedMode = panelChoices.getCodexReasoningMode();
       const options: ReasoningOption[] = getCodexReasoningChoices()
         .filter((choice) => choice.value !== "auto")
         .map((choice) => ({
@@ -5853,7 +5886,7 @@ export function setupHandlers(
         activeThinking: directSelection.mode !== "none",
       };
     }
-    const selectedProfile = getSelectedModelEntry();
+    const selectedProfile = panelChoices.getSelectedModelEntry();
     const provider = detectReasoningProvider(
       currentModel,
       selectedProfile?.apiBase,
@@ -5869,15 +5902,18 @@ export function setupHandlers(
       .filter((option) => option.enabled)
       .map((option) => option.level);
     const previousLevel =
-      selectedReasoningCache.get(item.id) ||
-      getLastUsedReasoningLevelForProvider(provider) ||
-      getLastUsedReasoningLevel();
+      selectedReasoningCache.get(
+        reasoningCacheKey(selectionSurface(), item.id),
+      ) ||
+      panelChoices.getLastUsedReasoningLevelForProvider(provider) ||
+      panelChoices.getLastUsedReasoningLevel();
     const resolved = getSelectedReasoningForItem(
       item.id,
       currentModel,
       selectedProfile?.apiBase,
       selectedProfile?.providerProtocol,
       selectedProfile?.advanced?.profileOverride,
+      selectionSurface(),
     );
     const selectedLevel = resolved?.level || "auto";
     if (
@@ -5993,17 +6029,55 @@ export function setupHandlers(
     loadedConversationKeys.add(key);
     markNextWebChatSendAsNewChat();
     primeFreshWebChatPaperChipState();
-    if (inputBox && !inlineEditTarget) {
+    if (inputBox && !getInlineEditTarget(body)) {
       inputBox.value = "";
       resizeTextareaToContent(inputBox);
     }
   };
+
+  // In WebChat a paper chat panel is only ever on the paper's WebChat session,
+  // never on its ordinary chat: WebChat empties the chat it is on, and the
+  // other surface (on an API model) may show that chat. A panel that opens in
+  // WebChat on an ordinary chat moves to the WebChat session, as picking a
+  // WebChat model does.
+  let movingToOwnWebChatSession = false;
+  async function moveToOwnWebChatSession(): Promise<void> {
+    // The move itself switches the panel; it never starts a second move.
+    if (movingToOwnWebChatSession) return;
+    movingToOwnWebChatSession = true;
+    let anchored = false;
+    try {
+      anchored = (await ensureWebChatSessionPaperConversation()) === true;
+    } finally {
+      movingToOwnWebChatSession = false;
+    }
+    if (!isWebChatMode()) return;
+    if (!anchored) {
+      await leaveWebChatMode({ restoreConversation: false });
+      if (status) setStatus(status, t("Failed to create paper chat"), "error");
+      return;
+    }
+    resetCurrentWebChatConversation();
+    refreshChatPreservingScroll();
+  }
 
   const initializeWebChatConversationForCurrentItem = () => {
     if (!item) return;
     const key = getConversationKey(item);
     const hadWebChatSession =
       webChatIsolatedConversationKeys.has(key) && chatHistory.has(key);
+    if (
+      shouldMoveToOwnWebChatSession({
+        conversationKey: key,
+        paperMode: isPaperMode(),
+        body,
+      })
+    ) {
+      void moveToOwnWebChatSession().catch((err) => {
+        appLogger.warn("LLM: Failed to open the WebChat session", err);
+      });
+      return;
+    }
     webChatIsolatedConversationKeys.add(key);
     if (!hadWebChatSession) {
       chatHistory.set(key, []);
@@ -6013,7 +6087,7 @@ export function setupHandlers(
       webChatDraftInputCache.delete(key);
       markNextWebChatSendAsNewChat();
       primeFreshWebChatPaperChipState();
-      if (inputBox && !inlineEditTarget) {
+      if (inputBox && !getInlineEditTarget(body)) {
         inputBox.value = "";
         resizeTextareaToContent(inputBox);
       }
@@ -6035,7 +6109,7 @@ export function setupHandlers(
     getAvailableModelEntries,
     getSelectedModelEntryId: () =>
       getSelectedModelInfo().selectedEntryId || null,
-    setSelectedModelEntry,
+    setSelectedModelEntry: panelChoices.setSelectedModelEntry,
     abortPreload: () => webChatFeature.abortPreload(),
     removePreloadOverlay: () => {
       body.querySelector(".llm-webchat-preload")?.remove();
@@ -6103,7 +6177,7 @@ export function setupHandlers(
         })()
       : isCodexConversationSystem()
         ? (() => {
-            const mode = getCodexReasoningModePref();
+            const mode = panelChoices.getCodexReasoningMode();
             return (
               getCodexReasoningChoices().find(
                 (choice) => choice.value.toLowerCase() === mode.toLowerCase(),
@@ -6208,7 +6282,10 @@ export function setupHandlers(
         "Webchat mode",
         "llm-reasoning-menu-section",
       );
-      const currentSel = selectedReasoningCache.get(item.id) || "none";
+      const currentSel =
+        selectedReasoningCache.get(
+          reasoningCacheKey(selectionSurface(), item.id),
+        ) || "none";
       for (const mode of WEBCHAT_MODES) {
         const isSelected = currentSel === mode.level;
         const option = createElement(
@@ -6227,14 +6304,15 @@ export function setupHandlers(
           if (!item) return;
           if (isClaudeConversationSystem()) {
             clearClaudeReasoningDisplayOverride();
-            setClaudeReasoningModePref(
+            panelChoices.setClaudeReasoningMode(
               mode.level === "none" ? "auto" : (mode.level as any),
             );
           } else {
-            selectedReasoningCache.clear();
-            selectedReasoningCache.set(item.id, mode.level as any);
-            selectedReasoningProviderCache.set(item.id, "unsupported");
-            setLastUsedReasoningLevel(mode.level as any);
+            const reasoningKey = reasoningCacheKey(selectionSurface(), item.id);
+            clearSelectedReasoningForSurface(selectionSurface());
+            selectedReasoningCache.set(reasoningKey, mode.level as any);
+            selectedReasoningProviderCache.set(reasoningKey, "unsupported");
+            panelChoices.setLastUsedReasoningLevel(mode.level as any);
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
@@ -6281,7 +6359,7 @@ export function setupHandlers(
           e.stopPropagation();
           if (!item) return;
           clearClaudeReasoningDisplayOverride();
-          setClaudeReasoningModePref(mode.value as any);
+          panelChoices.setClaudeReasoningMode(mode.value as any);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         };
@@ -6293,13 +6371,13 @@ export function setupHandlers(
     }
     if (isCodexConversationSystem()) {
       const codexModes = getCodexReasoningChoices();
-      const currentMode = getCodexReasoningModePref();
+      const currentMode = panelChoices.getCodexReasoningMode();
       appendReasoningChoiceButtons({
         menu: reasoningMenu,
         choices: codexModes,
         currentValue: currentMode,
         onSelect: (value) => {
-          setCodexReasoningModePref(value);
+          panelChoices.setCodexReasoningMode(value);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         },
@@ -6359,18 +6437,19 @@ export function setupHandlers(
           if (isClaudeConversationSystem()) {
             const nextMode = optionState.label === "Max" ? "max" : level;
             clearClaudeReasoningDisplayOverride();
-            setClaudeReasoningModePref(nextMode as any);
+            panelChoices.setClaudeReasoningMode(nextMode as any);
           } else {
             if (reasoningBtn) delete reasoningBtn.dataset.reasoningAdjustment;
-            selectedReasoningCache.clear();
-            selectedReasoningCache.set(item.id, level);
+            const reasoningKey = reasoningCacheKey(selectionSurface(), item.id);
+            clearSelectedReasoningForSurface(selectionSurface());
+            selectedReasoningCache.set(reasoningKey, level);
             selectedReasoningProviderCache.set(
-              item.id,
+              reasoningKey,
               provider === "unsupported" ? "customized" : provider,
             );
-            setLastUsedReasoningLevelForProvider(provider, level);
+            panelChoices.setLastUsedReasoningLevelForProvider(provider, level);
             if (provider !== "anthropic") {
-              setLastUsedReasoningLevel(level);
+              panelChoices.setLastUsedReasoningLevel(level);
             }
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -6385,9 +6464,6 @@ export function setupHandlers(
       reasoningMenu.appendChild(option);
     }
   };
-
-  (body as any).__llmApplyResolvedClaudeEffort =
-    applyClaudeResolvedReasoningDisplay;
 
   const syncModelFromPrefs = (onlyIfChanged = false) => {
     updateModelButton(onlyIfChanged);
@@ -6405,23 +6481,30 @@ export function setupHandlers(
     syncModelFromPrefs();
   });
   codexDirectController = createCodexDirectModelReasoningController({
-    getSelectedEntry: () => (item ? getSelectedModelEntry() : null),
+    getSelectedEntry: () =>
+      item ? panelChoices.getSelectedModelEntry() : null,
     isRuntimeConversationSystem,
     onStateChange: syncModelFromPrefs,
+    getReasoningSelection: panelChoices.getCodexDirectReasoningSelection,
+    setReasoningSelection: panelChoices.setCodexDirectReasoningSelection,
   });
 
-  (body as any).__llmRefreshContextSourceForCurrentItem = () => {
-    withScrollGuard(chatBox, conversationKey, () => {
-      refreshAutoLoadedPaperContextForCurrentItem();
-      updatePaperPreviewPreservingScroll();
-      syncModelFromPrefs();
-      flushResponsiveLayoutSyncNow();
-      flushPanelStateRefreshNow();
-      if (item && chatBox && !chatBox.childElementCount) {
-        refreshChat(body, item);
-      }
-    });
+  const panelHandle: PanelHandle = {
+    refreshContextSourceForCurrentItem: () => {
+      withScrollGuard(chatBox, conversationKey, () => {
+        refreshAutoLoadedPaperContextForCurrentItem();
+        updatePaperPreviewPreservingScroll();
+        syncModelFromPrefs();
+        flushResponsiveLayoutSyncNow();
+        flushPanelStateRefreshNow();
+        if (item && chatBox && !chatBox.childElementCount) {
+          refreshChat(body, item);
+        }
+      });
+    },
+    applyResolvedClaudeEffort: applyClaudeResolvedReasoningDisplay,
   };
+  publishPanelHandle(body, panelHandle);
 
   const webChatHistoryController = createWebChatHistoryController({
     body,
@@ -6439,10 +6522,16 @@ export function setupHandlers(
     isWebChatMode,
     clearNextWebChatNewChatIntent,
     setSelectedReasoningLevel: (itemId, level) => {
-      selectedReasoningCache.set(itemId, level);
+      selectedReasoningCache.set(
+        reasoningCacheKey(selectionSurface(), itemId),
+        level,
+      );
     },
     setSelectedReasoningProvider: (itemId, provider) => {
-      selectedReasoningProviderCache.set(itemId, provider);
+      selectedReasoningProviderCache.set(
+        reasoningCacheKey(selectionSurface(), itemId),
+        provider,
+      );
     },
     updateReasoningButton,
     setStatusMessage: status
@@ -6468,7 +6557,7 @@ export function setupHandlers(
       // getSelectedModelInfo may not be ready during initial render —
       // fall back to checking the last-used model entry directly.
       try {
-        const lastId = getLastUsedModelEntryId();
+        const lastId = panelChoices.getModelEntryId();
         const entry = lastId ? getModelEntryById(lastId) : null;
         isWebChat = entry?.authMode === "webchat";
       } catch {
@@ -6610,7 +6699,7 @@ export function setupHandlers(
     syncModelFromPrefs(true);
     // Another view of this conversation can edit the shared draft. Restore
     // that change without remeasuring an unchanged composer on every visit.
-    if (item && inputBox && !inlineEditTarget) {
+    if (item && inputBox && !getInlineEditTarget(body)) {
       const cache = isWebChatModeActive()
         ? webChatDraftInputCache
         : draftInputCache;
@@ -6645,7 +6734,7 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : getSelectedModelEntry();
+        : panelChoices.getSelectedModelEntry();
     if (!selected) return null;
     return {
       ...selected,
@@ -6679,7 +6768,7 @@ export function setupHandlers(
       const mode =
         codexModelCatalogStatus === "ready"
           ? reconcileSelectedCodexReasoningMode()
-          : getCodexReasoningModePref();
+          : panelChoices.getCodexReasoningMode();
       return buildCodexAppServerReasoningConfig(mode);
     }
     const directEntry = codexDirectController?.getSelectedEntry();
@@ -6744,8 +6833,8 @@ export function setupHandlers(
     },
     optimizeImageDataUrl,
     persistAttachmentBlob,
-    selectedImageCache,
-    selectedFileAttachmentCache,
+    selectedImageCache: composeContextStore.images,
+    selectedFileAttachmentCache: composeContextStore.files,
     updateImagePreview,
     updateFilePreview,
     scheduleAttachmentGc,
@@ -6889,6 +6978,7 @@ export function setupHandlers(
     consumeActiveActionToken,
   } = actionCommandController;
   closeSlashMenu = closeActionSlashMenu;
+  menus.register("slash", closeSlashMenu);
   clearForcedSkill = clearForcedSkillFromActionController;
 
   if (inputSection && inputBox) {
@@ -7237,8 +7327,12 @@ export function setupHandlers(
       void refreshGlobalHistoryHeader();
     },
     persistDraftInput: persistDraftInputForCurrentConversation,
+    // The library lock keeps the sidebar panels on a Library chat while it
+    // answers. The standalone window does not follow the selection in Library
+    // chat, so its sends neither take nor release that lock.
     autoLockGlobalChat: () => {
       if (isRuntimeConversationSystem()) return;
+      if (isStandaloneSelectionSurface()) return;
       if (!item || !isGlobalMode() || isNoteSession()) return;
       const ck = conversationKey;
       if (ck === null) return;
@@ -7251,6 +7345,7 @@ export function setupHandlers(
     },
     autoUnlockGlobalChat: () => {
       if (isRuntimeConversationSystem()) return;
+      if (isStandaloneSelectionSurface()) return;
       const ck = conversationKey;
       if (ck === null || !isAutoLockedGlobalConversation(ck)) return;
       removeAutoLockedGlobalConversationKey(ck);
@@ -7279,9 +7374,10 @@ export function setupHandlers(
   const executeSend = async () => {
     // If the inline edit widget is active, route through editUserTurnAndRetry
     // instead of the normal send flow.
-    if (inlineEditTarget && item) {
+    const panelEditTarget = getInlineEditTarget(body);
+    if (panelEditTarget && item) {
       const currentItem = item;
-      const editTarget = inlineEditTarget;
+      const editTarget = panelEditTarget;
       const newText = inputBox?.value.trim() ?? "";
       if (!newText && isRequestPending(getConversationKey(currentItem))) return;
       const inlineRequest = newText
@@ -7484,11 +7580,7 @@ export function setupHandlers(
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
       const targetRuntimeMode = getCurrentRuntimeMode();
-      inlineEditCleanup?.();
-      setInlineEditCleanup(null);
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
-      setInlineEditTarget(null);
+      endInlineEdit(body);
       if (newText) {
         const webchatGreyOut = isWebChatMode();
         let retrySucceeded = false;
@@ -7648,7 +7740,7 @@ export function setupHandlers(
       setCurrentRuntimeMode(nextMode);
       // Only an explicit toggle updates the sticky default, so implicit
       // switches (/compact, skill selection) stay scoped to this conversation.
-      setLastUsedRuntimeMode(nextMode);
+      panelChoices.setLastUsedRuntimeMode(nextMode);
       if (status) {
         setStatus(
           status,
@@ -7797,14 +7889,10 @@ export function setupHandlers(
         }
       }
     }
-    if (ke.key === "Escape" && inlineEditTarget) {
+    if (ke.key === "Escape" && getInlineEditTarget(body)) {
       e.preventDefault();
       e.stopPropagation();
-      inlineEditCleanup?.();
-      setInlineEditCleanup(null);
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
-      setInlineEditTarget(null);
+      endInlineEdit(body);
       refreshConversationPanels(body, item);
       return;
     }
@@ -7874,12 +7962,7 @@ export function setupHandlers(
   openModelMenu = () => {
     if (!modelMenu || !modelBtn) return;
     if ((modelBtn as HTMLButtonElement).disabled) return;
-    closeSlashMenu();
-    closeRetryModelMenu();
-    closeReasoningMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
+    menus.closeMany(MENUS_CLOSED_BY_MODEL_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
     } else if (isClaudeConversationSystem()) {
@@ -7906,15 +7989,11 @@ export function setupHandlers(
   closeModelMenu = () => {
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
   };
+  menus.register("model", closeModelMenu);
 
   openReasoningMenu = () => {
     if (!reasoningMenu || !reasoningBtn) return;
-    closeSlashMenu();
-    closeRetryModelMenu();
-    closeModelMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
+    menus.closeMany(MENUS_CLOSED_BY_REASONING_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
     } else if (codexDirectController?.getSelectedEntry()) {
@@ -7934,17 +8013,11 @@ export function setupHandlers(
   closeReasoningMenu = () => {
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
   };
+  menus.register("reasoning", closeReasoningMenu);
 
   const openRetryModelMenu = (anchor: HTMLButtonElement) => {
     if (!item || !retryModelMenu) return;
-    closeSlashMenu();
-    closeResponseMenu();
-    closeExportMenu();
-    closePromptMenu();
-    closeHistoryNewMenu();
-    closeHistoryMenu();
-    closeModelMenu();
-    closeReasoningMenu();
+    menus.closeMany(MENUS_CLOSED_BY_RETRY_MODEL_MENU);
     rebuildRetryModelMenu();
     if (!retryModelMenu.childElementCount) {
       closeRetryModelMenu();
@@ -7978,12 +8051,8 @@ export function setupHandlers(
     closePaperChipMineruCacheMenu,
     closePaperChipMenu,
     getItem: () => item,
-    getInlineEditTarget: () => inlineEditTarget,
-    getInlineEditCleanup: () => inlineEditCleanup,
-    clearInlineEdit: () => {
-      setInlineEditCleanup(null);
-      setInlineEditTarget(null);
-    },
+    getInlineEditTarget: () => getInlineEditTarget(body),
+    endInlineEdit: () => endInlineEdit(body),
     closePromptMenu,
     closeRetryModelMenu,
     closePaperPicker,
@@ -8218,6 +8287,8 @@ export function setupHandlers(
     cleanupModelCapabilitySubscription?.();
     cleanupModelCapabilitySubscription = null;
     disposeHistoryActivity?.();
+    // Before the panel's teardown, which would repaint the button.
+    unbindTaskProgressToggle?.();
     disposeTaskProgressPanel(body);
     disposeConversationTurnNavigator(body);
     disposeChatRendering(body);
@@ -8241,18 +8312,20 @@ export function setupHandlers(
     activeContextPanelStateSync.delete(body);
     // Rebuilding the root of a still-mounted body must retain its raw paper
     // identity. A detached body, however, owns no surviving UI registration.
-    if (!body.isConnected) unregisterContextPanel(body);
-    delete (body as any).__llmApplyResolvedClaudeEffort;
-    delete (body as any).__llmRefreshContextSourceForCurrentItem;
+    if (!body.isConnected) {
+      unregisterContextPanel(body);
+      releaseInlineEdit(body);
+    }
+    releaseMenuTargets(body);
+    unpublishPanelHandle(body, panelHandle);
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
-    delete (body as any).__llmScheduleClaudeQueueDrain;
-    delete (body as any).__llmScheduleClaudeThreadQueueDrain;
     delete (body as any).__llmQueueTurnDeletion;
     delete (body as any).__llmSearchPanelHistory;
     panelLifecycle.dispose();
     unregisterContextSurfaceActions();
     disposePendingDeletionSubscriptionForBody(body);
+    disposeConversationCatalogSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);
     if (setupHandlersCleanupByBody.get(body) === cleanupSetupHandlers) {
       setupHandlersCleanupByBody.delete(body);

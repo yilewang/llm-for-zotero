@@ -103,6 +103,13 @@ export default defineConfig({
         if (snapshot) {
           await cp(snapshot, ".scaffold/test/data", { recursive: true });
         }
+        // Test-only: a run can start from a saved profile prefs.js, such as
+        // the one an earlier phase of a DB upgrade test left behind. The
+        // scaffold keeps the prefs it finds in the profile and adds its own.
+        const prefsSnapshot = process.env.LLM_FOR_ZOTERO_PROFILE_PREFS_SNAPSHOT;
+        if (prefsSnapshot) {
+          await cp(prefsSnapshot, ".scaffold/test/profile/prefs.js");
+        }
       },
       "test:bundleTests": () => patchGeneratedWorkflowTestReporter(),
     },

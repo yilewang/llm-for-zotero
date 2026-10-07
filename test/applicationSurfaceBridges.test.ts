@@ -13,7 +13,6 @@ import {
   configureRetrievalCandidateInvalidator,
   invalidateRetrievalCandidates,
 } from "../src/services/retrieval/cacheInvalidation";
-import { warmPdfPageTextCache } from "../src/services/pdf/readerTextBridge";
 import { composeHostSurfaces } from "../src/modules/contextPanel/hostSurfaces";
 
 const UNCOMPOSED = /adapter is not configured for this application surface/;
@@ -141,10 +140,6 @@ describe("host surface composition", function () {
         UNCOMPOSED,
       );
       assert.notMatch(
-        await captureAsyncFailure(() => warmPdfPageTextCache(null)),
-        UNCOMPOSED,
-      );
-      assert.notMatch(
         await captureAsyncFailure(() =>
           writeAssistantItemNote({
             item: {} as Zotero.Item,
@@ -180,10 +175,6 @@ describe("host surface composition", function () {
     );
     assert.match(
       captureFailure(() => invalidateRetrievalCandidates(4)),
-      UNCOMPOSED,
-    );
-    assert.match(
-      await captureAsyncFailure(() => warmPdfPageTextCache(null)),
       UNCOMPOSED,
     );
     assert.match(

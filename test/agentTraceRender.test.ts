@@ -11409,11 +11409,11 @@ describe("agent trace action summary card", function () {
     const word = effect.findByClass("llm-agent-action-verb-word")!;
     assert.equal(
       word.textContent,
-      "Moved to collection",
+      "Added to collection",
       "a glyph with nothing after it says nothing; the word is shown instead",
     );
     assert.include(word.className, "llm-agent-action-verb-word-inline");
-    assert.include(collectFakeText(effect), "Moved to collection");
+    assert.include(collectFakeText(effect), "Added to collection");
   });
 
   /** A stand-in library window, recording where the card sent the reader. */

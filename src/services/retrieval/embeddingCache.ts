@@ -2,7 +2,7 @@
  * Persistent disk cache for paper chunk embeddings.
  *
  * Stores one JSON file per paper in `{dataDir}/llm-for-zotero-embeddings/`.
- * Uses the same Gecko I/O pattern as mineruCache.ts (IOUtils → OS.File fallback).
+ * Uses the shared Gecko I/O helpers in utils/geckoFs.ts (IOUtils → OS.File fallback).
  *
  * Cache invalidation:
  *  - chunk content changes (chunkHash mismatch)
@@ -11,52 +11,16 @@
  */
 
 import { appLogger } from "../../core/logging";
+import {
+  ensureDir,
+  readFileBytes,
+  removePathQuietly,
+  writeFileBytes,
+} from "../../utils/geckoFs";
 import { joinLocalPath } from "../../utils/localPath";
 
 const EMBEDDING_CACHE_DIR = "llm-for-zotero-embeddings";
 const CACHE_VERSION = 2; // v2: added provider field for cross-provider cache isolation
-
-// ── Gecko I/O helpers (mirrors mineruCache.ts) ──────────────────────────────
-
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
 
 function getBaseDir(): string {
   const zotero = Zotero as unknown as {
@@ -77,88 +41,6 @@ function getCacheDir(): string {
 
 function getCachePath(itemId: number): string {
   return joinLocalPath(getCacheDir(), `${itemId}.json`);
-}
-
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, { ignoreExisting: true });
-  }
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = getIOUtils();
-  if (io?.read) {
-    try {
-      const data = await io.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.read) {
-    try {
-      const data = await osFile.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, bytes);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, bytes);
-  }
-}
-
-async function removePath(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.remove) {
-    try {
-      await io.remove(path, { recursive: true, ignoreAbsent: true });
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.removeDir) {
-    try {
-      await osFile.removeDir(path, {
-        ignoreAbsent: true,
-        ignorePermissions: false,
-      });
-    } catch {
-      /* ignore */
-    }
-  } else if (osFile?.remove) {
-    try {
-      await osFile.remove(path, { ignoreAbsent: true });
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 // ── Chunk hashing ───────────────────────────────────────────────────────────
@@ -268,8 +150,8 @@ export async function saveCachedEmbeddings(
  */
 export async function clearEmbeddingCache(itemId?: number): Promise<void> {
   if (itemId != null) {
-    await removePath(getCachePath(itemId));
+    await removePathQuietly(getCachePath(itemId));
   } else {
-    await removePath(getCacheDir());
+    await removePathQuietly(getCacheDir());
   }
 }

@@ -12,6 +12,11 @@ import {
   markConversationSchemaMigrationApplied,
 } from "./conversationSchemaMigrations";
 import type { ConversationSystem } from "./types";
+import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
+
+/** Only upstream paper conversations live in a catalog of their own. */
+const UPSTREAM_PAPER_CATALOG_TABLE =
+  CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream.catalogTables.paper;
 
 export type PaperRestoreScope = {
   system: ConversationSystem;
@@ -249,7 +254,7 @@ function mergeLegacyCandidates(
 function eligibleRegistryScanSql(system: ConversationSystem): string {
   const upstreamJoin =
     system === "upstream"
-      ? `JOIN llm_for_zotero_paper_conversations pc
+      ? `JOIN ${UPSTREAM_PAPER_CATALOG_TABLE} pc
            ON pc.conversation_key = r.legacy_conversation_key
           AND pc.library_id = r.library_id
           AND pc.paper_item_id = r.paper_item_id
@@ -281,7 +286,7 @@ function staleMarkerClearSql(system: ConversationSystem): string {
     system === "upstream"
       ? `OR NOT EXISTS (
            SELECT 1
-           FROM llm_for_zotero_paper_conversations pc
+           FROM ${UPSTREAM_PAPER_CATALOG_TABLE} pc
            WHERE pc.conversation_key = ${REGISTRY_TABLE}.legacy_conversation_key
              AND pc.library_id = ${REGISTRY_TABLE}.library_id
              AND pc.paper_item_id = ${REGISTRY_TABLE}.paper_item_id
@@ -645,7 +650,7 @@ async function persistScopeSelection(
     if (conversationKey) {
       const upstreamJoin =
         scope.system === "upstream"
-          ? `JOIN llm_for_zotero_paper_conversations pc
+          ? `JOIN ${UPSTREAM_PAPER_CATALOG_TABLE} pc
                ON pc.conversation_key = r.legacy_conversation_key
               AND pc.library_id = r.library_id
               AND pc.paper_item_id = r.paper_item_id

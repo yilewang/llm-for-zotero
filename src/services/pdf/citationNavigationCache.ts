@@ -1,10 +1,13 @@
+import { quoteKeyHash } from "../quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export type CitationPageCacheEntry = {
   contextItemId: number;
   quoteHash: string;
+  /** The page a jump verified; the fact the entry records. */
   pageIndex: number;
-  pageLabel: string;
+  /** The printed label the reader reported for it, when it reported one. */
+  pageLabel?: string;
   createdAt: number;
   lastAccessedAt: number;
 };
@@ -19,22 +22,8 @@ function now(): number {
   return nowForTests ? nowForTests() : Date.now();
 }
 
-function normalizeQuoteTextForHash(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
 export function buildCitationQuoteHash(quoteText: string): string {
-  const normalized = normalizeQuoteTextForHash(quoteText);
-  if (!normalized) return "";
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return quoteKeyHash(quoteText);
 }
 
 function buildCitationPageCacheKey(
@@ -79,10 +68,22 @@ function enforceEntryLimit(): void {
   }
 }
 
+/**
+ * How a cached page is shown: its printed label, else its page number.
+ * Only for display; navigation uses the entry's page index.
+ */
+export function citationPageDisplayLabel(
+  entry: Pick<CitationPageCacheEntry, "pageIndex" | "pageLabel">,
+): string {
+  return entry.pageLabel || `${entry.pageIndex + 1}`;
+}
+
+/** Record a verified page; returns how it is shown, or null if not stored. */
 export function rememberCitationPage(input: {
   contextItemId: number;
   quoteText: string;
   pageIndex: number;
+  /** The reader's printed label; never one guessed from the page index. */
   pageLabel?: string;
 }): string | null {
   const contextItemId = normalizeContextItemId(input.contextItemId);
@@ -90,23 +91,23 @@ export function rememberCitationPage(input: {
   const pageIndex = normalizePageIndex(input.pageIndex);
   if (pageIndex === null) return null;
   const pageLabel = sanitizeText(input.pageLabel || "").trim();
-  if (!pageLabel) return null;
   const quoteHash = buildCitationQuoteHash(input.quoteText);
   if (!quoteHash) return null;
 
   const currentTime = now();
   evictExpiredEntries(currentTime);
   const key = buildCitationPageCacheKey(contextItemId, quoteHash);
-  citationPageCache.set(key, {
+  const entry: CitationPageCacheEntry = {
     contextItemId,
     quoteHash,
     pageIndex,
-    pageLabel,
+    ...(pageLabel ? { pageLabel } : {}),
     createdAt: currentTime,
     lastAccessedAt: currentTime,
-  });
+  };
+  citationPageCache.set(key, entry);
   enforceEntryLimit();
-  return pageLabel;
+  return citationPageDisplayLabel(entry);
 }
 
 export function lookupCitationPage(input: {

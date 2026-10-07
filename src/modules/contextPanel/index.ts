@@ -48,6 +48,7 @@ import {
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
+import { mountPanelShell } from "./panelMount";
 import { ensureConversationLoaded, getConversationKey } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
@@ -55,7 +56,6 @@ import {
   beginChatRenderCycle,
   claimAsyncChatRender,
   claimDeferredChatRender,
-  currentChatRenderCycle,
   setPanelRenderClaim,
   takePanelRenderClaim,
 } from "./chatRenderCycle";
@@ -85,11 +85,11 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
 } from "../../services/paperContent/pdfContext";
-import { getPageLabelForIndex } from "./livePdfSelectionLocator";
+import { getPageLabelForIndex } from "../../services/pdf/livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
-} from "./readerSelection";
+} from "../../services/pdf/readerSelection";
 import {
   createReaderSelectionTrackingLifecycle,
   unregisterReaderSelectionTrackingListener,
@@ -97,10 +97,7 @@ import {
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
-import {
-  resolveReaderPopupPanelTarget,
-  resolveStandalonePopupPanelTarget,
-} from "./readerPopupPanelRouting";
+import { resolveReaderPopupPanelTarget } from "./readerPopupPanelRouting";
 import {
   includeReaderSelectedText,
   type IncludeReaderSelectedTextResult,
@@ -124,10 +121,7 @@ import {
   hasPanelContextOwnerChanged,
   shouldRefreshContextSourceWithoutPanelRebuild,
 } from "./panelContextLifecycle";
-import {
-  retainClaudeRuntimeForBody,
-  releaseClaudeRuntimeForBody,
-} from "../../claudeCode/runtimeRetention";
+import { retainClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import {
   bindEmbeddedPanelHost,
   canLifecycleCommitPanelConversation,
@@ -136,12 +130,12 @@ import {
   isPanelOperationLeaseCurrent,
   renderPanelOwnershipBlocked,
 } from "./panelHostOwnership";
+import { getPanelHandle } from "./panelHandle";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
   isStandaloneWindowActive,
   notifyStandaloneItemChanged,
-  renderStandalonePlaceholder,
 } from "./standaloneWindow";
 
 // =============================================================================
@@ -288,13 +282,16 @@ export function registerReaderContextPanel() {
     }
     clearCompletedPanelLifecycleSignature(body);
     persistPendingChatScrollRestoreFromBody(body);
-    buildUI(body, resolvedState.item);
-    const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
-    writePanelContextDataset(panelRoot, rawItem || resolvedState.item);
-    activeContextPanels.set(body, () => resolvedState.item);
-    activeContextPanelRawItems.set(body, rawItem || null);
-    void retainClaudeRuntimeForBody(body, resolvedState.item);
-    setupEmbeddedPanelHandlers(body, rawItem);
+    mountPanelShell({
+      body,
+      renderItem: resolvedState.item,
+      beforeRegister: (panelRoot) =>
+        writePanelContextDataset(panelRoot, rawItem || resolvedState.item),
+      getMountedItem: () => resolvedState.item,
+      rawItem: rawItem || null,
+      retainFor: resolvedState.item,
+      setupItem: rawItem,
+    });
     const chatRenderCycle = beginChatRenderCycle(body);
     setPanelRenderClaim(body, {
       kind: "sync-rendered",
@@ -304,8 +301,7 @@ export function registerReaderContextPanel() {
     void (async () => {
       try {
         if (resolvedState.item)
-          await ensureConversationLoaded(resolvedState.item);
-        if (isStandaloneWindowActive()) return;
+          await ensureConversationLoaded(resolvedState.item, { body });
         if (!isPanelOperationLeaseCurrent(hostLease)) return;
         if (!claimDeferredChatRender(body, chatRenderCycle)) return;
         refreshChat(body, resolvedState.item);
@@ -354,9 +350,7 @@ export function registerReaderContextPanel() {
         (mountedVerdict === "unresolved" && isPanelBodyInitialized(body))
       ) {
         renderPanelOwnershipBlocked(body, "onItemChange", mountedVerdict);
-        if (!isStandaloneWindowActive()) {
-          rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
-        }
+        rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
       }
       const selectedTabId = refreshLastKnownSelectedTabId();
       const itemChangeSignature = [
@@ -376,30 +370,6 @@ export function registerReaderContextPanel() {
     onRender: ({ body, item, tabType }) => {
       bindEmbeddedPanelHost(body, item || null, tabType);
       const lifecycleLease = capturePanelOperationLease(body);
-      // When standalone window is open, show placeholder instead of full UI
-      if (isStandaloneWindowActive()) {
-        clearCompletedPanelLifecycleSignature(body);
-        void releaseClaudeRuntimeForBody(body);
-        renderStandalonePlaceholder(body);
-        const resolvedState = resolveInitialPanelItemState(item);
-        if (
-          canLifecycleCommitPanelConversation(
-            body,
-            resolvedState.item,
-            "standalone-placeholder-commit",
-            lifecycleLease,
-          )
-        ) {
-          activeContextPanels.set(body, () => resolvedState.item);
-          activeContextPanelRawItems.set(body, item || null);
-        }
-        setPanelRenderClaim(body, {
-          kind: "sync-rendered",
-          itemKey: getPanelItemIdKey(item || null),
-          cycle: currentChatRenderCycle(body),
-        });
-        return;
-      }
       try {
         const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
         // Treat missing panel root as needing a full render — the body may
@@ -522,10 +492,9 @@ export function registerReaderContextPanel() {
               kind: "context-refresh",
               itemKey: getPanelItemIdKey(item || null),
             });
-            const refreshContextSource = (body as any)
-              .__llmRefreshContextSourceForCurrentItem;
-            if (typeof refreshContextSource === "function") {
-              refreshContextSource();
+            const panelHandle = getPanelHandle(body);
+            if (panelHandle) {
+              panelHandle.refreshContextSourceForCurrentItem();
             } else {
               activeContextPanelStateSync.get(body)?.();
             }
@@ -537,8 +506,6 @@ export function registerReaderContextPanel() {
     },
     onAsyncRender: async ({ body, item, setEnabled }) => {
       setEnabled(true);
-      // Skip full render when standalone window is active
-      if (isStandaloneWindowActive()) return;
 
       const resolvedInitialState = resolveInitialPanelItemState(item);
       const resolvedItem = resolvedInitialState.item;
@@ -612,12 +579,10 @@ export function registerReaderContextPanel() {
       }
 
       if (resolvedItem) {
-        await ensureConversationLoaded(resolvedItem);
+        await ensureConversationLoaded(resolvedItem, { body });
       }
-      // Bail if a newer render has started while we were awaiting,
-      // or if the standalone window was opened during the await.
+      // Bail if a newer render has started while we were awaiting.
       if (renderGeneration !== thisGeneration) return;
-      if (isStandaloneWindowActive()) return;
       if (!isPanelOperationLeaseCurrent(hostLease)) return;
       await renderShortcuts(
         body,
@@ -627,16 +592,14 @@ export function registerReaderContextPanel() {
           : resolveShortcutMode(resolvedItem),
       );
       if (renderGeneration !== thisGeneration) return;
-      if (isStandaloneWindowActive()) return;
       if (!isPanelOperationLeaseCurrent(hostLease)) return;
       if (!syncAlreadyRendered && !contextRefreshOnly) {
         setupEmbeddedPanelHandlers(body, item);
       }
       if (contextRefreshOnly) {
-        const refreshContextSource = (body as any)
-          .__llmRefreshContextSourceForCurrentItem;
-        if (typeof refreshContextSource === "function") {
-          refreshContextSource();
+        const panelHandle = getPanelHandle(body);
+        if (panelHandle) {
+          panelHandle.refreshContextSourceForCurrentItem();
         } else {
           activeContextPanelStateSync.get(body)?.();
         }
@@ -767,13 +730,13 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               _tabID?: string | number | null;
             };
             const popupTopDoc = event.doc.defaultView?.top?.document || null;
-            const target = isStandaloneWindowActive()
-              ? resolveStandalonePopupPanelTarget(activeContextPanels.keys())
-              : resolveReaderPopupPanelTarget({
-                  preferredDocument: popupTopDoc,
-                  documents: docs,
-                  tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
-                });
+            // Always the reader tab's own panel, also while the standalone
+            // window is open; without one the text is not added anywhere.
+            const target = resolveReaderPopupPanelTarget({
+              preferredDocument: popupTopDoc,
+              documents: docs,
+              tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
+            });
             if (!target) {
               appLogger.warn(
                 "LLM: Add Text popup action skipped (reader panel unavailable)",

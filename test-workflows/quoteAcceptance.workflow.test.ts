@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
-import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
+import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 import {
   SUMMERFIELD_QUOTE,
   SUMMERFIELD_SOURCE_PREFIX,

@@ -165,19 +165,24 @@ describe("WebChat teardown", function () {
     );
   });
 
-  it("deletes the eight panel body properties it published", function () {
+  it("unpublishes its panel handle and deletes the four body properties it published", function () {
     const body = cleanupBody();
     for (const property of [
-      "delete (body as any).__llmApplyResolvedClaudeEffort;",
-      "delete (body as any).__llmRefreshContextSourceForCurrentItem;",
+      "unpublishPanelHandle(body, panelHandle);",
       "delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];",
       "delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];",
-      "delete (body as any).__llmScheduleClaudeQueueDrain;",
-      "delete (body as any).__llmScheduleClaudeThreadQueueDrain;",
       "delete (body as any).__llmQueueTurnDeletion;",
       "delete (body as any).__llmSearchPanelHistory;",
     ]) {
       assert.include(body, property);
+    }
+    for (const retired of [
+      "__llmApplyResolvedClaudeEffort",
+      "__llmRefreshContextSourceForCurrentItem",
+      "__llmScheduleClaudeQueueDrain",
+      "__llmScheduleClaudeThreadQueueDrain",
+    ]) {
+      assert.notInclude(body, retired);
     }
   });
 });

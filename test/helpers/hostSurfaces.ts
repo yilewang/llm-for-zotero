@@ -1,11 +1,5 @@
 import { clearRetrievalCandidateCache } from "../../src/modules/contextPanel/multiContextPlanner";
-import {
-  verifyCompleteQuoteInLivePdfJs,
-  warmPageTextCache,
-  warmPageTextCacheForAttachment,
-} from "../../src/modules/contextPanel/livePdfSelectionLocator";
 import { configureRetrievalCandidateInvalidator } from "../../src/services/retrieval/cacheInvalidation";
-import { configurePdfReaderTextBridge } from "../../src/services/pdf/readerTextBridge";
 
 /**
  * Panel-owned capabilities that services reach through `src/services/**`
@@ -18,12 +12,4 @@ import { configurePdfReaderTextBridge } from "../../src/services/pdf/readerTextB
  */
 export function composeRetrievalCandidateInvalidation(): () => void {
   return configureRetrievalCandidateInvalidator(clearRetrievalCandidateCache);
-}
-
-export function composePdfReaderText(): () => void {
-  return configurePdfReaderTextBridge({
-    warmPageTextCache,
-    warmPageTextCacheForAttachment,
-    verifyCompleteQuote: verifyCompleteQuoteInLivePdfJs,
-  });
 }

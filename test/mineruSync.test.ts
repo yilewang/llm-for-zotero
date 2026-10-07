@@ -15,7 +15,11 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
 } from "../src/services/mineru/mineruCache";
-import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import {
+  pdfTextCache,
+  pdfTextLoadingTasks,
+} from "../src/services/paperContent/contextCache";
+import { configureRetrievalCandidateInvalidator } from "../src/services/retrieval/cacheInvalidation";
 import {
   buildMineruSyncPackageBytes,
   cleanSyncedMineruPackages,
@@ -660,6 +664,57 @@ describe("mineruSync", function () {
     assert.equal(result.failed, 0);
     assert.isFalse(await hasCachedMineruMd(509));
     assert.isFalse(packageItem.deleted === true);
+  });
+
+  it("MinerU runtime clean-up drops cached text, the in-progress load, retrieval candidates, and embeddings, without queuing a re-index", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    items.set(parent.id, parent);
+    setupZotero(items, io);
+    await writeSampleCache(510);
+    const embeddingPath = "/tmp/zotero/llm-for-zotero-embeddings/510.json";
+    io.files.set(embeddingPath, bytes("{}"));
+    pdfTextCache.set(510, {
+      title: "stale",
+      chunks: ["stale"],
+      chunkMeta: [],
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 1,
+      fullLength: 5,
+      sourceType: "mineru",
+    });
+    pdfTextLoadingTasks.set(510, Promise.resolve());
+    const invalidated: Array<number | undefined> = [];
+    const restoreInvalidator = configureRetrievalCandidateInvalidator((id) =>
+      invalidated.push(id),
+    );
+    // The lazily imported scheduler instance (a static import differs under the test loader).
+    const scheduler = (
+      await import("../src/services/libraryTextIndex/scheduler")
+    ).libraryTextIndexScheduler as unknown as {
+      enqueue: (...args: unknown[]) => Promise<void>;
+    };
+    const enqueued: unknown[] = [];
+    const originalEnqueue = scheduler.enqueue;
+    scheduler.enqueue = async (...args) => {
+      enqueued.push(args);
+    };
+    try {
+      await cleanupMineruArtifactsForRemovedAttachment(510);
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      assert.isFalse(pdfTextCache.has(510));
+      assert.isFalse(pdfTextLoadingTasks.has(510));
+      assert.deepEqual(invalidated, [510]);
+      assert.isFalse(io.files.has(embeddingPath), "embedding cache removed");
+      assert.deepEqual(enqueued, [], "MinerU clean-up never queues a re-index");
+    } finally {
+      scheduler.enqueue = originalEnqueue;
+      restoreInvalidator();
+    }
   });
 
   it("publishes and restores MinerU packages for parentless raw PDFs", async function () {

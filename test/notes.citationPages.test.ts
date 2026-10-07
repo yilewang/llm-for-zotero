@@ -86,6 +86,69 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
   });
 
+  describe("a cached page's link and label (D5)", function () {
+    const quote =
+      "Printed page labels need not follow the physical order of the pages.";
+    const messages = (): Message[] => {
+      const quoteCitation = buildQuoteCitation({
+        quoteText: quote,
+        citationLabel: "(Whittington et al., 2020)",
+        contextItemId: 23,
+        itemId: 1,
+      });
+      return [
+        {
+          role: "user",
+          text: "Summarize the paper.",
+          timestamp: 1,
+          paperContexts: [
+            {
+              itemId: 1,
+              contextItemId: 23,
+              title: "Whittington 2020",
+              firstCreator: "Whittington et al.",
+              year: "2020",
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          text: `> ${quote}\n\n(Whittington et al., 2020)`,
+          timestamp: 2,
+          modelName: "Claude",
+          quoteCitations: [quoteCitation!],
+        },
+      ];
+    };
+
+    it("links the physical page and shows the printed label", function () {
+      // Page index 3 carries the printed label 431.
+      rememberCachedCitationPage(23, quote, 3, "431");
+
+      const result = buildChatHistoryNotePayload(messages());
+
+      // Was ?page=431, the label read as a page number.
+      assert.include(
+        result.noteHtml,
+        'href="zotero://open-pdf/library/items/ATTACH23?page=4"',
+      );
+      assert.include(result.noteHtml, "(Whittington et al., 2020, page 431)");
+    });
+
+    it("links and numbers a page the reader gave no label", function () {
+      rememberCachedCitationPage(23, quote, 4);
+
+      const result = buildChatHistoryNotePayload(messages());
+
+      // Was: no page at all, because the cache kept only labelled pages.
+      assert.include(
+        result.noteHtml,
+        'href="zotero://open-pdf/library/items/ATTACH23?page=5"',
+      );
+      assert.include(result.noteHtml, "(Whittington et al., 2020, page 5)");
+    });
+  });
+
   it("does not restore a rejected quote label during note export", function () {
     const quote =
       "This interpretation has no searchable wording in the complete paper.";

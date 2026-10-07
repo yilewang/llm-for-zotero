@@ -1,7 +1,5 @@
 import type { ConversationSystem } from "../../shared/types";
 import {
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
   chatHistory,
   getAbortController,
   getPendingRequestId,
@@ -17,15 +15,12 @@ import {
   type ConversationCatalogIdentityWitness,
 } from "../../core/conversations/repository";
 import {
-  buildPaperStateKey,
-  getLastUsedUpstreamGlobalConversationKey,
   getLockedGlobalConversationKey,
-  removeLastUsedUpstreamGlobalConversationKey,
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
+import { forget } from "./conversationSelection";
 import {
   clearOwnerAttachmentRefs,
-  clearOwnerAttachmentRefsInTransaction,
   replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
 import type {
@@ -45,16 +40,6 @@ import {
   invalidateClaudeConversationSession,
   invalidateClaudeConversationSessionWithinWriteLock,
 } from "../../claudeCode/runtime";
-import {
-  activeClaudeGlobalConversationByLibrary,
-  activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
-  buildClaudePaperStateKey,
-} from "../../claudeCode/state";
-import {
-  getLastUsedClaudeGlobalConversationKey,
-  removeLastUsedClaudeGlobalConversationKey,
-} from "../../claudeCode/prefs";
 import { getRegisteredConversationScope } from "../../shared/conversationRegistry";
 import {
   enqueueConversationCleanupJob,
@@ -67,20 +52,10 @@ import {
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import {
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
-import {
-  getLastUsedCodexGlobalConversationKey,
-  removeLastUsedCodexGlobalConversationKey,
-} from "../../codexAppServer/prefs";
-import { invalidatePaperRestoreTargetCache } from "../../shared/paperConversationRestore";
-import {
   clearAgentConversationState,
+  clearAgentTurnState,
   clearDeletedAgentConversationState,
-  clearPersistedAgentConversationRowsInTransaction,
+  withAgentTurnPurge,
 } from "./agentConversationCleanup";
 import { ensureAgentTraceSchema } from "../../agent/store/traceStore";
 import { resolveConversationRefForKey } from "../../shared/conversationRef";
@@ -320,6 +295,8 @@ function buildOperations(
     deleteLocalConversationRows: async (target) => {
       // Ensure the trace-file cleanup table exists before the owning catalog
       // transaction starts; the transaction callback itself is DML-only.
+      // The store's deletion transaction purges the agent rows and the
+      // attachment refs itself.
       await ensureAgentTraceSchema();
       await conversationRepository.deleteLocalConversationRows({
         instanceID: target.instanceID,
@@ -332,15 +309,6 @@ function buildOperations(
         additionalProviderCleanup: target.additionalProviderCleanup,
         libraryID: target.libraryID,
         paperItemID: target.paperItemID,
-        onBeforeCommit: async () => {
-          await clearPersistedAgentConversationRowsInTransaction(
-            target.conversationKey,
-          );
-          await clearOwnerAttachmentRefsInTransaction(
-            "conversation",
-            target.conversationKey,
-          );
-        },
       });
     },
     clearOwnerAttachmentRefs,
@@ -514,62 +482,21 @@ async function clearRememberedSelection(
   }
   const conversationKey = target.conversationKey;
   if (target.kind === "global") {
-    if (target.conversationSystem === "claude_code") {
-      const stateKey = buildClaudeLibraryStateKey(target.libraryID);
-      if (
-        Math.floor(
-          Number(activeClaudeGlobalConversationByLibrary.get(stateKey) || 0),
-        ) === conversationKey
-      ) {
-        activeClaudeGlobalConversationByLibrary.delete(stateKey);
-      }
-      const persistedKey = Number(
-        getLastUsedClaudeGlobalConversationKey(target.libraryID) || 0,
-      );
-      if (
-        Number.isFinite(persistedKey) &&
-        Math.floor(persistedKey) === conversationKey
-      ) {
-        removeLastUsedClaudeGlobalConversationKey(target.libraryID);
-      }
-      return;
-    }
-    if (target.conversationSystem === "codex") {
-      const stateKey = buildCodexLibraryStateKey(target.libraryID);
-      if (
-        Math.floor(
-          Number(activeCodexGlobalConversationByLibrary.get(stateKey) || 0),
-        ) === conversationKey
-      ) {
-        activeCodexGlobalConversationByLibrary.delete(stateKey);
-      }
-      const persistedKey = Number(
-        getLastUsedCodexGlobalConversationKey(target.libraryID) || 0,
-      );
-      if (
-        Number.isFinite(persistedKey) &&
-        Math.floor(persistedKey) === conversationKey
-      ) {
-        removeLastUsedCodexGlobalConversationKey(target.libraryID);
-      }
-      return;
-    }
-    if (
-      Math.floor(
-        Number(activeGlobalConversationByLibrary.get(target.libraryID) || 0),
-      ) === conversationKey
-    ) {
-      activeGlobalConversationByLibrary.delete(target.libraryID);
-    }
-    const persistedKey = Number(
-      getLastUsedUpstreamGlobalConversationKey(target.libraryID) || 0,
+    forget(
+      {
+        system: target.conversationSystem,
+        libraryID: target.libraryID,
+        kind: "global",
+      },
+      { expectedKey: conversationKey },
     );
     if (
-      Number.isFinite(persistedKey) &&
-      Math.floor(persistedKey) === conversationKey
+      target.conversationSystem === "claude_code" ||
+      target.conversationSystem === "codex"
     ) {
-      removeLastUsedUpstreamGlobalConversationKey(target.libraryID);
+      return;
     }
+    // The library lock is an upstream-only pointer.
     const lockedKey = getLockedGlobalConversationKey(target.libraryID);
     if (
       lockedKey !== null &&
@@ -583,61 +510,14 @@ async function clearRememberedSelection(
 
   const paperItemID = normalizePositiveInt(target.paperItemID);
   if (!paperItemID) return;
-  if (target.conversationSystem === "claude_code") {
-    const stateKey = buildClaudePaperStateKey(target.libraryID, paperItemID);
-    if (
-      Math.floor(
-        Number(activeClaudePaperConversationByPaper.get(stateKey) || 0),
-      ) === conversationKey
-    ) {
-      activeClaudePaperConversationByPaper.delete(stateKey);
-    }
-    invalidatePaperRestoreTargetCache(
-      {
-        system: "claude_code",
-        libraryID: target.libraryID,
-        paperItemID,
-      },
-      conversationKey,
-      target.instanceID,
-    );
-    return;
-  }
-  if (target.conversationSystem === "codex") {
-    const stateKey = buildCodexPaperStateKey(target.libraryID, paperItemID);
-    if (
-      Math.floor(
-        Number(activeCodexPaperConversationByPaper.get(stateKey) || 0),
-      ) === conversationKey
-    ) {
-      activeCodexPaperConversationByPaper.delete(stateKey);
-    }
-    invalidatePaperRestoreTargetCache(
-      {
-        system: "codex",
-        libraryID: target.libraryID,
-        paperItemID,
-      },
-      conversationKey,
-      target.instanceID,
-    );
-    return;
-  }
-  const stateKey = buildPaperStateKey(target.libraryID, paperItemID);
-  if (
-    Math.floor(Number(activePaperConversationByPaper.get(stateKey) || 0)) ===
-    conversationKey
-  ) {
-    activePaperConversationByPaper.delete(stateKey);
-  }
-  invalidatePaperRestoreTargetCache(
+  forget(
     {
-      system: "upstream",
+      system: target.conversationSystem,
       libraryID: target.libraryID,
+      kind: "paper",
       paperItemID,
     },
-    conversationKey,
-    target.instanceID,
+    { expectedKey: conversationKey, instanceID: target.instanceID },
   );
 }
 
@@ -1465,31 +1345,33 @@ export async function finalizeQueuedTurnDeletion(
     warn?: (message: string, ...args: unknown[]) => void;
     scheduleAttachmentGc?: () => void;
     detachProviderSession?: (entry: PendingTurnDeletionEntry) => Promise<void>;
-    clearAgentConversationState?: (conversationKey: number) => Promise<void>;
+    clearAgentTurnState?: (conversationKey: number) => Promise<void>;
   } = {},
 ): Promise<boolean | PendingFinalizeOutcome> {
   const warn = deps.warn || deps.log || (() => {});
   return withConversationWriteLock(entry.conversationKey, async () => {
     try {
-      const deleteTarget = {
-        system: entry.system,
-        conversationKey: entry.conversationKey,
-        userTimestamp: entry.userTimestamp,
-        assistantTimestamp: entry.assistantTimestamp,
-        ...(entry.userMessageID ? { userMessageID: entry.userMessageID } : {}),
-        ...(entry.assistantMessageID
-          ? { assistantMessageID: entry.assistantMessageID }
-          : {}),
-        // Agent transcript/memory/evidence/run state is keyed by the immutable
-        // conversation, not by the chat-message row IDs.  Purge it in the same
-        // transaction as the turn rows so a crash cannot leave deleted turn
-        // content available to the next prompt.
-        onBeforeCommit: () =>
-          clearPersistedAgentConversationRowsInTransaction(
-            entry.conversationKey,
-          ),
-      };
-      await conversationRepository.deleteTurnMessages(deleteTarget);
+      // Agent transcript/memory/evidence state is keyed by the immutable
+      // conversation, not by the chat-message row IDs; the trace is purged
+      // only for the runs the deleted rows named, so the other turns keep
+      // theirs.  Purge it in the same transaction as the turn rows so a crash
+      // cannot leave deleted turn content available to the next prompt; a
+      // failed transaction rolls the purge back with it.
+      await withAgentTurnPurge(entry.conversationKey, (onBeforeCommit) =>
+        conversationRepository.deleteTurnMessages({
+          system: entry.system,
+          conversationKey: entry.conversationKey,
+          userTimestamp: entry.userTimestamp,
+          assistantTimestamp: entry.assistantTimestamp,
+          ...(entry.userMessageID
+            ? { userMessageID: entry.userMessageID }
+            : {}),
+          ...(entry.assistantMessageID
+            ? { assistantMessageID: entry.assistantMessageID }
+            : {}),
+          onBeforeCommit,
+        }),
+      );
     } catch (err) {
       warn("LLM: queued turn deletion failed to delete rows", err);
       return false;
@@ -1507,7 +1389,7 @@ export async function finalizeQueuedTurnDeletion(
       });
     }
     try {
-      await (deps.clearAgentConversationState || clearAgentConversationState)(
+      await (deps.clearAgentTurnState || clearAgentTurnState)(
         entry.conversationKey,
       );
     } catch (err) {

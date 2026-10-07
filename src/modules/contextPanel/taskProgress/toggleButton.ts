@@ -1,10 +1,11 @@
 /**
- * The standalone window's Task progress button, left of Export in the chat's
- * title bar. A click shows the row for the conversation on screen, or hides
- * it; `panel.ts` keeps that choice and binds the button to the window's chat
- * panel. The button is pressed while the row shows, whether the user or the
+ * The Task progress button: left of Export in the standalone window's title
+ * bar, and left of Open in Window in the sidebar header. A click shows the
+ * row for the conversation on screen, or hides it; `panel.ts` keeps that
+ * choice and binds the button to its chat panel. The button is pressed while the row shows, whether the user or the
  * automatic rule showed it, and is out of the title bar where the row never
- * shows (WebChat, a note chat, no conversation).
+ * shows (WebChat, a note chat, no conversation). The Stacked sidebar header
+ * also drops it below its compact width (CSS).
  */
 import { HTML_NS } from "../../../utils/domHelpers";
 import { t } from "../../../utils/i18n";
@@ -18,10 +19,10 @@ export type TaskProgressToggleState = {
 
 export function createTaskProgressToggleButton(
   doc: Document,
+  className = "llm-standalone-title-action llm-standalone-icon-task-progress",
 ): HTMLButtonElement {
   const button = doc.createElementNS(HTML_NS, "button") as HTMLButtonElement;
-  button.className =
-    "llm-standalone-title-action llm-standalone-icon-task-progress";
+  button.className = className;
   button.type = "button";
   applyTaskProgressToggleState(button, { applies: false, shown: false });
   return button;

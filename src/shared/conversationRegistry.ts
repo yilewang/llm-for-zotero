@@ -1,7 +1,9 @@
 declare const Zotero: any;
 
+import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
+import { getConversationCatalogTable } from "./conversationStore/storeTables";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -103,18 +105,6 @@ export function registerPaperRestoreTargetInvalidationListener(
   };
 }
 
-const CATALOG_TABLES: Record<
-  `${ConversationSystem}:${RegistryConversationKind}`,
-  string
-> = {
-  "upstream:global": "llm_for_zotero_global_conversations",
-  "upstream:paper": "llm_for_zotero_paper_conversations",
-  "claude_code:global": "llm_for_zotero_claude_conversations",
-  "claude_code:paper": "llm_for_zotero_claude_conversations",
-  "codex:global": "llm_for_zotero_codex_conversations",
-  "codex:paper": "llm_for_zotero_codex_conversations",
-};
-
 function normalizePositiveInt(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -188,12 +178,7 @@ export function generateConversationInstanceID(): string {
 
 export function buildProfileSignature(profileDir: string): string {
   const normalized = profileDir.trim().replace(/\\/g, "/");
-  let hash = 2166136261;
-  for (let i = 0; i < normalized.length; i += 1) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `profile-${(hash >>> 0).toString(16)}`;
+  return `profile-${fnv1a32Raw(normalized).toString(16)}`;
 }
 
 export function getCurrentProfileSignature(): string {
@@ -422,7 +407,7 @@ export async function syncCatalogInstanceID(
   >,
 ): Promise<void> {
   const db = getZoteroDb();
-  const table = CATALOG_TABLES[`${scope.system}:${scope.kind}`];
+  const table = getConversationCatalogTable(scope.system, scope.kind);
   const instanceID = normalizeInstanceID(scope.instanceID);
   const conversationKey = normalizePositiveInt(scope.conversationKey);
   if (!db?.queryAsync || !table || !instanceID || !conversationKey) return;
@@ -444,7 +429,7 @@ async function getCatalogInstanceID(
   scope: Pick<ConversationRegistryScope, "conversationKey" | "system" | "kind">,
 ): Promise<string> {
   const db = getZoteroDb();
-  const table = CATALOG_TABLES[`${scope.system}:${scope.kind}`];
+  const table = getConversationCatalogTable(scope.system, scope.kind);
   const conversationKey = normalizePositiveInt(scope.conversationKey);
   if (!db?.queryAsync || !table || !conversationKey) return "";
   try {

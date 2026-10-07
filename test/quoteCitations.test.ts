@@ -18,6 +18,7 @@ import {
   isSectionOnlyCitationLabel,
   mergeQuoteCitations,
   normalizeQuoteCitationPlaceholdersForDisplay,
+  normalizeQuoteCitations,
   replaceQuoteCitationPlaceholdersForMarkdown,
   sanitizeInvalidStructuredSourceMarkers,
   withReusableQuoteTextIndexes,
@@ -5095,5 +5096,37 @@ describe("withReusableQuoteTextIndexes", function () {
     const out = withReusableQuoteTextIndexes(sourceTexts, prepared);
     assert.isUndefined(out[0].textIndex);
     assert.notStrictEqual(out, sourceTexts, "returns a new array");
+  });
+});
+
+describe("quote ids with '.' or ':'", function () {
+  it("reports a quote token whose id contains '.' or ':' as unresolved when no quote matches", function () {
+    const markdown = "One [[quote:x.y]] and [[quote:p:1]] and [[quote:x.y]].";
+    assert.deepEqual(findUnresolvedQuoteCitationPlaceholderIds(markdown, []), [
+      "x.y",
+      "p:1",
+    ]);
+    assert.notInclude(
+      replaceQuoteCitationPlaceholdersForMarkdown(markdown, [], {
+        unresolved: "omit",
+      }),
+      "[[quote:",
+    );
+  });
+
+  it("keeps '.' and ':' in quote ids and drops only characters outside the rule", function () {
+    const quoteText =
+      "Population codes rotate while the decoder stays aligned with behaviour across weeks.";
+    const make = (id: string) =>
+      buildQuoteCitation({ id, quoteText, citationLabel: "(Kim, 2026)" })!;
+    assert.equal(make("Q1.a").id, "Q1.a");
+    assert.equal(make("p:1").id, "p:1");
+    assert.equal(make(" Q 1/a ").id, "Q1a");
+    assert.deepEqual(
+      normalizeQuoteCitations([make("Q1.a"), make("Q1a"), make("Q1.a")]).map(
+        (citation) => citation.id,
+      ),
+      ["Q1.a", "Q1a"],
+    );
   });
 });

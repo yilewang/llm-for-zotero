@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   navigateSelectedTextContextToPage,
   resolveSelectedTextContextTargetItemId,
@@ -172,6 +172,21 @@ describe("selected text context reader navigation", function () {
       { pageIndex: 1, pageLabel: "431" },
     ]);
     assert.isNotEmpty(dispatchedQueries);
+  });
+
+  it("navigates by page index only when the context has no printed label (D5)", async function () {
+    const reader = createReader(101, []);
+    const context = createContext(101);
+    delete context.pageLabel;
+
+    const navigated = await navigateSelectedTextContextToPage(
+      context,
+      createNavigationDeps({ getActiveReaderForSelectedTab: () => reader }),
+    );
+
+    assert.isTrue(navigated);
+    // Was { pageIndex: 1, pageLabel: "2" }.
+    assert.deepEqual(reader.navigatedLocations, [{ pageIndex: 1 }]);
   });
 
   it("uses the reader returned by opening the target attachment", async function () {

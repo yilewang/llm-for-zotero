@@ -136,8 +136,7 @@ describe("panelRenderClaim", function () {
   });
 
   it("a sync-rendered claim without a cycle still lets its async render own the chat render", function () {
-    // Standalone-placeholder path: onRender marked the body sync-rendered but
-    // began no cycle of its own.
+    // onRender marked the body sync-rendered but began no cycle of its own.
     const body = fakeBody();
     setPanelRenderClaim(body, {
       kind: "sync-rendered",

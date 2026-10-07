@@ -14,6 +14,9 @@ import {
   getCurrentProfileSignature,
 } from "./conversationRegistry";
 import type { ConversationSystem } from "./types";
+import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
+
+const UPSTREAM_TABLES = CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream;
 
 type ZoteroDb = {
   queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -410,11 +413,11 @@ function getCoverageCatalogDescriptors(
   if (system === "upstream") {
     return [
       {
-        tableName: "llm_for_zotero_global_conversations",
+        tableName: UPSTREAM_TABLES.catalogTables.global,
         validitySql: UPSTREAM_GLOBAL_VALIDITY_SQL,
       },
       {
-        tableName: "llm_for_zotero_paper_conversations",
+        tableName: UPSTREAM_TABLES.catalogTables.paper,
         validitySql: UPSTREAM_PAPER_VALIDITY_SQL,
       },
     ];
@@ -422,14 +425,15 @@ function getCoverageCatalogDescriptors(
   if (system === "claude_code") {
     return [
       {
-        tableName: "llm_for_zotero_claude_conversations",
+        tableName:
+          CONVERSATION_STORE_TABLES_BY_SYSTEM.claude_code.catalogTables.global,
         validitySql: CLAUDE_VALIDITY_SQL,
       },
     ];
   }
   return [
     {
-      tableName: "llm_for_zotero_codex_conversations",
+      tableName: CONVERSATION_STORE_TABLES_BY_SYSTEM.codex.catalogTables.global,
       validitySql: CODEX_VALIDITY_SQL,
     },
   ];
@@ -536,8 +540,8 @@ export async function refreshConversationSearchIndexForSystem(
   if (system === "upstream") {
     await refreshCatalogIntoSearchIndex({
       system,
-      catalogTable: "llm_for_zotero_global_conversations",
-      messageTable: "llm_for_zotero_chat_messages",
+      catalogTable: UPSTREAM_TABLES.catalogTables.global,
+      messageTable: UPSTREAM_TABLES.messageTable,
       kindSql: "'global'",
       paperItemIDSql: "NULL",
       activitySql: "COALESCE(MAX(m.timestamp), c.created_at)",
@@ -547,8 +551,8 @@ export async function refreshConversationSearchIndexForSystem(
     });
     await refreshCatalogIntoSearchIndex({
       system,
-      catalogTable: "llm_for_zotero_paper_conversations",
-      messageTable: "llm_for_zotero_chat_messages",
+      catalogTable: UPSTREAM_TABLES.catalogTables.paper,
+      messageTable: UPSTREAM_TABLES.messageTable,
       kindSql: "'paper'",
       paperItemIDSql: "c.paper_item_id",
       activitySql: "COALESCE(MAX(m.timestamp), c.created_at)",
@@ -562,14 +566,12 @@ export async function refreshConversationSearchIndexForSystem(
     });
     return true;
   }
-  const catalogTable =
-    system === "claude_code"
-      ? "llm_for_zotero_claude_conversations"
-      : "llm_for_zotero_codex_conversations";
-  const messageTable =
-    system === "claude_code"
-      ? "llm_for_zotero_claude_messages"
-      : "llm_for_zotero_codex_messages";
+  const runtimeTables =
+    CONVERSATION_STORE_TABLES_BY_SYSTEM[
+      system === "claude_code" ? "claude_code" : "codex"
+    ];
+  const catalogTable = runtimeTables.catalogTables.global;
+  const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
     system,
     catalogTable,
@@ -603,8 +605,8 @@ export async function refreshConversationSearchIndexForConversation(params: {
   if (system === "upstream") {
     await refreshCatalogIntoSearchIndex({
       system,
-      catalogTable: "llm_for_zotero_global_conversations",
-      messageTable: "llm_for_zotero_chat_messages",
+      catalogTable: UPSTREAM_TABLES.catalogTables.global,
+      messageTable: UPSTREAM_TABLES.messageTable,
       kindSql: "'global'",
       paperItemIDSql: "NULL",
       activitySql: "COALESCE(MAX(m.timestamp), c.created_at)",
@@ -615,8 +617,8 @@ export async function refreshConversationSearchIndexForConversation(params: {
     });
     await refreshCatalogIntoSearchIndex({
       system,
-      catalogTable: "llm_for_zotero_paper_conversations",
-      messageTable: "llm_for_zotero_chat_messages",
+      catalogTable: UPSTREAM_TABLES.catalogTables.paper,
+      messageTable: UPSTREAM_TABLES.messageTable,
       kindSql: "'paper'",
       paperItemIDSql: "c.paper_item_id",
       activitySql: "COALESCE(MAX(m.timestamp), c.created_at)",
@@ -627,14 +629,12 @@ export async function refreshConversationSearchIndexForConversation(params: {
     });
     return true;
   }
-  const catalogTable =
-    system === "claude_code"
-      ? "llm_for_zotero_claude_conversations"
-      : "llm_for_zotero_codex_conversations";
-  const messageTable =
-    system === "claude_code"
-      ? "llm_for_zotero_claude_messages"
-      : "llm_for_zotero_codex_messages";
+  const runtimeTables =
+    CONVERSATION_STORE_TABLES_BY_SYSTEM[
+      system === "claude_code" ? "claude_code" : "codex"
+    ];
+  const catalogTable = runtimeTables.catalogTables.global;
+  const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
     system,
     catalogTable,

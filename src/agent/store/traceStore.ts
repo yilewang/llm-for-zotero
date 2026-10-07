@@ -1,6 +1,16 @@
 import { appLogger } from "../../core/logging";
+import {
+  deleteIfPresent,
+  isMissingTableError,
+  type AgentPurgeDb,
+} from "./inTransactionDelete";
 import { config } from "../../../package.json";
 import { getClaudeRuntimeRootDir } from "../../claudeCode/projectSkills";
+import {
+  ensureDirFromParent,
+  getIOUtils,
+  getOSFile,
+} from "../../utils/geckoFs";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
   getConversationKeyLedgerEntry,
@@ -66,32 +76,6 @@ const deletedRunIDsByConversation = new Map<
   { runIDs: string[]; generation: number }
 >();
 
-type IOUtilsLike = {
-  write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  remove?: (path: string) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-};
-
-type OSFileLike = {
-  writeAtomic?: (
-    path: string,
-    data: Uint8Array<ArrayBufferLike>,
-  ) => Promise<void>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  remove?: (path: string) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
 function isAgentTraceExportEnabled(): boolean {
   try {
     const raw = Zotero.Prefs.get(AGENT_TRACE_EXPORT_PREF_KEY, true);
@@ -101,28 +85,10 @@ function isAgentTraceExportEnabled(): boolean {
   }
 }
 
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
 async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
+  if (!(await ensureDirFromParent(path))) {
+    throw new Error("No directory API available for trace export");
   }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory API available for trace export");
 }
 
 async function writeUtf8File(path: string, content: string): Promise<void> {
@@ -377,13 +343,18 @@ export function sweepOrphanedAgentTraceExports(): Promise<void> {
   return task;
 }
 
-/** Remember run IDs before the deletion transaction removes their rows. */
+/**
+ * Remember run IDs before the deletion transaction removes their rows.
+ * Returns an undo for the owning transaction to call if it rolls back: it
+ * puts back the conversation's marker as it was before this call, so it also
+ * undoes any marker a later purge in the same transaction added.
+ */
 export function rememberAgentTraceRunIDsForDeletedConversation(
   conversationKey: number,
   runIDs: readonly string[],
-): void {
+): () => void {
   const key = Math.floor(Number(conversationKey));
-  if (!Number.isFinite(key) || key <= 0) return;
+  if (!Number.isFinite(key) || key <= 0) return () => {};
   const normalized = Array.from(
     new Set(
       runIDs
@@ -391,13 +362,16 @@ export function rememberAgentTraceRunIDsForDeletedConversation(
         .filter(Boolean),
     ),
   );
-  if (normalized.length) {
-    const previous = deletedRunIDsByConversation.get(key);
-    deletedRunIDsByConversation.set(key, {
-      runIDs: Array.from(new Set([...(previous?.runIDs || []), ...normalized])),
-      generation: getConversationWriteGeneration(key),
-    });
-  }
+  if (!normalized.length) return () => {};
+  const previous = deletedRunIDsByConversation.get(key);
+  deletedRunIDsByConversation.set(key, {
+    runIDs: Array.from(new Set([...(previous?.runIDs || []), ...normalized])),
+    generation: getConversationWriteGeneration(key),
+  });
+  return () => {
+    if (previous) deletedRunIDsByConversation.set(key, previous);
+    else forgetAgentTraceRunIDsForDeletedConversation(key);
+  };
 }
 
 /**
@@ -946,6 +920,53 @@ export async function clearAgentTraceState(
   const cleanupRunIDs = Array.from(
     new Set([...runIds, ...exportRunIDs, ...rememberedRunIDs, ...queuedRunIDs]),
   );
+  return removeAgentTraceRuns(runIds, cleanupRunIDs);
+}
+
+/**
+ * Finish deleting the runs a committed turn deletion queued, and only those:
+ * the runs its transaction remembered and queued for file cleanup (see
+ * `purgeAgentConversationTurn`). The conversation's other runs belong to the
+ * turns that remain and are left alone. The durable cleanup rows are the work
+ * list, so a retry after a failed file removal still finds every run.
+ */
+export async function clearQueuedAgentTraceRuns(
+  conversationKey: number,
+): Promise<string[]> {
+  const normalizedKey = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(normalizedKey) || normalizedKey <= 0) return [];
+  if (typeof Zotero?.DB?.executeTransaction !== "function") return [];
+  const cleanupRows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId
+     FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  ).catch((error: unknown) => {
+    if (/no such table|no table/i.test(String(error))) return [];
+    throw error;
+  })) as Array<{ runId?: unknown }> | undefined;
+  const queuedRunIDs = (cleanupRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const rememberedRunIDs =
+    deletedRunIDsByConversation.get(normalizedKey)?.runIDs || [];
+  deletedRunIDsByConversation.delete(normalizedKey);
+  const cleanupRunIDs = Array.from(
+    new Set([...rememberedRunIDs, ...queuedRunIDs]),
+  );
+  return removeAgentTraceRuns(cleanupRunIDs, cleanupRunIDs);
+}
+
+/**
+ * Deletes the run and event rows of `runIds`, then each of `cleanupRunIDs`'
+ * runtime state, trace file, export row and cleanup row. A trace file that
+ * cannot be removed keeps its cleanup row, and the first such failure is
+ * thrown once the rest are done.
+ */
+async function removeAgentTraceRuns(
+  runIds: readonly string[],
+  cleanupRunIDs: readonly string[],
+): Promise<string[]> {
   await Zotero.DB.executeTransaction(async () => {
     if (runIds.length) {
       const placeholders = runIds.map(() => "?").join(", ");
@@ -995,7 +1016,7 @@ export async function clearAgentTraceState(
     }
   }
   if (firstFileError) throw firstFileError;
-  return cleanupRunIDs;
+  return [...cleanupRunIDs];
 }
 
 /** Durable host events for provider-owned turns, using the existing run store. */
@@ -1068,4 +1089,99 @@ export function createAgentRunEventJournal(params: {
       });
     },
   };
+}
+
+/**
+ * The run IDs a conversation's trace rows name, read inside its deletion
+ * transaction before the rows go: the runs, then the trace exports.  An
+ * absent table names none.
+ */
+export async function listAgentTraceRunIDsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<{ runIds: string[]; exportRunIds: string[] }> {
+  const runRows = (await db
+    .queryAsync(
+      `SELECT run_id AS runId FROM ${AGENT_RUNS_TABLE} WHERE conversation_key = ?`,
+      [conversationKey],
+    )
+    .catch((error) => {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    })) as Array<{ runId?: unknown }>;
+  const runIds = (runRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const exportRows = (await db
+    .queryAsync(
+      `SELECT run_id AS runId FROM ${AGENT_TRACE_EXPORTS_TABLE} WHERE conversation_key = ?`,
+      [conversationKey],
+    )
+    .catch((error) => {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    })) as Array<{ runId?: unknown }>;
+  const exportRunIds = (exportRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  return { runIds, exportRunIds };
+}
+
+/**
+ * Delete some of a conversation's runs inside a turn deletion transaction:
+ * their events, the runs, then their trace exports. Runs of the conversation
+ * not named are left alone. Each statement treats an absent table as no rows.
+ */
+export async function deleteAgentTraceRowsForRunsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+  runIds: readonly string[],
+): Promise<void> {
+  if (!runIds.length) return;
+  const placeholders = runIds.map(() => "?").join(", ");
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id IN (${placeholders})`,
+    [...runIds],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_RUNS_TABLE} WHERE conversation_key = ? AND run_id IN (${placeholders})`,
+    [conversationKey, ...runIds],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_TRACE_EXPORTS_TABLE} WHERE conversation_key = ? AND run_id IN (${placeholders})`,
+    [conversationKey, ...runIds],
+  );
+}
+
+/**
+ * Delete a conversation's trace rows inside its deletion transaction: the
+ * events of its runs, the runs, then the trace exports.  Each statement
+ * treats an absent table as no rows.
+ */
+export async function deleteAgentTraceRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+  runIds: readonly string[],
+): Promise<void> {
+  if (runIds.length) {
+    const placeholders = runIds.map(() => "?").join(", ");
+    await deleteIfPresent(
+      db,
+      `DELETE FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id IN (${placeholders})`,
+      [...runIds],
+    );
+  }
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_RUNS_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_TRACE_EXPORTS_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

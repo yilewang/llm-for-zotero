@@ -1,9 +1,10 @@
 /**
- * The standalone window's Task progress button: left of Export in the chat's
- * title bar, it shows or hides the row for the conversation on screen. The
- * choice holds for that conversation in that window (a new run does not undo
- * it) and goes when the window shows another conversation. The sidebar panel
- * has no button and keeps the automatic rule.
+ * The Task progress button: left of Export in the standalone window's title
+ * bar and left of Open in Window in the sidebar header, it shows or hides the
+ * row for the conversation on screen. The choice holds for that conversation
+ * in that panel (a new run does not undo it) and goes when the panel shows
+ * another conversation. The Stacked sidebar header drops the button below
+ * its compact width.
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -485,13 +486,44 @@ describe("task progress button", function () {
       );
     });
 
-    it("is not in the chat panel's own header, so the sidebar never has it", function () {
-      assert.notInclude(buildUiSource, "llm-standalone-icon-task-progress");
-      assert.notInclude(buildUiSource, "createTaskProgressToggleButton");
-      assert.include(
-        buildUiSource,
-        "headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);",
+    it("leaves the chat panel's own header button unbound, so the title bar's keeps the panel", function () {
+      const setupSource = read("src/modules/contextPanel/setupHandlers.ts");
+      assert.match(
+        setupSource,
+        /taskProgressToggleBtn && !isStandalonePanel\s*\?\s*bindTaskProgressToggle\(body, taskProgressToggleBtn\)/,
       );
+    });
+  });
+
+  describe("in the sidebar header", function () {
+    const buildUiSource = read("src/modules/contextPanel/buildUI.ts");
+    const setupSource = read("src/modules/contextPanel/setupHandlers.ts");
+
+    it("sits immediately left of Open in Window, with the header's icon-button look", function () {
+      assert.match(
+        buildUiSource,
+        /headerActions\.append\(\s*taskProgressBtn,\s*popoutBtn,\s*settingsBtn,\s*exportBtn,\s*clearBtn,?\s*\)/,
+      );
+      assert.match(
+        buildUiSource,
+        /createTaskProgressToggleButton\(\s*doc,\s*"llm-btn-icon llm-task-progress-btn",?\s*\)/,
+      );
+      const button = createTaskProgressToggleButton(
+        fakeDocument,
+        "llm-btn-icon llm-task-progress-btn",
+      ) as unknown as FakeElement;
+      assert.isTrue(button.classList.contains("llm-btn-icon"));
+      assert.isFalse(button.classList.contains("llm-standalone-title-action"));
+      assert.equal(button.style.display, "none");
+    });
+
+    it("lets go of the panel before the panel's teardown", function () {
+      const cleanup = setupSource.slice(
+        setupSource.indexOf("const cleanupSetupHandlers = () => {"),
+      );
+      const unbind = cleanup.indexOf("unbindTaskProgressToggle?.()");
+      assert.isAtLeast(unbind, 0, "the cleanup unbinds it");
+      assert.isBelow(unbind, cleanup.indexOf("disposeTaskProgressPanel(body)"));
     });
   });
 
@@ -533,6 +565,36 @@ describe("task progress button", function () {
       assert.include(
         rule,
         ".llm-standalone-content-title-actions .llm-standalone-icon-task-progress",
+      );
+    });
+
+    it("masks the same icon in the sidebar header, pressed with its hover look", function () {
+      const icon = css.match(/\.llm-task-progress-btn::before\s*\{[^}]*\}/)?.[0];
+      assert.isOk(icon);
+      assert.include(icon, 'mask-image: url("icons/action-task-progress.svg")');
+      const pressedRule = css.match(
+        /\.llm-task-progress-btn\[aria-pressed="true"\]\s*\{[^}]*\}/,
+      )?.[0];
+      assert.isOk(pressedRule);
+      assert.include(pressedRule, "background: var(--fill-quinary)");
+      assert.include(pressedRule, "opacity: 1");
+      assert.match(css, /\.llm-popout-btn,\s*\.llm-task-progress-btn\s*\{/);
+    });
+
+    it("leaves the Stacked header at the width where its actions compact, and only there", function () {
+      const start = css.indexOf("@container (max-width: 380px) {");
+      assert.isAtLeast(start, 0);
+      const block = css.slice(start, css.indexOf("\n}\n", start));
+      assert.include(block, ".llm-header-actions {");
+      assert.match(
+        block,
+        /:root\[data-llm-sidebar-layout="stacked"\] \.llm-task-progress-btn\s*\{\s*display: none;\s*\}/,
+      );
+      const outside = css.slice(0, start) + css.slice(start + block.length);
+      assert.notMatch(
+        outside,
+        /\.llm-task-progress-btn\s*\{\s*display: none/,
+        "no other rule hides it",
       );
     });
 

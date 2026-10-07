@@ -9,7 +9,7 @@
  * so the row never spins after its request is gone. Every request that ends
  * names its question (number and words) for the drawer's history.
  *
- * And the standalone window's button (`toggleButton.ts`): a click shows or
+ * And the Task progress button (`toggleButton.ts`): a click shows or
  * hides the row for the conversation the panel shows. The choice belongs to
  * that panel and that conversation, in memory only: a new run in the
  * conversation leaves it as it is, and the panel showing another
@@ -83,7 +83,7 @@ const userChoices = new WeakMap<
   { conversationKey: number; choice: TaskProgressUserChoice }
 >();
 
-/** The standalone window's button, per panel body it drives. */
+/** The Task progress button, per panel body it drives. */
 const toggleButtons = new WeakMap<Element, HTMLButtonElement>();
 
 /** The choice for the conversation shown; another one drops it. */
@@ -545,9 +545,9 @@ export function toggleTaskProgressPanel(body: Element): void {
 }
 
 /**
- * Let the standalone window's button drive this panel body's row, and keep
- * it pressed while the row shows. Returns the unbinding, for the window's
- * close (before the panel's own teardown).
+ * Let a Task progress button (the standalone title bar's or the sidebar
+ * header's) drive this panel body's row, and keep it pressed while the row
+ * shows. Returns the unbinding, for the panel's close (before its teardown).
  */
 export function bindTaskProgressToggle(
   body: Element,

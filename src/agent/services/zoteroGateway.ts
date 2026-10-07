@@ -43,6 +43,7 @@
  */
 
 import { libraryIndexService } from "../../services/libraryIndexService";
+import { resolvePaperScope } from "../../services/libraryIndex/paperScope";
 import type { NoteImageImportInput } from "../../services/notes/noteImages";
 import {
   getSelectedContextAttachment,
@@ -79,7 +80,6 @@ import {
   resolveBibliographicItem,
 } from "./zotero/internal/itemResolution";
 import {
-  indexItemMatchesAggregateTagScope,
   orderedGatewayPaperIds,
   pageIds,
 } from "./zotero/internal/libraryIndex";
@@ -640,86 +640,7 @@ export class ZoteroGateway {
     summedScopeCount: number;
   }> {
     const snapshot = await libraryIndexService.getSnapshot(params.libraryID);
-    const excluded = new Set(params.excludedItemIds || []);
-    const union = new Set<number>();
-    const tagItemIds = new Set<number>();
-    let summedScopeCount = 0;
-    const add = (ids: Iterable<number>): number => {
-      let count = 0;
-      for (const id of ids) {
-        const item = snapshot.itemById.get(id);
-        // Retrieval is bibliographic: standalone notes/files remain available
-        // to library_search but are not paper resources.
-        if (!item || item.kind !== "regular" || item.deleted) continue;
-        if (excluded.has(id)) continue;
-        union.add(id);
-        count += 1;
-      }
-      return count;
-    };
-    add(params.itemIds || []);
-    const collectionNames: string[] = [];
-    for (const collectionId of params.collectionIds || []) {
-      const collection = snapshot.collectionById.get(collectionId);
-      if (!collection || collection.libraryID !== params.libraryID) continue;
-      collectionNames.push(
-        snapshot.collectionPathById.get(collectionId) || collection.name,
-      );
-      summedScopeCount += add(
-        snapshot.directItemIdsByCollectionId.get(collectionId) || [],
-      );
-    }
-    const tagNames: string[] = [];
-    for (const tagContext of params.tagContexts || []) {
-      let ids: Set<number>;
-      if (tagContext.scope === "allTagged") {
-        ids = new Set(
-          snapshot.topLevelItemOrder.filter((itemId) => {
-            const item = snapshot.itemById.get(itemId);
-            return Boolean(
-              item &&
-              indexItemMatchesAggregateTagScope(
-                item,
-                "allTagged",
-                tagContext.includeAutomatic === true,
-              ),
-            );
-          }),
-        );
-      } else if (tagContext.scope === "untagged") {
-        ids = new Set(
-          snapshot.topLevelItemOrder.filter((itemId) => {
-            const item = snapshot.itemById.get(itemId);
-            return Boolean(
-              item &&
-              indexItemMatchesAggregateTagScope(
-                item,
-                "untagged",
-                tagContext.includeAutomatic === true,
-              ),
-            );
-          }),
-        );
-      } else {
-        ids = libraryIndexService.tagItemIds(
-          snapshot,
-          tagContext.name || tagContext.normalizedName || "",
-          tagContext.includeAutomatic === true,
-        );
-      }
-      tagNames.push(tagContext.name);
-      summedScopeCount += add(ids);
-      for (const id of ids) {
-        if (snapshot.itemById.get(id)?.kind === "regular") tagItemIds.add(id);
-      }
-    }
-    return {
-      itemIds: [...union],
-      tagItemIds: [...tagItemIds].filter((id) => union.has(id)),
-      collectionNames,
-      tagNames,
-      summedScopeCount,
-    };
+    return resolvePaperScope(snapshot, params);
   }
 
   /** See `ItemCapability.searchItemsByConditions`. */
@@ -941,6 +862,7 @@ export class ZoteroGateway {
     collections: CollectionSummary[];
     items: BatchMoveItemResult[];
     priorCollections?: ItemCollectionSet[];
+    note?: string;
   }> {
     return this.collectionCapability.addItemsToCollections(params);
   }

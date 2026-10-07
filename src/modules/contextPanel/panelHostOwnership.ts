@@ -10,6 +10,7 @@ import {
 import { COMPOSER_BOUND_KEYS } from "./composerKeyBindings";
 import { getConversationKey } from "./conversationIdentity";
 import type { ConversationSystem } from "../../shared/types";
+import type { SelectionSurface } from "./conversationSelection";
 
 export type PanelHostSurface = "reader" | "library" | "standalone";
 
@@ -198,6 +199,25 @@ export function getPanelHostBinding(
   body: Element,
 ): PanelHostBinding | undefined {
   return hostBindings.get(body);
+}
+
+/**
+ * The selection surface a panel body reads and writes (see
+ * conversationSelection.ts): the standalone window's panel is "standalone";
+ * every sidebar panel — library item pane or reader tab — is "embedded". The
+ * host binding decides once it exists; before that, the window marks its
+ * content area and panel root with `data-standalone`.
+ */
+export function resolveSelectionSurfaceForBody(
+  body: Element | null | undefined,
+): SelectionSurface {
+  if (!body) return "embedded";
+  const binding = hostBindings.get(body);
+  if (binding)
+    return binding.surface === "standalone" ? "standalone" : "embedded";
+  if ((body as HTMLElement).dataset?.standalone === "true") return "standalone";
+  const root = body.querySelector?.("#llm-main") as HTMLElement | null;
+  return root?.dataset?.standalone === "true" ? "standalone" : "embedded";
 }
 
 function resolveScopeForItem(

@@ -2,6 +2,7 @@ import type { AgentModelContentPart, AgentModelMessage } from "../agent/types";
 import { parseDataUrl } from "../shared/dataUrl";
 import type { ChatMessage, MessageContent } from "../shared/llm";
 import { fileUrlToPath } from "./pathFileUrl";
+import { getIOUtils, getOSFile, pathExists } from "./geckoFs";
 import { joinLocalPath } from "./localPath";
 
 export type CodexAppServerUserInput =
@@ -40,41 +41,6 @@ export type CodexAppServerPreparedTurn = {
 
 const MAX_APP_SERVER_IMAGE_FILES = 128;
 
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  getChildren?: (path: string) => Promise<string[]>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
 function getWritableRoot(): string {
   const zotero = Zotero as unknown as {
     DataDirectory?: { dir?: string };
@@ -97,26 +63,6 @@ function getAppServerImageDir(): string {
     getWritableRoot(),
     "llm-for-zotero-codex-app-server-images",
   );
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 async function ensureDir(path: string): Promise<void> {

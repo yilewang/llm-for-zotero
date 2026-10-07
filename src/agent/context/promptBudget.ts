@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import type {
   AgentModelContentPart,
   AgentModelMessage,
@@ -22,6 +23,7 @@ import {
 } from "../../utils/outputTokenPolicy";
 import { normalizeProviderProtocol } from "../../utils/providerProtocol";
 import { durableTranscriptMessages } from "./transcriptCompactor";
+import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 import { isCatalogToolName, isPaperEvidenceToolName } from "./toolNames";
 
 const HISTORY_CHECKPOINT_MAX_TOKENS = 1_200;
@@ -256,12 +258,7 @@ function isEvidenceTool(toolName: string): boolean {
 
 function simpleDigest(value: unknown): string {
   const text = stableStringify(value);
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
+  return fnv1a32Raw(text).toString(16);
 }
 
 function buildToolCallArgumentDigestById(
@@ -394,7 +391,7 @@ function compactPaperContext(
 
 function normalizeQuoteCitationId(value: unknown): string {
   const id = compactScalar(value, 80);
-  return typeof id === "string" ? id.replace(/[^A-Za-z0-9_-]/g, "") : "";
+  return typeof id === "string" ? normalizeQuoteTokenId(id) : "";
 }
 
 function compactQuoteCitationRecord(

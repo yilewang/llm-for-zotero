@@ -5,6 +5,7 @@ import type {
 } from "../../types";
 import type { WebAccessDepth, WebReadResponse } from "../../../webAccess/types";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
+import { getWebAccessProvider } from "../../../webAccess/prefs";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   applyRunSourceIds,
@@ -20,9 +21,9 @@ import {
 
 export type WebReadInput = {
   urls: string[];
-  query: string;
-  depth: WebAccessDepth;
-  chunksPerSource: number;
+  query?: string;
+  depth?: WebAccessDepth;
+  chunksPerSource?: number;
 };
 
 export type WebReadToolResult = WebReadResponse & {
@@ -49,6 +50,16 @@ export function validateWebReadInput(
     return fail(error instanceof Error ? error.message : String(error));
   }
   const uniqueUrls = Array.from(new Set(urls));
+  if (getWebAccessProvider() === "anysearch") {
+    if (
+      Object.keys(args).some((key) => key !== "urls" && args[key] !== undefined)
+    ) {
+      return fail(
+        "AnySearch extraction accepts only urls; query, depth and chunksPerSource are not supported.",
+      );
+    }
+    return ok({ urls: uniqueUrls });
+  }
   const query = typeof args.query === "string" ? args.query.trim() : "";
   if (!query) return fail("query is required");
   if (query.length > 2_000)
@@ -84,10 +95,9 @@ function buildReadTraceDetails(
       : {};
   const details: AgentTraceDetail[] = [];
   if (input.ok) {
-    details.push({
-      label: "Query",
-      value: input.value.query,
-    });
+    if (input.value.query) {
+      details.push({ label: "Query", value: input.value.query });
+    }
     for (const url of input.value.urls) {
       const source = (result.pages || []).find((page) => page.url === url);
       details.push({
@@ -108,7 +118,7 @@ function buildReadTraceDetails(
 export function createWebReadTool(
   providerFactory: WebAccessProviderFactory = createConfiguredWebAccessProvider,
 ): AgentToolDefinition<WebReadInput, WebReadToolResult> {
-  return {
+  const tool: AgentToolDefinition<WebReadInput, WebReadToolResult> = {
     spec: {
       name: "web_read",
       description:
@@ -154,6 +164,8 @@ export function createWebReadTool(
         const input = validateWebReadInput(args);
         const result = content as Partial<WebReadToolResult> | undefined;
         if (!input.ok || !result) return null;
+        if (result.provider === "anysearch")
+          return "Read web pages · AnySearch";
         return `Read web pages · Depth: ${input.value.depth}`;
       },
       summaries: {
@@ -183,9 +195,11 @@ export function createWebReadTool(
       if (!context.runId) {
         throw new Error("web_read requires an active local agent run.");
       }
+      const validated = validateWebReadInput(input);
+      if (!validated.ok) throw new Error(validated.error);
       assertWebReadUrlsFromSearch(context.runId, input.urls);
       const result = await providerFactory().read({
-        ...input,
+        ...validated.value,
         signal: context.signal,
       });
       const pages = applyRunSourceIds(context.runId, result.pages);
@@ -195,6 +209,30 @@ export function createWebReadTool(
         citation: webCitationInstruction(
           pages.map((source) => source.sourceId),
         ),
+      };
+    },
+  };
+  return {
+    ...tool,
+    get spec() {
+      if (getWebAccessProvider() !== "anysearch") return tool.spec;
+      return {
+        ...tool.spec,
+        description:
+          "Read text from one to five public URLs returned by web_search in this run using AnySearch. Supports HTML/XHTML, text, JSON and Markdown, not PDF, Office or media binaries. No query-focused extraction, depth or chunks controls. Output is bounded and may be truncated.",
+        inputSchema: {
+          type: "object",
+          required: ["urls"],
+          additionalProperties: false,
+          properties: {
+            urls: {
+              type: "array",
+              minItems: 1,
+              maxItems: 5,
+              items: { type: "string" },
+            },
+          },
+        },
       };
     },
   };

@@ -35,7 +35,6 @@ import {
   buildFullPaperContext,
   buildTruncatedFullPaperContext,
   buildPaperKey,
-  buildPaperRetrievalCandidates,
   preGenerateEmbeddings,
   ensurePDFTextCached,
   ensureNoteTextCached,
@@ -46,9 +45,10 @@ import {
   isSupportedContextAttachment,
 } from "../../services/paperContent/contextAttachmentSupport";
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
 import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
+import { retrievePerPaper } from "../../services/retrieval/paperRetriever";
 import {
   buildRetrievalQueryPlan,
   buildRetrievalQueryPlanCacheKey,
@@ -79,6 +79,8 @@ import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 import { renderSelectedTextPageFallbackContext } from "../../services/context/selectedTextAnchorFormatting";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
+import { libraryIndexService } from "../../services/libraryIndexService";
+import { resolvePaperScope } from "../../services/libraryIndex/paperScope";
 
 /**
  * Which part of papers a plain-chat question asks about, in any language:
@@ -106,7 +108,9 @@ function buildRetrievalCacheKey(paperKey: string, question: string): string {
   const normQ = question
     .trim()
     .toLowerCase()
-    .replace(/[^\w\s]/g, " ")
+    // Unicode-aware: an ASCII-only class strips every CJK letter, so
+    // different non-English questions would share one key.
+    .replace(/[^\p{L}\p{M}\p{N}_\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
@@ -114,20 +118,15 @@ function buildRetrievalCacheKey(paperKey: string, question: string): string {
 }
 
 function getCachedRetrievalCandidates(
-  paperKey: string,
-  question: string,
+  key: string,
 ): PaperContextCandidate[] | undefined {
-  return retrievalCandidateCache.get(
-    buildRetrievalCacheKey(paperKey, question),
-  );
+  return retrievalCandidateCache.get(key);
 }
 
 function setCachedRetrievalCandidates(
-  paperKey: string,
-  question: string,
+  key: string,
   candidates: PaperContextCandidate[],
 ): void {
-  const key = buildRetrievalCacheKey(paperKey, question);
   if (retrievalCandidateCache.size >= MAX_RETRIEVAL_CACHE_ENTRIES) {
     // Evict the oldest entry (Maps preserve insertion order).
     const first = retrievalCandidateCache.keys().next().value;
@@ -414,99 +413,38 @@ function getCollectionChildItemIds(collection: Zotero.Collection): number[] {
   }
 }
 
-function getCollectionChildCollectionIds(
-  collection: Zotero.Collection,
-): number[] {
-  try {
-    return (collection.getChildCollections?.(true, false) || [])
-      .map((id) => normalizeCollectionId(id))
-      .filter((id): id is number => Boolean(id));
-  } catch (_err) {
-    return [];
-  }
-}
-
-function collectCollectionItemIds(
-  collectionId: number,
-  seenCollections = new Set<number>(),
-): number[] {
-  if (seenCollections.has(collectionId)) return [];
-  seenCollections.add(collectionId);
+/**
+ * The papers a folder scope covers: the folder's own papers. Subfolders are
+ * not expanded, exactly as the agent's retrieval and Task progress do not
+ * (`services/libraryIndex/paperScope`), so one folder chip means the same
+ * papers in plain chat and in the agent.
+ */
+function collectCollectionItemIds(collectionId: number): number[] {
   const collection = Zotero.Collections.get(collectionId);
   if (!collection) return [];
-  const out = new Set<number>(getCollectionChildItemIds(collection));
-  for (const childCollectionId of getCollectionChildCollectionIds(collection)) {
-    for (const childItemId of collectCollectionItemIds(
-      childCollectionId,
-      seenCollections,
-    )) {
-      out.add(childItemId);
-    }
-  }
-  return Array.from(out);
+  return Array.from(new Set(getCollectionChildItemIds(collection)));
 }
 
-function getTagContextItemTagNames(
-  item: Zotero.Item,
-  includeAutomatic: boolean,
-): string[] {
-  try {
-    const rawTags = (item as { getTags?: () => unknown[] }).getTags?.();
-    if (!Array.isArray(rawTags)) return [];
-    const out = new Set<string>();
-    for (const entry of rawTags) {
-      let name = "";
-      let type: unknown;
-      if (typeof entry === "string") {
-        name = entry;
-      } else if (entry && typeof entry === "object") {
-        const typed = entry as {
-          tag?: unknown;
-          name?: unknown;
-          type?: unknown;
-        };
-        name =
-          typeof typed.tag === "string"
-            ? typed.tag
-            : typeof typed.name === "string"
-              ? typed.name
-              : "";
-        type = typed.type;
-      }
-      const normalized = sanitizeText(name).trim();
-      if (!normalized) continue;
-      if (type === 1 && !includeAutomatic) continue;
-      out.add(normalized);
-    }
-    return Array.from(out);
-  } catch (_err) {
-    return [];
-  }
-}
-
+/**
+ * The papers a tag scope covers, by the plugin's one tag rule
+ * (`services/libraryIndex/paperScope`), read from the library index like the
+ * reference picker that offered the tag. Plain chat answers from PDF text, so
+ * it asks for papers with a readable PDF only.
+ */
 async function collectTagContextItems(
   tagContext: TagContextRef,
 ): Promise<Zotero.Item[]> {
   const libraryID = Math.floor(Number(tagContext.libraryID) || 0);
   if (libraryID <= 0) return [];
-  const allItems = await Promise.resolve(
-    (Zotero.Items as any).getAll?.(libraryID, true, false, false) || [],
-  );
-  if (!Array.isArray(allItems)) return [];
-  const includeAutomatic = tagContext.includeAutomatic === true;
-  const tagName = sanitizeText(
-    tagContext.normalizedName || tagContext.name || "",
-  ).trim();
-  const tagNameLower = tagName.toLowerCase();
-  return allItems.filter((item): item is Zotero.Item => {
-    if (!item?.isRegularItem?.()) return false;
-    const tags = getTagContextItemTagNames(item, includeAutomatic);
-    if (tagContext.scope === "allTagged") return tags.length > 0;
-    if (tagContext.scope === "untagged") return tags.length === 0;
-    return tags.some(
-      (tag) => tag === tagName || tag.toLowerCase() === tagNameLower,
-    );
+  const snapshot = await libraryIndexService.getSnapshot(libraryID);
+  const { itemIds } = resolvePaperScope(snapshot, {
+    libraryID,
+    tagContexts: [tagContext],
+    pdfOnly: true,
   });
+  return itemIds
+    .map((itemId) => Zotero.Items.get(itemId))
+    .filter((item): item is Zotero.Item => Boolean(item?.isRegularItem?.()));
 }
 
 type CollectionScopeResolution = {
@@ -672,7 +610,11 @@ async function resolveCollectionScopePapers(params: {
   }
 
   for (const tagContext of tagContexts) {
-    const tagName = sanitizeText(tagContext.name).trim();
+    // The display name labels the scope; the shared rule falls back to the
+    // normalized name when it is empty, and so does the label.
+    const tagName = sanitizeText(
+      tagContext.name || tagContext.normalizedName || "",
+    ).trim();
     if (!tagName) continue;
     const items = await collectTagContextItems(tagContext);
     let tagPaperCount = 0;
@@ -758,7 +700,7 @@ async function resolveCollectionScopePapers(params: {
       paperKey: buildPaperKey(candidate.paperContext),
       paperContext: candidate.paperContext,
       contextItem,
-      pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      pdfContext: contextItem ? paperTextStore.peek(contextItem.id) : undefined,
       isActive: false,
       pinKind: "none",
     });
@@ -1157,7 +1099,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
   }
 
   // Pre-compute query embedding once so we don't make N identical API calls
-  // for N papers in the loop below.
+  // for N papers in the loop below. It is computed even when every paper hits
+  // the retrieval cache: the section-intent ranking below also uses it.
   let precomputedQueryEmbedding: number[] | undefined;
   if (queryPlan.semanticQuery.trim() && resolveSemanticSearchState().enabled) {
     try {
@@ -1169,40 +1112,35 @@ export async function assembleRetrievedMultiPaperContext(params: {
     }
   }
 
-  const allCandidates: PaperContextCandidate[] = [];
-  for (const paper of papers) {
-    const lockedChunkIndexes =
-      options?.lockedChunkIndexesByContextItem?.get(
-        paper.paperContext.contextItemId,
-      ) || [];
-    const cached = lockedChunkIndexes.length
-      ? undefined
-      : getCachedRetrievalCandidates(paper.paperKey, retrievalCacheKey);
-    if (cached) {
-      allCandidates.push(...cached);
-      continue;
-    }
-    const candidates = await buildPaperRetrievalCandidates(
-      paper.paperContext,
-      paper.pdfContext,
-      question,
-      {
+  const lockedChunkIndexesFor = (paper: PlannerPaperEntry): number[] =>
+    options?.lockedChunkIndexesByContextItem?.get(
+      paper.paperContext.contextItemId,
+    ) || [];
+  const allCandidates: PaperContextCandidate[] = await retrievePerPaper({
+    targets: papers,
+    question,
+    cache: {
+      // Locked chunks must stay selectable, so such a read neither reuses
+      // nor stores candidates.
+      keyFor: (paper) =>
+        lockedChunkIndexesFor(paper).length
+          ? undefined
+          : buildRetrievalCacheKey(paper.paperKey, retrievalCacheKey),
+      get: getCachedRetrievalCandidates,
+      set: setCachedRetrievalCandidates,
+    },
+    resolveQueryEmbedding: async () => precomputedQueryEmbedding,
+    builderArguments: (paper, embedding) => ({
+      options: {
         topK: RETRIEVAL_TOP_K_PER_PAPER,
         mode: "evidence",
-        precomputedQueryEmbedding,
+        precomputedQueryEmbedding: embedding,
         queryPlan,
-        preferredChunkIndexes: lockedChunkIndexes,
+        preferredChunkIndexes: lockedChunkIndexesFor(paper),
       },
-    );
-    if (!lockedChunkIndexes.length) {
-      setCachedRetrievalCandidates(
-        paper.paperKey,
-        retrievalCacheKey,
-        candidates,
-      );
-    }
-    allCandidates.push(...candidates);
-  }
+    }),
+    project: (_paper, candidates) => candidates,
+  });
 
   if (!allCandidates.length) {
     const readStrategy = buildRetrievedAssemblyReadStrategy({
@@ -1598,7 +1536,7 @@ async function resolvePlannerPaperEntries(params: {
       paperKey,
       paperContext,
       contextItem,
-      pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      pdfContext: contextItem ? paperTextStore.peek(contextItem.id) : undefined,
       isActive,
       pinKind,
     });

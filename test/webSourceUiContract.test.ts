@@ -8,7 +8,7 @@ import { initI18n, t } from "../src/utils/i18n";
 describe("web source UI contract", function () {
   const root = process.cwd();
 
-  it("translates the complete Tavily preferences copy for Chinese users", function () {
+  it("translates the complete web-provider preferences copy for Chinese users", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: {
         Prefs?: { get: () => string };
@@ -60,9 +60,13 @@ describe("web source UI contract", function () {
         (match) => match[1].replace(/\s+/g, " ").trim(),
       ).filter(Boolean);
       assert.deepEqual(
-        tavilyCopy.filter((english) => t(english) === english),
+        tavilyCopy.filter(
+          (english) =>
+            !["Tavily", "AnySearch"].includes(english) &&
+            t(english) === english,
+        ),
         [],
-        "every visible Tavily card string must have a Chinese translation",
+        "every visible web-provider card string except brand names must have a Chinese translation",
       );
 
       const preferenceScript = readFileSync(

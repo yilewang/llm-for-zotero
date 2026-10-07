@@ -20,12 +20,15 @@ import {
  */
 import type { AgentRuntime } from "../../../agent/runtime";
 import { ExecutionCheckpointFold } from "../../../agent/execution/checkpointEvents";
+import { unansweredTurnError } from "../../../agent/execution/unansweredTurn";
+import { taskProgressEffect } from "../taskProgress/runFold";
 import type {
   AgentEvent,
   AgentPendingAction,
   AgentRunEventRecord,
   AgentRuntimeOutcome,
   AgentRuntimeRequestInput as AgentRuntimeRequest,
+  AgentRuntimeUnansweredOutcome,
 } from "../../../agent/types";
 import { consumePendingRetentionEvents } from "../../../claudeCode/runtimeRetention";
 import {
@@ -37,6 +40,7 @@ import {
   resolveDisplayConversationKind,
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
+import { toStoredUserRowPatch } from "../storedUserRow";
 import { filterMessagesInPendingTurns } from "../turnMessageUtils";
 import { resolveStreamInterruptionOutcome } from "../streamInterruption";
 import {
@@ -100,11 +104,9 @@ function applyResolvedClaudeEffortDisplay(
 ): void {
   if (event.type !== "provider_event") return;
   if (event.providerType !== "runtime_config") return;
-  const applyResolvedEffort = (body as any).__llmApplyResolvedClaudeEffort as
-    | ((effort: unknown) => void)
-    | undefined;
-  if (typeof applyResolvedEffort !== "function") return;
-  applyResolvedEffort(event.payload?.resolvedEffort);
+  getPanelHandle(body)?.applyResolvedClaudeEffort(
+    event.payload?.resolvedEffort,
+  );
 }
 import type {
   AdvancedModelParams,
@@ -120,6 +122,11 @@ import type {
   TagContextRef,
 } from "../../../shared/types";
 import type { ResolvedContextSource } from "../types";
+import {
+  toAgentRuntimeRequestParams,
+  type BuildAgentRuntimeRequestParams,
+  type EffectiveRequestConfig,
+} from "../requestContext";
 import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
 import type { ChatMessage } from "../../../utils/llmClient";
@@ -135,6 +142,7 @@ import {
 } from "../../../services/quotes/quoteCitations";
 import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
+import { getPanelHandle } from "../panelHandle";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key];
@@ -210,37 +218,14 @@ function appendPendingFinalText(
 }
 
 /**
- * The stored-row patch for a turn's user message. Shared by the onStart and
- * tool_result persistence in both the send and retry paths, which previously
- * hand-copied these fields four times.
+ * The stored-row patch for a turn's user message, written by the onStart and
+ * tool_result persistence in both the send and retry paths and by the retry
+ * restore. Every field is named, so no update NULLs one.
  */
 function buildStoredUserMessagePatch(
   message: Message,
 ): Parameters<AgentEngineDeps["updateStoredLatestUserMessage"]>[1] {
-  return {
-    text: message.text,
-    timestamp: message.timestamp,
-    runMode: "agent",
-    agentRunId: message.agentRunId,
-    selectedText: message.selectedText,
-    selectedTextContexts: message.selectedTextContexts,
-    selectedTexts: message.selectedTexts,
-    selectedTextSources: message.selectedTextSources,
-    selectedTextPaperContexts: message.selectedTextPaperContexts,
-    selectedTextNoteContexts: message.selectedTextNoteContexts,
-    screenshotImages: message.screenshotImages,
-    paperContexts: message.paperContexts,
-    pdfPaperContexts: message.pdfPaperContexts,
-    fullTextPaperContexts: message.fullTextPaperContexts,
-    citationPaperContexts: message.citationPaperContexts,
-    selectedCollectionContexts: message.selectedCollectionContexts,
-    selectedTagContexts: message.selectedTagContexts,
-    attachments: message.attachments,
-    modelAttachments: message.modelAttachments,
-    modelName: message.modelName,
-    modelEntryId: message.modelEntryId,
-    modelProviderLabel: message.modelProviderLabel,
-  };
+  return toStoredUserRowPatch(message, { runMode: "agent" });
 }
 
 type AgentTurnEventContext = {
@@ -315,6 +300,10 @@ export function createAgentTurnEventHandler(
   // Task progress follows the run: working from its start, the paper ledger
   // as reads land, answering at the first answer text, ✓ at final.
   let taskRunBegun = false;
+  // Approvals already settled. The card's second, delayed paint must not
+  // bring back a card settled before it ran (the same chat open in another
+  // surface can approve it at once).
+  const settledConfirmationIds = new Set<string>();
   // The run's outcome ledger, folded from its whole and delta events.
   const outcomeLedger = new ExecutionCheckpointFold();
   const ensureTaskRun = () => {
@@ -325,6 +314,52 @@ export function createAgentTurnEventHandler(
       turnIndex: taskTurnIndexFor(history, pairedUserMessage) || undefined,
       text: pairedUserMessage.text,
     });
+  };
+  // What the event does to Task progress, read by the one fold the rebuild
+  // of a stored conversation shares, applied here as the event arrives.
+  const applyTaskProgress = (event: AgentEvent): void => {
+    const effect = taskProgressEffect(event);
+    if (!effect) return;
+    const runId = assistantMessage.agentRunId;
+    switch (effect.kind) {
+      case "paper_delta":
+        applyTaskPaperUpdate(conversationKey, effect.delta, runId);
+        return;
+      case "document_citations":
+        // The papers a submitted document cites, under their sections.
+        if (effect.citations?.length) {
+          applyTaskDocumentCitations(conversationKey, runId, effect.citations);
+        }
+        return;
+      case "outcomes": {
+        // The run's outcomes, as its ledger stands, are its Task progress steps.
+        const checkpoint = outcomeLedger.apply(effect.event);
+        if (runId && checkpoint) {
+          setTaskOutcomes(conversationKey, runId, checkpoint);
+        }
+        return;
+      }
+      case "answering":
+        markTaskAnswering(conversationKey, runId);
+        return;
+      case "waiting":
+        markTaskWaiting(conversationKey, runId, effect.waiting);
+        return;
+      case "final":
+        completeTaskRun(conversationKey, {
+          runId,
+          quoteCitations: selectUsedQuoteCitations({
+            text: assistantMessage.text,
+            quoteCitations: assistantMessage.quoteCitations,
+          }),
+          libraryID: runtimeRequest.libraryID,
+        });
+        return;
+      default:
+        // A Codex plan or a retired plan event never reaches this engine's
+        // Task progress: native Codex turns are wired in the chat panel.
+        return;
+    }
   };
   return async (event: AgentEvent): Promise<void> => {
     ensureTaskRun();
@@ -464,6 +499,8 @@ export function createAgentTurnEventHandler(
       }
       case "status": {
         const isCompactingStatus = /compacting context/i.test(event.text);
+        // A status can come before the run starts: the wait for a stopped
+        // run, and the Claude bridge adapter's session-resume retry notice.
         if (
           !isCompactingStatus &&
           !assistantMessage.agentRunId &&
@@ -511,16 +548,18 @@ export function createAgentTurnEventHandler(
         break;
       case "confirmation_required":
         // The run waits on the user's decision until the card resolves.
-        markTaskWaiting(conversationKey, assistantMessage.agentRunId, true);
+        applyTaskProgress(event);
         showInlineConfirmationCard(body, ui, event.requestId, event.action);
         queueRefresh();
         body.ownerDocument?.defaultView?.setTimeout(() => {
+          if (settledConfirmationIds.has(event.requestId)) return;
           showInlineConfirmationCard(body, ui, event.requestId, event.action);
         }, 90);
         setStatusSafely("Approval required", "sending");
         return;
       case "confirmation_resolved":
-        markTaskWaiting(conversationKey, assistantMessage.agentRunId, false);
+        applyTaskProgress(event);
+        settledConfirmationIds.add(event.requestId);
         closeInlineConfirmationCard(body, ui, event.requestId);
         queueRefresh();
         setStatusSafely(
@@ -531,42 +570,22 @@ export function createAgentTurnEventHandler(
       case "message_delta": {
         // The answer is streaming: the row says so and an open overlay
         // collapses, back to the chat the answer arrives in.
-        markTaskAnswering(conversationKey, assistantMessage.agentRunId);
+        applyTaskProgress(event);
         messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
         return;
       }
       case "paper_ledger_update":
-        applyTaskPaperUpdate(
-          conversationKey,
-          event.delta,
-          assistantMessage.agentRunId,
-        );
+        applyTaskProgress(event);
         return;
       case "material_finalized":
-        // The papers a submitted document cites, under their sections.
-        if (event.citedSources?.length) {
-          applyTaskDocumentCitations(
-            conversationKey,
-            assistantMessage.agentRunId,
-            event.citedSources,
-          );
-        }
+        applyTaskProgress(event);
         // As before: the assistant refreshes after the event (the store
         // repaints the Task progress view on its own).
         break;
       case "execution_checkpoint":
-      case "execution_checkpoint_delta": {
-        // The run's outcomes, as its ledger stands, are its Task progress steps.
-        const checkpoint = outcomeLedger.apply(event);
-        if (assistantMessage.agentRunId && checkpoint) {
-          setTaskOutcomes(
-            conversationKey,
-            assistantMessage.agentRunId,
-            checkpoint,
-          );
-        }
+      case "execution_checkpoint_delta":
+        applyTaskProgress(event);
         break;
-      }
       case "message_rollback":
         if (typeof event.length === "number" && event.length > 0) {
           assistantMessage.pendingFinalText = (
@@ -638,14 +657,7 @@ export function createAgentTurnEventHandler(
         assistantMessage.pendingFinalText = assistantMessage.text;
         assistantMessage.waitingAnimationStartedAt = undefined;
         assistantMessage.streaming = false;
-        completeTaskRun(conversationKey, {
-          runId: assistantMessage.agentRunId,
-          quoteCitations: selectUsedQuoteCitations({
-            text: assistantMessage.text,
-            quoteCitations: assistantMessage.quoteCitations,
-          }),
-          libraryID: runtimeRequest.libraryID,
-        });
+        applyTaskProgress(event);
         break;
       default:
         break;
@@ -653,6 +665,100 @@ export function createAgentTurnEventHandler(
     ctx.refreshAssistant();
     await deps.waitForUiStep();
   };
+}
+
+/**
+ * The callbacks a turn's run reports through, shared by send and retry. At
+ * its start the run is bound to the assistant and the paired user message,
+ * its Task progress row begins, and its trace opens; its events are handled
+ * by {@link createAgentTurnEventHandler}. The wait for a stopped run, before
+ * the run starts, shows as the run's status did.
+ */
+function startAgentTurnRun(
+  ctx: Omit<AgentTurnEventContext, "pushTraceEvent">,
+): {
+  onStart: (runId: string) => Promise<void>;
+  onEvent: (event: AgentEvent) => Promise<void>;
+  onWaiting: (text: string) => Promise<void>;
+} {
+  const {
+    deps,
+    conversationKey,
+    assistantMessage,
+    pairedUserMessage,
+    history,
+    isCompactCommand,
+    refreshChatSafely,
+  } = ctx;
+  const pushTraceEvent = (runId: string, event: AgentEvent) => {
+    const list = deps.agentRunTraceCache.get(runId) || [];
+    list.push({
+      runId,
+      seq: list.length + 1,
+      eventType: event.type,
+      payload: event,
+      createdAt: Date.now(),
+    });
+    deps.agentRunTraceCache.set(runId, list);
+  };
+  const onEvent = createAgentTurnEventHandler({ ...ctx, pushTraceEvent });
+  return {
+    onStart: async (runId) => {
+      assistantMessage.agentRunId = runId;
+      pairedUserMessage.agentRunId = runId;
+      beginTaskRun(conversationKey, {
+        runId,
+        turnIndex: taskTurnIndexFor(history, pairedUserMessage) || undefined,
+        text: pairedUserMessage.text,
+      });
+      deps.agentRunTraceCache.set(runId, []);
+      refreshChatSafely();
+      if (!isCompactCommand) {
+        await deps.updateStoredLatestUserMessage(
+          conversationKey,
+          buildStoredUserMessagePatch(pairedUserMessage),
+        );
+      }
+    },
+    onEvent,
+    onWaiting: (text) => onEvent({ type: "status", text }),
+  };
+}
+
+/**
+ * How a turn ends once its run has: an answered or fallback outcome is
+ * finalized; a cancelled one ends as the user's Stop; a failed one, or a
+ * thrown error, ends as a failure. Shared by send and retry.
+ *
+ * What the cancelled or failed ending throws is not a second failure: it
+ * leaves the turn, as it did when the run threw instead of returning.
+ */
+async function settleAgentTurn(ctx: {
+  run: () => Promise<AgentRuntimeOutcome>;
+  finalize: (
+    outcome: Exclude<AgentRuntimeOutcome, AgentRuntimeUnansweredOutcome>,
+  ) => Promise<void>;
+  reasoningRefreshes: Pick<ReasoningRefreshCoalescer, "flushNow">;
+  markCancelled: () => Promise<void>;
+  failTurn: (err: unknown) => Promise<void>;
+}): Promise<void> {
+  let unanswered: AgentRuntimeUnansweredOutcome | undefined;
+  try {
+    const outcome = await ctx.run();
+    if (outcome.kind === "cancelled" || outcome.kind === "failed") {
+      unanswered = outcome;
+    } else {
+      // A run can end without a final event; nothing it streamed may
+      // repaint after the outcome below finalizes the message.
+      ctx.reasoningRefreshes.flushNow();
+      await ctx.finalize(outcome);
+    }
+  } catch (err) {
+    await ctx.failTurn(err);
+    return;
+  }
+  if (unanswered?.kind === "cancelled") await ctx.markCancelled();
+  else if (unanswered) await ctx.failTurn(unansweredTurnError(unanswered));
 }
 
 /**
@@ -665,7 +771,7 @@ async function finalizeAgentTurnOutcome(ctx: {
   item: Zotero.Item;
   conversationKey: number;
   thisRequestId: number;
-  outcome: AgentRuntimeOutcome;
+  outcome: Exclude<AgentRuntimeOutcome, AgentRuntimeUnansweredOutcome>;
   assistantMessage: Message;
   pairedUserMessage: Message;
   runtimeRequest: AgentRuntimeRequest;
@@ -1063,57 +1169,6 @@ function extractPaperContextCandidatesFromToolContent(
 export const extractPaperContextCandidatesFromToolContentForTests =
   extractPaperContextCandidatesFromToolContent;
 
-type EffectiveRequestConfigShape = {
-  model: string;
-  apiBase: string;
-  apiKey: string;
-  authMode:
-    | "api_key"
-    | "codex_auth"
-    | "codex_app_server"
-    | "copilot_auth"
-    | "webchat";
-  providerProtocol?:
-    | "codex_responses"
-    | "responses_api"
-    | "openai_chat_compat"
-    | "anthropic_messages"
-    | "gemini_native"
-    | "ollama_native"
-    | "web_sync";
-  modelEntryId?: string;
-  modelProviderLabel?: string;
-  reasoning: LLMReasoningConfig | undefined;
-  advanced: AdvancedModelParams | undefined;
-};
-
-type BuildAgentRuntimeRequestParamsShape = {
-  conversationKey: number;
-  conversationGeneration?: number;
-  sourceMessageTimestamp?: number;
-  item: Zotero.Item;
-  activePaperContext?: PaperContextRef;
-  userText: string;
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts: PaperContextRef[];
-  citationPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  attachments: ChatAttachment[] | undefined;
-  localDocuments?: readonly LocalDocumentResource[];
-  screenshots: string[] | undefined;
-  forcedSkillIds?: string[];
-  effectiveRequestConfig: EffectiveRequestConfigShape;
-  history: ChatMessage[];
-};
-
 type LatestRetryPairShape = {
   userIndex: number;
   userMessage: Message;
@@ -1153,6 +1208,7 @@ export type AgentEngineDeps = {
     conversationKey: number,
     requestId: number,
     abortController: AbortController | null,
+    startingBody?: Element | null,
   ) => boolean;
   isRequestOwner: (conversationKey: number, requestId: number) => boolean;
   finishRequest: (conversationKey: number, requestId: number) => boolean;
@@ -1239,7 +1295,7 @@ export type AgentEngineDeps = {
   getConversationKey: (item: Zotero.Item) => number;
   buildLLMHistoryMessages: (history: Message[]) => ChatMessage[];
   buildAgentRuntimeRequest: (
-    params: BuildAgentRuntimeRequestParamsShape,
+    params: BuildAgentRuntimeRequestParams,
   ) => AgentRuntimeRequest | Promise<AgentRuntimeRequest>;
   resolveLocalPdfResources: (
     paperContexts: PaperContextRef[],
@@ -1268,7 +1324,7 @@ export type AgentEngineDeps = {
     modelProviderLabel?: string;
     reasoning?: LLMReasoningConfig;
     advanced?: AdvancedModelParams;
-  }) => EffectiveRequestConfigShape;
+  }) => EffectiveRequestConfig;
   normalizeSelectedTexts: (
     selectedTexts: unknown,
     legacySelectedText?: unknown,
@@ -1513,6 +1569,7 @@ export async function sendAgentTurn(
         conversationKey,
         thisRequestId,
         AbortControllerCtor ? new AbortControllerCtor() : null,
+        body,
       )
     ) {
       return;
@@ -1792,32 +1849,38 @@ export async function sendAgentTurn(
       modelProviderLabel: userMessage.modelProviderLabel,
     });
   }
-  const runtimeRequest = await deps.buildAgentRuntimeRequest({
-    conversationKey,
-    conversationGeneration: deps.conversationGeneration,
-    sourceMessageTimestamp: userMessage.timestamp,
-    item,
-    activePaperContext,
-    userText: question,
-    selectedTextContexts: selectedTextContextsForMessage,
-    resolvedSelectedTextAnchors,
-    selectedTexts: selectedTextsForMessage,
-    selectedTextSources: selectedTextSourcesForMessage,
-    selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-    selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-    paperContexts: paperContextsForMessage,
-    pdfPaperContexts: pdfPaperContextsForMessage,
-    fullTextPaperContexts: fullTextPaperContextsForMessage,
-    citationPaperContexts: userMessage.citationPaperContexts,
-    selectedCollectionContexts,
-    selectedTagContexts,
-    attachments: modelAttachments ?? attachments,
-    localDocuments,
-    screenshots: images,
-    forcedSkillIds,
-    effectiveRequestConfig,
-    history: llmHistory,
-  });
+  const runtimeRequest = await deps.buildAgentRuntimeRequest(
+    toAgentRuntimeRequestParams(
+      {
+        activePaperContext,
+        selectedTextContexts: selectedTextContextsForMessage,
+        resolvedSelectedTextAnchors,
+        selectedTexts: selectedTextsForMessage,
+        selectedTextSources: selectedTextSourcesForMessage,
+        selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+        selectedTextNoteContexts: selectedTextNoteContextsForMessage,
+        selectedPaperContexts: paperContextsForMessage,
+        pdfPaperContexts: pdfPaperContextsForMessage,
+        fullTextPaperContexts: fullTextPaperContextsForMessage,
+        citationPaperContexts: userMessage.citationPaperContexts,
+        selectedCollectionContexts,
+        selectedTagContexts,
+        attachments: modelAttachments ?? attachments,
+        localDocuments,
+        screenshots: images,
+        forcedSkillIds,
+      },
+      {
+        conversationKey,
+        conversationGeneration: deps.conversationGeneration,
+        sourceMessageTimestamp: userMessage.timestamp,
+        item,
+        userText: question,
+        effectiveRequestConfig,
+        history: llmHistory,
+      },
+    ),
+  );
   const agentRuntime = deps.getAgentRuntime();
   const capabilities = agentRuntime.getCapabilities(runtimeRequest);
   if (!capabilities.toolCalls) {
@@ -1826,6 +1889,10 @@ export async function sendAgentTurn(
     const fallback = await agentRuntime.runTurn({
       request: runtimeRequest,
     });
+    // The probe has no Stop and no turn of its own to end: a run it could not
+    // finish leaves the send as a thrown error, as it always has.
+    if (fallback.kind === "cancelled" || fallback.kind === "failed")
+      throw unansweredTurnError(fallback);
     if (fallback.kind === "fallback") {
       historyForRun.pop();
       await deps.sendChatFallback({
@@ -1908,98 +1975,72 @@ export async function sendAgentTurn(
   };
 
   try {
-    const pushTraceEvent = (runId: string, event: AgentEvent) => {
-      const list = deps.agentRunTraceCache.get(runId) || [];
-      list.push({
-        runId,
-        seq: list.length + 1,
-        eventType: event.type,
-        payload: event,
-        createdAt: Date.now(),
-      });
-      deps.agentRunTraceCache.set(runId, list);
-    };
     let compactEventHandled = false;
-
-    if (ui.inputBox) ui.inputBox.disabled = false;
-    opts.onProviderDispatch?.();
-    const outcome = await agentRuntime.runTurn({
-      request: runtimeRequest,
-      signal: deps.currentAbortController(conversationKey)?.signal,
-      onStart: async (runId) => {
-        assistantMessage.agentRunId = runId;
-        userMessage.agentRunId = runId;
-        beginTaskRun(conversationKey, {
-          runId,
-          turnIndex: taskTurnIndexFor(historyForRun, userMessage) || undefined,
-          text: userMessage.text,
-        });
-        deps.agentRunTraceCache.set(runId, []);
-        refreshChatSafely();
-        if (!isCompactCommand) {
-          await deps.updateStoredLatestUserMessage(
+    await settleAgentTurn({
+      run: () => {
+        if (ui.inputBox) ui.inputBox.disabled = false;
+        opts.onProviderDispatch?.();
+        return agentRuntime.runTurn({
+          request: runtimeRequest,
+          signal: deps.currentAbortController(conversationKey)?.signal,
+          ...startAgentTurnRun({
+            deps,
+            body,
+            ui,
             conversationKey,
-            buildStoredUserMessagePatch(userMessage),
-          );
-        }
+            runtimeRequest,
+            assistantMessage,
+            pairedUserMessage: userMessage,
+            history: historyForRun,
+            isCompactCommand,
+            compactStyle: "replace-assistant",
+            onContextCompacted: () => {
+              compactEventHandled = true;
+            },
+            messageDeltaCoalescer,
+            flushMessageDeltas,
+            reasoningRefreshes,
+            queueRefresh,
+            refreshAssistant: () =>
+              refreshAssistantMessageSafely(assistantMessage),
+            refreshChatSafely,
+            setStatusSafely,
+            scheduleQueueDrain,
+          }),
+        });
       },
-      onEvent: createAgentTurnEventHandler({
-        deps,
-        body,
-        ui,
-        conversationKey,
-        runtimeRequest,
-        assistantMessage,
-        pairedUserMessage: userMessage,
-        history: historyForRun,
-        isCompactCommand,
-        compactStyle: "replace-assistant",
-        onContextCompacted: () => {
-          compactEventHandled = true;
-        },
-        messageDeltaCoalescer,
-        flushMessageDeltas,
-        reasoningRefreshes,
-        queueRefresh,
-        refreshAssistant: () => refreshAssistantMessageSafely(assistantMessage),
-        refreshChatSafely,
-        setStatusSafely,
-        pushTraceEvent,
-        scheduleQueueDrain,
-      }),
-    });
-
-    // A run can end without a final event; nothing it streamed may repaint
-    // after the outcome below finalizes the message.
-    reasoningRefreshes.flushNow();
-    await finalizeAgentTurnOutcome({
-      deps,
-      item,
-      conversationKey,
-      thisRequestId,
-      outcome,
-      assistantMessage,
-      pairedUserMessage: userMessage,
-      runtimeRequest,
-      refreshChatSafely,
-      markCancelled,
-      persistAssistantOnce,
-      uiRelease,
-      skipAssistantPersist: isCompactCommand && compactEventHandled,
-    });
-  } catch (err) {
-    await handleAgentTurnFailure({
-      err,
-      deps,
-      conversationKey,
-      thisRequestId,
-      assistantMessage,
-      messageDeltaCoalescer,
+      finalize: (outcome) =>
+        finalizeAgentTurnOutcome({
+          deps,
+          item,
+          conversationKey,
+          thisRequestId,
+          outcome,
+          assistantMessage,
+          pairedUserMessage: userMessage,
+          runtimeRequest,
+          refreshChatSafely,
+          markCancelled,
+          persistAssistantOnce,
+          uiRelease,
+          skipAssistantPersist: isCompactCommand && compactEventHandled,
+        }),
       reasoningRefreshes,
-      refreshChatSafely,
-      setStatusSafely,
       markCancelled,
-      persistAssistantOnce,
+      failTurn: (err) =>
+        handleAgentTurnFailure({
+          err,
+          deps,
+          conversationKey,
+          thisRequestId,
+          assistantMessage,
+          messageDeltaCoalescer,
+          reasoningRefreshes,
+          refreshChatSafely,
+          setStatusSafely,
+          markCancelled,
+          persistAssistantOnce,
+        }),
     });
   } finally {
     if (!uiRelease.isReleased()) {
@@ -2059,6 +2100,7 @@ export async function retryAgentTurn(
         initialConversationKey,
         thisRequestId,
         AbortControllerCtor ? new AbortControllerCtor() : null,
+        body,
       )
     ) {
       return;
@@ -2387,32 +2429,42 @@ export async function retryAgentTurn(
     retryPair.userMessage.modelAttachments ??
     retryPair.userMessage.attachments?.filter((a) => a.category !== "image");
 
-  const runtimeRequest = await deps.buildAgentRuntimeRequest({
-    conversationKey,
-    conversationGeneration: deps.conversationGeneration,
-    sourceMessageTimestamp: retryPair.userMessage.timestamp,
-    item,
-    activePaperContext:
-      activePaperContextOverride ?? retryPaperContext.activePaperContext,
-    userText: question,
-    selectedTextContexts: selectedTextContextsRaw,
-    resolvedSelectedTextAnchors,
-    selectedTexts: selectedTextsRaw,
-    selectedTextSources: selectedTextSourcesRaw,
-    selectedTextPaperContexts: selectedTextPaperContextsRaw,
-    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
-    paperContexts,
-    pdfPaperContexts,
-    fullTextPaperContexts,
-    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
-    selectedCollectionContexts,
-    selectedTagContexts,
-    attachments: retryModelAttachments,
-    localDocuments: retryLocalDocuments,
-    screenshots: screenshotImages,
-    effectiveRequestConfig,
-    history: historyForLLM,
-  });
+  // The retry hands over the forced skills the turn stored, as the plain-chat
+  // retry does.
+  const runtimeRequest = await deps.buildAgentRuntimeRequest(
+    toAgentRuntimeRequestParams(
+      {
+        activePaperContext:
+          activePaperContextOverride ?? retryPaperContext.activePaperContext,
+        selectedTextContexts: selectedTextContextsRaw,
+        resolvedSelectedTextAnchors,
+        selectedTexts: selectedTextsRaw,
+        selectedTextSources: selectedTextSourcesRaw,
+        selectedTextPaperContexts: selectedTextPaperContextsRaw,
+        selectedTextNoteContexts:
+          retryPair.userMessage.selectedTextNoteContexts,
+        selectedPaperContexts: paperContexts,
+        pdfPaperContexts,
+        fullTextPaperContexts,
+        citationPaperContexts: retryPair.userMessage.citationPaperContexts,
+        selectedCollectionContexts,
+        selectedTagContexts,
+        attachments: retryModelAttachments,
+        localDocuments: retryLocalDocuments,
+        screenshots: screenshotImages,
+        forcedSkillIds: retryPair.userMessage.forcedSkillIds,
+      },
+      {
+        conversationKey,
+        conversationGeneration: deps.conversationGeneration,
+        sourceMessageTimestamp: retryPair.userMessage.timestamp,
+        item,
+        userText: question,
+        effectiveRequestConfig,
+        history: historyForLLM,
+      },
+    ),
+  );
   if (!requestIsActive()) {
     restorePreviousAssistant();
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
@@ -2464,98 +2516,73 @@ export async function retryAgentTurn(
 
   const agentRuntime = deps.getAgentRuntime();
   try {
-    const pushTraceEvent = (runId: string, event: AgentEvent) => {
-      const list = deps.agentRunTraceCache.get(runId) || [];
-      list.push({
-        runId,
-        seq: list.length + 1,
-        eventType: event.type,
-        payload: event,
-        createdAt: Date.now(),
-      });
-      deps.agentRunTraceCache.set(runId, list);
-    };
-
-    if (ui.inputBox) ui.inputBox.disabled = false;
-    onProviderDispatch?.();
-    const outcome = await agentRuntime.runTurn({
-      request: runtimeRequest,
-      signal: deps.currentAbortController(conversationKey)?.signal,
-      // A retry re-answers a question the usage ledger already counted; its
-      // tokens are recorded, the question tally is not moved again.
-      usageCountsAsQuestion: false,
-      onStart: async (runId) => {
-        assistantMessage.agentRunId = runId;
-        retryPair.userMessage.agentRunId = runId;
-        beginTaskRun(conversationKey, {
-          runId,
-          turnIndex:
-            taskTurnIndexFor(history, retryPair.userMessage) || undefined,
-          text: retryPair.userMessage.text,
+    await settleAgentTurn({
+      run: () => {
+        if (ui.inputBox) ui.inputBox.disabled = false;
+        onProviderDispatch?.();
+        return agentRuntime.runTurn({
+          request: runtimeRequest,
+          signal: deps.currentAbortController(conversationKey)?.signal,
+          // A retry re-answers a question the usage ledger already counted;
+          // its tokens are recorded, the question tally is not moved again.
+          usageCountsAsQuestion: false,
+          ...startAgentTurnRun({
+            deps,
+            body,
+            ui,
+            conversationKey,
+            runtimeRequest,
+            assistantMessage,
+            pairedUserMessage: retryPair.userMessage,
+            history,
+            isCompactCommand: false,
+            compactStyle: "keep-assistant",
+            messageDeltaCoalescer,
+            flushMessageDeltas,
+            reasoningRefreshes,
+            queueRefresh,
+            refreshAssistant: () =>
+              refreshAssistantMessageSafely(assistantMessage),
+            refreshChatSafely,
+            setStatusSafely,
+            scheduleQueueDrain,
+          }),
         });
-        deps.agentRunTraceCache.set(runId, []);
-        refreshChatSafely();
-        await deps.updateStoredLatestUserMessage(
-          conversationKey,
-          buildStoredUserMessagePatch(retryPair.userMessage),
-        );
       },
-      onEvent: createAgentTurnEventHandler({
-        deps,
-        body,
-        ui,
-        conversationKey,
-        runtimeRequest,
-        assistantMessage,
-        pairedUserMessage: retryPair.userMessage,
-        history,
-        isCompactCommand: false,
-        compactStyle: "keep-assistant",
-        messageDeltaCoalescer,
-        flushMessageDeltas,
-        reasoningRefreshes,
-        queueRefresh,
-        refreshAssistant: () => refreshAssistantMessageSafely(assistantMessage),
-        refreshChatSafely,
-        setStatusSafely,
-        pushTraceEvent,
-        scheduleQueueDrain,
-      }),
-    });
-
-    // A run can end without a final event; nothing it streamed may repaint
-    // after the outcome below finalizes the message.
-    reasoningRefreshes.flushNow();
-    await finalizeAgentTurnOutcome({
-      deps,
-      item,
-      conversationKey,
-      thisRequestId,
-      outcome,
-      assistantMessage,
-      pairedUserMessage: retryPair.userMessage,
-      runtimeRequest,
-      refreshChatSafely,
-      markCancelled,
-      persistAssistantOnce,
-      uiRelease,
-      skipAssistantPersist: false,
-    });
-  } catch (err) {
-    await handleAgentTurnFailure({
-      err,
-      deps,
-      conversationKey,
-      thisRequestId,
-      assistantMessage,
-      messageDeltaCoalescer,
+      finalize: (outcome) =>
+        finalizeAgentTurnOutcome({
+          deps,
+          item,
+          conversationKey,
+          thisRequestId,
+          outcome,
+          assistantMessage,
+          pairedUserMessage: retryPair.userMessage,
+          runtimeRequest,
+          refreshChatSafely,
+          markCancelled,
+          persistAssistantOnce,
+          uiRelease,
+          skipAssistantPersist: false,
+        }),
       reasoningRefreshes,
-      refreshChatSafely,
-      setStatusSafely,
       markCancelled,
-      persistAssistantOnce,
-      restorePreviousAssistant,
-      restorePairedUser,
+      failTurn: (err) =>
+        handleAgentTurnFailure({
+          err,
+          deps,
+          conversationKey,
+          thisRequestId,
+          assistantMessage,
+          messageDeltaCoalescer,
+          reasoningRefreshes,
+          refreshChatSafely,
+          setStatusSafely,
+          markCancelled,
+          persistAssistantOnce,
+          restorePreviousAssistant,
+          restorePairedUser,
+        }),
     });
   } finally {
     if (!uiRelease.isReleased()) {

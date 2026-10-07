@@ -241,6 +241,79 @@ describe("streaming response owner", function () {
     });
   });
 
+  describe("stall timer", function () {
+    it("schedules, fires and clears the stall timer through injected timers", function () {
+      const message = { role: "assistant", text: "" } as Message;
+      const refreshes: string[] = [];
+      const scheduled: { callback: () => void; delayMs: number }[] = [];
+      const cleared: unknown[] = [];
+
+      const streamingResponse = createStreamingResponse({
+        message,
+        refreshMessage: () => refreshes.push(message.text),
+        createQueuedRefresh: (refresh) => refresh,
+        setTimer: (callback, delayMs) => {
+          scheduled.push({ callback, delayMs });
+          return `timer-${scheduled.length}`;
+        },
+        clearTimer: (timer) => {
+          cleared.push(timer);
+        },
+      });
+
+      streamingResponse.start();
+      streamingResponse.push("stalled");
+      assert.equal(scheduled.length, 1, "a buffered delta arms the timer");
+      assert.equal(scheduled[0].delayMs, 450);
+      assert.equal(message.text, "");
+
+      scheduled[0].callback();
+      assert.equal(message.text, "stalled");
+      assert.deepEqual(refreshes, ["stalled"]);
+
+      streamingResponse.push(" again");
+      assert.equal(scheduled.length, 2, "the next buffered delta re-arms it");
+      streamingResponse.flush("final");
+
+      assert.deepEqual(cleared, ["timer-2"]);
+      assert.equal(message.text, "stalled again");
+    });
+
+    it("uses the global setTimeout and clearTimeout when no timers are injected", function () {
+      const globals = globalThis as unknown as {
+        setTimeout: (callback: () => void, delayMs: number) => unknown;
+        clearTimeout: (timer: unknown) => void;
+      };
+      const originalSetTimeout = globals.setTimeout;
+      const originalClearTimeout = globals.clearTimeout;
+      const delays: number[] = [];
+      const cleared: unknown[] = [];
+      const handle = { fake: "timer" };
+      globals.setTimeout = (_callback, delayMs) => {
+        delays.push(delayMs);
+        return handle;
+      };
+      globals.clearTimeout = (timer) => {
+        cleared.push(timer);
+      };
+
+      try {
+        const { message, streamingResponse } = harness();
+
+        streamingResponse.start();
+        streamingResponse.push("stalled");
+        streamingResponse.flush("final");
+
+        assert.deepEqual(delays, [450]);
+        assert.deepEqual(cleared, [handle]);
+        assert.equal(message.text, "stalled");
+      } finally {
+        globals.setTimeout = originalSetTimeout;
+        globals.clearTimeout = originalClearTimeout;
+      }
+    });
+  });
+
   describe("queued refresh", function () {
     it("builds the message's repaint once, through the panel's factory", function () {
       const message = { role: "assistant", text: "" } as Message;

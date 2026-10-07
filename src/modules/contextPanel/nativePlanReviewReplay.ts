@@ -1,5 +1,5 @@
 import { renderAgentTrace } from "./agentTrace/render";
-import { resolveCodexNativeHostInteractionWithTrace } from "./chat";
+import { resolveCodexNativeHostInteractionWithTrace } from "./codexNative/turnCallbacks";
 import { createCodexNativeActivityTraceControllerForTests } from "./codexNativeTrace/controller";
 import type { Message } from "./types";
 import { agentRunTraceCache } from "./agentState";

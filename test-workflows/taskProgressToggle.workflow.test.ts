@@ -5,7 +5,9 @@
  * holds for the conversation: a row the user showed stays through a run, and
  * a row the user hid stays hidden while another run declares its steps.
  * Another conversation is back on the automatic rule, and so is this one
- * when the window shows it again. The sidebar panel has no such button.
+ * when the window shows it again. The sidebar header has the same button,
+ * left of Open in Window; the Stacked header drops it below its compact
+ * width.
  */
 import { assert } from "chai";
 import { executionCheckpointEvent } from "../src/agent/execution/checkpointEvents";
@@ -222,22 +224,93 @@ describe("workflow: task progress button", function () {
     );
   });
 
-  it("has no button in the sidebar panel", async function () {
+  it("shows and hides the row from the sidebar header, left of Open in Window", async function () {
     const panel = await api.renderPanelForItem(fixture!.parentItemId);
     const doc = Zotero.getMainWindow().document;
     const body = doc.querySelector(
       `[data-workflow-panel-id="${panel.panelId}"]`,
     ) as HTMLElement;
     assert.isOk(body, "the sidebar panel is rendered");
-    assert.isNull(body.querySelector(BUTTON));
-    assert.isNull(doc.querySelector(BUTTON), "nowhere in the main window");
+    assert.isNull(
+      body.querySelector(BUTTON),
+      "not the standalone title bar's button",
+    );
     assert.deepEqual(
       Array.from(body.querySelectorAll(".llm-header-actions > button")).map(
         (node) => (node as HTMLElement).id,
       ),
-      ["llm-popout", "llm-settings", "llm-export", "llm-clear"],
-      "the panel header keeps its own actions",
+      [
+        "llm-task-progress-toggle",
+        "llm-popout",
+        "llm-settings",
+        "llm-export",
+        "llm-clear",
+      ],
     );
+    const button = body.querySelector(
+      "#llm-task-progress-toggle",
+    ) as HTMLButtonElement;
+    const curtain = () =>
+      (body.querySelector(".llm-task-progress-curtain") as HTMLElement)
+        .dataset.curtain;
+    const settle = async (target: "open" | "closed", label: string) => {
+      await until(() => {
+        api.flushTaskProgress();
+        return curtain() === target;
+      }, `${label}: curtain ${curtain()}`);
+      assert.equal(
+        button.getAttribute("aria-pressed"),
+        target === "open" ? "true" : "false",
+        label,
+      );
+    };
+
+    const header = body.querySelector(".llm-header") as HTMLElement;
+    const layoutPref = "extensions.zotero.llmforzotero.sidebarLayout";
+    const savedLayout = Zotero.Prefs.get(layoutPref, true);
+    const layout = async (value: "independent" | "stacked") => {
+      Zotero.Prefs.set(layoutPref, value, true);
+      await until(
+        () =>
+          doc.documentElement.getAttribute("data-llm-sidebar-layout") ===
+          value,
+        `${value} layout applies`,
+      );
+    };
+    const width = () => button.getBoundingClientRect().width;
+    try {
+      await layout("independent");
+      await until(() => width() > 0, "a paper chat shows the button");
+      await settle("closed", "one paper: the automatic rule hides the row");
+      button.click();
+      await settle("open", "a click shows the row");
+      button.click();
+      await settle("closed", "the next click hides it");
+
+      // Independent keeps the button at the compact width too.
+      header.style.width = "360px";
+      await until(() => width() > 0, "Independent at 360px keeps it");
+
+      await layout("stacked");
+      await until(() => width() === 0, "Stacked at 360px drops it");
+      header.style.width = "420px";
+      await until(() => width() > 0, "Stacked at 420px shows it");
+      const actions = body
+        .querySelector(".llm-header-actions")!
+        .getBoundingClientRect();
+      const runtime = body
+        .querySelector(".llm-header-runtime-controls")!
+        .getBoundingClientRect();
+      assert.isAtMost(
+        runtime.right,
+        actions.left + 0.5,
+        "the runtime systems still clear the actions",
+      );
+    } finally {
+      header.style.width = "";
+      if (savedLayout === undefined) Zotero.Prefs.clear(layoutPref, true);
+      else Zotero.Prefs.set(layoutPref, savedLayout as never, true);
+    }
   });
 
   it("shows and hides the row from the standalone title bar, for the conversation on screen", async function () {

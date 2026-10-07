@@ -8,6 +8,7 @@ import type {
   CodexAppServerHistoryItem,
   CodexAppServerUserInput,
 } from "./codexAppServerInput";
+import { pathExists } from "./geckoFs";
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
@@ -48,16 +49,36 @@ type PendingRequest = {
   reject: (reason: unknown) => void;
 };
 
-type ActivityHandler = () => void;
+type ActivityHandler = (message: Record<string, unknown>) => void;
 type NotificationHandler = (params: unknown) => void;
 type RequestHandler = (
   params: unknown,
   id: string | number,
   signal: AbortSignal,
 ) => unknown | Promise<unknown>;
+/**
+ * Says whether a request handler owns a server request. Two conversations can
+ * have turns on one process at once, each registering handlers for the same
+ * methods; the request's thread decides which of them answers it.
+ */
+type RequestAcceptor = (params: unknown) => boolean;
+
+type RequestRegistration = {
+  handler: RequestHandler;
+  accepts?: RequestAcceptor;
+};
+
+type SendRequestOptions = {
+  /**
+   * A request that times out marks the whole process unusable by default.
+   * Turn interrupts opt out: the turn's own failure handling decides whether
+   * the process can go, because another conversation may still be using it.
+   */
+  failProcessOnTimeout?: boolean;
+};
 
 type ServerRequest = {
-  handler: RequestHandler;
+  registration: RequestRegistration;
   controller: AbortController;
   method: string;
   threadId?: string;
@@ -122,6 +143,54 @@ function createAbortError(): Error {
   return err;
 }
 
+/**
+ * The first Codex release whose app-server is known to tag every turn event
+ * and every server request with the thread (and turn) it belongs to. Older or
+ * unidentified servers get one process-wide turn queue, as before.
+ */
+const CODEX_APP_SERVER_CONCURRENT_TURNS_MIN_VERSION: readonly [
+  number,
+  number,
+  number,
+] = [0, 156, 1];
+const CODEX_APP_SERVER_SETUP_LOCK_KEY = "\u0000setup";
+
+/** Reads the Codex version from the initialize response's `userAgent`. */
+export function parseCodexAppServerUserAgentVersion(
+  userAgent: unknown,
+): [number, number, number] | null {
+  if (typeof userAgent !== "string") return null;
+  const match = userAgent.trim().match(/^[^\s/]+\/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function isVersionAtLeast(
+  version: readonly [number, number, number],
+  minimum: readonly [number, number, number],
+): boolean {
+  for (let index = 0; index < 3; index++) {
+    if (version[index] !== minimum[index]) {
+      return version[index] > minimum[index];
+    }
+  }
+  return true;
+}
+
+function extractCodexAppServerRequestThreadId(params: unknown): string {
+  if (!params || typeof params !== "object") return "";
+  const record = params as { threadId?: unknown; conversationId?: unknown };
+  if (typeof record.threadId === "string" && record.threadId) {
+    return record.threadId;
+  }
+  // Legacy v1 approvals (applyPatchApproval, execCommandApproval) name the
+  // thread as the conversation.
+  if (typeof record.conversationId === "string" && record.conversationId) {
+    return record.conversationId;
+  }
+  return "";
+}
+
 function extractCodexAppServerNotificationThreadId(rawParams: unknown): string {
   if (!rawParams || typeof rawParams !== "object") return "";
   const params = rawParams as {
@@ -137,13 +206,25 @@ function extractCodexAppServerNotificationThreadId(rawParams: unknown): string {
   return "";
 }
 
+/**
+ * Thrown before a turn starts on a process that a failure already retired.
+ * The turn has not run; it can be started again on a fresh process.
+ */
+export class CodexAppServerProcessRetiredError extends Error {
+  constructor() {
+    // Same message as before, for callers and logs that match on it.
+    super("CodexAppServerProcess destroyed");
+    this.name = "CodexAppServerProcessRetiredError";
+  }
+}
+
 export class CodexAppServerProcess {
   private proc: unknown;
   private nextId = 1;
   private pendingRequests = new Map<number, PendingRequest>();
   private activityHandlers = new Set<ActivityHandler>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
-  private requestHandlers = new Map<string, Set<RequestHandler>>();
+  private requestHandlers = new Map<string, Set<RequestRegistration>>();
   private serverRequests = new Map<string | number, ServerRequest>();
 
   hasPendingUserInput(threadId?: string, turnId?: string): boolean {
@@ -161,7 +242,10 @@ export class CodexAppServerProcess {
   private closeHandlers = new Set<() => void>();
   private readLoopPromise: Promise<void> | null = null;
   private stderrLoopPromise: Promise<void> | null = null;
-  private turnQueue = Promise.resolve();
+  private turnQueues = new Map<string, Promise<void>>();
+  private activeTurnCount = 0;
+  private destroyWhenIdleRequested = false;
+  private serverVersion: [number, number, number] | null = null;
   private lineBuffer = "";
   private diagnosticBuffer = "";
   private readonly diagnosticStreamRedactor =
@@ -359,7 +443,7 @@ export class CodexAppServerProcess {
   private handleMessage(msg: Record<string, unknown>): void {
     for (const handler of this.activityHandlers) {
       try {
-        handler();
+        handler(msg);
       } catch {
         /* ignore */
       }
@@ -389,7 +473,11 @@ export class CodexAppServerProcess {
 
       if (typeof msg.method === "string") {
         const handlers = this.requestHandlers.get(msg.method);
-        if (!handlers?.size) {
+        if (this.serverRequests.has(id)) return;
+        const registration = handlers?.size
+          ? selectRequestRegistration(handlers, msg.params)
+          : undefined;
+        if (!registration) {
           try {
             appLogger.warn("Codex app-server: unhandled server request", {
               method: msg.method,
@@ -404,25 +492,23 @@ export class CodexAppServerProcess {
             id,
             error: {
               code: -32601,
-              message: `No handler registered for ${msg.method}`,
+              message: handlers?.size
+                ? `No handler accepted ${msg.method} for its thread`
+                : `No handler registered for ${msg.method}`,
             },
           });
           return;
         }
-        const handler = handlers.values().next().value as
-          | RequestHandler
-          | undefined;
-        if (!handler) return;
-        if (this.serverRequests.has(id)) return;
-        const identity = msg.params as
-          | { threadId?: string; turnId?: string }
-          | undefined;
+        const handler = registration.handler;
+        const identity = msg.params as { turnId?: unknown } | undefined;
         const request: ServerRequest = {
-          handler,
+          registration,
           controller: createAbortController(),
           method: msg.method,
-          threadId: identity?.threadId,
-          turnId: identity?.turnId,
+          threadId:
+            extractCodexAppServerRequestThreadId(msg.params) || undefined,
+          turnId:
+            typeof identity?.turnId === "string" ? identity.turnId : undefined,
           pending: true,
         };
         this.serverRequests.set(id, request);
@@ -489,6 +575,7 @@ export class CodexAppServerProcess {
     method: string,
     params?: unknown,
     timeoutMs = DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+    options: SendRequestOptions = {},
   ): Promise<unknown> {
     if (this.destroyed) {
       return Promise.reject(new Error("CodexAppServerProcess destroyed"));
@@ -516,7 +603,8 @@ export class CodexAppServerProcess {
                 `Timed out waiting for codex app-server response to ${method} after ${timeoutMs}ms`,
               );
               activePending.reject(error);
-              this.fail(error, true);
+              if (options.failProcessOnTimeout !== false)
+                this.fail(error, true);
             }, timeoutMs)
           : null;
       try {
@@ -545,22 +633,102 @@ export class CodexAppServerProcess {
     }
   }
 
-  async runTurnExclusive<T>(callback: () => Promise<T>): Promise<T> {
-    const previous = this.turnQueue;
+  /**
+   * Runs one turn. Turns with the same key (one conversation) run one after
+   * another; turns with different keys share the process and run at once.
+   * A server that is not known to tag every turn event and request with its
+   * thread puts all turns on one queue instead.
+   *
+   * A turn that reaches the front after a failure retired this process (it
+   * is destroyed, or waits to be destroyed once a sibling turn ends) does not
+   * start here: it throws CodexAppServerProcessRetiredError, so the caller
+   * can start it on a fresh process.
+   */
+  async runTurnExclusive<T>(callback: () => Promise<T>, key = ""): Promise<T> {
+    const queueKey = this.supportsConcurrentTurns() ? `turn:${key}` : "turn:";
+    return this.runQueued(queueKey, async () => {
+      if (this.destroyed || this.destroyWhenIdleRequested) {
+        throw new CodexAppServerProcessRetiredError();
+      }
+      const release = this.holdActiveTurn();
+      try {
+        return await callback();
+      } finally {
+        release();
+      }
+    });
+  }
+
+  /**
+   * Serializes the short, process-wide thread setup of a turn (MCP config
+   * reload, thread resume or start) across all conversations.
+   */
+  async runThreadSetupExclusive<T>(callback: () => Promise<T>): Promise<T> {
+    return this.runQueued(CODEX_APP_SERVER_SETUP_LOCK_KEY, callback);
+  }
+
+  private async runQueued<T>(
+    key: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.turnQueues.get(key) || Promise.resolve();
     let release!: () => void;
-    this.turnQueue = new Promise<void>((resolve) => {
+    const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-
+    this.turnQueues.set(key, current);
     await previous;
     try {
-      if (this.destroyed) {
-        throw new Error("CodexAppServerProcess destroyed");
-      }
       return await callback();
     } finally {
       release();
+      if (this.turnQueues.get(key) === current) this.turnQueues.delete(key);
     }
+  }
+
+  setServerUserAgent(userAgent: unknown): void {
+    this.serverVersion = parseCodexAppServerUserAgentVersion(userAgent);
+  }
+
+  supportsConcurrentTurns(): boolean {
+    return Boolean(
+      this.serverVersion &&
+      isVersionAtLeast(
+        this.serverVersion,
+        CODEX_APP_SERVER_CONCURRENT_TURNS_MIN_VERSION,
+      ),
+    );
+  }
+
+  /**
+   * Marks a turn as live on this process until the returned release is
+   * called. A process that was retired while turns were live is destroyed
+   * when the last of them releases.
+   */
+  holdActiveTurn(): () => void {
+    this.activeTurnCount++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeTurnCount--;
+      if (this.activeTurnCount <= 0 && this.destroyWhenIdleRequested) {
+        this.destroy();
+      }
+    };
+  }
+
+  getActiveTurnCount(): number {
+    return this.activeTurnCount;
+  }
+
+  /** Destroys the process now, or as soon as its last live turn ends. */
+  destroyWhenIdle(): void {
+    if (this.activeTurnCount <= 0) {
+      this.destroy();
+      return;
+    }
+    this.destroyWhenIdleRequested = true;
   }
 
   onNotification(method: string, handler: NotificationHandler): () => void {
@@ -593,17 +761,28 @@ export class CodexAppServerProcess {
     };
   }
 
-  onRequest(method: string, handler: RequestHandler): () => void {
+  /**
+   * Registers a server-request handler. With `accepts`, the handler answers
+   * only the requests it accepts; handlers without it answer whatever no
+   * accepting handler claimed. Disposing a handler cancels only the requests
+   * it took.
+   */
+  onRequest(
+    method: string,
+    handler: RequestHandler,
+    accepts?: RequestAcceptor,
+  ): () => void {
     let handlers = this.requestHandlers.get(method);
     if (!handlers) {
       handlers = new Set();
       this.requestHandlers.set(method, handlers);
     }
-    handlers.add(handler);
+    const registration: RequestRegistration = { handler, accepts };
+    handlers.add(registration);
     return () => {
-      this.requestHandlers.get(method)?.delete(handler);
+      this.requestHandlers.get(method)?.delete(registration);
       for (const [id, request] of this.serverRequests) {
-        if (request.handler !== handler) continue;
+        if (request.registration !== registration) continue;
         request.controller.abort();
         this.serverRequests.delete(id);
       }
@@ -623,7 +802,7 @@ export class CodexAppServerProcess {
   }
 
   private async initialize(): Promise<void> {
-    await this.sendRequest("initialize", {
+    const result = await this.sendRequest("initialize", {
       clientInfo: {
         name: "llm-for-zotero",
         title: "LLM for Zotero",
@@ -631,6 +810,11 @@ export class CodexAppServerProcess {
       },
       capabilities: { experimentalApi: true },
     });
+    this.setServerUserAgent(
+      result && typeof result === "object"
+        ? (result as { userAgent?: unknown }).userAgent
+        : undefined,
+    );
     this.sendNotification("initialized");
     this.protocolInitialized = true;
   }
@@ -709,6 +893,26 @@ export class CodexAppServerProcess {
     }
     this.closeHandlers.clear();
   }
+}
+
+function selectRequestRegistration(
+  handlers: Set<RequestRegistration>,
+  params: unknown,
+): RequestRegistration | undefined {
+  for (const registration of handlers) {
+    if (!registration.accepts) continue;
+    let accepted = false;
+    try {
+      accepted = registration.accepts(params);
+    } catch {
+      accepted = false;
+    }
+    if (accepted) return registration;
+  }
+  for (const registration of handlers) {
+    if (!registration.accepts) return registration;
+  }
+  return undefined;
 }
 
 export function isCodexAppServerInjectItemsUnsupportedError(
@@ -1380,6 +1584,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
         // Ignore downstream consumer errors so the transport can finish cleanly.
       });
     };
+    // This turn is normally counted as live by the runTurnExclusive call
+    // around it; every other live turn belongs to another conversation.
+    const otherLiveTurns = () => Math.max(0, proc.getActiveTurnCount() - 1);
+    const retireProcess = () => {
+      if (!cacheKey) return;
+      retireCodexAppServerProcessAfterTurnFailure({
+        cacheKey,
+        proc,
+        processOptions: params.processOptions,
+        otherLiveTurns: otherLiveTurns(),
+      });
+    };
     const scheduleTimeout = () => {
       if (timeoutMs <= 0 || settled) return;
       if (timeoutId !== null) {
@@ -1390,13 +1606,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
           scheduleTimeout();
           return;
         }
-        if (cacheKey) {
-          destroyCachedCodexAppServerProcess(
-            cacheKey,
-            proc,
-            params.processOptions,
-          );
+        if (otherLiveTurns() > 0 && params.threadId && turnId) {
+          // Stop only this turn; the process stays up for the others.
+          void proc
+            .sendRequest(
+              "turn/interrupt",
+              { threadId: params.threadId, turnId },
+              5000,
+              { failProcessOnTimeout: false },
+            )
+            .catch(() => undefined);
         }
+        retireProcess();
         settle(() =>
           reject(
             new Error(
@@ -1408,35 +1629,30 @@ export function waitForCodexAppServerTurnCompletion(params: {
     };
     const abortHandler = () => {
       if (params.interruptOnAbort && params.threadId) {
+        // The interrupted turn stays live on the server until the interrupt
+        // answers, so it keeps its own hold for the decision below.
+        const releaseHold = proc.holdActiveTurn();
         void proc
           .sendRequest(
             "turn/interrupt",
             { threadId: params.threadId, turnId },
             5000,
+            { failProcessOnTimeout: false },
           )
           .catch((error) => {
             appLogger.warn(
-              "Codex app-server: turn/interrupt failed; destroying process",
+              "Codex app-server: turn/interrupt failed; retiring process",
               new Error(
                 redactAllRememberedLocalDocumentPathsFromTerminalText(
                   error instanceof Error ? error.message : String(error),
                 ),
               ),
             );
-            if (cacheKey) {
-              destroyCachedCodexAppServerProcess(
-                cacheKey,
-                proc,
-                params.processOptions,
-              );
-            }
-          });
-      } else if (cacheKey) {
-        destroyCachedCodexAppServerProcess(
-          cacheKey,
-          proc,
-          params.processOptions,
-        );
+            retireProcess();
+          })
+          .finally(releaseHold);
+      } else {
+        retireProcess();
       }
       settle(() => reject(createAbortError()));
     };
@@ -1462,7 +1678,35 @@ export function waitForCodexAppServerTurnCompletion(params: {
       fn();
     }
 
-    const unsubActivity = proc.onActivity(() => {
+    // Threads a sub-agent of this turn runs on; their traffic keeps this turn
+    // alive, other conversations' traffic on the shared process does not.
+    const childThreadIds = new Set<string>();
+    const unsubActivity = proc.onActivity((message) => {
+      const messageParams = message.params;
+      const messageThreadId =
+        extractCodexAppServerNotificationThreadId(messageParams) ||
+        extractCodexAppServerRequestThreadId(messageParams);
+      const messageTurnId =
+        extractCodexAppServerNotificationTurnId(messageParams);
+      if (params.threadId && messageThreadId) {
+        if (messageThreadId === params.threadId) {
+          if (messageTurnId && turnId && messageTurnId !== turnId) return;
+          const item = (messageParams as { item?: Record<string, unknown> })
+            ?.item;
+          const receivers =
+            item?.receiverThreadIds ?? item?.receiver_thread_ids;
+          if (Array.isArray(receivers)) {
+            for (const receiver of receivers) {
+              if (typeof receiver === "string" && receiver) {
+                childThreadIds.add(receiver);
+              }
+            }
+          }
+        } else if (!childThreadIds.has(messageThreadId)) {
+          // Another conversation's message.
+          return;
+        }
+      }
       scheduleTimeout();
     });
     scheduleTimeout();
@@ -1956,26 +2200,6 @@ function uniquePaths(paths: string[]): string[] {
     out.push(normalized);
   }
   return out;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.exists) {
-    try {
-      return Boolean(await IOUtils.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.exists) {
-    try {
-      return Boolean(await OSFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 async function readSubprocessStdout(proc: any): Promise<string> {
@@ -2661,6 +2885,87 @@ export function destroyCachedCodexAppServerProcess(
         proc.destroy();
       }
     });
+}
+
+/**
+ * Removes a process from the cache without destroying it, so new turns start
+ * on a fresh process while the turns already on this one finish.
+ */
+export function detachCachedCodexAppServerProcess(
+  cacheKey: string,
+  proc: CodexAppServerProcess,
+  options: CodexAppServerProcessOptions = {},
+): void {
+  const effectiveCacheKey = buildProcessCacheKey(cacheKey, options);
+  const existing = processCache.get(effectiveCacheKey);
+  if (!existing) return;
+  void existing
+    .then((cachedProc) => {
+      if (
+        cachedProc === proc &&
+        processCache.get(effectiveCacheKey) === existing
+      ) {
+        processCache.delete(effectiveCacheKey);
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * After a turn timed out or could not be stopped, its process is suspect. With
+ * no other live turn it is destroyed at once, as it always was. While another
+ * conversation still has a turn on it, it is taken out of the cache and
+ * destroyed when that turn ends, so the failure never kills a sibling turn.
+ */
+export function retireCodexAppServerProcessAfterTurnFailure(params: {
+  cacheKey: string;
+  proc: CodexAppServerProcess;
+  processOptions?: CodexAppServerProcessOptions;
+  otherLiveTurns: number;
+}): void {
+  if (params.otherLiveTurns <= 0) {
+    destroyCachedCodexAppServerProcess(
+      params.cacheKey,
+      params.proc,
+      params.processOptions,
+    );
+    return;
+  }
+  detachCachedCodexAppServerProcess(
+    params.cacheKey,
+    params.proc,
+    params.processOptions,
+  );
+  params.proc.destroyWhenIdle();
+}
+
+/**
+ * Runs one turn on the cached process for the cache key, queued behind the
+ * same turn key's earlier turns. If a failure retired that process while this
+ * turn waited, the turn starts once on a fresh cached process instead.
+ */
+export async function runCodexAppServerTurnOnCachedProcess<T>(
+  target: {
+    cacheKey: string;
+    options?: CodexAppServerProcessOptions;
+    turnKey: string;
+  },
+  callback: (proc: CodexAppServerProcess) => Promise<T>,
+): Promise<T> {
+  const runOn = async (proc: CodexAppServerProcess) =>
+    proc.runTurnExclusive(() => callback(proc), target.turnKey);
+  const proc = await getOrCreateCodexAppServerProcess(
+    target.cacheKey,
+    target.options,
+  );
+  try {
+    return await runOn(proc);
+  } catch (error) {
+    if (!(error instanceof CodexAppServerProcessRetiredError)) throw error;
+  }
+  return runOn(
+    await getOrCreateCodexAppServerProcess(target.cacheKey, target.options),
+  );
 }
 
 export async function getOrCreateCodexAppServerProcess(

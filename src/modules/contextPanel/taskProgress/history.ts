@@ -24,7 +24,7 @@
  */
 import { ExecutionCheckpointFold } from "../../../agent/execution/checkpointEvents";
 import { listAgentRunEventsForRuns } from "../../../agent/store/traceStore";
-import type { AgentRunEventRecord, AgentEvent } from "../../../agent/types";
+import type { AgentRunEventRecord } from "../../../agent/types";
 import type {
   TaskPaperDocumentCitation,
   TaskPaperLedgerDelta,
@@ -36,7 +36,10 @@ import {
 } from "../../../shared/conversationWriteFence";
 import { chatHistory, loadedConversationKeys } from "../state";
 import type { Message } from "../types";
-import { readCodexPlanChecklist } from "./codexPlan";
+import {
+  TASK_PROGRESS_REPLAY_EVENT_TYPES,
+  taskProgressEffect,
+} from "./runFold";
 import {
   getTaskProgress,
   getTaskProgressClearCount,
@@ -50,22 +53,8 @@ import {
 } from "./store";
 
 /** Event kinds a rebuild reads; everything else in a trace is skipped. */
-export const TASK_PROGRESS_HISTORY_EVENT_TYPES = [
-  "paper_ledger_update",
-  "material_finalized",
-  "codex_progress",
-  "plan_updated",
-  "plan_ready",
-  "plan_execution_updated",
-  "execution_checkpoint",
-  "execution_checkpoint_delta",
-] as const;
-
-const PLAN_EVENT_TYPES = new Set<string>([
-  "plan_updated",
-  "plan_ready",
-  "plan_execution_updated",
-]);
+export const TASK_PROGRESS_HISTORY_EVENT_TYPES =
+  TASK_PROGRESS_REPLAY_EVENT_TYPES;
 
 function settledState(message: Message | undefined): TaskRunState | null {
   if (!message || message.role !== "assistant" || message.streaming) {
@@ -112,27 +101,32 @@ export function buildTaskProgressHistory(
     const ledger = new ExecutionCheckpointFold();
     let checklist: TaskProgressHistoryChecklist | null = null;
     for (const entry of events) {
-      const payload: AgentEvent = entry.payload;
-      if (payload.type === "paper_ledger_update" && payload.delta) {
-        deltas.push(payload.delta);
-      } else if (payload.type === "material_finalized") {
-        documentCitations.push(...(payload.citedSources || []));
-      } else if (
-        payload.type === "execution_checkpoint" ||
-        payload.type === "execution_checkpoint_delta"
-      ) {
-        const checkpoint = ledger.apply(payload);
-        if (checkpoint?.tasks?.length) planSeen = true;
-        if (checkpoint)
-          checklist = taskOutcomesChecklist(runId, checkpoint) ?? checklist;
-      } else if (PLAN_EVENT_TYPES.has(payload.type)) {
-        planSeen = true;
-      } else {
-        const steps = readCodexPlanChecklist(payload);
-        if (steps) {
-          planSeen = true;
-          checklist = { source: "codex", runId, steps };
+      const effect = taskProgressEffect(entry.payload);
+      if (!effect) continue;
+      switch (effect.kind) {
+        case "paper_delta":
+          if (effect.delta) deltas.push(effect.delta);
+          break;
+        case "document_citations":
+          documentCitations.push(...(effect.citations || []));
+          break;
+        case "outcomes": {
+          const checkpoint = ledger.apply(effect.event);
+          if (checkpoint?.tasks?.length) planSeen = true;
+          if (checkpoint)
+            checklist = taskOutcomesChecklist(runId, checkpoint) ?? checklist;
+          break;
         }
+        case "plan_seen":
+          planSeen = true;
+          break;
+        case "codex_checklist":
+          planSeen = true;
+          checklist = { source: "codex", runId, steps: effect.steps };
+          break;
+        default:
+          // Live-only effects (answering, waiting, final) are not replayed.
+          break;
       }
     }
     runs.push({

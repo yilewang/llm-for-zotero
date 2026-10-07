@@ -1,3 +1,5 @@
+import { isQuoteTokenId } from "./quoteTokenIds";
+
 /** Paragraph support and reading recommendations share IDs, not presentation. */
 const CITATION_RUN = /\[\[cite:[^\]\n]*\]\](?:[ \t]*\[\[cite:[^\]\n]*\]\])*/g;
 
@@ -29,7 +31,7 @@ export function transformParagraphCitations(
             if (offset > 0 && part[offset - 1] === "\\") return token;
             const ids = [...token.matchAll(/\[\[cite:([^\]]+)\]\]/g)]
               .flatMap((match) => match[1].split(",").map((id) => id.trim()))
-              .filter((id) => /^[A-Za-z0-9_-]+$/.test(id));
+              .filter(isQuoteTokenId);
             return replace([...new Set(ids)]);
           });
         })

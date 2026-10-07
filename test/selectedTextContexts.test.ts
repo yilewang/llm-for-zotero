@@ -33,7 +33,8 @@ describe("selected text context normalization", function () {
     });
     assert.equal(contexts[1]?.contextItemId, 44);
     assert.equal(contexts[1]?.pageIndex, 587);
-    assert.equal(contexts[1]?.pageLabel, "588");
+    // D5 (was "588", guessed from the page index): no label is invented.
+    assert.isUndefined(contexts[1]?.pageLabel);
   });
 
   it("treats canonical contexts as authoritative over legacy arrays", function () {

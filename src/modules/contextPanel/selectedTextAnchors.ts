@@ -5,14 +5,14 @@ import type {
   SelectedTextContext,
 } from "../../shared/types";
 import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
-import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
-import type { LivePdfPageText } from "./livePdfSelectionLocator";
+import { warmPageTextCacheForAttachment } from "../../services/pdf/livePdfSelectionLocator";
+import type { LivePdfPageText } from "../../services/pdf/livePdfSelectionLocator";
 import { normalizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
 } from "../../services/quotes/quoteTextSearch";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export const SELECTED_TEXT_ANCHOR_MAX_CHARS = 6_500;
@@ -191,7 +191,7 @@ async function resolveProvisionalAnchor(params: {
       // Locator-only fallback remains available.
     }
   }
-  const pdfContext = pdfTextCache.get(contextItemId);
+  const pdfContext = paperTextStore.peek(contextItemId);
   const pageCache = await warmPageTextCacheForAttachment(contextItemId).catch(
     () => null,
   );
@@ -258,9 +258,10 @@ function buildProvisionalAnchor(params: {
     contextIndex,
     contextItemId,
     pageIndex,
+    // Only a printed label; formatting numbers an unlabelled page itself.
     pageLabel:
       sanitizeText(context.pageLabel || selectedPage?.pageLabel || "").trim() ||
-      (pageIndex !== undefined ? `${pageIndex + 1}` : undefined),
+      undefined,
     paperContext,
     resolution,
     primaryChunkIndex: primaryChunkIndex ?? undefined,

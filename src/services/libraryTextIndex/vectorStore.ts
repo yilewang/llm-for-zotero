@@ -15,6 +15,13 @@
  */
 
 import { fnv1a32 } from "../../utils/fnv1a";
+import {
+  ensureDir,
+  getIOUtils,
+  getOSFile,
+  readFileBytes,
+  writeFileBytes,
+} from "../../utils/geckoFs";
 import { joinLocalPath } from "../../utils/localPath";
 
 export type QuantizedVector = { q: Int8Array; scale: number };
@@ -94,99 +101,9 @@ export function getVectorShardPath(
   return joinLocalPath(getNamespaceDir(namespace), `${attachmentId}.bin`);
 }
 
-// ── Gecko I/O helpers (mirrors retrieval/embeddingCache.ts) ─────────────────
+// ── Gecko I/O helpers ────────────────────────────────────────────────────────
 
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-  stat?: (path: string) => Promise<{ size?: number; type?: string }>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, { ignoreExisting: true });
-  }
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = getIOUtils();
-  if (io?.read) {
-    try {
-      const data = await io.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.read) {
-    try {
-      const data = await osFile.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, bytes);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, bytes);
-  }
-}
-
+// Unlike the shared `pathExists`, this one lets API errors propagate.
 async function pathExists(path: string): Promise<boolean> {
   const io = getIOUtils();
   if (io?.exists) return io.exists(path);

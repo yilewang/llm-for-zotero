@@ -7,7 +7,7 @@ import {
 } from "../src/services/quotes/quoteCitations";
 import { buildQuoteRenderPlan } from "../src/modules/contextPanel/quoteRenderPlan";
 import { resolveQuoteCitationLookupText } from "../src/modules/contextPanel/quoteNavigationText";
-import { resolvePageNativeFindControllerQuery } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { resolvePageNativeFindControllerQuery } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   ALTERED_QUOTE_ACCEPTANCE_CASES,
   CITATION_MARKER_QUOTE_CASES,

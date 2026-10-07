@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import {
   buildZoteroMcpConfigValue,
@@ -31,6 +32,16 @@ export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
   "paper_read",
   "file_io",
   "run_command",
+] as const;
+/**
+ * Direct-path PDF turns read the PDF with Codex's own shell, so the host
+ * access tools are hidden and only the library tools must be ready. The MCP
+ * catalog also hides control tools per scope, so readiness never requires
+ * the whole enabled list.
+ */
+export const REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES = [
+  "library_search",
+  "library_read",
 ] as const;
 export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
@@ -213,12 +224,7 @@ function getConfigHeaders(
 }
 
 function hashString(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
+  return fnv1a32Raw(value).toString(16);
 }
 
 function buildPreflightConfigSignature(

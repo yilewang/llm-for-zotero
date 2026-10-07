@@ -5,8 +5,8 @@ import {
   lookupCitationPage,
   rememberCitationPage,
   setCitationNavigationCacheNowForTests,
-} from "../src/modules/contextPanel/citationNavigationCache";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../src/services/pdf/citationNavigationCache";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 
 describe("citationNavigationCache", function () {
   afterEach(function () {

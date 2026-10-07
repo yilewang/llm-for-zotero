@@ -8,12 +8,13 @@
  */
 import { appLogger } from "../../../core/logging";
 import { paragraphCitationIds } from "../../../services/quotes/paragraphCitations";
+import { quoteTokenPattern } from "../../../services/quotes/quoteTokenIds";
 import type { AgentRuntimeRequestInput as AgentRuntimeRequest } from "../../../agent/types";
 import {
   getActiveReaderForSelectedTab,
   getAllOpenReaders,
 } from "../../../services/pdf/zoteroReaderTabs";
-import { pdfTextCache } from "../../../services/paperContent/contextCache";
+import { paperTextStore } from "../../../services/paperContent/paperTextStore";
 import { formatPaperSourceLabel } from "../../../services/paperContent/paperAttribution";
 import {
   ensureNoteTextCached,
@@ -31,7 +32,7 @@ import {
   getCachedPageTextForAttachment,
   hasCompleteSearchablePageTextForAttachment,
   warmPageTextCacheForAttachment,
-} from "../livePdfSelectionLocator";
+} from "../../../services/pdf/livePdfSelectionLocator";
 import type { Message, PaperContextRef } from "../types";
 
 function quoteSourcePaperKey(paper: PaperContextRef): string {
@@ -41,12 +42,12 @@ function quoteSourcePaperKey(paper: PaperContextRef): string {
 }
 
 function cachedQuoteSourceText(contextItemId: number): string {
-  const cached = pdfTextCache.get(contextItemId);
+  const cached = paperTextStore.peek(contextItemId);
   return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
 }
 
 function cachedQuoteSourceChunks(contextItemId: number): QuoteSourceText[] {
-  const cached = pdfTextCache.get(contextItemId);
+  const cached = paperTextStore.peek(contextItemId);
   if (!Array.isArray(cached?.chunks) || !cached.chunks.length) return [];
   const chunkMeta = Array.isArray(cached.chunkMeta) ? cached.chunkMeta : [];
   const out: QuoteSourceText[] = [];
@@ -109,12 +110,7 @@ async function ensureQuoteSourceTextCachedForPaper(
 
   // An empty cache entry means an earlier extraction attempt did not provide
   // searchable text. Retry here before the provenance finalizer gives up.
-  if (
-    !hasCachedQuoteSourceText(contextItemId) &&
-    pdfTextCache.has(contextItemId)
-  ) {
-    pdfTextCache.delete(contextItemId);
-  }
+  paperTextStore.discardEmptyEntry(contextItemId);
 
   try {
     if ((contextItem as any).isNote?.()) {
@@ -322,7 +318,7 @@ export function assistantMarkdownNeedsQuoteSourceSearch(
   return (
     /^[ \t]*>/.test(markdown || "") ||
     /\n[ \t]*>/.test(markdown || "") ||
-    /\[\[quote:[A-Za-z0-9_-]+\]\]/.test(markdown || "")
+    quoteTokenPattern("quote", "").test(markdown || "")
   );
 }
 
@@ -337,7 +333,7 @@ export function assistantMarkdownNeedsBackgroundQuoteSearch(
   );
   let hasUnresolvedAnchor = false;
   const withoutResolvedAnchors = (markdown || "").replace(
-    /\[\[quote:([A-Za-z0-9_-]+)\]\]/g,
+    quoteTokenPattern("quote"),
     (token, id: string) => {
       if (knownIds.has(id)) return "";
       hasUnresolvedAnchor = true;
@@ -437,7 +433,7 @@ export function registeredQuoteCitationsForReview(
 ): QuoteCitation[] {
   const anchoredIds = new Set(
     Array.from(
-      (markdown || "").matchAll(/\[\[quote:([A-Za-z0-9_-]+)\]\]/g),
+      (markdown || "").matchAll(quoteTokenPattern("quote")),
       (match) => match[1],
     ),
   );

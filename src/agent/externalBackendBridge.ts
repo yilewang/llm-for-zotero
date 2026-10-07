@@ -1,5 +1,6 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
-import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
+import { settleExternalTurn } from "./execution/externalTurnSettlement";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -21,6 +22,7 @@ import { getClaudeConversationSummary } from "../claudeCode/store";
 import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
+import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
@@ -110,6 +112,8 @@ export type RunTurnParams = {
   request: AgentRuntimeRequestInput;
   onEvent?: (event: AgentEvent) => void | Promise<void>;
   onStart?: (runId: string) => void | Promise<void>;
+  /** As for the in-plugin runtime; a bridge turn never waits, so never called. */
+  onWaiting?: (text: string) => void | Promise<void>;
   signal?: AbortSignal;
 };
 
@@ -148,9 +152,12 @@ export type AgentRuntimeLike = Pick<
   | "resolveConfirmation"
   | "getRunTrace"
 > & {
-  getCapabilities(request: AgentRuntimeRequestInput): AgentModelCapabilities;
+  getCapabilities(
+    request: AgentRuntimeRequestInput,
+    options?: ClaudeBridgeGateOptions,
+  ): AgentModelCapabilities;
   runTurn(params: RunTurnParams): Promise<AgentRuntimeOutcome>;
-  listExternalActionsSync(): Array<{
+  listExternalActionsSync(options?: ClaudeBridgeGateOptions): Array<{
     name: string;
     description: string;
     inputSchema: object;
@@ -161,7 +168,7 @@ export type AgentRuntimeLike = Pick<
     mutability: "read" | "write";
   }>;
   refreshExternalActions(force?: boolean): Promise<void>;
-  listSlashCommandsSync(): Array<{
+  listSlashCommandsSync(options?: ClaudeBridgeGateOptions): Array<{
     name: string;
     description: string;
     argumentHint?: string;
@@ -171,10 +178,12 @@ export type AgentRuntimeLike = Pick<
   listEfforts(
     model?: string,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<string[]>;
   listModels(
     force?: boolean,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<ClaudeModelCatalog>;
   updateRuntimeRetention(params: {
     conversationKey: number;
@@ -208,10 +217,20 @@ export type AgentRuntimeLike = Pick<
   ): Promise<ActionResult<unknown>>;
 };
 
+/**
+ * What the bridge server streams as a turn's outcome: Claude answered or
+ * fell back. A stop or a failure arrives as an error line instead, and the
+ * bridge runtime turns it into a cancelled or failed outcome.
+ */
+type BridgeTurnOutcome = Extract<
+  AgentRuntimeOutcome,
+  { kind: "completed" | "fallback" }
+>;
+
 type BridgeLine =
   | { type: "start"; runId: string }
   | { type: "event"; event: AgentEvent }
-  | { type: "outcome"; outcome: AgentRuntimeOutcome }
+  | { type: "outcome"; outcome: BridgeTurnOutcome }
   | { type: "error"; error: string };
 
 function makeProfilingEvent(
@@ -397,13 +416,7 @@ type BridgeScope = BridgeScopeSnapshot;
 type ClaudeMcpServersConfig = Record<string, Record<string, unknown>>;
 
 function hashProviderIdentityStack(stack: string[]): string {
-  let hash = 2166136261;
-  const input = stack.join("\n");
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a-${(hash >>> 0).toString(16)}`;
+  return `fnv1a-${fnv1a32Raw(stack.join("\n")).toString(16)}`;
 }
 
 async function buildClaudeProviderIdentityStack(): Promise<string[]> {
@@ -726,10 +739,19 @@ function isClaudeCodeModeEnabled(): boolean {
   }
 }
 
-function isClaudeBridgeActive(): boolean {
-  return (
-    getConversationSystemPref() === "claude_code" && isClaudeCodeModeEnabled()
-  );
+/**
+ * Which conversation system a caller acts for. The standalone window and the
+ * sidebar each have their own (surfaceChoices.ts), so callers acting for a
+ * panel or a turn name it; only callers acting for no panel leave it out and
+ * get the saved system.
+ */
+export type ClaudeBridgeGateOptions = {
+  conversationSystem?: ConversationSystem | null;
+};
+
+function isClaudeBridgeActive(options?: ClaudeBridgeGateOptions): boolean {
+  const system = options?.conversationSystem || getConversationSystemPref();
+  return system === "claude_code" && isClaudeCodeModeEnabled();
 }
 
 export function resolveClaudeBridgeModelForMetadata(
@@ -1044,7 +1066,7 @@ async function runExternalBridgeTurn(
     ) => void;
     resolveExternalConfirmation?: ResolveExternalConfirmation;
   },
-): Promise<AgentRuntimeOutcome> {
+): Promise<BridgeTurnOutcome> {
   const url = `${normalizeBaseUrl(baseUrl)}/run-turn`;
   const reasoningLevel =
     typeof params.request.reasoning?.level === "string"
@@ -1133,7 +1155,7 @@ async function runExternalBridgeTurn(
     throw new Error(`Bridge HTTP ${response.status}`);
   }
 
-  let finalOutcome: AgentRuntimeOutcome | null = null;
+  let finalOutcome: BridgeTurnOutcome | null = null;
   let sawFirstBridgeLine = false;
 
   await streamBridgeLines(response, async (line) => {
@@ -2307,7 +2329,7 @@ async function runExternalBridgeAction(
     onStart?: (runId: string) => void | Promise<void>;
     metadata?: Record<string, unknown>;
   },
-): Promise<AgentRuntimeOutcome> {
+): Promise<BridgeTurnOutcome> {
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}/run-action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2336,7 +2358,7 @@ async function runExternalBridgeAction(
   if (!response.ok) {
     throw new Error(`Bridge HTTP ${response.status}`);
   }
-  let finalOutcome: AgentRuntimeOutcome | null = null;
+  let finalOutcome: BridgeTurnOutcome | null = null;
   await streamBridgeLines(response, async (line) => {
     if (line.type === "start") {
       await params.onStart?.(line.runId);
@@ -2364,6 +2386,26 @@ async function runExternalBridgeAction(
     };
   }
   return finalOutcome;
+}
+
+/**
+ * The bridge runtime as seen by one turn or panel: every system gate answers
+ * for `conversationSystem` instead of the saved one; everything else is the
+ * same runtime.
+ */
+export function bindClaudeBridgeConversationSystem(
+  runtime: AgentRuntimeLike,
+  conversationSystem: ConversationSystem,
+): AgentRuntimeLike {
+  const gate: ClaudeBridgeGateOptions = { conversationSystem };
+  return {
+    ...runtime,
+    getCapabilities: (request) => runtime.getCapabilities(request, gate),
+    listExternalActionsSync: () => runtime.listExternalActionsSync(gate),
+    listSlashCommandsSync: () => runtime.listSlashCommandsSync(gate),
+    listEfforts: (model, context) => runtime.listEfforts(model, context, gate),
+    listModels: (force, context) => runtime.listModels(force, context, gate),
+  };
 }
 
 export function createExternalBackendBridgeRuntime(options: {
@@ -2459,9 +2501,10 @@ export function createExternalBackendBridgeRuntime(options: {
   const listEfforts = async (
     model?: string,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<string[]> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    if (!bridgeUrl || !isClaudeBridgeActive()) {
+    if (!bridgeUrl || !isClaudeBridgeActive(options)) {
       return [];
     }
     const configKey = resolveCapabilityConfigKey();
@@ -2499,9 +2542,10 @@ export function createExternalBackendBridgeRuntime(options: {
   const listModels = async (
     force = false,
     context?: ClaudeModelCatalogRequestContext,
+    options?: ClaudeBridgeGateOptions,
   ): Promise<ClaudeModelCatalog> => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    if (!bridgeUrl || !isClaudeBridgeActive()) {
+    if (!bridgeUrl || !isClaudeBridgeActive(options)) {
       return { models: [], legacy: true };
     }
     const configKey = resolveCapabilityConfigKey();
@@ -2642,9 +2686,11 @@ export function createExternalBackendBridgeRuntime(options: {
     await slashCommandsRefreshInFlight;
   };
 
-  const listSlashCommandsSync = (): ExternalSlashCommandDescriptor[] => {
+  const listSlashCommandsSync = (
+    options?: ClaudeBridgeGateOptions,
+  ): ExternalSlashCommandDescriptor[] => {
     const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-    const hasBridge = !!bridgeUrl && isClaudeBridgeActive();
+    const hasBridge = !!bridgeUrl && isClaudeBridgeActive(options);
     const count = cachedSlashCommands.length;
     dbg("listSlashCommandsSync called", { hasBridge, count, bridgeUrl });
     if (!hasBridge) {
@@ -2693,9 +2739,9 @@ export function createExternalBackendBridgeRuntime(options: {
     resolveConfirmation: (requestId, approvedOrResolution, data) =>
       coreRuntime.resolveConfirmation(requestId, approvedOrResolution, data),
     getRunTrace: (runId: string) => coreRuntime.getRunTrace(runId),
-    getCapabilities: (request) => {
+    getCapabilities: (request, options) => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-      if (!bridgeUrl || !isClaudeBridgeActive()) {
+      if (!bridgeUrl || !isClaudeBridgeActive(options)) {
         return coreRuntime.getCapabilities(request);
       }
       return buildAgentModelCapabilities({
@@ -2710,8 +2756,8 @@ export function createExternalBackendBridgeRuntime(options: {
         reasoning: true,
       });
     },
-    listExternalActionsSync: () => {
-      if (!normalizeBaseUrl(getBridgeUrl()) || !isClaudeBridgeActive()) {
+    listExternalActionsSync: (options) => {
+      if (!normalizeBaseUrl(getBridgeUrl()) || !isClaudeBridgeActive(options)) {
         return [];
       }
       return cachedTools.map((tool) => ({
@@ -3350,7 +3396,7 @@ export function createExternalBackendBridgeRuntime(options: {
           const runBridge = async (
             request: AgentRuntimeRequest,
             bridgeRuntimeRequest: BridgeRuntimeRequest,
-          ): Promise<AgentRuntimeOutcome> =>
+          ): Promise<BridgeTurnOutcome> =>
             runExternalBridgeTurn(bridgeUrl, {
               ...params,
               request,
@@ -3376,44 +3422,40 @@ export function createExternalBackendBridgeRuntime(options: {
 
           let outcome = await runBridge(params.request, runtimeRequest);
           await Promise.all(pendingMcpActivity);
-          let terminalRunStatus: "completed" | "failed" =
-            outcome.kind === "completed" ? "completed" : "failed";
-          let finalizedDocument = null;
-          if (outcome.kind === "completed") {
-            finalizedDocument = await loadFinalizedDocument();
-          }
-          if (outcome.kind === "completed") {
-            const document = finalizedDocument;
-            if (document) {
-              outcome = {
-                ...outcome,
-                text: document.visibleMarkdown,
-                documentId: document.documentId,
-              };
-            }
-          }
-          const actionEvaluation = evaluatePreparedActionContract(hostReceipts);
-          if (
-            actionEvaluation.state !== "satisfied" &&
-            actionEvaluation.state !== "cancelled"
-          ) {
-            terminalRunStatus = "failed";
-            const failure =
-              actionEvaluation.failure ||
-              "The requested action has no verified completion evidence.";
+          // Only an answered turn has a finalized document, and the bridge
+          // keys it by the persisted run.
+          const finalizedDocument =
+            outcome.kind === "completed" ? await loadFinalizedDocument() : null;
+          const settlement = settleExternalTurn({
+            answerText:
+              outcome.kind === "completed" ? outcome.text : outcome.reason,
+            answered: outcome.kind === "completed",
+            document: finalizedDocument,
+            hostReceipts,
+          });
+          const terminalRunStatus = settlement.status;
+          if (settlement.unverified !== undefined) {
             await emitTurnEvent({
               type: "provider_event",
               providerType: "agent_completion_unverified",
-              payload: { reason: failure },
+              payload: { reason: settlement.unverified },
             });
+            // The report replaces the outcome, a fallback included.
             outcome = {
               kind: "completed",
               runId: outcome.runId,
-              text: finalizedDocument
-                ? `${finalizedDocument.visibleMarkdown}\n\n${failure}`
-                : failure,
-              documentId: finalizedDocument?.documentId,
+              text: settlement.text,
+              documentId: settlement.documentId,
               usedFallback: false,
+              ...(terminalRunStatus === "failed"
+                ? { runStatus: "failed" as const }
+                : {}),
+            };
+          } else if (outcome.kind === "completed" && finalizedDocument) {
+            outcome = {
+              ...outcome,
+              text: settlement.text,
+              documentId: settlement.documentId,
             };
           }
 
@@ -3421,7 +3463,7 @@ export function createExternalBackendBridgeRuntime(options: {
             await appendPersistedEvent(redactedEvent);
             await notifyIfLive(redactedEvent);
           }
-          const safeOutcome: AgentRuntimeOutcome =
+          const safeOutcome: BridgeTurnOutcome =
             outcome.kind === "completed"
               ? {
                   ...outcome,
@@ -3496,7 +3538,17 @@ export function createExternalBackendBridgeRuntime(options: {
             finishAgentRun(fallbackRunId, failedRunStatus, message),
           );
           appLogger.warn("LLM Agent: External bridge unavailable", message);
-          throw new Error(message);
+          // The throwing public runTurn rethrows the report as it always has.
+          const cause = new Error(message);
+          return failedRunStatus === "cancelled"
+            ? { kind: "cancelled", runId: fallbackRunId, cause }
+            : {
+                kind: "failed",
+                runId: fallbackRunId,
+                message,
+                interrupted: false,
+                cause,
+              };
         } finally {
           unregisterMcpToolActivity();
           clearScopedMcpScope();

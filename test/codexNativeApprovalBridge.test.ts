@@ -6,7 +6,7 @@ import type {
 import {
   resolveCodexNativeApprovalWithOptionalReviewCard,
   resolveCodexNativeHostInteractionWithTrace,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/codexNative/turnCallbacks";
 
 describe("Codex native approval bridge", function () {
   it("lets the trace exclusively own a host-interaction question card", async function () {

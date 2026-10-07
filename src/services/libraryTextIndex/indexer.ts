@@ -9,7 +9,7 @@ import {
   readAttachmentFileState,
   type AttachmentFileState,
 } from "../../utils/attachmentFileState";
-import { pdfTextCache } from "../paperContent/contextCache";
+import { paperTextStore } from "../paperContent/paperTextStore";
 import { ensurePDFTextCached } from "../paperContent/pdfContext";
 import type { PdfContext } from "../paperContent/types";
 import { LIBRARY_TEXT_INDEX_CHUNKER_VERSION } from "./constants";
@@ -148,7 +148,8 @@ export async function indexAttachment(params: {
   const now = params.now || Date.now;
   const started = now();
   const attachmentId = params.item.id;
-  const hadContext = pdfTextCache.has(attachmentId);
+  // The agent may have loaded this paper for its own reasons; only evict what indexing loaded.
+  const releaseBorrowedText = paperTextStore.borrow(attachmentId);
   try {
     // Prefetch: cheapest source first (MinerU md → Zotero full-text cache → PDFWorker).
     // Urgent (write-through, added, invalidated): today's ladder, pages included.
@@ -159,7 +160,7 @@ export async function indexAttachment(params: {
         ? { preferFulltextCache: true, silentLoad: true }
         : { silentLoad: true },
     );
-    const ctx = pdfTextCache.get(attachmentId);
+    const ctx = paperTextStore.peek(attachmentId);
     if (!ctx || !ctx.chunks.length) {
       const fileState = await readAttachmentFileState(params.item);
       if (!fileState) {
@@ -254,7 +255,6 @@ export async function indexAttachment(params: {
       elapsedMs: now() - started,
     };
   } finally {
-    // The agent may have loaded this paper for its own reasons; only evict what indexing loaded.
-    if (!hadContext) pdfTextCache.delete(attachmentId);
+    releaseBorrowedText();
   }
 }

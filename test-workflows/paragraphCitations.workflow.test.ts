@@ -3,7 +3,7 @@ import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTy
 import { preparePaperPromptContext } from "../src/agent/context/paperPromptContext";
 import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
 import { renderAssistantRichText } from "../src/modules/contextPanel/assistantRichText";
-import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
+import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 import { waitForAssistantQuoteValidationForTests } from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { createSourcePopover } from "../src/modules/contextPanel/sourcePopover";
 

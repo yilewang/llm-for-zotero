@@ -1,19 +1,15 @@
 import { t } from "../../../../utils/i18n";
 import { registerAddonDialog } from "../../../../utils/dialogRegistry";
 import { MAX_SELECTED_IMAGES } from "../../constants";
-import {
-  activeContextPanels,
-  selectedImageCache,
-  selectedImagePreviewActiveIndexCache,
-  selectedImagePreviewExpandedCache,
-} from "../../state";
+import { activeContextPanels } from "../../state";
+import { composeContextStore } from "../../contexts/composeContextStore";
 import {
   getActiveContextAttachmentFromTabs,
   getActiveReaderSelectionText,
 } from "../../contextResolution";
 import { getActiveReaderForSelectedTab } from "../../../../services/pdf/zoteroReaderTabs";
 import { resolvePaperContextRefFromAttachment } from "../../../../services/paperContent/paperAttribution";
-import { getCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
+import { getCurrentSelectionPageLocationFromReader } from "../../../../services/pdf/livePdfSelectionLocator";
 import { includeReaderSelectedText } from "../../readerTextInclusion";
 import {
   captureScreenshotSelection,
@@ -278,7 +274,7 @@ export function attachComposeCaptureController(
         !!mainWindow.document.documentElement,
       );
 
-      const currentImages = selectedImageCache.get(item.id) || [];
+      const currentImages = composeContextStore.images.list(item.id);
       if (currentImages.length >= MAX_SELECTED_IMAGES) {
         setStatus(
           `Maximum ${MAX_SELECTED_IMAGES} screenshots allowed`,
@@ -303,22 +299,21 @@ export function attachComposeCaptureController(
           ) {
             return;
           }
-          const existingImages = selectedImageCache.get(item.id) || [];
+          const existingImages = composeContextStore.images.list(item.id);
           const nextImages = [...existingImages, optimized].slice(
             0,
             MAX_SELECTED_IMAGES,
           );
-          selectedImageCache.set(item.id, nextImages);
-          const expandedBeforeCapture = selectedImagePreviewExpandedCache.get(
-            item.id,
-          );
-          selectedImagePreviewExpandedCache.set(
+          composeContextStore.images.set(item.id, nextImages);
+          const expandedBeforeCapture =
+            composeContextStore.imagePreviewExpanded.get(item.id);
+          composeContextStore.imagePreviewExpanded.set(
             item.id,
             typeof expandedBeforeCapture === "boolean"
               ? expandedBeforeCapture
               : false,
           );
-          selectedImagePreviewActiveIndexCache.set(
+          composeContextStore.imagePreviewActiveIndex.set(
             item.id,
             nextImages.length - 1,
           );
@@ -432,7 +427,7 @@ export function attachComposeCaptureController(
         setStatus(getScreenshotDisabledHint(currentModel), "error");
         return;
       }
-      const currentImages = selectedImageCache.get(item.id) || [];
+      const currentImages = composeContextStore.images.list(item.id);
       if (currentImages.length >= MAX_SELECTED_IMAGES) {
         setStatus(`Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
         return;
@@ -450,18 +445,20 @@ export function attachComposeCaptureController(
           if (!isOwnershipLeaseCurrent(ownership, "capture-pdf-page-commit")) {
             return;
           }
-          const existingImages = selectedImageCache.get(item.id) || [];
+          const existingImages = composeContextStore.images.list(item.id);
           const nextImages = [...existingImages, optimized].slice(
             0,
             MAX_SELECTED_IMAGES,
           );
-          selectedImageCache.set(item.id, nextImages);
-          const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
-          selectedImagePreviewExpandedCache.set(
+          composeContextStore.images.set(item.id, nextImages);
+          const expandedBefore = composeContextStore.imagePreviewExpanded.get(
+            item.id,
+          );
+          composeContextStore.imagePreviewExpanded.set(
             item.id,
             typeof expandedBefore === "boolean" ? expandedBefore : false,
           );
-          selectedImagePreviewActiveIndexCache.set(
+          composeContextStore.imagePreviewActiveIndex.set(
             item.id,
             nextImages.length - 1,
           );
@@ -498,7 +495,7 @@ export function attachComposeCaptureController(
           setStatus(getScreenshotDisabledHint(currentModel), "error");
           return;
         }
-        const currentImages = selectedImageCache.get(item.id) || [];
+        const currentImages = composeContextStore.images.list(item.id);
         const remaining = MAX_SELECTED_IMAGES - currentImages.length;
         if (remaining <= 0) {
           setStatus(`Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
@@ -606,20 +603,20 @@ export function attachComposeCaptureController(
             ) {
               return;
             }
-            const existingImages = selectedImageCache.get(item.id) || [];
+            const existingImages = composeContextStore.images.list(item.id);
             const nextImages = [...existingImages, ...optimized].slice(
               0,
               MAX_SELECTED_IMAGES,
             );
-            selectedImageCache.set(item.id, nextImages);
-            const expandedBefore = selectedImagePreviewExpandedCache.get(
+            composeContextStore.images.set(item.id, nextImages);
+            const expandedBefore = composeContextStore.imagePreviewExpanded.get(
               item.id,
             );
-            selectedImagePreviewExpandedCache.set(
+            composeContextStore.imagePreviewExpanded.set(
               item.id,
               typeof expandedBefore === "boolean" ? expandedBefore : true,
             );
-            selectedImagePreviewActiveIndexCache.set(
+            composeContextStore.imagePreviewActiveIndex.set(
               item.id,
               nextImages.length - 1,
             );

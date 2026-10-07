@@ -49,6 +49,7 @@ describe("a turn's action receipts", function () {
         id: "second",
         capability: "zotero.collections",
         operation: "move_to_collection",
+        normalizedParameters: { sourceCollectionId: 7 },
       }),
     ]);
     assert.deepEqual(session.receiptStatus().split("\n"), [

@@ -6,6 +6,7 @@ import { initPlanDocumentStore } from "../src/agent/documents/store";
 import {
   addZoteroMcpToolActivityObserver,
   getOrCreateZoteroMcpBearerToken,
+  getZoteroMcpDirectPdfToolNames,
   getZoteroMcpServerUrl,
   registerScopedZoteroMcpScope,
   registerMcpServer,
@@ -14,7 +15,12 @@ import {
   unregisterMcpServer,
   ZOTERO_MCP_ENDPOINT_PATH,
   ZOTERO_MCP_SCOPE_HEADER,
+  ZOTERO_MCP_WRITE_TOOL_NAMES,
 } from "../src/agent/mcp/server";
+import {
+  assertRequiredCodexZoteroMcpToolsReady,
+  REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES,
+} from "../src/codexAppServer/mcpSetup";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type {
@@ -1565,6 +1571,63 @@ describe("Zotero MCP server", function () {
         assert.equal(payload.error.code, -32601);
         assert.notProperty(payload, "result");
       }
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  it("lists every tool Codex requires before a direct-path PDF turn", async function () {
+    // Issue #493: the readiness check required task_update, which the
+    // catalog hides from every external scope.
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    const writeNames = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
+    for (const name of getZoteroMcpDirectPdfToolNames()) {
+      registry.register(
+        writeNames.has(name) ? createWriteTool(name) : createReadTool(name),
+      );
+    }
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 7_940_002,
+      libraryID: 1,
+      kind: "paper",
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "Raw PDF",
+          contentSourceMode: "pdf",
+        },
+      ],
+    });
+
+    try {
+      const listed = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const toolNames = JSON.parse(listed[2]).result.tools.map(
+        (tool: { name: string }) => tool.name,
+      );
+      assert.notInclude(toolNames, "task_update");
+      assert.notInclude(toolNames, "request_user_input");
+      assert.doesNotThrow(() =>
+        assertRequiredCodexZoteroMcpToolsReady(
+          {
+            enabled: true,
+            serverName: "llm_for_zotero_profile_a",
+            serverUrl: getZoteroMcpServerUrl(),
+            configured: true,
+            connected: true,
+            toolNames,
+            errors: [],
+          },
+          REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES,
+        ),
+      );
     } finally {
       scoped.clear();
     }

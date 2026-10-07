@@ -135,9 +135,8 @@ export function normalizeSelectedTextContexts(
       noteContext,
       contextItemId,
       pageIndex,
-      pageLabel:
-        rawPageLabel ||
-        (pageIndex !== undefined ? `${pageIndex + 1}` : undefined),
+      // Only a stored label; none is guessed from the page index.
+      pageLabel: rawPageLabel || undefined,
     });
   }
   return out;

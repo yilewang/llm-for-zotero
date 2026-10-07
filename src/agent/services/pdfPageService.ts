@@ -14,9 +14,9 @@ import {
 } from "../../services/pdf/pdfJsPageRenderer";
 import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 import {
-  warmPdfPageTextCache as warmPageTextCache,
-  warmPdfPageTextCacheForAttachment as warmPageTextCacheForAttachment,
-} from "../../services/pdf/readerTextBridge";
+  warmPageTextCache,
+  warmPageTextCacheForAttachment,
+} from "../../services/pdf/livePdfSelectionLocator";
 import type {
   PdfFigureBox,
   PdfFigureCandidateSource,

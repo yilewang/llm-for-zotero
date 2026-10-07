@@ -474,4 +474,223 @@ describe("taskPaperScopeListing", function () {
       });
     }
   });
+
+  describe("characterizes the shared scope union", function () {
+    const originalGetSnapshot = libraryIndexService.getSnapshot;
+
+    /**
+     * The shared fixture plus a folder from another library, a tag whose
+     * members include a trashed paper, a standalone note and an automatic
+     * tagging, and a tag held only by a standalone note.
+     */
+    function characterizationSnapshot(): LibraryIndexSnapshot {
+      const snapshot = fakeSnapshot();
+      const collectionById = new Map(snapshot.collectionById);
+      collectionById.set(12, {
+        collectionId: 12,
+        libraryID: 2,
+        name: "Elsewhere",
+        parentCollectionId: 0,
+        deleted: false,
+      });
+      const directItemIdsByCollectionId = new Map(
+        snapshot.directItemIdsByCollectionId,
+      );
+      directItemIdsByCollectionId.set(12, new Set([7]));
+      const tagByNormalizedName = new Map(snapshot.tagByNormalizedName);
+      tagByNormalizedName.set("mixed", {
+        normalizedName: "mixed",
+        displayVariants: ["Mixed"],
+        manualItemIds: new Set([5, 4, 7, 99]),
+        automaticItemIds: new Set([3, 7]),
+      });
+      tagByNormalizedName.set("notes only", {
+        normalizedName: "notes only",
+        displayVariants: ["Notes only"],
+        manualItemIds: new Set([5]),
+        automaticItemIds: new Set(),
+      });
+      return {
+        ...snapshot,
+        collectionById,
+        directItemIdsByCollectionId,
+        tagByNormalizedName,
+      } as LibraryIndexSnapshot;
+    }
+
+    before(function () {
+      const snapshot = characterizationSnapshot();
+      (
+        libraryIndexService as unknown as {
+          getSnapshot: (libraryID: number) => Promise<LibraryIndexSnapshot>;
+        }
+      ).getSnapshot = async () => snapshot;
+    });
+
+    after(function () {
+      (libraryIndexService as unknown as { getSnapshot: unknown }).getSnapshot =
+        originalGetSnapshot;
+    });
+
+    type Expected = {
+      itemIds: number[];
+      tagItemIds: number[];
+      collectionNames: string[];
+      tagNames: string[];
+      summedScopeCount: number;
+    };
+    const cases: Array<[string, TaskPaperScopeContexts, Expected]> = [
+      [
+        "papers keep their order, once each, live regular only",
+        {
+          papers: [
+            { itemId: 7 },
+            { itemId: 2 },
+            { itemId: 7 },
+            { itemId: 4 },
+            { itemId: 5 },
+            { itemId: 404 },
+          ],
+        },
+        {
+          itemIds: [7, 2],
+          tagItemIds: [],
+          collectionNames: [],
+          tagNames: [],
+          summedScopeCount: 0,
+        },
+      ],
+      [
+        "folders in the given order, direct items only, paths as names",
+        { collections: [{ collectionId: 11 }, { collectionId: 10 }] },
+        {
+          itemIds: [2, 3, 1],
+          tagItemIds: [],
+          collectionNames: ["Drift/Rodents", "Drift"],
+          tagNames: [],
+          // Rodents adds 2 and 3; Drift counts 1 and 2 again.
+          summedScopeCount: 4,
+        },
+      ],
+      [
+        "a folder of another library and an unknown folder are skipped",
+        {
+          collections: [
+            { collectionId: 12 },
+            { collectionId: 99 },
+            { collectionId: 10 },
+          ],
+        },
+        {
+          itemIds: [1, 2],
+          tagItemIds: [],
+          collectionNames: ["Drift"],
+          tagNames: [],
+          summedScopeCount: 2,
+        },
+      ],
+      [
+        "a tag's name wins over its normalized name",
+        { tags: [{ name: "Learning", normalizedName: "drift" }] },
+        {
+          itemIds: [2, 6],
+          tagItemIds: [2, 6],
+          collectionNames: [],
+          tagNames: ["Learning"],
+          summedScopeCount: 2,
+        },
+      ],
+      [
+        "a tag without a name falls back to its normalized name",
+        { tags: [{ name: "", normalizedName: "Drift" }] },
+        {
+          itemIds: [1],
+          tagItemIds: [1],
+          collectionNames: [],
+          tagNames: [""],
+          summedScopeCount: 1,
+        },
+      ],
+      [
+        "a tag drops trashed, non-regular and unknown members",
+        { tags: [{ name: "MIXED", includeAutomatic: true }] },
+        {
+          itemIds: [7, 3],
+          tagItemIds: [7, 3],
+          collectionNames: [],
+          tagNames: ["MIXED"],
+          summedScopeCount: 2,
+        },
+      ],
+      [
+        "a tag held only by a note adds nothing",
+        { tags: [{ name: "notes only" }, { name: "unknown tag" }] },
+        {
+          itemIds: [],
+          tagItemIds: [],
+          collectionNames: [],
+          tagNames: ["notes only", "unknown tag"],
+          summedScopeCount: 0,
+        },
+      ],
+      [
+        "aggregate scopes read top-level order",
+        {
+          tags: [
+            { name: "Untagged", scope: "untagged", includeAutomatic: true },
+            { name: "All Tagged", scope: "allTagged" },
+          ],
+        },
+        {
+          itemIds: [7, 1, 2, 6],
+          tagItemIds: [7, 1, 2, 6],
+          collectionNames: [],
+          tagNames: ["Untagged", "All Tagged"],
+          summedScopeCount: 4,
+        },
+      ],
+      [
+        "papers, then folders, then tags; removed papers are left out",
+        {
+          papers: [{ itemId: 6 }, { itemId: 3 }],
+          collections: [{ collectionId: 10 }],
+          tags: [{ name: "learning", includeAutomatic: true }],
+          excludedItemIds: [3, 1],
+        },
+        {
+          itemIds: [6, 2],
+          tagItemIds: [2, 6],
+          collectionNames: ["Drift"],
+          tagNames: ["learning"],
+          // Drift adds 2; the tag counts 2 and 6 again.
+          summedScopeCount: 3,
+        },
+      ],
+    ];
+
+    for (const [label, contexts, expected] of cases) {
+      it(label, async function () {
+        const resolved = await new ZoteroGateway().resolveLibraryScopeItemIds({
+          libraryID: 1,
+          itemIds: (contexts.papers || []).map((paper) => paper.itemId),
+          collectionIds: (contexts.collections || []).map(
+            (collection) => collection.collectionId,
+          ),
+          tagContexts: (contexts.tags || []).map((tag) => ({
+            name: tag.name,
+            libraryID: 1,
+            normalizedName: tag.normalizedName,
+            scope: tag.scope,
+            includeAutomatic: tag.includeAutomatic,
+          })),
+          excludedItemIds: contexts.excludedItemIds,
+        });
+        assert.deepEqual(resolved, expected);
+        assert.deepEqual(
+          resolveTaskPaperScopeItemIds(characterizationSnapshot(), contexts),
+          expected.itemIds,
+        );
+      });
+    }
+  });
 });

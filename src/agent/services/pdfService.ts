@@ -1,5 +1,5 @@
 import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import {
   isPdfContextAttachment,
   isSupportedContextAttachment,
@@ -53,7 +53,7 @@ export class PdfService {
     await ensurePDFTextCached(contextItem, {
       sourceMode: paperContext.contentSourceMode,
     });
-    return pdfTextCache.get(contextItem.id);
+    return paperTextStore.peek(contextItem.id);
   }
 
   async getChunkExcerpt(params: {

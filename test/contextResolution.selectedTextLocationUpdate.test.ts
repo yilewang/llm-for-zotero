@@ -46,6 +46,38 @@ describe("selected text location enrichment", function () {
     });
   });
 
+  it("keeps the page label empty when the reader reported none (D5)", function () {
+    appendSelectedTextContextForItem(
+      conversationKey,
+      "unlabelled appended text",
+      "pdf",
+      null,
+      { contextItemId: 42, pageIndex: 3 },
+    );
+    appendSelectedTextContextForItem(
+      conversationKey,
+      "unlabelled located text",
+      "pdf",
+      null,
+      { contextItemId: 42 },
+    );
+    assert.isTrue(
+      updateSelectedTextContextLocationForItem(
+        conversationKey,
+        "unlabelled located text",
+        "pdf",
+        null,
+        { contextItemId: 42, pageIndex: 5 },
+      ),
+    );
+
+    const [appended, located] = getSelectedTextContextEntries(conversationKey);
+    assert.equal(appended?.pageIndex, 3);
+    assert.isUndefined(appended?.pageLabel);
+    assert.equal(located?.pageIndex, 5);
+    assert.isUndefined(located?.pageLabel);
+  });
+
   it("does not overwrite an already located context", function () {
     appendSelectedTextContextForItem(
       conversationKey,

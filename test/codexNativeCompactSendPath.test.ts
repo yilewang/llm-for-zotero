@@ -22,7 +22,7 @@ describe("Codex native compact send path", function () {
     );
     const userPersist = source.indexOf('role: "user",', userPersistCall);
     const nativeTurn = source.indexOf(
-      "await runCodexAppServerNativeTurn",
+      "await runCodexNativePanelTurn(",
       compactBranch,
     );
     const nativeCompact = source.indexOf(

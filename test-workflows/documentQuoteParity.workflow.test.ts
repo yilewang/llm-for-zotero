@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import type { PlanDocument } from "../src/agent/documents/types";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
-import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
+import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 import {
   buildQuoteCitation,
   buildQuoteSourceIndex,

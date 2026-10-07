@@ -20,7 +20,6 @@ import {
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
   refreshAllCitationButtonPagesForTests,
-  resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
   shouldSearchLibraryForCitationForTests,
@@ -29,7 +28,8 @@ import {
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import * as citationLinks from "../src/modules/contextPanel/assistantCitationLinks";
 import { stripLeadingCitationSeparators } from "../src/services/quotes/citationText";
-import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
+import { lookupCitationPage } from "../src/services/pdf/citationNavigationCache";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -790,6 +790,27 @@ describe("assistantCitationLinks", function () {
     assert.notInclude(navigationSource, "removeChild(citation)");
     assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
     assert.notInclude(source, "shouldMarkQuoteCardUnverifiedAfterNavigation");
+    // The navigation the click hands its quote to must not reach for the
+    // quote's provenance either.
+    const navigatorSource = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+      "utf8",
+    );
+    assert.include(navigationSource, "navigateToQuote({");
+    assert.notInclude(navigatorSource, "quoteStatus");
+    assert.notInclude(navigatorSource, "removeChild(citation)");
+    assert.notInclude(
+      navigatorSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure",
+    );
+    assert.notInclude(
+      navigatorSource,
+      "shouldMarkQuoteCardUnverifiedAfterNavigation",
+    );
+    assert.notInclude(
+      navigatorSource,
+      "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
+    );
   });
 
   it("keeps repeated source text a navigation ambiguity, not a provenance downgrade", function () {
@@ -811,10 +832,24 @@ describe("assistantCitationLinks", function () {
       resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
       "utf8",
     );
-    assert.notInclude(source, "startBackgroundQuoteCardVerification");
-    assert.notInclude(source, "verifyQuoteCardSearchabilityInBackground");
-    assert.notInclude(source, "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS");
-    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
+    // The click navigation moved to quoteNavigator.ts; it is held to the
+    // same rule.
+    const navigatorSource = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+      "utf8",
+    );
+    for (const checked of [source, navigatorSource]) {
+      assert.notInclude(checked, "startBackgroundQuoteCardVerification");
+      assert.notInclude(checked, "verifyQuoteCardSearchabilityInBackground");
+      assert.notInclude(
+        checked,
+        "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
+      );
+      assert.notInclude(
+        checked,
+        "markQuoteCardUnverifiedAfterNavigationFailure",
+      );
+    }
   });
 
   it("does not render source-less fallback quote cards for unresolved blockquotes", function () {
@@ -1468,13 +1503,22 @@ describe("assistantCitationLinks", function () {
       assert.isNull(lookupCachedCitationPage(23, ""));
     });
 
-    it("does not synthesize verified page labels from page indexes", function () {
+    it("stores a verified page without a reader label, and numbers it only for display", function () {
       const quote =
         "Only reader-confirmed page labels should enter the citation cache.";
       const pageLabel = rememberCachedCitationPage(23, quote, 10);
 
-      assert.isNull(pageLabel);
-      assert.isNull(lookupCachedCitationPage(23, quote));
+      // D5 (was: nothing stored, null): the page index is the verified
+      // fact; the cache stores no label the reader did not report.
+      const entry = lookupCitationPage({ contextItemId: 23, quoteText: quote });
+      assert.equal(entry?.pageIndex, 10);
+      assert.isUndefined(entry?.pageLabel);
+      assert.equal(pageLabel, "11");
+      assert.equal(lookupCachedCitationPage(23, quote), "11");
+      assert.equal(
+        lookupCachedCitationPageForContextIdsForTests("23", quote),
+        "11",
+      );
     });
 
     it("looks up verified page labels by the button's own context ids", function () {
@@ -1533,43 +1577,6 @@ describe("assistantCitationLinks", function () {
       assert.equal(
         ariaLabel,
         "Jump to cited source: (Smith et al., 2024, page A-3)",
-      );
-    });
-
-    it("normalizes stored quote citation page hints as non-authoritative hints", function () {
-      assert.deepEqual(
-        resolveQuoteCitationPageHintForTests({
-          id: "Q_hint",
-          quoteText:
-            "Stored page hints should speed up first paint without becoming proof that the quote is absent elsewhere.",
-          citationLabel: "(Hint et al., 2026)",
-          contextItemId: 11,
-          pageHintIndex: 4.9,
-          pageHintLabel: " v ",
-        }),
-        { pageIndex: 4, pageLabel: "v" },
-      );
-      assert.deepEqual(
-        resolveQuoteCitationPageHintForTests({
-          id: "Q_hint_label",
-          quoteText:
-            "Printed page labels may be the only available location metadata for an extracted quote.",
-          citationLabel: "(Hint et al., 2026)",
-          contextItemId: 11,
-          pageHintLabel: " 12 ",
-        }),
-        { pageLabel: "12" },
-      );
-      assert.isNull(
-        resolveQuoteCitationPageHintForTests({
-          id: "Q_bad_hint",
-          quoteText:
-            "Invalid stored page hints must not change citation navigation behavior.",
-          citationLabel: "(Hint et al., 2026)",
-          contextItemId: 11,
-          pageHintIndex: -1,
-          pageHintLabel: " ",
-        }),
       );
     });
 
@@ -1641,7 +1648,7 @@ describe("assistantCitationLinks", function () {
       assert.isAbove(lookupText.length, 250);
     });
 
-    it("orders trusted quote page hints after verified caches and before full search", function () {
+    it("verifies a trusted quote before any reader moves, and uses page caches only to order papers", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1649,29 +1656,55 @@ describe("assistantCitationLinks", function () {
         ),
         "utf8",
       );
-      const verifiedStart = source.indexOf(
-        "const cached = await navigateToCachedCitationPage",
+      // The trusted click hands its papers to the navigator and keeps the
+      // success bookkeeping.
+      const trustedStart = source.indexOf(
+        "async function resolveAndNavigateAssistantCitation(params: {",
       );
-      const hiddenStart = source.indexOf("// Hidden page-index cache");
-      const hintStart = source.indexOf("// Stored quote page hint");
-      const fullSearchStart = source.indexOf(
-        'if (status) setStatus(status, "Locating cited quote...", "sending")',
+      const trustedEnd = source.indexOf("} catch (error) {", trustedStart);
+      const trustedSection = source.slice(trustedStart, trustedEnd);
+      const navigateCall = trustedSection.slice(
+        trustedSection.indexOf("const navigableCandidates"),
       );
-      const hintSection = source.slice(hintStart, fullSearchStart);
+      assert.isAtLeast(trustedStart, 0);
+      assert.isAbove(trustedEnd, trustedStart);
+      assert.include(navigateCall, "navigateToQuote({");
+      assert.include(trustedSection, "quoteJumpSucceeded = true");
+      assert.include(trustedSection, "return;");
+      // U1: a cached page only orders the papers; no stored page hint or
+      // page label is handed over, and only the inline citation (which has
+      // no quote to verify) opens a reader here.
+      assert.include(navigateCall, "cachedPage: true");
+      assert.notInclude(navigateCall, "hints:");
+      assert.notInclude(navigateCall, "onProgress");
+      assert.notInclude(navigateCall, "openReaderForItem");
+      assert.notInclude(source, "citationPageLabel");
+      assert.notInclude(source, "Opening cited page hint...");
+      assert.lengthOf(trustedSection.match(/openReaderForItem\(/g) || [], 1);
+      assert.include(
+        trustedSection.slice(
+          0,
+          trustedSection.indexOf("const navigableCandidates"),
+        ),
+        "if (!normalizedQuoteText) {",
+      );
 
-      assert.isAtLeast(verifiedStart, 0);
-      assert.isAbove(hiddenStart, verifiedStart);
-      assert.isAbove(hintStart, hiddenStart);
-      assert.isAbove(fullSearchStart, hintStart);
-      assert.include(hintSection, "navigateToStoredQuotePageHint");
-      assert.include(hintSection, "attemptCitationParagraphJump");
-      assert.include(hintSection, "rememberCachedCitationPage");
-      assert.include(hintSection, "quoteJumpSucceeded = true");
-      assert.include(hintSection, "return;");
-      assert.include(hintSection, "continue to full quote-location fallback");
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      for (const retired of [
+        "navigateByHintLadder",
+        "navigateToCachedCitationPage",
+        "navigateToHiddenQuoteLocation",
+        "navigateToStoredQuotePageHint",
+        "hint-ladder",
+      ]) {
+        assert.notInclude(navigatorSource, retired);
+      }
     });
 
-    it("passes trusted quote citation metadata into citation buttons for fast hint clicks", function () {
+    it("passes the trusted quote citation into its citation button for the click", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1717,43 +1750,30 @@ describe("assistantCitationLinks", function () {
       );
     });
 
-    it("keeps cached citation navigation tied to the reader it opened", function () {
+    it("keeps citation navigation tied to the reader it opened", function () {
       const source = readFileSync(
-        resolve(
-          testDir,
-          "../src/modules/contextPanel/assistantCitationLinks.ts",
-        ),
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
         "utf8",
       );
-      const resultTypeStart = source.indexOf(
-        "type CitationParagraphJumpNavigation",
+      const navigateStart = source.indexOf(
+        "export async function navigateToQuote(",
       );
-      const resultTypeEnd = source.indexOf(
-        "const citationButtonCandidateCache",
-        resultTypeStart,
-      );
-      const cachedBranchStart = source.indexOf(
-        "const cached = await navigateToCachedCitationPage",
-      );
-      const hiddenBranchStart = source.indexOf(
-        "// Hidden page-index cache",
-        cachedBranchStart,
-      );
-      const cachedBranch = source.slice(cachedBranchStart, hiddenBranchStart);
+      const navigateEnd = source.indexOf("\n}\n", navigateStart);
+      const navigateSection = source.slice(navigateStart, navigateEnd);
 
-      assert.isAtLeast(resultTypeStart, 0);
-      assert.isAbove(resultTypeEnd, resultTypeStart);
-      assert.include(
-        source.slice(resultTypeStart, resultTypeEnd),
-        "reader: any",
+      assert.isAtLeast(navigateStart, 0);
+      assert.isAbove(navigateEnd, navigateStart);
+      // The label and the remembered page come from the reader and the
+      // attachment the click opened, not from whatever reader is active.
+      assert.match(
+        navigateSection,
+        /const reader = await deps\.openReader\(contextItemId,/,
       );
-      assert.include(
-        source.slice(resultTypeStart, resultTypeEnd),
-        "contextItemId: number",
-      );
-      assert.match(cachedBranch, /resolveJumpedPageLabel\(\s*cached\.reader,/);
-      assert.notInclude(cachedBranch, "getActiveReaderForSelectedTab()");
-      assert.include(cachedBranch, "cached.contextItemId");
+      // D5 (was resolveJumpedPageLabel): jumpedPage reads the label from
+      // the opened reader and guesses none.
+      assert.match(navigateSection, /jumpedPage\(\s*reader,/);
+      assert.match(navigateSection, /deps\.rememberPage\(\s*contextItemId,/);
+      assert.notInclude(navigateSection, "getActiveReaderForSelectedTab()");
     });
 
     it("refreshes citation buttons from button context ids, not the active reader", function () {
@@ -1791,6 +1811,12 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(source, "resolvePageForCitationButton");
       assert.notInclude(source, "PDFWorker.getFullText");
       assert.include(source, "warmPageTextCache");
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      assert.notInclude(navigatorSource, "resolvePageForCitationButton");
+      assert.notInclude(navigatorSource, "PDFWorker.getFullText");
     });
 
     it("keeps idle cache warming separate from page label mutation", function () {
@@ -1955,27 +1981,54 @@ describe("assistantCitationLinks", function () {
         start,
       );
       const navigateSection = source.slice(start, end);
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      const verifyFirstStart = navigatorSource.indexOf(
+        "export async function navigateToQuote(",
+      );
+      const verifyFirstEnd = navigatorSource.indexOf("\n}\n", verifyFirstStart);
+      const verifyFirst = navigatorSource.slice(
+        verifyFirstStart,
+        verifyFirstEnd,
+      );
 
+      // The untrusted click hands its candidates to the verify-first
+      // navigation and opens no reader itself.
+      assert.isAtLeast(start, 0);
+      assert.isAbove(end, start);
+      assert.include(navigateSection, "navigateToQuote({");
+      assert.notInclude(navigateSection, "strategy:");
+      assert.lengthOf(navigateSection.match(/openReader/g) || [], 0);
       // Candidates are checked against background PDF text; the single
-      // openReaderForItem call in this function is the verified winner.
-      assert.include(navigateSection, "resolveVerifiedQuoteTarget");
-      assert.include(navigateSection, "verify: verifyQuoteInCitationCandidate");
-      assert.lengthOf(navigateSection.match(/openReaderForItem\(/g) || [], 1);
+      // reader open in the verify-first navigation is the verified winner.
+      assert.isAtLeast(verifyFirstStart, 0);
+      assert.isAbove(verifyFirstEnd, verifyFirstStart);
+      assert.include(verifyFirst, "resolveVerifiedQuoteTarget");
+      assert.match(
+        verifyFirst,
+        /verify: \(candidate, quoteText\) =>[\s\S]*?deps\.verifyInBackground\(candidate, quoteText/,
+      );
+      assert.include(
+        navigatorSource,
+        "verifyInBackground: verifyQuoteInCitationCandidate",
+      );
+      assert.lengthOf(verifyFirst.match(/openReader\(/g) || [], 1);
       // How many PDFs a click had to read is the number to watch when a jump
       // feels slow, so it is recorded rather than left to guesswork.
-      assert.include(navigateSection, "pdfsRead:");
+      assert.include(verifyFirst, "pdfsRead:");
+      assert.include(navigateSection, "markCitationNavigationTiming");
       assert.notInclude(
         navigateSection,
         "no explicit PDF context is available",
       );
+      assert.notInclude(verifyFirst, "no explicit PDF context is available");
     });
 
     it("verifies candidates without opening them", function () {
       const source = readFileSync(
-        resolve(
-          testDir,
-          "../src/modules/contextPanel/assistantCitationLinks.ts",
-        ),
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
         "utf8",
       );
       const start = source.indexOf(
@@ -1991,6 +2044,7 @@ describe("assistantCitationLinks", function () {
       assert.isAbove(end, start);
       assert.include(verifySection, "verifyQuoteLocationForAttachment");
       assert.notInclude(verifySection, "openReaderForItem");
+      assert.notInclude(verifySection, "openReader(");
     });
 
     it("renders untrusted quote-card citation controls without static candidates", function () {
@@ -2041,12 +2095,28 @@ describe("assistantCitationLinks", function () {
       assert.include(warmSection, "isPdfBackedCitationCandidate");
       assert.notInclude(warmSection, "updateCitationButtonPage");
       assert.notInclude(warmSection, "rememberCachedCitationPage");
-      assert.include(source, "lookupCachedQuoteLocationForAttachment");
-      assert.match(
-        source,
-        /lookupCachedQuoteLocationForAttachment\([\s\S]*?\)\s*\?\?\s*\(await warmQuoteLocationCacheForAttachment\(/,
+      // A trusted click reads the warmed location only to put its paper
+      // first; it never opens that page before the quote is verified (U1).
+      const trustedStart = source.indexOf(
+        "async function resolveAndNavigateAssistantCitation(params: {",
       );
-      assert.include(source, "navigateToHiddenQuoteLocation");
+      const trustedSection = source.slice(
+        trustedStart,
+        source.indexOf("} catch (error) {", trustedStart),
+      );
+      assert.match(
+        trustedSection,
+        /lookupCachedQuoteLocationForAttachment\([\s\S]*?\)\s*\?\s*\{ \.\.\.candidate, cachedPage: true \}/,
+      );
+      const navigatorSource = readFileSync(
+        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
+        "utf8",
+      );
+      assert.notInclude(
+        navigatorSource,
+        "lookupCachedQuoteLocationForAttachment",
+      );
+      assert.notInclude(navigatorSource, "warmQuoteLocationCacheForAttachment");
     });
 
     it("warms trusted quote locations while rendering citation buttons", function () {

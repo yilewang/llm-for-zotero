@@ -97,4 +97,17 @@ describe("paragraph evidence citations", function () {
       "No source. ",
     );
   });
+  it("keeps paragraph citation ids that contain '.' or ':'", function () {
+    assert.deepEqual(
+      [...paragraphCitationIds("A claim. [[cite:x.y, p:1]] [[cite:bad id]]")],
+      ["x.y", "p:1"],
+    );
+    assert.equal(
+      normalizeParagraphCitations(
+        "A claim. [[cite:x.y,p:1]]",
+        new Set(["p:1"]),
+      ),
+      "A claim. [[cite:p:1]]",
+    );
+  });
 });

@@ -142,7 +142,11 @@ export function renderAgentActionsInSlashMenu(
   if (context.isClaudeConversationSystem()) {
     let commands: ClaudeSlashMenuItem[] = [];
     try {
-      commands = getAgentApi().listSlashCommands?.() || [];
+      // This panel is on Claude Code, whatever the other surface chose.
+      commands =
+        getAgentApi().listSlashCommands?.({
+          conversationSystem: "claude_code",
+        }) || [];
     } catch {
       commands = [];
     }

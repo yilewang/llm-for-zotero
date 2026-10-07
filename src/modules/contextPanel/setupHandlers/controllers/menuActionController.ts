@@ -734,25 +734,20 @@ export function attachMenuActionController(
     e.preventDefault();
     e.stopPropagation();
     try {
-      const {
-        isStandaloneWindowActive,
-        openStandaloneChat,
-      } = require("../../standaloneWindow");
+      // Opens the window on this panel's conversation, or only focuses it
+      // when it is already open; the window keeps its own conversation.
+      const { openStandaloneChat } = require("../../standaloneWindow");
       const item = deps.getItem();
-      if (isStandaloneWindowActive()) {
-        addon.data.standaloneWindow?.close();
-      } else {
-        openStandaloneChat({
-          initialItem: item,
-          initialConversationSystem: deps.getConversationSystem(),
-          initialRuntimeMode: item
-            ? deps.getCurrentRuntimeModeForItem(item)
-            : null,
-          sourceBody: deps.body,
-        });
-      }
+      openStandaloneChat({
+        initialItem: item,
+        initialConversationSystem: deps.getConversationSystem(),
+        initialRuntimeMode: item
+          ? deps.getCurrentRuntimeModeForItem(item)
+          : null,
+        sourceBody: deps.body,
+      });
     } catch (err) {
-      deps.logError("LLM: Failed to toggle standalone window", err);
+      deps.logError("LLM: Failed to open standalone window", err);
     }
   });
 

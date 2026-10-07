@@ -35,15 +35,8 @@ import {
   conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
+  webChatSessionConversationKeys,
   draftInputCache,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  setInlineEditTarget,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   setForkSourceNavigationRunner,
   isRequestPending,
 } from "../../state";
@@ -55,6 +48,7 @@ import {
 } from "../../menuPositioning";
 import { renderShortcuts } from "../../shortcuts";
 import {
+  canIsolateConversationForWebChat,
   ensureConversationLoaded,
   getConversationKey,
   refreshConversationPanels,
@@ -71,37 +65,16 @@ import {
   loadAllCodexConversationHistory,
   loadCodexConversationHistoryScope,
 } from "../../../../codexAppServer/historyLoader";
-import {
-  rememberClaudeConversationSelection,
-  resolveRememberedClaudeConversationKey,
-  touchClaudeConversation,
-} from "../../../../claudeCode/runtime";
+import { touchClaudeConversation } from "../../../../claudeCode/runtime";
 import {
   getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
   setConversationSystemPref,
   setLastUsedClaudeGlobalConversationKey,
 } from "../../../../claudeCode/prefs";
 import {
-  activeClaudeGlobalConversationByLibrary,
-  buildClaudeLibraryStateKey,
-} from "../../../../claudeCode/state";
-import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
 } from "../../../../claudeCode/portal";
-import {
-  getLastUsedCodexGlobalConversationKey,
-  getLastUsedCodexPaperConversationKey,
-  setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexPaperConversationKey,
-} from "../../../../codexAppServer/prefs";
-import {
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../../../codexAppServer/state";
 import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
@@ -120,14 +93,10 @@ import {
   findTurnPairByTimestamps,
 } from "../../turnMessageUtils";
 import {
-  getLastUsedUpstreamGlobalConversationKey,
-  getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
-  setLastUsedUpstreamGlobalConversationKey,
-  setLastUsedPaperConversationKey,
   setLockedGlobalConversationKey,
-  buildPaperStateKey,
 } from "../../prefHelpers";
+import { recall, recallActive, remember } from "../../conversationSelection";
 import type { AgentRuntime } from "../../../../agent/runtime";
 import { clearActiveConversationForPendingDeletion } from "../../conversationDeletionActivation";
 import {
@@ -135,12 +104,13 @@ import {
   resolveConversationDeletionSurfaceAction,
   type ConversationDeletionSurfaceSnapshot,
 } from "../../conversationDeletionSurfaceSync";
+import { forgetRecentlyDeletedConversation } from "../../../../core/conversations/recentlyDeletedConversations";
 import {
-  forgetRecentlyDeletedConversation,
-  hasConversationDeletionTombstoneForKey,
-  isConversationInstanceRecentlyDeleted,
-  markConversationInstanceRecentlyDeleted,
-} from "../../../../core/conversations/recentlyDeletedConversations";
+  commitConversationRename,
+  markCommittedConversationDeletionTombstone,
+  queueWitnessedConversationDeletion,
+  shouldSeedConversationCatalogEntry,
+} from "../../conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -181,7 +151,6 @@ import { createHistorySearchPopupController } from "./historySearchPopupControll
 import { collapseDuplicateReusableConversationDrafts } from "../../standaloneConversationResolution";
 import { showConversationRenameDialog } from "../../conversationRenameDialog";
 import {
-  canCommitConversationRename,
   isConversationRenameEligible,
   type ConversationRenameIdentity,
 } from "../../conversationRenameEligibility";
@@ -192,12 +161,20 @@ import {
   type SidebarChatModeTab,
 } from "../../sidebarChatModeToggle";
 import { installSidebarModeSwitch } from "../../sidebarModeSwitch";
+import { endInlineEdit } from "../../inlineEditState";
+import { subscribeConversationCatalogChanges } from "../../../../core/conversations/conversationCatalogEvents";
+import {
+  createCatalogReloadScheduler,
+  isChatPanelBodyShown,
+  watchChatPanelShown,
+} from "../../historyCatalogReload";
 import {
   canCommitPanelConversation,
   capturePanelOperationLease,
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
 } from "../../panelHostOwnership";
 
 type HistorySearchIndexFallbackStatus = Pick<
@@ -221,6 +198,7 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 type StatusLevel = "ready" | "warning" | "error";
 
 const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
+const catalogChangeSubscriptionsByBody = new WeakMap<Element, () => void>();
 
 // Conversations a surface gave up because a deletion was queued, keyed by
 // pending-deletion entry id. Kept on the body (not the controller) so a panel
@@ -235,6 +213,16 @@ export function disposePendingDeletionSubscriptionForBody(body: Element): void {
   if (unsubscribe) {
     unsubscribe();
     pendingDeletionSubscriptionsByBody.delete(body);
+  }
+}
+
+export function disposeConversationCatalogSubscriptionForBody(
+  body: Element,
+): void {
+  const unsubscribe = catalogChangeSubscriptionsByBody.get(body);
+  if (unsubscribe) {
+    unsubscribe();
+    catalogChangeSubscriptionsByBody.delete(body);
   }
 }
 
@@ -341,6 +329,11 @@ export type HistoryLifecycleControllerDeps = {
   };
   markNextWebChatSendAsNewChat: () => void;
   primeFreshWebChatPaperChipState: () => void;
+  /**
+   * Moves the panel (in WebChat) to the paper's own WebChat session; leaves
+   * WebChat if there is none.
+   */
+  moveToOwnWebChatSession: () => Promise<void>;
   updateImagePreviewPreservingScroll: () => void;
   switchConversationSystem: (
     nextSystem: ConversationSystem,
@@ -465,6 +458,9 @@ export function createHistoryLifecycleController(
     libraryChatTabBtn,
     modeSwitch,
   } = deps;
+  // This panel's selection surface: the standalone window's own slots, or the
+  // ones every sidebar panel shares (see conversationSelection.ts).
+  const selectionSurface = () => resolveSelectionSurfaceForBody(body);
   const getConversationSystem = deps.getConversationSystem;
   const isClaudeConversationSystem = deps.isClaudeConversationSystem;
   const isCodexConversationSystem = deps.isCodexConversationSystem;
@@ -572,28 +568,7 @@ export function createHistoryLifecycleController(
     kind: "global" | "paper";
     paperItemID?: number;
   }) => {
-    if (
-      pendingDeletionStore.isConversationPendingDeletion(params.conversationKey)
-    ) {
-      return null;
-    }
-    const identityWitness =
-      await conversationRepository.getCatalogIdentityWitness(params);
-    if (
-      identityWitness?.instanceID &&
-      isConversationInstanceRecentlyDeleted(
-        params.conversationKey,
-        identityWitness.instanceID,
-      )
-    ) {
-      return null;
-    }
-    if (
-      !identityWitness &&
-      (await hasConversationDeletionTombstoneForKey(params.conversationKey))
-    ) {
-      return null;
-    }
+    if (!(await shouldSeedConversationCatalogEntry(params))) return null;
     return ensureConversationCatalogEntry(params);
   };
   const touchEmptyDraftActivity = async (
@@ -1688,7 +1663,11 @@ export function createHistoryLifecycleController(
     }, 200);
   }
 
+  // Counts this panel's history reloads, so a chat-list change this panel
+  // already reloaded for (typically its own write) is not reloaded twice.
+  let historyReloadsStarted = 0;
   const refreshGlobalHistoryHeader = async () => {
+    historyReloadsStarted += 1;
     if (!historyBar || !titleStatic || !item) {
       if (titleStatic) {
         titleStatic.style.display = body.closest(".llm-dedicated-chat-pane")
@@ -1945,11 +1924,12 @@ export function createHistoryLifecycleController(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeClaudeGlobalConversationByLibrary.get(
-              buildClaudeLibraryStateKey(libraryID),
-            ) ||
-              getLastUsedClaudeGlobalConversationKey(libraryID) ||
-              0,
+            recall({
+              system: "claude_code",
+              libraryID,
+              kind: "global",
+              surface: selectionSurface(),
+            }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -2032,11 +2012,12 @@ export function createHistoryLifecycleController(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) ||
-              getLastUsedCodexGlobalConversationKey(libraryID) ||
-              0,
+            recall({
+              system: "codex",
+              libraryID,
+              kind: "global",
+              surface: selectionSurface(),
+            }),
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -2118,9 +2099,13 @@ export function createHistoryLifecycleController(
         if (isGlobalMode() && item && Number.isFinite(item.id) && item.id > 0) {
           activeGlobalKey = Math.floor(item.id);
         } else {
-          const remembered = Number(
-            activeGlobalConversationByLibrary.get(libraryID),
-          );
+          // Upstream reads the active map only here, not the pref.
+          const remembered = recallActive({
+            system: "upstream",
+            libraryID,
+            kind: "global",
+            surface: selectionSurface(),
+          });
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey =
               remembered === GLOBAL_CONVERSATION_KEY_BASE
@@ -2336,40 +2321,19 @@ export function createHistoryLifecycleController(
       return false;
     }
     if (!setCurrentItem(nextItem as any)) return false;
+    remember(
+      { system, libraryID, kind: "global", surface: selectionSurface() },
+      normalizedConversationKey,
+    );
     if (system === "claude_code") {
-      rememberClaudeConversationSelection({
-        conversationKey: normalizedConversationKey,
-        kind: "global",
-        libraryID,
-      });
       void touchClaudeConversation(normalizedConversationKey, {
         updatedAt: Date.now(),
       });
-    } else if (system === "codex") {
-      activeCodexGlobalConversationByLibrary.set(
-        buildCodexLibraryStateKey(libraryID),
-        normalizedConversationKey,
-      );
-      setLastUsedCodexGlobalConversationKey(
-        libraryID,
-        normalizedConversationKey,
-      );
-    } else {
-      activeGlobalConversationByLibrary.set(
-        libraryID,
-        normalizedConversationKey,
-      );
-      setLastUsedUpstreamGlobalConversationKey(
-        libraryID,
-        normalizedConversationKey,
-      );
     }
     syncConversationIdentity();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
     setActiveEditSession(null);
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     clearForcedSkill();
     closePaperPicker();
     closePromptMenu();
@@ -2378,7 +2342,7 @@ export function createHistoryLifecycleController(
     closeExportMenu();
     closeHistoryNewMenu();
     closeHistoryMenu();
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (!isPanelOperationLeaseCurrent(hostLease)) return false;
     invalidateHistorySearchDocument(normalizedConversationKey);
     restoreDraftInputForCurrentConversation();
@@ -2461,33 +2425,16 @@ export function createHistoryLifecycleController(
       }
       return entry;
     };
-    const resolveRememberedPaperConversationKey = (): number => {
-      if (system === "claude_code") {
-        return Number(
-          resolveRememberedClaudeConversationKey({
-            libraryID,
-            kind: "paper",
-            paperItemID,
-          }) || 0,
-        );
-      }
-      if (system === "codex") {
-        return Number(
-          activeCodexPaperConversationByPaper.get(
-            buildCodexPaperStateKey(libraryID, paperItemID),
-          ) ||
-            getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
-            0,
-        );
-      }
-      return Number(
-        activePaperConversationByPaper.get(
-          buildPaperStateKey(libraryID, paperItemID),
-        ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
+    const resolveRememberedPaperConversationKey = (): number =>
+      Number(
+        recall({
+          system,
+          libraryID,
+          kind: "paper",
+          paperItemID,
+          surface: selectionSurface(),
+        }),
       );
-    };
 
     let targetSummary = await loadPaperCatalogEntry(requestedConversationKey);
     if (!targetSummary) {
@@ -2584,50 +2531,61 @@ export function createHistoryLifecycleController(
         return false;
       }
     }
-    if (system === "claude_code") {
-      rememberClaudeConversationSelection({
-        conversationKey: resolvedConversationKey,
-        kind: "paper",
-        libraryID,
-        paperItemID,
-      });
-      void touchClaudeConversation(resolvedConversationKey, {
-        updatedAt: Date.now(),
-      });
-    } else if (system === "codex") {
-      activeCodexPaperConversationByPaper.set(
-        buildCodexPaperStateKey(libraryID, paperItemID),
+    if (system === "claude_code" || system === "codex") {
+      remember(
+        {
+          system,
+          libraryID,
+          kind: "paper",
+          paperItemID,
+          surface: selectionSurface(),
+        },
         resolvedConversationKey,
       );
-      setLastUsedCodexPaperConversationKey(
-        libraryID,
-        paperItemID,
-        resolvedConversationKey,
-      );
+      if (system === "claude_code") {
+        void touchClaudeConversation(resolvedConversationKey, {
+          updatedAt: Date.now(),
+        });
+      }
     } else {
-      activePaperConversationByPaper.set(
-        buildPaperStateKey(libraryID, paperItemID),
-        resolvedConversationKey,
-      );
+      const paperScope = {
+        system: "upstream",
+        libraryID,
+        kind: "paper",
+        paperItemID,
+        surface: selectionSurface(),
+      } as const;
       // Ephemeral webchat session rows (flagged in the catalog) are swept at
       // the next startup, so they must never become the paper's persisted
       // last-used conversation. Registering the key in the isolation set
       // here makes the guard inside setLastUsedPaperConversationKey hold for
       // later writers, including history-navigation priming.
       if (targetSummary.webchatSession === true) {
+        remember(paperScope, resolvedConversationKey, {
+          persist: false,
+        });
         webChatIsolatedConversationKeys.add(resolvedConversationKey);
+        webChatSessionConversationKeys.add(resolvedConversationKey);
       } else {
-        setLastUsedPaperConversationKey(
-          libraryID,
-          paperItemID,
-          resolvedConversationKey,
-        );
+        remember(paperScope, resolvedConversationKey);
       }
     }
     syncConversationIdentity();
     refreshAutoLoadedPaperContextForCurrentItem();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
-    if (isWebChatMode()) {
+    // In WebChat the panel is only ever on a WebChat session row (isolated
+    // above), never on the paper's ordinary chat: WebChat empties the chat it
+    // is on, and the other surface (on an API model) may show that chat. On
+    // an ordinary chat the panel shows it as it is for a moment and moves to
+    // the paper's own WebChat session.
+    // (An ordinary chat another panel isolated for WebChat is still not a
+    // WebChat session row.)
+    const moveToOwnWebChatSession =
+      isWebChatMode() &&
+      !webChatSessionConversationKeys.has(resolvedConversationKey);
+    if (moveToOwnWebChatSession) {
+      // The chat's history stays as it is.
+    } else if (isWebChatMode()) {
       const hadWebChatSession =
         webChatIsolatedConversationKeys.has(resolvedConversationKey) &&
         chatHistory.has(resolvedConversationKey);
@@ -2639,13 +2597,11 @@ export function createHistoryLifecycleController(
       }
       loadedConversationKeys.add(resolvedConversationKey);
     } else {
-      await ensureConversationLoaded(item as Zotero.Item);
+      await ensureConversationLoaded(item as Zotero.Item, { body });
     }
     if (!isPanelOperationLeaseCurrent(hostLease)) return false;
     setActiveEditSession(null);
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     clearForcedSkill();
     closePaperPicker();
     closePromptMenu();
@@ -2661,6 +2617,11 @@ export function createHistoryLifecycleController(
     updateModelButton();
     updateReasoningButton();
     void refreshGlobalHistoryHeader();
+    if (moveToOwnWebChatSession) {
+      void deps.moveToOwnWebChatSession().catch((error) => {
+        appLogger.warn("LLM: Failed to open the WebChat session", error);
+      });
+    }
     return true;
   };
 
@@ -2702,6 +2663,7 @@ export function createHistoryLifecycleController(
     const targetModeSnapshot = primeHistoryNavigationMode({
       system: link.sourceSystem,
       libraryID,
+      surface: selectionSurface(),
       mode: link.sourceKind,
       conversationKey: sourceConversationKey,
       paperItemID:
@@ -2865,6 +2827,7 @@ export function createHistoryLifecycleController(
           normalizeHistoryPaperItemID(entry.libraryID) ||
           normalizeHistoryPaperItemID(paperItem.libraryID) ||
           getCurrentLibraryID(),
+        surface: selectionSurface(),
         mode: "paper",
         conversationKey: entry.conversationKey,
         paperItemID: paperItem.id,
@@ -2910,6 +2873,7 @@ export function createHistoryLifecycleController(
       system: getConversationSystem(),
       libraryID:
         normalizeHistoryPaperItemID(entry.libraryID) || getCurrentLibraryID(),
+      surface: selectionSurface(),
       mode: "global",
       conversationKey: entry.conversationKey,
     });
@@ -3165,7 +3129,7 @@ export function createHistoryLifecycleController(
       if (status) setStatus(status, t("Delete target changed"), "error");
       return;
     }
-    await ensureConversationLoaded(item as Zotero.Item);
+    await ensureConversationLoaded(item as Zotero.Item, { body });
     if (
       !isOwnedPanelOperationCurrent(ownership, "delete-turn-load") ||
       !item ||
@@ -3334,58 +3298,25 @@ export function createHistoryLifecycleController(
       return;
     }
     try {
-      let currentEntry = findHistoryEntryByKey(
-        target.kind,
-        target.conversationKey,
-      );
-      if (
-        !canCommitConversationRename({
-          target,
-          current: currentEntry
-            ? getHistoryEntryRenameIdentity(currentEntry)
-            : null,
-          pendingDelete:
-            Boolean(currentEntry?.isPendingDelete) ||
-            pendingDeletionStore.isConversationPendingDeletion(
-              target.conversationKey,
-            ),
-          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
-          requestPending: isRequestPending(target.conversationKey),
-        })
-      ) {
-        return;
-      }
-      const summary = await conversationRepository.getCatalogEntry(target);
-      if (
-        !isOwnedPanelOperationCurrent(ownership, "rename-conversation-commit")
-      ) {
-        return;
-      }
-      currentEntry = findHistoryEntryByKey(target.kind, target.conversationKey);
-      if (
-        !summary ||
-        summary.kind !== target.kind ||
-        !canCommitConversationRename({
-          target,
-          current: currentEntry
-            ? getHistoryEntryRenameIdentity(currentEntry)
-            : null,
-          pendingDelete:
-            Boolean(currentEntry?.isPendingDelete) ||
-            pendingDeletionStore.isConversationPendingDeletion(
-              target.conversationKey,
-            ),
-          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
-          requestPending: isRequestPending(target.conversationKey),
-        })
-      ) {
-        return;
-      }
-      await conversationRepository.setCatalogTitle({
-        ...target,
-        expectedGeneration: renameGeneration,
+      const renamed = await commitConversationRename({
+        target,
         title: nextTitle,
+        expectedGeneration: renameGeneration,
+        findCurrentEntry: () =>
+          findHistoryEntryByKey(target.kind, target.conversationKey),
+        toIdentity: (currentEntry) =>
+          getHistoryEntryRenameIdentity(currentEntry),
+        // The surface guards; the standalone window passes all but the
+        // row's own pending-delete flag, which its rows do not have.
+        isEntryPendingDelete: (currentEntry) =>
+          Boolean(currentEntry.isPendingDelete),
+        isOrphan: (currentEntry) => isOrphanHistoryEntry(currentEntry),
+        isRequestPending: (conversationKey) =>
+          isRequestPending(conversationKey),
+        isStillCurrent: () =>
+          isOwnedPanelOperationCurrent(ownership, "rename-conversation-commit"),
       });
+      if (!renamed) return;
       if (
         !isOwnedPanelOperationCurrent(ownership, "rename-conversation-result")
       ) {
@@ -3485,45 +3416,34 @@ export function createHistoryLifecycleController(
     }
 
     const wasActive = isHistoryEntryActive(targetEntry, conversationSystem);
-    // Capture the catalog row's identity witness BEFORE queueing: keys are
-    // recycled, so this is the only value that lets the finalizer prove it is
-    // still deleting this conversation. A missing witness is persisted as a
-    // durable intent and moves to identity quarantine after the Undo window.
-    const identityWitness =
-      await conversationRepository.getCatalogIdentityWitness({
-        system: conversationSystem,
-        kind: targetEntry.kind,
+    const queueResult = await queueWitnessedConversationDeletion({
+      intent: {
+        conversationKind: targetEntry.kind,
+        conversationID: targetEntry.conversationID,
         conversationKey: targetEntry.conversationKey,
-      });
-    // No await may separate this final check from queueConversationDeletion:
-    // that call freezes writes synchronously at the durable intent boundary.
-    if (
-      !isOwnedPanelOperationCurrent(ownership, "delete-conversation-commit") ||
-      rejectConversationDeletionWhileGenerating(targetEntry.conversationKey)
-    ) {
-      return false;
-    }
-    const queued = await pendingDeletionStore.queueConversationDeletion({
-      conversationKind: targetEntry.kind,
-      instanceID: identityWitness?.instanceID || "",
-      conversationID:
-        identityWitness?.conversationID || targetEntry.conversationID,
-      catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
-      conversationKey: targetEntry.conversationKey,
-      libraryID,
-      system: conversationSystem,
-      paperItemID: targetEntry.paperItemID,
-      providerSessionId: targetEntry.providerSessionId || undefined,
-      title: targetEntry.title,
-      wasActive,
+        libraryID,
+        system: conversationSystem,
+        paperItemID: targetEntry.paperItemID,
+        providerSessionId: targetEntry.providerSessionId || undefined,
+        title: targetEntry.title,
+        wasActive,
+      },
+      // The panel's final check: it still owns the operation and the
+      // conversation is not generating. It runs after the witness read with
+      // no await before the queue call.
+      finalCheck: () =>
+        isOwnedPanelOperationCurrent(ownership, "delete-conversation-commit") &&
+        !rejectConversationDeletionWhileGenerating(targetEntry.conversationKey),
     });
-    if (!queued) {
+    if (queueResult.status === "refused") return false;
+    if (queueResult.status === "failed") {
       if (status) {
         setStatus(status, t("Failed to queue deletion. Check logs."), "error");
       }
       await refreshGlobalHistoryHeader();
       return false;
     }
+    const queued = queueResult.entry;
     if (
       !isOwnedPanelOperationCurrent(ownership, "delete-conversation-result")
     ) {
@@ -3679,31 +3599,27 @@ export function createHistoryLifecycleController(
       return isConversationKeyForKind(targetSystem, "global", key) ? key : 0;
     };
     const currentCandidate = (() => {
+      // The active map only: a persisted pointer is not a current draft.
+      const activeKey = () =>
+        recallActive({
+          system,
+          libraryID,
+          kind: "global",
+          surface: selectionSurface(),
+        });
       if (system === "claude_code") {
         return (
-          currentGlobalConversationKeyForSystem("claude_code") ||
-          Number(
-            activeClaudeGlobalConversationByLibrary.get(
-              buildClaudeLibraryStateKey(libraryID),
-            ) || 0,
-          )
+          currentGlobalConversationKeyForSystem("claude_code") || activeKey()
         );
       }
       if (system === "codex") {
-        return (
-          currentGlobalConversationKeyForSystem("codex") ||
-          Number(
-            activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) || 0,
-          )
-        );
+        return currentGlobalConversationKeyForSystem("codex") || activeKey();
       }
       return item &&
         isGlobalMode() &&
         isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
         ? getConversationKey(item)
-        : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
+        : activeKey();
     })();
     const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
       ? Math.floor(currentCandidate)
@@ -3758,24 +3674,13 @@ export function createHistoryLifecycleController(
         return false;
       }
     }
-    if (system === "claude_code") {
-      activeClaudeGlobalConversationByLibrary.set(
-        buildClaudeLibraryStateKey(libraryID),
-        targetConversationKey,
-      );
-    } else if (system === "codex") {
-      activeCodexGlobalConversationByLibrary.set(
-        buildCodexLibraryStateKey(libraryID),
-        targetConversationKey,
-      );
-      setLastUsedCodexGlobalConversationKey(libraryID, targetConversationKey);
-    } else {
-      activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
-      setLastUsedUpstreamGlobalConversationKey(
-        libraryID,
-        targetConversationKey,
-      );
-    }
+    // Claude Code remembers the new key in the active map only here; its
+    // pref is written when switchGlobalConversation commits the switch.
+    remember(
+      { system, libraryID, kind: "global", surface: selectionSurface() },
+      targetConversationKey,
+      { persist: system !== "claude_code" },
+    );
     if (forceFresh) {
       clearTransientComposeStateForItem(targetConversationKey);
     }
@@ -4022,9 +3927,13 @@ export function createHistoryLifecycleController(
           }
         })();
         const key = getConversationKey(item);
-        webChatIsolatedConversationKeys.add(key);
-        chatHistory.set(key, []);
-        loadedConversationKeys.add(key);
+        // Never empty a chat another panel shows outside WebChat (this panel
+        // is still moving to its own WebChat session).
+        if (canIsolateConversationForWebChat(key, body)) {
+          webChatIsolatedConversationKeys.add(key);
+          chatHistory.set(key, []);
+          loadedConversationKeys.add(key);
+        }
         refreshChatPreservingScroll();
         if (status)
           setStatus(status, t("New chat — send a message to start"), "ready");
@@ -4228,24 +4137,9 @@ export function createHistoryLifecycleController(
     if (event.entry.kind === "conversation") {
       const entry = event.entry;
       clearPendingDeletionCaches(entry.conversationKey);
-      // The store drops the entry before it notifies, so this tombstone is the
-      // only thing standing between the deleted key and the seeding paths.
-      // Record it before any refresh runs.
-      // Only a REAL deletion tombstones the key; a dropped intent leaves the
-      // conversation alive and it must stay seedable.
-      if (
-        (event.type === "completed" || event.type === "finalized") &&
-        !event.dropped
-      ) {
-        if (entry.instanceID) {
-          markConversationInstanceRecentlyDeleted(
-            entry.conversationKey,
-            entry.instanceID,
-            Date.now(),
-            entry.identityDigest,
-          );
-        }
-      }
+      // The panel tombstones synchronously, in the subscriber itself, so the
+      // key is retired before any queued handler or refresh runs.
+      markCommittedConversationDeletionTombstone(event);
       void enqueueConversationDeletionEvent(() =>
         handleConversationPendingDeletionEvent(
           event.type,
@@ -4275,33 +4169,79 @@ export function createHistoryLifecycleController(
     body,
     pendingDeletionStore.subscribe(onPendingDeletionEvent),
   );
+
+  // A chat created, renamed, deleted or answered anywhere (the other chat
+  // surface, another sidebar panel, the agent API) reloads this panel's
+  // history header and menu, and through onConversationHistoryChanged the
+  // window's conversation list. One reload per panel per burst of changes;
+  // none when this panel has already reloaded since the change. A panel
+  // nobody can see (a reader tab not selected, a collapsed pane, a minimized
+  // window) reloads once when it is shown again.
+  const catalogReload = createCatalogReloadScheduler({
+    defer: (run) => {
+      const win = body.ownerDocument?.defaultView;
+      if (win) win.setTimeout(run, 0);
+    },
+    isAlive: () => body.isConnected,
+    isShown: () => isChatPanelBodyShown(body),
+    watchShown: (onMaybeShown) => watchChatPanelShown(body, onMaybeShown),
+    reloadsStarted: () => historyReloadsStarted,
+    reload: () => {
+      // The reload rebuilds an open history menu; someone typing in its
+      // search box keeps the focus.
+      const active = body.ownerDocument?.activeElement as Element | null;
+      const typingInSearch = Boolean(
+        active?.classList?.contains("llm-history-menu-search-input") &&
+        historyMenu?.contains(active),
+      );
+      void refreshGlobalHistoryHeader().then(() => {
+        if (typingInSearch) restoreHistorySearchInputFocus();
+      });
+    },
+  });
+  disposeConversationCatalogSubscriptionForBody(body);
+  const unsubscribeCatalogChanges = subscribeConversationCatalogChanges(
+    catalogReload.onCatalogChanged,
+  );
+  catalogChangeSubscriptionsByBody.set(body, () => {
+    unsubscribeCatalogChanges();
+    catalogReload.dispose();
+  });
   renderPendingDeletionToast();
   void pendingDeletionStore.sweepExpired("panel-init");
 
   // --- Paper chat | Library chat toggle ---
   // A tab click navigates exactly like picking a conversation in the history
   // menu: prime the target mode, switch, and roll the priming back on failure.
+  // The library lock is the sidebar's; the standalone window has none.
   const resolveRememberedGlobalConversationKey = (libraryID: number): number =>
     isClaudeConversationSystem()
-      ? resolveRememberedClaudeConversationKey({
+      ? recall({
+          system: "claude_code",
           libraryID,
           kind: "global",
-        }) ||
-        getLastUsedClaudeGlobalConversationKey(libraryID) ||
-        0
+          surface: selectionSurface(),
+        })
       : isCodexConversationSystem()
-        ? activeCodexGlobalConversationByLibrary.get(
-            buildCodexLibraryStateKey(libraryID),
-          ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
-          0
+        ? recall({
+            system: "codex",
+            libraryID,
+            kind: "global",
+            surface: selectionSurface(),
+          })
         : (() => {
-            const lockedKey = getLockedGlobalConversationKey(libraryID);
+            const lockedKey =
+              selectionSurface() === "standalone"
+                ? null
+                : getLockedGlobalConversationKey(libraryID);
             if (lockedKey !== null) return lockedKey;
             const activeKey = Number(
-              activeGlobalConversationByLibrary.get(libraryID) ||
-                getLastUsedUpstreamGlobalConversationKey(libraryID) ||
-                0,
+              recall({
+                system: "upstream",
+                libraryID,
+                kind: "global",
+                surface: selectionSurface(),
+              }),
             );
             if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
             return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -4341,6 +4281,7 @@ export function createHistoryLifecycleController(
       const targetModeSnapshot = primeHistoryNavigationMode({
         system: getConversationSystem(),
         libraryID,
+        surface: selectionSurface(),
         mode: "global",
         conversationKey: targetGlobalKey,
       });
@@ -4355,6 +4296,7 @@ export function createHistoryLifecycleController(
     const targetModeSnapshot = primeHistoryNavigationMode({
       system: getConversationSystem(),
       libraryID: normalizeHistoryPaperItemID(paperItem?.libraryID) || libraryID,
+      surface: selectionSurface(),
       mode: "paper",
       paperItemID: paperItem?.id,
     });

@@ -1,5 +1,14 @@
+import { fnv1a32 } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { deleteMineruCheckpoint, hashMineruBytes } from "./mineruCheckpoint";
+import {
+  ensureDir,
+  getIOUtils,
+  pathExists,
+  readFileBytes,
+  removePathQuietly,
+  writeFileBytes,
+} from "../../utils/geckoFs";
 import { MineruCancelledError } from "../../utils/mineruClient";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
@@ -80,47 +89,6 @@ type FinalizeMineruCacheFilesOptions = {
   pageCount?: number;
 };
 
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
 function getBaseDir(): string {
   const zotero = Zotero as unknown as {
     DataDirectory?: { dir?: string };
@@ -157,108 +125,6 @@ function getLegacyMdPath(id: number): string {
   return joinLocalPath(getMineruCacheDir(), `${id}.md`);
 }
 
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, { ignoreExisting: true });
-  }
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = getIOUtils();
-  if (io?.read) {
-    try {
-      const data = await io.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.read) {
-    try {
-      const data = await osFile.read(path);
-      return data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data as ArrayBuffer);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, bytes);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, bytes);
-  }
-}
-
-async function removePath(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.remove) {
-    try {
-      await io.remove(path, { recursive: true, ignoreAbsent: true });
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.removeDir) {
-    try {
-      await osFile.removeDir(path, {
-        ignoreAbsent: true,
-        ignorePermissions: false,
-      });
-    } catch {
-      /* ignore */
-    }
-  } else if (osFile?.remove) {
-    try {
-      await osFile.remove(path, { ignoreAbsent: true });
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
 // ── MinerU archive path normalization ────────────────────────────────────────
 
 const CONTENT_LIST_FILE_NAME = "content_list.json";
@@ -270,12 +136,7 @@ const MAX_CACHE_PATH_SEGMENT_LENGTH = 80;
 const MAX_CACHE_RELATIVE_PATH_LENGTH = 160;
 
 function stableHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return fnv1a32(value);
 }
 
 function splitFileName(fileName: string): { stem: string; ext: string } {
@@ -878,7 +739,7 @@ export async function pruneNonDurableMineruCacheArtifacts(
             includeSourceImages: options.keepSourceImages,
           })
         ) {
-          await removePath(child);
+          await removePathQuietly(child);
           changed = true;
           continue;
         }
@@ -891,7 +752,7 @@ export async function pruneNonDurableMineruCacheArtifacts(
           includeSourceImages: options.keepSourceImages,
         })
       ) {
-        await removePath(child);
+        await removePathQuietly(child);
         changed = true;
       }
     }
@@ -1441,20 +1302,20 @@ async function writeMineruCacheFilesOwned(
   }
   await options.beforeCommit?.();
   checkAbort();
-  await removePath(pendingPath);
+  await removePathQuietly(pendingPath);
   if (await pathExists(pendingPath))
     throw new Error("MinerU cache publication could not finish");
 
   // Clean up legacy _content.md if it exists
   const legacyContentPath = getLegacyContentMdPath(id);
   if (await pathExists(legacyContentPath)) {
-    await removePath(legacyContentPath);
+    await removePathQuietly(legacyContentPath);
   }
 
   // Clean up legacy single-file cache if it exists
   const legacyPath = getLegacyMdPath(id);
   if (await pathExists(legacyPath)) {
-    await removePath(legacyPath);
+    await removePathQuietly(legacyPath);
   }
 }
 
@@ -2043,9 +1904,9 @@ export async function ensureManifest(
 export async function invalidateMineruMd(id: number): Promise<void> {
   await deleteMineruCheckpoint(id);
   // Remove the directory-based cache
-  await removePath(getMineruItemDir(id));
+  await removePathQuietly(getMineruItemDir(id));
   // Also remove legacy single-file cache
-  await removePath(getLegacyMdPath(id));
+  await removePathQuietly(getLegacyMdPath(id));
   // Cascade: clear embedding cache since chunks will change
   try {
     const { clearEmbeddingCache } = await import("../retrieval/embeddingCache");
@@ -2091,7 +1952,7 @@ export async function cleanupLegacyContentMdFiles(): Promise<void> {
     const contentMdPath = joinLocalPath(entry, "_content.md");
 
     if ((await pathExists(fullMdPath)) && (await pathExists(contentMdPath))) {
-      await removePath(contentMdPath);
+      await removePathQuietly(contentMdPath);
       cleaned += 1;
     }
   }

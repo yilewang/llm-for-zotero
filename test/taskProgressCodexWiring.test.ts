@@ -5,7 +5,11 @@ import {
   getConversationWriteGeneration,
   tryBeginRequest,
 } from "../src/modules/contextPanel/state";
-import { buildCodexNativeTurnCallbacksForTests } from "../src/modules/contextPanel/chat";
+import {
+  buildCodexNativeTurnCallbacksForTests,
+  finishCodexNativePanelTurn,
+  runCodexNativePanelTurn,
+} from "../src/modules/contextPanel/codexNative/turnCallbacks";
 import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import { readCodexPlanChecklist } from "../src/modules/contextPanel/taskProgress/codexPlan";
 import {
@@ -13,7 +17,8 @@ import {
   getTaskProgress,
 } from "../src/modules/contextPanel/taskProgress/store";
 import type { Message } from "../src/modules/contextPanel/types";
-import { ledgerDelta } from "./helpers/taskProgressFixtures";
+import type { AgentRuntimeRequest } from "../src/agent/types";
+import { ledgerDelta, quoteCitation } from "./helpers/taskProgressFixtures";
 
 describe("task progress in a Codex native turn", function () {
   const key = 908173;
@@ -155,6 +160,90 @@ describe("task progress in a Codex native turn", function () {
         { label: "Inspect", status: "completed" },
         { label: "Compare", status: "pending" },
       ],
+    );
+    trace.dispose();
+  });
+
+  it("shows ✓ and the cited papers on the run the turn began, not the native journal's", async function () {
+    tryBeginRequest(key, 1, null);
+    const assistant: Message = {
+      role: "assistant",
+      text: "",
+      timestamp: 7,
+      streaming: true,
+    };
+    chatHistory.set(key, [
+      { role: "user", text: "What is drift?", timestamp: 6 },
+      assistant,
+    ]);
+    // The panel names the turn with its trace, as send and retry do.
+    const trace = createCodexNativeActivityTraceControllerForTests(
+      assistant,
+      () => {},
+    );
+    const journalRunId = `native-host:${key}:9:journal`;
+    const outcome = await runCodexNativePanelTurn(
+      {
+        executionRequest: {} as AgentRuntimeRequest,
+        scope: { conversationKey: key, libraryID: 1, kind: "global" },
+        messages: [],
+      },
+      {
+        body: {} as Element,
+        item: {} as Zotero.Item,
+        assistantMessage: assistant,
+        codexActivityTrace: trace,
+        flushResponseStream: () => {},
+        setStatusSafely: () => {},
+        handleDelta: () => {},
+        handleReasoning: () => {},
+        handleUsage: () => {},
+        conversationKey: key,
+        conversationGeneration: getConversationWriteGeneration(key),
+      },
+      // The native turn reads one paper, answers, and reports the run its
+      // event journal stored the turn under.
+      async (params) => {
+        params.onMcpToolActivity?.({
+          phase: "completed",
+          ok: true,
+          toolName: "library_retrieve",
+          requestId: "mcp-1",
+          paperLedgerDelta: ledgerDelta("mcp-1", [[1, "read", "Drift grows."]]),
+          timestamp: 8,
+        } as never);
+        params.onDelta?.("Drift grows.");
+        return {
+          agentRunId: journalRunId,
+          text: "Drift grows.",
+          threadId: "thread-1",
+          resumed: false,
+        };
+      },
+    );
+    const began = getTaskProgress(key)!.runId;
+    assert.equal(began, "codex-native-7");
+    assert.equal(
+      assistant.agentRunId,
+      journalRunId,
+      "the message holds the journal run until the trace persists",
+    );
+    assert.equal(getTaskProgress(key)!.runState, "answering");
+
+    assistant.text = outcome.text;
+    assistant.quoteCitations = [quoteCitation("q1", 1)];
+    finishCodexNativePanelTurn({
+      conversationKey: key,
+      assistantMessage: assistant,
+      codexActivityTrace: trace,
+    });
+    const record = getTaskProgress(key)!;
+    assert.equal(record.runId, began);
+    assert.equal(record.runState, "completed", "live ✓");
+    assert.equal(
+      record.ledger.papers["1:1"].turns[record.turnIndex].state,
+      "cited",
+      "the answer's citations mark the paper it read",
     );
     trace.dispose();
   });

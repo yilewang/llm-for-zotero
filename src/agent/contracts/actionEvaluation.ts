@@ -9,7 +9,7 @@ import {
   readAgentActionVerification,
 } from "./actionVerificationLabels";
 import { innermostToolResult } from "./toolResultEnvelope";
-import { operationCatalogEntry } from "./operationCatalog";
+import { collectionAddOnly, operationCatalogEntry } from "./operationCatalog";
 
 export type ContractEvaluation = {
   state:
@@ -299,7 +299,12 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const proof = verification
         ? ` ${AGENT_ACTION_VERIFICATION_LABELS[verification]};`
         : "";
-      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
+      // When an item is only added, say that it stays in its other
+      // collections. Otherwise, the model can report that it moved.
+      const operation = collectionAddOnly(receipt)
+        ? `${receipt.operation} (added only; the items stay in their other collections)`
+        : receipt.operation;
+      return `[Action status: ${operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
 }

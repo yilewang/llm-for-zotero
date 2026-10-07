@@ -300,6 +300,7 @@ describe("Original Agent run endings", function () {
       text: "The answer.",
       usedFallback: false,
     });
+    assert.notProperty(ending.outcome, "runStatus");
     assert.equal(ending.run.status, "completed");
     assert.equal(ending.run.finalText, "The answer.");
     assertStoppedBy(ending, "final_answer", "completed");
@@ -367,7 +368,12 @@ describe("Original Agent run endings", function () {
     const text =
       "Agent stopped after repeated tool errors. Please adjust the request and try again.";
     assert.equal(adapter.steps(), 3);
-    assert.deepInclude(ending.outcome, { kind: "completed", text });
+    // It answered, so it completed; the run was stored as failed.
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      text,
+      runStatus: "failed",
+    });
     assert.equal(ending.run.status, "failed");
     assert.equal(ending.run.finalText, text);
     assertStoppedBy(ending, "repeated_tool_errors", "failed");
@@ -436,7 +442,11 @@ describe("Original Agent run endings", function () {
     const text =
       "Agent stopped after segment 2 produced no new successful tool result. The completed transcript was saved; narrow or redirect the request before continuing.";
     assert.equal(adapter.steps(), MAX_AGENT_ROUNDS * 2);
-    assert.deepInclude(ending.outcome, { kind: "completed", text });
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      text,
+      runStatus: "failed",
+    });
     assert.equal(ending.run.status, "failed");
     assert.equal(ending.run.finalText, text);
     assertStoppedBy(ending, "segment_without_progress", "failed");
@@ -594,7 +604,12 @@ describe("Original Agent run endings", function () {
     const text =
       "I used web access for this task, but could not safely attach valid paragraph-level sources to the answer.";
     assert.equal(adapter.steps(), 3);
-    assert.deepInclude(ending.outcome, { kind: "completed", text });
+    // It answered, so it completed; the run was stored as failed.
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      text,
+      runStatus: "failed",
+    });
     assert.equal(ending.run.status, "failed");
     assert.equal(ending.run.finalText, text);
     assertStoppedBy(ending, "final_gate_rejected", "failed");
@@ -639,8 +654,11 @@ describe("Original Agent run endings", function () {
     });
 
     assert.equal(adapter.steps(), 1);
-    assert.isUndefined(ending.outcome);
-    assert.equal((ending.error as Error).message, "Aborted");
+    assert.isUndefined(ending.error);
+    assert.deepEqual(ending.outcome, {
+      kind: "cancelled",
+      runId: String(ending.run.runId),
+    });
     assert.equal(ending.run.status, "cancelled");
     assert.isNull(ending.run.finalText);
     assertStoppedBy(ending, "cancelled_before_step", "cancelled");
@@ -687,15 +705,17 @@ describe("Original Agent run endings", function () {
     assert.include(results.get("c2"), '"status":"not_started"');
     assert.include(results.get("c2"), "Stopped before it started");
     // The next model step ends the run, as Stop between rounds does.
-    assert.equal((ending.error as Error).message, "Aborted");
+    assert.isUndefined(ending.error);
+    assert.equal(ending.outcome?.kind, "cancelled");
     assert.equal(ending.run.status, "cancelled");
     assertStoppedBy(ending, "cancelled_before_step", "cancelled");
   });
   it("cancelled_in_flight: finishes as cancelled when the user stops a step in flight", async function () {
     const controller = new AbortController();
+    const thrown = new Error("The request was aborted.");
     const adapter = scriptedAdapter(() => {
       controller.abort();
-      throw new Error("The request was aborted.");
+      throw thrown;
     });
     const ending = await runToEnding(installed, {
       adapter,
@@ -703,24 +723,35 @@ describe("Original Agent run endings", function () {
       request: baseRequest(97_314, "Explain this topic"),
     });
 
-    assert.isUndefined(ending.outcome);
-    assert.equal((ending.error as Error).message, "The request was aborted.");
+    assert.isUndefined(ending.error);
+    assert.deepEqual(ending.outcome, {
+      kind: "cancelled",
+      runId: String(ending.run.runId),
+      cause: thrown,
+    });
     assert.equal(ending.run.status, "cancelled");
     assert.equal(ending.run.finalText, "The request was aborted.");
     assertStoppedBy(ending, "cancelled_in_flight", "cancelled");
   });
 
   it("interrupted_by_error: marks the run interrupted when the provider throws", async function () {
+    const thrown = new Error("provider interrupted");
     const adapter = scriptedAdapter(() => {
-      throw new Error("provider interrupted");
+      throw thrown;
     });
     const ending = await runToEnding(installed, {
       adapter,
       request: baseRequest(97_315, "Explain this topic"),
     });
 
-    assert.isUndefined(ending.outcome);
-    assert.equal((ending.error as Error).message, "provider interrupted");
+    assert.isUndefined(ending.error);
+    assert.deepEqual(ending.outcome, {
+      kind: "failed",
+      runId: String(ending.run.runId),
+      message: "provider interrupted",
+      interrupted: true,
+      cause: thrown,
+    });
     assert.equal(ending.run.status, "failed");
     assert.equal(ending.run.finalText, INTERRUPTED_AGENT_RUN_MARKER);
     assertStoppedBy(ending, "interrupted_by_error", "failed");

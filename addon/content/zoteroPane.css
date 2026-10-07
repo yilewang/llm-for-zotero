@@ -1326,6 +1326,12 @@
     gap: 0;
   }
 
+  /* The Stacked header's single row has no room for a fifth action here;
+   * above this width the button shows. */
+  :root[data-llm-sidebar-layout="stacked"] .llm-task-progress-btn {
+    display: none;
+  }
+
   .llm-header-actions .llm-btn-icon {
     width: 24px;
     min-width: 24px;
@@ -1432,7 +1438,8 @@
   pointer-events: none;
 }
 
-.llm-popout-btn {
+.llm-popout-btn,
+.llm-task-progress-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -1444,6 +1451,30 @@
   font-size: 0;
   line-height: 0;
   padding: 0;
+}
+
+/* A pressed Task progress button keeps the hover look, as the standalone
+ * title bar's does. */
+.llm-task-progress-btn[aria-pressed="true"] {
+  opacity: 1;
+  background: var(--fill-quinary);
+}
+
+.llm-task-progress-btn::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-image: url("icons/action-task-progress.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-task-progress.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
 }
 
 /* Hide popout button inside the standalone window */

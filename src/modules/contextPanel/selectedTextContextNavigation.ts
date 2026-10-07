@@ -1,10 +1,11 @@
 import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
-import { scrollToSelectedTextInReader } from "./livePdfSelectionLocator";
+import { scrollToSelectedTextInReader } from "../../services/pdf/livePdfSelectionLocator";
 import type { SelectedTextContext } from "./types";
 
 type ReaderLocation = {
   pageIndex: number;
-  pageLabel: string;
+  /** The context's printed label, when the reader reported one. */
+  pageLabel?: string;
 };
 
 export type SelectedTextContextTargetResolutionDeps = {
@@ -83,14 +84,18 @@ export async function navigateSelectedTextContextToPage(
   const rawPageIndex = Number(selectedContext.pageIndex);
   if (!Number.isFinite(rawPageIndex) || rawPageIndex < 0) return false;
   const pageIndex = Math.floor(rawPageIndex);
-  const pageLabel = selectedContext.pageLabel || `${pageIndex + 1}`;
+  // The page index drives navigation; a label goes along only when the
+  // reader reported one.
+  const pageLabel = selectedContext.pageLabel;
   const targetItemId = resolveSelectedTextContextTargetItemId(
     selectedContext,
     deps,
   );
   if (!targetItemId) return false;
 
-  const location = { pageIndex, pageLabel };
+  const location: ReaderLocation = pageLabel
+    ? { pageIndex, pageLabel }
+    : { pageIndex };
   const activeReader = deps.getActiveReaderForSelectedTab();
   const activeReaderItemId = asFinitePositiveItemId(
     activeReader?._item?.id || activeReader?.itemID,

@@ -11,9 +11,9 @@
  * Codex's own checklist, or the outcomes a run declares (a long job's paged
  * parts among them), live or finished, rebuilt from history after a
  * restart. A plain question over the whole library that reads no paper in
- * depth adds nothing to show. In the standalone window the user can show or
- * hide the row for the conversation on screen; that choice beats the rule
- * above until the window shows another conversation. The row never shows in
+ * depth adds nothing to show. With the Task progress button the user can
+ * show or hide the row for the conversation on screen; that choice beats the
+ * rule above until the panel shows another conversation. The row never shows in
  * WebChat or in a note chat, whatever the user chose. Everything here is
  * pure.
  */
@@ -27,7 +27,7 @@ import type {
 /** A paper chat shows the row from this many papers (its own included). */
 export const TASK_PROGRESS_PAPER_THRESHOLD = 5;
 
-/** What the user asked of the row with the standalone window's button. */
+/** What the user asked of the row with the Task progress button. */
 export type TaskProgressUserChoice = "shown" | "hidden";
 
 export type TaskProgressVisibilityInput = {

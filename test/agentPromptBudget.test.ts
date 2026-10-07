@@ -612,6 +612,55 @@ describe("agent prompt budget", function () {
     assert.notInclude(JSON.stringify(modelFacing), "Q_orphan_1");
   });
 
+  it("keeps '.' and ':' in compacted quote ids", function () {
+    const evidenceMessage = buildEvidenceToolMessage(80);
+    const content = JSON.parse(String(evidenceMessage.content));
+    content.snippets = content.snippets.map(
+      (snippet: Record<string, unknown>, index: number) => ({
+        ...snippet,
+        quoteCitationId: index === 0 ? "Q1.a:p2" : `Q_orphan_${index}`,
+      }),
+    );
+    content.quoteCitations = [
+      {
+        id: "Q1.a:p2",
+        quoteText: "Evidence snippet 0",
+        citationLabel: "(Evidence Paper 0, 2026)",
+        itemId: 20_000,
+        contextItemId: 30_000,
+      },
+    ];
+    evidenceMessage.content = JSON.stringify(content);
+    const result = enforceAgentPromptBudget({
+      messages: [
+        { role: "system", content: "Use tools." },
+        { role: "user", content: "Find evidence." },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-1",
+              name: "library_retrieve",
+              arguments: { query: "representational drift" },
+            },
+          ],
+        },
+        evidenceMessage,
+      ],
+      model: "claude-haiku-4-5",
+      inputTokenCap: 10_000,
+      conversationKey: 2,
+      resourceSignature: "scope-a",
+    });
+    const tool = result.messages.find((message) => message.role === "tool");
+    const modelFacing = JSON.parse((tool as { content: string }).content);
+
+    assert.isTrue(modelFacing.modelContextCompacted);
+    assert.equal(modelFacing.quoteCitations[0].id, "Q1.a:p2");
+    assert.equal(modelFacing.snippets[0].quoteCitationId, "Q1.a:p2");
+  });
+
   /**
    * Host state the model should see once is marked transient. The transcript
    * compactor already refuses to fold such a message into a durable summary;

@@ -10,7 +10,6 @@ import {
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
   selectedRuntimeModeCache,
 } from "./state";
 import {
@@ -31,24 +30,32 @@ import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   applyPanelFontScale,
-  buildPaperStateKey,
   getClaudeCodeModeEnabled,
   getLastUsedUpstreamGlobalConversationKey,
   getStandaloneSidebarWidthPref,
   getLockedGlobalConversationKey,
-  setLastUsedUpstreamConversationMode,
-  setLastUsedUpstreamGlobalConversationKey,
   setLockedGlobalConversationKey,
   setStandaloneSidebarWidthPref,
 } from "./prefHelpers";
-import { buildUI } from "./buildUI";
+import {
+  clearStandaloneSelection,
+  recall,
+  recallMode,
+  remember,
+  rememberMode,
+} from "./conversationSelection";
+import {
+  startStandaloneSurfaceChoicesFromSidebar,
+  demoteConversationSystemOnEverySurface,
+  surfaceChoices,
+} from "./surfaceChoices";
+import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
   observeHistoryActivity,
 } from "./historyActivity";
 import {
   disposeSetupHandlers,
-  setupHandlers,
   type ContextPreviewRenderMetrics,
   type SetupHandlersHooks,
 } from "./setupHandlers";
@@ -61,14 +68,11 @@ import {
 import { renderShortcuts } from "./shortcuts";
 import { bindTaskProgressToggle } from "./taskProgress/panel";
 import { createTaskProgressToggleButton } from "./taskProgress/toggleButton";
-import { createElement, HTML_NS } from "../../utils/domHelpers";
+import { HTML_NS } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
 import {
   bindStandalonePanelHost,
-  canLifecycleCommitPanelConversation,
-  capturePanelOperationLease,
   clearPanelHostBinding,
-  isPanelOperationLeaseCurrent,
 } from "./panelHostOwnership";
 import type { ConversationSystem } from "../../shared/types";
 import type { ChatRuntimeMode } from "./types";
@@ -82,6 +86,7 @@ import {
 } from "../../utils/attachmentRefStore";
 import {
   chatHistory,
+  isRequestPending,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
 } from "./state";
@@ -122,10 +127,7 @@ import {
   invalidateAllClaudeHotRuntimes,
   refreshClaudeSlashCommands,
 } from "../../claudeCode/runtime";
-import {
-  retainClaudeRuntimeForBody,
-  releaseClaudeRuntimeForBody,
-} from "../../claudeCode/runtimeRetention";
+import { releaseClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import {
   createClaudeProjectSkillTemplate,
   deleteClaudeProjectSkillFile,
@@ -136,21 +138,11 @@ import { initAgentSubsystem } from "../../agent";
 import {
   getConversationSystemPref,
   getStoredConversationSystemPref,
-  getLastUsedClaudeConversationMode,
   getLastUsedClaudeGlobalConversationKey,
-  setConversationSystemPref,
-  setLastUsedClaudeConversationMode,
 } from "../../claudeCode/prefs";
-import {
-  activeClaudeGlobalConversationByLibrary,
-  activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
-  buildClaudePaperStateKey,
-} from "../../claudeCode/state";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
 import {
-  canCommitConversationRename,
   isConversationRenameEligible,
   type ConversationRenameIdentity,
 } from "./conversationRenameEligibility";
@@ -170,32 +162,20 @@ import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
 } from "../../codexAppServer/portal";
-import {
-  getLastUsedCodexConversationMode,
-  getLastUsedCodexGlobalConversationKey,
-  isCodexAppServerModeEnabled,
-  setLastUsedCodexConversationMode,
-  setLastUsedCodexGlobalConversationKey,
-  setLastUsedCodexPaperConversationKey,
-} from "../../codexAppServer/prefs";
-import {
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
+import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import { loadAllCodexConversationHistory } from "../../codexAppServer/historyLoader";
 import { clearActiveConversationForPendingDeletion } from "./conversationDeletionActivation";
 import {
   createSerializedConversationDeletionEventQueue,
   resolveConversationDeletionSurfaceAction,
 } from "./conversationDeletionSurfaceSync";
+import { forgetRecentlyDeletedConversation } from "../../core/conversations/recentlyDeletedConversations";
 import {
-  forgetRecentlyDeletedConversation,
-  hasConversationDeletionTombstoneForKey,
-  isConversationInstanceRecentlyDeleted,
-  markConversationInstanceRecentlyDeleted,
-} from "../../core/conversations/recentlyDeletedConversations";
+  commitConversationRename,
+  markCommittedConversationDeletionTombstone,
+  queueWitnessedConversationDeletion,
+  shouldSeedConversationCatalogEntry,
+} from "./conversationLifecycle";
 import {
   pendingDeletionStore,
   type PendingConversationDeletionEntry,
@@ -211,6 +191,7 @@ import {
   setStandaloneSidebarState,
 } from "./standaloneSidebarView";
 import { installStandaloneSidebarFlyout } from "./standaloneSidebarFlyout";
+import { releaseInlineEdit } from "./inlineEditState";
 
 type StandaloneSessionState = {
   pending: boolean;
@@ -229,6 +210,34 @@ const STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX =
 const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
 const STANDALONE_WINDOW_FEATURES =
   "chrome,extrachrome,menubar,resizable,scrollbars,status,centerscreen,dialog=no,dependent=no";
+
+// The standalone window remembers its library chat in its own selection slot
+// only. The sidebar panels keep theirs, and the persisted pointers stay the
+// sidebar's (see conversationSelection.ts).
+function rememberStandaloneGlobalConversation(
+  system: ConversationSystem,
+  libraryID: number,
+  conversationKey: number,
+): void {
+  remember(
+    { system, libraryID, kind: "global", surface: "standalone" },
+    conversationKey,
+  );
+}
+
+// The standalone window remembers its paper chat in its own selection slot
+// only; the sidebar's remembered chat for the paper is left alone.
+function rememberStandalonePaperConversation(
+  system: ConversationSystem,
+  libraryID: number,
+  paperItemID: number,
+  conversationKey: number,
+): void {
+  remember(
+    { system, libraryID, kind: "paper", paperItemID, surface: "standalone" },
+    conversationKey,
+  );
+}
 
 function clampStandaloneWindowSize(win: Window): void {
   try {
@@ -292,160 +301,20 @@ export function notifyStandaloneItemChanged(item: Zotero.Item | null): void {
   standaloneItemChangeHandler?.(item);
 }
 
-function isStandaloneTrackedBody(body: Element): boolean {
-  const standaloneWin = getStandaloneSessionWindow();
-  if (standaloneWin && body.ownerDocument === standaloneWin.document) {
-    return true;
-  }
-  return (body as HTMLElement).dataset?.standalone === "true";
-}
-
-function renderStandalonePlaceholdersInEmbeddedPanels(
-  excludedBody?: Element | null,
-): void {
-  const seenBodies = new Set<Element>();
-  const mainWindows = Zotero.getMainWindows?.() || [];
-  for (const win of mainWindows) {
-    const panelRoots = win?.document?.querySelectorAll?.("#llm-main") || [];
-    for (const panelRoot of panelRoots) {
-      const body = (panelRoot as Element).parentElement;
-      if (
-        !body ||
-        !body.isConnected ||
-        body === excludedBody ||
-        isStandaloneTrackedBody(body) ||
-        seenBodies.has(body)
-      ) {
-        continue;
-      }
-      renderStandalonePlaceholder(body);
-      seenBodies.add(body);
-    }
-  }
-  for (const [body] of activeContextPanels) {
-    if (
-      !(body as Element).isConnected ||
-      body === excludedBody ||
-      isStandaloneTrackedBody(body as Element) ||
-      seenBodies.has(body as Element)
-    ) {
-      continue;
-    }
-    renderStandalonePlaceholder(body as Element);
-    seenBodies.add(body as Element);
-  }
-}
-
-function restoreEmbeddedPanelsAfterStandaloneClose(
+/**
+ * The sidebar chat panels stay live while the window is open, so closing it
+ * leaves them alone. Only bodies that went away while it was open are
+ * dropped from panel tracking here.
+ */
+function releaseDisconnectedEmbeddedPanels(
   excludedBody?: Element | null,
 ): void {
   for (const [body] of activeContextPanels) {
     if (excludedBody && body === excludedBody) continue;
-    if (!(body as Element).isConnected) {
-      void releaseClaudeRuntimeForBody(body as Element);
-      unregisterContextPanel(body);
-      continue;
-    }
-    const rawItem = activeContextPanelRawItems.get(body as Element) || null;
-    const resolved = resolveInitialPanelItemState(rawItem, {
-      conversationSystem: resolveConversationSystemForItem(rawItem),
-    });
-    const hostLease = capturePanelOperationLease(body as Element);
-    if (
-      !canLifecycleCommitPanelConversation(
-        body as Element,
-        resolved.item,
-        "restore-embedded-panel",
-        hostLease,
-      )
-    ) {
-      continue;
-    }
-    buildUI(body as Element, resolved.item);
-    activeContextPanels.set(body, () => resolved.item);
-    activeContextPanelRawItems.set(body as Element, rawItem);
-    setupHandlers(body as Element, resolved.item || rawItem);
-    void (async () => {
-      try {
-        if (resolved.item) await ensureConversationLoaded(resolved.item);
-        if (!isPanelOperationLeaseCurrent(hostLease)) return;
-        await renderShortcuts(
-          body as Element,
-          resolved.item,
-          resolveShortcutMode(resolved.item),
-        );
-        if (!isPanelOperationLeaseCurrent(hostLease)) return;
-        refreshChat(body as Element, resolved.item);
-      } catch (err) {
-        appLogger.warn("LLM: side panel restore failed", err);
-      }
-    })();
+    if ((body as Element).isConnected) continue;
+    void releaseClaudeRuntimeForBody(body as Element);
+    unregisterContextPanel(body);
   }
-}
-
-/**
- * Replace a side-panel body with a placeholder message while the
- * standalone window is open.
- */
-export function renderStandalonePlaceholder(body: Element): void {
-  if (typeof (body as any).replaceChildren === "function") {
-    (body as any).replaceChildren();
-  } else {
-    body.textContent = "";
-  }
-  const doc = body.ownerDocument!;
-  const wrap = createElement(doc, "div", "llm-standalone-placeholder");
-  wrap.style.cssText =
-    "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
-    "height:100%;gap:12px;padding:24px;text-align:center;color:var(--fill-secondary);";
-
-  const msg = createElement(doc, "div", "", {
-    textContent: t("Chat is open in a separate window"),
-  });
-  msg.style.cssText = "font-size:13px;";
-
-  const focusBtn = createElement(doc, "button", "llm-btn llm-btn-primary", {
-    textContent: t("Focus Window"),
-    type: "button",
-  });
-  focusBtn.style.cssText =
-    "display:flex;align-items:center;justify-content:center;" +
-    "padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;" +
-    "background:var(--color-accent,#2563eb);color:#fff;border:none;";
-  focusBtn.addEventListener("click", () => {
-    getStandaloneSessionWindow()?.focus();
-  });
-
-  const closeBtn = createElement(doc, "button", "llm-btn", {
-    textContent: t("Close Window & Return Here"),
-    type: "button",
-  });
-  closeBtn.style.cssText =
-    "display:flex;align-items:center;justify-content:center;" +
-    "padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;" +
-    "background:none;color:var(--fill-secondary);border:1px solid var(--stroke-secondary,#888);";
-  closeBtn.addEventListener("click", () => {
-    try {
-      const win =
-        getStandaloneSessionWindow() ||
-        (addon.data.standaloneWindow as Window | undefined) ||
-        null;
-      appLogger.debug(
-        "LLM: close standalone clicked, win=",
-        Boolean(win),
-        "closed=",
-        win ? (win as any).closed : "N/A",
-      );
-      if (win && !(win as any).closed) {
-        (win as any).close();
-      }
-    } catch (err) {
-      appLogger.warn("LLM: close standalone failed", err);
-    }
-  });
-
-  wrap.append(msg, focusBtn, closeBtn);
-  body.appendChild(wrap);
 }
 
 type SidebarConv = {
@@ -490,6 +359,12 @@ export function openStandaloneChat(options?: {
 
   const mainWin = Zotero.getMainWindow();
   if (!mainWin) return;
+
+  // A new window starts from the sidebar's selection (read below), model and
+  // backend, and keeps its own from here on; nothing a previous window chose
+  // carries over, and a later sidebar change does not move this window.
+  clearStandaloneSelection();
+  startStandaloneSurfaceChoicesFromSidebar();
 
   const sourceRawContextItem =
     options?.sourceBody && options.sourceBody.isConnected
@@ -567,12 +442,9 @@ export function openStandaloneChat(options?: {
     ) || 1;
 
   const libraryID = initialLibraryID > 0 ? Math.floor(initialLibraryID) : 1;
-  const initialRememberedRuntimeMode =
-    currentConversationSystem === "claude_code"
-      ? getLastUsedClaudeConversationMode(libraryID)
-      : currentConversationSystem === "codex"
-        ? getLastUsedCodexConversationMode(libraryID)
-        : null;
+  const initialRememberedRuntimeMode = isRuntimeConversationSystem()
+    ? recallMode(currentConversationSystem, libraryID, { source: "persisted" })
+    : null;
   const initialMode: "open" | "paper" =
     initialDisplayConversationKind === "global"
       ? "open"
@@ -618,10 +490,7 @@ export function openStandaloneChat(options?: {
     : isCodexConversationSystem()
       ? sourceCodexGlobalKey > 0
         ? sourceCodexGlobalKey
-        : activeCodexGlobalConversationByLibrary.get(
-            buildCodexLibraryStateKey(libraryID),
-          ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
+        : recall({ system: "codex", libraryID, kind: "global" }) ||
           buildDefaultCodexGlobalConversationKey(libraryID)
       : sourceUpstreamGlobalKey > 0
         ? sourceUpstreamGlobalKey
@@ -645,8 +514,7 @@ export function openStandaloneChat(options?: {
     : initialPaperItem || globalPortalItem;
 
   // Set flag BEFORE openDialog — keeps isStandaloneWindowActive() true
-  // throughout the entire openDialog + load cycle so any onRender calls
-  // in the sidepanel will show the placeholder.
+  // throughout the entire openDialog + load cycle.
   setStandalonePending(true);
 
   const newWin = mainWin.openDialog(
@@ -658,11 +526,6 @@ export function openStandaloneChat(options?: {
     setStandalonePending(false);
     return;
   }
-
-  if (options?.sourceBody && options.sourceBody.isConnected) {
-    renderStandalonePlaceholder(options.sourceBody);
-  }
-  renderStandalonePlaceholdersInEmbeddedPanels(options?.sourceBody || null);
 
   setStandaloneSessionWindow(newWin);
   // Keep standalonePending = true until initWindow runs — see below
@@ -1333,32 +1196,13 @@ export function openStandaloneChat(options?: {
         const key = Number(params.conversationKey || 0);
         if (
           key > 0 &&
-          pendingDeletionStore.isConversationPendingDeletion(key)
+          !(await shouldSeedConversationCatalogEntry({
+            system: currentConversationSystem,
+            kind: params.kind,
+            conversationKey: key,
+          }))
         ) {
           return null;
-        }
-        if (key > 0) {
-          const identityWitness =
-            await conversationRepository.getCatalogIdentityWitness({
-              system: currentConversationSystem,
-              kind: params.kind,
-              conversationKey: key,
-            });
-          if (
-            identityWitness?.instanceID &&
-            isConversationInstanceRecentlyDeleted(
-              key,
-              identityWitness.instanceID,
-            )
-          ) {
-            return null;
-          }
-          if (
-            !identityWitness &&
-            (await hasConversationDeletionTombstoneForKey(key))
-          ) {
-            return null;
-          }
         }
         return ensureConversationCatalogEntry(params);
       };
@@ -1732,6 +1576,7 @@ export function openStandaloneChat(options?: {
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: standaloneMode === "open" ? "global" : "paper",
+          surface: "standalone",
         });
         const mountedItem = resolvedState.item || nextItem;
         const rawItemForPanel =
@@ -1766,48 +1611,18 @@ export function openStandaloneChat(options?: {
             const paperItemID = Number(currentBasePaperItem.id || 0);
             if (paperItemID > 0) {
               const paperLibraryID = getCurrentPaperLibraryID();
-              if (isClaudeConversationSystem()) {
-                activeClaudePaperConversationByPaper.set(
-                  buildClaudePaperStateKey(paperLibraryID, paperItemID),
-                  activeConversationKey,
-                );
-              } else if (isCodexConversationSystem()) {
-                activeCodexPaperConversationByPaper.set(
-                  buildCodexPaperStateKey(paperLibraryID, paperItemID),
-                  activeConversationKey,
-                );
-                setLastUsedCodexPaperConversationKey(
-                  paperLibraryID,
-                  paperItemID,
-                  activeConversationKey,
-                );
-              } else {
-                activePaperConversationByPaper.set(
-                  buildPaperStateKey(paperLibraryID, paperItemID),
-                  activeConversationKey,
-                );
-              }
+              rememberStandalonePaperConversation(
+                currentConversationSystem,
+                paperLibraryID,
+                paperItemID,
+                activeConversationKey,
+              );
             }
           }
 
           clearContent();
           updateContentTitle();
 
-          buildUI(contentArea, mountedItem);
-
-          // The left tab represents the preserved paper-side slot, so do not
-          // derive its label from a mounted global portal item.
-          syncPaperTabLabel();
-
-          const llmMain = contentArea.querySelector(
-            "#llm-main",
-          ) as HTMLElement | null;
-          if (llmMain) llmMain.dataset.standalone = "true";
-
-          bindStandalonePanelHost(contentArea, mountedItem);
-          activeContextPanels.set(contentArea, () => activeItem);
-          activeContextPanelRawItems.set(contentArea, rawItemForPanel);
-          void retainClaudeRuntimeForBody(contentArea, mountedItem);
           let standaloneInputFitRequestId = 0;
           const cancelPendingStandaloneInputFit = () => {
             standaloneInputFitRequestId += 1;
@@ -1848,7 +1663,23 @@ export function openStandaloneChat(options?: {
               return await createStandaloneOpenConversationForContext();
             },
           };
-          setupHandlers(contentArea, mountedItem as any, chatHooks);
+          const llmMain = mountPanelShell({
+            body: contentArea,
+            renderItem: mountedItem,
+            beforeRegister: (panelRoot) => {
+              // The left tab represents the preserved paper-side slot, so do
+              // not derive its label from a mounted global portal item.
+              syncPaperTabLabel();
+              if (panelRoot) panelRoot.dataset.standalone = "true";
+              bindStandalonePanelHost(contentArea, mountedItem);
+            },
+            // Live: the standalone window re-points activeItem in place.
+            getMountedItem: () => activeItem,
+            rawItem: rawItemForPanel,
+            retainFor: mountedItem,
+            setupItem: mountedItem,
+            hooks: chatHooks,
+          });
           // Store hooks reference so webchat load handlers can call clearWebChatNewChatIntent
           currentChatHooks = chatHooks;
 
@@ -1864,7 +1695,9 @@ export function openStandaloneChat(options?: {
         void (async () => {
           try {
             if (!isCurrentMount()) return;
-            await ensureConversationLoaded(mountedItem);
+            await ensureConversationLoaded(mountedItem, {
+              body: contentArea,
+            });
             if (!isCurrentMount()) return;
             refreshChat(contentArea, mountedItem);
             // Refresh sidebar after conversation is confirmed loaded
@@ -2302,6 +2135,7 @@ export function openStandaloneChat(options?: {
                 Number(entry.libraryID || 0) ||
                 Number(paperItem.libraryID || 0) ||
                 getCurrentLibraryScopeID(),
+              surface: "standalone",
               mode: "paper",
               conversationKey: entry.conversationKey,
               paperItemID: paperItem.id,
@@ -2349,6 +2183,7 @@ export function openStandaloneChat(options?: {
               system: currentConversationSystem,
               libraryID:
                 Number(entry.libraryID || 0) || getCurrentLibraryScopeID(),
+              surface: "standalone",
               mode: "global",
               conversationKey: entry.conversationKey,
             });
@@ -2844,6 +2679,22 @@ export function openStandaloneChat(options?: {
         ) {
           return;
         }
+        // Like the panel, refuse before the dialog opens, with the panel's
+        // messages; the commit re-checks both after the user confirms.
+        if (isOrphanHistoryEntry(toStandaloneHistoryEntry(entry))) {
+          setStandaloneHistoryStatus(
+            t("This chat's source item was deleted"),
+            "warning",
+          );
+          return;
+        }
+        if (isRequestPending(target.conversationKey)) {
+          setStandaloneHistoryStatus(
+            t("History is unavailable while generating"),
+            "ready",
+          );
+          return;
+        }
         const currentTitle = normalizeHistoryTitle(entry.title || "");
         const rawTitle = await showConversationRenameDialog(doc, {
           title: t("Rename chat"),
@@ -2858,46 +2709,25 @@ export function openStandaloneChat(options?: {
           return;
         }
         try {
-          let currentEntry = standaloneSidebarEntriesByKey.get(
-            target.conversationKey,
-          );
-          if (
-            !canCommitConversationRename({
-              target,
-              current: currentEntry
-                ? getStandaloneRenameIdentity(currentEntry)
-                : null,
-              pendingDelete: pendingDeletionStore.isConversationPendingDeletion(
-                target.conversationKey,
-              ),
-            })
-          ) {
-            return;
-          }
-          const summary = await conversationRepository.getCatalogEntry(target);
-          currentEntry = standaloneSidebarEntriesByKey.get(
-            target.conversationKey,
-          );
-          if (
-            !summary ||
-            summary.kind !== target.kind ||
-            !canCommitConversationRename({
-              target,
-              current: currentEntry
-                ? getStandaloneRenameIdentity(currentEntry)
-                : null,
-              pendingDelete: pendingDeletionStore.isConversationPendingDeletion(
-                target.conversationKey,
-              ),
-            })
-          ) {
-            return;
-          }
-          await conversationRepository.setCatalogTitle({
-            ...target,
-            expectedGeneration: renameGeneration,
+          const renamed = await commitConversationRename({
+            target,
             title,
+            expectedGeneration: renameGeneration,
+            findCurrentEntry: () =>
+              standaloneSidebarEntriesByKey.get(target.conversationKey),
+            toIdentity: getStandaloneRenameIdentity,
+            // The panel's guards, each read from the window's own state. A
+            // sidebar row has no pending-delete flag of its own; the commit
+            // checks the pending-deletion store for every surface.
+            isOrphan: (currentEntry) =>
+              isOrphanHistoryEntry(toStandaloneHistoryEntry(currentEntry)),
+            isRequestPending: (conversationKey) =>
+              isRequestPending(conversationKey),
+            // The window does not hand its sidebar to another owner, so it
+            // stays current until it closes.
+            isStillCurrent: () => !cancelled,
           });
+          if (!renamed) return;
           searchDocCache.delete(target.conversationKey);
           if (cancelled) return;
           await renderSidebar();
@@ -2963,21 +2793,11 @@ export function openStandaloneChat(options?: {
           const currentLibraryID = Number(
             entry.libraryID || getCurrentLibraryScopeID(),
           );
-          if (isClaudeConversationSystem()) {
-            activeClaudeGlobalConversationByLibrary.set(
-              buildClaudeLibraryStateKey(currentLibraryID),
-              key,
-            );
-          } else if (isCodexConversationSystem()) {
-            activeCodexGlobalConversationByLibrary.set(
-              buildCodexLibraryStateKey(currentLibraryID),
-              key,
-            );
-            setLastUsedCodexGlobalConversationKey(currentLibraryID, key);
-          } else {
-            activeGlobalConversationByLibrary.set(currentLibraryID, key);
-            setLastUsedUpstreamGlobalConversationKey(currentLibraryID, key);
-          }
+          rememberStandaloneGlobalConversation(
+            currentConversationSystem,
+            currentLibraryID,
+            key,
+          );
           const newItem = buildStandalonePortalItem({
             mode: "open",
             conversationKey: key,
@@ -3070,22 +2890,9 @@ export function openStandaloneChat(options?: {
       ): Promise<void> => {
         if (event.entry.kind !== "conversation") return;
         const entry = event.entry;
-        // The store drops the entry before it notifies, so this tombstone is
-        // the only thing keeping renderSidebar from re-seeding the dead key.
-        // Only a REAL deletion tombstones the key; a dropped intent leaves the
-        // conversation alive and it must stay seedable.
-        if (
-          (event.type === "completed" || event.type === "finalized") &&
-          !event.dropped &&
-          entry.instanceID
-        ) {
-          markConversationInstanceRecentlyDeleted(
-            entry.conversationKey,
-            entry.instanceID,
-            Date.now(),
-            entry.identityDigest,
-          );
-        }
+        // The standalone window tombstones when its serialized handler reaches
+        // this event, before renderSidebar can re-seed the dead key.
+        markCommittedConversationDeletionTombstone(event);
         const registered =
           activeConversationKey > 0
             ? await getRegisteredConversationScope(activeConversationKey)
@@ -3227,7 +3034,23 @@ export function openStandaloneChat(options?: {
         }
       };
 
+      // Like the panel, never delete a conversation that is generating:
+      // queueing the deletion fences the send's writes, so an Undo would
+      // restore the chat with an answer that streamed but was never saved.
+      const rejectStandaloneDeletionWhileGenerating = (
+        conversationKey: number,
+      ): boolean => {
+        if (!isRequestPending(conversationKey)) return false;
+        setStandaloneHistoryStatus(
+          t("Cannot delete while generating"),
+          "ready",
+        );
+        return true;
+      };
+
       const queueStandaloneHistoryDeletion = async (rawEntry: SidebarConv) => {
+        const rawKey = Number(rawEntry.conversationKey || 0);
+        if (rawKey && rejectStandaloneDeletionWhileGenerating(rawKey)) return;
         const entry = await hydrateStandaloneHistoryDeletionEntry(rawEntry);
         const key = Number(entry.conversationKey || 0);
         if (!key) return;
@@ -3247,39 +3070,35 @@ export function openStandaloneChat(options?: {
           // Persist the write-ahead intent before moving an active window.
           // The queued event performs the move after the row is durable, so a
           // crash cannot strand the user in a new chat without an obligation.
-          // Same identity witness the panel path captures: without it the
-          // durable intent is retained and later moved to identity quarantine.
-          const identityWitness =
-            await conversationRepository.getCatalogIdentityWitness({
-              system: deletionConversationSystem,
-              kind: conversationKind,
+          // The pending-deletion check above runs before the witness read;
+          // the final check refuses a send that started in the meantime.
+          const queueResult = await queueWitnessedConversationDeletion({
+            intent: {
+              conversationKind,
+              conversationID: entry.conversationID,
               conversationKey: key,
-            });
-          const queued = await pendingDeletionStore.queueConversationDeletion({
-            conversationKind,
-            instanceID: identityWitness?.instanceID || "",
-            conversationID:
-              identityWitness?.conversationID || entry.conversationID,
-            catalogCreatedAt: identityWitness?.catalogCreatedAt || 0,
-            conversationKey: key,
-            libraryID:
-              Number(entry.libraryID || 0) ||
-              (entry.kind === "paper"
-                ? getCurrentPaperLibraryID()
-                : getCurrentLibraryScopeID()),
-            system: deletionConversationSystem,
-            paperItemID: entry.paperItemID,
-            providerSessionId: entry.providerSessionId || undefined,
-            title: entry.title || "",
-            wasActive: isActive,
+              libraryID:
+                Number(entry.libraryID || 0) ||
+                (entry.kind === "paper"
+                  ? getCurrentPaperLibraryID()
+                  : getCurrentLibraryScopeID()),
+              system: deletionConversationSystem,
+              paperItemID: entry.paperItemID,
+              providerSessionId: entry.providerSessionId || undefined,
+              title: entry.title || "",
+              wasActive: isActive,
+            },
+            finalCheck: () => !rejectStandaloneDeletionWhileGenerating(key),
           });
-          if (!queued) {
+          if (queueResult.status === "refused") return;
+          if (queueResult.status === "failed") {
             setStandaloneHistoryStatus(
               t("Failed to queue deletion. Check logs."),
               "error",
             );
             return;
           }
+          const queued = queueResult.entry;
           if (isActive) {
             // We already stepped off this chat above; remember where we came
             // from so an undo or an abandoned deletion can put the user back.
@@ -3371,21 +3190,11 @@ export function openStandaloneChat(options?: {
 
         if (standaloneMode === "open") {
           const currentLibraryID = getCurrentLibraryScopeID();
-          if (isClaudeConversationSystem()) {
-            activeClaudeGlobalConversationByLibrary.set(
-              buildClaudeLibraryStateKey(currentLibraryID),
-              key,
-            );
-          } else if (isCodexConversationSystem()) {
-            activeCodexGlobalConversationByLibrary.set(
-              buildCodexLibraryStateKey(currentLibraryID),
-              key,
-            );
-            setLastUsedCodexGlobalConversationKey(currentLibraryID, key);
-          } else {
-            activeGlobalConversationByLibrary.set(currentLibraryID, key);
-            setLastUsedUpstreamGlobalConversationKey(currentLibraryID, key);
-          }
+          rememberStandaloneGlobalConversation(
+            currentConversationSystem,
+            currentLibraryID,
+            key,
+          );
           const newItem = buildStandalonePortalItem({
             mode: "open",
             conversationKey: key,
@@ -3510,30 +3319,11 @@ export function openStandaloneChat(options?: {
         openTab.classList.add("active");
         activeConversationKey = normalizedKey;
         const currentLibraryID = getCurrentLibraryScopeID();
-        if (isClaudeConversationSystem()) {
-          activeClaudeGlobalConversationByLibrary.set(
-            buildClaudeLibraryStateKey(currentLibraryID),
-            normalizedKey,
-          );
-        } else if (isCodexConversationSystem()) {
-          activeCodexGlobalConversationByLibrary.set(
-            buildCodexLibraryStateKey(currentLibraryID),
-            normalizedKey,
-          );
-          setLastUsedCodexGlobalConversationKey(
-            currentLibraryID,
-            normalizedKey,
-          );
-        } else {
-          activeGlobalConversationByLibrary.set(
-            currentLibraryID,
-            normalizedKey,
-          );
-          setLastUsedUpstreamGlobalConversationKey(
-            currentLibraryID,
-            normalizedKey,
-          );
-        }
+        rememberStandaloneGlobalConversation(
+          currentConversationSystem,
+          currentLibraryID,
+          normalizedKey,
+        );
         const nextItem = buildStandalonePortalItem({
           mode: "open",
           conversationKey: normalizedKey,
@@ -3575,6 +3365,7 @@ export function openStandaloneChat(options?: {
             ? resolveRememberedGlobalPanelItem(
                 getCurrentLibraryScopeID(),
                 currentConversationSystem,
+                "standalone",
               )
             : null;
         const conversationKey = rememberedItem
@@ -3607,24 +3398,11 @@ export function openStandaloneChat(options?: {
             if (!newKey || cancelled) return;
             await touchStandaloneEmptyDraftActivity(newKey, "global");
             activeConversationKey = newKey;
-            if (isClaudeConversationSystem()) {
-              activeClaudeGlobalConversationByLibrary.set(
-                buildClaudeLibraryStateKey(currentLibraryID),
-                newKey,
-              );
-            } else if (isCodexConversationSystem()) {
-              activeCodexGlobalConversationByLibrary.set(
-                buildCodexLibraryStateKey(currentLibraryID),
-                newKey,
-              );
-              setLastUsedCodexGlobalConversationKey(currentLibraryID, newKey);
-            } else {
-              activeGlobalConversationByLibrary.set(currentLibraryID, newKey);
-              setLastUsedUpstreamGlobalConversationKey(
-                currentLibraryID,
-                newKey,
-              );
-            }
+            rememberStandaloneGlobalConversation(
+              currentConversationSystem,
+              currentLibraryID,
+              newKey,
+            );
             const newItem = buildStandalonePortalItem({
               mode: "open",
               conversationKey: newKey,
@@ -3732,7 +3510,11 @@ export function openStandaloneChat(options?: {
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
-          setConversationSystemPref(resolvedNextSystem);
+          // The window's backend is its own; the sidebar keeps the saved one.
+          surfaceChoices.conversationSystem.set(
+            resolvedNextSystem,
+            "standalone",
+          );
           currentConversationSystem = resolvedNextSystem;
           if (options?.forceFresh === true) {
             if (activeNoteSession.conversationKind === "global") {
@@ -3742,21 +3524,11 @@ export function openStandaloneChat(options?: {
               await touchStandaloneEmptyDraftActivity(newKey, "global");
               if (switchSeq !== systemSwitchSeq) return;
               const libraryID = activeNoteSession.libraryID;
-              if (resolvedNextSystem === "claude_code") {
-                activeClaudeGlobalConversationByLibrary.set(
-                  buildClaudeLibraryStateKey(libraryID),
-                  newKey,
-                );
-              } else if (resolvedNextSystem === "codex") {
-                activeCodexGlobalConversationByLibrary.set(
-                  buildCodexLibraryStateKey(libraryID),
-                  newKey,
-                );
-                setLastUsedCodexGlobalConversationKey(libraryID, newKey);
-              } else {
-                activeGlobalConversationByLibrary.set(libraryID, newKey);
-                setLastUsedUpstreamGlobalConversationKey(libraryID, newKey);
-              }
+              rememberStandaloneGlobalConversation(
+                resolvedNextSystem,
+                libraryID,
+                newKey,
+              );
               activeConversationKey = newKey;
             } else {
               const paperItem =
@@ -3770,27 +3542,12 @@ export function openStandaloneChat(options?: {
               if (switchSeq !== systemSwitchSeq) return;
               const libraryID = getLibraryIDForPaperItem(paperItem);
               const paperItemID = Number(paperItem.id || 0);
-              if (resolvedNextSystem === "claude_code") {
-                activeClaudePaperConversationByPaper.set(
-                  buildClaudePaperStateKey(libraryID, paperItemID),
-                  newKey,
-                );
-              } else if (resolvedNextSystem === "codex") {
-                activeCodexPaperConversationByPaper.set(
-                  buildCodexPaperStateKey(libraryID, paperItemID),
-                  newKey,
-                );
-                setLastUsedCodexPaperConversationKey(
-                  libraryID,
-                  paperItemID,
-                  newKey,
-                );
-              } else {
-                activePaperConversationByPaper.set(
-                  buildPaperStateKey(libraryID, paperItemID),
-                  newKey,
-                );
-              }
+              rememberStandalonePaperConversation(
+                resolvedNextSystem,
+                libraryID,
+                paperItemID,
+                newKey,
+              );
               activeConversationKey = newKey;
             }
           }
@@ -3805,7 +3562,7 @@ export function openStandaloneChat(options?: {
         const currentSystem = currentConversationSystem;
         if (nextSystem === currentSystem) return;
         const forceFresh = options?.forceFresh === true;
-        setConversationSystemPref(nextSystem);
+        surfaceChoices.conversationSystem.set(nextSystem, "standalone");
         currentConversationSystem = nextSystem;
         updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
@@ -3819,24 +3576,11 @@ export function openStandaloneChat(options?: {
                   ? createCodexGlobalPortalItem(libraryID, conversationKey)
                   : createGlobalPortalItem(libraryID, conversationKey);
             activeConversationKey = conversationKey;
-            if (nextSystem === "claude_code") {
-              activeClaudeGlobalConversationByLibrary.set(
-                buildClaudeLibraryStateKey(libraryID),
-                conversationKey,
-              );
-            } else if (nextSystem === "codex") {
-              activeCodexGlobalConversationByLibrary.set(
-                buildCodexLibraryStateKey(libraryID),
-                conversationKey,
-              );
-              setLastUsedCodexGlobalConversationKey(libraryID, conversationKey);
-            } else {
-              activeGlobalConversationByLibrary.set(libraryID, conversationKey);
-              setLastUsedUpstreamGlobalConversationKey(
-                libraryID,
-                conversationKey,
-              );
-            }
+            rememberStandaloneGlobalConversation(
+              nextSystem,
+              libraryID,
+              conversationKey,
+            );
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
             updateStandaloneSystemToggles();
@@ -3856,6 +3600,7 @@ export function openStandaloneChat(options?: {
           const rememberedItem = resolveRememberedGlobalPanelItem(
             libraryID,
             nextSystem,
+            "standalone",
           );
           const targetKey = rememberedItem
             ? getConversationKey(rememberedItem)
@@ -3871,6 +3616,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(nextRawItem, {
           conversationSystem: nextSystem,
           conversationMode: "paper",
+          surface: "standalone",
         });
         currentRawContextItem = nextRawItem || currentRawContextItem;
         currentBasePaperItem = resolved.basePaperItem || currentBasePaperItem;
@@ -3967,9 +3713,7 @@ export function openStandaloneChat(options?: {
                   err,
                 );
               });
-            if (getConversationSystemPref() === "claude_code") {
-              setConversationSystemPref("upstream");
-            }
+            demoteConversationSystemOnEverySurface("claude_code");
             if (isClaudeConversationSystem()) {
               void switchConversationSystem("upstream");
               return;
@@ -3983,9 +3727,7 @@ export function openStandaloneChat(options?: {
             return;
           }
           if (!isCodexAppServerModeEnabled()) {
-            if (getConversationSystemPref() === "codex") {
-              setConversationSystemPref("upstream");
-            }
+            demoteConversationSystemOnEverySurface("codex");
             if (isCodexConversationSystem()) {
               void switchConversationSystem("upstream");
               return;
@@ -4011,22 +3753,14 @@ export function openStandaloneChat(options?: {
 
       const commitStandaloneMode = (mode: "open" | "paper") => {
         standaloneMode = mode;
-        if (isClaudeConversationSystem()) {
-          setLastUsedClaudeConversationMode(
-            getCurrentLibraryScopeID(),
-            mode === "open" ? "global" : "paper",
-          );
-        } else if (isCodexConversationSystem()) {
-          setLastUsedCodexConversationMode(
-            getCurrentLibraryScopeID(),
-            mode === "open" ? "global" : "paper",
-          );
-        } else {
-          setLastUsedUpstreamConversationMode(
-            getCurrentLibraryScopeID(),
-            mode === "open" ? "global" : "paper",
-          );
-        }
+        // The window's own mode slot only; the sidebar's mode and the
+        // persisted mode stay as they are.
+        rememberMode(
+          currentConversationSystem,
+          getCurrentLibraryScopeID(),
+          mode === "open" ? "global" : "paper",
+          { surface: "standalone" },
+        );
         paperTab.classList.toggle("active", mode === "paper");
         openTab.classList.toggle("active", mode === "open");
       };
@@ -4048,6 +3782,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(rawItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: "paper",
+          surface: "standalone",
         });
         const paperItem =
           resolved.basePaperItem ||
@@ -4101,6 +3836,7 @@ export function openStandaloneChat(options?: {
             const rememberedItem = resolveRememberedGlobalPanelItem(
               getCurrentLibraryScopeID(),
               currentConversationSystem,
+              "standalone",
             );
             const key = rememberedItem ? getConversationKey(rememberedItem) : 0;
             if (!key) return;
@@ -4271,7 +4007,6 @@ export function openStandaloneChat(options?: {
         "mode=" + standaloneMode,
       );
       scheduleStandaloneSidebarRender();
-      renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
     } catch (err) {
       appLogger.warn("LLM: standalone initWindow failed", err);
       // Show a visible error so the window isn't silently blank
@@ -4338,6 +4073,10 @@ export function openStandaloneChat(options?: {
     const contentArea = root?.querySelector(".llm-standalone-content");
     if (contentArea) {
       disposeSetupHandlers(contentArea);
+      // The window is closing, so its content area is still connected here and
+      // the panel's own teardown keeps an open message edit; release it or the
+      // edit pins the whole window DOM in memory.
+      releaseInlineEdit(contentArea);
       clearPanelHostBinding(contentArea);
       void releaseClaudeRuntimeForBody(contentArea as Element);
       unregisterContextPanel(contentArea);
@@ -4346,7 +4085,7 @@ export function openStandaloneChat(options?: {
     if (sessionWin === newWin || sessionWin === null) {
       setStandaloneSessionWindow(null);
     }
-    restoreEmbeddedPanelsAfterStandaloneClose(contentArea as Element | null);
+    releaseDisconnectedEmbeddedPanels(contentArea as Element | null);
   };
 
   newWin.addEventListener("load", initWindow, { once: true });

@@ -30,7 +30,6 @@ import {
   addZoteroMcpToolActivityObserver,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
-  getZoteroMcpDirectPdfToolNames,
   getZoteroMcpServerName,
   qualifyZoteroMcpToolName,
   registerScopedZoteroMcpScope,
@@ -53,6 +52,8 @@ import {
   resolveCodexAppServerBinaryPath,
   resolveCodexAppServerReasoningParams,
   resolveCodexAppServerTurnInputWithFallback,
+  retireCodexAppServerProcessAfterTurnFailure,
+  runCodexAppServerTurnOnCachedProcess,
   waitForCodexAppServerThreadCompacted,
   waitForCodexAppServerTurnCompletion,
   type CodexAppServerAgentMessageDeltaEvent,
@@ -83,6 +84,7 @@ import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildCodexZoteroMcpThreadConfig,
   preflightCodexZoteroMcpServer,
+  REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES,
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
@@ -130,7 +132,7 @@ import {
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
 import { enqueueConversationCleanupJob } from "../core/conversations/conversationCleanupJobs";
-import { evaluatePreparedActionContract } from "../agent/contracts/actionEvaluation";
+import { settleExternalTurn } from "../agent/execution/externalTurnSettlement";
 import { isCodexNativeItemType } from "./nativeActivityStages";
 
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
@@ -1460,6 +1462,10 @@ function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
 export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
   isDeniedTrustedZoteroMcpGuardianReview;
 
+export const registerNativeGuardianReviewHandlersForTests = (
+  ...args: Parameters<typeof registerNativeGuardianReviewHandlers>
+) => registerNativeGuardianReviewHandlers(...args);
+
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
   threadId: string;
@@ -1470,6 +1476,9 @@ function registerNativeGuardianReviewHandlers(params: {
   return params.proc.onNotification(
     CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
     (rawParams) => {
+      // Another conversation's turn can share this process; its reviews are
+      // not this turn's to override.
+      if (normalizeRecord(rawParams).threadId !== params.threadId) return;
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
         appLogger.debug("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -2545,7 +2554,31 @@ function registerNativeApprovalRequestHandlers(params: {
   getTurnIdentity?: () => Promise<
     { threadId: string; turnId?: string } | undefined
   >;
+  /**
+   * The thread this turn runs on, once known. Requests that name another
+   * thread belong to another conversation's turn on the same process and are
+   * left to its handlers.
+   */
+  getActiveThreadId?: () => string | undefined;
+  /**
+   * Called when stopping the turn after an unanswered question failed (the
+   * interrupt timed out), so the process is retired the way a timed-out turn
+   * retires it: at once when no other turn is live, else once they end.
+   */
+  retireProcessAfterInterruptFailure?: () => void;
 }): () => void {
+  const acceptsRequest = params.getActiveThreadId
+    ? (rawParams: unknown) => {
+        const record = normalizeRecord(rawParams);
+        const requestThreadId =
+          normalizeNonEmptyString(record.threadId) ||
+          normalizeNonEmptyString(record.conversationId);
+        // A request that names no thread cannot be routed; the first turn
+        // takes it, as before.
+        if (!requestThreadId) return true;
+        return requestThreadId === params.getActiveThreadId?.();
+      }
+    : undefined;
   const disposers = CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS.map((method) =>
     params.proc.onRequest(
       method,
@@ -2609,10 +2642,22 @@ function registerNativeApprovalRequestHandlers(params: {
               .length &&
             identity?.turnId
           ) {
-            await params.proc.sendRequest("turn/interrupt", {
-              threadId: identity.threadId,
-              turnId: identity.turnId,
-            });
+            // A timeout here must not fail the shared process under other
+            // conversations' turns; retiring it is decided below.
+            try {
+              await params.proc.sendRequest(
+                "turn/interrupt",
+                {
+                  threadId: identity.threadId,
+                  turnId: identity.turnId,
+                },
+                undefined,
+                { failProcessOnTimeout: false },
+              );
+            } catch (error) {
+              params.retireProcessAfterInterruptFailure?.();
+              throw error;
+            }
           }
           if (!questions) {
             await reportApprovalEffect(response);
@@ -2634,12 +2679,17 @@ function registerNativeApprovalRequestHandlers(params: {
             signal.removeEventListener("abort", abort);
         }
       },
+      acceptsRequest,
     ),
   );
   return () => {
     for (const dispose of disposers) dispose();
   };
 }
+
+export const registerNativeApprovalRequestHandlersForTests = (
+  ...args: Parameters<typeof registerNativeApprovalRequestHandlers>
+) => registerNativeApprovalRequestHandlers(...args);
 
 export async function listCodexAppServerModels(
   params: {
@@ -3003,10 +3053,17 @@ export async function runCodexAppServerNativeTurn(input: {
   const processKey = params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY;
   try {
     const skillContext = params.skillContext;
-    const proc = await getOrCreateCodexAppServerProcess(processKey, {
-      codexPath,
-    });
-    return await proc.runTurnExclusive(async () => {
+    // One conversation's turns run in order; another conversation's turn can
+    // run on the same process at the same time. Keyed by conversation, not
+    // thread: the thread is resolved inside, and can be replaced there. A
+    // turn queued behind a failure that retired the process starts on a
+    // fresh one.
+    const target = {
+      cacheKey: processKey,
+      options: { codexPath },
+      turnKey: `conversation:${params.scope.conversationKey}`,
+    };
+    return await runCodexAppServerTurnOnCachedProcess(target, async (proc) => {
       const codexNativeRuntimeCwd = resolveCodexNativeRuntimeCwd();
       const storedSession = await loadResumableProviderSession({
         conversationKey: params.scope.conversationKey,
@@ -3054,6 +3111,14 @@ export async function runCodexAppServerNativeTurn(input: {
         redactText,
         isTurnStillLive: assertApprovalTurnStillLive,
         signal: params.signal,
+        retireProcessAfterInterruptFailure: () =>
+          retireCodexAppServerProcessAfterTurnFailure({
+            cacheKey: processKey,
+            proc,
+            processOptions: { codexPath },
+            // This turn is counted as live by the runTurnExclusive around it.
+            otherLiveTurns: Math.max(0, proc.getActiveTurnCount() - 1),
+          }),
         onApprovalEffect: async (decision) => {
           const receipt = await recordExternalRuntimeEffect({
             ...decision,
@@ -3078,6 +3143,7 @@ export async function runCodexAppServerNativeTurn(input: {
           await turnStarted;
           return activeTurnIdentity;
         },
+        getActiveThreadId: () => activeTurnIdentity?.threadId,
       });
       const mcpEnabled = isCodexZoteroMcpToolsEnabled();
       const profileSignature =
@@ -3577,7 +3643,7 @@ export async function runCodexAppServerNativeTurn(input: {
             });
             assertRequiredCodexZoteroMcpToolsReady(
               mcpStatus,
-              rawPdfMode ? getZoteroMcpDirectPdfToolNames() : undefined,
+              rawPdfMode ? REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES : undefined,
             );
             mcpReady = true;
           } catch (error) {
@@ -3596,29 +3662,34 @@ export async function runCodexAppServerNativeTurn(input: {
             throw new Error(mcpWarning);
           }
         }
-        const resolvePersistentThread = async (forceReplacement = false) => {
-          // Loaded native threads retain their discovered MCP catalog. Reload
-          // before thread/resume so the thread binds this turn's current Plan
-          // phase; reloading after resume leaves the previous phase's catalog
-          // attached for the entire turn.
-          if (storedThreadId && !forceReplacement && scopedMcp) {
-            await proc.sendRequest("config/mcpServer/reload");
-            assertTurnStillLive();
-          }
-          return resolveNativeThread({
-            proc,
-            scope: scopeWithProfile,
-            model: params.model,
-            effort: reasoningParams.effort,
-            developerInstructions: developerPreparedTurn.developerInstructions,
-            config: threadConfig,
-            cwd: codexNativeRuntimeCwd,
-            hooks: params.hooks,
-            storedThreadId: storedThreadId || null,
-            permissionExecution,
-            forceReplacement,
+        // The MCP reload is process-wide, so the reload and the thread/resume
+        // that binds it run as one step, never interleaved with another
+        // conversation's setup on the same process.
+        const resolvePersistentThread = (forceReplacement = false) =>
+          proc.runThreadSetupExclusive(async () => {
+            // Loaded native threads retain their discovered MCP catalog.
+            // Reload before thread/resume so the thread binds this turn's
+            // current Plan phase; reloading after resume leaves the previous
+            // phase's catalog attached for the entire turn.
+            if (storedThreadId && !forceReplacement && scopedMcp) {
+              await proc.sendRequest("config/mcpServer/reload");
+              assertTurnStillLive();
+            }
+            return resolveNativeThread({
+              proc,
+              scope: scopeWithProfile,
+              model: params.model,
+              effort: reasoningParams.effort,
+              developerInstructions:
+                developerPreparedTurn.developerInstructions,
+              config: threadConfig,
+              cwd: codexNativeRuntimeCwd,
+              hooks: params.hooks,
+              storedThreadId: storedThreadId || null,
+              permissionExecution,
+              forceReplacement,
+            });
           });
-        };
         let thread: NativeThreadResolution = rawPdfMode
           ? await (async () => {
               // Do not start an ephemeral provider thread after Clear has
@@ -3627,16 +3698,18 @@ export async function runCodexAppServerNativeTurn(input: {
               // the provider response.
               assertTurnStillLive();
               return {
-                ...(await startNativeThread({
-                  proc,
-                  model: params.model,
-                  developerInstructions:
-                    developerPreparedTurn.developerInstructions,
-                  config: threadConfig,
-                  cwd: codexNativeRuntimeCwd,
-                  ephemeral: true,
-                  permissionExecution,
-                })),
+                ...(await proc.runThreadSetupExclusive(() =>
+                  startNativeThread({
+                    proc,
+                    model: params.model,
+                    developerInstructions:
+                      developerPreparedTurn.developerInstructions,
+                    config: threadConfig,
+                    cwd: codexNativeRuntimeCwd,
+                    ephemeral: true,
+                    permissionExecution,
+                  }),
+                )),
                 resumed: false,
               };
             })()
@@ -3801,37 +3874,33 @@ export async function runCodexAppServerNativeTurn(input: {
           candidate: CodexNativeTurnResult,
         ) =>
           candidate.turnId ? loadLatestDocumentForRun(candidate.turnId) : null;
+        // A document exists only when submit_document succeeded, keyed by
+        // the Codex turn id.
         const document = submittedDocument
           ? await loadSubmittedDocument(result)
           : null;
-        const actionEvaluation = evaluatePreparedActionContract(hostReceipts);
-        const verificationFailure = [
-          actionEvaluation.state !== "satisfied" &&
-          actionEvaluation.state !== "cancelled"
-            ? actionEvaluation.failure
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n");
-        if (verificationFailure) {
-          result = {
-            ...result,
-            text: verificationFailure,
-            verificationFailure,
-          };
+        const settlement = settleExternalTurn({
+          answerText: result.text,
+          answered: true,
+          document,
+          hostReceipts,
+        });
+        const verificationFailure = settlement.unverified;
+        if (verificationFailure !== undefined) {
           await publishHost({
             type: "provider_event",
             providerType: "agent_completion_unverified",
             payload: { failure: verificationFailure },
           });
         }
-        if (document) {
+        if (verificationFailure !== undefined || document) {
           result = {
             ...result,
-            text: verificationFailure
-              ? `${document.visibleMarkdown}\n\n${verificationFailure}`
-              : document.visibleMarkdown,
-            documentId: document.documentId,
+            text: settlement.text,
+            ...(verificationFailure !== undefined
+              ? { verificationFailure }
+              : {}),
+            ...(document ? { documentId: settlement.documentId } : {}),
           };
         }
         if (rawPdfMode && storedThreadId) {
@@ -3856,10 +3925,7 @@ export async function runCodexAppServerNativeTurn(input: {
             hooks: params.hooks,
           });
         }
-        await params.eventJournal.finish(
-          verificationFailure ? "failed" : "completed",
-          result.text,
-        );
+        await params.eventJournal.finish(settlement.status, result.text);
         return { ...result, agentRunId: params.eventJournal.runId };
       } catch (error) {
         scopedMcp?.clear();

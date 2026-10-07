@@ -1,3 +1,5 @@
+import { fnv1a32 } from "../../utils/fnv1a";
+import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 import {
   installConversationKeyLedgerAgentTriggers,
   isConversationKeyRetiredInMemory,
@@ -93,12 +95,7 @@ function stabilizeForJson(value: unknown): unknown {
 }
 
 function hashText(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return fnv1a32(value);
 }
 
 function storeKey(conversationKey: number, handle: string): string {
@@ -395,4 +392,19 @@ export async function clearPersistedAgentToolResultHandles(
       error,
     );
   }
+}
+
+/**
+ * Delete a conversation's tool-result handle rows inside the conversation's
+ * deletion transaction (the agent row purge).  An absent table means no rows.
+ */
+export async function deleteAgentToolResultHandleRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${TOOL_RESULT_HANDLE_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

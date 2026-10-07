@@ -1,6 +1,7 @@
 import { ToolInputRejection } from "../tools/execution/failure";
+import { quoteTokenPattern } from "../../services/quotes/quoteTokenIds";
 
-const QUOTE_TOKEN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
+const QUOTE_TOKEN = quoteTokenPattern("quote");
 /**
  * A leading enumerator ("1.", "2)", "3.1", "IV.", "A.") is presentation, not
  * the section's name; numbered headings are ordinary in reviews.

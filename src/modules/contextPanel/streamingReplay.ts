@@ -11,11 +11,8 @@ import {
   tryBeginRequest,
   nextRequestId,
   finishRequest,
-  initializedConversationComposeContextKeys,
-  selectedCollectionContextCache,
-  selectedPaperContextCache,
-  selectedTagContextCache,
 } from "./state";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { agentRunTraceCache } from "./agentState";
 import { getConversationWriteGeneration } from "../../shared/conversationWriteFence";
 import { createBlockStreamCoalescer } from "./blockStreamCoalescer";
@@ -901,14 +898,15 @@ export async function startTaskProgressReplay(
   history.push(user, message);
   chatHistory.set(key, history);
   // The context bar holds what the question carried, as it does after a send.
-  const hold = <T>(cache: Map<number, T[]>, list: readonly T[] | undefined) => {
-    if (list?.length) cache.set(key, [...list]);
-    else cache.delete(key);
-  };
-  hold(selectedPaperContextCache, user.paperContexts);
-  hold(selectedCollectionContextCache, user.selectedCollectionContexts);
-  hold(selectedTagContextCache, user.selectedTagContexts);
-  initializedConversationComposeContextKeys.add(key);
+  const copy = <T>(list: readonly T[] | undefined) =>
+    list ? [...list] : undefined;
+  composeContextStore.papers.replace(key, copy(user.paperContexts));
+  composeContextStore.collections.replace(
+    key,
+    copy(user.selectedCollectionContexts),
+  );
+  composeContextStore.tags.replace(key, copy(user.selectedTagContexts));
+  composeContextStore.initializedConversations.mark(key);
   // The synthetic history replaces the conversation's, so does its ledger;
   // a follow-up keeps both.
   if (!input.followUp) clearTaskProgress(key);
