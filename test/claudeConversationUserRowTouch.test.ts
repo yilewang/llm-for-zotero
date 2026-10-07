@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import { afterEach, beforeEach, describe, it } from "mocha";
 import * as claude from "../src/claudeCode/store";
-import { updateLatestClaudeConversationUserMessageWithinWriteLock } from "../src/claudeCode/runtime";
+import {
+  updateLatestClaudeConversationAssistantMessageWithinWriteLock,
+  updateLatestClaudeConversationUserMessageWithinWriteLock,
+} from "../src/claudeCode/runtime";
 import type { StoredChatMessage } from "../src/utils/chatStore";
 import {
   FIXED_STORE_CLOCK_MS,
@@ -125,5 +128,47 @@ describe("Claude Code user-row write and the catalog touch", function () {
     // The touch writes the message's own timestamp, as it always has.
     assert.isNotEmpty(catalogWrites(from), "the catalog touch ran");
     assert.equal(catalogRow(key).updated_at, at(1));
+  });
+
+  it("an exact-row answer write that finds no row leaves the catalog untouched", async function () {
+    const key = await seededConversation();
+    const before = catalogRow(key);
+    const from = harness.statements.length;
+
+    const written =
+      await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+        key,
+        plain("assistant", "never written", at(5)),
+        { expectedTimestamp: at(9) },
+      );
+
+    assert.isFalse(written);
+    assert.deepEqual(catalogRow(key), before, "activity time unchanged");
+    assert.deepEqual(catalogWrites(from), [], "no catalog touch ran");
+  });
+
+  it("an exact-row answer write rewrites the older answer and touches the catalog", async function () {
+    const key = await seededConversation();
+    const from = harness.statements.length;
+
+    const written =
+      await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+        key,
+        plain("assistant", "a1-retried", at(5)),
+        { expectedTimestamp: at(2) },
+      );
+
+    assert.isTrue(written);
+    assert.isNotEmpty(catalogWrites(from), "the catalog touch ran");
+    assert.deepEqual(
+      harness
+        .all(
+          `SELECT text FROM llm_for_zotero_claude_messages
+           WHERE conversation_key = ? ORDER BY id`,
+          [key],
+        )
+        .map((row) => row.text),
+      ["u1", "a1-retried", "u2", "a2"],
+    );
   });
 });
