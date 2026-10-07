@@ -15,7 +15,7 @@ import {
   worstAgentActionVerification,
   type AgentActionVerification,
 } from "../../../agent/contracts/actionVerificationLabels";
-import { operationLabel } from "../../../agent/contracts/operationCatalog";
+import { receiptOperationLabel } from "../../../agent/contracts/operationCatalog";
 import { operationVerb } from "./actionCardVocabulary";
 import { noteChangeCardHeader } from "./noteChangeCard";
 
@@ -409,7 +409,7 @@ export function buildAgentActionSummaryCard(
       receiptId: receipt.id,
       operation: receipt.operation,
       verb: operationVerb(receipt.operation),
-      label: operationLabel(receipt.operation),
+      label: receiptOperationLabel(receipt),
       objects: objectsOf(receipt, resolvers, targets),
       ...(commands.has(receipt.id)
         ? { command: commands.get(receipt.id) }

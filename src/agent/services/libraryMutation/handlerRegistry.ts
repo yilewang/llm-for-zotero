@@ -273,8 +273,11 @@ export const libraryMutationHandlers = {
         Number(entry.targetCollectionId),
       ),
     ],
+    // Only a move leaves a collection; an add that carried a stray `from`
+    // must not be recorded as one.
     actionParameters: (operation) => ({
-      sourceCollectionId: operation.from,
+      sourceCollectionId:
+        operation.mode === "move" ? operation.from : undefined,
       destinationCollectionId:
         operation.targetCollectionId ||
         operation.assignments?.[0]?.targetCollectionId,

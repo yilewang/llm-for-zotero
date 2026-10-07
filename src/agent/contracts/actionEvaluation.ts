@@ -9,7 +9,7 @@ import {
   readAgentActionVerification,
 } from "./actionVerificationLabels";
 import { innermostToolResult } from "./toolResultEnvelope";
-import { operationCatalogEntry } from "./operationCatalog";
+import { collectionAddOnly, operationCatalogEntry } from "./operationCatalog";
 
 export type ContractEvaluation = {
   state:
@@ -299,7 +299,13 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const proof = verification
         ? ` ${AGENT_ACTION_VERIFICATION_LABELS[verification]};`
         : "";
-      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
+      // An add-only filing says so: "move_to_collection — applied" read as a
+      // move, and the model went on to tell the user the paper had left its
+      // old folder.
+      const operation = collectionAddOnly(receipt)
+        ? `${receipt.operation} (added only; the items stay in their other collections)`
+        : receipt.operation;
+      return `[Action status: ${operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
 }
