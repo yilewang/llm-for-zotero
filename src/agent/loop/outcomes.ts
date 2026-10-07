@@ -3,7 +3,7 @@ import type {
   AgentActionProposal,
   AgentActionReceipt,
 } from "../contracts/types";
-import { operationLabel } from "../contracts/operationCatalog";
+import { receiptOperationLabel } from "../contracts/operationCatalog";
 import type { MaterialRef } from "../documents/materialRef";
 import {
   materialRefKey,
@@ -986,7 +986,7 @@ function applyReceipt(
   const host: Task = {
     ...newTask(
       hostReceiptTaskId(checkpoint, receipt.id),
-      operationLabel(receipt.operation),
+      receiptOperationLabel(receipt),
       now,
     ),
     effect: "mutation",
@@ -1348,7 +1348,7 @@ function applyDeclined(
     {
       ...newTask(
         freeTaskId(checkpoint, (attempt) => `host-declined-${attempt}`),
-        operationLabel(first.operation),
+        receiptOperationLabel(first),
         now,
       ),
       status: "blocked",
