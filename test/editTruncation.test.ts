@@ -18,8 +18,8 @@ import {
 
 /**
  * Edit and retry deletes the stored turns after the edited one.  Each pair's
- * transaction also purges the conversation's agent rows, because agent state
- * is keyed by the conversation, not by the deleted message rows.
+ * transaction also purges the trace of the runs that pair's rows name; the
+ * turns before the edited one keep their traces.
  */
 describe("edit truncation deletes the trailing turns and their agent rows", function () {
   const globalScope = globalThis as typeof globalThis & {
@@ -79,19 +79,24 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
       "user",
       "assistant",
     ].entries()) {
+      // Each turn's rows name that turn's own run.
+      const runId = `run-${Math.floor(index / 2)}`;
       await upstream.appendMessage(key, {
         role,
         text: `${role}-${index}`,
         timestamp: 1_000 * (index + 1),
+        agentRunId: runId,
       } as upstream.StoredChatMessage);
+      if (role === "user") {
+        await createAgentRun({
+          runId,
+          conversationKey: key,
+          mode: "agent",
+          status: "completed",
+          createdAt: 1,
+        } as Parameters<typeof createAgentRun>[0]);
+      }
     }
-    await createAgentRun({
-      runId: "run-1",
-      conversationKey: key,
-      mode: "agent",
-      status: "completed",
-      createdAt: 1,
-    } as Parameters<typeof createAgentRun>[0]);
     return key;
   }
 
@@ -108,7 +113,11 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     });
     assert.isTrue(ok);
     assert.deepEqual(messageTexts(key), ["user-0", "assistant-1"]);
-    assert.deepEqual(runIDs(key), [], "the agent rows were purged");
+    assert.deepEqual(
+      runIDs(key),
+      ["run-0"],
+      "only the deleted turns' runs were purged",
+    );
     await createAgentRun({
       runId: "next-run",
       conversationKey: key,
@@ -118,7 +127,7 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     } as Parameters<typeof createAgentRun>[0]);
     assert.deepEqual(
       runIDs(key),
-      ["next-run"],
+      ["next-run", "run-0"],
       "a later agent run of the conversation survives",
     );
   });
@@ -133,7 +142,7 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     });
     assert.isFalse(ok);
     assert.lengthOf(messageTexts(key), 6);
-    assert.deepEqual(runIDs(key), ["run-1"]);
+    assert.deepEqual(runIDs(key), ["run-0", "run-1", "run-2"]);
   });
 
   it("a later pair that fails does not leave the committed purge's mark behind", async function () {
@@ -170,7 +179,11 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
       ["user-0", "assistant-1", "user-4", "assistant-5"],
       "the first pair committed, the second rolled back",
     );
-    assert.deepEqual(runIDs(key), [], "the committed purge removed the run");
+    assert.deepEqual(
+      runIDs(key),
+      ["run-0", "run-2"],
+      "the committed purge removed only its turn's run",
+    );
     await createAgentRun({
       runId: "next-run",
       conversationKey: key,
@@ -180,7 +193,7 @@ describe("edit truncation deletes the trailing turns and their agent rows", func
     } as Parameters<typeof createAgentRun>[0]);
     assert.deepEqual(
       runIDs(key),
-      ["next-run"],
+      ["next-run", "run-0", "run-2"],
       "a later agent run of the conversation survives",
     );
   });

@@ -5,12 +5,17 @@ import { clearPersistedAgentToolResultHandles } from "../../agent/store/toolResu
 import { clearPersistedAgentEvidence } from "../../agent/context/cacheManagement";
 import { clearPersistedAgentCoverage } from "../../agent/context/coverageLedger";
 import { clearRememberedLocalDocumentPaths } from "../../agent/privacy/localDocumentPathRedaction";
-import { clearAgentTraceState } from "../../agent/store/traceStore";
+import {
+  clearAgentTraceState,
+  clearQueuedAgentTraceRuns,
+} from "../../agent/store/traceStore";
 import { sweepJournalRecoveryBlobCleanup } from "../../agent/store/changeJournal";
 import {
   purgeAgentConversation,
+  purgeAgentConversationTurn,
   type AgentConversationPurge,
 } from "../../agent/store/agentConversationPurge";
+import type { TurnDeletionBeforeCommit } from "../../shared/conversationStore/localRowDeletion";
 import { clearAgentRuntimeTraceState } from "./agentState";
 import { clearTaskProgress } from "./taskProgress/store";
 
@@ -34,19 +39,22 @@ export async function clearPersistedAgentConversationRowsInTransaction(
 }
 
 /**
- * Run a turn-row deletion whose transaction purges the conversation's agent
- * rows in its onBeforeCommit (turn deletion, edit truncation).  When that
- * transaction fails, the purge's in-memory part is rolled back with it.
+ * Run a turn-row deletion whose transaction purges the turn's agent rows in
+ * its onBeforeCommit (turn deletion, edit truncation): the trace of the runs
+ * the deleted rows named, and the conversation's other agent rows (see
+ * purgeAgentConversationTurn).  When that transaction fails, the purge's
+ * in-memory part is rolled back with it.
  */
-export async function withAgentConversationPurge(
+export async function withAgentTurnPurge(
   conversationKey: number,
-  deleteRows: (onBeforeCommit: () => Promise<void>) => Promise<void>,
+  deleteRows: (onBeforeCommit: TurnDeletionBeforeCommit) => Promise<void>,
 ): Promise<void> {
   let purge: AgentConversationPurge | undefined;
   try {
-    await deleteRows(async () => {
-      purge =
-        await clearPersistedAgentConversationRowsInTransaction(conversationKey);
+    await deleteRows(async ({ agentRunIds }) => {
+      purge = await purgeAgentConversationTurn(conversationKey, agentRunIds, {
+        clearTaskProgress,
+      });
     });
   } catch (error) {
     purge?.rollback();
@@ -54,8 +62,28 @@ export async function withAgentConversationPurge(
   }
 }
 
+/** Clears a deleted conversation's agent state outside the database. */
 export async function clearAgentConversationState(
   conversationKey: number,
+): Promise<void> {
+  await clearAgentStateAfterCommit(conversationKey, clearAgentTraceState);
+}
+
+/**
+ * Clears the agent state outside the database after a turn deletion or edit
+ * truncation committed: the runs that deletion queued (their trace files and
+ * cached traces) and nothing of the remaining turns' runs, then the
+ * conversation's other agent state, as for a whole conversation.
+ */
+export async function clearAgentTurnState(
+  conversationKey: number,
+): Promise<void> {
+  await clearAgentStateAfterCommit(conversationKey, clearQueuedAgentTraceRuns);
+}
+
+async function clearAgentStateAfterCommit(
+  conversationKey: number,
+  clearTraceRuns: (conversationKey: number) => Promise<string[]>,
 ): Promise<void> {
   clearRememberedLocalDocumentPaths(conversationKey);
   clearTaskProgress(conversationKey);
@@ -69,7 +97,7 @@ export async function clearAgentConversationState(
   };
   await Promise.all([
     capture(async () => {
-      const traceRunIds = await clearAgentTraceState(conversationKey);
+      const traceRunIds = await clearTraceRuns(conversationKey);
       clearAgentRuntimeTraceState(traceRunIds);
     }),
     capture(() => clearAgentMemory(conversationKey)),

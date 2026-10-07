@@ -9,7 +9,7 @@ import {
 } from "../src/agent/store/traceStore";
 import { purgeAgentConversation } from "../src/agent/store/agentConversationPurge";
 import { finalizeQueuedTurnDeletion } from "../src/modules/contextPanel/conversationDeletion";
-import { withAgentConversationPurge } from "../src/modules/contextPanel/agentConversationCleanup";
+import { withAgentTurnPurge } from "../src/modules/contextPanel/agentConversationCleanup";
 import {
   installSqliteZotero,
   resetConversationStoreProcessStateForTests,
@@ -153,11 +153,13 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
       role: "user",
       text: "q",
       timestamp: 1_000,
+      agentRunId: "old-run",
     } as upstream.StoredChatMessage);
     await upstream.appendMessage(key, {
       role: "assistant",
       text: "a",
       timestamp: 2_000,
+      agentRunId: "old-run",
     } as upstream.StoredChatMessage);
     await startRun(key, "old-run");
     // Fail the turn deletion's transaction after its last statement (the
@@ -170,7 +172,7 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
     db.executeTransaction = (task) =>
       realTransaction(async () => {
         const result = await task();
-        const purged = runIDs(key).length === 0;
+        const purged = !runIDs(key).includes("old-run");
         if (failNext && purged) {
           failNext = false;
           throw new Error("simulated commit failure");
@@ -206,9 +208,9 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
       executeTransaction: (task: () => Promise<unknown>) => Promise<unknown>;
     };
     let failure = "";
-    await withAgentConversationPurge(key, (onBeforeCommit) =>
+    await withAgentTurnPurge(key, (onBeforeCommit) =>
       db.executeTransaction(async () => {
-        await onBeforeCommit();
+        await onBeforeCommit({ agentRunIds: ["old-run", "stray-run"] });
         throw new Error("simulated rollback");
       }),
     ).catch((error) => {
@@ -288,9 +290,9 @@ describe("a rolled-back agent purge keeps later agent runs", function () {
       [key],
     );
     let failure = "";
-    await withAgentConversationPurge(key, (onBeforeCommit) =>
+    await withAgentTurnPurge(key, (onBeforeCommit) =>
       db.executeTransaction(async () => {
-        await onBeforeCommit();
+        await onBeforeCommit({ agentRunIds: ["old-run", "stray-run"] });
         throw new Error("simulated rollback");
       }),
     ).catch((error) => {
