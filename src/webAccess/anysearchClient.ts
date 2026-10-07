@@ -286,7 +286,7 @@ function source(value: unknown, extracted: boolean): WebSourceRecord {
       : !extracted && typeof entry.snippet === "string"
         ? entry.snippet
         : undefined;
-  if (typeof entry.title !== "string" || content === undefined) {
+  if (typeof entry.title !== "string" || (extracted && content === undefined)) {
     throw new WebAccessError(
       "AnySearch returned incomplete result fields.",
       "service",
@@ -298,10 +298,14 @@ function source(value: unknown, extracted: boolean): WebSourceRecord {
     hostname,
     organization: hostname,
     title: entry.title.replace(/\s+/g, " ").trim().slice(0, 500) || hostname,
-    ...(extracted
-      ? { content: content.slice(0, CONTENT_LIMIT) }
-      : { snippet: content.slice(0, CONTENT_LIMIT) }),
-    ...(content.length > CONTENT_LIMIT ? { truncated: true } : {}),
+    ...(content === undefined
+      ? {}
+      : extracted
+        ? { content: content.slice(0, CONTENT_LIMIT) }
+        : { snippet: content.slice(0, CONTENT_LIMIT) }),
+    ...(content !== undefined && content.length > CONTENT_LIMIT
+      ? { truncated: true }
+      : {}),
   };
 }
 

@@ -384,6 +384,9 @@ describe("AnySearch native integration (offline)", function () {
     assert.deepEqual(Object.keys(schema.properties), ["query", "maxResults"]);
     assert.notInclude(JSON.stringify(specs), "costs 1 credit");
     assert.notInclude(search.guidance!.instruction, "explicitly choose basic");
+    assert.isFalse(
+      search.guidance!.matches(context.request, { matchedSkillIds: [] }),
+    );
     assert.isTrue(search.validate({ query: "hello" }).ok);
     for (const key of [
       "depth",
@@ -411,9 +414,12 @@ describe("AnySearch native integration (offline)", function () {
     setWebAccessProvider("tavily");
     assert.isFalse(search.validate({ query: "hello" }).ok);
     assert.include(JSON.stringify(search.spec.inputSchema), "advanced");
+    assert.isFalse(
+      search.guidance!.matches(context.request, { matchedSkillIds: [] }),
+    );
   });
 
-  it("runs search then read with stable citations and blocks unsearched URLs (mock transport)", async function () {
+  it("reads a search result without summary text with stable citations and blocks unsearched URLs (mock transport)", async function () {
     setWebAccessProvider("anysearch");
     let calls = 0;
     const client = new AnysearchClient("", async (request) => {
@@ -429,7 +435,9 @@ describe("AnySearch native integration (offline)", function () {
         body: {
           code: 0,
           request_id: "mock-request",
-          data: request.url.endsWith("/search") ? { results: [page] } : page,
+          data: request.url.endsWith("/search")
+            ? { results: [{ url: page.url, title: page.title }] }
+            : page,
         },
       };
     });

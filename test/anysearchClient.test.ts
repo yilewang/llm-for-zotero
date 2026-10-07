@@ -82,6 +82,36 @@ describe("AnySearch client (offline)", function () {
     }).search(search);
   });
 
+  it("preserves mixed search results when summary text is unavailable", async function () {
+    const withoutSummary = {
+      url: "https://example.org/no-summary",
+      title: "Title and URL only",
+    };
+    const result = await new AnysearchClient("", async () =>
+      success({ results: [page, withoutSummary] }),
+    ).search(search);
+
+    assert.lengthOf(result.results, 2);
+    assert.equal(result.results[0].snippet, page.content);
+    assert.equal(result.results[1].url, withoutSummary.url);
+    assert.equal(result.results[1].title, withoutSummary.title);
+    assert.isNotEmpty(result.results[1].sourceId);
+    assert.notProperty(result.results[1], "snippet");
+    assert.notProperty(result.results[1], "content");
+    assert.notProperty(result.results[1], "truncated");
+  });
+
+  it("still reports extraction failure when page content is missing", async function () {
+    const result = await new AnysearchClient("", async () =>
+      success({ url: page.url, title: page.title, snippet: "Search summary" }),
+    ).read({ urls: [page.url] });
+
+    assert.isEmpty(result.pages);
+    assert.deepEqual(result.failedResults, [
+      { url: page.url, error: "AnySearch returned incomplete result fields." },
+    ]);
+  });
+
   it("uses the native main-window AbortController when the plugin global lacks it", async function () {
     globalThis.AbortController = undefined as unknown as typeof AbortController;
     globalThis.Zotero = {

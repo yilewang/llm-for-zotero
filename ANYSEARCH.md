@@ -83,8 +83,10 @@ parameter is exposed. Supplying unsupported tool fields fails validation.
 Tavily retains its own depth, topic, filtering, focused extraction and credit
 behavior.
 
-Search results use `data.results`, requiring title, public URL and
-content/snippet. A valid empty results array is a successful empty search;
+Search results use `data.results`, requiring a title and public URL.
+Both `content` and `snippet` may be absent when summary text is unavailable.
+Extraction still requires page content.
+A valid empty results array is a successful empty search;
 invalid envelopes and failed requests are errors. Extraction requires the
 returned normalized URL to equal the requested normalized URL, avoiding
 accidental attribution of a different page.

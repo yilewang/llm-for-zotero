@@ -338,7 +338,7 @@ export function createWebSearchTool(
     get guidance() {
       if (getWebAccessProvider() !== "anysearch") return tool.guidance;
       return {
-        matches: matchesWebSearchGuidance,
+        matches: neverSelected,
         instruction:
           "Use web_search for current or general public evidence. AnySearch accepts query and maxResults only; do not invent depth, topic, date/domain filters or vertical options. Use web_read with searched URLs only when snippets are insufficient. Every final-answer paragraph using web information must end with the hidden source marker described in the result, using only returned sourceId values. Do not add a references footer.",
       };
