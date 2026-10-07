@@ -920,6 +920,53 @@ export async function clearAgentTraceState(
   const cleanupRunIDs = Array.from(
     new Set([...runIds, ...exportRunIDs, ...rememberedRunIDs, ...queuedRunIDs]),
   );
+  return removeAgentTraceRuns(runIds, cleanupRunIDs);
+}
+
+/**
+ * Finish deleting the runs a committed turn deletion queued, and only those:
+ * the runs its transaction remembered and queued for file cleanup (see
+ * `purgeAgentConversationTurn`). The conversation's other runs belong to the
+ * turns that remain and are left alone. The durable cleanup rows are the work
+ * list, so a retry after a failed file removal still finds every run.
+ */
+export async function clearQueuedAgentTraceRuns(
+  conversationKey: number,
+): Promise<string[]> {
+  const normalizedKey = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(normalizedKey) || normalizedKey <= 0) return [];
+  if (typeof Zotero?.DB?.executeTransaction !== "function") return [];
+  const cleanupRows = (await Zotero.DB.queryAsync(
+    `SELECT run_id AS runId
+     FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  ).catch((error: unknown) => {
+    if (/no such table|no table/i.test(String(error))) return [];
+    throw error;
+  })) as Array<{ runId?: unknown }> | undefined;
+  const queuedRunIDs = (cleanupRows || [])
+    .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
+    .filter(Boolean);
+  const rememberedRunIDs =
+    deletedRunIDsByConversation.get(normalizedKey)?.runIDs || [];
+  deletedRunIDsByConversation.delete(normalizedKey);
+  const cleanupRunIDs = Array.from(
+    new Set([...rememberedRunIDs, ...queuedRunIDs]),
+  );
+  return removeAgentTraceRuns(cleanupRunIDs, cleanupRunIDs);
+}
+
+/**
+ * Deletes the run and event rows of `runIds`, then each of `cleanupRunIDs`'
+ * runtime state, trace file, export row and cleanup row. A trace file that
+ * cannot be removed keeps its cleanup row, and the first such failure is
+ * thrown once the rest are done.
+ */
+async function removeAgentTraceRuns(
+  runIds: readonly string[],
+  cleanupRunIDs: readonly string[],
+): Promise<string[]> {
   await Zotero.DB.executeTransaction(async () => {
     if (runIds.length) {
       const placeholders = runIds.map(() => "?").join(", ");
@@ -969,7 +1016,7 @@ export async function clearAgentTraceState(
     }
   }
   if (firstFileError) throw firstFileError;
-  return cleanupRunIDs;
+  return [...cleanupRunIDs];
 }
 
 /** Durable host events for provider-owned turns, using the existing run store. */
@@ -1078,6 +1125,35 @@ export async function listAgentTraceRunIDsInTransaction(
     .map((row) => (typeof row.runId === "string" ? row.runId.trim() : ""))
     .filter(Boolean);
   return { runIds, exportRunIds };
+}
+
+/**
+ * Delete some of a conversation's runs inside a turn deletion transaction:
+ * their events, the runs, then their trace exports. Runs of the conversation
+ * not named are left alone. Each statement treats an absent table as no rows.
+ */
+export async function deleteAgentTraceRowsForRunsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+  runIds: readonly string[],
+): Promise<void> {
+  if (!runIds.length) return;
+  const placeholders = runIds.map(() => "?").join(", ");
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_RUN_EVENTS_TABLE} WHERE run_id IN (${placeholders})`,
+    [...runIds],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_RUNS_TABLE} WHERE conversation_key = ? AND run_id IN (${placeholders})`,
+    [conversationKey, ...runIds],
+  );
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${AGENT_TRACE_EXPORTS_TABLE} WHERE conversation_key = ? AND run_id IN (${placeholders})`,
+    [conversationKey, ...runIds],
+  );
 }
 
 /**

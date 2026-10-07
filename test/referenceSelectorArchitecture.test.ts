@@ -200,6 +200,25 @@ describe("reference selector model", function () {
     );
   });
 
+  it("does not mark a subfolder's paper as covered by its parent folder's chip", function () {
+    const child = makeGroup(2, { collectionIds: [11] });
+    const state = createReferenceSelectorState();
+    setReferenceSelectorCollections(state, [
+      makeCollection(10, [], [makeCollection(11, [child])]),
+    ]);
+    assert.notEqual(
+      resolveReferenceSelectorAttachmentSelectionState({
+        state,
+        group: child,
+        attachment: child.attachments[0],
+        selectedCollections: [
+          { collectionId: 10, name: "Collection 10", libraryID: 1 },
+        ],
+      }),
+      "coveredByCollection",
+    );
+  });
+
   it("distinguishes explicit selection from selected collection/tag coverage", function () {
     const group = makeGroup(1, { collectionIds: [10], tags: ["Stable"] });
     const attachment = group.attachments[0];

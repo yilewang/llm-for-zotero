@@ -53,8 +53,9 @@ import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import {
   clearAgentConversationState,
+  clearAgentTurnState,
   clearDeletedAgentConversationState,
-  withAgentConversationPurge,
+  withAgentTurnPurge,
 } from "./agentConversationCleanup";
 import { ensureAgentTraceSchema } from "../../agent/store/traceStore";
 import { resolveConversationRefForKey } from "../../shared/conversationRef";
@@ -1344,33 +1345,32 @@ export async function finalizeQueuedTurnDeletion(
     warn?: (message: string, ...args: unknown[]) => void;
     scheduleAttachmentGc?: () => void;
     detachProviderSession?: (entry: PendingTurnDeletionEntry) => Promise<void>;
-    clearAgentConversationState?: (conversationKey: number) => Promise<void>;
+    clearAgentTurnState?: (conversationKey: number) => Promise<void>;
   } = {},
 ): Promise<boolean | PendingFinalizeOutcome> {
   const warn = deps.warn || deps.log || (() => {});
   return withConversationWriteLock(entry.conversationKey, async () => {
     try {
-      // Agent transcript/memory/evidence/run state is keyed by the immutable
-      // conversation, not by the chat-message row IDs.  Purge it in the same
-      // transaction as the turn rows so a crash cannot leave deleted turn
-      // content available to the next prompt; a failed transaction rolls the
-      // purge back with it.
-      await withAgentConversationPurge(
-        entry.conversationKey,
-        (onBeforeCommit) =>
-          conversationRepository.deleteTurnMessages({
-            system: entry.system,
-            conversationKey: entry.conversationKey,
-            userTimestamp: entry.userTimestamp,
-            assistantTimestamp: entry.assistantTimestamp,
-            ...(entry.userMessageID
-              ? { userMessageID: entry.userMessageID }
-              : {}),
-            ...(entry.assistantMessageID
-              ? { assistantMessageID: entry.assistantMessageID }
-              : {}),
-            onBeforeCommit,
-          }),
+      // Agent transcript/memory/evidence state is keyed by the immutable
+      // conversation, not by the chat-message row IDs; the trace is purged
+      // only for the runs the deleted rows named, so the other turns keep
+      // theirs.  Purge it in the same transaction as the turn rows so a crash
+      // cannot leave deleted turn content available to the next prompt; a
+      // failed transaction rolls the purge back with it.
+      await withAgentTurnPurge(entry.conversationKey, (onBeforeCommit) =>
+        conversationRepository.deleteTurnMessages({
+          system: entry.system,
+          conversationKey: entry.conversationKey,
+          userTimestamp: entry.userTimestamp,
+          assistantTimestamp: entry.assistantTimestamp,
+          ...(entry.userMessageID
+            ? { userMessageID: entry.userMessageID }
+            : {}),
+          ...(entry.assistantMessageID
+            ? { assistantMessageID: entry.assistantMessageID }
+            : {}),
+          onBeforeCommit,
+        }),
       );
     } catch (err) {
       warn("LLM: queued turn deletion failed to delete rows", err);
@@ -1389,7 +1389,7 @@ export async function finalizeQueuedTurnDeletion(
       });
     }
     try {
-      await (deps.clearAgentConversationState || clearAgentConversationState)(
+      await (deps.clearAgentTurnState || clearAgentTurnState)(
         entry.conversationKey,
       );
     } catch (err) {

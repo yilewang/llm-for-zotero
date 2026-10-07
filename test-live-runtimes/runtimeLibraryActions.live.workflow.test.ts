@@ -38,6 +38,7 @@ import {
   LIVE_SYSTEMS,
   approveCardsUntil,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   liveRuntimePrefs,
   persistenceSnapshot,
@@ -47,6 +48,7 @@ import {
   readStoredMessages,
   selectedSystems,
   shortSystemName,
+  switchPanelToLibraryChat,
   waitFor,
   withPrefs,
   workflowApi,
@@ -70,6 +72,11 @@ function notesInCollection(collectionId: number): any[] {
   "live R2: runtime library actions",
   function () {
     this.timeout(900_000);
+
+    // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+    before(async function () {
+      await ensureOwnZoteroHttpServer();
+    });
 
     for (const system of selectedSystems().filter(
       (entry) => entry !== "upstream",
@@ -127,9 +134,7 @@ function notesInCollection(collectionId: number): any[] {
               );
               let diag = await api.getDiagnostics(panel.panelId);
               assert.equal(diag.conversationSystem, system, "panel system");
-              if (diag.conversationKind !== "global") {
-                diag = await api.togglePanelConversationMode(panel.panelId);
-              }
+              diag = await switchPanelToLibraryChat(panel.panelId);
               assert.equal(diag.conversationKind, "global", "library chat");
               await api.setTaskProgressComposerContexts({
                 panelId: panel.panelId,

@@ -70,6 +70,26 @@ export type ConversationLocalRowStore = {
   refreshSearchIndex(conversationKey: number): Promise<void>;
 };
 
+/** What a turn deletion removed, handed to its `onBeforeCommit`. */
+export type DeletedTurnRows = {
+  /**
+   * The agent runs the deleted user and assistant rows name, read in the
+   * deletion transaction before the rows go. Only these runs belong to the
+   * turn; the conversation's other runs belong to the turns that remain.
+   */
+  agentRunIds: string[];
+  /**
+   * The plan documents the deleted rows named that no remaining row of the
+   * conversation names, read the same way.
+   */
+  documentIds: string[];
+};
+
+/** Runs inside a turn deletion's transaction, before it commits. */
+export type TurnDeletionBeforeCommit = (
+  deleted: DeletedTurnRows,
+) => Promise<void>;
+
 export type ConversationLocalRowDeletionIdentity = {
   instanceID?: string;
   conversationID?: string;
@@ -273,7 +293,7 @@ export async function deleteConversationTurnMessages(
   assistantTimestamp: number,
   userMessageID?: number,
   assistantMessageID?: number,
-  onBeforeCommit?: () => Promise<void>,
+  onBeforeCommit?: TurnDeletionBeforeCommit,
 ): Promise<void> {
   const normalizedKey = normalizeConversationKey(conversationKey);
   if (!normalizedKey || !store.isStoreConversationKey(normalizedKey)) return;
@@ -302,7 +322,45 @@ export async function deleteConversationTurnMessages(
     },
   );
   const searchIndexReady = await initConversationSearchIndexStore();
+  // Each row is found the same way for reading its run and for deleting it:
+  // by row id, or else as the latest row of that role at the turn's
+  // timestamp.
+  const rowTarget = (
+    role: "user" | "assistant",
+    messageID: number,
+    timestamp: number,
+  ): { sql: string; params: unknown[] } =>
+    messageID > 0
+      ? {
+          sql: `id = ? AND ${selector.whereSql} AND role = '${role}'`,
+          params: [messageID, ...selector.params],
+        }
+      : {
+          sql: `id = (
+           SELECT id
+           FROM ${messagesTable}
+           WHERE ${selector.whereSql}
+             AND role = '${role}'
+             AND timestamp = ?
+           ORDER BY id DESC
+           LIMIT 1
+         )`,
+          params: [...selector.params, timestamp],
+        };
+  const userRow = rowTarget(
+    "user",
+    normalizedUserMessageID,
+    normalizedUserTimestamp,
+  );
+  const assistantRow = rowTarget(
+    "assistant",
+    normalizedAssistantMessageID,
+    normalizedAssistantTimestamp,
+  );
   await Zotero.DB.executeTransaction(async () => {
+    const links = onBeforeCommit
+      ? await readTurnRowLinks(messagesTable, [userRow, assistantRow])
+      : { agentRunIds: [], documentIds: [] };
     if (normalizedUserMessageID > 0) {
       await Zotero.DB.queryAsync(
         `DELETE FROM ${messagesTable}
@@ -352,7 +410,76 @@ export async function deleteConversationTurnMessages(
         conversationKey: normalizedKey,
       });
     }
-    await onBeforeCommit?.();
+    if (onBeforeCommit) {
+      await onBeforeCommit({
+        agentRunIds: links.agentRunIds,
+        documentIds: await documentIdsNoRowNames(
+          messagesTable,
+          selector,
+          links.documentIds,
+        ),
+      });
+    }
   });
   await store.refreshSearchIndex(normalizedKey);
+}
+
+/**
+ * The agent run IDs and plan document IDs the given message rows name. A
+ * store whose messages table predates a column names none of it.
+ */
+async function readTurnRowLinks(
+  messagesTable: string,
+  rows: ReadonlyArray<{ sql: string; params: unknown[] }>,
+): Promise<{ agentRunIds: string[]; documentIds: string[] }> {
+  const agentRunIds = new Set<string>();
+  const documentIds = new Set<string>();
+  const text = (value: unknown) =>
+    typeof value === "string" ? value.trim() : "";
+  for (const row of rows) {
+    let found:
+      | Array<{ agentRunId?: unknown; documentId?: unknown }>
+      | undefined;
+    try {
+      found = (await Zotero.DB.queryAsync(
+        `SELECT agent_run_id AS agentRunId, document_id AS documentId
+         FROM ${messagesTable}
+         WHERE ${row.sql}`,
+        row.params,
+      )) as Array<{ agentRunId?: unknown; documentId?: unknown }> | undefined;
+    } catch (error) {
+      if (/no such column/i.test(String(error))) {
+        return { agentRunIds: [], documentIds: [] };
+      }
+      throw error;
+    }
+    for (const entry of found || []) {
+      if (text(entry.agentRunId)) agentRunIds.add(text(entry.agentRunId));
+      if (text(entry.documentId)) documentIds.add(text(entry.documentId));
+    }
+  }
+  return { agentRunIds: [...agentRunIds], documentIds: [...documentIds] };
+}
+
+/**
+ * The given plan documents that no row of the conversation names any more,
+ * read after the turn's rows are deleted: a document a remaining turn still
+ * shows is kept.
+ */
+async function documentIdsNoRowNames(
+  messagesTable: string,
+  selector: { whereSql: string; params: unknown[] },
+  documentIds: readonly string[],
+): Promise<string[]> {
+  const unnamed: string[] = [];
+  for (const documentId of documentIds) {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT id FROM ${messagesTable}
+       WHERE ${selector.whereSql} AND document_id = ?
+       LIMIT 1`,
+      [...selector.params, documentId],
+    )) as unknown[] | undefined;
+    if (!rows?.length) unnamed.push(documentId);
+  }
+  return unnamed;
 }

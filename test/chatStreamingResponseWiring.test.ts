@@ -261,4 +261,74 @@ describe("chat streaming-response wiring", function () {
       assert.notInclude(retry, "stillLatest");
     });
   });
+
+  describe("retry answer-row target", function () {
+    it("every retry answer write targets the retried pair's own answer row", function () {
+      const retry = retryFlowSource(readChatSource());
+      // The target starts at the stored row's timestamp, taken before the
+      // retry gives the answer a new one.
+      assert.match(
+        retry,
+        /let retryAssistantRowTimestamp = assistantSnapshot\.timestamp;/,
+      );
+      const helper = sliceBetween(
+        retry,
+        "const writeRetryAssistantRow = async (",
+        "let retryUserRowWritten = false;",
+      );
+      assert.include(
+        helper,
+        "{ expectedTimestamp: retryAssistantRowTimestamp }",
+      );
+      assert.include(helper, "if (written) retryAssistantRowTimestamp");
+      // The cancel, completion and interrupted writes all go through it.
+      assert.lengthOf(
+        retry.match(/updateStoredLatestAssistantMessageByConversation\(/g) ||
+          [],
+        2,
+        "only the helper calls the store",
+      );
+      assert.lengthOf(retry.match(/writeRetryAssistantRow\(\{/g) || [], 3);
+      // A completed answer whose row was not found is reported as not saved.
+      const completion = sliceBetween(
+        retry,
+        "const saved = await assistantTurn.saveCompletion(",
+        "if (saved)",
+      );
+      assert.include(completion, "if (\n        !written &&");
+      assert.include(completion, "throw new Error(");
+    });
+  });
+
+  describe("edit user-row target", function () {
+    it("editing the latest turn rewrites the edited row, taken before its new timestamp", function () {
+      const edit = sliceBetween(
+        readChatSource(),
+        "export async function editLatestUserMessageAndRetry(",
+        "export async function retryLatestAssistantResponse(",
+      );
+      const target = edit.indexOf(
+        "const editedUserRowTarget: UpdateLatestUserMessageOptions = {\n    expectedTimestamp: retryPair.userMessage.timestamp,",
+      );
+      assert.isAtLeast(target, 0);
+      assert.isBelow(
+        target,
+        edit.indexOf("retryPair.userMessage.timestamp = updatedTimestamp;"),
+      );
+      assert.match(edit, /retryStorageSystem,\s+editedUserRowTarget,\s+\);/);
+    });
+
+    it("editing an earlier turn rewrites the edited row, taken before its new timestamp", function () {
+      const source = readChatSource();
+      const edit = source.slice(
+        source.indexOf("export async function editUserTurnAndRetry("),
+      );
+      const target = edit.indexOf(
+        "const editedUserRowTarget: UpdateLatestUserMessageOptions = {\n    expectedTimestamp: userMsg.timestamp,",
+      );
+      assert.isAtLeast(target, 0);
+      assert.isBelow(target, edit.indexOf("userMsg.timestamp = Date.now();"));
+      assert.match(edit, /retryStorageSystem,\s+editedUserRowTarget,\s+\);/);
+    });
+  });
 });

@@ -13,7 +13,7 @@ declare const Zotero: any;
 
 describe("live: note writing from typed workspace context", function () {
   this.timeout(720000);
-  it("reads the source paper, replaces the bound note, appends, edits, and clarifies ambiguous writing", async function () {
+  it("reads the source paper, replaces the bound note, appends, edits, and writes an unspecified request without asking", async function () {
     const creds = await resolveLiveAgentCredentials({
       requestedModel: liveModelName("deepseek-v4-flash"),
     });
@@ -51,7 +51,7 @@ describe("live: note writing from typed workspace context", function () {
       questions: number;
       result: any;
     }> = [];
-    async function turn(userText: string, ambiguous = false) {
+    async function turn(userText: string) {
       await note.reload(["note"], true);
       const calls: string[] = [],
         writes: any[] = [];
@@ -99,33 +99,28 @@ describe("live: note writing from typed workspace context", function () {
             writes.push(event);
           if (event.type === "confirmation_required") {
             if (event.action.toolName === "request_user_input") questions++;
-            void api.agent.resolveConfirmation(
-              event.requestId,
-              ambiguous ? false : true,
-            );
+            void api.agent.resolveConfirmation(event.requestId, true);
           }
         },
       );
       runs.push({ calls, writes, questions, result });
       await note.reload(["note"], true);
-      if (!ambiguous) {
-        assert.equal(
-          result.kind,
-          "completed",
-          JSON.stringify({ calls, kind: result.kind }),
-        );
-        assert.isAtLeast(writes.length, 1, "the requested write must execute");
-        assert.isTrue(
-          writes.every((w) => w.ok),
-          "all reported note writes must be verified",
-        );
-        assert.isTrue(
-          writes.some((w) =>
-            w.actionReceipts?.some((r: any) => r.verification === "verified"),
-          ),
-          "native receipt required",
-        );
-      }
+      assert.equal(
+        result.kind,
+        "completed",
+        JSON.stringify({ calls, kind: result.kind }),
+      );
+      assert.isAtLeast(writes.length, 1, "the requested write must execute");
+      assert.isTrue(
+        writes.every((w) => w.ok),
+        "all reported note writes must be verified",
+      );
+      assert.isTrue(
+        writes.some((w) =>
+          w.actionReceipts?.some((r: any) => r.verification === "verified"),
+        ),
+        "native receipt required",
+      );
       return { calls, writes, questions };
     }
     try {
@@ -160,18 +155,19 @@ describe("live: note writing from typed workspace context", function () {
       );
       assert.include(note.getNote(), "0.83");
       assert.isNotEmpty(generated);
-      const beforeQuestion = note.getNote();
-      const unclear = await turn(
+      // A request that does not say append or replace is written without
+      // asking, and keeps what the note already holds.
+      const unspecified = await turn(
         "Write this into my note: Another observation.",
-        true,
       );
-      assert.isAtLeast(
-        unclear.questions,
-        1,
-        "ambiguous append versus replacement must be clarified",
+      assert.equal(
+        unspecified.questions,
+        0,
+        "an unspecified note write must not ask the user first",
       );
-      assert.lengthOf(unclear.writes, 0);
-      assert.isTrue(noteHtmlMatches(note.getNote(), beforeQuestion));
+      assert.include(note.getNote(), "Another observation");
+      assert.include(note.getNote(), "Pipeline revised marker.");
+      assert.include(note.getNote(), "0.83");
       await paper.reload(
         ["primaryData", "tags", "collections", "childItems"],
         true,

@@ -149,6 +149,47 @@ export async function withPrefs<T>(
   }
 }
 
+/**
+ * Makes sure this test Zotero answers on the HTTP port the plugin advertises.
+ *
+ * Every scaffold profile asks for the same port (23124). When another
+ * scaffold Zotero starts first, such as a test run in a different checkout,
+ * it owns that port and this instance starts with no HTTP server. Codex and
+ * Claude Code reach the Zotero MCP endpoint over HTTP, so their tool calls
+ * then land in the other instance, which rejects this instance's bearer
+ * token (HTTP 401: "authorization failed", "no Zotero tools").
+ *
+ * In that case this starts the server on a port the OS picks and points the
+ * plugin at it. Only this scaffold profile's prefs change; the user's own
+ * Zotero (port 23119) and Codex config are never touched.
+ */
+export async function ensureOwnZoteroHttpServer(): Promise<number> {
+  const listeningPort = (): number => {
+    try {
+      return Number(Zotero.Server.port) || 0;
+    } catch {
+      return 0; // Zotero.Server.port throws while no server is listening.
+    }
+  };
+  let port = listeningPort();
+  if (!port) {
+    await Zotero.Server.init(-1);
+    port = listeningPort();
+    if (!port) {
+      throw new Error(
+        "This test Zotero has no HTTP server, so Codex and Claude Code cannot reach its MCP endpoint",
+      );
+    }
+    Zotero.debug(
+      `[live tests] port ${Zotero.Prefs.get("httpServer.port")} belongs to another Zotero; this instance now listens on ${port}`,
+    );
+  }
+  if (Number(Zotero.Prefs.get("httpServer.port")) !== port) {
+    Zotero.Prefs.set("httpServer.port", port);
+  }
+  return port;
+}
+
 /** Errors thrown inside Zotero lose their message at the runner boundary. */
 export function describeError(error: unknown): string {
   const message = String((error as Error)?.message || error);
@@ -186,6 +227,57 @@ export function panelElement(panelId: string): HTMLElement {
     if (element) return element;
   }
   throw new Error(`Panel ${panelId} is not in the document`);
+}
+
+/**
+ * Switches a paper panel to library chat and waits until the switch has
+ * finished.
+ *
+ * togglePanelConversationMode resolves as soon as the panel reports the
+ * library kind, but the switch is still loading and rendering the library
+ * conversation. A turn sent in that window is stored, yet the switch then
+ * replaces the panel's history with the one it loaded: the panel shows the
+ * start page and never the answer, and the turn times out on "Ready".
+ *
+ * The switch has finished when the chat box was rendered again for the
+ * library conversation: a new conversation shows the library start page and
+ * the "Started new …" or "Reused existing new …" status; an existing one
+ * shows its messages.
+ */
+export async function switchPanelToLibraryChat(
+  panelId: string,
+): Promise<Awaited<ReturnType<WorkflowTestApi["getDiagnostics"]>>> {
+  const api = workflowApi();
+  const before = await api.getDiagnostics(panelId);
+  if (before.conversationKind === "global") return before;
+  const chatBox = () =>
+    panelElement(panelId).querySelector("#llm-chat-box") as HTMLElement | null;
+  const nodesBefore = new Set(Array.from(chatBox()?.children || []));
+  await api.togglePanelConversationMode(panelId);
+  const settled = (diag: typeof before): boolean => {
+    const box = chatBox();
+    if (diag.conversationKind !== "global" || !box) return false;
+    const nodes = Array.from(box.children);
+    // Still the paper view: its start page or nodes from before the switch.
+    if (!nodes.length || nodes.some((node) => nodesBefore.has(node)))
+      return false;
+    if (box.querySelector(".llm-start-page")) return false;
+    if (box.querySelector(".llm-standalone-start-page"))
+      return /^(Started new|Reused existing new)/.test(diag.statusText || "");
+    return box.querySelectorAll(".llm-message-wrapper").length > 0;
+  };
+  const diag = await waitFor(
+    () => api.getDiagnostics(panelId),
+    settled,
+    15_000,
+    25,
+  );
+  if (!settled(diag)) {
+    throw new Error(
+      `The switch to library chat did not finish: kind ${diag.conversationKind}, status "${diag.statusText}"`,
+    );
+  }
+  return diag;
 }
 
 export type StoredMessageRow = {
