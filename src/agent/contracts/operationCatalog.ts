@@ -187,11 +187,10 @@ export function operationLabel(operation: string): string {
 /**
  * What one receipt did, in the reader's words.
  *
- * `move_to_collection` is one operation for two effects: by default it only
- * adds the item to the destination, and only a move (which always names the
- * collection it leaves) takes it out of anywhere. Calling an add "Moved to
- * collection" told the reader, and the model reading its own trace, that
- * the paper had left its old folder when it was still filed there.
+ * A collection operation adds an item to its destination by default.
+ * A move also names the collection that the item leaves.
+ * Calling an add "Moved to collection" told the reader, and the model
+ * reading its own trace, that the paper had left its old folder.
  */
 export function receiptOperationLabel(receipt: {
   operation: string;
@@ -201,7 +200,7 @@ export function receiptOperationLabel(receipt: {
   return operationLabel(receipt.operation);
 }
 
-/** A `move_to_collection` receipt that filed items without moving them. */
+/** Whether a collection receipt added items without moving them. */
 export function collectionAddOnly(receipt: {
   operation: string;
   normalizedParameters?: { sourceCollectionId?: number | "all" };

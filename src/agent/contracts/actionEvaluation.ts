@@ -299,9 +299,8 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const proof = verification
         ? ` ${AGENT_ACTION_VERIFICATION_LABELS[verification]};`
         : "";
-      // An add-only filing says so: "move_to_collection — applied" read as a
-      // move, and the model went on to tell the user the paper had left its
-      // old folder.
+      // When an item is only added, say that it stays in its other
+      // collections. Otherwise, the model can report that it moved.
       const operation = collectionAddOnly(receipt)
         ? `${receipt.operation} (added only; the items stay in their other collections)`
         : receipt.operation;
