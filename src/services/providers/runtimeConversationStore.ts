@@ -123,6 +123,7 @@ import {
   type ConversationAgentPurge,
   type ConversationLocalRowDeletionIdentity,
   type ConversationLocalRowStore,
+  type TurnDeletionBeforeCommit,
 } from "../../shared/conversationStore/localRowDeletion";
 
 /**
@@ -1291,7 +1292,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     assistantTimestamp: number,
     userMessageID?: number,
     assistantMessageID?: number,
-    onBeforeCommit?: () => Promise<void>,
+    onBeforeCommit?: TurnDeletionBeforeCommit,
   ): Promise<void> {
     await deleteConversationTurnMessages(
       localRowStore,

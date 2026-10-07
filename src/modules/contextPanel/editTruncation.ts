@@ -8,8 +8,8 @@ import {
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import type { ConversationSystem } from "../../shared/types";
 import {
-  clearAgentConversationState,
-  withAgentConversationPurge,
+  clearAgentTurnState,
+  withAgentTurnPurge,
 } from "./agentConversationCleanup";
 
 /** A stored turn after the edited one: its user and assistant timestamps. */
@@ -25,17 +25,17 @@ type TrailingTurnTarget = {
  * Delete the stored turns after an edited turn (edit and retry).
  *
  * Each pair goes in its own transaction under the conversation write lock,
- * and that transaction also purges the conversation's agent rows (agent
- * state is keyed by the conversation, not by the message rows).  The loop
+ * and that transaction also purges the trace of the runs the pair's rows
+ * named and the conversation's other agent rows (see withAgentTurnPurge);
+ * the earlier turns keep their traces.  The loop
  * stops at the first pair it cannot delete: the conversation changed (write
  * generation), its writes are frozen, it has no storage system, or the
  * delete failed.  Returns true when every pair was deleted.
  *
  * Once any pair has committed, the agent state outside the database is
- * cleared too (caches, trace files, the purge's mark on the deleted runs),
- * even when a later pair failed: the committed purge already removed every
- * agent row, and the mark left behind would drop every later agent run of
- * the conversation.
+ * cleared too (the deleted runs' caches and trace files, the purge's mark on
+ * them), even when a later pair failed: the mark left behind would drop
+ * every later agent run of the conversation.
  */
 export async function deleteTrailingTurnPairs(
   params: TrailingTurnTarget & { pairs: readonly TrailingTurnPair[] },
@@ -50,7 +50,7 @@ export async function deleteTrailingTurnPairs(
   } finally {
     if (committedPairs > 0) {
       try {
-        await clearAgentConversationState(params.conversationKey);
+        await clearAgentTurnState(params.conversationKey);
       } catch (err) {
         appLogger.warn(
           "LLM: Failed to clear agent state after edit truncation",
@@ -82,7 +82,7 @@ async function deleteTrailingTurnPair(
         conversationSystem: target.conversationSystem,
       });
       if (!storageSystem) return false;
-      await withAgentConversationPurge(conversationKey, (onBeforeCommit) =>
+      await withAgentTurnPurge(conversationKey, (onBeforeCommit) =>
         conversationRepository.deleteTurnMessages({
           system: storageSystem,
           conversationKey,

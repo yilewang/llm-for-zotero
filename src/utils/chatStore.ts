@@ -122,6 +122,7 @@ import {
   preflightDeleteConversationLocalRows,
   type ConversationLocalRowDeletionIdentity,
   type ConversationLocalRowStore,
+  type TurnDeletionBeforeCommit,
 } from "../shared/conversationStore/localRowDeletion";
 import { deleteUsageEventsForConversation } from "./usageStore";
 import {
@@ -3124,7 +3125,7 @@ export async function deleteTurnMessages(
   assistantTimestamp: number,
   userMessageID?: number,
   assistantMessageID?: number,
-  onBeforeCommit?: () => Promise<void>,
+  onBeforeCommit?: TurnDeletionBeforeCommit,
 ): Promise<void> {
   await deleteConversationTurnMessages(
     UPSTREAM_LOCAL_ROW_STORE,
