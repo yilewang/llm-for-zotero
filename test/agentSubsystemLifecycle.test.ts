@@ -5,6 +5,11 @@ import {
   initAgentSubsystem,
   shutdownAgentSubsystem,
 } from "../src/agent/index";
+import { AgentRuntime } from "../src/agent/runtime";
+import { AgentToolRegistry } from "../src/agent/tools/registry";
+import type { AgentStepParams } from "../src/agent/model/adapter";
+import type { AgentModelStep } from "../src/agent/types";
+import { installMockDb } from "./helpers/agentRuntimeMockDb";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -172,5 +177,226 @@ describe("agent subsystem lifecycle", function () {
     await getAgentApi().runTurn(request);
     assert.strictEqual(received[0].signal, stop.signal);
     assert.notProperty(received[1], "signal");
+  });
+});
+
+/**
+ * The public `runTurn` is a third-party contract: a turn the caller stopped
+ * rejects with `Error("Aborted")`, or with what the stopped provider call
+ * threw, and a turn the provider failed rejects with the provider's error.
+ */
+describe("public agent API runTurn endings", function () {
+  let restoreDb: (() => void) | null = null;
+
+  afterEach(function () {
+    try {
+      shutdownAgentSubsystem();
+    } catch {
+      // The fake Zotero object may not carry what shutdown unregisters.
+    }
+    restoreDb?.();
+    restoreDb = null;
+  });
+
+  /** The public API over a real runtime whose model is `runStep`. */
+  async function publicApiOver(
+    runStep: (params: AgentStepParams) => Promise<AgentModelStep>,
+    registry = new AgentToolRegistry(),
+    runtimeOptions: { stoppedRunWaitMs?: number } = {},
+  ) {
+    const fixture = installAgentLifecycleTestZotero();
+    const subsystem = await initAgentSubsystem();
+    fixture.restore();
+    restoreDb = installMockDb();
+    const real = new AgentRuntime({
+      registry,
+      ...runtimeOptions,
+      adapterFactory: () => ({
+        getCapabilities: () => ({
+          streaming: false,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        supportsTools: () => true,
+        runStep,
+      }),
+    });
+    subsystem.runTurn = real.runTurn.bind(real);
+    return Object.assign(getAgentApi(), { real });
+  }
+
+  const request = (conversationKey: number) => ({
+    conversationKey,
+    mode: "agent" as const,
+    userText: "Read the notes",
+    model: "test",
+    apiBase: "",
+    apiKey: "test",
+  });
+
+  const readStep: AgentModelStep = {
+    kind: "tool_calls",
+    calls: [{ id: "c1", name: "read_notes", arguments: {} }],
+    assistantMessage: {
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: "c1", name: "read_notes", arguments: {} }],
+    },
+  };
+
+  it("resolves an answered turn to its completed outcome", async function () {
+    const api = await publicApiOver(async () => ({
+      kind: "final",
+      text: "The answer.",
+      assistantMessage: { role: "assistant", content: "The answer." },
+    }));
+    const outcome = await api.runTurn(request(9401));
+    assert.equal(outcome.kind, "completed");
+    if (outcome.kind === "completed") assert.equal(outcome.text, "The answer.");
+  });
+
+  it('rejects with Error("Aborted") when the caller stopped the turn between steps', async function () {
+    const stop = new AbortController();
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "read_notes",
+        description: "Read notes",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: (async () => {
+        stop.abort();
+        return { notes: [] };
+      }) as never,
+    });
+    const api = await publicApiOver(async () => readStep, registry);
+    const error = await captureRejection(
+      api.runTurn(request(9402), undefined, { signal: stop.signal }),
+    );
+    assert.instanceOf(error, Error);
+    assert.equal((error as Error).message, "Aborted");
+  });
+
+  it("rejects with the stopped provider call's own error when the caller stopped it in flight", async function () {
+    const stop = new AbortController();
+    const thrown = new Error("The request was aborted.");
+    const api = await publicApiOver(async () => {
+      stop.abort();
+      throw thrown;
+    });
+    const error = await captureRejection(
+      api.runTurn(request(9403), undefined, { signal: stop.signal }),
+    );
+    assert.strictEqual(error, thrown);
+  });
+
+  it("rejects with the provider's own error when the provider failed", async function () {
+    class ProviderError extends Error {
+      readonly status = 503;
+    }
+    const thrown = new ProviderError("provider down");
+    const api = await publicApiOver(async () => {
+      throw thrown;
+    });
+    const error = await captureRejection(api.runTurn(request(9404)));
+    assert.strictEqual(error, thrown);
+  });
+  it("sends the wait for a stopped prior run to the caller's onEvent as a status", async function () {
+    const held = createDeferred<void>();
+    const reading = createDeferred<void>();
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "read_notes",
+        description: "Read notes",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: (async () => {
+        reading.resolve();
+        await held.promise;
+        return { notes: [] };
+      }) as never,
+    });
+    const api = await publicApiOver(
+      async (params) =>
+        params.request.userText === "prior"
+          ? params.messages.some((message) => message.role === "tool")
+            ? {
+                kind: "final",
+                text: "Prior.",
+                assistantMessage: { role: "assistant", content: "Prior." },
+              }
+            : readStep
+          : {
+              kind: "final",
+              text: "Done.",
+              assistantMessage: { role: "assistant", content: "Done." },
+            },
+      registry,
+      { stoppedRunWaitMs: 20 },
+    );
+    const prior = api.real.runTurn({
+      request: { ...request(9405), userText: "prior" },
+    });
+    await reading.promise;
+    const statuses: string[] = [];
+    const outcome = await api.runTurn(
+      { ...request(9405), userText: "next" },
+      (event) => {
+        if (event.type === "status") statuses.push(event.text);
+      },
+    );
+    held.resolve();
+    await prior;
+    assert.equal(outcome.kind, "completed");
+    assert.equal(statuses[0], "Waiting for the stopped run to finish");
+  });
+
+  it("rethrows a returned ending's cause, or rebuilds its error when none was kept", async function () {
+    const fixture = installAgentLifecycleTestZotero();
+    restoreDb = fixture.restore;
+    const subsystem = await initAgentSubsystem();
+    const cause = new Error("bridge report");
+    const endings = [
+      { kind: "cancelled", runId: "r1" },
+      {
+        kind: "failed",
+        runId: "r2",
+        message: "provider down",
+        interrupted: true,
+      },
+      {
+        kind: "failed",
+        runId: "r3",
+        message: "redacted",
+        interrupted: false,
+        cause,
+      },
+      { kind: "cancelled", runId: "r4", cause },
+    ];
+    let next = 0;
+    subsystem.runTurn = (async () => endings[next++]) as never;
+    const rejections = [];
+    for (let index = 0; index < endings.length; index++)
+      rejections.push(
+        await captureRejection(getAgentApi().runTurn(request(9405))),
+      );
+    assert.deepEqual(
+      rejections
+        .slice(0, 2)
+        .map((error) => [error instanceof Error, (error as Error).message]),
+      [
+        [true, "Aborted"],
+        [true, "provider down"],
+      ],
+    );
+    assert.strictEqual(rejections[2], cause);
+    assert.strictEqual(rejections[3], cause);
   });
 });

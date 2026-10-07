@@ -1,4 +1,10 @@
 import { unzipSync } from "fflate";
+import {
+  ensureDirFromParent,
+  getIOUtils,
+  getOSFile,
+  pathExists,
+} from "../../utils/geckoFs";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import { getRuntimePlatformInfo } from "../../utils/runtimePlatform";
 
@@ -11,43 +17,6 @@ const PDFTOPPM_CANDIDATE_PATHS = [
   "/usr/local/bin/pdftoppm",
   "/usr/bin/pdftoppm",
 ];
-
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  setPermissions?: (path: string, permissions: number) => Promise<void>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-  setPermissions?: (
-    path: string,
-    options: { unixMode?: number },
-  ) => Promise<void>;
-};
 
 type RuntimeManifest = {
   kind?: unknown;
@@ -81,52 +50,10 @@ function sanitizeText(value: unknown): string {
   return `${value ?? ""}`.replace(/\s+/g, " ").trim();
 }
 
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
+  if (!(await ensureDirFromParent(path))) {
+    throw new Error("No directory creation API available");
   }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory creation API available");
 }
 
 async function removeDir(path: string): Promise<void> {

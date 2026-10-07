@@ -112,7 +112,7 @@ describe("quote source warming bounds", function () {
     const locatorSource = readFileSync(
       resolve(
         dirname(fileURLToPath(import.meta.url)),
-        "../src/modules/contextPanel/livePdfSelectionLocator.ts",
+        "../src/services/pdf/livePdfSelectionLocator.ts",
       ),
       "utf8",
     );

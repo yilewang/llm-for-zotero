@@ -102,6 +102,12 @@ export type TaskPaperReadEvent = {
   whyMatched?: string;
   /** Chunk index of the paper's text the snippet came from, when known. */
   chunk?: number;
+  /**
+   * The page index the read came from (the first, for several pages), when
+   * the payload names one. Opening the read goes to this page; `label` is
+   * for display. Absent on rows saved before reads recorded it.
+   */
+  pageIndex?: number;
   /** Host observation ids this read attested. */
   observationIds?: string[];
   /**
@@ -126,6 +132,7 @@ export type TaskPaperCitation = {
   sectionLabel?: string;
   /** Every document section the citation is used in, when more than one. */
   sectionLabels?: string[];
+  /** The page label the quote recorded; for display. */
   pageLabel?: string;
   /**
    * "document" for a source a `submit_document` call cited; absent (or
@@ -356,6 +363,13 @@ function positive(value: unknown): number | undefined {
 function nonNegative(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/** A payload's page index; null and empty values name no page. */
+function pageIndexOf(value: unknown): number | undefined {
+  return value === null || value === undefined || value === ""
+    ? undefined
+    : nonNegative(value);
 }
 
 function text(value: unknown): string | undefined {
@@ -597,11 +611,14 @@ function readSeed(fields: {
   label?: unknown;
   snippet?: unknown;
   whyMatched?: unknown;
+  pageIndex?: unknown;
 }): ReadSeed {
   const seed: ReadSeed = { granularity: fields.granularity };
   if (fields.method) seed.method = fields.method;
   const label = clipTaskPaperText(fields.label, 120);
   if (label) seed.label = label;
+  const pageIndex = pageIndexOf(fields.pageIndex);
+  if (pageIndex !== undefined) seed.pageIndex = pageIndex;
   const snippet = clipTaskPaperText(
     fields.snippet,
     TASK_PAPER_SNIPPET_MAX_CHARS,
@@ -632,6 +649,7 @@ function passageReadSeed(row: Row, method: string): ReadSeed {
       method,
       label: sectionLabel || pageLabelFor(row),
       snippet: row.text,
+      pageIndex: row.pageIndex,
     });
   }
   return readSeed({
@@ -640,6 +658,7 @@ function passageReadSeed(row: Row, method: string): ReadSeed {
     label: sectionLabel || pageLabelFor(row),
     snippet: row.snippet ?? row.text ?? row.surroundingText,
     whyMatched: row.whyMatched,
+    pageIndex: row.pageIndex,
   });
 }
 
@@ -1027,12 +1046,15 @@ function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
 
 /** One page-level read of `ref`, from the page rows `container` lists. */
 function pageSeed(ref: PaperRef, container: Row): Seed | null {
+  const pageIndexes: number[] = [];
   const pageRows = [
     ...rowsAt(container, "results"),
     ...rowsAt(container, "pages"),
   ].flatMap((row) => {
     const value = record(row);
     const label = value ? pageLabelFor(value) : undefined;
+    const index = value ? pageIndexOf(value.pageIndex) : undefined;
+    if (label && index !== undefined) pageIndexes.push(index);
     return label ? [label] : [];
   });
   const captured =
@@ -1064,6 +1086,11 @@ function pageSeed(ref: PaperRef, container: Row): Seed | null {
       method: "view_pages",
       label: labels.slice(0, 8).join(", "),
       snippet: text(container.pageText),
+      // The page the label names first.
+      pageIndex:
+        pageIndexes[0] ??
+        pageIndexOf(container.capturedPageIndex) ??
+        pageIndexOf(container.pageIndex),
     }),
   };
 }

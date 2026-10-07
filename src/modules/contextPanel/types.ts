@@ -347,9 +347,6 @@ export type SendQuestionOptions = {
   activeNoteContext?: ActiveNoteContext;
   conversationKey?: number;
   conversationKind?: "global" | "paper";
-  scopeType?: string;
-  scopeId?: string;
-  scopeLabel?: string;
   paperContexts?: PaperContextRef[];
   pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
@@ -378,7 +375,6 @@ export type SendQuestionOptions = {
   /** [webchat] Explicit persisted remote conversation binding for a follow-up. */
   webchatExpectedChatUrl?: string;
   webchatExpectedChatId?: string;
-  skipAutoCompact?: boolean;
 };
 
 export type EditRetryOptions = {

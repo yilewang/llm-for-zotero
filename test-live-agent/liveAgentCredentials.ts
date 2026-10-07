@@ -24,6 +24,14 @@ function environmentValue(key: string): string {
   }
 }
 
+/**
+ * The model a live test asks for: LLM_FOR_ZOTERO_LIVE_MODEL when it is set,
+ * otherwise the test's own default.
+ */
+export function liveModelName(defaultModel: string): string {
+  return environmentValue("LLM_FOR_ZOTERO_LIVE_MODEL") || defaultModel;
+}
+
 /** Reads one string pref out of a profile prefs.js, without loading it. */
 export function stringPrefFromContents(contents: string, key: string): string {
   const escaped = key.replace(/\./g, "\\.");

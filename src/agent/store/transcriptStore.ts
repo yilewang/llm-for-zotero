@@ -1,4 +1,5 @@
 import type { AgentModelContentPart, AgentModelMessage } from "../types";
+import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 import {
   installConversationKeyLedgerAgentTriggers,
   isConversationKeyRetiredInMemory,
@@ -551,4 +552,19 @@ export async function clearAgentTranscript(
   } catch (error) {
     logTranscriptStoreError("LLM Agent: Failed to clear transcript", error);
   }
+}
+
+/**
+ * Delete a conversation's transcript rows inside the conversation's deletion
+ * transaction (the agent row purge).  An absent table means no rows.
+ */
+export async function deleteAgentTranscriptRowsInTransaction(
+  db: AgentPurgeDb,
+  conversationKey: number,
+): Promise<void> {
+  await deleteIfPresent(
+    db,
+    `DELETE FROM ${TRANSCRIPT_TABLE} WHERE conversation_key = ?`,
+    [conversationKey],
+  );
 }

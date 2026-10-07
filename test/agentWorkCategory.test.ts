@@ -300,6 +300,7 @@ describe("agent work categories", function () {
     // from the specs without any test noticing.
     const scanned = [
       "src/modules/contextPanel/chat.ts",
+      "src/modules/contextPanel/codexNative/turnCallbacks.ts",
       "src/codexAppServer/nativeActivityStages.ts",
       "src/codexAppServer/nativeClient.ts",
       "src/agent/externalBackendBridge.ts",
@@ -333,10 +334,12 @@ describe("agent work categories", function () {
       Array.from(CODEX_NATIVE_WORK_KINDS).sort(),
       "the mapping table must be exhaustive over the kinds the bridge handles",
     );
-    assert.notMatch(
-      scanned[0].source,
-      /resolveCodexNativeWorkCategory\(/,
-      "the panel must not resolve a native work category for itself",
-    );
+    for (const panel of scanned.slice(0, 2)) {
+      assert.notMatch(
+        panel.source,
+        /resolveCodexNativeWorkCategory\(/,
+        `${panel.path}: the panel must not resolve a native work category for itself`,
+      );
+    }
   });
 });

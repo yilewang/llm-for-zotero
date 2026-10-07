@@ -22,7 +22,6 @@ This folder implements the reader/library side-panel chat experience.
 - `types.ts`: shared types.
 - `state.ts`: in-memory module state caches/maps.
 - `normalizers.ts`: canonical normalization helpers for selected text source, paper contexts, hashes, and positive integers.
-- `readerSelection.ts`: shared reader-selection document traversal helpers used by popup and panel flows.
 - `menuPositioning.ts`: reusable floating menu positioning functions.
 - `prefHelpers.ts`: preference read/write wrappers for panel behavior.
 - `textUtils.ts`: sanitization, prompt composition, status, and rendering helpers.

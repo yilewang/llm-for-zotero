@@ -1,3 +1,4 @@
+import { fnv1a32, fnv1a32Raw } from "../../utils/fnv1a";
 import {
   paragraphCitationIds,
   normalizeParagraphCitations,
@@ -41,12 +42,24 @@ import {
   normalizeWrappedCitationLabel as normalizeCitationLabel,
   parseStandaloneCitationLabel as parseStandaloneSourceCitationLabel,
 } from "./citationLabelParser";
+import {
+  normalizeQuoteTokenId,
+  quoteTokenPattern,
+  quoteTokenSource,
+} from "./quoteTokenIds";
 
-export const QUOTE_CITATION_PATTERN = /\[\[quote:([A-Za-z0-9_-]+)\]\]/g;
-const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN =
-  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/gm;
-const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN =
-  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/;
+export const QUOTE_CITATION_PATTERN = quoteTokenPattern("quote");
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE = `^[ \\t]*(?:>[ \\t]*)+${quoteTokenSource("quote")}[ \\t]*$`;
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN = new RegExp(
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE,
+  "gm",
+);
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN = new RegExp(
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE,
+);
+const STANDALONE_QUOTE_CITATION_LINE_PATTERN = new RegExp(
+  `^[ \\t]*${quoteTokenSource("quote")}[ \\t]*$`,
+);
 const STRUCTURED_SOURCE_MARKER_PATTERN =
   /\[\[\s*source\s*=\s*([^\]]+?)\s*\]\]/gi;
 const BRACKETED_SOURCE_METADATA_PATTERN = /\[\s*source\s*=\s*([^\]]+?)\s*\]/gi;
@@ -503,7 +516,7 @@ export function findAdjacentStandaloneQuoteCitation(params: {
   if (lineIndex >= params.markdownLines.length) return null;
   const line = params.markdownLines[lineIndex];
   const candidate = /^[ \t]*>/.test(line) ? stripBlockquoteMarker(line) : line;
-  const match = candidate.match(/^[ \t]*\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/);
+  const match = candidate.match(STANDALONE_QUOTE_CITATION_LINE_PATTERN);
   return match?.[1]
     ? {
         quoteCitationId: match[1],
@@ -921,12 +934,7 @@ export function sanitizeUntrustedSourceBackedQuoteBlocks(
 }
 
 function hashBase36(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36).padStart(7, "0").slice(0, 8);
+  return fnv1a32Raw(value).toString(36).padStart(7, "0").slice(0, 8);
 }
 
 export function buildQuoteCitationId(input: {
@@ -1017,7 +1025,7 @@ export function buildQuoteCitation(input: {
   }
   const contextItemId = normalizePositiveInt(input.contextItemId);
   const itemId = normalizePositiveInt(input.itemId);
-  const id = normalizeText(input.id).replace(/[^A-Za-z0-9_-]/g, "");
+  const id = normalizeQuoteTokenId(normalizeText(input.id));
   const displayQuoteText = stripQuoteCitationAnchorsFromDisplayText(
     input.displayQuoteText,
   );
@@ -1269,12 +1277,7 @@ function buildLazyQuoteRepairCacheKey(
     citation.id,
     normalizeQuoteTextForMatch(displayedQuoteText),
   ].join("\u241f");
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `quote-repair-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `quote-repair-${fnv1a32(value)}`;
 }
 
 function rememberLazyQuoteRepair(key: string, citation: QuoteCitation): void {
@@ -1370,7 +1373,7 @@ function collectInvalidQuoteCitationIds(value: unknown): Set<string> {
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
-    const id = normalizeText(record.id).replace(/[^A-Za-z0-9_-]/g, "");
+    const id = normalizeQuoteTokenId(normalizeText(record.id));
     if (!id) continue;
     if (!buildQuoteCitation(record)) ids.add(id);
   }

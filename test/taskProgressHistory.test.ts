@@ -319,6 +319,64 @@ describe("task progress history rebuild", function () {
     assert.equal(ledger.papers["1:1"].itemKey, "PAPER001");
   });
 
+  it("reads exactly the stored event kinds that carry Task progress", function () {
+    assert.deepEqual(
+      [...TASK_PROGRESS_HISTORY_EVENT_TYPES],
+      [
+        "paper_ledger_update",
+        "material_finalized",
+        "codex_progress",
+        "plan_updated",
+        "plan_ready",
+        "plan_execution_updated",
+        "execution_checkpoint",
+        "execution_checkpoint_delta",
+      ],
+    );
+  });
+
+  it("skips events that carry no Task progress", function () {
+    const events = [
+      record("run-1", 1, {
+        type: "paper_ledger_update",
+        callId: "c0",
+      } as unknown as AgentRunEventRecord["payload"]),
+      record("run-1", 2, {
+        type: "codex_progress",
+        itemId: "codex-reasoning",
+        text: "✓ Not a plan",
+      } as AgentRunEventRecord["payload"]),
+      record("run-1", 3, {
+        type: "codex_progress",
+        itemId: "codex-plan-checklist",
+        text: "",
+      } as AgentRunEventRecord["payload"]),
+      record("run-1", 4, {
+        type: "material_finalized",
+        materialRef: { documentId: "d", documentVersion: 1, contentHash: "h" },
+      } as AgentRunEventRecord["payload"]),
+      record("run-1", 5, { type: "message_delta", text: "Two" }),
+      record("run-1", 6, { type: "final", text: "Two do." }),
+    ];
+    const history = buildTaskProgressHistory(
+      conversation().slice(0, 2),
+      new Map([["run-1", events]]),
+      1,
+    );
+    assert.deepEqual(history.runs, [
+      {
+        runId: "run-1",
+        turn: 1,
+        live: false,
+        deltas: [],
+        quoteCitations: [quoteCitation("q1", 2)],
+        checklist: null,
+      },
+    ]);
+    assert.isFalse(history.planSeen);
+    assert.isNull(history.checklist);
+  });
+
   it("waits for the conversation's history to load", async function () {
     loadedConversationKeys.delete(KEY);
     ensureTaskProgressHydrated(KEY, 1);

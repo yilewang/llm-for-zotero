@@ -55,6 +55,29 @@ describe("selected text anchors", function () {
     assert.include(anchors[0]?.contextText || "", "Following local context");
   });
 
+  it("leaves the anchor's page label empty when neither the selection nor the page has one (D5)", function () {
+    const quote = "The unlabelled page result is uniquely identifiable.";
+    const anchors = resolveSelectedTextAnchorsFromTextSources({
+      selectedTextContexts: [pdfSelection(quote, 91, 4)],
+      sources: {
+        91: {
+          chunks: [`Result section. ${quote} More selected evidence.`],
+          pages: [
+            {
+              pageIndex: 4,
+              text: `Page heading. ${quote} More selected evidence.`,
+            },
+          ],
+          sourceType: "zotero",
+        },
+      },
+    });
+
+    assert.equal(anchors[0]?.pageIndex, 4);
+    // Was "5", guessed from the page index.
+    assert.isUndefined(anchors[0]?.pageLabel);
+  });
+
   it("disambiguates repeated quotes using the selected page text", function () {
     const quote = "Repeated result sentence.";
     const anchors = resolveSelectedTextAnchorsFromTextSources({

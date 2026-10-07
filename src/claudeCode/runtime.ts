@@ -13,6 +13,7 @@ import {
   createExternalBackendBridgeRuntime,
   fetchExternalBridgeSessionInfo,
   type AgentRuntimeLike,
+  type ClaudeBridgeGateOptions,
   type ExternalBridgeSessionInfo,
 } from "../agent/externalBackendBridge";
 import { releaseConversationScopeToken } from "../agent/mcp/server";
@@ -25,11 +26,7 @@ import {
 import {
   appendClaudeMessage,
   clearClaudeConversationSessionMetadata,
-  createClaudeGlobalConversation,
-  createClaudePaperConversation,
   deleteClaudeTurnMessages as deleteClaudeConversationTurnMessagesStore,
-  ensureClaudeGlobalConversation,
-  ensureClaudePaperConversation,
   getClaudeConversationSummary,
   listClaudeGlobalConversations,
   listClaudePaperConversations,
@@ -58,7 +55,6 @@ import {
   type ClaudeReasoningMode,
   type ClaudeRuntimeModel,
 } from "./constants";
-import { dbg } from "../utils/debugLogger";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
@@ -104,8 +100,6 @@ export type ClaudeBridgeScope = {
   scopeLabel?: string;
 };
 
-const conversationScopeCache = new Map<number, ClaudeBridgeScope>();
-const conversationScopeIdentityCache = new Map<number, string>();
 let bridgeRuntimeCache: AgentRuntimeLike | null = null;
 let bridgeRuntimeCoreRef: AgentRuntime | null = null;
 
@@ -181,47 +175,9 @@ export function buildClaudeScope(params: {
   };
 }
 
-export function rememberClaudeConversationScope(
-  conversationKey: number,
-  scope: ClaudeBridgeScope,
-  instanceID?: string,
-): void {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  const key = Math.floor(conversationKey);
-  conversationScopeCache.set(key, scope);
-  if (instanceID?.trim())
-    conversationScopeIdentityCache.set(key, instanceID.trim());
-}
-
-export function getRememberedClaudeConversationScope(
-  conversationKey: number,
-): ClaudeBridgeScope | null {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return null;
-  return conversationScopeCache.get(Math.floor(conversationKey)) || null;
-}
-
-export function forgetClaudeConversationScope(
-  conversationKey: number,
-  expectedInstanceID?: string,
-): void {
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
-  const key = Math.floor(conversationKey);
-  const expected = expectedInstanceID?.trim();
-  if (expected) {
-    // If a cleanup job carries an identity, absence is not permission to
-    // delete an unlabelled/new runtime entry.  This closes the old-key race.
-    const remembered = conversationScopeIdentityCache.get(key);
-    if (!remembered || remembered !== expected) return;
-  }
-  conversationScopeCache.delete(key);
-  conversationScopeIdentityCache.delete(key);
-}
-
 export function resetClaudeBridgeRuntime(): void {
   bridgeRuntimeCache = null;
   bridgeRuntimeCoreRef = null;
-  conversationScopeCache.clear();
-  conversationScopeIdentityCache.clear();
 }
 
 export function getClaudeBridgeRuntime(
@@ -244,26 +200,39 @@ export async function refreshClaudeSlashCommands(
   await getClaudeBridgeRuntime(coreRuntime).refreshSlashCommands(force);
 }
 
+// The list readers answer for the caller's conversation system when it names
+// one (a panel acting for its own surface); otherwise for the saved system.
 export function listClaudeSlashCommands(
   coreRuntime: AgentRuntime,
+  options?: ClaudeBridgeGateOptions,
 ): ClaudeSlashCommandDescriptor[] {
-  return getClaudeBridgeRuntime(coreRuntime).listSlashCommandsSync();
+  return getClaudeBridgeRuntime(coreRuntime).listSlashCommandsSync(options);
 }
 
 export async function listClaudeEfforts(
   coreRuntime: AgentRuntime,
   model?: string,
   context?: ClaudeModelCatalogRequestContext,
+  options?: ClaudeBridgeGateOptions,
 ): Promise<string[]> {
-  return getClaudeBridgeRuntime(coreRuntime).listEfforts(model, context);
+  return getClaudeBridgeRuntime(coreRuntime).listEfforts(
+    model,
+    context,
+    options,
+  );
 }
 
 export async function listClaudeModels(
   coreRuntime: AgentRuntime,
   force = false,
   context?: ClaudeModelCatalogRequestContext,
+  options?: ClaudeBridgeGateOptions,
 ): Promise<ClaudeModelCatalog> {
-  return getClaudeBridgeRuntime(coreRuntime).listModels(force, context);
+  return getClaudeBridgeRuntime(coreRuntime).listModels(
+    force,
+    context,
+    options,
+  );
 }
 
 export async function runClaudeTurn(
@@ -349,10 +318,6 @@ export async function invalidateClaudeConversationSessionWithinWriteLock(
     // durable cleanup job is still pending.
     if (Number(current?.userTurnCount || 0) > 0) return;
   }
-  forgetClaudeConversationScope(
-    params.conversationKey,
-    expectedInstanceID || undefined,
-  );
   // The bridge runtime binds the MCP scope header for the whole conversation,
   // so its stable token dies with the session it scoped.  The profile is
   // always available in Zotero, but keep bootstrap and test callers from
@@ -389,14 +354,12 @@ export async function fetchClaudeSessionInfo(
 ): Promise<ClaudeBridgeSessionInfo | null> {
   const baseUrl = getBridgeUrl();
   if (!baseUrl.trim()) return null;
-  const rememberedScope =
-    scope || getRememberedClaudeConversationScope(conversationKey);
   return fetchExternalBridgeSessionInfo({
     baseUrl,
     conversationKey,
-    scopeType: rememberedScope?.scopeType,
-    scopeId: rememberedScope?.scopeId,
-    scopeLabel: rememberedScope?.scopeLabel,
+    scopeType: scope?.scopeType,
+    scopeId: scope?.scopeId,
+    scopeLabel: scope?.scopeLabel,
   });
 }
 
@@ -413,40 +376,6 @@ export async function listClaudeConversationsForScope(params: {
         params.limit,
       )
     : listClaudeGlobalConversations(params.libraryID, params.limit);
-}
-
-export async function ensureClaudeConversationForScope(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-}): Promise<ClaudeConversationSummary | null> {
-  const summary =
-    params.kind === "paper"
-      ? await ensureClaudePaperConversation(
-          params.libraryID,
-          params.paperItemID || 0,
-        )
-      : await ensureClaudeGlobalConversation(params.libraryID);
-  if (!summary) return null;
-  rememberClaudeConversationSelection(summary);
-  return summary;
-}
-
-export async function createClaudeConversationForScope(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-}): Promise<ClaudeConversationSummary | null> {
-  const summary =
-    params.kind === "paper"
-      ? await createClaudePaperConversation(
-          params.libraryID,
-          params.paperItemID || 0,
-        )
-      : await createClaudeGlobalConversation(params.libraryID);
-  if (!summary) return null;
-  rememberClaudeConversationSelection(summary);
-  return summary;
 }
 
 export async function loadClaudeConversationMessages(
@@ -496,15 +425,27 @@ export async function updateLatestClaudeConversationUserMessage(
   );
 }
 
-/** Caller must already hold the conversation write lock. */
+/**
+ * Caller must already hold the conversation write lock. With
+ * `options.expectedTimestamp` the write targets that user row only; when no
+ * user row has it, nothing is written and the conversation is not touched.
+ * Returns whether the row was written.
+ */
 export async function updateLatestClaudeConversationUserMessageWithinWriteLock(
   conversationKey: number,
   message: Parameters<typeof updateLatestClaudeUserMessage>[1],
-): Promise<void> {
-  await updateLatestClaudeUserMessage(conversationKey, message);
+  options?: Parameters<typeof updateLatestClaudeUserMessage>[2],
+): Promise<boolean> {
+  const written = await updateLatestClaudeUserMessage(
+    conversationKey,
+    message,
+    options,
+  );
+  if (!written) return false;
   await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
   });
+  return true;
 }
 
 export async function updateLatestClaudeConversationAssistantMessage(
@@ -519,16 +460,28 @@ export async function updateLatestClaudeConversationAssistantMessage(
   );
 }
 
-/** Caller must already hold the conversation write lock. */
+/**
+ * Caller must already hold the conversation write lock. With
+ * `options.expectedTimestamp` the write targets that assistant row only; when
+ * no assistant row has it, nothing is written and the conversation is not
+ * touched. Returns whether the row was written.
+ */
 export async function updateLatestClaudeConversationAssistantMessageWithinWriteLock(
   conversationKey: number,
   message: Parameters<typeof updateLatestClaudeAssistantMessage>[1],
-): Promise<void> {
-  await updateLatestClaudeAssistantMessage(conversationKey, message);
+  options?: Parameters<typeof updateLatestClaudeAssistantMessage>[2],
+): Promise<boolean> {
+  const written = await updateLatestClaudeAssistantMessage(
+    conversationKey,
+    message,
+    options,
+  );
+  if (!written && options?.expectedTimestamp !== undefined) return false;
   await touchClaudeConversationWithinWriteLock(conversationKey, {
     updatedAt: message.timestamp,
     model: message.modelName,
   });
+  return written;
 }
 
 export async function deleteClaudeConversationTurnMessages(
@@ -717,47 +670,6 @@ export function resolveRememberedClaudeConversationKey(params: {
     getLastUsedClaudeGlobalConversationKey(params.libraryID) ||
     null
   );
-}
-
-export function syncClaudeConversationMetadata(params: {
-  conversationKey: number;
-  kind: ClaudeConversationKind;
-  libraryID: number;
-  paperItemID?: number;
-  title?: string;
-  scope?: ClaudeBridgeScope | null;
-  instanceID?: string;
-}): void {
-  rememberClaudeConversationSelection({
-    conversationKey: params.conversationKey,
-    kind: params.kind,
-    libraryID: params.libraryID,
-    paperItemID: params.paperItemID,
-  });
-  if (params.scope) {
-    rememberClaudeConversationScope(
-      params.conversationKey,
-      params.scope,
-      params.instanceID,
-    );
-  }
-  void upsertClaudeConversationSummary({
-    conversationKey: params.conversationKey,
-    instanceID: params.instanceID,
-    libraryID: params.libraryID,
-    kind: params.kind,
-    paperItemID: params.paperItemID,
-    title: params.title,
-    updatedAt: Date.now(),
-    scopeType: params.scope?.scopeType,
-    scopeId: params.scope?.scopeId,
-    scopeLabel: params.scope?.scopeLabel,
-  }).catch((error) => {
-    dbg("failed to sync claude conversation metadata", {
-      conversationKey: params.conversationKey,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
 }
 
 export function resolveClaudeSystemLabel(): string {

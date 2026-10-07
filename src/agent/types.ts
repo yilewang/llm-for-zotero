@@ -1062,13 +1062,47 @@ export type AgentRuntimeOutcome =
       /** The same claim-anchored citations the `final` event published. */
       quoteCitations?: QuoteCitation[];
       usedFallback: false;
+      /**
+       * `"failed"` when the run answered but was stored as failed (a stop
+       * rule such as repeated tool errors, or an unverified delegated
+       * action): the text is the answer and the report. Absent otherwise.
+       */
+      runStatus?: "completed" | "failed";
     }
   | {
       kind: "fallback";
       runId: string;
       reason: string;
       usedFallback: true;
+    }
+  | {
+      /** The caller's Stop ended the run; it was stored as cancelled. */
+      kind: "cancelled";
+      runId: string;
+      /** The answer text the run had streamed when it stopped, if any. */
+      text?: string;
+      /**
+       * What the stopped run threw, kept in process only, so the throwing
+       * public `runTurn` rethrows it unchanged. Never sent over a bridge.
+       */
+      cause?: unknown;
+    }
+  | {
+      /** An error ended the run before it answered; it was stored as failed. */
+      kind: "failed";
+      runId: string;
+      message: string;
+      /** True when the run was stored as interrupted, resumable on "continue". */
+      interrupted: boolean;
+      /** The thrown error, in process only, as for `cancelled`. */
+      cause?: unknown;
     };
+
+/** The outcome of a turn that ended without an answer or a fallback. */
+export type AgentRuntimeUnansweredOutcome = Extract<
+  AgentRuntimeOutcome,
+  { kind: "cancelled" | "failed" }
+>;
 
 export type AgentToolArtifact =
   | {

@@ -77,6 +77,16 @@ export async function withConversationWriteLock<T>(
   }
 }
 
+/**
+ * Test-only: the promise the next writer for this key will wait on, or
+ * undefined when no write holds or awaits the lock.
+ */
+export function getConversationWriteLockTailForTests(
+  conversationKey: number,
+): Promise<void> | undefined {
+  return locks.get(normalizeKey(conversationKey));
+}
+
 /** Test-only reset for isolated store/workflow fixtures. */
 export function resetConversationWriteFenceForTests(): void {
   generations.clear();

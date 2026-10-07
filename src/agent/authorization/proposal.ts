@@ -1,3 +1,4 @@
+import { fnv1a32 } from "../../utils/fnv1a";
 import type {
   AgentActionProposal,
   AgentInvocationPlan,
@@ -16,12 +17,7 @@ function stableValue(value: unknown): unknown {
 }
 
 function hashText(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `fnv1a:${fnv1a32(value)}`;
 }
 
 export function buildActionCallDigest(

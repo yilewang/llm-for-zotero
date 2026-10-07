@@ -77,7 +77,7 @@ export type PanelRenderClaim =
       /** onRender built UI + handlers synchronously; async skips that work. */
       kind: "sync-rendered";
       itemKey: string;
-      /** The cycle begun by that onRender; null when it began none (placeholder path). */
+      /** The cycle begun by that onRender; null when it began none. */
       cycle: ChatRenderCycle | null;
     }
   | {

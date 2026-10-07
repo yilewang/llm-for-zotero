@@ -600,24 +600,16 @@ export function normalizeReferenceSelectorTagIdentityName(
 }
 
 export function isReferenceSelectorGroupCoveredBySelectedCollection(
-  state: ReferenceSelectorState,
+  _state: ReferenceSelectorState,
   group: PaperSearchGroupCandidate,
   selectedCollections: readonly CollectionContextRef[],
 ): boolean {
   if (!selectedCollections.length) return false;
-  for (const collectionRef of selectedCollections) {
-    if (group.collectionIds.includes(collectionRef.collectionId)) return true;
-    const collection = state.collectionById.get(collectionRef.collectionId);
-    if (!collection) continue;
-    if (
-      collectReferenceSelectorCollectionGroups(collection).some(
-        (candidate) => candidate.itemId === group.itemId,
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
+  // A folder chip covers the folder's own papers, not the papers in its
+  // subfolders, as in plain chat, the agent and Task progress.
+  return selectedCollections.some((collectionRef) =>
+    group.collectionIds.includes(collectionRef.collectionId),
+  );
 }
 
 export function isReferenceSelectorGroupCoveredBySelectedTag(

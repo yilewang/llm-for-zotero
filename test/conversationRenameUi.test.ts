@@ -9,6 +9,36 @@ function source(path: string): string {
   return readFileSync(resolve(here, "..", path), "utf8");
 }
 
+// Both surfaces commit through commitConversationRename: it re-checks the
+// same live target before and after the catalog read, then writes that
+// target's title.
+function assertSharedRenameCommitRechecksTarget(): void {
+  const helperSource = source(
+    "src/modules/contextPanel/conversationLifecycle.ts",
+  );
+  const start = helperSource.indexOf(
+    "export async function commitConversationRename<",
+  );
+  assert.isAtLeast(start, 0);
+  const body = helperSource.slice(start);
+  const check = body.indexOf("canCommitConversationRename({");
+  const firstGate = body.indexOf("if (!canCommit()) return false;");
+  const read = body.indexOf(
+    "await conversationRepository.getCatalogEntry(target);",
+  );
+  const secondGate = body.indexOf("|| !canCommit()) return false;", read);
+  const write = body.indexOf(
+    "await conversationRepository.setCatalogTitle({",
+    secondGate,
+  );
+  assert.isAtLeast(check, 0);
+  assert.isAbove(firstGate, check);
+  assert.isAbove(read, firstGate);
+  assert.isAbove(secondGate, read);
+  assert.isAbove(write, secondGate);
+  assert.include(body.slice(write, write + 120), "...target");
+}
+
 describe("conversation rename UI", function () {
   it("exposes rename beside standalone history rows and persists through the catalog", function () {
     const standaloneSource = source(
@@ -21,8 +51,9 @@ describe("conversation rename UI", function () {
       "const renameStandaloneHistoryEntry = async",
       renderControl,
     );
+    // The catalog write itself lives in the shared commitConversationRename.
     const catalogUpdate = standaloneSource.indexOf(
-      "await conversationRepository.setCatalogTitle({",
+      "await commitConversationRename({",
       renameHelper,
     );
     const sidebarRefresh = standaloneSource.indexOf(
@@ -44,11 +75,11 @@ describe("conversation rename UI", function () {
     assert.isAbove(sidebarRefresh, catalogUpdate);
     assert.isAbove(clickHandler, sidebarRefresh);
     assert.isAbove(renameCall, clickHandler);
-    assert.include(
+    assert.match(
       standaloneSource.slice(catalogUpdate, sidebarRefresh),
-      "...target",
+      /commitConversationRename\(\{\s+target,/,
     );
-    assert.include(standaloneSource, "canCommitConversationRename({");
+    assertSharedRenameCommitRechecksTarget();
     assert.notInclude(
       standaloneSource.slice(renameHelper, sidebarRefresh),
       "newWin.closed",
@@ -75,7 +106,11 @@ describe("conversation rename UI", function () {
     assert.isAbove(renameCall, clickHandler);
     assert.include(lifecycleSource, "showConversationRenameDialog");
     assert.include(lifecycleSource, "canRenameHistoryEntry(entry)");
-    assert.include(lifecycleSource, "canCommitConversationRename({");
+    assert.match(
+      lifecycleSource,
+      /await commitConversationRename\(\{\s+target,/,
+    );
+    assertSharedRenameCommitRechecksTarget();
   });
 
   it("uses the shared edit icon and reveals rename controls on row hover", function () {

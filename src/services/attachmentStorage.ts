@@ -1,11 +1,18 @@
 import { appLogger } from "../core/logging";
 import {
+  ensureDirFromParent,
+  getIOUtils,
+  getOSFile,
+  pathExists,
+} from "../utils/geckoFs";
+import {
   fileUrlToPath,
   getLocalParentPath,
   joinLocalPath,
   toFileUrl,
 } from "../utils/localPath";
 import { isConversationKeyRetiredInMemory } from "../shared/conversationKeyLedger";
+import { CONVERSATION_CATALOG_TABLES } from "../shared/conversationStore/storeTables";
 import {
   areConversationWritesFrozen,
   withConversationWriteLock,
@@ -14,48 +21,6 @@ import {
 export const CHAT_ATTACHMENTS_DIR_NAME = "chat-attachments";
 
 export const ATTACHMENT_BLOBS_TABLE = "llm_for_zotero_attachment_blobs";
-
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  copy?: (sourcePath: string, destPath: string) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-};
-
-type OSFileLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  copy?: (sourcePath: string, destPath: string) => Promise<void>;
-  remove?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean },
-  ) => Promise<void>;
-  removeDir?: (
-    path: string,
-    options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
 
 function sanitizeFileName(name: string): string {
   const trimmed = (name || "").trim() || "attachment";
@@ -108,43 +73,9 @@ export function getChatAttachmentsRootDir(): string {
 }
 
 async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, {
-      createAncestors: true,
-      ignoreExisting: true,
-    });
-    return;
+  if (!(await ensureDirFromParent(path))) {
+    throw new Error("No directory creation API available");
   }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory creation API available");
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  const io = getIOUtils();
-  if (io?.exists) {
-    try {
-      return Boolean(await io.exists(path));
-    } catch (_err) {
-      return false;
-    }
-  }
-  const osFile = getOSFile();
-  if (osFile?.exists) {
-    try {
-      return Boolean(await osFile.exists(path));
-    } catch (_err) {
-      return false;
-    }
-  }
-  return false;
 }
 
 /**
@@ -525,26 +456,11 @@ async function removeConversationAttachmentFilesUnlocked(
       instanceColumn: "instance_id",
       keyColumn: "legacy_conversation_key",
     },
-    {
-      name: "llm_for_zotero_global_conversations",
+    ...CONVERSATION_CATALOG_TABLES.map((catalog) => ({
+      name: catalog.catalogTable,
       instanceColumn: "conversation_instance_id",
       keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_paper_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_claude_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
-    {
-      name: "llm_for_zotero_codex_conversations",
-      instanceColumn: "conversation_instance_id",
-      keyColumn: "conversation_key",
-    },
+    })),
   ];
   let sawCurrentInstance = false;
   let sawCatalogRow = false;

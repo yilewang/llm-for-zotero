@@ -13,13 +13,8 @@ import {
   normalizeSelectedTextSource,
 } from "../../services/context/normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
-import {
-  selectedTextCache,
-  selectedTextPreviewExpandedCache,
-  selectedNotePreviewExpandedCache,
-  recentReaderSelectionCache,
-  pinnedSelectedTextKeys,
-} from "./state";
+import { recentReaderSelectionCache } from "./state";
+import { composeContextStore } from "./contexts/composeContextStore";
 import type {
   NoteContextRef,
   ResolvedContextSource,
@@ -50,7 +45,7 @@ import { createContextIcon } from "./contextIcons";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
-} from "./readerSelection";
+} from "../../services/pdf/readerSelection";
 import {
   ensureMarkedReaderSelectionTrackingListener,
   type ReaderSelectionTrackingReader,
@@ -712,12 +707,12 @@ export function getSelectedTextContexts(itemId: number): string[] {
 export function getSelectedTextContextEntries(
   itemId: number,
 ): SelectedTextContext[] {
-  const raw = selectedTextCache.get(itemId);
+  const raw = composeContextStore.selectedTexts.get(itemId);
   const normalized = normalizeSelectedTextContexts(raw, { sanitizeText });
   const synced = syncNoteBackedSelectedTextContexts(normalized);
   const deduped = dedupeNoteBackedSelectedTextContexts(synced.contexts);
   if (synced.changed || deduped.changed) {
-    selectedTextCache.set(itemId, deduped.contexts);
+    composeContextStore.selectedTexts.set(itemId, deduped.contexts);
   }
   return deduped.contexts;
 }
@@ -850,12 +845,12 @@ function normalizeSelectedTextPageLocation(
     Number.isFinite(rawPageIndex) && rawPageIndex >= 0
       ? Math.floor(rawPageIndex)
       : undefined;
+  // Only a label the reader reported; display falls back to the page number
+  // (formatSelectedTextContextPageLabel).
   const pageLabel =
     typeof location.pageLabel === "string" && location.pageLabel.trim()
       ? location.pageLabel.trim()
-      : pageIndex !== undefined
-        ? `${pageIndex + 1}`
-        : undefined;
+      : undefined;
   if (
     contextItemId === undefined &&
     pageIndex === undefined &&
@@ -917,11 +912,11 @@ export function setSelectedTextContextEntries(
     normalizeSelectedTextContexts(contexts),
   ).contexts;
   if (!normalized.length) {
-    selectedTextCache.delete(itemId);
-    selectedTextPreviewExpandedCache.delete(itemId);
+    composeContextStore.selectedTexts.delete(itemId);
+    composeContextStore.selectedTextExpandedIndex.delete(itemId);
     return;
   }
-  selectedTextCache.set(itemId, normalized);
+  composeContextStore.selectedTexts.set(itemId, normalized);
 }
 
 function areSelectedTextContextsEquivalent(
@@ -967,7 +962,7 @@ export function syncSelectedTextContextForSource(
       return false;
     }
     setSelectedTextContextEntries(itemId, retainedContexts);
-    selectedTextPreviewExpandedCache.delete(itemId);
+    composeContextStore.selectedTextExpandedIndex.delete(itemId);
     return true;
   }
 
@@ -994,7 +989,7 @@ export function syncSelectedTextContextForSource(
       ? [nextContext, ...retainedContexts]
       : [...retainedContexts, nextContext];
   setSelectedTextContextEntries(itemId, nextContexts);
-  selectedTextPreviewExpandedCache.delete(itemId);
+  composeContextStore.selectedTextExpandedIndex.delete(itemId);
   return true;
 }
 
@@ -1045,7 +1040,7 @@ export function appendSelectedTextContextForItem(
   }
   if (existingContexts.length >= MAX_SELECTED_TEXT_CONTEXTS) return false;
   setSelectedTextContextEntries(itemId, [...existingContexts, incomingEntry]);
-  selectedTextPreviewExpandedCache.delete(itemId);
+  composeContextStore.selectedTextExpandedIndex.delete(itemId);
   return true;
 }
 
@@ -1065,12 +1060,11 @@ export function updateSelectedTextContextLocationForItem(
     Number.isFinite(rawPageIndex) && rawPageIndex >= 0
       ? Math.floor(rawPageIndex)
       : undefined;
+  // Only a label the reader reported; none is guessed from the index.
   const pageLabel =
     typeof location?.pageLabel === "string" && location.pageLabel.trim()
       ? location.pageLabel.trim()
-      : pageIndex !== undefined
-        ? `${pageIndex + 1}`
-        : undefined;
+      : undefined;
   if (!contextItemId && pageIndex === undefined && !pageLabel) return false;
 
   const paperIdentity = (context?: PaperContextRef | null): string =>
@@ -1106,7 +1100,9 @@ export function getSelectedTextExpandedIndex(
   itemId: number,
   count: number,
 ): number {
-  const raw = selectedTextPreviewExpandedCache.get(itemId) as unknown;
+  const raw = composeContextStore.selectedTextExpandedIndex.get(
+    itemId,
+  ) as unknown;
   const normalized = (() => {
     if (typeof raw === "number" && Number.isFinite(raw)) {
       return Math.floor(raw);
@@ -1115,7 +1111,7 @@ export function getSelectedTextExpandedIndex(
     return -1;
   })();
   if (normalized < 0 || normalized >= count) {
-    selectedTextPreviewExpandedCache.delete(itemId);
+    composeContextStore.selectedTextExpandedIndex.delete(itemId);
     return -1;
   }
   return normalized;
@@ -1126,14 +1122,14 @@ export function setSelectedTextExpandedIndex(
   index: number | null,
 ): void {
   if (index === null || index < 0 || !Number.isFinite(index)) {
-    selectedTextPreviewExpandedCache.delete(itemId);
+    composeContextStore.selectedTextExpandedIndex.delete(itemId);
     return;
   }
-  selectedTextPreviewExpandedCache.set(itemId, Math.floor(index));
+  composeContextStore.selectedTextExpandedIndex.set(itemId, Math.floor(index));
 }
 
 export function isNoteContextExpanded(itemId: number): boolean {
-  return selectedNotePreviewExpandedCache.get(itemId) === true;
+  return composeContextStore.notePreviewExpanded.get(itemId) === true;
 }
 
 export function setNoteContextExpanded(
@@ -1141,10 +1137,10 @@ export function setNoteContextExpanded(
   expanded: boolean | null,
 ): void {
   if (expanded !== true) {
-    selectedNotePreviewExpandedCache.delete(itemId);
+    composeContextStore.notePreviewExpanded.delete(itemId);
     return;
   }
-  selectedNotePreviewExpandedCache.set(itemId, true);
+  composeContextStore.notePreviewExpanded.set(itemId, true);
 }
 
 type AddSelectedTextContextOptions = {
@@ -1361,14 +1357,18 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     };
   })();
   if (!showActiveNoteChip) {
-    selectedNotePreviewExpandedCache.delete(itemId);
+    composeContextStore.notePreviewExpanded.delete(itemId);
   }
-  prunePinnedSelectedTextKeys(pinnedSelectedTextKeys, itemId, selectedContexts);
+  prunePinnedSelectedTextKeys(
+    composeContextStore.pinnedKeys.selectedTexts,
+    itemId,
+    selectedContexts,
+  );
   if (!selectedContexts.length && !activeNoteChipData) {
     previewList.style.display = "none";
     previewList.innerHTML = "";
-    selectedTextPreviewExpandedCache.delete(itemId);
-    selectedNotePreviewExpandedCache.delete(itemId);
+    composeContextStore.selectedTextExpandedIndex.delete(itemId);
+    composeContextStore.notePreviewExpanded.delete(itemId);
     if (selectTextBtn) {
       selectTextBtn.classList.remove("llm-action-btn-active");
     }
@@ -1403,7 +1403,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     const selectedSource = selectedContext.source;
     const isExpanded = expandedIndex === index;
     const pinned = isPinnedSelectedText(
-      pinnedSelectedTextKeys,
+      composeContextStore.pinnedKeys.selectedTexts,
       itemId,
       selectedContext,
     );

@@ -2,14 +2,12 @@ import { assert } from "chai";
 import { describe, it } from "mocha";
 
 import { summarizeRenderFlight } from "../src/agent/flightMetrics";
-import { createStreamingResponse } from "../src/modules/contextPanel/streamingResponse";
 import {
   RENDER_TRANSCRIPT_CHARS,
   buildRenderTranscript,
   driveRenderFlight,
   measureRenderFlight,
 } from "./helpers/renderFlight";
-import type { Message } from "../src/modules/contextPanel/types";
 
 /**
  * What a streamed answer costs the panel in repaints.
@@ -24,31 +22,6 @@ import type { Message } from "../src/modules/contextPanel/types";
  * than per provider chunk -- a provider that switches from 1-character to
  * 128-character deltas must not change how often the panel paints.
  */
-
-/** Drives the real owner exactly as the send and retry flows drive it. */
-function driveOwner(transcript: string, deltaChars: number) {
-  const message = { role: "assistant", text: "" } as Message;
-  let refreshesScheduled = 0;
-  let repaints = 0;
-
-  const streamingResponse = createStreamingResponse({
-    message,
-    refreshMessage: () => {
-      repaints += 1;
-    },
-    createQueuedRefresh: (refresh) => () => {
-      refreshesScheduled += 1;
-      refresh();
-    },
-  });
-
-  streamingResponse.start();
-  for (let at = 0; at < transcript.length; at += deltaChars)
-    streamingResponse.push(transcript.slice(at, at + deltaChars));
-  streamingResponse.flush("final");
-
-  return { text: message.text, refreshesScheduled, repaints };
-}
 
 describe("render flight metrics", function () {
   describe("the transcript", function () {
@@ -132,33 +105,6 @@ describe("render flight metrics", function () {
         );
       }
     });
-
-    it("matches what the streaming-response owner itself does", function () {
-      const transcript = buildRenderTranscript();
-      for (const deltaChars of [1, 16, 128]) {
-        const driven = driveRenderFlight({
-          id: `delta${deltaChars}`,
-          deltaChars,
-        });
-        const owner = driveOwner(transcript, deltaChars);
-
-        assert.equal(
-          owner.text,
-          driven.text,
-          `the owner and the measurement rig disagree on the text at delta size ${deltaChars}`,
-        );
-        assert.equal(
-          owner.refreshesScheduled,
-          driven.run.refreshesScheduled,
-          `the owner and the measurement rig disagree on the repaint count at delta size ${deltaChars}`,
-        );
-        assert.equal(
-          owner.repaints,
-          driven.run.blocksReleased,
-          `the owner repainted a number of times other than once per released block at delta size ${deltaChars}`,
-        );
-      }
-    });
   });
 
   describe("the stalled worst case", function () {
@@ -195,7 +141,7 @@ describe("render flight metrics", function () {
         "a stall after every delta releases every delta as its own block: this is the ceiling the coalescer is measured against",
       );
       assert.deepEqual(
-        new Set(stalled.reasons),
+        new Set(stalled.releasedBy),
         new Set(["timer"]),
         "every block in the stalled run is released by the injected stall timer, which a real 450 ms timer could never do inside a synchronous push loop",
       );

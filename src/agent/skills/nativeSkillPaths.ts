@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import { joinLocalPath } from "../../utils/localPath";
 
 export const NATIVE_SKILL_FILE_NAME = "SKILL.md";
@@ -13,12 +14,7 @@ function getZoteroLike(): ZoteroLike {
 
 export function buildSkillProfileSignature(profileDir: string): string {
   const normalized = profileDir.trim().replace(/\\/g, "/");
-  let hash = 2166136261;
-  for (let i = 0; i < normalized.length; i += 1) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `profile-${(hash >>> 0).toString(16)}`;
+  return `profile-${fnv1a32Raw(normalized).toString(16)}`;
 }
 
 export function getSkillStorageBaseDir(): string {

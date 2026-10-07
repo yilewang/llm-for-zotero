@@ -21,6 +21,8 @@ import {
   compactCodexAppServerThread,
   forkCodexAppServerThread,
   isDeniedTrustedZoteroMcpGuardianReviewForTests,
+  registerNativeApprovalRequestHandlersForTests,
+  registerNativeGuardianReviewHandlersForTests,
   listCodexAppServerModels,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
@@ -4027,5 +4029,369 @@ describe("Codex MCP tool activity bridge", function () {
     assert.equal(event.type, "codex_tool_activity");
     if (event.type !== "codex_tool_activity") return;
     assert.equal(event.workCategory, CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY);
+  });
+});
+
+describe("Codex native turns of two conversations on one process", function () {
+  const CURRENT_USER_AGENT =
+    "llm-for-zotero/0.156.1 (Mac OS 15.7.4; arm64) unknown (llm-for-zotero; 1.0)";
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  type TestProcess = CodexAppServerProcess & {
+    handleMessage: (msg: Record<string, unknown>) => void;
+  };
+  function createRoutingProcess(writes: Array<Record<string, any>>) {
+    return CodexAppServerProcess.forTest({
+      stdin: { write: (line: string) => writes.push(JSON.parse(line)) },
+      kill: () => {},
+    }) as TestProcess;
+  }
+
+  it("answers each approval from the turn that owns its thread", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    const asked: string[] = [];
+    const register = (threadId: string, decision: string) =>
+      registerNativeApprovalRequestHandlersForTests({
+        proc,
+        onApprovalRequest: async (request) => {
+          asked.push(`${threadId}:${(request.params as any).threadId}`);
+          return { decision };
+        },
+        getTurnIdentity: async () => ({ threadId, turnId: `turn-${threadId}` }),
+        getActiveThreadId: () => threadId,
+      });
+    register("thread-A", "accept");
+    register("thread-B", "decline");
+    proc.handleMessage({
+      id: 1,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-B", turnId: "turn-thread-B", itemId: "b" },
+    });
+    proc.handleMessage({
+      id: 2,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-A", turnId: "turn-thread-A", itemId: "a" },
+    });
+    await tick();
+    await tick();
+    assert.sameMembers(asked, ["thread-A:thread-A", "thread-B:thread-B"]);
+    assert.deepEqual(writes.find((message) => message.id === 1)?.result, {
+      decision: "decline",
+    });
+    assert.deepEqual(writes.find((message) => message.id === 2)?.result, {
+      decision: "accept",
+    });
+  });
+
+  it("an unanswered question's interrupt never fails the shared process on timeout and retires it only when the turn cannot be stopped", async function () {
+    const proc = createRoutingProcess([]);
+    const interrupts: Array<{ options: unknown }> = [];
+    (proc as any).sendRequest = (
+      method: string,
+      _params: unknown,
+      _timeoutMs?: number,
+      options?: unknown,
+    ) => {
+      if (method === "turn/interrupt") interrupts.push({ options });
+      return Promise.reject(new Error("interrupt timed out"));
+    };
+    let retired = 0;
+    registerNativeApprovalRequestHandlersForTests({
+      proc,
+      onApprovalRequest: async () => ({ answers: {} }),
+      getTurnIdentity: async () => ({
+        threadId: "thread-A",
+        turnId: "turn-A",
+      }),
+      getActiveThreadId: () => "thread-A",
+      retireProcessAfterInterruptFailure: () => {
+        retired += 1;
+      },
+    });
+    proc.handleMessage({
+      id: 1,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread-A",
+        turnId: "turn-A",
+        itemId: "q",
+        questions: [{ id: "q1", question: "Which?", header: "Pick" }],
+      },
+    });
+    await tick();
+    await tick();
+    assert.lengthOf(interrupts, 1);
+    assert.deepEqual(interrupts[0].options, { failProcessOnTimeout: false });
+    assert.equal(retired, 1);
+  });
+
+  it("keeps another conversation's pending approval when one turn ends", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    const signals: Record<string, AbortSignal> = {};
+    const register = (threadId: string) =>
+      registerNativeApprovalRequestHandlersForTests({
+        proc,
+        onApprovalRequest: (request) => {
+          signals[threadId] = request.signal!;
+          return new Promise(() => {});
+        },
+        getTurnIdentity: async () => ({ threadId, turnId: `turn-${threadId}` }),
+        getActiveThreadId: () => threadId,
+      });
+    const disposeA = register("thread-A");
+    register("thread-B");
+    for (const threadId of ["thread-A", "thread-B"]) {
+      proc.handleMessage({
+        id: `question-${threadId}`,
+        method: "item/fileChange/requestApproval",
+        params: { threadId, turnId: `turn-${threadId}`, itemId: threadId },
+      });
+    }
+    await tick();
+    await tick();
+    disposeA();
+    assert.isTrue(signals["thread-A"]?.aborted);
+    assert.isFalse(signals["thread-B"]?.aborted);
+    assert.isTrue(proc.hasPendingUserInput("thread-B"));
+    proc.destroy();
+  });
+
+  it("overrides a guardian denial only for its own thread", async function () {
+    const writes: Array<Record<string, any>> = [];
+    const proc = createRoutingProcess(writes);
+    registerNativeGuardianReviewHandlersForTests({
+      proc,
+      threadId: "thread-A",
+    });
+    const deniedReview = (threadId: string) => ({
+      method: "item/autoApprovalReview/completed",
+      params: {
+        threadId,
+        turnId: `turn-${threadId}`,
+        review: { status: "denied" },
+        action: {
+          type: "mcp_tool_call",
+          server: "llm_for_zotero_profile_1234",
+          tool_name: "library_search",
+        },
+      },
+    });
+    proc.handleMessage(deniedReview("thread-B"));
+    await tick();
+    assert.notExists(
+      writes.find(
+        (message) => message.method === "thread/approveGuardianDeniedAction",
+      ),
+    );
+    proc.handleMessage(deniedReview("thread-A"));
+    await tick();
+    const approvals = writes.filter(
+      (message) => message.method === "thread/approveGuardianDeniedAction",
+    );
+    assert.lengthOf(approvals, 1);
+    assert.equal(approvals[0].params.threadId, "thread-A");
+    proc.handleMessage({ id: approvals[0].id, result: {} });
+  });
+
+  async function runTwoConversations(params: {
+    onTurn: Parameters<typeof createNativeLifecycleTestProcess>[0]["onTurn"];
+    onServerResponse?: (message: Record<string, any>) => void;
+    runA: (
+      run: (
+        extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>,
+      ) => Promise<unknown>,
+    ) => Promise<unknown>;
+    runB: (
+      run: (
+        extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>,
+      ) => Promise<unknown>,
+    ) => Promise<unknown>;
+    requests: Array<{ method: string; params: Record<string, any> }>;
+  }) {
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["coexist-thread-1", "coexist-thread-2"],
+      requests: params.requests,
+      onServerResponse: params.onServerResponse,
+      onTurn: params.onTurn,
+    });
+    proc.setServerUserAgent(CURRENT_USER_AGENT);
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs();
+    const processKey = "codex-two-conversations";
+    const globalScope = globalThis as typeof globalThis & {
+      ztoolkit?: { log: (...args: unknown[]) => void };
+    };
+    const originalZtoolkit = globalScope.ztoolkit;
+    globalScope.ztoolkit = { log: () => undefined };
+    CodexAppServerProcess.spawn = async () => proc;
+    const run =
+      (conversationKey: number, title: string) =>
+      (extra: Partial<Parameters<typeof runCodexAppServerNativeTurn>[0]>) =>
+        runCodexAppServerNativeTurn({
+          scope: { conversationKey, libraryID: 1, kind: "global", title },
+          model: "gpt-5.6",
+          messages: [{ role: "user", content: `Question ${title}` }],
+          processKey,
+          hooks: {
+            loadProviderSessionId: async () => undefined,
+            persistProviderSession: async () => {},
+          },
+          ...extra,
+        });
+    try {
+      const guard = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("the two conversations did not overlap")),
+          2000,
+        ),
+      );
+      return await Promise.race([
+        Promise.allSettled([
+          params.runA(run(6_000_000_501, "A")),
+          params.runB(run(6_000_000_502, "B")),
+        ]),
+        guard,
+      ]);
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+      globalScope.ztoolkit = originalZtoolkit;
+    }
+  }
+
+  it("lets one conversation answer while another waits on an approval", async function () {
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const emitters = new Map<
+      number,
+      { turnId: string; emit: (message: Record<string, unknown>) => void }
+    >();
+    const order: string[] = [];
+    let finishB!: () => void;
+    const bFinished = new Promise<void>((resolve) => {
+      finishB = resolve;
+    });
+    const results = await runTwoConversations({
+      requests,
+      onTurn: ({ threadId, turnId, emit }) => {
+        const approvalId = 9200 + emitters.size;
+        emitters.set(approvalId, { turnId, emit });
+        emit({
+          id: approvalId,
+          method: "item/commandExecution/requestApproval",
+          params: { threadId, turnId, itemId: `cmd-${turnId}`, command: "ls" },
+        });
+      },
+      onServerResponse: (message) => {
+        const owner = emitters.get(message.id);
+        if (!owner) return;
+        owner.emit({
+          method: "item/agentMessage/delta",
+          params: { turnId: owner.turnId, delta: `answer ${owner.turnId}` },
+        });
+        owner.emit({
+          method: "turn/completed",
+          params: { turn: { id: owner.turnId, status: "completed" } },
+        });
+      },
+      runA: (run) =>
+        run({
+          onApprovalRequest: async (request) => {
+            order.push(`A asked on ${(request.params as any).threadId}`);
+            await bFinished;
+            order.push("A approved");
+            return { decision: "accept" };
+          },
+        }).then((result) => {
+          order.push("A done");
+          return result;
+        }),
+      runB: (run) =>
+        run({
+          onApprovalRequest: async (request) => {
+            order.push(`B asked on ${(request.params as any).threadId}`);
+            return { decision: "accept" };
+          },
+        }).then((result) => {
+          order.push("B done");
+          finishB();
+          return result;
+        }),
+    });
+    assert.deepEqual(
+      results.map((result) => result.status),
+      ["fulfilled", "fulfilled"],
+      JSON.stringify(results),
+    );
+    const [resultA, resultB] = results.map(
+      (result) => (result as PromiseFulfilledResult<any>).value,
+    );
+    assert.notEqual(resultA.threadId, resultB.threadId);
+    assert.include(order, `A asked on ${resultA.threadId}`);
+    assert.include(order, `B asked on ${resultB.threadId}`);
+    assert.isBelow(order.indexOf("B done"), order.indexOf("A approved"));
+    assert.isBelow(order.indexOf("A approved"), order.indexOf("A done"));
+    assert.equal(resultA.text, `answer ${resultA.turnId}`);
+    assert.equal(resultB.text, `answer ${resultB.turnId}`);
+  });
+
+  it("stops one conversation without stopping the other", async function () {
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const controllerA = new AbortController();
+    const turns: Array<{
+      threadId: string;
+      turnId: string;
+      emit: (message: Record<string, unknown>) => void;
+    }> = [];
+    let markAStarted!: () => void;
+    const aStarted = new Promise<void>((resolve) => {
+      markAStarted = resolve;
+    });
+    const results = await runTwoConversations({
+      requests,
+      onTurn: (turn) => {
+        turns.push(turn);
+        if (turns.length === 2) markAStarted();
+      },
+      runA: (run) => run({ signal: controllerA.signal }),
+      runB: async (run) => {
+        const pending = run({});
+        await aStarted;
+        const [first, second] = turns;
+        // Whichever turn started first, the one not on A's signal is B's.
+        controllerA.abort();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const interrupted = requests.find(
+          (request) => request.method === "turn/interrupt",
+        );
+        const turnB = [first, second].find(
+          (turn) => turn.turnId !== interrupted?.params.turnId,
+        )!;
+        turnB.emit({
+          method: "item/agentMessage/delta",
+          params: { turnId: turnB.turnId, delta: "B still answers" },
+        });
+        turnB.emit({
+          method: "turn/completed",
+          params: { turn: { id: turnB.turnId, status: "completed" } },
+        });
+        return pending;
+      },
+    });
+    assert.equal(results[0].status, "rejected");
+    assert.equal(
+      ((results[0] as PromiseRejectedResult).reason as Error)?.name,
+      "AbortError",
+    );
+    assert.equal(results[1].status, "fulfilled", JSON.stringify(results[1]));
+    assert.equal(
+      (results[1] as PromiseFulfilledResult<any>).value.text,
+      "B still answers",
+    );
+    const interrupts = requests.filter(
+      (request) => request.method === "turn/interrupt",
+    );
+    assert.lengthOf(interrupts, 1);
   });
 });

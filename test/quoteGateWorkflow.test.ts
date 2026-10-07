@@ -14,7 +14,7 @@ import {
   waitForAssistantQuoteValidationForTests,
 } from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
-import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import {
   beginQuoteNavigationActivity,
   resetQuoteValidationActivityForTests,
@@ -563,11 +563,12 @@ describe("minimal source-match quote gate workflow", function () {
         assistantMessage.quoteDisplayOverride?.markdown || "",
         "Not a source quote",
       );
-      assert.equal(
-        assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]
-          ?.pageHintLabel,
-        "1",
-      );
+      // D5 (was pageHintLabel "1", guessed from the page index): PDFWorker
+      // text has no printed labels, so the quote records only its index.
+      const verified =
+        assistantMessage.quoteDisplayOverride?.quoteCitations?.[0];
+      assert.isUndefined(verified?.pageHintLabel);
+      assert.equal(verified?.pageHintIndex, 0);
     });
   }
 

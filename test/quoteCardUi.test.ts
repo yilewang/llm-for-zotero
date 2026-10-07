@@ -685,11 +685,19 @@ describe("quote card UI contract", function () {
       "await ensurePDFTextCached(contextItem",
     );
     assert.include(quoteValidationSource, 'paper.contentSourceMode || ""');
-    assert.include(
-      quoteValidationSource,
-      "!hasCachedQuoteSourceText(contextItemId) &&",
+    // An empty cached entry is dropped before the reload, so quote
+    // validation retries an extraction that produced no searchable text.
+    const discardEmptyIndex = quoteValidationSource.indexOf(
+      "paperTextStore.discardEmptyEntry(contextItemId);",
     );
-    assert.include(quoteValidationSource, "pdfTextCache.has(contextItemId)");
+    assert.isAtLeast(discardEmptyIndex, 0);
+    assert.isAbove(
+      quoteValidationSource.indexOf(
+        "await ensurePDFTextCached(contextItem",
+        discardEmptyIndex,
+      ),
+      discardEmptyIndex,
+    );
     assert.include(
       quoteValidationSource,
       "const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(",
@@ -746,9 +754,11 @@ describe("quote card UI contract", function () {
     );
     assert.include(agentSource, "pairedUserMessage: userMessage,");
     assert.include(agentSource, "pairedUserMessage: retryPair.userMessage,");
-    // Both turn paths route through the shared finalizer.
+    // Both turn paths settle through the shared settlement, whose answered
+    // outcome goes to the shared finalizer.
+    assert.equal(agentSource.match(/await settleAgentTurn\(\{/g)?.length, 2);
     assert.equal(
-      agentSource.match(/await finalizeAgentTurnOutcome\(\{/g)?.length,
+      agentSource.match(/=>\s*finalizeAgentTurnOutcome\(\{/g)?.length,
       2,
     );
   });

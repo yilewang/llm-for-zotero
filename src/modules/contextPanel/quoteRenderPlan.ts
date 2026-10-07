@@ -17,11 +17,12 @@ import {
   parseStandaloneCitationLabel,
 } from "../../services/quotes/citationLabelParser";
 import { resolveQuoteCitationLookupText } from "./quoteNavigationText";
+import { quoteTokenPattern } from "../../services/quotes/quoteTokenIds";
 
 export const PARAGRAPH_CITATION_TOKEN_PATTERN = /LLMPAPERCITE(\d+)END/g;
 
 export const QUOTE_RENDER_OCCURRENCE_PATTERN =
-  /\[\[quote-occurrence:([A-Za-z0-9_-]+)\]\]/g;
+  quoteTokenPattern("quote-occurrence");
 
 const FENCED_CODE_PATTERN = /^[ \t]*(```|~~~)/;
 

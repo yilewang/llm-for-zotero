@@ -132,7 +132,7 @@ const GENERIC_FONT_FAMILIES = new Set([
  * vocabulary, and is the same one the editor warns against, so "will be
  * remembered" means the same thing in both places.
  */
-function isReasoningLevelSelection(
+export function isReasoningLevelSelection(
   value: string,
 ): value is ReasoningLevelSelection {
   return isValidReasoningLevelId(value);
@@ -233,6 +233,25 @@ function getLastReasoningLevelByProviderMap(): Record<string, string> {
   } catch (_err) {
     return {};
   }
+}
+
+/** Every provider's last-used reasoning level, keyed by normalized provider. */
+export function getLastUsedReasoningLevelsByProvider(): Record<
+  string,
+  ReasoningLevelSelection
+> {
+  return getLastReasoningLevelByProviderMap() as Record<
+    string,
+    ReasoningLevelSelection
+  >;
+}
+
+/** The normalized provider key a last-used reasoning level is stored under. */
+export function normalizeReasoningProviderSelectionKey(
+  provider: string,
+): string | null {
+  const normalized = provider.trim().toLowerCase();
+  return REASONING_PROVIDER_SELECTION_KEYS.has(normalized) ? normalized : null;
 }
 
 export function getLastUsedReasoningLevelForProvider(
@@ -466,10 +485,20 @@ export function getAvailableModelEntries(): RuntimeModelEntry[] {
 }
 
 export function getSelectedModelEntry(): RuntimeModelEntry | null {
+  return resolveSelectedModelEntry(getLastUsedModelEntryId());
+}
+
+/**
+ * The configured entry for `preferredId`, or the default entry when that one
+ * is gone. Each chat surface keeps its own preferred ID (see
+ * surfaceChoices.ts); the saved pref is the sidebar's.
+ */
+export function resolveSelectedModelEntry(
+  preferredId: string,
+): RuntimeModelEntry | null {
   const entries = getRuntimeModelEntries();
   if (!entries.length) return null;
 
-  const preferredId = getLastUsedModelEntryId();
   return (
     entries.find((entry) => entry.entryId === preferredId) ||
     getDefaultModelEntry() ||

@@ -42,6 +42,10 @@ export type CollectionBrowseNode = {
   childCollections: CollectionBrowseNode[];
 };
 
+/** What an add-mode filing tells its caller about the folders it left alone. */
+export const ADD_ONLY_NOTE =
+  "Added only: no paper was removed from any collection, so each one is still in every collection it was in before. To move papers, call again with mode:'move' and from:<collectionId>.";
+
 export type BatchMoveItemResult = {
   itemId: number;
   title: string;
@@ -906,6 +910,7 @@ export class CollectionCapability {
     collections: CollectionSummary[];
     items: BatchMoveItemResult[];
     priorCollections?: ItemCollectionSet[];
+    note?: string;
   }> {
     const normalizedAssignments: BatchMoveAssignment[] = [];
     const seen = new Set<string>();
@@ -1056,6 +1061,9 @@ export class CollectionCapability {
       skippedCount: results.length - addedCount,
       collections: Array.from(collectionMap.values()),
       items: results,
+      // Said outright, because a model that meant to move read "added" as
+      // done and told the user the paper had left its old folder.
+      note: ADD_ONLY_NOTE,
     };
   }
 

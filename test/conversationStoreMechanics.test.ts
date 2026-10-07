@@ -1,5 +1,4 @@
 import { assert } from "chai";
-import { DatabaseSync } from "node:sqlite";
 import {
   CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
@@ -37,6 +36,10 @@ import {
   repairClaudeConversationIdentityRegistry,
   upsertClaudeConversationSummary,
 } from "../src/claudeCode/store";
+import {
+  installSqliteZotero as installSharedSqliteZotero,
+  type SqliteHarness,
+} from "./helpers/conversationStoreDb";
 
 /**
  * Characterization for the mechanics the three conversation stores duplicate:
@@ -58,94 +61,8 @@ const globalScope = globalThis as typeof globalThis & {
 };
 const originalZotero = globalScope.Zotero;
 
-type SqliteHarness = {
-  db: DatabaseSync;
-  all: (sql: string, params?: unknown[]) => Record<string, unknown>[];
-  run: (sql: string, params?: unknown[]) => void;
-  transactions: () => number;
-  statements: Array<{ sql: string; params: unknown[]; inTransaction: boolean }>;
-};
-
 function installSqliteZotero(): SqliteHarness {
-  const db = new DatabaseSync(":memory:");
-  const bindable = (params: unknown[] | undefined) =>
-    (Array.isArray(params) ? params : params === undefined ? [] : [params]).map(
-      (value) => (value === undefined ? null : value),
-    ) as never[];
-  // Zotero 7's queryAsync wraps rows in a proxy that THROWS when code reads a
-  // column the SELECT did not include (node:sqlite returns undefined). Mimic
-  // that here or the suite silently passes on exactly the row-access bugs
-  // that break the real plugin.
-  const toZoteroRow = (row: Record<string, unknown>) =>
-    new Proxy(row, {
-      get(target, prop, receiver) {
-        if (typeof prop === "string" && !(prop in target)) {
-          throw new Error(`Column '${prop}' not present in this row`);
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-  const statements: SqliteHarness["statements"] = [];
-  let openTransactions = 0;
-  const queryAsync = async (sql: string, params?: unknown[]) => {
-    statements.push({
-      sql,
-      params: Array.isArray(params) ? params : [],
-      inTransaction: openTransactions > 0,
-    });
-    const head = sql.trimStart().slice(0, 8).toUpperCase();
-    const stmt = db.prepare(sql);
-    if (
-      head.startsWith("SELECT") ||
-      head.startsWith("PRAGMA") ||
-      head.startsWith("WITH")
-    ) {
-      return (stmt.all(...bindable(params)) as Record<string, unknown>[]).map(
-        toZoteroRow,
-      );
-    }
-    stmt.run(...bindable(params));
-    return [];
-  };
-  const prefs = new Map<string, unknown>();
-  let transactions = 0;
-  globalScope.Zotero = {
-    ...(originalZotero || {}),
-    Libraries: { userLibraryID: 1 },
-    Items: { get: () => null },
-    Prefs: {
-      get: (key: string) => prefs.get(key),
-      set: (key: string, value: unknown) => prefs.set(key, value),
-      clear: (key: string) => prefs.delete(key),
-    },
-    Profile: { dir: "/tmp/llm-for-zotero-store-mechanics" },
-    debug: () => undefined,
-    DB: {
-      queryAsync,
-      executeTransaction: async (task: () => Promise<unknown>) => {
-        transactions += 1;
-        openTransactions += 1;
-        try {
-          return await task();
-        } finally {
-          openTransactions -= 1;
-        }
-      },
-    },
-  };
-  return {
-    db,
-    all: (sql, params) =>
-      db.prepare(sql).all(...((params || []) as never[])) as Record<
-        string,
-        unknown
-      >[],
-    run: (sql, params) => {
-      db.prepare(sql).run(...((params || []) as never[]));
-    },
-    transactions: () => transactions,
-    statements,
-  };
+  return installSharedSqliteZotero({ baseZotero: originalZotero });
 }
 
 function tableColumns(harness: SqliteHarness, table: string): Set<string> {

@@ -16,6 +16,7 @@
 import {
   createBlockStreamCoalescer,
   type BlockStreamCoalescer,
+  type BlockStreamCoalescerOptions,
   type BlockStreamFlushReason,
 } from "./blockStreamCoalescer";
 import type { Message } from "./types";
@@ -32,6 +33,14 @@ export type StreamingResponseDeps = {
    * per panel by `chat.ts`, which cancels it when the panel is torn down.
    */
   createQueuedRefresh: (refresh: () => void) => () => void;
+  /**
+   * Arms the coalescer's stalled-stream timer. Omitted in production, where the
+   * coalescer falls back to the global `setTimeout`; a test injects one to hold
+   * the timer still or fire it on demand.
+   */
+  setTimer?: BlockStreamCoalescerOptions["setTimer"];
+  /** Disarms a timer `setTimer` returned. Omitted means `clearTimeout`. */
+  clearTimer?: BlockStreamCoalescerOptions["clearTimer"];
 };
 
 export type StreamingResponse = {
@@ -73,6 +82,8 @@ export function createStreamingResponse(
           deps.message.text += chunk;
           queueRefresh();
         },
+        setTimer: deps.setTimer,
+        clearTimer: deps.clearTimer,
       });
     },
 

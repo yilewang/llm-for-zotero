@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../utils/fnv1a";
 import type {
   WebAccessProvider,
   WebAccessUsage,
@@ -186,12 +187,7 @@ export function normalizePublicWebUrl(value: unknown): string {
 }
 
 export function buildWebSourceId(url: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < url.length; index += 1) {
-    hash ^= url.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `web_${(hash >>> 0).toString(36).padStart(7, "0")}`;
+  return `web_${fnv1a32Raw(url).toString(36).padStart(7, "0")}`;
 }
 
 function hostnameForUrl(url: string): string {

@@ -1,21 +1,9 @@
 import { appLogger } from "../../core/logging";
-import {
-  readNativeQuestions,
-  buildNativeQuestionAction,
-  nativeQuestionAnswers,
-} from "../../codexAppServer/nativeQuestions";
+import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
+import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
+export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
-import {
-  applyTaskPaperUpdate,
-  beginTaskRun,
-  completeTaskRun,
-  markTaskAnswering,
-  setTaskChecklist,
-  taskTurnIndexFor,
-} from "./taskProgress/store";
-import { codexPlanTaskSteps } from "./taskProgress/codexPlan";
-import { paperLedgerUpdateFromMcpActivity } from "../../agent/context/taskPaperLedgerRecorder";
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
@@ -34,15 +22,14 @@ import {
   updateLatestUserMessage as updateStoredLatestUserMessage,
   updateLatestAssistantMessage as updateStoredLatestAssistantMessage,
   StoredChatMessage,
+  type UpdateLatestAssistantMessageOptions,
+  type UpdateLatestUserMessageOptions,
 } from "../../utils/chatStore";
 import { conversationRepository } from "../../core/conversations/repository";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
 import { filterMessagesInPendingTurns } from "./turnMessageUtils";
-import {
-  clearAgentConversationState,
-  clearPersistedAgentConversationRowsInTransaction,
-} from "./agentConversationCleanup";
+import { deleteTrailingTurnPairs } from "./editTruncation";
 import {
   appendCodexMessage,
   clearCodexConversationSessionMetadata,
@@ -74,28 +61,32 @@ import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import { getEffectiveCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
 import {
-  buildCodexNativeApprovalPendingAction,
-  buildCodexNativeApprovalResponseFromResolution,
   compactCodexAppServerConversation,
-  isCodexNativeBuiltInApprovalRequest,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
-  resolveCodexNativeApprovalRequest,
-  runCodexAppServerNativeTurn,
-  type CodexNativeApprovalRequest,
   type CodexNativeConversationScope,
-  type CodexNativeDiagnostics,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
-import { formatCodexZoteroMcpError } from "../../codexAppServer/mcpErrors";
-import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
+import {
+  toAgentRuntimeRequestParams,
+  toCodexNativeSkillContext,
+  type BuildAgentRuntimeRequestParams,
+  type EffectiveRequestConfig,
+  type TurnRequestContext,
+} from "./requestContext";
+export type {
+  BuildAgentRuntimeRequestParams,
+  EffectiveRequestConfig,
+} from "./requestContext";
+import {
+  bindClaudeBridgeConversationSystem,
+  preflightClaudeBridgeLocalPdfCapability,
+} from "../../agent/externalBackendBridge";
 import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
   type ChatParams,
@@ -114,8 +105,6 @@ import {
 import {
   appendContinuationText,
   callDirectChatTurnWithRecovery,
-  EMPTY_OUTPUT_LIMIT_MESSAGE,
-  resolveEmptyModelOutcomeMessage,
 } from "./directChatCompletion";
 import {
   getModelCapabilities,
@@ -146,7 +135,6 @@ import {
   restoreChatScrollAfterRender,
   disposeChatScrollViewport,
   scheduleChatScrollReconciliation,
-  scheduleChatContentScroll,
   writeChatScrollTop,
   persistChatScrollSnapshotForConversationKey,
   setFollowBottomChatScrollSnapshot,
@@ -164,11 +152,13 @@ import { resizeTextareaToContent } from "./textareaSizing";
 export { withScrollGuard } from "./chatScrollSnapshots";
 
 import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
-import { createStreamingResponse } from "./streamingResponse";
 import {
-  getStreamInterruptionLabel,
-  resolveStreamInterruptionOutcome,
-} from "./streamInterruption";
+  createAssistantTurn,
+  finalizeCancelledAssistantMessage,
+} from "./assistantTurn";
+import { toStoredAssistantRow } from "./storedAssistantRow";
+import { toStoredUserRowPatch } from "./storedUserRow";
+import { getStreamInterruptionLabel } from "./streamInterruption";
 import {
   restoreRetryUserSnapshot,
   takeRetryUserSnapshot,
@@ -200,7 +190,13 @@ import {
   type PanelOperationLease,
   renderPanelOwnershipBlocked,
   requireCurrentPanelOwnership,
+  resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
+import type { SelectionSurface } from "./conversationSelection";
+import {
+  getSelectedModelEntryForSurface,
+  surfaceChoices,
+} from "./surfaceChoices";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -232,7 +228,6 @@ import { withConversationWriteLock } from "../../shared/conversationWriteFence";
 import {
   createTurnUsageRecorder,
   type TurnUsageRecorder,
-  type UsageTurnFlushReason,
 } from "../../utils/usageTurnRecorder";
 import {
   chatHistory,
@@ -240,19 +235,14 @@ import {
   loadedConversationKeys,
   loadingConversationTasks,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
   selectedReasoningCache,
   selectedReasoningProviderCache,
-  selectedImageCache,
-  selectedFileAttachmentCache,
-  selectedPaperContextCache,
-  selectedCollectionContextCache,
-  selectedTagContextCache,
-  initializedConversationComposeContextKeys,
-  paperContextModeOverrides,
-  paperContentSourceOverrides,
+  reasoningCacheKey,
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelStateSync,
+  draftInputCache,
   getCancelledRequestId,
   getPendingRequestId,
   getAbortController,
@@ -271,20 +261,26 @@ import {
   getResponseActionRunner,
   getForkSourceNavigationRunner,
   setPromptMenuTarget,
-  inlineEditTarget,
-  setInlineEditTarget,
-  inlineEditCleanup,
-  setInlineEditCleanup,
-  inlineEditInputSectionEl,
-  inlineEditInputSectionParent,
-  inlineEditInputSectionNextSib,
-  inlineEditSavedDraft,
-  setInlineEditInputSection,
-  setInlineEditSavedDraft,
   selectedRuntimeModeCache,
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
+import {
+  endInlineEdit,
+  endInlineEditSuperseded,
+  getInlineEditBorrowedInputSection,
+  getInlineEditCleanup,
+  getInlineEditSavedDraft,
+  getInlineEditTarget,
+  getLatestUserTurnTimestamp,
+  hasNewerUserTurnThanInlineEdit,
+  isInlineEditSuperseded,
+  mergeSupersededEditIntoDraft,
+  setInlineEditBorrowedInputSection,
+  setInlineEditCleanup,
+  setInlineEditSavedDraft,
+  setInlineEditTarget,
+} from "./inlineEditState";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
   formatTime,
@@ -321,9 +317,6 @@ import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import {
   getAvailableModelEntries,
   getLastReasoningExpanded,
-  getLastUsedReasoningLevel,
-  getLastUsedReasoningLevelForProvider,
-  getSelectedModelEntry,
   getStringPref,
   setLastReasoningExpanded,
   setLastUsedReasoningLevelForProvider,
@@ -336,7 +329,7 @@ import {
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
 } from "../../services/paperContent/paperAttribution";
-import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { composeContextStore } from "./contexts/composeContextStore";
 import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -358,17 +351,7 @@ import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
-import {
-  renderAgentTrace,
-  disposeAgentTrace,
-  renderPendingActionCard,
-} from "./agentTrace/render";
-import {
-  createCodexNativeActivityTraceController,
-  isCodexNativeAgentMessageItem,
-  noteExplicitCodexNativeSkillInvocations,
-  type CodexNativeActivityTraceController,
-} from "./codexNativeTrace/controller";
+import { renderAgentTrace, disposeAgentTrace } from "./agentTrace/render";
 import {
   conversationHasStreamingMessage,
   finalizeAssistantMessageQuoteCitations,
@@ -407,15 +390,9 @@ import {
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
-import {
-  getAgentApi,
-  getCoreAgentRuntime,
-  initAgentSubsystem,
-} from "../../agent/index";
-import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
+import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
 import {
   appendAgentRunEventAfterLatest,
-  createAgentRunEventJournal,
   getAgentRunTrace,
 } from "../../agent/store/traceStore";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
@@ -429,8 +406,6 @@ import {
 import type {
   AgentAttachmentResource,
   AgentAttachmentResourceSummary,
-  AgentConfirmationResolution,
-  AgentPendingAction,
   AgentRunEventRecord,
   AgentRuntimeRequestInput as AgentRuntimeRequest,
 } from "../../agent/types";
@@ -536,9 +511,37 @@ export function hasAgentRunTraceForTests(runId: string): boolean {
   return agentRunTraceCache.has((runId || "").trim());
 }
 
-function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
+/**
+ * The surface showing `item`, for paths that act for a panel but were handed
+ * only its item. Both surfaces can show the same item object; the window's
+ * choices apply only when no sidebar panel shows it.
+ */
+function resolveSurfaceForMountedItem(
+  item: Zotero.Item | null | undefined,
+): SelectionSurface {
+  if (!item) return "embedded";
+  let shownInWindow = false;
+  for (const [body, getItem] of activeContextPanels) {
+    if (getItem() !== item) continue;
+    if (resolveSelectionSurfaceForBody(body) !== "standalone") {
+      return "embedded";
+    }
+    shownInWindow = true;
+  }
+  return shownInWindow ? "standalone" : "embedded";
+}
+
+/**
+ * Whether `item`'s chat goes to WebChat for the given surface's choices.
+ * Callers with a panel body pass its surface: both surfaces can show the same
+ * item, and only one of them may be in WebChat.
+ */
+function isEffectiveWebChatRequest(
+  item: Zotero.Item,
+  surface?: SelectionSurface,
+): boolean {
   try {
-    const requestConfig = resolveEffectiveRequestConfig({ item });
+    const requestConfig = resolveEffectiveRequestConfig({ item, surface });
     return (
       requestConfig.authMode === "webchat" ||
       requestConfig.providerProtocol === "web_sync"
@@ -546,6 +549,81 @@ function isEffectiveWebChatRequest(item: Zotero.Item): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a live panel other than `exceptBody` shows the conversation outside
+ * WebChat (the other surface still on an API model, say).
+ */
+export function isConversationShownOutsideWebChat(
+  conversationKey: number,
+  exceptBody?: Element | null,
+  isWebChatPanel: (body: Element, item: Zotero.Item) => boolean = (
+    body,
+    item,
+  ) => isEffectiveWebChatRequest(item, resolveSelectionSurfaceForBody(body)),
+): boolean {
+  for (const [body, getItem] of activeContextPanels) {
+    if (body === exceptBody || !body.isConnected) continue;
+    const item = getItem?.() || null;
+    if (!item) continue;
+    if (getPanelBodyConversationKey(body, item) !== conversationKey) continue;
+    if (!isWebChatPanel(body, item)) return true;
+  }
+  return false;
+}
+
+/**
+ * WebChat isolation empties a conversation's shared in-memory history. It
+ * never touches a conversation another panel shows outside WebChat: the panel
+ * entering WebChat moves to its own WebChat session instead. A conversation
+ * already isolated stays isolated.
+ */
+export function canIsolateConversationForWebChat(
+  conversationKey: number,
+  body?: Element | null,
+  isWebChatPanel?: (body: Element, item: Zotero.Item) => boolean,
+): boolean {
+  return (
+    webChatIsolatedConversationKeys.has(conversationKey) ||
+    !isConversationShownOutsideWebChat(conversationKey, body, isWebChatPanel)
+  );
+}
+
+/**
+ * Whether a panel entering WebChat on `conversationKey` moves to its paper's
+ * own WebChat session instead of keeping the chat it is on.
+ *
+ * A paper panel stays only on a WebChat session row it already holds. Being
+ * isolated for WebChat is not enough: another panel on the same paper may
+ * have emptied the paper's ordinary chat for WebChat in place and then moved
+ * to the session, and this panel must follow it there so both show the same
+ * WebChat chat. A library chat stays in place unless another panel shows it
+ * outside WebChat.
+ */
+export function shouldMoveToOwnWebChatSession(params: {
+  conversationKey: number;
+  paperMode: boolean;
+  body?: Element | null;
+  isWebChatPanel?: (body: Element, item: Zotero.Item) => boolean;
+}): boolean {
+  const { conversationKey } = params;
+  const hasWebChatHistory =
+    webChatIsolatedConversationKeys.has(conversationKey) &&
+    chatHistory.has(conversationKey);
+  if (params.paperMode) {
+    return !(
+      hasWebChatHistory && webChatSessionConversationKeys.has(conversationKey)
+    );
+  }
+  return (
+    !hasWebChatHistory &&
+    !canIsolateConversationForWebChat(
+      conversationKey,
+      params.body,
+      params.isWebChatPanel,
+    )
+  );
 }
 
 function isolateWebChatConversationKey(
@@ -1171,7 +1249,7 @@ export function invokeResponseMenuActionButton(params: {
   if (!target) return false;
   const runner = getResponseActionRunner(body);
   if (!runner) return false;
-  setResponseMenuTarget(target);
+  setResponseMenuTarget(body, target);
   void runner(action, target);
   return true;
 }
@@ -1258,7 +1336,7 @@ function attachAssistantResponseContextMenu(params: {
       retryModelMenu.classList.remove("llm-model-menu-open");
       retryModelMenu.style.display = "none";
     }
-    setPromptMenuTarget(null);
+    setPromptMenuTarget(body, null);
     // If the user has text selected within this bubble, extract just that
     // portion. Otherwise fall back to the full raw markdown source.
     const selectedText = getSelectedTextWithinBubble(doc, bubble);
@@ -1270,7 +1348,7 @@ function attachAssistantResponseContextMenu(params: {
       selectedText,
     });
     if (!menuTarget) return;
-    setResponseMenuTarget(menuTarget);
+    setResponseMenuTarget(body, menuTarget);
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
   });
 }
@@ -1561,9 +1639,13 @@ function renderContextUsageSnapshot(
 function estimateHistoryContextUsageSnapshot(
   item: Zotero.Item,
   history: Message[],
+  surface?: SelectionSurface,
 ): ContextUsageSnapshot | undefined {
   if (!history.length) return undefined;
-  const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
+  const effectiveRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    surface,
+  });
   const messages = buildLLMHistoryMessages(history);
   const inputCap = applyModelInputTokenCap(
     messages,
@@ -1689,12 +1771,18 @@ async function loadConversationForkLinkCache(
   }
 }
 
+/**
+ * Writes a user row through its system's store. Without `options` the write
+ * targets the conversation's latest user row; with an expected timestamp it
+ * targets that row only and writes nothing when the row is gone.
+ */
 async function updateStoredLatestUserMessageByConversationUnlocked(
   conversationKey: number,
   message: Parameters<typeof updateStoredLatestUserMessage>[1] & {
     conversationGeneration?: number;
   },
   conversationSystem?: ConversationSystem | null,
+  options?: UpdateLatestUserMessageOptions,
 ): Promise<void> {
   const expectedGeneration = Number(
     (message as StoredChatMessage).conversationGeneration,
@@ -1711,18 +1799,28 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
     conversationSystem,
   });
   if (!storageSystem) return;
-  if (storageSystem === "claude_code") {
-    await updateLatestClaudeConversationUserMessageWithinWriteLock(
+  const written =
+    storageSystem === "claude_code"
+      ? await updateLatestClaudeConversationUserMessageWithinWriteLock(
+          conversationKey,
+          message,
+          options,
+        )
+      : storageSystem === "codex"
+        ? await updateLatestCodexUserMessage(conversationKey, message, options)
+        : await updateStoredLatestUserMessage(
+            conversationKey,
+            message,
+            options,
+          );
+  if (!written && options?.expectedTimestamp !== undefined) {
+    // The row is gone (for example, the turn was deleted), so nothing was
+    // written. Not an error for the caller, but worth a trace.
+    appLogger.warn("LLM: The user row to rewrite is gone; nothing written", {
       conversationKey,
-      message,
-    );
-    return;
+      expectedTimestamp: options.expectedTimestamp,
+    });
   }
-  if (storageSystem === "codex") {
-    await updateLatestCodexUserMessage(conversationKey, message);
-    return;
-  }
-  await updateStoredLatestUserMessage(conversationKey, message);
 }
 
 async function publishPersistedPlanDocumentIfPresent(params: {
@@ -1807,6 +1905,12 @@ async function announceFinalizedMaterialForRun(
 export const announceFinalizedMaterialForRunForTests =
   announceFinalizedMaterialForRun;
 
+/**
+ * Writes an assistant row through its system's store. Without `options` the
+ * write targets the conversation's latest assistant row; with an expected
+ * timestamp it targets that row only and writes nothing when the row is gone.
+ * Returns whether a row was written.
+ */
 async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationKey: number,
   message: Parameters<typeof updateStoredLatestAssistantMessage>[1] &
@@ -1814,7 +1918,8 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
       conversationGeneration?: number;
     },
   conversationSystem?: ConversationSystem | null,
-): Promise<void> {
+  options?: UpdateLatestAssistantMessageOptions,
+): Promise<boolean> {
   const expectedGeneration = Number(
     (message as StoredChatMessage).conversationGeneration,
   );
@@ -1822,45 +1927,17 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
     Number.isFinite(expectedGeneration) &&
     !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
   ) {
-    return;
+    return false;
   }
-  if (areConversationWritesFrozen(conversationKey)) return;
+  if (areConversationWritesFrozen(conversationKey)) return false;
   const storageSystem = resolveConversationStorageSystem({
     conversationKey,
     conversationSystem,
   });
-  if (!storageSystem) return;
-  if (storageSystem === "claude_code") {
+  if (!storageSystem) return false;
+  const withContextUsage = () => {
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
-      conversationKey,
-      {
-        ...message,
-        contextTokens:
-          Number.isFinite(Number(message.contextTokens)) &&
-          Number(message.contextTokens) > 0
-            ? Math.floor(Number(message.contextTokens))
-            : latestContextSnapshot?.contextTokens,
-        contextWindow:
-          Number.isFinite(Number(message.contextWindow)) &&
-          Number(message.contextWindow) > 0
-            ? Math.floor(Number(message.contextWindow))
-            : latestContextSnapshot?.contextWindow,
-      },
-    );
-    await publishPersistedPlanDocumentIfPresent({
-      conversationKey,
-      text: message.text,
-      timestamp: message.timestamp,
-      agentRunId: message.agentRunId,
-      documentId: message.documentId,
-      planDocumentId: message.planDocumentId,
-    });
-    return;
-  }
-  if (storageSystem === "codex") {
-    const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateLatestCodexAssistantMessage(conversationKey, {
+    return {
       ...message,
       contextTokens:
         Number.isFinite(Number(message.contextTokens)) &&
@@ -1872,18 +1949,35 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
         Number(message.contextWindow) > 0
           ? Math.floor(Number(message.contextWindow))
           : latestContextSnapshot?.contextWindow,
-    });
-    await publishPersistedPlanDocumentIfPresent({
-      conversationKey,
-      text: message.text,
-      timestamp: message.timestamp,
-      agentRunId: message.agentRunId,
-      documentId: message.documentId,
-      planDocumentId: message.planDocumentId,
-    });
-    return;
+    };
+  };
+  const written =
+    storageSystem === "claude_code"
+      ? await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+          conversationKey,
+          withContextUsage(),
+          options,
+        )
+      : storageSystem === "codex"
+        ? await updateLatestCodexAssistantMessage(
+            conversationKey,
+            withContextUsage(),
+            options,
+          )
+        : await updateStoredLatestAssistantMessage(
+            conversationKey,
+            message,
+            options,
+          );
+  if (!written && options?.expectedTimestamp !== undefined) {
+    // The row is gone (for example, the turn was deleted), so nothing was
+    // written, and there is no answer to publish a plan document for.
+    appLogger.warn(
+      "LLM: The assistant row to rewrite is gone; nothing written",
+      { conversationKey, expectedTimestamp: options.expectedTimestamp },
+    );
+    return false;
   }
-  await updateStoredLatestAssistantMessage(conversationKey, message);
   await publishPersistedPlanDocumentIfPresent({
     conversationKey,
     text: message.text,
@@ -1892,6 +1986,7 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
     documentId: message.documentId,
     planDocumentId: message.planDocumentId,
   });
+  return written;
 }
 
 async function updateStoredLatestUserMessageByConversation(
@@ -1900,12 +1995,14 @@ async function updateStoredLatestUserMessageByConversation(
     conversationGeneration?: number;
   },
   conversationSystem?: ConversationSystem | null,
+  options?: UpdateLatestUserMessageOptions,
 ): Promise<void> {
   await withConversationWriteLock(conversationKey, () =>
     updateStoredLatestUserMessageByConversationUnlocked(
       conversationKey,
       message,
       conversationSystem,
+      options,
     ),
   );
 }
@@ -1916,20 +2013,49 @@ async function updateStoredLatestAssistantMessageByConversation(
     conversationGeneration?: number;
   },
   conversationSystem?: ConversationSystem | null,
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, () =>
+  options?: UpdateLatestAssistantMessageOptions,
+): Promise<boolean> {
+  return withConversationWriteLock(conversationKey, () =>
     updateStoredLatestAssistantMessageByConversationUnlocked(
       conversationKey,
       message,
       conversationSystem,
+      options,
     ),
   );
 }
 
+/** Whether the conversation's store holds an assistant row at `timestamp`. */
+async function isAssistantRowStored(
+  conversationKey: number,
+  timestamp: number,
+  conversationSystem?: ConversationSystem | null,
+): Promise<boolean> {
+  const storageSystem = resolveConversationStorageSystem({
+    conversationKey,
+    conversationSystem,
+  });
+  if (!storageSystem) return false;
+  const latest = await loadStoredConversationByKey(
+    conversationKey,
+    4,
+    storageSystem,
+  );
+  return latest.some(
+    (row) => row.role === "assistant" && row.timestamp === timestamp,
+  );
+}
+
+/**
+ * Appends one message row and runs the store upkeep after it. A failure is
+ * logged and swallowed, unless `options.rethrow` asks for it to propagate
+ * (the completed answer's save, which handles its own failures).
+ */
 async function persistConversationMessage(
   conversationKey: number,
   message: StoredChatMessage,
   conversationSystem?: ConversationSystem | null,
+  options: { rethrow?: boolean } = {},
 ): Promise<void> {
   try {
     const expectedGeneration = Number(message.conversationGeneration);
@@ -1995,6 +2121,7 @@ async function persistConversationMessage(
     });
   } catch (err) {
     appLogger.warn("LLM: Failed to persist chat message", err);
+    if (options.rethrow) throw err;
   }
 }
 
@@ -2103,13 +2230,8 @@ export const deriveConversationComposeContextSnapshotForTests =
   deriveConversationComposeContextSnapshot;
 
 function clearPaperContinuationOverrides(itemId: number): void {
-  const prefix = `${itemId}:`;
-  for (const key of Array.from(paperContextModeOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContextModeOverrides.delete(key);
-  }
-  for (const key of Array.from(paperContentSourceOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContentSourceOverrides.delete(key);
-  }
+  composeContextStore.paperSendModes.clearOwner(itemId);
+  composeContextStore.paperSourceModes.clearOwner(itemId);
 }
 
 export function restoreConversationComposeContext(item: Zotero.Item): boolean {
@@ -2119,16 +2241,16 @@ export function restoreConversationComposeContext(item: Zotero.Item): boolean {
     conversationKey <= 0 ||
     itemId <= 0 ||
     !loadedConversationKeys.has(conversationKey) ||
-    initializedConversationComposeContextKeys.has(conversationKey)
+    composeContextStore.initializedConversations.has(conversationKey)
   ) {
     return false;
   }
   if (
-    selectedPaperContextCache.has(itemId) ||
-    selectedCollectionContextCache.has(itemId) ||
-    selectedTagContextCache.has(itemId)
+    composeContextStore.papers.has(itemId) ||
+    composeContextStore.collections.has(itemId) ||
+    composeContextStore.tags.has(itemId)
   ) {
-    initializedConversationComposeContextKeys.add(conversationKey);
+    composeContextStore.initializedConversations.mark(conversationKey);
     return false;
   }
 
@@ -2137,23 +2259,11 @@ export function restoreConversationComposeContext(item: Zotero.Item): boolean {
     chatHistory.get(conversationKey) || [],
     resolveAutoLoadedPaperContextForItem(item),
   );
-  if (snapshot.paperContexts.length) {
-    selectedPaperContextCache.set(itemId, snapshot.paperContexts);
-  } else {
-    selectedPaperContextCache.delete(itemId);
-  }
-  if (snapshot.collectionContexts.length) {
-    selectedCollectionContextCache.set(itemId, snapshot.collectionContexts);
-  } else {
-    selectedCollectionContextCache.delete(itemId);
-  }
-  if (snapshot.tagContexts.length) {
-    selectedTagContextCache.set(itemId, snapshot.tagContexts);
-  } else {
-    selectedTagContextCache.delete(itemId);
-  }
+  composeContextStore.papers.replace(itemId, snapshot.paperContexts);
+  composeContextStore.collections.replace(itemId, snapshot.collectionContexts);
+  composeContextStore.tags.replace(itemId, snapshot.tagContexts);
   clearPaperContinuationOverrides(itemId);
-  initializedConversationComposeContextKeys.add(conversationKey);
+  composeContextStore.initializedConversations.mark(conversationKey);
 
   for (const [body, getItem] of activeContextPanels) {
     const activeItem = getItem();
@@ -2286,7 +2396,15 @@ function toPanelMessage(message: StoredChatMessage): Message {
 
 export async function ensureConversationLoaded(
   item: Zotero.Item,
+  options: {
+    /** The panel loading it; its surface decides whether it is in WebChat. */
+    body?: Element | null;
+  } = {},
 ): Promise<void> {
+  const surface = options.body
+    ? resolveSelectionSurfaceForBody(options.body)
+    : undefined;
+  const isWebChatForCaller = () => isEffectiveWebChatRequest(item, surface);
   // Provision first.  A paper's historical default key may have been
   // permanently retired; provisioning then allocates a fresh key and updates
   // the active scope before this function captures the key used by all load,
@@ -2319,7 +2437,12 @@ export async function ensureConversationLoaded(
     conversationForkLinks.delete(conversationKey);
     return;
   }
-  if (isEffectiveWebChatRequest(item)) {
+  if (isWebChatForCaller()) {
+    // Another panel shows this chat outside WebChat: leave its history
+    // alone. The panel entering WebChat moves to its own WebChat session.
+    if (!canIsolateConversationForWebChat(conversationKey, options.body)) {
+      return;
+    }
     isolateWebChatConversationKey(
       conversationKey,
       !webChatIsolatedConversationKeys.has(conversationKey),
@@ -2435,7 +2558,8 @@ export async function ensureConversationLoaded(
       }
       if (
         webChatIsolatedConversationKeys.has(conversationKey) ||
-        isEffectiveWebChatRequest(item)
+        (isWebChatForCaller() &&
+          canIsolateConversationForWebChat(conversationKey, options.body))
       ) {
         isolateWebChatConversationKey(conversationKey, false);
         shouldMarkLoaded = true;
@@ -2798,6 +2922,8 @@ export function getSelectedReasoningForItem(
   apiBase?: string,
   providerProtocol?: ProviderProtocol,
   profileOverride?: ModelProfileOverride,
+  /** Whose last-used level fills in (surfaceChoices.ts); the sidebar's when omitted. */
+  surface?: SelectionSurface,
 ): LLMReasoningConfig | undefined {
   const detectedProvider = detectReasoningProvider(modelName, apiBase);
   const capabilities = getModelCapabilities({
@@ -2809,342 +2935,22 @@ export function getSelectedReasoningForItem(
   });
   const provider =
     detectedProvider === "unsupported" ? "customized" : detectedProvider;
+  const cacheKey = reasoningCacheKey(surface, itemId);
   const cached =
-    selectedReasoningProviderCache.get(itemId) === provider
-      ? selectedReasoningCache.get(itemId)
+    selectedReasoningProviderCache.get(cacheKey) === provider
+      ? selectedReasoningCache.get(cacheKey)
       : undefined;
   const saved =
     cached ||
-    getLastUsedReasoningLevelForProvider(provider) ||
-    getLastUsedReasoningLevel();
+    surfaceChoices.lastUsedReasoningLevelForProvider.get(provider, surface) ||
+    surfaceChoices.lastUsedReasoningLevel.get(surface);
   const selected = resolveModelReasoningSelection(capabilities, {
     level: saved || "auto",
   });
   const level = selected.kind === "option" ? selected.option.id : "auto";
-  selectedReasoningCache.set(itemId, level);
-  selectedReasoningProviderCache.set(itemId, provider);
+  selectedReasoningCache.set(cacheKey, level);
+  selectedReasoningProviderCache.set(cacheKey, provider);
   return { provider, level };
-}
-
-export type PanelRequestUI = {
-  inputBox: HTMLTextAreaElement | null;
-  chatBox: HTMLDivElement | null;
-  sendBtn: HTMLButtonElement | null;
-  cancelBtn: HTMLButtonElement | null;
-  status: HTMLElement | null;
-  tokenUsageEl: HTMLElement | null;
-};
-
-function getPanelRequestUI(body: Element): PanelRequestUI {
-  return {
-    inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
-    chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
-    sendBtn: body.querySelector("#llm-send") as HTMLButtonElement | null,
-    cancelBtn: body.querySelector("#llm-cancel") as HTMLButtonElement | null,
-    status: body.querySelector("#llm-status") as HTMLElement | null,
-    tokenUsageEl: body.querySelector("#llm-token-usage") as HTMLElement | null,
-  };
-}
-
-function syncInlineActionCardAttr(body: Element): void {
-  const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
-  if (!panelRoot) return;
-  const hasCard = Boolean(body.querySelector(".llm-action-inline-card"));
-  if (hasCard) {
-    panelRoot.dataset.hasActionCard = "true";
-  } else {
-    delete panelRoot.dataset.hasActionCard;
-  }
-}
-
-function findNativeMcpActionCard(
-  chatBox: HTMLElement,
-  requestId: string,
-): HTMLElement | null {
-  const cards = Array.from(
-    chatBox.querySelectorAll(
-      ".llm-agent-hitl-card[data-request-id], .llm-action-inline-card[data-request-id]",
-    ),
-  ) as HTMLElement[];
-  return cards.find((card) => card.dataset.requestId === requestId) || null;
-}
-
-let codexNativeApprovalRequestCounter = 0;
-
-function closeNativeMcpActionCard(body: Element, requestId?: string): void {
-  const ui = getPanelRequestUI(body);
-  const chatBox = ui.chatBox;
-  if (!chatBox) return;
-  let card: Element | null = null;
-  if (requestId) {
-    card =
-      findNativeMcpActionCard(chatBox, requestId) ||
-      (
-        Array.from(
-          chatBox.querySelectorAll(".llm-action-inline-card"),
-        ) as HTMLElement[]
-      ).find((entry) => entry.dataset.requestId === requestId) ||
-      null;
-  } else {
-    card = chatBox.querySelector(".llm-action-inline-card");
-  }
-  card?.remove();
-  syncInlineActionCardAttr(body);
-}
-
-function showNativeMcpActionCard(
-  body: Element,
-  requestId: string,
-  action: AgentPendingAction,
-  signal?: AbortSignal,
-  traceOwnsCard = false,
-): Promise<AgentConfirmationResolution> {
-  return new Promise((resolve) => {
-    const cancel = () => {
-      getAgentApi().resolveConfirmation(requestId, false);
-    };
-    if (signal?.aborted) {
-      resolve({ approved: false });
-      return;
-    }
-    appLogger.debug("Codex app-server native confirmation requested", {
-      requestId,
-      toolName: action.toolName,
-      mode: action.mode || "approval",
-      title: action.title,
-    });
-    const ui = getPanelRequestUI(body);
-    const ownerDoc = body.ownerDocument;
-    if (!ownerDoc || !ui.chatBox) {
-      appLogger.warn("Codex app-server native confirmation unavailable", {
-        requestId,
-        reason: "missing_panel_review_card_ui",
-      });
-      throw new Error(
-        "Zotero review card UI is unavailable for native confirmation.",
-      );
-    }
-
-    try {
-      getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        appLogger.debug("Codex app-server native confirmation resolved", {
-          requestId,
-          approved: resolution.approved,
-          actionId: resolution.actionId,
-        });
-        signal?.removeEventListener("abort", cancel);
-        closeNativeMcpActionCard(body, requestId);
-        resolve(resolution);
-      });
-    } catch (error) {
-      appLogger.warn("Codex app-server native confirmation unavailable", {
-        requestId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      throw new Error(
-        `Zotero review card UI could not register native confirmation: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-
-    signal?.addEventListener("abort", cancel, { once: true });
-    if (signal?.aborted) {
-      cancel();
-      return;
-    }
-    // The queued assistant trace owns persistent review cards. Register the
-    // response now, but do not race that render with a second inline card.
-    if (traceOwnsCard) return;
-    const renderedCard = findNativeMcpActionCard(ui.chatBox, requestId);
-    if (renderedCard) {
-      scheduleChatContentScroll(ui.chatBox);
-      syncInlineActionCardAttr(body);
-      appLogger.debug("Codex app-server native confirmation rendered", {
-        requestId,
-        toolName: action.toolName,
-        mode: action.mode || "approval",
-        source: "trace",
-      });
-      return;
-    }
-    ui.chatBox.querySelector(".llm-action-inline-card")?.remove();
-    const wrapper = ownerDoc.createElement("div");
-    wrapper.className = "llm-action-inline-card llm-action-inline-card-review";
-    wrapper.dataset.requestId = requestId;
-    wrapper.appendChild(
-      renderPendingActionCard(ownerDoc, { requestId, action }),
-    );
-    ui.chatBox.appendChild(wrapper);
-    scheduleChatContentScroll(ui.chatBox);
-    syncInlineActionCardAttr(body);
-    appLogger.debug("Codex app-server native confirmation rendered", {
-      requestId,
-      toolName: action.toolName,
-      mode: action.mode || "approval",
-      source: "inline",
-    });
-  });
-}
-
-type CodexNativeApprovalTrace = {
-  noteMcpConfirmationRequired?: (
-    requestId: string,
-    action: AgentPendingAction,
-  ) => void;
-  noteMcpConfirmationResolved?: (
-    requestId: string,
-    resolution: AgentConfirmationResolution,
-  ) => void;
-};
-
-export async function resolveCodexNativeHostInteractionWithTrace(params: {
-  body: Element;
-  action: AgentPendingAction;
-  trace?: CodexNativeApprovalTrace | null;
-  showActionCard?: typeof showNativeMcpActionCard;
-  nextRequestId?: () => string;
-  isCurrent?: () => boolean;
-}): Promise<AgentConfirmationResolution> {
-  if (params.isCurrent && !params.isCurrent()) return { approved: false };
-  const requestId =
-    params.nextRequestId?.() ||
-    `host-review-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
-  params.trace?.noteMcpConfirmationRequired?.(requestId, params.action);
-  let resolution: AgentConfirmationResolution;
-  try {
-    resolution = await (params.showActionCard || showNativeMcpActionCard)(
-      params.body,
-      requestId,
-      params.action,
-      undefined,
-      Boolean(params.trace?.noteMcpConfirmationRequired),
-    );
-  } catch (error) {
-    params.trace?.noteMcpConfirmationResolved?.(requestId, {
-      approved: false,
-    });
-    throw error;
-  }
-  if (params.isCurrent && !params.isCurrent()) {
-    resolution = { approved: false };
-  }
-  params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
-  return resolution;
-}
-
-export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
-  body: Element;
-  request: CodexNativeApprovalRequest;
-  trace?: CodexNativeApprovalTrace | null;
-  setStatusSafely: (
-    text: string,
-    kind: Parameters<typeof setStatus>[2],
-  ) => void;
-  showActionCard?: (
-    body: Element,
-    requestId: string,
-    action: AgentPendingAction,
-    signal?: AbortSignal,
-    traceOwnsCard?: boolean,
-  ) => Promise<AgentConfirmationResolution>;
-  nextRequestId?: () => string;
-  isCurrent?: () => boolean;
-}): Promise<unknown> {
-  const questions = readNativeQuestions(params.request);
-  const defaultDecision = resolveCodexNativeApprovalRequest(params.request);
-  if (
-    params.request.signal?.aborted ||
-    (params.isCurrent && !params.isCurrent())
-  ) {
-    return questions ? { answers: {} } : defaultDecision.response;
-  }
-  if (defaultDecision.approved) {
-    params.setStatusSafely("Codex approved Zotero MCP access", "sending");
-    return defaultDecision.response;
-  }
-  if (questions) {
-    const requestId = `codex-question-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
-    const action = buildNativeQuestionAction(questions);
-    params.setStatusSafely("Codex is waiting for your input", "sending");
-    params.trace?.noteMcpConfirmationRequired?.(requestId, action);
-    let resolution: AgentConfirmationResolution;
-    try {
-      resolution = await (params.showActionCard || showNativeMcpActionCard)(
-        params.body,
-        requestId,
-        action,
-        params.request.signal,
-        Boolean(params.trace?.noteMcpConfirmationRequired),
-      );
-    } catch (error) {
-      params.trace?.noteMcpConfirmationResolved?.(requestId, {
-        approved: false,
-      });
-      throw error;
-    }
-    if (
-      params.request.signal?.aborted ||
-      (params.isCurrent && !params.isCurrent())
-    )
-      resolution = { approved: false };
-    params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
-    return nativeQuestionAnswers(questions, resolution);
-  }
-  if (defaultDecision.reason === "unsupported_mcp_elicitation") {
-    params.setStatusSafely(
-      "Codex declined unsupported MCP elicitation",
-      "sending",
-    );
-    return defaultDecision.response;
-  }
-  if (!isCodexNativeBuiltInApprovalRequest(params.request)) {
-    params.setStatusSafely(
-      "Codex denied a built-in or untrusted approval request",
-      "error",
-    );
-    return defaultDecision.response;
-  }
-
-  const requestId =
-    params.nextRequestId?.() ||
-    `codex-native-approval-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
-  const action = buildCodexNativeApprovalPendingAction(params.request);
-  const showActionCard = params.showActionCard || showNativeMcpActionCard;
-  try {
-    params.setStatusSafely("Codex is waiting for your approval", "sending");
-    params.trace?.noteMcpConfirmationRequired?.(requestId, action);
-    const resolution = await showActionCard(
-      params.body,
-      requestId,
-      action,
-      params.request.signal,
-      Boolean(params.trace?.noteMcpConfirmationRequired),
-    );
-    if (params.isCurrent && !params.isCurrent()) {
-      return defaultDecision.response;
-    }
-    params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
-    return buildCodexNativeApprovalResponseFromResolution(
-      params.request,
-      resolution,
-    );
-  } catch (error) {
-    if (typeof ztoolkit !== "undefined") {
-      appLogger.warn(
-        "Codex app-server native approval UI unavailable; denying request",
-        {
-          method: params.request.method,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      );
-    }
-    params.setStatusSafely(
-      "Codex denied a built-in approval request because the approval UI was unavailable",
-      "error",
-    );
-    return defaultDecision.response;
-  }
 }
 
 function isPanelWebChatMode(body: Element): boolean {
@@ -3396,7 +3202,7 @@ export function beginPanelRequest(
   const abortController = AbortControllerCtor
     ? new AbortControllerCtor()
     : null;
-  if (!tryBeginRequest(conversationKey, requestId, abortController)) {
+  if (!tryBeginRequest(conversationKey, requestId, abortController, body)) {
     return null;
   }
   syncRequestUIForConversation(conversationKey, body, item);
@@ -3652,224 +3458,6 @@ function createStreamUsageHandler(params: {
   };
 }
 
-type CodexNativeTurnCallbacks = Pick<
-  Parameters<typeof runCodexAppServerNativeTurn>[0],
-  | "eventJournal"
-  | "onSkillActivated"
-  | "onDelta"
-  | "onAgentMessageDelta"
-  | "onReasoning"
-  | "onUsage"
-  | "onItemStarted"
-  | "onItemCompleted"
-  | "onPlanUpdated"
-  | "onMcpToolActivity"
-  | "onHostEvent"
-  | "onMcpSetupWarning"
-  | "onDiagnostics"
-  | "onApprovalRequest"
-  | "onHostInteraction"
->;
-
-/**
- * The Codex app-server native-turn callback set, previously duplicated
- * verbatim between the send and retry pipelines.
- */
-function buildCodexNativeTurnCallbacks(ctx: {
-  body: Element;
-  item: Zotero.Item;
-  assistantMessage: Message;
-  codexActivityTrace: ReturnType<
-    typeof createCodexNativeActivityTraceController
-  > | null;
-  flushResponseStream: (reason: BlockStreamFlushReason) => void;
-  setStatusSafely: (
-    text: string,
-    kind: Parameters<typeof setStatus>[2],
-  ) => void;
-  handleDelta: (delta: string) => void;
-  handleReasoning: (reasoning: ReasoningEvent) => void;
-  handleUsage: (usage: UsageStats) => void;
-  conversationKey: number;
-  conversationGeneration: number;
-  skillRoutingReceipt?: import("../../agent/types").AgentRuntimeRequest["skillRoutingReceipt"];
-}): CodexNativeTurnCallbacks {
-  const {
-    body,
-    assistantMessage,
-    codexActivityTrace,
-    flushResponseStream,
-    setStatusSafely,
-    handleDelta,
-    handleReasoning,
-    handleUsage,
-  } = ctx;
-  const isLive = () =>
-    !areConversationWritesFrozen(ctx.conversationKey) &&
-    isConversationWriteGenerationCurrent(
-      ctx.conversationKey,
-      ctx.conversationGeneration,
-    );
-  // The Task progress row follows this turn: working now, answering at the
-  // first streamed text, and each MCP read's paper ledger delta as it lands.
-  {
-    const history = chatHistory.get(ctx.conversationKey) || [];
-    const position = history.indexOf(assistantMessage);
-    const asked = position >= 0 ? history.slice(0, position) : history;
-    const question = asked
-      .filter((message) => message.role === "user" && !message.compactMarker)
-      .pop();
-    beginTaskRun(ctx.conversationKey, {
-      runId: assistantMessage.agentRunId,
-      turnIndex: taskTurnIndexFor(asked),
-      text: question?.text,
-    });
-  }
-  const noteAnswering = () =>
-    markTaskAnswering(ctx.conversationKey, assistantMessage.agentRunId);
-  return {
-    eventJournal: createAgentRunEventJournal({
-      conversationKey: ctx.conversationKey,
-      conversationGeneration: ctx.conversationGeneration,
-      model: assistantMessage.modelName,
-    }),
-    onSkillActivated: (skillId) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      codexActivityTrace?.noteSkillActivated(skillId);
-      setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
-    },
-    onDelta: (delta) => {
-      if (!isLive()) return;
-      noteAnswering();
-      handleDelta(delta);
-    },
-    onAgentMessageDelta: (event) => {
-      if (!isLive()) return;
-      noteAnswering();
-      if (!codexActivityTrace?.appendAgentMessageDelta(event)) {
-        handleDelta(event.delta);
-      }
-    },
-    onReasoning: (reasoning) => {
-      if (isLive()) handleReasoning(reasoning);
-    },
-    onUsage: (usage) => {
-      if (isLive()) handleUsage(usage);
-    },
-    onItemStarted: (event) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      codexActivityTrace?.appendItemStatus(event, "started");
-      const itemType = sanitizeText(event.type || "");
-      if (itemType && !isCodexNativeAgentMessageItem(event)) {
-        setStatusSafely(`Codex: ${itemType} started`, "sending");
-      }
-    },
-    onItemCompleted: (event) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      codexActivityTrace?.noteAgentMessageCompleted(event);
-      codexActivityTrace?.appendItemStatus(event, "completed");
-      const itemType = sanitizeText(event.type || "");
-      if (itemType && !isCodexNativeAgentMessageItem(event)) {
-        setStatusSafely(`Codex: ${itemType} completed`, "sending");
-      }
-    },
-    onPlanUpdated: (event) => {
-      if (!isLive()) return;
-      // Codex's plan is the run's steps in Task progress; the trace keeps it
-      // as a persisted event and renders no row for it.
-      codexActivityTrace?.appendNativePlanProgress(event.steps);
-      if (assistantMessage.agentRunId) {
-        setTaskChecklist(ctx.conversationKey, {
-          source: "codex",
-          runId: assistantMessage.agentRunId,
-          steps: codexPlanTaskSteps(event.steps),
-        });
-      }
-    },
-    onHostEvent: (event) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      codexActivityTrace?.appendHostEvent(event);
-    },
-    onMcpToolActivity: (event) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      codexActivityTrace?.noteMcpToolActivity(event);
-      const ledgerUpdate = paperLedgerUpdateFromMcpActivity(event);
-      if (ledgerUpdate) {
-        applyTaskPaperUpdate(
-          ctx.conversationKey,
-          ledgerUpdate.delta,
-          assistantMessage.agentRunId,
-        );
-      }
-      assistantMessage.quoteCitations = mergeQuoteCitations(
-        assistantMessage.quoteCitations,
-        event.quoteCitations,
-      );
-      const label =
-        sanitizeText(event.toolLabel || "").trim() ||
-        sanitizeText(event.toolName || "")
-          .replace(/_/g, " ")
-          .trim();
-      if (label) {
-        setStatusSafely(
-          event.phase === "completed"
-            ? `Codex: used ${label}`
-            : `Codex: using ${label}`,
-          "sending",
-        );
-      }
-    },
-    onMcpSetupWarning: (message) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      setStatusSafely(
-        formatCodexZoteroMcpError(
-          message,
-          "Native conversation MCP setup warning",
-        ),
-        "error",
-      );
-    },
-    onDiagnostics: (diagnostics) => {
-      if (!isLive()) return;
-      flushResponseStream("event");
-      setStatusSafely(
-        formatCodexNativeDiagnosticsStatus(diagnostics),
-        "sending",
-      );
-    },
-    onHostInteraction: async (action) => {
-      return resolveCodexNativeHostInteractionWithTrace({
-        body,
-        action,
-        trace: codexActivityTrace,
-        isCurrent: isLive,
-      });
-    },
-    onApprovalRequest: async (request) => {
-      if (!isLive())
-        return { approved: false, reason: "conversation_not_live" };
-      flushResponseStream("event");
-      return resolveCodexNativeApprovalWithOptionalReviewCard({
-        body,
-        request,
-        trace: codexActivityTrace,
-        setStatusSafely,
-        isCurrent: () =>
-          requireCurrentPanelOwnership(body, ctx.item, "agent-confirmation"),
-      });
-    },
-  };
-}
-
-export const buildCodexNativeTurnCallbacksForTests =
-  buildCodexNativeTurnCallbacks;
-
 function createPanelUpdateHelpers(
   body: Element,
   item: Zotero.Item,
@@ -3921,23 +3509,6 @@ function createPanelUpdateHelpers(
     setStatusSafely,
   };
 }
-
-export type EffectiveRequestConfig = {
-  model: string;
-  apiBase: string;
-  apiKey: string;
-  authMode:
-    | "api_key"
-    | "codex_auth"
-    | "codex_app_server"
-    | "copilot_auth"
-    | "webchat";
-  providerProtocol?: ProviderProtocol;
-  modelEntryId?: string;
-  modelProviderLabel?: string;
-  reasoning: LLMReasoningConfig | undefined;
-  advanced: AdvancedModelParams | undefined;
-};
 
 function resolveEffectiveProviderCapabilities(config: EffectiveRequestConfig) {
   return resolveProviderCapabilities({
@@ -4009,7 +3580,15 @@ export function resolveEffectiveRequestConfig(params: {
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
+  /**
+   * Whose model choices fill what the caller left out (surfaceChoices.ts).
+   * Callers with a panel body pass its surface; otherwise it is the surface
+   * showing `item`.
+   */
+  surface?: SelectionSurface;
 }): EffectiveRequestConfig {
+  const resolveSurface = (): SelectionSurface =>
+    params.surface || resolveSurfaceForMountedItem(params.item);
   if (params.authMode === "webchat" || params.providerProtocol === "web_sync") {
     return {
       model: (params.model || "chatgpt.com").trim() || "chatgpt.com",
@@ -4026,8 +3605,11 @@ export function resolveEffectiveRequestConfig(params: {
 
   if (isCodexAppServerConversationRequest(params)) {
     const model =
-      (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
-    const reasoningMode = getCodexReasoningModePref();
+      (
+        params.model || surfaceChoices.codexRuntimeModel.get(resolveSurface())
+      ).trim() || "gpt-5.4";
+    const reasoningMode =
+      surfaceChoices.codexReasoningMode.get(resolveSurface());
     const reasoning =
       params.reasoning || buildCodexAppServerReasoningConfig(reasoningMode);
     return {
@@ -4051,7 +3633,7 @@ export function resolveEffectiveRequestConfig(params: {
   );
   const fallbackEntry = hasExplicitProviderMetadata
     ? null
-    : getSelectedModelEntry();
+    : getSelectedModelEntryForSurface(resolveSurface());
   const explicitEntry =
     hasExplicitProviderMetadata && params.modelProviderLabel === "Claude Code"
       ? {
@@ -4122,6 +3704,7 @@ export function resolveEffectiveRequestConfig(params: {
         apiBase,
         providerProtocol,
         advanced?.profileOverride,
+        resolveSurface(),
       );
   return {
     model,
@@ -4201,93 +3784,203 @@ function resolveCodexNativeConversationScope(params: {
   };
 }
 
-function formatCodexNativeDiagnosticsStatus(
-  diagnostics: CodexNativeDiagnostics,
-): string {
-  const threadId = sanitizeText(diagnostics.threadId || "");
-  const threadShort = threadId ? threadId.slice(0, 10) : "unknown";
-  const source = sanitizeText(diagnostics.threadSource || "appServer");
-  const libraryName = sanitizeText(diagnostics.libraryName || "");
-  const libraryLabel = libraryName
-    ? `${diagnostics.libraryID} ${libraryName}`
-    : `${diagnostics.libraryID}`;
-  const mcpLabel = diagnostics.mcpServerName
-    ? `${sanitizeText(diagnostics.mcpServerName)} ${
-        diagnostics.mcpReady ? "ready" : "not ready"
-      }`
-    : "MCP disabled";
-  const historyLabel =
-    diagnostics.historyVerified === undefined
-      ? ""
-      : `, history ${diagnostics.historyVerified ? "verified" : "unverified"}`;
-  return `Codex app-server ${threadShort} (${source}), library ${libraryLabel}, ${mcpLabel}${historyLabel}`;
-}
-
-function buildCodexNativeSkillContext(params: {
-  forcedSkillIds?: string[];
-  selectedTextContexts?: SelectedTextContext[];
+/**
+ * The locals of the Codex send flow that its agent request and its native
+ * skill context read, under the flow's own names. The send and the retry
+ * each keep their own field values (they differ on purpose or by an open
+ * product decision); golden tests in test/requestContext.test.ts pin them.
+ */
+type CodexSendRequestSite = {
+  conversationKey: number;
+  conversationGeneration?: number;
+  userMessage: Pick<
+    Message,
+    "timestamp" | "citationPaperContexts" | "pinnedPaperContexts"
+  >;
+  item: Zotero.Item;
+  shownQuestion: string;
+  selectedTextContextsForMessage: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts?: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts?: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
-  fullTextPaperContexts?: PaperContextRef[];
-  pinnedPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  screenshots?: string[];
+  selectedTextsForMessage: string[];
+  selectedTextSourcesForMessage: SelectedTextSource[];
+  selectedTextPaperContextsForMessage: (PaperContextRef | undefined)[];
+  selectedTextNoteContextsForMessage: (NoteContextRef | undefined)[];
+  contextPlan: Pick<
+    ContextPlanForRequest,
+    "paperContexts" | "fullTextPaperContexts"
+  >;
+  normalizedPdfPaperContexts: PaperContextRef[];
+  selectedCollectionContextsForMessage: CollectionContextRef[];
+  selectedTagContextsForMessage: TagContextRef[];
+  modelAttachments?: ChatAttachment[];
   attachments?: ChatAttachment[];
-}): CodexNativeSkillContext {
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
+  allSendImages: string[];
+  opts: { forcedSkillIds?: string[] };
+  effectiveRequestConfig: EffectiveRequestConfig;
+  llmHistory: ChatMessage[];
+};
+
+/**
+ * The Codex send's request context. The send asks the model for
+ * `modelAttachments || attachments` but routes skills on the visible
+ * attachments.
+ */
+function codexSendRequestContext({
+  userMessage,
+  selectedTextContextsForMessage,
+  resolvedSelectedTextAnchors,
+  selectedTextsForMessage,
+  selectedTextSourcesForMessage,
+  selectedTextPaperContextsForMessage,
+  selectedTextNoteContextsForMessage,
+  contextPlan,
+  normalizedPdfPaperContexts,
+  selectedCollectionContextsForMessage,
+  selectedTagContextsForMessage,
+  modelAttachments,
+  attachments,
+  localDocuments,
+  allSendImages,
+  opts,
+}: CodexSendRequestSite): TurnRequestContext {
   return {
-    forcedSkillIds: params.forcedSkillIds?.length
-      ? params.forcedSkillIds
-      : undefined,
-    selectedTextContexts: params.selectedTextContexts?.length
-      ? params.selectedTextContexts
-      : undefined,
-    resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors?.length
-      ? params.resolvedSelectedTextAnchors
-      : undefined,
-    selectedTexts: params.selectedTexts?.length
-      ? params.selectedTexts
-      : undefined,
-    selectedTextSources: params.selectedTextSources?.length
-      ? params.selectedTextSources
-      : undefined,
-    selectedTextPaperContexts: params.selectedTextPaperContexts?.some(Boolean)
-      ? params.selectedTextPaperContexts
-      : undefined,
-    selectedTextNoteContexts: params.selectedTextNoteContexts?.some(Boolean)
-      ? params.selectedTextNoteContexts
-      : undefined,
-    selectedPaperContexts: params.paperContexts?.length
-      ? params.paperContexts
-      : undefined,
-    pdfPaperContexts: params.pdfPaperContexts?.length
-      ? params.pdfPaperContexts
-      : undefined,
-    localDocuments: params.localDocuments?.length
-      ? params.localDocuments
-      : undefined,
-    fullTextPaperContexts: params.fullTextPaperContexts?.length
-      ? params.fullTextPaperContexts
-      : undefined,
-    pinnedPaperContexts: params.pinnedPaperContexts?.length
-      ? params.pinnedPaperContexts
-      : undefined,
-    selectedCollectionContexts: params.selectedCollectionContexts?.length
-      ? params.selectedCollectionContexts
-      : undefined,
-    selectedTagContexts: params.selectedTagContexts?.length
-      ? params.selectedTagContexts
-      : undefined,
-    screenshots: params.screenshots?.length ? params.screenshots : undefined,
-    attachments: params.attachments?.length ? params.attachments : undefined,
+    selectedTextContexts: selectedTextContextsForMessage,
+    resolvedSelectedTextAnchors,
+    selectedTexts: selectedTextsForMessage,
+    selectedTextSources: selectedTextSourcesForMessage,
+    selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+    selectedTextNoteContexts: selectedTextNoteContextsForMessage,
+    selectedPaperContexts: contextPlan.paperContexts,
+    pdfPaperContexts: normalizedPdfPaperContexts,
+    fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+    pinnedPaperContexts: userMessage.pinnedPaperContexts,
+    citationPaperContexts: userMessage.citationPaperContexts,
+    selectedCollectionContexts: selectedCollectionContextsForMessage,
+    selectedTagContexts: selectedTagContextsForMessage,
+    attachments: modelAttachments || attachments,
+    skillAttachments: attachments,
+    localDocuments,
+    screenshots: allSendImages,
+    forcedSkillIds: opts.forcedSkillIds,
   };
 }
+
+function codexSendRequestParams(
+  site: CodexSendRequestSite,
+): BuildAgentRuntimeRequestParams {
+  return toAgentRuntimeRequestParams(codexSendRequestContext(site), {
+    conversationKey: site.conversationKey,
+    conversationGeneration: site.conversationGeneration,
+    sourceMessageTimestamp: site.userMessage.timestamp,
+    item: site.item,
+    userText: site.shownQuestion,
+    effectiveRequestConfig: site.effectiveRequestConfig,
+    history: site.llmHistory,
+  });
+}
+
+function codexSendSkillContext(
+  site: CodexSendRequestSite,
+): CodexNativeSkillContext {
+  return toCodexNativeSkillContext(codexSendRequestContext(site));
+}
+
+/** The locals of the Codex retry flow; see `CodexSendRequestSite`. */
+type CodexRetryRequestSite = {
+  conversationKey: number;
+  conversationGeneration?: number;
+  retryPair: {
+    userMessage: Pick<
+      Message,
+      | "timestamp"
+      | "selectedTexts"
+      | "selectedTextSources"
+      | "selectedTextPaperContexts"
+      | "selectedTextNoteContexts"
+      | "pdfPaperContexts"
+      | "citationPaperContexts"
+      | "forcedSkillIds"
+      | "pinnedPaperContexts"
+    >;
+  };
+  item: Zotero.Item;
+  question: string;
+  retrySelectedTextContexts: SelectedTextContext[];
+  retryResolvedSelectedTextAnchors: ResolvedSelectedTextAnchor[];
+  contextPlan: Pick<
+    ContextPlanForRequest,
+    "paperContexts" | "fullTextPaperContexts"
+  >;
+  selectedCollectionContexts: CollectionContextRef[];
+  selectedTagContexts: TagContextRef[];
+  attachments: ChatAttachment[] | undefined;
+  retryLocalDocuments:
+    | readonly import("../../shared/types").LocalDocumentResource[]
+    | undefined;
+  allImages: string[];
+  effectiveRequestConfig: EffectiveRequestConfig;
+  llmHistory: ChatMessage[];
+};
+
+/** The Codex retry's request context, read from the stored user message. */
+function codexRetryRequestContext({
+  retryPair,
+  retrySelectedTextContexts,
+  retryResolvedSelectedTextAnchors,
+  contextPlan,
+  selectedCollectionContexts,
+  selectedTagContexts,
+  attachments,
+  retryLocalDocuments,
+  allImages,
+}: CodexRetryRequestSite): TurnRequestContext {
+  return {
+    selectedTextContexts: retrySelectedTextContexts,
+    resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
+    selectedTexts: retryPair.userMessage.selectedTexts || [],
+    selectedTextSources: retryPair.userMessage.selectedTextSources,
+    selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
+    selectedPaperContexts: contextPlan.paperContexts,
+    pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+    fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+    pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
+    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
+    selectedCollectionContexts,
+    selectedTagContexts,
+    attachments,
+    skillAttachments: attachments,
+    localDocuments: retryLocalDocuments,
+    screenshots: allImages,
+    forcedSkillIds: retryPair.userMessage.forcedSkillIds,
+  };
+}
+
+function codexRetryRequestParams(
+  site: CodexRetryRequestSite,
+): BuildAgentRuntimeRequestParams {
+  return toAgentRuntimeRequestParams(codexRetryRequestContext(site), {
+    conversationKey: site.conversationKey,
+    conversationGeneration: site.conversationGeneration,
+    sourceMessageTimestamp: site.retryPair.userMessage.timestamp,
+    item: site.item,
+    userText: site.question,
+    effectiveRequestConfig: site.effectiveRequestConfig,
+    history: site.llmHistory,
+  });
+}
+
+function codexRetrySkillContext(
+  site: CodexRetryRequestSite,
+): CodexNativeSkillContext {
+  return toCodexNativeSkillContext(codexRetryRequestContext(site));
+}
+
+export const codexSendRequestParamsForTests = codexSendRequestParams;
+export const codexSendSkillContextForTests = codexSendSkillContext;
+export const codexRetryRequestParamsForTests = codexRetryRequestParams;
+export const codexRetrySkillContextForTests = codexRetrySkillContext;
 
 type ContextPlanForRequest = {
   combinedContext: string;
@@ -4765,10 +4458,15 @@ export type LatestRetryPair = {
   assistantMessage: Message;
 };
 
+// The answer fields a retry can change before it fails and restores the
+// previous answer. `streaming` is not kept: a restored answer is settled.
 type AssistantMessageSnapshot = Pick<
   Message,
   | "text"
   | "timestamp"
+  | "runMode"
+  | "agentRunId"
+  | "waitingAnimationStartedAt"
   | "modelName"
   | "modelEntryId"
   | "modelProviderLabel"
@@ -4784,6 +4482,8 @@ type AssistantMessageSnapshot = Pick<
   | "webchatCompletionReason"
   | "quoteCitations"
   | "quoteDisplayOverride"
+  | "documentId"
+  | "planDocumentId"
 >;
 
 export function findLatestRetryPair(
@@ -4805,6 +4505,9 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
   return {
     text: message.text,
     timestamp: message.timestamp,
+    runMode: message.runMode,
+    agentRunId: message.agentRunId,
+    waitingAnimationStartedAt: message.waitingAnimationStartedAt,
     modelName: message.modelName,
     modelEntryId: message.modelEntryId,
     modelProviderLabel: message.modelProviderLabel,
@@ -4836,6 +4539,8 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
           ),
         }
       : undefined,
+    documentId: message.documentId,
+    planDocumentId: message.planDocumentId,
   };
 }
 
@@ -4845,6 +4550,9 @@ function restoreAssistantSnapshot(
 ): void {
   message.text = snapshot.text;
   message.timestamp = snapshot.timestamp;
+  message.runMode = snapshot.runMode;
+  message.agentRunId = snapshot.agentRunId;
+  message.waitingAnimationStartedAt = snapshot.waitingAnimationStartedAt;
   message.modelName = snapshot.modelName;
   message.modelEntryId = snapshot.modelEntryId;
   message.modelProviderLabel = snapshot.modelProviderLabel;
@@ -4876,32 +4584,9 @@ function restoreAssistantSnapshot(
         ),
       }
     : undefined;
+  message.documentId = snapshot.documentId;
+  message.planDocumentId = snapshot.planDocumentId;
   message.streaming = false;
-}
-
-function finalizeCancelledAssistantMessage(
-  message: Message,
-  fallbackText = "[Cancelled]",
-): void {
-  const text = sanitizeText(message.text || "");
-  const reasoningSummary = sanitizeText(message.reasoningSummary || "");
-  const reasoningDetails = sanitizeText(message.reasoningDetails || "");
-  const hasReasoning = Boolean(reasoningSummary || reasoningDetails);
-
-  message.text = text || fallbackText;
-  message.timestamp = Date.now();
-  message.reasoningSummary = reasoningSummary || undefined;
-  message.reasoningDetails = reasoningDetails || undefined;
-  message.reasoningOpen = hasReasoning
-    ? message.reasoningOpen !== false
-    : false;
-  message.pendingAgentTraceEvents = undefined;
-  message.streaming = false;
-  message.interrupted = undefined;
-  message.completionStatus = undefined;
-  message.completionReason = undefined;
-  message.webchatRunState = undefined;
-  message.webchatCompletionReason = null;
 }
 
 function applyWebChatAnswerSnapshot(
@@ -5571,18 +5256,10 @@ function syncComposeContextForInlineEdit(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  if (screenshotImages.length) {
-    selectedImageCache.set(item.id, screenshotImages);
-  } else {
-    selectedImageCache.delete(item.id);
-  }
+  composeContextStore.images.replace(item.id, screenshotImages);
 
   const fileAttachments = normalizeEditableAttachments(userMessage.attachments);
-  if (fileAttachments.length) {
-    selectedFileAttachmentCache.set(item.id, fileAttachments);
-  } else {
-    selectedFileAttachmentCache.delete(item.id);
-  }
+  composeContextStore.files.replace(item.id, fileAttachments);
 
   const { paperContexts, pdfPaperContexts, fullTextPaperContexts } =
     normalizeStoredPaperContextRoutes({
@@ -5606,37 +5283,19 @@ function syncComposeContextForInlineEdit(
           ),
       )
     : composePaperContexts;
-  if (selectedPaperContexts.length) {
-    selectedPaperContextCache.set(item.id, selectedPaperContexts);
-  } else {
-    selectedPaperContextCache.delete(item.id);
-  }
+  composeContextStore.papers.replace(item.id, selectedPaperContexts);
   const selectedCollectionContexts = normalizeCollectionContexts(
     userMessage.selectedCollectionContexts,
   );
-  if (selectedCollectionContexts.length) {
-    selectedCollectionContextCache.set(item.id, selectedCollectionContexts);
-  } else {
-    selectedCollectionContextCache.delete(item.id);
-  }
+  composeContextStore.collections.replace(item.id, selectedCollectionContexts);
   const selectedTagContexts = normalizeTagContexts(
     userMessage.selectedTagContexts,
   );
-  if (selectedTagContexts.length) {
-    selectedTagContextCache.set(item.id, selectedTagContexts);
-  } else {
-    selectedTagContextCache.delete(item.id);
-  }
+  composeContextStore.tags.replace(item.id, selectedTagContexts);
   // Clear existing mode overrides for this item, then set full-next for each full-text paper
-  const modePrefix = `${item.id}:`;
-  for (const key of Array.from(paperContextModeOverrides.keys())) {
-    if (key.startsWith(modePrefix)) paperContextModeOverrides.delete(key);
-  }
+  composeContextStore.paperSendModes.clearOwner(item.id);
   for (const paperContext of fullTextPaperContexts) {
-    paperContextModeOverrides.set(
-      `${item.id}:${buildPaperKey(paperContext)}`,
-      "full-next",
-    );
+    composeContextStore.paperSendModes.set(item.id, paperContext, "full-next");
   }
   for (const paperContext of composePaperContexts) {
     clearPaperContentSourceOverride(item.id, paperContext);
@@ -5647,9 +5306,12 @@ function syncComposeContextForInlineEdit(
     );
   }
 
-  initializedConversationComposeContextKeys.add(conversationKey);
+  composeContextStore.initializedConversations.mark(conversationKey);
   activeContextPanelStateSync.get(body)?.();
 }
+
+export const syncComposeContextForInlineEditForTests =
+  syncComposeContextForInlineEdit;
 
 export async function editLatestUserMessageAndRetry(
   opts: import("./types").EditRetryOptions,
@@ -5692,7 +5354,7 @@ export async function editLatestUserMessageAndRetry(
   if (requestId !== undefined) {
     if (!isRequestOwner(initialConversationKey, requestId)) return "stale";
   }
-  await ensureConversationLoaded(item);
+  await ensureConversationLoaded(item, { body });
   const conversationKey = getConversationKey(item);
   if (requestId !== undefined) {
     if (
@@ -5745,6 +5407,7 @@ export async function editLatestUserMessageAndRetry(
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const retryConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -5858,6 +5521,12 @@ export async function editLatestUserMessageAndRetry(
       enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
   }
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
+  // The edit rewrites the edited row by its stored timestamp, taken before the
+  // edit gives it a new one. A send that lands meanwhile appends a later user
+  // row, and an exact-row write can never land on it.
+  const editedUserRowTarget: UpdateLatestUserMessageOptions = {
+    expectedTimestamp: retryPair.userMessage.timestamp,
+  };
   const updatedTimestamp = Date.now();
   const nextDisplayQuestion = sanitizeText(displayQuestion || "");
 
@@ -5968,6 +5637,7 @@ export async function editLatestUserMessageAndRetry(
         modelProviderLabel: retryPair.userMessage.modelProviderLabel,
       },
       retryStorageSystem,
+      editedUserRowTarget,
     );
 
     const storedMessages = await loadStoredConversationByKey(
@@ -6079,7 +5749,7 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
-    await ensureConversationLoaded(item);
+    await ensureConversationLoaded(item, { body });
   } catch (error) {
     finishPanelRequest(body, item, initialConversationKey, thisRequestId);
     throw error;
@@ -6159,7 +5829,6 @@ export async function retryLatestAssistantResponse(
   );
 
   const assistantMessage = retryPair.assistantMessage;
-  let codexActivityTrace: CodexNativeActivityTraceController | null = null;
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
   const continueIncomplete = Boolean(
     retryOptions?.continueIncomplete &&
@@ -6179,6 +5848,11 @@ export async function retryLatestAssistantResponse(
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
   assistantMessage.agentRunId = undefined;
+  if (!continueIncomplete) {
+    // A new answer is not the previous answer's document.
+    assistantMessage.documentId = undefined;
+    assistantMessage.planDocumentId = undefined;
+  }
   assistantMessage.pendingAgentTraceEvents = undefined;
   assistantMessage.generatedImages = undefined;
   assistantMessage.streaming = true;
@@ -6199,6 +5873,7 @@ export async function retryLatestAssistantResponse(
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const effectiveConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -6338,19 +6013,8 @@ export async function retryLatestAssistantResponse(
   }
 
   refreshChatSafely();
-  // Streaming flushes only mutate this assistant message, so re-render just
-  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
-  // not in the DOM yet.
-  const streamingResponse = createStreamingResponse({
-    message: assistantMessage,
-    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
-    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
-  });
-  let streamedReasoningSummary: string | undefined;
-  let streamedReasoningDetails: string | undefined;
   // Local usage ledger for this retry. A retry's tokens are real and are
   // recorded, but the question was already counted when it was first asked.
-  let usageFlushReason: UsageTurnFlushReason = "complete";
   const usageRecorder = createTurnUsageRecorder({
     conversationKey,
     conversationGeneration,
@@ -6359,91 +6023,122 @@ export async function retryLatestAssistantResponse(
     model: effectiveRequestConfig.model,
     provider: effectiveRequestConfig.modelProviderLabel,
   });
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const assistantTurn = createAssistantTurn({
+    message: assistantMessage,
+    conversationKey,
+    conversationGeneration,
+    requestId: thisRequestId,
+    isCodexNativeTurn,
+    usageRecorder,
+    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
+    refreshChat: refreshChatSafely,
+    refreshCompletedTurn: () =>
+      refreshCompletedAssistantTurnSafely(assistantMessage),
+    setStatus: setStatusSafely,
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
+    resolveRetryHint: resolveMultimodalRetryHint,
+  });
+  let streamedReasoningSummary: string | undefined;
+  let streamedReasoningDetails: string | undefined;
 
   const restoreOriginalTurn = () => {
-    streamingResponse.rollback();
+    assistantTurn.rollback();
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
     refreshChatSafely();
   };
-  const stopRetryPreparation = () => {
-    if (requestIsActive()) return false;
-    restoreOriginalTurn();
-    releaseRequest();
-    return true;
+  // Every retry write targets the retried pair's own user row by its stored
+  // timestamp, which a retry never changes. A send that arrives after Cancel
+  // appends a later user row; an exact-row write can never land on it.
+  const retryUserRowTarget: UpdateLatestUserMessageOptions = {
+    expectedTimestamp: retryPair.userMessage.timestamp,
   };
-  // Writes the user row as it currently stands in memory. Called once before
-  // the request goes out, and again after restoreOriginalTurn on a
-  // zero-output failure so the stored row rolls back with the answer.
+  // Writes the user row as it currently stands in memory. The restore paths
+  // call it after restoreOriginalTurn so the stored row rolls back with the
+  // answer; the first write before the request goes out is inline below.
   const persistRetryUserRow = async () => {
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
-      {
+      toStoredUserRowPatch(retryPair.userMessage, {
         conversationGeneration,
-        text: retryPair.userMessage.text,
-        timestamp: retryPair.userMessage.timestamp,
-        runMode: retryPair.userMessage.runMode,
-        agentRunId: retryPair.userMessage.agentRunId,
-        selectedText: retryPair.userMessage.selectedText,
-        selectedTextContexts: retryPair.userMessage.selectedTextContexts,
         selectedTexts: retryPair.userMessage.selectedTexts || [],
-        selectedTextSources: retryPair.userMessage.selectedTextSources,
-        selectedTextPaperContexts:
-          retryPair.userMessage.selectedTextPaperContexts,
-        screenshotImages: retryPair.userMessage.screenshotImages,
-        paperContexts: retryPair.userMessage.paperContexts,
-        pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-        fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
-        citationPaperContexts: retryPair.userMessage.citationPaperContexts,
-        selectedCollectionContexts:
-          retryPair.userMessage.selectedCollectionContexts,
-        attachments: retryPair.userMessage.attachments,
-        modelAttachments: retryPair.userMessage.modelAttachments,
-        modelName: retryPair.userMessage.modelName,
-        modelEntryId: retryPair.userMessage.modelEntryId,
-        modelProviderLabel: retryPair.userMessage.modelProviderLabel,
-      },
+      }),
       effectiveStorageSystem,
+      retryUserRowTarget,
     );
   };
-  const finalizeCancelledAssistant = async () => {
-    streamingResponse.flush("cancel");
-    // The turn never reached finish(), so the trace's own buffers are still
-    // holding commentary the model sent. Deliver it before the store write.
-    codexActivityTrace?.flushBufferedProgress("cancel");
-    finalizeCancelledAssistantMessage(assistantMessage);
-    await codexActivityTrace?.persist(
+  // The answer writes target the retried pair's own assistant row in the same
+  // way. Unlike the user row, the answer row takes a new timestamp when it is
+  // written, so the target follows the row after each write. A save that
+  // committed but then failed (and is retried) finds its row at the new
+  // timestamp instead.
+  let retryAssistantRowTimestamp = assistantSnapshot.timestamp;
+  const writeRetryAssistantRow = async (
+    row: Parameters<typeof updateStoredLatestAssistantMessageByConversation>[1],
+  ) => {
+    let written = await updateStoredLatestAssistantMessageByConversation(
       conversationKey,
-      conversationGeneration,
-      "cancelled",
-    );
-    refreshChatSafely();
-    const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateStoredLatestAssistantMessageByConversation(
-      conversationKey,
-      {
-        conversationGeneration,
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
-        documentId: assistantMessage.documentId,
-        planDocumentId: assistantMessage.planDocumentId,
-        interrupted: assistantMessage.interrupted,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
-        compactMarker: assistantMessage.compactMarker,
-        contextTokens: latestContextSnapshot?.contextTokens,
-        contextWindow: latestContextSnapshot?.contextWindow,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
-      },
+      row,
       effectiveStorageSystem,
+      { expectedTimestamp: retryAssistantRowTimestamp },
     );
-    setStatusSafely("Cancelled", "ready");
+    if (
+      !written &&
+      Number.isFinite(row.timestamp) &&
+      row.timestamp !== retryAssistantRowTimestamp
+    ) {
+      written = await updateStoredLatestAssistantMessageByConversation(
+        conversationKey,
+        row,
+        effectiveStorageSystem,
+        { expectedTimestamp: row.timestamp },
+      );
+    }
+    if (written) retryAssistantRowTimestamp = row.timestamp;
+    return written;
+  };
+  let retryUserRowWritten = false;
+  let retryDispatched = false;
+  // The one way a retry that never reached the provider ends: put the
+  // previous turn back in memory and, once the retry wrote its user row,
+  // write the restored row back too. The answer row was never touched.
+  const restorePreparedTurn = async () => {
+    restoreOriginalTurn();
+    // The write-back targets the retried pair's own row, so it is safe even
+    // when a send that arrived after Cancel already owns the latest row.
+    if (!retryUserRowWritten) return;
+    try {
+      await persistRetryUserRow();
+    } catch (error) {
+      appLogger.warn("LLM: Failed to restore the retried user row", error);
+    }
+  };
+  const stopRetryPreparation = async () => {
+    if (requestIsActive()) return false;
+    await restorePreparedTurn();
+    releaseRequest();
+    return true;
+  };
+  // The retry persists the cancelled trace before repainting, then writes its
+  // row through the store UPDATE, which throws on failure (no once-guard).
+  const finalizeCancelledAssistant = async () => {
+    await assistantTurn.cancel({
+      order: "trace-first",
+      persist: async () => {
+        const latestContextSnapshot =
+          contextUsageSnapshots.get(conversationKey);
+        await writeRetryAssistantRow({
+          ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+          documentId: assistantMessage.documentId,
+          planDocumentId: assistantMessage.planDocumentId,
+          contextTokens: latestContextSnapshot?.contextTokens,
+          contextWindow: latestContextSnapshot?.contextWindow,
+        });
+      },
+    });
   };
   if (
     shouldApplyCodexAppServerNativeAttachmentPolicy({
@@ -6474,7 +6169,7 @@ export async function retryLatestAssistantResponse(
       modelAttachmentsOverride,
       effectiveRequestConfig,
     });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     retryScreenshotImages = retryModelInputs.screenshotImages;
     retryPair.userMessage.screenshotImages = retryScreenshotImages.length
       ? retryScreenshotImages
@@ -6516,13 +6211,13 @@ export async function retryLatestAssistantResponse(
       usesLocalPdfTransport && pdfPaperContexts.length
         ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
         : undefined;
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (
       retryLocalDocuments?.length &&
       effectiveConversationSystem === "claude_code"
     ) {
       await preflightClaudeBridgeLocalPdfCapability();
-      if (stopRetryPreparation()) return;
+      if (await stopRetryPreparation()) return;
     }
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
@@ -6536,7 +6231,7 @@ export async function retryLatestAssistantResponse(
         providerProtocol: effectiveRequestConfig.providerProtocol,
         profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       });
-      if (stopRetryPreparation()) return;
+      if (await stopRetryPreparation()) return;
     }
 
     const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
@@ -6557,6 +6252,7 @@ export async function retryLatestAssistantResponse(
           paperContexts: retryPaperContexts,
           fullTextPaperContexts: retryFullTextPaperContexts,
           selectedCollectionContexts,
+          selectedTagContexts,
           recentPaperContexts,
           history: llmHistory,
           effectiveRequestConfig,
@@ -6567,7 +6263,7 @@ export async function retryLatestAssistantResponse(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
@@ -6588,26 +6284,28 @@ export async function retryLatestAssistantResponse(
       selectedCollectionContexts.length
         ? selectedCollectionContexts
         : undefined;
-    await persistRetryUserRow();
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await finalizeCancelledAssistant();
-      return;
-    }
+    // The first write is skipped when the retry was cancelled while it waited
+    // for the lock, so a cancelled retry never changes the stored row.
+    let wrote = false;
+    await withConversationWriteLock(conversationKey, async () => {
+      if (!requestIsActive()) return;
+      wrote = true;
+      await updateStoredLatestUserMessageByConversationUnlocked(
+        conversationKey,
+        toStoredUserRowPatch(retryPair.userMessage, {
+          conversationGeneration,
+          selectedTexts: retryPair.userMessage.selectedTexts || [],
+        }),
+        effectiveStorageSystem,
+        retryUserRowTarget,
+      );
+    });
+    retryUserRowWritten = wrote;
+    if (await stopRetryPreparation()) return;
 
-    const queueRefresh = streamingResponse.queueRefresh;
-    codexActivityTrace = isCodexNativeTurn
-      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
-      : null;
-    noteExplicitCodexNativeSkillInvocations(
-      codexActivityTrace,
-      retryPair.userMessage.forcedSkillIds,
-    );
-    if (getCancelledRequestId(conversationKey) >= thisRequestId) {
-      getAbortController(conversationKey)?.abort();
-      await finalizeCancelledAssistant();
-      return;
-    }
+    const queueRefresh = assistantTurn.queueRefresh;
+    assistantTurn.attachCodexTrace(retryPair.userMessage.forcedSkillIds);
+    if (await stopRetryPreparation()) return;
 
     // Models resolved as image-disabled reject image_url content, so drop all images.
     const allImages = supportsImageInputs(effectiveRequestConfig)
@@ -6640,7 +6338,7 @@ export async function retryLatestAssistantResponse(
         contextPlan,
         combinedContext,
       });
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (workflowTestIntercepted) {
       assistantMessage.text = "Workflow request intercepted before dispatch.";
       assistantMessage.streaming = false;
@@ -6657,10 +6355,10 @@ export async function retryLatestAssistantResponse(
     });
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
-    streamingResponse.start();
+    assistantTurn.start();
     const handleReasoning = createStreamReasoningHandler({
       assistantMessage,
-      flushResponseStream: streamingResponse.flush,
+      flushResponseStream: assistantTurn.flush,
       queueRefresh,
       onReasoningCaptured: () => {
         streamedReasoningSummary = assistantMessage.reasoningSummary;
@@ -6686,37 +6384,31 @@ export async function retryLatestAssistantResponse(
           }),
         )
       : null;
+    // Read at each use, so the request and the skill context see the flow's
+    // locals when they are built, as the inline literals did.
+    const codexRetryRequestSite = (): CodexRetryRequestSite => ({
+      conversationKey,
+      conversationGeneration,
+      retryPair,
+      item,
+      question,
+      retrySelectedTextContexts,
+      retryResolvedSelectedTextAnchors,
+      contextPlan,
+      selectedCollectionContexts,
+      selectedTagContexts,
+      attachments,
+      retryLocalDocuments,
+      allImages,
+      effectiveRequestConfig,
+      llmHistory,
+    });
     const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) =>
           runtime.prepareExecutionRequest(
-            await buildAgentRuntimeRequest({
-              conversationKey,
-              conversationGeneration,
-              sourceMessageTimestamp: retryPair.userMessage.timestamp,
-              item,
-              userText: question,
-              selectedTextContexts: retrySelectedTextContexts,
-              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-              selectedTexts: retryPair.userMessage.selectedTexts || [],
-              selectedTextSources: retryPair.userMessage.selectedTextSources,
-              selectedTextPaperContexts:
-                retryPair.userMessage.selectedTextPaperContexts,
-              selectedTextNoteContexts:
-                retryPair.userMessage.selectedTextNoteContexts,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              citationPaperContexts:
-                retryPair.userMessage.citationPaperContexts,
-              selectedCollectionContexts,
-              selectedTagContexts,
-              attachments,
-              localDocuments: retryLocalDocuments,
-              screenshots: allImages,
-              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
-              effectiveRequestConfig,
-              history: llmHistory,
-            }),
+            await buildAgentRuntimeRequest(
+              codexRetryRequestParams(codexRetryRequestSite()),
+            ),
             {
               signal: getAbortController(conversationKey)?.signal,
               permissionOwner: "external_runtime",
@@ -6724,7 +6416,7 @@ export async function retryLatestAssistantResponse(
           ),
         )
       : undefined;
-    if (stopRetryPreparation()) return;
+    if (await stopRetryPreparation()) return;
     if (
       !notifyProviderDispatch(
         body,
@@ -6737,10 +6429,11 @@ export async function retryLatestAssistantResponse(
       return;
     // The request is going out: from here the provider bills whatever it
     // produces, including on abort, so the turn owes a usage row.
-    usageRecorder.markDispatched();
+    assistantTurn.dispatched();
+    retryDispatched = true;
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
-      ? await (async () => {
-          const result = await runCodexAppServerNativeTurn({
+      ? await runCodexNativePanelTurn(
+          {
             executionRequest: codexExecutionRequest!,
             scope: codexScope!,
             conversationGeneration,
@@ -6751,111 +6444,58 @@ export async function retryLatestAssistantResponse(
             codexPath: getEffectiveCodexAppServerBinaryPath(
               effectiveRequestConfig.apiBase,
             ),
-            skillContext: buildCodexNativeSkillContext({
-              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
-              selectedTextContexts: retrySelectedTextContexts,
-              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
-              selectedTexts: retryPair.userMessage.selectedTexts || [],
-              selectedTextSources: retryPair.userMessage.selectedTextSources,
-              selectedTextPaperContexts:
-                retryPair.userMessage.selectedTextPaperContexts,
-              selectedTextNoteContexts:
-                retryPair.userMessage.selectedTextNoteContexts,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
-              localDocuments: retryLocalDocuments,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
-              selectedCollectionContexts,
-              selectedTagContexts,
-              screenshots: allImages,
-              attachments,
-            }),
-            ...buildCodexNativeTurnCallbacks({
-              body,
-              item,
-              assistantMessage,
-              codexActivityTrace,
-              flushResponseStream: streamingResponse.flush,
-              setStatusSafely,
-              handleDelta: streamingResponse.push,
-              handleReasoning,
-              handleUsage,
-              conversationKey,
-              conversationGeneration,
-            }),
-          });
-          assistantMessage.agentRunId = result.agentRunId;
-          if (result.documentId) {
-            assistantMessage.documentId = result.documentId;
-          }
-          return {
-            text: result.text,
-            completion: { status: "complete" as const },
-          };
-        })()
+            skillContext: codexRetrySkillContext(codexRetryRequestSite()),
+          },
+          {
+            body,
+            item,
+            assistantMessage,
+            codexActivityTrace: assistantTurn.codexTrace,
+            flushResponseStream: assistantTurn.flush,
+            setStatusSafely,
+            handleDelta: assistantTurn.push,
+            handleReasoning,
+            handleUsage,
+            conversationKey,
+            conversationGeneration,
+          },
+        )
       : await callDirectChatTurnWithRecovery({
           request: {
             ...requestParams,
             systemMessages,
           },
-          onDelta: streamingResponse.push,
+          onDelta: assistantTurn.push,
           onReasoning: handleReasoning,
           onUsage: handleUsage,
         });
 
-    if (
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted)
-    ) {
-      usageFlushReason = "abort";
+    if (assistantTurn.wasCancelled()) {
+      assistantTurn.noteUsageOutcome("abort");
       await finalizeCancelledAssistant();
       return;
     }
 
-    streamingResponse.flush("final");
-    const hasGeneratedOutput = normalizeGeneratedChatImages(
-      assistantMessage.generatedImages,
-    ).length;
-    const outputLimited =
-      modelOutcome.completion.status === "incomplete" &&
-      modelOutcome.completion.reason === "output_limit";
+    const emptyOutputText = assistantTurn.beginCompletion(modelOutcome);
+    // The retry's own text policy: a continuation appends to the previous
+    // answer, and a document answer keeps the text it streamed.
     const responseText =
-      sanitizeText(modelOutcome.text) ||
-      streamingResponse.getStreamedText() ||
-      "";
+      sanitizeText(modelOutcome.text) || assistantTurn.getStreamedText() || "";
     const visibleResponseText = continueIncomplete
       ? appendContinuationText(assistantSnapshot.text, responseText)
       : responseText;
     assistantMessage.text =
       (assistantMessage.documentId || assistantMessage.planDocumentId
         ? assistantMessage.text
-        : visibleResponseText) ||
-      (hasGeneratedOutput
-        ? ""
-        : outputLimited
-          ? EMPTY_OUTPUT_LIMIT_MESSAGE
-          : resolveEmptyModelOutcomeMessage(modelOutcome.completion));
-    assistantMessage.completionStatus = modelOutcome.completion.status;
-    assistantMessage.completionReason =
-      "reason" in modelOutcome.completion
-        ? modelOutcome.completion.reason
-        : undefined;
-    await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+        : visibleResponseText) || emptyOutputText;
+    await assistantTurn.recordCompletion(modelOutcome, {
       pairedUserMessage: retryPair.userMessage,
       paperContexts: contextPlan.paperContexts,
       fullTextPaperContexts: contextPlan.fullTextPaperContexts,
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
-    if (codexActivityTrace) {
-      completeTaskRun(conversationKey, {
-        runId: assistantMessage.agentRunId,
-        quoteCitations: assistantMessage.quoteCitations,
-      });
-    }
-    await codexActivityTrace?.persist(conversationKey, conversationGeneration);
+    await assistantTurn.persistTrace();
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
     assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
@@ -6864,76 +6504,63 @@ export async function retryLatestAssistantResponse(
     assistantMessage.reasoningSummary = streamedReasoningSummary;
     assistantMessage.reasoningDetails = streamedReasoningDetails;
     assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
-    assistantMessage.compactMarker = isCompactCommandText(question);
-    if (assistantMessage.compactMarker && !assistantMessage.text.trim()) {
-      assistantMessage.text = "Conversation compacted";
-    }
-    assistantMessage.interrupted = undefined;
-    assistantMessage.streaming = false;
-    refreshCompletedAssistantTurnSafely(assistantMessage);
+    assistantTurn.presentCompletion({
+      compactMarker: isCompactCommandText(question),
+    });
 
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-    await updateStoredLatestAssistantMessageByConversation(
-      conversationKey,
-      {
-        conversationGeneration,
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
+    // The answer is complete: a failed save is the turn owner's to handle,
+    // not a stream failure. The row UPDATE is safe to run a second time.
+    const saved = await assistantTurn.saveCompletion(async () => {
+      const written = await writeRetryAssistantRow({
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
         documentId: assistantMessage.documentId,
         planDocumentId: assistantMessage.planDocumentId,
-        interrupted: assistantMessage.interrupted,
         completionStatus: assistantMessage.completionStatus,
         completionReason: assistantMessage.completionReason,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
-        compactMarker: assistantMessage.compactMarker,
         contextTokens: latestContextSnapshot?.contextTokens,
         contextWindow: latestContextSnapshot?.contextWindow,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
-      },
-      effectiveStorageSystem,
-    );
+      });
+      // A deleted or reset conversation skips the write on purpose. Any other
+      // miss (the stored row no longer has the answer's timestamp, as after
+      // an earlier failed save) is a lost answer, so the owner reports it
+      // instead of calling the turn saved.
+      if (
+        !written &&
+        !areConversationWritesFrozen(conversationKey) &&
+        isConversationWriteGenerationCurrent(
+          conversationKey,
+          conversationGeneration,
+        )
+      ) {
+        throw new Error("The retried answer's stored row was not found");
+      }
+    });
 
-    setStatusSafely("Ready", "ready");
+    if (saved) setStatusSafely("Ready", "ready");
     return true;
   } catch (err) {
-    const isCancelled =
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted) ||
-      (err as { name?: string }).name === "AbortError";
-    usageFlushReason = isCancelled ? "abort" : "error";
+    const isCancelled = assistantTurn.wasCancelled(err);
+    assistantTurn.noteUsageOutcome(isCancelled ? "abort" : "error");
     if (isCancelled) {
-      await finalizeCancelledAssistant();
+      // A cancel that aborted the preparation restores like any other
+      // pre-dispatch stop; after dispatch the turn keeps what streamed.
+      if (retryDispatched) await finalizeCancelledAssistant();
+      else {
+        await restorePreparedTurn();
+        setStatusSafely("Cancelled", "ready");
+      }
       return;
     }
 
-    const technicalErrMsg = (err as Error).message || "Error";
-    const errMsg = isCodexNativeTurn
-      ? formatCodexZoteroMcpError(err, "Native conversation retry failed")
-      : technicalErrMsg;
-    const retryHint = resolveMultimodalRetryHint(
-      errMsg,
-      screenshotImages.length,
-    );
     // Preserve whatever streamed during the retry before the drop. Only fall
-    // back to restoring the previous answer when nothing new streamed. The
-    // message-text fallback covers content that was flushed out of a
-    // stream torn down before the throw (same chain as the send path).
-    const partialText = sanitizeText(
-      streamingResponse.getStreamedText() || assistantMessage.text || "",
-    );
-    streamingResponse.dispose();
-    const outcome = resolveStreamInterruptionOutcome({
-      partialText,
-      errorMessage: errMsg,
-      retryHint,
+    // back to restoring the previous answer when nothing new streamed.
+    const outcome = assistantTurn.readInterruption(err, {
+      codexLabel: "Native conversation retry failed",
+      imageCount: screenshotImages.length,
     });
+    const errMsg = outcome.errorMessage;
+    const retryHint = outcome.retryHint;
     if (outcome.interrupted) {
       assistantMessage.text = outcome.text;
       assistantMessage.interrupted = true;
@@ -6946,35 +6573,17 @@ export async function retryLatestAssistantResponse(
       assistantMessage.reasoningDetails = streamedReasoningDetails;
       assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
       assistantMessage.streaming = false;
-      codexActivityTrace?.flushBufferedProgress("cancel");
-      await codexActivityTrace?.persist(
-        conversationKey,
-        conversationGeneration,
-      );
+      assistantTurn.codexTrace?.flushBufferedProgress("cancel");
+      await assistantTurn.persistTrace();
       refreshChatSafely();
       const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
-      await updateStoredLatestAssistantMessageByConversation(
-        conversationKey,
-        {
-          conversationGeneration,
-          text: assistantMessage.text,
-          timestamp: assistantMessage.timestamp,
-          runMode: assistantMessage.runMode,
-          agentRunId: assistantMessage.agentRunId,
-          interrupted: assistantMessage.interrupted,
-          modelName: assistantMessage.modelName,
-          modelEntryId: assistantMessage.modelEntryId,
-          modelProviderLabel: assistantMessage.modelProviderLabel,
-          reasoningSummary: assistantMessage.reasoningSummary,
-          reasoningDetails: assistantMessage.reasoningDetails,
-          compactMarker: assistantMessage.compactMarker,
-          contextTokens: latestContextSnapshot?.contextTokens,
-          contextWindow: latestContextSnapshot?.contextWindow,
-          quoteCitations: assistantMessage.quoteCitations,
-          generatedImages: assistantMessage.generatedImages,
-        },
-        effectiveStorageSystem,
-      );
+      await writeRetryAssistantRow({
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+        // The interrupted row keeps omitting documentId, planDocumentId,
+        // and the completion fields, as it always has.
+        contextTokens: latestContextSnapshot?.contextTokens,
+        contextWindow: latestContextSnapshot?.contextWindow,
+      });
     } else {
       restoreOriginalTurn();
       // The user row was already persisted with the failed retry's model and
@@ -6988,13 +6597,9 @@ export async function retryLatestAssistantResponse(
     );
   } finally {
     // The turn is over on every path through this flow, including the
-    // interrupted and failed ones: the trace controller must stop here or a
-    // buffered flush lands on a message that was already persisted.
-    codexActivityTrace?.dispose();
-    // Every path through this flow -- completion, error, abort -- ends here,
-    // so this is where the one usage row for the turn is written. It never
-    // throws and is deliberately not awaited: usage must not delay the turn.
-    void usageRecorder.flush(usageFlushReason);
+    // interrupted and failed ones: stop the trace and write the one usage
+    // row (unawaited) before the request is released.
+    assistantTurn.end();
     releaseRequest();
   }
 }
@@ -7168,7 +6773,7 @@ export async function editUserTurnAndRetry(opts: {
   if (requestId !== undefined) {
     if (!isRequestOwner(initialConversationKey, requestId)) return false;
   }
-  await ensureConversationLoaded(item);
+  await ensureConversationLoaded(item, { body });
   const conversationKey = getConversationKey(item);
   if (requestId !== undefined) {
     if (
@@ -7238,6 +6843,7 @@ export async function editUserTurnAndRetry(opts: {
     modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const retryConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -7326,47 +6932,12 @@ export async function editUserTurnAndRetry(opts: {
   history.splice(assistantIndex + 1);
 
   // Delete persisted subsequent turns
-  let trailingDeleteFailed = false;
-  for (const p of subsequentPairs) {
-    try {
-      const deleted = await withConversationWriteLock(
-        conversationKey,
-        async () => {
-          if (
-            !isConversationWriteGenerationCurrent(
-              conversationKey,
-              conversationGeneration,
-            ) ||
-            areConversationWritesFrozen(conversationKey)
-          ) {
-            return false;
-          }
-          const storageSystem = resolveConversationStorageSystem({
-            conversationKey,
-            conversationSystem: retryStorageSystem,
-          });
-          if (!storageSystem) return false;
-          await conversationRepository.deleteTurnMessages({
-            system: storageSystem,
-            conversationKey,
-            userTimestamp: p.userTs,
-            assistantTimestamp: p.assistantTs,
-            onBeforeCommit: () =>
-              clearPersistedAgentConversationRowsInTransaction(conversationKey),
-          });
-          return true;
-        },
-      );
-      if (!deleted) {
-        trailingDeleteFailed = true;
-        break;
-      }
-    } catch (err) {
-      appLogger.warn("LLM: Failed to delete subsequent stored turn", err);
-      trailingDeleteFailed = true;
-      break;
-    }
-  }
+  const trailingDeleteFailed = !(await deleteTrailingTurnPairs({
+    conversationKey,
+    pairs: subsequentPairs,
+    conversationGeneration,
+    conversationSystem: retryStorageSystem,
+  }));
   if (trailingDeleteFailed) {
     try {
       const restored = await loadStoredConversationByKey(
@@ -7387,22 +6958,17 @@ export async function editUserTurnAndRetry(opts: {
     return false;
   }
   // The edit path deletes trailing message rows directly rather than through
-  // the queued-turn coordinator.  Persistent agent state is conversation-key
-  // scoped, so clear its in-memory/trace participants after the atomic row
-  // purge before the edited retry can build a prompt.
-  if (subsequentPairs.length) {
-    try {
-      await clearAgentConversationState(conversationKey);
-    } catch (err) {
-      appLogger.warn(
-        "LLM: Failed to clear agent state after edit truncation",
-        err,
-      );
-    }
-  }
+  // the queued-turn coordinator; deleteTrailingTurnPairs has already cleared
+  // the agent state's in-memory/trace participants after the atomic row
+  // purge, before the edited retry can build a prompt.
 
   // Update user message text + timestamp
   const userMsg = history[userIndex]!;
+  // The edited row is rewritten by the timestamp it was found by, before the
+  // edit gives it a new one, never as "the latest user row".
+  const editedUserRowTarget: UpdateLatestUserMessageOptions = {
+    expectedTimestamp: userMsg.timestamp,
+  };
   userMsg.text = sanitizeText(newText) || newText;
   userMsg.timestamp = Date.now();
   userMsg.runMode = retryRuntimeMode;
@@ -7558,6 +7124,7 @@ export async function editUserTurnAndRetry(opts: {
         modelProviderLabel: userMsg.modelProviderLabel,
       },
       retryStorageSystem,
+      editedUserRowTarget,
     );
   } catch (err) {
     appLogger.warn("LLM: Failed to persist edited user message", err);
@@ -7637,33 +7204,6 @@ export async function editUserTurnAndRetry(opts: {
       );
   return retrySucceeded === true;
 }
-
-export type BuildAgentRuntimeRequestParams = {
-  conversationKey: number;
-  conversationGeneration?: number;
-  sourceMessageTimestamp?: number;
-  item: Zotero.Item;
-  activePaperContext?: PaperContextRef;
-  userText: string;
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts: string[];
-  selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
-  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
-  paperContexts: PaperContextRef[];
-  pdfPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts: PaperContextRef[];
-  citationPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-  selectedTagContexts?: TagContextRef[];
-  attachments: ChatAttachment[] | undefined;
-  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
-  screenshots: string[] | undefined;
-  forcedSkillIds?: string[];
-  effectiveRequestConfig: EffectiveRequestConfig;
-  history: ChatMessage[];
-};
 
 function buildActiveNoteRuntimeContext(
   item: Zotero.Item,
@@ -8066,7 +7606,9 @@ async function buildAgentRuntimeRequest(
     claudeEffortLevel:
       typeof params.effectiveRequestConfig.reasoning?.level === "string"
         ? ((params.effectiveRequestConfig.reasoning.level === "xhigh"
-            ? getClaudeReasoningModePref() === "max"
+            ? surfaceChoices.claudeReasoningMode.get(
+                params.surface || resolveSurfaceForMountedItem(params.item),
+              ) === "max"
               ? "max"
               : "xhigh"
             : params.effectiveRequestConfig.reasoning.level) as
@@ -8162,10 +7704,19 @@ function buildAgentEngineDeps(
       scheduleQueuedInputDrain(body, scope);
     },
     createPanelUpdateHelpers,
-    ensureConversationLoaded,
+    ensureConversationLoaded: (targetItem) =>
+      ensureConversationLoaded(targetItem, { body: panelBody }),
     getConversationKey,
     buildLLMHistoryMessages,
-    buildAgentRuntimeRequest,
+    buildAgentRuntimeRequest: (requestParams) =>
+      buildAgentRuntimeRequest(
+        panelBody && !requestParams.surface
+          ? {
+              ...requestParams,
+              surface: resolveSelectionSurfaceForBody(panelBody),
+            }
+          : requestParams,
+      ),
     resolveLocalPdfResources: (paperContexts) =>
       createLocalPdfResourceResolver().resolve(paperContexts),
     preflightLocalPdfCapability: async () => {
@@ -8312,10 +7863,13 @@ function buildAgentEngineDeps(
       );
     },
     sendChatFallback: sendQuestion,
+    // The turn's own system decides, not the saved one: the other chat
+    // surface may have switched backend since (surfaceChoices.ts).
     getAgentRuntime: () =>
       getEffectiveConversationSystem() === "claude_code"
-        ? (getClaudeBridgeRuntime(
-            getCoreAgentRuntime(),
+        ? (bindClaudeBridgeConversationSystem(
+            getClaudeBridgeRuntime(getCoreAgentRuntime()),
+            "claude_code",
           ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
         : getCoreAgentRuntime(),
     maxSelectedImages: MAX_SELECTED_IMAGES,
@@ -8694,7 +8248,7 @@ export async function sendQuestion(
 
   const shownQuestion = displayQuestion || question;
   try {
-    await ensureConversationLoaded(item);
+    await ensureConversationLoaded(item, { body });
   } catch (error) {
     finishBeforeDispatch();
     throw error;
@@ -8823,6 +8377,7 @@ export async function sendQuestion(
     modelProviderLabel: opts.modelProviderLabel,
     reasoning,
     advanced,
+    surface: resolveSelectionSurfaceForBody(body),
   });
   const shouldPersistTurn =
     effectiveRequestConfig.providerProtocol !== "web_sync";
@@ -9204,67 +8759,96 @@ export async function sendQuestion(
   } = createPanelUpdateHelpers(body, item, conversationKey, ui);
   refreshChatSafely();
 
+  // Local usage ledger for this turn: one question, one row.
+  const usageRecorder = createTurnUsageRecorder({
+    conversationKey,
+    conversationGeneration,
+    runtime: isCodexNativeTurn ? "codex" : "chat",
+    model: effectiveRequestConfig.model,
+    provider: effectiveRequestConfig.modelProviderLabel,
+  });
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const assistantTurn = createAssistantTurn({
+    message: assistantMessage,
+    conversationKey,
+    conversationGeneration,
+    requestId: thisRequestId,
+    isCodexNativeTurn,
+    usageRecorder,
+    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
+    refreshChat: refreshChatSafely,
+    refreshCompletedTurn: () =>
+      refreshCompletedAssistantTurnSafely(assistantMessage),
+    setStatus: setStatusSafely,
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
+    resolveRetryHint: resolveMultimodalRetryHint,
+  });
   let assistantPersisted = false;
-  let codexActivityTrace: CodexNativeActivityTraceController | null = null;
+  const writeAssistantRow = async (options?: { rethrow?: boolean }) => {
+    // Like the retry rows, the send row stores the context-usage snapshot,
+    // so a reopened chat shows this turn's context count.
+    const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
+    await persistConversationMessage(
+      conversationKey,
+      {
+        ...toStoredAssistantRow(assistantMessage, conversationGeneration),
+        role: "assistant",
+        documentId: assistantMessage.documentId,
+        planDocumentId: assistantMessage.planDocumentId,
+        completionStatus: assistantMessage.completionStatus,
+        completionReason: assistantMessage.completionReason,
+        webchatRunState: assistantMessage.webchatRunState,
+        webchatCompletionReason: assistantMessage.webchatCompletionReason,
+        webchatChatUrl: assistantMessage.webchatChatUrl,
+        webchatChatId: assistantMessage.webchatChatId,
+        contextTokens: latestContextSnapshot?.contextTokens,
+        contextWindow: latestContextSnapshot?.contextWindow,
+      },
+      effectiveStorageSystem,
+      options,
+    );
+  };
   const persistAssistantOnce = async (
     status?: import("../../agent/types").AgentRunStatus,
   ) => {
     if (assistantPersisted) return;
     assistantPersisted = true;
     if (!shouldPersistTurn) return;
-    await codexActivityTrace?.persist(
-      conversationKey,
-      conversationGeneration,
-      status,
-    );
-    await persistConversationMessage(
-      conversationKey,
-      {
-        conversationGeneration,
-        role: "assistant",
-        text: assistantMessage.text,
-        timestamp: assistantMessage.timestamp,
-        runMode: assistantMessage.runMode,
-        agentRunId: assistantMessage.agentRunId,
-        documentId: assistantMessage.documentId,
-        planDocumentId: assistantMessage.planDocumentId,
-        modelName: assistantMessage.modelName,
-        modelEntryId: assistantMessage.modelEntryId,
-        modelProviderLabel: assistantMessage.modelProviderLabel,
-        interrupted: assistantMessage.interrupted,
-        completionStatus: assistantMessage.completionStatus,
-        completionReason: assistantMessage.completionReason,
-        reasoningSummary: assistantMessage.reasoningSummary,
-        reasoningDetails: assistantMessage.reasoningDetails,
-        webchatRunState: assistantMessage.webchatRunState,
-        webchatCompletionReason: assistantMessage.webchatCompletionReason,
-        webchatChatUrl: assistantMessage.webchatChatUrl,
-        webchatChatId: assistantMessage.webchatChatId,
-        quoteCitations: assistantMessage.quoteCitations,
-        generatedImages: assistantMessage.generatedImages,
-        compactMarker: assistantMessage.compactMarker,
-      },
-      effectiveStorageSystem,
-    );
+    await assistantTurn.persistTrace(status);
+    await writeAssistantRow();
   };
-  // Streaming flushes only mutate this assistant message, so re-render just
-  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
-  // not in the DOM yet.
-  const streamingResponse = createStreamingResponse({
-    message: assistantMessage,
-    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
-    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
-  });
-  const markCancelled = async () => {
-    streamingResponse.flush("cancel");
-    // Same reason as the retry flow: finish() never ran, so flush the trace's
-    // buffered commentary before persistAssistantOnce writes the turn.
-    codexActivityTrace?.flushBufferedProgress("cancel");
-    finalizeCancelledAssistantMessage(assistantMessage);
-    refreshChatSafely();
-    await persistAssistantOnce("cancelled");
-    setStatusSafely("Cancelled", "ready");
+  // The completed answer's save, under the same once-guard. A failed save is
+  // the turn owner's to handle, not a stream failure. The row is appended,
+  // so before the second attempt a row the first attempt already stored
+  // (its failure came after the append) counts as saved: no duplicate row.
+  const persistCompletedAssistantOnce = async (): Promise<boolean> => {
+    if (assistantPersisted) return true;
+    assistantPersisted = true;
+    if (!shouldPersistTurn) return true;
+    await assistantTurn.persistTrace();
+    return assistantTurn.saveCompletion(async (attempt) => {
+      if (
+        attempt > 0 &&
+        (await isAssistantRowStored(
+          conversationKey,
+          assistantMessage.timestamp,
+          effectiveStorageSystem,
+        ))
+      ) {
+        return;
+      }
+      await writeAssistantRow({ rethrow: true });
+    });
   };
+  // The send repaints before it writes, and its once-guarded persist writes
+  // the cancelled trace together with the row.
+  const markCancelled = () =>
+    assistantTurn.cancel({
+      order: "refresh-first",
+      persist: persistAssistantOnce,
+    });
   const stopInactiveRequest = async () => {
     if (requestIsActive(conversationKey)) return false;
     if (isRequestOwner(conversationKey, thisRequestId)) {
@@ -9440,16 +9024,6 @@ export async function sendQuestion(
     return;
   }
 
-  // Local usage ledger for this turn: one question, one row.
-  const usageRecorder = createTurnUsageRecorder({
-    conversationKey,
-    conversationGeneration,
-    runtime: isCodexNativeTurn ? "codex" : "chat",
-    model: effectiveRequestConfig.model,
-    provider: effectiveRequestConfig.modelProviderLabel,
-  });
-  let usageFlushReason: UsageTurnFlushReason = "complete";
-
   try {
     const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
     // Apply auto-summary compression when the history grows long.
@@ -9489,6 +9063,7 @@ export async function sendQuestion(
           paperContexts: paperContextsForMessage,
           fullTextPaperContexts: fullTextPaperContextsForMessage,
           selectedCollectionContexts: selectedCollectionContextsForMessage,
+          selectedTagContexts: selectedTagContextsForMessage,
           recentPaperContexts,
           history: llmHistory,
           effectiveRequestConfig,
@@ -9515,44 +9090,15 @@ export async function sendQuestion(
     );
     await updateStoredLatestUserMessageByConversation(
       conversationKey,
-      {
-        conversationGeneration,
-        text: userMessage.text,
-        timestamp: userMessage.timestamp,
-        runMode: userMessage.runMode,
-        agentRunId: userMessage.agentRunId,
-        selectedText: userMessage.selectedText,
-        selectedTextContexts: userMessage.selectedTextContexts,
-        selectedTexts: userMessage.selectedTexts,
-        selectedTextSources: userMessage.selectedTextSources,
-        selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
-        screenshotImages: userMessage.screenshotImages,
-        paperContexts: userMessage.paperContexts,
-        pdfPaperContexts: userMessage.pdfPaperContexts,
-        fullTextPaperContexts: userMessage.fullTextPaperContexts,
-        citationPaperContexts: userMessage.citationPaperContexts,
-        selectedCollectionContexts: userMessage.selectedCollectionContexts,
-        selectedTagContexts: userMessage.selectedTagContexts,
-        attachments: userMessage.attachments,
-        modelAttachments: userMessage.modelAttachments,
-        modelName: userMessage.modelName,
-        modelEntryId: userMessage.modelEntryId,
-        modelProviderLabel: userMessage.modelProviderLabel,
-      },
+      toStoredUserRowPatch(userMessage, { conversationGeneration }),
       effectiveStorageSystem,
     );
 
     if (await stopInactiveRequest()) return;
 
-    const queueRefresh = streamingResponse.queueRefresh;
-    codexActivityTrace = isCodexNativeTurn
-      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
-      : null;
-    noteExplicitCodexNativeSkillInvocations(
-      codexActivityTrace,
-      opts.forcedSkillIds,
-    );
-    streamingResponse.start();
+    const queueRefresh = assistantTurn.queueRefresh;
+    assistantTurn.attachCodexTrace(opts.forcedSkillIds);
+    assistantTurn.start();
 
     if (await stopInactiveRequest()) return;
 
@@ -9606,7 +9152,7 @@ export async function sendQuestion(
 
     const handleReasoning = createStreamReasoningHandler({
       assistantMessage,
-      flushResponseStream: streamingResponse.flush,
+      flushResponseStream: assistantTurn.flush,
       queueRefresh,
     });
     const handleUsage = createStreamUsageHandler({
@@ -9629,33 +9175,37 @@ export async function sendQuestion(
           }),
         )
       : null;
+    // Read at each use, so the request and the skill context see the flow's
+    // locals when they are built, as the inline literals did.
+    const codexSendRequestSite = (): CodexSendRequestSite => ({
+      conversationKey,
+      conversationGeneration,
+      userMessage,
+      item,
+      shownQuestion,
+      selectedTextContextsForMessage,
+      resolvedSelectedTextAnchors,
+      selectedTextsForMessage,
+      selectedTextSourcesForMessage,
+      selectedTextPaperContextsForMessage,
+      selectedTextNoteContextsForMessage,
+      contextPlan,
+      normalizedPdfPaperContexts,
+      selectedCollectionContextsForMessage,
+      selectedTagContextsForMessage,
+      modelAttachments,
+      attachments,
+      localDocuments,
+      allSendImages,
+      opts,
+      effectiveRequestConfig,
+      llmHistory,
+    });
     const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) => {
-          const planRequest = await buildAgentRuntimeRequest({
-            conversationKey,
-            conversationGeneration,
-            sourceMessageTimestamp: userMessage.timestamp,
-            item,
-            userText: shownQuestion,
-            selectedTextContexts: selectedTextContextsForMessage,
-            resolvedSelectedTextAnchors,
-            selectedTexts: selectedTextsForMessage,
-            selectedTextSources: selectedTextSourcesForMessage,
-            selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-            selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-            paperContexts: contextPlan.paperContexts,
-            pdfPaperContexts: normalizedPdfPaperContexts,
-            fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-            citationPaperContexts: userMessage.citationPaperContexts,
-            selectedCollectionContexts: selectedCollectionContextsForMessage,
-            selectedTagContexts: selectedTagContextsForMessage,
-            attachments: modelAttachments || attachments,
-            localDocuments,
-            screenshots: allSendImages,
-            forcedSkillIds: opts.forcedSkillIds,
-            effectiveRequestConfig,
-            history: llmHistory,
-          });
+          const planRequest = await buildAgentRuntimeRequest(
+            codexSendRequestParams(codexSendRequestSite()),
+          );
           return runtime.prepareExecutionRequest(planRequest, {
             signal: getAbortController(conversationKey)?.signal,
             permissionOwner: "external_runtime",
@@ -9676,10 +9226,10 @@ export async function sendQuestion(
     }
     // The request is going out: from here the provider bills whatever it
     // produces, including on abort, so the turn owes a usage row.
-    usageRecorder.markDispatched();
+    assistantTurn.dispatched();
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
-      ? await (async () => {
-          const result = await runCodexAppServerNativeTurn({
+      ? await runCodexNativePanelTurn(
+          {
             executionRequest: codexExecutionRequest!,
             scope: codexScope!,
             conversationGeneration,
@@ -9690,112 +9240,60 @@ export async function sendQuestion(
             codexPath: getEffectiveCodexAppServerBinaryPath(
               effectiveRequestConfig.apiBase,
             ),
-            skillContext: buildCodexNativeSkillContext({
-              forcedSkillIds: opts.forcedSkillIds,
-              selectedTextContexts: selectedTextContextsForMessage,
-              resolvedSelectedTextAnchors,
-              selectedTexts: selectedTextsForMessage,
-              selectedTextSources: selectedTextSourcesForMessage,
-              selectedTextPaperContexts: selectedTextPaperContextsForMessage,
-              selectedTextNoteContexts: selectedTextNoteContextsForMessage,
-              paperContexts: contextPlan.paperContexts,
-              pdfPaperContexts: normalizedPdfPaperContexts,
-              localDocuments,
-              fullTextPaperContexts: contextPlan.fullTextPaperContexts,
-              pinnedPaperContexts: userMessage.pinnedPaperContexts,
-              selectedCollectionContexts: selectedCollectionContextsForMessage,
-              selectedTagContexts: selectedTagContextsForMessage,
-              screenshots: allSendImages,
-              attachments,
-            }),
-            ...buildCodexNativeTurnCallbacks({
-              body,
-              item,
-              assistantMessage,
-              codexActivityTrace,
-              flushResponseStream: streamingResponse.flush,
-              setStatusSafely,
-              handleDelta: streamingResponse.push,
-              handleReasoning,
-              handleUsage,
-              conversationKey,
-              conversationGeneration,
-              skillRoutingReceipt: codexExecutionRequest?.skillRoutingReceipt,
-            }),
-          });
-          assistantMessage.agentRunId = result.agentRunId;
-          if (result.documentId) {
-            assistantMessage.documentId = result.documentId;
-          }
-          return {
-            text: result.text,
-            completion: { status: "complete" as const },
-          };
-        })()
+            skillContext: codexSendSkillContext(codexSendRequestSite()),
+          },
+          {
+            body,
+            item,
+            assistantMessage,
+            codexActivityTrace: assistantTurn.codexTrace,
+            flushResponseStream: assistantTurn.flush,
+            setStatusSafely,
+            handleDelta: assistantTurn.push,
+            handleReasoning,
+            handleUsage,
+            conversationKey,
+            conversationGeneration,
+            skillRoutingReceipt: codexExecutionRequest?.skillRoutingReceipt,
+          },
+        )
       : await callDirectChatTurnWithRecovery({
           request: {
             ...requestParams,
             systemMessages,
           },
-          onDelta: streamingResponse.push,
+          onDelta: assistantTurn.push,
           onReasoning: handleReasoning,
           onUsage: handleUsage,
         });
-    if (
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted)
-    ) {
-      usageFlushReason = "abort";
+    if (assistantTurn.wasCancelled()) {
+      assistantTurn.noteUsageOutcome("abort");
       await markCancelled();
       return;
     }
 
-    streamingResponse.flush("final");
-    const hasGeneratedOutput = normalizeGeneratedChatImages(
-      assistantMessage.generatedImages,
-    ).length;
-    const outputLimited =
-      modelOutcome.completion.status === "incomplete" &&
-      modelOutcome.completion.reason === "output_limit";
+    const emptyOutputText = assistantTurn.beginCompletion(modelOutcome);
+    // The send's own text policy: a reused agent placeholder can already hold
+    // text, so it is the fallback before the empty-output notice.
     assistantMessage.text =
       sanitizeText(modelOutcome.text) ||
       assistantMessage.text ||
-      (hasGeneratedOutput
-        ? ""
-        : outputLimited
-          ? EMPTY_OUTPUT_LIMIT_MESSAGE
-          : resolveEmptyModelOutcomeMessage(modelOutcome.completion));
-    assistantMessage.completionStatus = modelOutcome.completion.status;
-    assistantMessage.completionReason =
-      "reason" in modelOutcome.completion
-        ? modelOutcome.completion.reason
-        : undefined;
-    await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+      emptyOutputText;
+    await assistantTurn.recordCompletion(modelOutcome, {
       pairedUserMessage: userMessage,
       paperContexts: contextPlan.paperContexts,
       fullTextPaperContexts: contextPlan.fullTextPaperContexts,
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
-    if (codexActivityTrace) {
-      completeTaskRun(conversationKey, {
-        runId: assistantMessage.agentRunId,
-        quoteCitations: assistantMessage.quoteCitations,
-      });
-    }
     assistantMessage.runMode = isCodexNativeTurn
       ? "agent"
       : effectiveRuntimeMode;
     assistantMessage.agentRunId = agentRunId || assistantMessage.agentRunId;
-    assistantMessage.compactMarker = isCompactCommandText(question);
-    if (assistantMessage.compactMarker && !assistantMessage.text.trim()) {
-      assistantMessage.text = "Conversation compacted";
-    }
-    assistantMessage.interrupted = undefined;
-    assistantMessage.streaming = false;
-    refreshCompletedAssistantTurnSafely(assistantMessage);
-    await persistAssistantOnce();
+    assistantTurn.presentCompletion({
+      compactMarker: isCompactCommandText(question),
+    });
+    const saved = await persistCompletedAssistantOnce();
     if (resolveConversationSystemForItem(item) === "claude_code") {
       const activeNoteSession = resolveActiveNoteSession(item);
       const conversationKind =
@@ -9833,51 +9331,37 @@ export async function sendQuestion(
       });
     }
 
-    setStatusSafely("Ready", "ready");
+    if (saved) setStatusSafely("Ready", "ready");
   } catch (err) {
-    const isCancelled =
-      getCancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(getAbortController(conversationKey)?.signal.aborted) ||
-      (err as { name?: string }).name === "AbortError";
-    usageFlushReason = isCancelled ? "abort" : "error";
+    const isCancelled = assistantTurn.wasCancelled(err);
+    assistantTurn.noteUsageOutcome(isCancelled ? "abort" : "error");
     if (isCancelled) {
       await markCancelled();
       return;
     }
 
-    const technicalErrMsg = (err as Error).message || "Error";
-    const errMsg = isCodexNativeTurn
-      ? formatCodexZoteroMcpError(err, "Native conversation failed")
-      : technicalErrMsg;
-    const retryHint = resolveMultimodalRetryHint(errMsg, imageCount);
     // Preserve whatever streamed before the connection dropped instead of
     // discarding it. The streamed text includes the last, not-yet-flushed
     // chunk.
-    const partialText = sanitizeText(
-      streamingResponse.getStreamedText() || assistantMessage.text || "",
-    );
-    streamingResponse.dispose();
-    const outcome = resolveStreamInterruptionOutcome({
-      partialText,
-      errorMessage: errMsg,
-      retryHint,
+    const outcome = assistantTurn.readInterruption(err, {
+      codexLabel: "Native conversation failed",
+      imageCount,
     });
+    const errMsg = outcome.errorMessage;
+    const retryHint = outcome.retryHint;
     assistantMessage.text = outcome.text;
     assistantMessage.interrupted = outcome.interrupted;
     assistantMessage.streaming = false;
-    codexActivityTrace?.flushBufferedProgress("error");
+    assistantTurn.codexTrace?.flushBufferedProgress("error");
     refreshChatSafely();
     await persistAssistantOnce();
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");
   } finally {
-    // Same end of life as the retry flow: stop the trace controller before
-    // the request UI goes idle, so nothing it buffered can arrive later.
-    codexActivityTrace?.dispose();
-    // Every path through this flow -- completion, error, abort -- ends here,
-    // so this is where the one usage row for the turn is written. It never
-    // throws and is deliberately not awaited: usage must not delay the turn.
-    void usageRecorder.flush(usageFlushReason);
+    // Same end of life as the retry flow: stop the trace and write the one
+    // usage row (unawaited) before the request UI goes idle, so nothing the
+    // trace buffered can arrive later.
+    assistantTurn.end();
     if (
       clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
     ) {
@@ -9889,6 +9373,45 @@ export async function sendQuestion(
       });
     }
   }
+}
+
+/**
+ * A turn started elsewhere ended this panel's edit. The edited text becomes
+ * the conversation's draft, like anything typed in its composer (every panel
+ * showing the conversation shares that draft), and the panel repaints without
+ * the edit widget. This waits a turn: the panel that started the turn clears
+ * the draft (its sent text) right after its request starts, and the request
+ * start already synced every panel's composer to that draft.
+ */
+function keepSupersededInlineEditText(
+  body: Element,
+  item: Zotero.Item,
+  inputBoxEl: HTMLTextAreaElement | null,
+  conversationKey: number | undefined,
+): void {
+  const win = body.ownerDocument?.defaultView;
+  if (!win) return;
+  const text = inputBoxEl?.value || "";
+  win.setTimeout(() => {
+    if (!body.isConnected || getInlineEditTarget(body)) return;
+    if (
+      text.trim() &&
+      conversationKey &&
+      conversationKey > 0 &&
+      getConversationKey(item) === conversationKey
+    ) {
+      const nextDraft = mergeSupersededEditIntoDraft(
+        draftInputCache.get(conversationKey) || "",
+        text,
+      );
+      draftInputCache.set(conversationKey, nextDraft);
+      if (inputBoxEl && inputBoxEl.value !== nextDraft) {
+        inputBoxEl.value = nextDraft;
+        resizeTextareaToContent(inputBoxEl);
+      }
+    }
+    refreshConversationPanels(body, item);
+  }, 0);
 }
 
 /** Build the inline edit textarea + action bar that replaces a user bubble. */
@@ -9903,17 +9426,20 @@ function buildInlineEditWidget(
   const widgetRoot = doc.createElement("div") as HTMLDivElement;
   widgetRoot.className = "llm-inline-edit-wrapper";
 
-  // On first entry, grab the real input section and the inputBox from the panel.
+  // On first entry, grab this panel's real input section and inputBox.
   // Subsequent refreshes (e.g. streaming) reuse the saved reference so the
   // already-detached element can be re-attached into the new widget root.
-  const isFirstEntry = !inlineEditInputSectionEl;
-  let inputSectionEl = inlineEditInputSectionEl;
+  // The edit and its borrowed section belong to this panel body only.
+  const borrowedSection = getInlineEditBorrowedInputSection(body);
+  const isFirstEntry = !borrowedSection.el;
+  let inputSectionEl = borrowedSection.el;
   if (isFirstEntry) {
     inputSectionEl = body.querySelector(
       ".llm-input-section",
     ) as HTMLElement | null;
     if (inputSectionEl) {
-      setInlineEditInputSection(
+      setInlineEditBorrowedInputSection(
+        body,
         inputSectionEl,
         inputSectionEl.parentElement,
         inputSectionEl.nextSibling,
@@ -9928,48 +9454,57 @@ function buildInlineEditWidget(
 
   // On first entry: save draft and pre-fill with the user message
   if (isFirstEntry) {
-    setInlineEditSavedDraft(inputBoxEl?.value ?? "");
-    if (inputBoxEl && inlineEditTarget) {
-      inputBoxEl.value = inlineEditTarget.currentText;
+    setInlineEditSavedDraft(body, inputBoxEl?.value ?? "");
+    const editTarget = getInlineEditTarget(body);
+    if (inputBoxEl && editTarget) {
+      inputBoxEl.value = editTarget.currentText;
     }
   }
 
-  // Keep inlineEditTarget.currentText in sync with what the user types
+  // Keep the edit target's currentText in sync with what the user types
   // (so text is preserved if chatBox rebuilds while still in edit mode).
   // Use a one-time marker to avoid stacking duplicate listeners.
   if (inputBoxEl && !inputBoxEl.dataset.inlineEditListening) {
     inputBoxEl.dataset.inlineEditListening = "1";
     inputBoxEl.addEventListener("input", () => {
-      if (inlineEditTarget) inlineEditTarget.currentText = inputBoxEl.value;
+      const editTarget = getInlineEditTarget(body);
+      if (editTarget) editTarget.currentText = inputBoxEl.value;
     });
   }
 
   // Register cleanup (idempotent — only set once per edit session).
-  if (!inlineEditCleanup) {
-    setInlineEditCleanup(() => {
+  if (!getInlineEditCleanup(body)) {
+    setInlineEditCleanup(body, () => {
+      const editConversationKey = getInlineEditTarget(body)?.conversationKey;
+      const superseded = isInlineEditSuperseded(body);
       // Restore input section to its original position in the panel.
-      const el = inlineEditInputSectionEl;
-      const parent = inlineEditInputSectionParent;
-      const next = inlineEditInputSectionNextSib;
+      const { el, parent, nextSib } = getInlineEditBorrowedInputSection(body);
       if (el && parent) {
-        parent.insertBefore(el, next);
+        parent.insertBefore(el, nextSib);
       }
-      // Restore the draft text.
+      // Restore the draft text (the edited text when a turn started
+      // elsewhere ended the edit).
       if (inputBoxEl) {
-        inputBoxEl.value = inlineEditSavedDraft;
+        inputBoxEl.value = getInlineEditSavedDraft(body);
         resizeTextareaToContent(inputBoxEl);
         delete inputBoxEl.dataset.inlineEditListening;
         delete inputBoxEl.dataset.inlineEditFocused;
       }
-      setInlineEditInputSection(null, null, null);
-      setInlineEditSavedDraft("");
+      setInlineEditBorrowedInputSection(body, null, null, null);
+      setInlineEditSavedDraft(body, "");
+      if (superseded) {
+        keepSupersededInlineEditText(
+          body,
+          item,
+          inputBoxEl,
+          editConversationKey,
+        );
+      }
     });
   }
 
   const doCancel = () => {
-    inlineEditCleanup?.();
-    setInlineEditCleanup(null);
-    setInlineEditTarget(null);
+    endInlineEdit(body);
     const win = body.ownerDocument?.defaultView;
     if (win) win.setTimeout(() => refreshConversationPanels(body, item), 0);
   };
@@ -10236,7 +9771,7 @@ export function refreshChat(
     if (updatedInPlace) return;
   }
   const doc = body.ownerDocument!;
-  setPromptMenuTarget(null);
+  setPromptMenuTarget(body, null);
   const paperContextDisplayCache: PaperContextDisplayCache = new Map();
   const resolvePaperContextForCardDisplay = (
     paperContext: PaperContextRef,
@@ -10293,6 +9828,7 @@ export function refreshChat(
     const recomputedSnapshot = estimateHistoryContextUsageSnapshot(
       item,
       history,
+      resolveSelectionSurfaceForBody(body),
     );
     const configuredLimitIsUserAuthoritative =
       recomputedSnapshot?.inputLimitSource === "advanced" ||
@@ -10326,9 +9862,51 @@ export function refreshChat(
     }
   }
 
+  // This panel's own open message edit. A turn started in the conversation
+  // from elsewhere (another panel's send, a writer with no panel) ends it as
+  // the turn starts (see tryBeginRequest), keeping the edited text in this
+  // panel's composer; a newer prompt that shows up here without that (a turn
+  // added with no request) ends it the same way. Once its prompt can no
+  // longer be shown here (deleted, or the panel shows another conversation)
+  // the edit ends too. Either way it ends before the chat box is rebuilt, so
+  // the composer it borrowed goes back to its place instead of being dropped.
+  const supersededEditTarget = getInlineEditTarget(body);
+  if (
+    supersededEditTarget?.conversationKey === conversationKey &&
+    !useTargetedRerender &&
+    hasNewerUserTurnThanInlineEdit(supersededEditTarget, history)
+  ) {
+    endInlineEditSuperseded(body);
+  }
+  const panelEditTarget = getInlineEditTarget(body);
+  const panelEditIndex =
+    panelEditTarget?.conversationKey === conversationKey
+      ? history.findIndex(
+          (message, index) =>
+            message.role === "user" &&
+            message.timestamp === panelEditTarget.userTimestamp &&
+            canEditUserPromptTurn({
+              isUser: true,
+              hasItem: Boolean(item),
+              conversationIsIdle: true,
+              assistantPair: history[index + 1],
+              providerProtocol: resolveEffectiveRequestConfig({
+                item,
+                surface: resolveSelectionSurfaceForBody(body),
+              }).providerProtocol,
+            }),
+        )
+      : -1;
+  if (panelEditTarget && panelEditIndex < 0 && !useTargetedRerender) {
+    endInlineEdit(body);
+  }
+
   if (history.length === 0) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
-    const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
+    const effectiveRequestConfig = resolveEffectiveRequestConfig({
+      item,
+      surface: resolveSelectionSurfaceForBody(body),
+    });
     if (effectiveRequestConfig.providerProtocol === "web_sync") {
       const targetEntry = getWebChatTargetByModelName(
         effectiveRequestConfig.model || "",
@@ -10385,6 +9963,7 @@ export function refreshChat(
   // [webchat] Resolve provider protocol once for editability checks
   const renderProviderProtocol = resolveEffectiveRequestConfig({
     item,
+    surface: resolveSelectionSurfaceForBody(body),
   }).providerProtocol;
   const conversationIsIdle = !history.some((m) => m.streaming);
   const canEditPromptAt = (index: number) =>
@@ -10416,11 +9995,7 @@ export function refreshChat(
     const assistantPairMsg = history[index + 1];
     const hasAssistantPair = isUser && assistantPairMsg?.role === "assistant";
     const canEditUserPrompt = canEditPromptAt(index);
-    const isInlineEditBubble = Boolean(
-      canEditUserPrompt &&
-      inlineEditTarget?.conversationKey === conversationKey &&
-      inlineEditTarget.userTimestamp === msg.timestamp,
-    );
+    const isInlineEditBubble = panelEditIndex >= 0 && index === panelEditIndex;
     let hasUserContext = false;
     const wrapper = doc.createElement("div") as HTMLDivElement;
     wrapper.className = `llm-message-wrapper ${isUser ? "user" : "assistant"}`;
@@ -11181,11 +10756,14 @@ export function refreshChat(
                 syncErr,
               );
             }
-            setInlineEditTarget({
+            setInlineEditTarget(body, {
               conversationKey,
               userTimestamp: msg.timestamp,
               assistantTimestamp: Math.floor(assistantPairMsg!.timestamp),
               currentText: msg.text || "",
+              latestUserTimestamp: getLatestUserTurnTimestamp(
+                chatHistory.get(conversationKey) || [],
+              ),
             });
             win.setTimeout(() => refreshConversationPanels(body, item), 0);
           });
@@ -11241,8 +10819,8 @@ export function refreshChat(
             retryModelMenu.classList.remove("llm-model-menu-open");
             retryModelMenu.style.display = "none";
           }
-          setResponseMenuTarget(null);
-          setPromptMenuTarget({
+          setResponseMenuTarget(body, null);
+          setPromptMenuTarget(body, {
             item,
             conversationKey,
             userTimestamp: Math.floor(msg.timestamp),
@@ -11832,6 +11410,7 @@ export function refreshChat(
           originalEntry.apiBase,
           originalEntry.providerProtocol,
           originalEntry.advanced?.profileOverride,
+          resolveSelectionSurfaceForBody(body),
         );
         void retryLatestAssistantResponse(
           body,

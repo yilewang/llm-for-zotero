@@ -1,5 +1,6 @@
 import { canonicalNoteHtml } from "../src/utils/noteHtml";
 import { assert } from "chai";
+import { setAppLogSinkForTests, type AppLogLevel } from "../src/core/logging";
 import { readFileSync } from "node:fs";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { createAgentExecutionContext } from "../src/agent/execution/context";
@@ -21,7 +22,9 @@ import {
 import {
   createAssistantResponseNote,
   createNoteFromChatHistory,
+  createStandaloneNoteFromChatHistory,
 } from "../src/modules/contextPanel/notes";
+import type { Message } from "../src/modules/contextPanel/types";
 import { normalizeNoteSourceText } from "../src/services/notes/noteRendering";
 import { stripNoteHtml } from "../src/services/notes/noteSnapshot";
 import {
@@ -1423,5 +1426,220 @@ describe("noteWrite create tracking", function () {
     assert.notInclude(note.getNote(), "flowchart LR");
     assert.equal(renderedMermaidSource, "flowchart LR\n  A --> B");
     assert.deepEqual(importedImageParents, [100]);
+  });
+
+  describe("chat-history export targets", function () {
+    const logged: Array<{ level: AppLogLevel; message: string }> = [];
+    const textHistory: Message[] = [
+      { role: "user", text: "What is the main result?", timestamp: 1 },
+      {
+        role: "assistant",
+        text: "The complete text-only answer.",
+        timestamp: 2,
+        modelName: "Codex",
+      },
+    ];
+    const missingImageHistory: Message[] = [
+      { role: "user", text: "Please make a diagram.", timestamp: 1 },
+      {
+        role: "assistant",
+        text: "",
+        timestamp: 2,
+        modelName: "Codex",
+        generatedImages: [
+          {
+            id: "img-missing",
+            label: "missing.png",
+            src: "file:///tmp/missing.png",
+          },
+        ],
+      },
+    ];
+
+    // A history whose attachments were never read proves that the target
+    // check rejected the export before any attachment normalization ran.
+    function historyRecordingAttachmentReads(): {
+      history: Message[];
+      wasRead: () => boolean;
+    } {
+      let read = false;
+      const message = { role: "user", text: "Hello", timestamp: 1 } as Message;
+      Object.defineProperty(message, "attachments", {
+        enumerable: true,
+        get: () => {
+          read = true;
+          return [];
+        },
+      });
+      return { history: [message], wasRead: () => read };
+    }
+
+    function messages(level: AppLogLevel): string[] {
+      return logged
+        .filter((entry) => entry.level === level)
+        .map((entry) => entry.message);
+    }
+
+    // Attachment GC runs un-awaited after the export returns.
+    async function waitForMessage(
+      level: AppLogLevel,
+      message: string,
+    ): Promise<string[]> {
+      for (let tick = 0; tick < 50; tick += 1) {
+        if (messages(level).includes(message)) break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      return messages(level);
+    }
+
+    beforeEach(function () {
+      logged.splice(0);
+      prefStore.set("extensions.zotero.llmforzotero.logLevel", "info");
+      setAppLogSinkForTests((level, args) =>
+        logged.push({ level, message: String(args[0]) }),
+      );
+    });
+
+    afterEach(function () {
+      setAppLogSinkForTests(null);
+    });
+
+    it("the item exporter creates a child note in the parent's library", async function () {
+      const result = await createNoteFromChatHistory(parentItem, textHistory);
+
+      assert.equal(result.noteId, 100);
+      assert.isUndefined(result.warnings);
+      const note = savedItems.get(100) as unknown as MockNoteItem;
+      assert.equal(note.parentID, 9);
+      assert.equal(note.libraryID, 1);
+      assert.include(note.getNote(), "The complete text-only answer.");
+      assert.include(
+        messages("info"),
+        "LLM: Created chat history note 100 for parent 9",
+      );
+      // The test Zotero has no DB, so both attachment bookkeeping steps fail
+      // and log under the exporter's own label.
+      assert.include(
+        messages("warn"),
+        "LLM: Failed to persist note attachment refs",
+      );
+      assert.include(
+        await waitForMessage(
+          "warn",
+          "LLM: Attachment GC after note export failed",
+        ),
+        "LLM: Attachment GC after note export failed",
+      );
+    });
+
+    it("the item exporter logs its own warning label", async function () {
+      globalScope.Zotero!.Attachments!.importEmbeddedImage = async () => null;
+
+      const result = await createNoteFromChatHistory(
+        parentItem,
+        missingImageHistory,
+      );
+
+      assert.deepEqual(result.warnings, [
+        "1 generated image(s) could not be embedded",
+      ]);
+      assert.include(
+        messages("warn"),
+        "LLM: Chat history note 100 saved with warnings:",
+      );
+    });
+
+    it("the item exporter rejects a missing parent before normalizing attachments", async function () {
+      const { history, wasRead } = historyRecordingAttachmentReads();
+      const orphan = {
+        id: 0,
+        libraryID: 1,
+        isRegularItem: () => false,
+        isAttachment: () => false,
+        isNote: () => false,
+        parentID: undefined,
+      } as unknown as Zotero.Item;
+
+      let error = "";
+      try {
+        await createNoteFromChatHistory(orphan, history);
+      } catch (e) {
+        error = (e as Error).message;
+      }
+
+      assert.equal(error, "No parent item available for note creation");
+      assert.isFalse(wasRead());
+      assert.equal(savedItems.size, 0);
+    });
+
+    it("the standalone exporter creates a top-level note in the floored library", async function () {
+      const result = await createStandaloneNoteFromChatHistory(
+        2.9,
+        textHistory,
+      );
+
+      assert.equal(result.noteId, 100);
+      assert.isUndefined(result.warnings);
+      const note = savedItems.get(100) as unknown as MockNoteItem;
+      assert.isUndefined(note.parentID);
+      assert.equal(note.libraryID, 2);
+      assert.lengthOf(note.saveOptionsHistory, 2);
+      assert.include(note.getNote(), "What is the main result?");
+      assert.include(note.getNote(), "The complete text-only answer.");
+      assert.notInclude(note.getNote(), "Preparing chat history export");
+      assert.lengthOf(childNotes(9), 0);
+      assert.include(
+        messages("info"),
+        "LLM: Created standalone chat history note 100 in library 2",
+      );
+      assert.include(
+        messages("warn"),
+        "LLM: Failed to persist standalone note attachment refs",
+      );
+      assert.include(
+        await waitForMessage(
+          "warn",
+          "LLM: Attachment GC after standalone note export failed",
+        ),
+        "LLM: Attachment GC after standalone note export failed",
+      );
+    });
+
+    it("the standalone exporter logs its own warning label", async function () {
+      globalScope.Zotero!.Attachments!.importEmbeddedImage = async () => null;
+
+      const result = await createStandaloneNoteFromChatHistory(
+        1,
+        missingImageHistory,
+      );
+
+      assert.deepEqual(result.warnings, [
+        "1 generated image(s) could not be embedded",
+      ]);
+      assert.include(
+        messages("warn"),
+        "LLM: Standalone chat history note 100 saved with warnings:",
+      );
+    });
+
+    it("the standalone exporter rejects an invalid library ID before normalizing attachments", async function () {
+      for (const libraryID of [0, -1, 0.5, Number.NaN, Infinity]) {
+        const { history, wasRead } = historyRecordingAttachmentReads();
+        let error = "";
+        try {
+          await createStandaloneNoteFromChatHistory(libraryID, history);
+        } catch (e) {
+          error = (e as Error).message;
+        }
+
+        assert.equal(
+          error,
+          "Invalid library ID for standalone note export",
+          String(libraryID),
+        );
+        assert.isFalse(wasRead(), String(libraryID));
+      }
+      assert.equal(savedItems.size, 0);
+    });
   });
 });

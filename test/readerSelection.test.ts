@@ -4,7 +4,7 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
   getSelectionPopupTextFromReader,
-} from "../src/modules/contextPanel/readerSelection";
+} from "../src/services/pdf/readerSelection";
 
 const normalize = (text: string) => text.trim().replace(/\s+/g, " ");
 

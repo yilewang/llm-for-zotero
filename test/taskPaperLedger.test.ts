@@ -643,6 +643,59 @@ describe("taskPaperLedger", function () {
       );
     });
 
+    it("records the page index a passage or page read came from (D5)", function () {
+      const paperContext = { itemId: 10, contextItemId: 20, title: "A" };
+      const targeted = derive(
+        "paper_read",
+        { mode: "targeted", query: "drift" },
+        {
+          mode: "targeted",
+          results: [],
+          papers: [
+            {
+              paperContext,
+              status: "matched",
+              passages: [
+                {
+                  text: "Printed page text",
+                  chunkKind: "page",
+                  pageIndex: 13,
+                  pageLabel: "4",
+                },
+                {
+                  text: "In Methods we ...",
+                  sectionLabel: "Methods",
+                  pageIndex: 5,
+                },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        readsFor(targeted, "1:10").map((read) => [read.label, read.pageIndex]),
+        [
+          ["p. 4", 13],
+          ["Methods", 5],
+        ],
+      );
+
+      const visual = derive(
+        "paper_read",
+        { target: { itemId: 10 }, mode: "visual", pages: [3, 4] },
+        {
+          target: { itemId: 10, contextItemId: 20, title: "A" },
+          pageCount: 2,
+          results: [
+            { pageIndex: 2, pageLabel: "3" },
+            { pageIndex: 3, pageLabel: "4" },
+          ],
+        },
+      );
+      // The first page the label names.
+      assert.equal(readsFor(visual, "1:10")[0].pageIndex, 2);
+    });
+
     it("returns null for unknown tools and empty payloads", function () {
       assert.isNull(
         deriveTaskPaperLedgerDelta({

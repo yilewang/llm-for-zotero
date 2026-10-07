@@ -1,3 +1,8 @@
+import { clearStandaloneSelection } from "./conversationSelection";
+import {
+  clearStandaloneSurfaceChoices,
+  getSelectedModelEntryForSurface,
+} from "./surfaceChoices";
 import { callLLM, callLLMStream } from "../../utils/llmClient";
 import { appLogger } from "../../core/logging";
 import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
@@ -49,7 +54,7 @@ import {
   exerciseLongJobNoteResume,
   exerciseLongJobReplay,
 } from "./longJobReplay";
-import { buildUI } from "./buildUI";
+import { mountPanelShell } from "./panelMount";
 import { getAgentRuntime } from "../../agent";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
 import {
@@ -100,6 +105,7 @@ import type {
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestTargetedQuoteRefreshResult,
+  WorkflowTestChatTurnLifecycleState,
   WorkflowTestLiveChatTurn,
   WorkflowTestLiveWebChatTurn,
   WorkflowTestWebChatPdfChipState,
@@ -135,12 +141,16 @@ import {
   buildAgentEngineDepsForTests,
   ensureConversationLoaded,
   getConversationKey,
+  getSelectedReasoningForItem,
   hasAgentRunTraceForTests,
   refreshActiveConversationPanels,
   refreshChat,
+  retryLatestAssistantResponse,
   setAgentRunTraceLoaderForTests,
   updateContextUsageSnapshotFromProvider,
 } from "./chat";
+import { getAdvancedModelParamsForEntry } from "./prefHelpers";
+import { loadUsageEventsForConversation } from "../../utils/usageStore";
 import {
   applySelectedTextPreview,
   getSelectedTextContextEntries,
@@ -190,7 +200,7 @@ import {
   getModelEntryById,
 } from "../../utils/modelProviders";
 import type { RuntimeConversationSystem } from "./runtimeSystemControls";
-import { collectReaderSelectionDocuments } from "./readerSelection";
+import { collectReaderSelectionDocuments } from "../../services/pdf/readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import type { ConversationSystem } from "../../shared/types";
 import { clearPaperRestoreTargetsForWorkflowTests } from "../../shared/paperConversationRestore";
@@ -199,10 +209,13 @@ import {
   bindEmbeddedPanelHost,
   bindTestPanelHost,
   capturePanelOperationLease,
+  resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
 import {
   getConversationWriteGeneration,
   bumpConversationWriteGeneration,
+  getConversationWriteLockTailForTests,
+  withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
 import { loadPlanDocumentOutbox } from "../../agent/documents/store";
 import {
@@ -723,12 +736,17 @@ function minimalPdfBytes(title: string): Uint8Array {
   return buildPdfBytes([title]);
 }
 
+// Two fixtures written in the same millisecond must not share a file: one
+// test's cleanup would otherwise remove another test's fixture.
+let tempFileSequence = 0;
+
 async function writeTempFile(
   filename: string,
   data: Uint8Array,
 ): Promise<string> {
+  tempFileSequence += 1;
   const path = getTempPath(
-    `llm-for-zotero-workflow-${Date.now()}-${sanitizeTempFilename(filename)}`,
+    `llm-for-zotero-workflow-${Date.now()}-${tempFileSequence}-${sanitizeTempFilename(filename)}`,
   );
   const ioUtils = (
     globalThis as unknown as {
@@ -1070,10 +1088,13 @@ async function exerciseBackgroundAgentPublication(input: {
   const paperB = Zotero.Items.get(input.paperBItemId);
   disposeSetupHandlers(panel.body);
   bindTestPanelHost(panel.body, paperB);
-  buildUI(panel.body, paperB);
-  activeContextPanels.set(panel.body, () => paperB);
-  activeContextPanelRawItems.set(panel.body, paperB);
-  setupHandlers(panel.body, paperB);
+  mountPanelShell({
+    body: panel.body,
+    renderItem: paperB,
+    getMountedItem: () => paperB,
+    rawItem: paperB,
+    setupItem: paperB,
+  });
   await ensureConversationLoaded(paperB);
   panel.item = paperB;
   refreshChat(panel.body, paperB);
@@ -1132,6 +1153,8 @@ function clearWorkflowConversationRuntimeState(): void {
   activeCodexConversationModeByLibrary.clear();
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
+  clearStandaloneSelection();
+  clearStandaloneSurfaceChoices();
   selectedPaperContextCache.clear();
   selectedCollectionContextCache.clear();
   selectedTagContextCache.clear();
@@ -1154,10 +1177,13 @@ async function renderPanelForItemInternal(
   const initialPanelItem = options?.resolveRememberedState
     ? resolveInitialPanelItemState(item).item
     : item;
-  buildUI(body, initialPanelItem);
-  activeContextPanels.set(body, () => initialPanelItem);
-  activeContextPanelRawItems.set(body, item);
-  setupHandlers(body, item);
+  mountPanelShell({
+    body,
+    renderItem: initialPanelItem,
+    getMountedItem: () => initialPanelItem,
+    rawItem: item,
+    setupItem: item,
+  });
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
   refreshChat(body, mountedItem);
@@ -1245,10 +1271,13 @@ async function exerciseStaleAgentTracePanelIsolation(input: {
 
     disposeSetupHandlers(body);
     bindTestPanelHost(body, paperBItem);
-    buildUI(body, paperBItem);
-    activeContextPanels.set(body, () => paperBItem);
-    activeContextPanelRawItems.set(body, paperBItem);
-    setupHandlers(body, paperBItem);
+    mountPanelShell({
+      body,
+      renderItem: paperBItem,
+      getMountedItem: () => paperBItem,
+      rawItem: paperBItem,
+      setupItem: paperBItem,
+    });
     await ensureConversationLoaded(paperBItem);
     const paperBConversationKey = getConversationKey(paperBItem);
     if (!paperBConversationKey) {
@@ -2701,6 +2730,137 @@ async function sendLiveChatTurn(
     probes.hidePromptMenu();
     setWorkflowTestSendInterceptor(previousInterceptor);
   }
+}
+
+/**
+ * Types `text` into the panel's composer and clicks Send, letting the send
+ * continue into the real `sendQuestion`. Resolves as soon as the send flow
+ * hands the request over; the caller drives the provider and waits for
+ * `sendSettledSequence` to pass `sendSettledSequenceBefore`.
+ */
+async function startPanelChatSend(
+  panelId: string,
+  text: string,
+  overrides: Pick<
+    SendQuestionOptions,
+    "forcedSkillIds" | "selectedTagContexts"
+  > = {},
+): Promise<{ conversationKey: number; sendSettledSequenceBefore: number }> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const input = panel.body.querySelector(
+    "#llm-input",
+  ) as HTMLTextAreaElement | null;
+  const sendBtn = panel.body.querySelector(
+    "#llm-send",
+  ) as HTMLButtonElement | null;
+  if (!input || !sendBtn) {
+    throw new Error("Workflow panel composer was not rendered");
+  }
+  const sendSettledSequenceBefore = getWorkflowTestSendSettledSequence();
+  const previousInterceptor = getWorkflowTestSendInterceptor();
+  lastSend = null;
+  try {
+    setWorkflowTestSendInterceptor((opts) => {
+      Object.assign(opts, overrides);
+      lastSend = opts;
+      return true;
+    });
+    input.value = text;
+    const eventCtor = panel.body.ownerDocument.defaultView?.Event ?? Event;
+    input.dispatchEvent(new eventCtor("input", { bubbles: true }));
+    sendBtn.click();
+    await waitForLastSend();
+  } finally {
+    setWorkflowTestSendInterceptor(previousInterceptor);
+  }
+  const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+  return {
+    conversationKey: getConversationKey(mountedItem),
+    sendSettledSequenceBefore,
+  };
+}
+
+/**
+ * Runs the real retry for the panel's latest turn with `entryId` (or the
+ * selected model entry), passing the same arguments the retry model menu
+ * passes for an upstream entry.
+ */
+async function retryLatestPanelResponse(
+  panelId: string,
+  entryId?: string,
+): Promise<unknown> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const item = activeContextPanels.get(panel.body)?.() || panel.item;
+  const entry = entryId
+    ? getModelEntryById(entryId)
+    : getSelectedModelEntryForSurface(
+        resolveSelectionSurfaceForBody(panel.body),
+      );
+  if (!entry) throw new Error("Workflow retry needs a model entry");
+  // The retry menu passes these arguments for upstream api_key entries only;
+  // Codex-auth entries take a different reasoning source.
+  const system =
+    (panel.body.querySelector("#llm-main") as HTMLElement | null)?.dataset
+      .conversationSystem || "upstream";
+  if (system !== "upstream" || entry.authMode === "codex_auth") {
+    throw new Error(
+      "Workflow retry helper supports upstream non-Codex-auth entries only",
+    );
+  }
+  return retryLatestAssistantResponse(
+    panel.body,
+    item,
+    entry.model,
+    entry.apiBase,
+    entry.apiKey,
+    entry.authMode,
+    entry.providerProtocol,
+    entry.entryId,
+    entry.providerLabel,
+    getSelectedReasoningForItem(
+      item.id,
+      entry.model,
+      entry.apiBase,
+      entry.providerProtocol,
+      entry.advanced?.profileOverride,
+      resolveSelectionSurfaceForBody(panel.body),
+    ),
+    getAdvancedModelParamsForEntry(entry.entryId),
+  );
+}
+
+async function readChatTurnLifecycle(
+  conversationKey: number,
+): Promise<WorkflowTestChatTurnLifecycleState> {
+  assertWorkflowTestEnabled();
+  const table = WORKFLOW_CONVERSATION_PERSISTENCE_TABLES.upstream.messages;
+  const columns = (
+    ((await Zotero.DB.queryAsync(`PRAGMA table_info(${table})`)) as
+      | Array<{ name?: unknown }>
+      | undefined) || []
+  )
+    .map((column) => String(column.name || ""))
+    .filter(Boolean);
+  const rows =
+    ((await Zotero.DB.queryAsync(
+      `SELECT ${columns.join(", ")} FROM ${table}
+       WHERE conversation_key = ?
+       ORDER BY id ASC`,
+      [conversationKey],
+    )) as Array<Record<string, unknown>> | undefined) || [];
+  return {
+    memory: JSON.parse(
+      JSON.stringify(chatHistory.get(conversationKey) || []),
+    ) as Array<Record<string, unknown>>,
+    storedRows: rows.map((row) =>
+      Object.fromEntries(columns.map((column) => [column, row[column]])),
+    ),
+    usageRows: await loadUsageEventsForConversation(conversationKey),
+    requestPending: isRequestPending(conversationKey),
+    sendSettledSequence: getWorkflowTestSendSettledSequence(),
+  };
 }
 
 async function renderAssistantForPanel(
@@ -4514,12 +4674,18 @@ async function exerciseReaderPopupActiveTabRouting(input: {
   }
 }
 
+/**
+ * Reader Add Text while the standalone window is open: the selection goes to
+ * the panel in the reader tab's own context pane, never to the window.
+ */
 async function exerciseReaderPopupStandaloneRouting(input: {
+  panelId: string;
   attachmentItemId: number;
   pageIndex: number;
   selectedText: string;
 }): Promise<WorkflowTestReaderPopupStandaloneRoutingDiagnostics> {
   assertWorkflowTestEnabled();
+  const readerPanel = getPanel(input.panelId);
   const standaloneDoc = await waitForStandaloneReady();
   const standaloneBody = standaloneDoc.querySelector(
     ".llm-standalone-content",
@@ -4538,6 +4704,23 @@ async function exerciseReaderPopupStandaloneRouting(input: {
   let popupHost: HTMLElement | null = null;
   let selectionDoc: Document | null = null;
   try {
+    const mainDocument = Zotero.getMainWindow?.()?.document || null;
+    const readerContextPanel = mainDocument
+      ? getReaderContextPanelForTab(mainDocument, reader.tabID)
+      : null;
+    if (!readerContextPanel) {
+      throw new Error("Workflow reader tab does not expose a context panel");
+    }
+    // First in the reader's pane, so routing picks it over any native panel
+    // in the pane that may show another conversation.
+    readerContextPanel.insertBefore(
+      readerPanel.body,
+      readerContextPanel.firstChild,
+    );
+    const readerItem =
+      activeContextPanels.get(readerPanel.body)?.() || readerPanel.item;
+    const readerConversationKey = getConversationKey(readerItem);
+
     const popupAction = await dispatchWorkflowReaderAddTextPopup({
       reader,
       pageIndex: input.pageIndex,
@@ -4545,23 +4728,55 @@ async function exerciseReaderPopupStandaloneRouting(input: {
     });
     popupHost = popupAction.popupHost;
     selectionDoc = popupAction.selectionDoc;
-    await waitForSelectedContext({
-      conversationKey: standaloneConversationKey,
-      selectedText: input.selectedText,
-      pageIndex: input.pageIndex,
-    });
+    try {
+      await waitForSelectedContext({
+        conversationKey: readerConversationKey,
+        selectedText: input.selectedText,
+        pageIndex: input.pageIndex,
+      });
+    } catch (err) {
+      const roots = Array.from(
+        readerContextPanel.querySelectorAll("#llm-main"),
+      ) as HTMLElement[];
+      throw new Error(
+        `${(err as Error).message}: ${JSON.stringify({
+          readerConversationKey,
+          standaloneConversationKey,
+          readerPanelRoots: roots.map((root) => ({
+            workflowPanel: root.parentElement === readerPanel.body,
+            conversationKey: Number(root.dataset.itemId || 0),
+            conversationKind: root.dataset.conversationKind || "",
+            hasText: getSelectedTextContextEntries(
+              Number(root.dataset.itemId || 0),
+            ).some((context) => context.text === input.selectedText),
+          })),
+          standaloneHasText: getSelectedTextContextEntries(
+            standaloneConversationKey,
+          ).some((context) => context.text === input.selectedText),
+        })}`,
+      );
+    }
     await Zotero.Promise.delay(25);
 
+    const previewHasText = (body: Element) =>
+      Array.from(body.querySelectorAll(".llm-selected-context-text")).some(
+        (node) => node?.textContent?.trim() === input.selectedText,
+      );
+    const conversationHasText = (conversationKey: number) =>
+      getSelectedTextContextEntries(conversationKey).some(
+        (context) => context.text === input.selectedText,
+      );
     return {
       readerTabId: `${reader.tabID || ""}`,
       addTextButtonLabel: popupAction.addTextButtonLabel,
+      readerConversationKey,
+      readerConversationHasText: conversationHasText(readerConversationKey),
+      readerPreviewHasText: previewHasText(readerPanel.body),
       standaloneConversationKey,
-      standaloneConversationHasText: getSelectedTextContextEntries(
+      standaloneConversationHasText: conversationHasText(
         standaloneConversationKey,
-      ).some((context) => context.text === input.selectedText),
-      standalonePreviewHasText: Array.from(
-        standaloneBody.querySelectorAll(".llm-selected-context-text"),
-      ).some((node) => node?.textContent?.trim() === input.selectedText),
+      ),
+      standalonePreviewHasText: previewHasText(standaloneBody),
     };
   } finally {
     selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
@@ -4737,6 +4952,8 @@ async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   resolveDelayedCodexPermissionCatalog?.();
   resolveDelayedCodexPermissionCatalog = null;
+  for (const held of heldConversationWriteLocks.values()) held.release();
+  heldConversationWriteLocks.clear();
   setFooterPermissionCatalogLoadersForTests();
   setAgentRunTraceLoaderForTests();
   await closeStandalone();
@@ -5175,6 +5392,119 @@ async function searchPanelHistory(
     throw new Error("History search hook not installed on panel body");
   }
   return search(query);
+}
+
+const heldConversationWriteLocks = new Map<
+  number,
+  { release: () => void; tail: Promise<void> | undefined }
+>();
+
+/**
+ * Holds the conversation's write lock until `releaseConversationWriteLock`,
+ * so a test can stop a flow at its next store write.
+ */
+async function holdConversationWriteLock(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  if (heldConversationWriteLocks.has(conversationKey)) {
+    throw new Error(`write lock ${conversationKey} is already held`);
+  }
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await new Promise<void>((held) => {
+    void withConversationWriteLock(conversationKey, () => {
+      held();
+      return released;
+    });
+  });
+  heldConversationWriteLocks.set(conversationKey, {
+    release,
+    tail: getConversationWriteLockTailForTests(conversationKey),
+  });
+}
+
+/** Whether another write now waits behind the held lock. */
+async function isConversationWriteLockQueued(
+  conversationKey: number,
+): Promise<boolean> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  if (!held) throw new Error(`write lock ${conversationKey} is not held`);
+  return getConversationWriteLockTailForTests(conversationKey) !== held.tail;
+}
+
+/**
+ * Treats the writes queued so far as seen, so that
+ * isConversationWriteLockQueued reports only a write that queues later.
+ */
+async function markConversationWriteLockQueue(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  if (!held) throw new Error(`write lock ${conversationKey} is not held`);
+  held.tail = getConversationWriteLockTailForTests(conversationKey);
+}
+
+async function releaseConversationWriteLock(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const held = heldConversationWriteLocks.get(conversationKey);
+  heldConversationWriteLocks.delete(conversationKey);
+  held?.release();
+}
+
+let heldFinalRequest: {
+  reached: boolean;
+  release: () => void;
+  previous: ReturnType<typeof getWorkflowTestFinalRequestInterceptor>;
+} | null = null;
+
+/**
+ * Holds the next chat request at its final preparation step, after the flow
+ * wrote its user row and before dispatch, until `releaseFinalRequest`. Later
+ * requests pass through to the interceptor that was installed before.
+ */
+async function holdNextFinalRequest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  if (heldFinalRequest) throw new Error("a final request is already held");
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hold = {
+    reached: false,
+    release,
+    previous: getWorkflowTestFinalRequestInterceptor(),
+  };
+  heldFinalRequest = hold;
+  setWorkflowTestFinalRequestInterceptor(async (snapshot) => {
+    if (!hold.reached) {
+      hold.reached = true;
+      await released;
+      return false;
+    }
+    return hold.previous ? await hold.previous(snapshot) : false;
+  });
+}
+
+/** Whether the held request has reached its final preparation step. */
+async function isFinalRequestHeld(): Promise<boolean> {
+  assertWorkflowTestEnabled();
+  return Boolean(heldFinalRequest?.reached);
+}
+
+async function releaseFinalRequest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  const hold = heldFinalRequest;
+  heldFinalRequest = null;
+  if (!hold) return;
+  setWorkflowTestFinalRequestInterceptor(hold.previous);
+  hold.release();
 }
 
 async function failNextPendingTurnFinalizes(count: number): Promise<void> {
@@ -5806,6 +6136,9 @@ export function installWorkflowTestHarness(targetAddon: {
     toggleWebChatPdfChip: toggleWebChatPdfChipForWorkflow,
     sendLiveWebChatTurn,
     sendLiveChatTurn,
+    startPanelChatSend,
+    retryLatestPanelResponse,
+    readChatTurnLifecycle,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
     clickPanelSystemTogglesRapidly,
@@ -6055,6 +6388,13 @@ export function installWorkflowTestHarness(targetAddon: {
     sweepPendingDeletionsAsRestart,
     searchPanelHistory,
     failNextPendingTurnFinalizes,
+    holdConversationWriteLock,
+    isConversationWriteLockQueued,
+    markConversationWriteLockQueue,
+    releaseConversationWriteLock,
+    holdNextFinalRequest,
+    isFinalRequestHeld,
+    releaseFinalRequest,
     forceWebChatSessionAnchorFailures,
     askCapturingFinalRequest,
     simulateProviderContextUsage,

@@ -119,7 +119,7 @@ describe("chat request lifecycle sync", function () {
       "src/modules/contextPanel/setupHandlers.ts",
       "utf8",
     );
-    const inlineStart = source.indexOf("if (inlineEditTarget && item) {");
+    const inlineStart = source.indexOf("if (panelEditTarget && item) {");
     const inlineEnd = source.indexOf(
       "if (isQueuedFollowUpSendAvailable())",
       inlineStart,

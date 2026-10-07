@@ -1,3 +1,4 @@
+import { fnv1a32Raw } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
@@ -10,21 +11,53 @@ import {
   stripBoundaryEllipsis,
   summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
-} from "../../services/quotes/quoteTextSearch";
-import type {
-  PdfQuoteCertificate,
-  PdfQuoteVerification,
-  PdfReaderPageText,
-  PdfReaderTextCache,
-  PdfReaderTextCoverage,
-} from "../../services/pdf/readerTextBridge";
+} from "../quotes/quoteTextSearch";
 import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
-} from "../../services/quotes/quoteTextNormalization";
+} from "../quotes/quoteTextNormalization";
+
+type PdfReaderPageText = {
+  pageIndex: number;
+  pageLabel?: string;
+  text: string;
+};
+
+type PdfReaderTextCoverage = "full-pdfworker" | "full-viewer" | "partial-dom";
+
+type PdfReaderTextCache = {
+  pages: PdfReaderPageText[];
+  /** Pre-computed normalised text per page for O(1) reuse. */
+  normalised: Array<{
+    pageIndex: number;
+    pageLabel?: string;
+    normalizedText: string;
+    textIndex: QuoteTextIndex;
+  }>;
+  coverage: PdfReaderTextCoverage;
+  pageCount?: number;
+  sourceFingerprint?: string;
+};
+
+type PdfQuoteCertificate = {
+  contextItemId: number;
+  documentFingerprint: string;
+  pageIndex: number;
+  pageLabel?: string;
+  sourceMatchText: string;
+  sourceMatchKind: "exact" | "normalized-span";
+  /** What was established, independently of formatting normalization. */
+  verificationMode?: "complete-quote" | "inline-math-locator";
+  sourceMatchPageOccurrence: number;
+};
+
+type PdfQuoteVerification =
+  | { status: "matched"; certificate: PdfQuoteCertificate }
+  | { status: "literal-not-found"; documentFingerprint: string }
+  | { status: "defer"; reason: string };
 
 export type LivePdfPageText = PdfReaderPageText;
 
@@ -108,6 +141,11 @@ export type ExactQuoteJumpResult = {
   expectedPageIndex: number | null;
   matchedPageIndex?: number;
   queryUsed?: string;
+  /**
+   * Which of the wordings handed to the jump (sanitized and trimmed) this
+   * match came from. Set only on a match.
+   */
+  wordingUsed?: string;
   highlightCoverage?: number;
   queries: ExactQuoteJumpQueryAttempt[];
   debugSummary: string[];
@@ -275,6 +313,13 @@ function parsePageIndexFromElement(
   return null;
 }
 
+/**
+ * The printed label on a PDF.js page element or its ancestors. PDF.js sets
+ * data-page-label exactly when the page has one. The page's other attributes
+ * are no label: data-page-number is the page number, and the landmark's
+ * l10n args and aria-label hold `pageLabel ?? pageNumber`, so without a
+ * label they hold the page number too.
+ */
 function getPageLabelFromElement(
   element: Element | null | undefined,
 ): string | undefined {
@@ -282,39 +327,6 @@ function getPageLabelFromElement(
   while (current) {
     const explicitPageLabel = current.getAttribute("data-page-label")?.trim();
     if (explicitPageLabel) return explicitPageLabel;
-
-    const localizationArgs = current.getAttribute("data-l10n-args");
-    if (localizationArgs) {
-      try {
-        const parsed = JSON.parse(localizationArgs) as Record<string, unknown>;
-        const localizedPageLabel = String(
-          parsed.pageLabel ?? parsed.page ?? parsed.label ?? "",
-        ).trim();
-        if (localizedPageLabel) return localizedPageLabel;
-      } catch {
-        // Ignore malformed localization metadata and use the PDF.js fallback.
-      }
-    }
-
-    const ariaLabel = current.getAttribute("aria-label")?.trim();
-    if (ariaLabel) {
-      const pageLabelMatch = ariaLabel.match(
-        /(?:^|\b)page\s*:?\s*([^\s,.]+)(?:\s|[,.]|$)/i,
-      );
-      if (pageLabelMatch?.[1]) return pageLabelMatch[1];
-    }
-
-    const pageNumberAttr = current.getAttribute("data-page-number");
-    if (pageNumberAttr) {
-      return pageNumberAttr;
-    }
-    const pageIndexAttr = current.getAttribute("data-page-index");
-    if (pageIndexAttr) {
-      const pageIndex = Number.parseInt(pageIndexAttr, 10);
-      if (Number.isFinite(pageIndex) && pageIndex >= 0) {
-        return `${pageIndex + 1}`;
-      }
-    }
     current = current.parentElement;
   }
   return undefined;
@@ -1156,6 +1168,23 @@ export function getCurrentSelectionPageLocationFromReader(
   return null;
 }
 
+/**
+ * The viewer's printed page labels, one per page index, when the PDF has
+ * them. Zotero's PDF.js keeps them on `_pageLabels`; other builds expose
+ * `pageLabels`.
+ */
+function getViewerPageLabels(app: any): unknown[] | null {
+  const labels =
+    app?.pdfViewer?.pageLabels ||
+    app?.pdfViewer?._pageLabels ||
+    app?.pdfDocument?._pageLabels;
+  return Array.isArray(labels) && labels.length > 0 ? labels : null;
+}
+
+/**
+ * The printed label the reader reports for a page, from the viewer's label
+ * array or the page's DOM. Undefined when the reader reports none.
+ */
 export function getPageLabelForIndex(
   reader: any,
   pageIndex: number,
@@ -1164,14 +1193,10 @@ export function getPageLabelForIndex(
   const normalizedPageIndex = Math.floor(pageIndex);
 
   // PDF.js data-page-number is always the internal 1-based index. Prefer
-  // the viewer's pageLabels array so printed labels such as 431 or iv are
+  // the viewer's label array so printed labels such as 431 or iv are
   // preserved instead of being collapsed to the internal page number 4.
-  const app = getPdfViewerApplication(reader);
-  const labels =
-    app?.pdfViewer?.pageLabels ||
-    app?.pdfViewer?._pageLabels ||
-    app?.pdfDocument?._pageLabels;
-  if (Array.isArray(labels) && labels[normalizedPageIndex]) {
+  const labels = getViewerPageLabels(getPdfViewerApplication(reader));
+  if (labels && labels[normalizedPageIndex]) {
     return String(labels[normalizedPageIndex]);
   }
 
@@ -1182,30 +1207,26 @@ export function getPageLabelForIndex(
     if (pageLabel) return pageLabel;
   }
 
-  return `${normalizedPageIndex + 1}`;
+  // No label is guessed from the page index. The index drives navigation;
+  // a label is for display and links, and a PDF's printed labels need not
+  // follow its page order. A caller that shows a page falls back to
+  // `${pageIndex + 1}` itself.
+  return undefined;
 }
 
 /**
- * Reverse lookup: resolve a page label (printed page number) to a 0-based
- * page index using the PDF's actual page label array.  Falls back to
- * `parseInt(label) - 1` when the PDF has no custom labels or the label is
- * not found in the array.
+ * Read a label as a page number, never through the PDF's printed labels:
+ * "4" is page index 3, and a roman "iv" is too. For labels that were page
+ * numbers guessed from the index, as every label stored before page text
+ * stopped recording labels was.
  */
-export function resolvePageIndexForLabel(
+export function resolvePageIndexForPageNumberLabel(
   reader: any,
   pageLabel: string,
 ): number | null {
   const clean = sanitizeText(pageLabel || "").trim();
   if (!clean) return null;
-
   const app = getPdfViewerApplication(reader);
-  const labels: unknown = app?.pdfViewer?.pageLabels;
-  if (Array.isArray(labels) && labels.length > 0) {
-    const idx = labels.findIndex(
-      (entry: unknown) => String(entry || "") === clean,
-    );
-    if (idx >= 0) return idx;
-  }
 
   if (/^\d+$/.test(clean)) {
     const parsed = Number.parseInt(clean, 10);
@@ -1965,7 +1986,8 @@ async function extractPageTextsFromPdfWorkerItemId(
         for (let i = 0; i < ffPages.length; i++) {
           const text = sanitizeText(ffPages[i].trim());
           if (text) {
-            pages.push({ pageIndex: i, pageLabel: `${i + 1}`, text });
+            // PDFWorker text carries no printed labels.
+            pages.push({ pageIndex: i, text });
           }
         }
         return pages.length > 0 ? { pages, pageCount: ffPages.length } : null;
@@ -1985,7 +2007,8 @@ async function extractPageTextsFromPdfWorkerItemId(
         const pageText = fullText.slice(offset, offset + charCount);
         const text = sanitizeText(pageText.trim());
         if (text) {
-          pages.push({ pageIndex: i, pageLabel: `${i + 1}`, text });
+          // PDFWorker text carries no printed labels.
+          pages.push({ pageIndex: i, text });
         }
       }
       offset += charCount;
@@ -2112,14 +2135,11 @@ async function extractPageTextsFromViewer(
               .replace(/\s+/g, " ")
               .trim();
         if (text) {
-          let pageLabel = `${i}`;
-          const labels = app?.pdfViewer?.pageLabels;
-          if (Array.isArray(labels) && labels[i - 1]) {
-            pageLabel = String(labels[i - 1]);
-          }
+          // Page text carries no label. The page index is the identity of
+          // a page here; a printed label comes from getPageLabelForIndex at
+          // the place that shows it.
           pages.push({
             pageIndex: i - 1,
-            pageLabel,
             text: options?.pageNative ? text : sanitizeText(text),
           });
         }
@@ -2756,6 +2776,13 @@ export async function warmQuoteLocationCacheForAttachment(
 export async function verifyQuoteLocationForAttachment(
   contextItemId: number,
   quoteText: string,
+  options?: {
+    /**
+     * The page to prefer when the quote occurs on several pages; it only
+     * chooses among identical copies.
+     */
+    expectedPageIndex?: number | null;
+  },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),
@@ -2788,7 +2815,33 @@ export async function verifyQuoteLocationForAttachment(
       "Could not read complete PDF page text for background quote verification.",
     );
   }
-  return locateQuoteInCachedPageTexts(pageTextCache, cleanQuote, null);
+  const result = locateQuoteInCachedPageTexts(
+    pageTextCache,
+    cleanQuote,
+    options?.expectedPageIndex ?? null,
+  );
+  // A reader warmed from its DOM text layers caches only the pages it had
+  // rendered, under this attachment's key too. A complete match there is
+  // still a match. A miss (or a tie) says nothing about the pages never
+  // rendered, and a partial span found there is unique only among the
+  // rendered pages, so neither may read as the PDF's verdict: callers would
+  // report "not found", or trust the span, and skip the viewer, which can
+  // read the whole PDF.
+  if (
+    !canUseCachedPageTextAsNegativeEvidence(pageTextCache) &&
+    result.status !== "selection-too-short" &&
+    !(result.status === "resolved" && result.sourceMatchKind === "exact")
+  ) {
+    return {
+      ...unavailable(
+        result.status === "resolved"
+          ? "Only the PDF's rendered pages were readable in the background; only part of the quote was found on them."
+          : "Only the PDF's rendered pages were readable in the background; the quote was not on them.",
+      ),
+      pagesScanned: result.pagesScanned,
+    };
+  }
+  return result;
 }
 
 /** Clear cache (e.g. when switching documents). */
@@ -4040,12 +4093,7 @@ async function extractFindControllerPageText(
 }
 
 function hashFindControllerQuery(query: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < query.length; index += 1) {
-    hash ^= query.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
+  return fnv1a32Raw(query).toString(36);
 }
 
 function findControllerQueryDiagnostic(query: string): string {
@@ -4215,7 +4263,14 @@ export async function locateCurrentSelectionInLivePdfReader(
 export async function locateQuoteInLivePdfReader(
   reader: any,
   quoteText: string,
-  options?: { skipFindController?: boolean; exactOnly?: boolean },
+  options?: {
+    exactOnly?: boolean;
+    /**
+     * The page to prefer when the quote occurs on several pages; it only
+     * chooses among identical copies. Default: the reader's current page.
+     */
+    expectedPageIndex?: number | null;
+  },
 ): Promise<LivePdfSelectionLocateResult> {
   const cleanQuote = stripBoundaryEllipsis(
     sanitizeText(quoteText || "").trim(),
@@ -4238,10 +4293,9 @@ export async function locateQuoteInLivePdfReader(
 
   try {
     const cached = await warmPageTextCache(reader);
-    const expectedPageIndex = getExpectedPageIndex(
-      reader,
-      getPdfViewerApplication(reader),
-    );
+    const expectedPageIndex =
+      options?.expectedPageIndex ??
+      getExpectedPageIndex(reader, getPdfViewerApplication(reader));
     if (!cached?.pages.length) {
       return {
         status: "unavailable",
@@ -4773,7 +4827,7 @@ export async function scrollToExactQuoteInReader(
       queryRole: candidateIndex === 0 ? "displayed-quote" : "source-locator",
       normalizationHintText: quoteTexts[0],
     });
-    if (result.matched) return result;
+    if (result.matched) return { ...result, wordingUsed: candidate };
     lastResult = result;
     if (
       result.matchStatus === "deferred" ||

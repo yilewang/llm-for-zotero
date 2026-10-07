@@ -194,14 +194,27 @@ type ConversationMessageTarget = {
   conversationKey: number;
 };
 
+/**
+ * Runs inside a turn deletion's transaction, before it commits, with the
+ * agent runs and plan documents the deleted rows named (the store kernel's
+ * `TurnDeletionBeforeCommit`, restated here so core does not import it).
+ */
+type TurnDeletionBeforeCommit = (deleted: {
+  agentRunIds: string[];
+  documentIds: string[];
+}) => Promise<void>;
+
 type DeleteTurnMessagesParams = ConversationMessageTarget & {
   userTimestamp: number;
   assistantTimestamp: number;
   /** Immutable row IDs captured when the turn was selected. */
   userMessageID?: number;
   assistantMessageID?: number;
-  /** Runs inside the provider's message-delete transaction before commit. */
-  onBeforeCommit?: () => Promise<void>;
+  /**
+   * Runs inside the provider's message-delete transaction before commit, with
+   * the agent runs the deleted rows named.
+   */
+  onBeforeCommit?: TurnDeletionBeforeCommit;
 };
 
 type EnsureCatalogEntryParams = ConversationCatalogScope & {
@@ -525,48 +538,618 @@ async function attachCatalogInstanceIdentity(
 async function touchRuntimeEmptyCatalogActivity(
   entry: ConversationCatalogEntry,
   timestamp: number,
+  upsertSummary: typeof upsertClaudeConversationSummary,
 ): Promise<void> {
   if (entry.userTurnCount > 0) return;
   const updatedAt = normalizeTimestamp(timestamp, Date.now());
-  if (entry.system === "claude_code") {
-    await upsertClaudeConversationSummary({
-      conversationKey: entry.conversationKey,
-      libraryID: entry.libraryID,
-      kind: entry.kind,
-      paperItemID: entry.paperItemID,
-      createdAt: entry.createdAt,
-      updatedAt,
-      title: entry.title,
-      providerSessionId: entry.providerSessionId,
-      scopedConversationKey: entry.scopedConversationKey,
-      scopeType: entry.scopeType,
-      scopeId: entry.scopeId,
-      scopeLabel: entry.scopeLabel,
-      cwd: entry.cwd,
-      model: entry.model,
-      effort: entry.effort,
+  await upsertSummary({
+    conversationKey: entry.conversationKey,
+    libraryID: entry.libraryID,
+    kind: entry.kind,
+    paperItemID: entry.paperItemID,
+    createdAt: entry.createdAt,
+    updatedAt,
+    title: entry.title,
+    providerSessionId: entry.providerSessionId,
+    scopedConversationKey: entry.scopedConversationKey,
+    scopeType: entry.scopeType,
+    scopeId: entry.scopeId,
+    scopeLabel: entry.scopeLabel,
+    cwd: entry.cwd,
+    model: entry.model,
+    effort: entry.effort,
+  });
+}
+
+type CatalogTitleIdentity = {
+  instanceID?: string;
+  conversationID?: string;
+  inTransaction?: boolean;
+};
+
+type LocalRowDeletionIdentity = {
+  instanceID?: string;
+  conversationID?: string;
+  onBeforeCommit?: () => Promise<void>;
+  onCommit?: () => Promise<void>;
+};
+
+/**
+ * One conversation store as the repository drives it.  Each method body is
+ * the store's former branch of the matching repository method; the
+ * repository normalizes its arguments and runs the shared part (identity
+ * enrichment, write locks, provider cleanup jobs) around the call.
+ */
+type ConversationStoreAdapter = {
+  getCatalogEntry(
+    conversationKey: number,
+    kind: ConversationCatalogKind | undefined,
+  ): Promise<ConversationCatalogEntry | null>;
+  loadMessages(
+    conversationKey: number,
+    limit: number,
+  ): Promise<StoredChatMessage[]>;
+  deleteTurnMessages(
+    conversationKey: number,
+    userTimestamp: number,
+    assistantTimestamp: number,
+    userMessageID?: number,
+    assistantMessageID?: number,
+    onBeforeCommit?: TurnDeletionBeforeCommit,
+  ): Promise<void>;
+  ensureCatalogEntry(
+    params: EnsureCatalogEntryParams,
+    normalized: {
+      libraryID: number;
+      paperItemID: number;
+      conversationKey: number;
+    },
+  ): Promise<ConversationCatalogEntry | null>;
+  createCatalogEntry(
+    params: CreateCatalogEntryParams,
+    normalized: { libraryID: number; paperItemID: number },
+  ): Promise<ConversationCatalogEntry | null>;
+  /** Absent for a store that cannot fork (Claude Code). */
+  fork?: {
+    /**
+     * Codex only: a fork must start from the latest forkable assistant turn,
+     * because the native thread fork copies the whole provider thread.
+     */
+    getLatestForkableAssistantTimestamp?: typeof getLatestCodexForkableAssistantTimestamp;
+    copyMessages: typeof forkUpstreamConversationMessages;
+  };
+  listCatalogEntries(
+    params: ConversationCatalogListParams,
+    normalized: { libraryID: number; paperItemID: number; limit: number },
+  ): Promise<ConversationCatalogEntry[]>;
+  listAllCatalogEntries(
+    libraryID: number,
+    limit: number | null,
+  ): Promise<ConversationCatalogEntry[]>;
+  setCatalogTitle(
+    conversationKey: number,
+    kind: ConversationCatalogKind | undefined,
+    title: string,
+  ): Promise<void>;
+  clearCatalogTitle(
+    conversationKey: number,
+    identity: CatalogTitleIdentity,
+  ): Promise<void>;
+  touchCatalogTitle(
+    conversationKey: number,
+    kind: ConversationCatalogKind | undefined,
+    title: string,
+  ): Promise<void>;
+  touchEmptyCatalogActivity(
+    target: ConversationCatalogMutationTarget,
+    conversationKey: number,
+    expectedGeneration: number,
+    timestamp: number,
+  ): Promise<void>;
+  /** The pre-ledger deletion, for a row without an instance witness. */
+  deleteLegacyConversation(
+    conversationKey: number,
+    kind: ConversationCatalogKind | undefined,
+  ): Promise<void>;
+  deleteLocalConversationRows(
+    conversationKey: number,
+    kind: ConversationCatalogKind | undefined,
+    identity: LocalRowDeletionIdentity,
+  ): Promise<void>;
+  preflightDeleteLocalConversationRows(conversationKey: number): Promise<void>;
+  /** Runs after either deletion (Codex releases the MCP scope token). */
+  afterDelete?(conversationKey: number, instanceID: string | undefined): void;
+  /** The provider job a deleted conversation queues (runtime stores only). */
+  providerCleanup?: {
+    operation: "codex_archive" | "claude_invalidate";
+    system: "codex" | "claude_code";
+    /** A Claude scope alone (without a session) witnesses a provider session. */
+    scopeIsSessionWitness: boolean;
+  };
+};
+
+const UPSTREAM_STORE: ConversationStoreAdapter = {
+  async getCatalogEntry(conversationKey, kind) {
+    if (kind === "global" || isUpstreamGlobalConversationKey(conversationKey)) {
+      return fromUpstreamGlobalSummary(
+        await getGlobalConversation(conversationKey),
+      );
+    }
+    if (kind === "paper" || isUpstreamPaperConversationKey(conversationKey)) {
+      return fromUpstreamPaperSummary(
+        await getPaperConversation(conversationKey),
+      );
+    }
+    return null;
+  },
+
+  loadMessages(conversationKey, limit) {
+    return loadUpstreamConversation(conversationKey, limit);
+  },
+
+  async deleteTurnMessages(
+    conversationKey,
+    userTimestamp,
+    assistantTimestamp,
+    userMessageID,
+    assistantMessageID,
+    onBeforeCommit,
+  ) {
+    await deleteUpstreamTurnMessages(
+      conversationKey,
+      userTimestamp,
+      assistantTimestamp,
+      userMessageID,
+      assistantMessageID,
+      onBeforeCommit,
+    );
+  },
+
+  async ensureCatalogEntry(
+    params,
+    { libraryID, paperItemID, conversationKey },
+  ) {
+    if (params.kind === "global") {
+      if (!conversationKey) return null;
+      const ensured = await ensureGlobalConversationExists(
+        libraryID,
+        conversationKey,
+      );
+      if (!ensured) return null;
+      const entry = fromUpstreamGlobalSummary(
+        await getGlobalConversation(conversationKey),
+      );
+      if (!catalogEntryMatchesScope(entry, params)) return null;
+      return (await repairUpstreamRuntimeRegistryFromEntry(entry))
+        ? entry
+        : null;
+    }
+    if (!paperItemID) return null;
+    const entry = fromUpstreamPaperSummary(
+      conversationKey
+        ? await getPaperConversation(conversationKey)
+        : await ensurePaperV1Conversation(libraryID, paperItemID),
+    );
+    if (!catalogEntryMatchesScope(entry, params)) return null;
+    return (await repairUpstreamRuntimeRegistryFromEntry(entry)) ? entry : null;
+  },
+
+  async createCatalogEntry(params, { libraryID, paperItemID }) {
+    if (params.kind === "paper") {
+      return hydrateCatalogEntryInstanceID(
+        fromUpstreamPaperSummary(
+          paperItemID
+            ? await createPaperConversation(libraryID, paperItemID, {
+                webchatSession: params.webchatSession === true,
+                conversationKey: params.preferredConversationKey,
+              })
+            : null,
+        ),
+      );
+    }
+    const conversationKey = await createGlobalConversation(libraryID, {
+      webchatSession: params.webchatSession === true,
+      conversationKey: params.preferredConversationKey,
     });
-    return;
-  }
-  if (entry.system === "codex") {
-    await upsertCodexConversationSummary({
-      conversationKey: entry.conversationKey,
-      libraryID: entry.libraryID,
-      kind: entry.kind,
-      paperItemID: entry.paperItemID,
-      createdAt: entry.createdAt,
-      updatedAt,
-      title: entry.title,
-      providerSessionId: entry.providerSessionId,
-      scopedConversationKey: entry.scopedConversationKey,
-      scopeType: entry.scopeType,
-      scopeId: entry.scopeId,
-      scopeLabel: entry.scopeLabel,
-      cwd: entry.cwd,
-      model: entry.model,
-      effort: entry.effort,
+    return hydrateCatalogEntryInstanceID(
+      conversationKey
+        ? fromUpstreamGlobalSummary(
+            await getGlobalConversation(conversationKey),
+          )
+        : null,
+    );
+  },
+
+  fork: {
+    copyMessages: (params) => forkUpstreamConversationMessages(params),
+  },
+
+  async listCatalogEntries(params, { libraryID, paperItemID, limit }) {
+    const rows =
+      params.kind === "paper"
+        ? await listPaperConversations(
+            libraryID,
+            paperItemID,
+            limit,
+            Boolean(params.includeEmpty),
+          )
+        : await listGlobalConversations(
+            libraryID,
+            limit,
+            Boolean(params.includeEmpty),
+          );
+    return rows
+      .map((row) =>
+        params.kind === "paper"
+          ? fromUpstreamPaperSummary(row as PaperConversationSummary)
+          : fromUpstreamGlobalSummary(row as GlobalConversationSummary),
+      )
+      .filter((row): row is ConversationCatalogEntry => Boolean(row));
+  },
+
+  async listAllCatalogEntries(libraryID, limit) {
+    const [paperRows, globalRows] = await Promise.all([
+      listAllPaperConversationsByLibrary(libraryID, limit),
+      listGlobalConversations(libraryID, limit, false),
+    ]);
+    return sortCatalogEntries([
+      ...paperRows
+        .map((row) => fromUpstreamPaperSummary(row))
+        .filter((row): row is ConversationCatalogEntry => Boolean(row)),
+      ...globalRows
+        .map((row) => fromUpstreamGlobalSummary(row))
+        .filter((row): row is ConversationCatalogEntry => Boolean(row)),
+    ]);
+  },
+
+  async setCatalogTitle(conversationKey, kind, title) {
+    if (kind === "paper" || isUpstreamPaperConversationKey(conversationKey)) {
+      await setPaperConversationTitle(conversationKey, title);
+      return;
+    }
+    await setGlobalConversationTitle(conversationKey, title);
+  },
+
+  async clearCatalogTitle(conversationKey, identity) {
+    await clearConversationTitle(conversationKey, identity);
+  },
+
+  async touchCatalogTitle(conversationKey, kind, title) {
+    if (kind === "paper" || isUpstreamPaperConversationKey(conversationKey)) {
+      await touchPaperConversationTitle(conversationKey, title);
+      return;
+    }
+    await touchGlobalConversationTitle(conversationKey, title);
+  },
+
+  async touchEmptyCatalogActivity(
+    target,
+    conversationKey,
+    expectedGeneration,
+    timestamp,
+  ) {
+    if (
+      target.kind === "paper" ||
+      isUpstreamPaperConversationKey(conversationKey)
+    ) {
+      await withConversationWriteLock(conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          return;
+        }
+        await touchEmptyPaperConversation(conversationKey, timestamp);
+      });
+      return;
+    }
+    await withConversationWriteLock(conversationKey, async () => {
+      if (
+        areConversationWritesFrozen(conversationKey) ||
+        !isConversationWriteGenerationCurrent(
+          conversationKey,
+          expectedGeneration,
+        )
+      ) {
+        return;
+      }
+      await touchEmptyGlobalConversation(conversationKey, timestamp);
     });
-  }
+  },
+
+  async deleteLegacyConversation(conversationKey, kind) {
+    if (kind === "paper" || isUpstreamPaperConversationKey(conversationKey)) {
+      await deletePaperConversation(conversationKey);
+      return;
+    }
+    await deleteGlobalConversation(conversationKey);
+  },
+
+  async deleteLocalConversationRows(conversationKey, kind, identity) {
+    await deleteUpstreamConversationLocalRows(conversationKey, kind, identity);
+  },
+
+  async preflightDeleteLocalConversationRows(conversationKey) {
+    await preflightDeleteUpstreamConversationLocalRows(conversationKey);
+  },
+};
+
+/** The store functions a runtime backend (Claude Code, Codex) exports. */
+type RuntimeStoreFunctions = {
+  system: "claude_code" | "codex";
+  fromSummary(
+    summary: ClaudeConversationSummary | null | undefined,
+  ): ConversationCatalogEntry | null;
+  getSummary: typeof getClaudeConversationSummary;
+  loadConversation: typeof loadClaudeConversation;
+  deleteTurnMessages: typeof deleteClaudeTurnMessages;
+  ensureGlobalConversation: typeof ensureClaudeGlobalConversation;
+  ensurePaperConversation: typeof ensureClaudePaperConversation;
+  createGlobalConversation: typeof createClaudeGlobalConversation;
+  createPaperConversation: typeof createClaudePaperConversation;
+  listGlobalConversations: typeof listClaudeGlobalConversations;
+  listPaperConversations: typeof listClaudePaperConversations;
+  listAllPaperConversationsByLibrary: typeof listAllClaudePaperConversationsByLibrary;
+  setConversationTitle: typeof setClaudeConversationTitle;
+  touchConversationTitle: typeof touchClaudeConversationTitle;
+  upsertSummary: typeof upsertClaudeConversationSummary;
+  deleteConversation: typeof deleteClaudeConversation;
+  deleteConversationLocalRows: typeof deleteClaudeConversationLocalRows;
+  preflightDeleteConversationLocalRows: typeof preflightDeleteClaudeConversationLocalRows;
+};
+
+/**
+ * A runtime store's adapter.  Claude Code and Codex ran the same branch
+ * bodies against their own store functions; Codex adds the fork capability,
+ * the MCP scope-token release after a deletion, and its own cleanup job.
+ */
+function createRuntimeStoreAdapter(
+  store: RuntimeStoreFunctions,
+  extra: Pick<
+    ConversationStoreAdapter,
+    "fork" | "afterDelete" | "providerCleanup"
+  >,
+): ConversationStoreAdapter {
+  return {
+    async getCatalogEntry(conversationKey) {
+      return store.fromSummary(await store.getSummary(conversationKey));
+    },
+
+    loadMessages(conversationKey, limit) {
+      return store.loadConversation(conversationKey, limit);
+    },
+
+    async deleteTurnMessages(
+      conversationKey,
+      userTimestamp,
+      assistantTimestamp,
+      userMessageID,
+      assistantMessageID,
+      onBeforeCommit,
+    ) {
+      await store.deleteTurnMessages(
+        conversationKey,
+        userTimestamp,
+        assistantTimestamp,
+        userMessageID,
+        assistantMessageID,
+        onBeforeCommit,
+      );
+    },
+
+    async ensureCatalogEntry(
+      params,
+      { libraryID, paperItemID, conversationKey },
+    ) {
+      if (conversationKey) {
+        const existing = await store.getSummary(conversationKey);
+        if (existing) {
+          const entry = store.fromSummary(existing);
+          if (!catalogEntryMatchesScope(entry, params)) return null;
+          await repairRuntimeRegistryFromSummary(store.system, existing);
+          return entry;
+        }
+        // An explicit key is a lookup witness, never an instruction to create
+        // a row. Recreating a missing key here would allow a stale history
+        // read to resurrect a retired conversation; new conversations must go
+        // through createCatalogEntry().
+        return null;
+      }
+      return store.fromSummary(
+        params.kind === "paper"
+          ? await store.ensurePaperConversation(libraryID, paperItemID)
+          : await store.ensureGlobalConversation(libraryID),
+      );
+    },
+
+    async createCatalogEntry(params, { libraryID, paperItemID }) {
+      return hydrateCatalogEntryInstanceID(
+        store.fromSummary(
+          params.kind === "paper"
+            ? await store.createPaperConversation(libraryID, paperItemID, {
+                conversationKey: params.preferredConversationKey,
+              })
+            : await store.createGlobalConversation(libraryID, {
+                conversationKey: params.preferredConversationKey,
+              }),
+        ),
+      );
+    },
+
+    async listCatalogEntries(params, { libraryID, paperItemID, limit }) {
+      const rows =
+        params.kind === "paper"
+          ? await store.listPaperConversations(libraryID, paperItemID, limit)
+          : await store.listGlobalConversations(libraryID, limit);
+      return rows
+        .map((row) => store.fromSummary(row))
+        .filter((row): row is ConversationCatalogEntry => Boolean(row));
+    },
+
+    async listAllCatalogEntries(libraryID, limit) {
+      const [paperRows, globalRows] = await Promise.all([
+        store.listAllPaperConversationsByLibrary(libraryID, limit),
+        store.listGlobalConversations(libraryID, limit),
+      ]);
+      return sortCatalogEntries(
+        [...paperRows, ...globalRows]
+          .map((row) => store.fromSummary(row))
+          .filter((row): row is ConversationCatalogEntry => Boolean(row)),
+      );
+    },
+
+    async setCatalogTitle(conversationKey, _kind, title) {
+      await store.setConversationTitle(conversationKey, title);
+    },
+
+    async clearCatalogTitle(conversationKey, identity) {
+      await store.setConversationTitle(conversationKey, "", identity);
+    },
+
+    async touchCatalogTitle(conversationKey, _kind, title) {
+      const existing = await store.getSummary(conversationKey);
+      if (!existing?.title?.trim()) {
+        await store.touchConversationTitle(conversationKey, title);
+      }
+    },
+
+    async touchEmptyCatalogActivity(
+      target,
+      conversationKey,
+      expectedGeneration,
+      timestamp,
+    ) {
+      const entry = await conversationRepository.getCatalogEntry(target);
+      if (!entry) return;
+      await withConversationWriteLock(conversationKey, async () => {
+        if (
+          areConversationWritesFrozen(conversationKey) ||
+          !isConversationWriteGenerationCurrent(
+            conversationKey,
+            expectedGeneration,
+          )
+        ) {
+          return;
+        }
+        const current = await conversationRepository.getCatalogEntry(target);
+        if (!current || current.instanceID !== entry.instanceID) return;
+        await touchRuntimeEmptyCatalogActivity(
+          current,
+          timestamp,
+          store.upsertSummary,
+        );
+      });
+    },
+
+    async deleteLegacyConversation(conversationKey) {
+      await store.deleteConversation(conversationKey);
+    },
+
+    async deleteLocalConversationRows(conversationKey, _kind, identity) {
+      await store.deleteConversationLocalRows(conversationKey, identity);
+    },
+
+    async preflightDeleteLocalConversationRows(conversationKey) {
+      await store.preflightDeleteConversationLocalRows(conversationKey);
+    },
+
+    ...extra,
+  };
+}
+
+const CLAUDE_CODE_STORE = createRuntimeStoreAdapter(
+  {
+    system: "claude_code",
+    fromSummary: fromClaudeSummary,
+    getSummary: getClaudeConversationSummary,
+    loadConversation: loadClaudeConversation,
+    deleteTurnMessages: deleteClaudeTurnMessages,
+    ensureGlobalConversation: ensureClaudeGlobalConversation,
+    ensurePaperConversation: ensureClaudePaperConversation,
+    createGlobalConversation: createClaudeGlobalConversation,
+    createPaperConversation: createClaudePaperConversation,
+    listGlobalConversations: listClaudeGlobalConversations,
+    listPaperConversations: listClaudePaperConversations,
+    listAllPaperConversationsByLibrary:
+      listAllClaudePaperConversationsByLibrary,
+    setConversationTitle: setClaudeConversationTitle,
+    touchConversationTitle: touchClaudeConversationTitle,
+    upsertSummary: upsertClaudeConversationSummary,
+    deleteConversation: deleteClaudeConversation,
+    deleteConversationLocalRows: deleteClaudeConversationLocalRows,
+    preflightDeleteConversationLocalRows:
+      preflightDeleteClaudeConversationLocalRows,
+  },
+  {
+    providerCleanup: {
+      operation: "claude_invalidate",
+      system: "claude_code",
+      scopeIsSessionWitness: true,
+    },
+  },
+);
+
+const CODEX_STORE = createRuntimeStoreAdapter(
+  {
+    system: "codex",
+    fromSummary: fromCodexSummary,
+    getSummary: getCodexConversationSummary,
+    loadConversation: loadCodexConversation,
+    deleteTurnMessages: deleteCodexTurnMessages,
+    ensureGlobalConversation: ensureCodexGlobalConversation,
+    ensurePaperConversation: ensureCodexPaperConversation,
+    createGlobalConversation: createCodexGlobalConversation,
+    createPaperConversation: createCodexPaperConversation,
+    listGlobalConversations: listCodexGlobalConversations,
+    listPaperConversations: listCodexPaperConversations,
+    listAllPaperConversationsByLibrary: listAllCodexPaperConversationsByLibrary,
+    setConversationTitle: setCodexConversationTitle,
+    touchConversationTitle: touchCodexConversationTitle,
+    upsertSummary: upsertCodexConversationSummary,
+    deleteConversation: deleteCodexConversation,
+    deleteConversationLocalRows: deleteCodexConversationLocalRows,
+    preflightDeleteConversationLocalRows:
+      preflightDeleteCodexConversationLocalRows,
+  },
+  {
+    fork: {
+      getLatestForkableAssistantTimestamp: (sourceConversationKey) =>
+        getLatestCodexForkableAssistantTimestamp(sourceConversationKey),
+      copyMessages: (params) => forkCodexConversationMessages(params),
+    },
+    afterDelete(conversationKey, instanceID) {
+      releaseConversationScopeToken({
+        profileSignature: getCodexProfileSignature(),
+        conversationKey,
+        instanceID,
+      });
+    },
+    providerCleanup: {
+      operation: "codex_archive",
+      system: "codex",
+      scopeIsSessionWitness: false,
+    },
+  },
+);
+
+/**
+ * The conversation stores, by system.  A value that names neither runtime
+ * store is served by the upstream store, as the repository always did.
+ */
+const STORES: Readonly<
+  Record<"claude_code" | "codex", ConversationStoreAdapter>
+> = {
+  claude_code: CLAUDE_CODE_STORE,
+  codex: CODEX_STORE,
+};
+
+function storeFor(system: ConversationSystem): ConversationStoreAdapter {
+  return system === "claude_code" || system === "codex"
+    ? STORES[system]
+    : UPSTREAM_STORE;
 }
 
 export const conversationRepository = {
@@ -575,33 +1158,11 @@ export const conversationRepository = {
   ): Promise<ConversationCatalogEntry | null> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return null;
-    if (target.system === "claude_code") {
-      return attachCatalogInstanceIdentity(
-        fromClaudeSummary(await getClaudeConversationSummary(conversationKey)),
-      );
-    }
-    if (target.system === "codex") {
-      return attachCatalogInstanceIdentity(
-        fromCodexSummary(await getCodexConversationSummary(conversationKey)),
-      );
-    }
-    if (
-      target.kind === "global" ||
-      isUpstreamGlobalConversationKey(conversationKey)
-    ) {
-      return attachCatalogInstanceIdentity(
-        fromUpstreamGlobalSummary(await getGlobalConversation(conversationKey)),
-      );
-    }
-    if (
-      target.kind === "paper" ||
-      isUpstreamPaperConversationKey(conversationKey)
-    ) {
-      return attachCatalogInstanceIdentity(
-        fromUpstreamPaperSummary(await getPaperConversation(conversationKey)),
-      );
-    }
-    return null;
+    const entry = await storeFor(target.system).getCatalogEntry(
+      conversationKey,
+      target.kind,
+    );
+    return entry ? attachCatalogInstanceIdentity(entry) : null;
   },
 
   // The permanent key ledger and immutable instance ID identify the row. The
@@ -674,13 +1235,7 @@ export const conversationRepository = {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return [];
     const limit = normalizeLimit(target.limit, 200);
-    if (target.system === "claude_code") {
-      return loadClaudeConversation(conversationKey, limit);
-    }
-    if (target.system === "codex") {
-      return loadCodexConversation(conversationKey, limit);
-    }
-    return loadUpstreamConversation(conversationKey, limit);
+    return storeFor(target.system).loadMessages(conversationKey, limit);
   },
 
   async deleteTurnMessages(target: DeleteTurnMessagesParams): Promise<void> {
@@ -688,29 +1243,7 @@ export const conversationRepository = {
     if (!conversationKey) return;
     const userTimestamp = normalizeTimestamp(target.userTimestamp);
     const assistantTimestamp = normalizeTimestamp(target.assistantTimestamp);
-    if (target.system === "claude_code") {
-      await deleteClaudeTurnMessages(
-        conversationKey,
-        userTimestamp,
-        assistantTimestamp,
-        target.userMessageID,
-        target.assistantMessageID,
-        target.onBeforeCommit,
-      );
-      return;
-    }
-    if (target.system === "codex") {
-      await deleteCodexTurnMessages(
-        conversationKey,
-        userTimestamp,
-        assistantTimestamp,
-        target.userMessageID,
-        target.assistantMessageID,
-        target.onBeforeCommit,
-      );
-      return;
-    }
-    await deleteUpstreamTurnMessages(
+    await storeFor(target.system).deleteTurnMessages(
       conversationKey,
       userTimestamp,
       assistantTimestamp,
@@ -727,71 +1260,11 @@ export const conversationRepository = {
     const paperItemID = normalizePositiveInt(params.paperItemID);
     const conversationKey = normalizePositiveInt(params.conversationKey);
     if (!libraryID) return null;
-
-    if (params.system === "claude_code") {
-      if (conversationKey) {
-        const existing = await getClaudeConversationSummary(conversationKey);
-        if (existing) {
-          const entry = fromClaudeSummary(existing);
-          if (!catalogEntryMatchesScope(entry, params)) return null;
-          await repairRuntimeRegistryFromSummary("claude_code", existing);
-          return entry;
-        }
-        // An explicit key is a lookup witness, never an instruction to create
-        // a row. Recreating a missing key here would allow a stale history
-        // read to resurrect a retired conversation.
-        return null;
-      }
-      return fromClaudeSummary(
-        params.kind === "paper"
-          ? await ensureClaudePaperConversation(libraryID, paperItemID)
-          : await ensureClaudeGlobalConversation(libraryID),
-      );
-    }
-
-    if (params.system === "codex") {
-      if (conversationKey) {
-        const existing = await getCodexConversationSummary(conversationKey);
-        if (existing) {
-          const entry = fromCodexSummary(existing);
-          if (!catalogEntryMatchesScope(entry, params)) return null;
-          await repairRuntimeRegistryFromSummary("codex", existing);
-          return entry;
-        }
-        // An explicit key is a lookup witness, never an instruction to create
-        // a row. New conversations must go through createCatalogEntry().
-        return null;
-      }
-      return fromCodexSummary(
-        params.kind === "paper"
-          ? await ensureCodexPaperConversation(libraryID, paperItemID)
-          : await ensureCodexGlobalConversation(libraryID),
-      );
-    }
-
-    if (params.kind === "global") {
-      if (!conversationKey) return null;
-      const ensured = await ensureGlobalConversationExists(
-        libraryID,
-        conversationKey,
-      );
-      if (!ensured) return null;
-      const entry = fromUpstreamGlobalSummary(
-        await getGlobalConversation(conversationKey),
-      );
-      if (!catalogEntryMatchesScope(entry, params)) return null;
-      return (await repairUpstreamRuntimeRegistryFromEntry(entry))
-        ? entry
-        : null;
-    }
-    if (!paperItemID) return null;
-    const entry = fromUpstreamPaperSummary(
-      conversationKey
-        ? await getPaperConversation(conversationKey)
-        : await ensurePaperV1Conversation(libraryID, paperItemID),
-    );
-    if (!catalogEntryMatchesScope(entry, params)) return null;
-    return (await repairUpstreamRuntimeRegistryFromEntry(entry)) ? entry : null;
+    return storeFor(params.system).ensureCatalogEntry(params, {
+      libraryID,
+      paperItemID,
+      conversationKey,
+    });
   },
 
   async createCatalogEntry(
@@ -800,64 +1273,20 @@ export const conversationRepository = {
     const libraryID = normalizePositiveInt(params.libraryID);
     const paperItemID = normalizePositiveInt(params.paperItemID);
     if (!libraryID) return null;
-    if (params.system === "claude_code") {
-      return hydrateCatalogEntryInstanceID(
-        fromClaudeSummary(
-          params.kind === "paper"
-            ? await createClaudePaperConversation(libraryID, paperItemID, {
-                conversationKey: params.preferredConversationKey,
-              })
-            : await createClaudeGlobalConversation(libraryID, {
-                conversationKey: params.preferredConversationKey,
-              }),
-        ),
-      );
-    }
-    if (params.system === "codex") {
-      return hydrateCatalogEntryInstanceID(
-        fromCodexSummary(
-          params.kind === "paper"
-            ? await createCodexPaperConversation(libraryID, paperItemID, {
-                conversationKey: params.preferredConversationKey,
-              })
-            : await createCodexGlobalConversation(libraryID, {
-                conversationKey: params.preferredConversationKey,
-              }),
-        ),
-      );
-    }
-    if (params.kind === "paper") {
-      return hydrateCatalogEntryInstanceID(
-        fromUpstreamPaperSummary(
-          paperItemID
-            ? await createPaperConversation(libraryID, paperItemID, {
-                webchatSession: params.webchatSession === true,
-                conversationKey: params.preferredConversationKey,
-              })
-            : null,
-        ),
-      );
-    }
-    const conversationKey = await createGlobalConversation(libraryID, {
-      webchatSession: params.webchatSession === true,
-      conversationKey: params.preferredConversationKey,
+    return storeFor(params.system).createCatalogEntry(params, {
+      libraryID,
+      paperItemID,
     });
-    return hydrateCatalogEntryInstanceID(
-      conversationKey
-        ? fromUpstreamGlobalSummary(
-            await getGlobalConversation(conversationKey),
-          )
-        : null,
-    );
   },
 
   async forkConversation(
     params: ForkConversationParams,
   ): Promise<ForkConversationResult | null> {
-    if (params.system === "claude_code") return null;
     if (params.system !== "upstream" && params.system !== "codex") {
       return null;
     }
+    const fork = storeFor(params.system).fork;
+    if (!fork) return null;
     const libraryID = normalizePositiveInt(params.libraryID);
     const paperItemID = normalizePositiveInt(params.paperItemID);
     const sourceConversationKey = normalizePositiveInt(
@@ -886,12 +1315,10 @@ export const conversationRepository = {
       const sourceProviderSessionId =
         normalizeTitle(sourceEntry.providerSessionId) || "";
 
-      if (params.system === "codex") {
-        const latestCodexForkableAssistantTimestamp =
-          await getLatestCodexForkableAssistantTimestamp(sourceConversationKey);
-        if (
-          latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp
-        ) {
+      if (fork.getLatestForkableAssistantTimestamp) {
+        const latestForkableAssistantTimestamp =
+          await fork.getLatestForkableAssistantTimestamp(sourceConversationKey);
+        if (latestForkableAssistantTimestamp !== throughAssistantTimestamp) {
           return null;
         }
       }
@@ -982,24 +1409,14 @@ export const conversationRepository = {
       let copiedMessageCount = 0;
       let targetAnchorAssistantTimestamp = 0;
       try {
-        const copyResult =
-          params.system === "codex"
-            ? await forkCodexConversationMessages({
-                sourceConversationKey,
-                sourceInstanceID: sourceEntry.instanceID,
-                sourceConversationID: sourceEntry.conversationID,
-                targetConversationKey: entry.conversationKey,
-                throughAssistantTimestamp,
-                timestampBase: Date.now(),
-              })
-            : await forkUpstreamConversationMessages({
-                sourceConversationKey,
-                sourceInstanceID: sourceEntry.instanceID,
-                sourceConversationID: sourceEntry.conversationID,
-                targetConversationKey: entry.conversationKey,
-                throughAssistantTimestamp,
-                timestampBase: Date.now(),
-              });
+        const copyResult = await fork.copyMessages({
+          sourceConversationKey,
+          sourceInstanceID: sourceEntry.instanceID,
+          sourceConversationID: sourceEntry.conversationID,
+          targetConversationKey: entry.conversationKey,
+          throughAssistantTimestamp,
+          timestampBase: Date.now(),
+        });
         copiedMessageCount = copyResult.copiedMessageCount;
         targetAnchorAssistantTimestamp =
           copyResult.targetAnchorAssistantTimestamp;
@@ -1094,44 +1511,11 @@ export const conversationRepository = {
     const paperItemID = normalizePositiveInt(params.paperItemID);
     const limit = normalizeLimit(params.limit);
     if (!libraryID) return [];
-    if (params.system === "claude_code") {
-      const rows =
-        params.kind === "paper"
-          ? await listClaudePaperConversations(libraryID, paperItemID, limit)
-          : await listClaudeGlobalConversations(libraryID, limit);
-      return rows
-        .map((row) => fromClaudeSummary(row))
-        .filter((row): row is ConversationCatalogEntry => Boolean(row));
-    }
-    if (params.system === "codex") {
-      const rows =
-        params.kind === "paper"
-          ? await listCodexPaperConversations(libraryID, paperItemID, limit)
-          : await listCodexGlobalConversations(libraryID, limit);
-      return rows
-        .map((row) => fromCodexSummary(row))
-        .filter((row): row is ConversationCatalogEntry => Boolean(row));
-    }
-    const rows =
-      params.kind === "paper"
-        ? await listPaperConversations(
-            libraryID,
-            paperItemID,
-            limit,
-            Boolean(params.includeEmpty),
-          )
-        : await listGlobalConversations(
-            libraryID,
-            limit,
-            Boolean(params.includeEmpty),
-          );
-    return rows
-      .map((row) =>
-        params.kind === "paper"
-          ? fromUpstreamPaperSummary(row as PaperConversationSummary)
-          : fromUpstreamGlobalSummary(row as GlobalConversationSummary),
-      )
-      .filter((row): row is ConversationCatalogEntry => Boolean(row));
+    return storeFor(params.system).listCatalogEntries(params, {
+      libraryID,
+      paperItemID,
+      limit,
+    });
   },
 
   async listAllCatalogEntries(params: {
@@ -1143,40 +1527,7 @@ export const conversationRepository = {
     const limit =
       params.limit === null ? null : normalizeLimit(params.limit, 100);
     if (!libraryID) return [];
-    if (params.system === "claude_code") {
-      const [paperRows, globalRows] = await Promise.all([
-        listAllClaudePaperConversationsByLibrary(libraryID, limit),
-        listClaudeGlobalConversations(libraryID, limit),
-      ]);
-      return sortCatalogEntries(
-        [...paperRows, ...globalRows]
-          .map((row) => fromClaudeSummary(row))
-          .filter((row): row is ConversationCatalogEntry => Boolean(row)),
-      );
-    }
-    if (params.system === "codex") {
-      const [paperRows, globalRows] = await Promise.all([
-        listAllCodexPaperConversationsByLibrary(libraryID, limit),
-        listCodexGlobalConversations(libraryID, limit),
-      ]);
-      return sortCatalogEntries(
-        [...paperRows, ...globalRows]
-          .map((row) => fromCodexSummary(row))
-          .filter((row): row is ConversationCatalogEntry => Boolean(row)),
-      );
-    }
-    const [paperRows, globalRows] = await Promise.all([
-      listAllPaperConversationsByLibrary(libraryID, limit),
-      listGlobalConversations(libraryID, limit, false),
-    ]);
-    return sortCatalogEntries([
-      ...paperRows
-        .map((row) => fromUpstreamPaperSummary(row))
-        .filter((row): row is ConversationCatalogEntry => Boolean(row)),
-      ...globalRows
-        .map((row) => fromUpstreamGlobalSummary(row))
-        .filter((row): row is ConversationCatalogEntry => Boolean(row)),
-    ]);
+    return storeFor(params.system).listAllCatalogEntries(libraryID, limit);
   },
 
   async setCatalogTitle(
@@ -1195,22 +1546,11 @@ export const conversationRepository = {
       ) {
         return;
       }
-      if (target.system === "claude_code") {
-        await setClaudeConversationTitle(conversationKey, target.title);
-        return;
-      }
-      if (target.system === "codex") {
-        await setCodexConversationTitle(conversationKey, target.title);
-        return;
-      }
-      if (
-        target.kind === "paper" ||
-        isUpstreamPaperConversationKey(conversationKey)
-      ) {
-        await setPaperConversationTitle(conversationKey, target.title);
-        return;
-      }
-      await setGlobalConversationTitle(conversationKey, target.title);
+      await storeFor(target.system).setCatalogTitle(
+        conversationKey,
+        target.kind,
+        target.title,
+      );
     });
   },
 
@@ -1219,23 +1559,7 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
-    if (target.system === "claude_code") {
-      await setClaudeConversationTitle(conversationKey, "", {
-        instanceID: target.instanceID,
-        conversationID: target.conversationID,
-        inTransaction: target.inTransaction,
-      });
-      return;
-    }
-    if (target.system === "codex") {
-      await setCodexConversationTitle(conversationKey, "", {
-        instanceID: target.instanceID,
-        conversationID: target.conversationID,
-        inTransaction: target.inTransaction,
-      });
-      return;
-    }
-    await clearConversationTitle(conversationKey, {
+    await storeFor(target.system).clearCatalogTitle(conversationKey, {
       instanceID: target.instanceID,
       conversationID: target.conversationID,
       inTransaction: target.inTransaction,
@@ -1247,28 +1571,11 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
-    if (target.system === "claude_code") {
-      const existing = await getClaudeConversationSummary(conversationKey);
-      if (!existing?.title?.trim()) {
-        await touchClaudeConversationTitle(conversationKey, target.title);
-      }
-      return;
-    }
-    if (target.system === "codex") {
-      const existing = await getCodexConversationSummary(conversationKey);
-      if (!existing?.title?.trim()) {
-        await touchCodexConversationTitle(conversationKey, target.title);
-      }
-      return;
-    }
-    if (
-      target.kind === "paper" ||
-      isUpstreamPaperConversationKey(conversationKey)
-    ) {
-      await touchPaperConversationTitle(conversationKey, target.title);
-      return;
-    }
-    await touchGlobalConversationTitle(conversationKey, target.title);
+    await storeFor(target.system).touchCatalogTitle(
+      conversationKey,
+      target.kind,
+      target.title,
+    );
   },
 
   async touchEmptyCatalogActivity(
@@ -1289,55 +1596,12 @@ export const conversationRepository = {
       return;
     }
     const timestamp = normalizeTimestamp(target.timestamp, Date.now());
-    if (target.system === "claude_code" || target.system === "codex") {
-      const entry = await conversationRepository.getCatalogEntry(target);
-      if (!entry) return;
-      await withConversationWriteLock(conversationKey, async () => {
-        if (
-          areConversationWritesFrozen(conversationKey) ||
-          !isConversationWriteGenerationCurrent(
-            conversationKey,
-            expectedGeneration,
-          )
-        ) {
-          return;
-        }
-        const current = await conversationRepository.getCatalogEntry(target);
-        if (!current || current.instanceID !== entry.instanceID) return;
-        await touchRuntimeEmptyCatalogActivity(current, timestamp);
-      });
-      return;
-    }
-    if (
-      target.kind === "paper" ||
-      isUpstreamPaperConversationKey(conversationKey)
-    ) {
-      await withConversationWriteLock(conversationKey, async () => {
-        if (
-          areConversationWritesFrozen(conversationKey) ||
-          !isConversationWriteGenerationCurrent(
-            conversationKey,
-            expectedGeneration,
-          )
-        ) {
-          return;
-        }
-        await touchEmptyPaperConversation(conversationKey, timestamp);
-      });
-      return;
-    }
-    await withConversationWriteLock(conversationKey, async () => {
-      if (
-        areConversationWritesFrozen(conversationKey) ||
-        !isConversationWriteGenerationCurrent(
-          conversationKey,
-          expectedGeneration,
-        )
-      ) {
-        return;
-      }
-      await touchEmptyGlobalConversation(conversationKey, timestamp);
-    });
+    await storeFor(target.system).touchEmptyCatalogActivity(
+      target,
+      conversationKey,
+      expectedGeneration,
+      timestamp,
+    );
   },
 
   async deleteCatalogEntry(
@@ -1357,34 +1621,10 @@ export const conversationRepository = {
       scheduleConversationCleanupJobsChangedNotification();
       return;
     }
-    const cleanupForkLink = async () => {
-      await deleteConversationForkLink(conversationKey).catch(() => {});
-    };
-    if (target.system === "claude_code") {
-      await deleteClaudeConversation(conversationKey);
-      await cleanupForkLink();
-      return;
-    }
-    if (target.system === "codex") {
-      await deleteCodexConversation(conversationKey);
-      releaseConversationScopeToken({
-        profileSignature: getCodexProfileSignature(),
-        conversationKey,
-        instanceID: target.instanceID,
-      });
-      await cleanupForkLink();
-      return;
-    }
-    if (
-      target.kind === "paper" ||
-      isUpstreamPaperConversationKey(conversationKey)
-    ) {
-      await deletePaperConversation(conversationKey);
-      await cleanupForkLink();
-      return;
-    }
-    await deleteGlobalConversation(conversationKey);
-    await cleanupForkLink();
+    const store = storeFor(target.system);
+    await store.deleteLegacyConversation(conversationKey, target.kind);
+    store.afterDelete?.(conversationKey, target.instanceID);
+    await deleteConversationForkLink(conversationKey).catch(() => {});
   },
 
   async deleteLocalConversationRows(
@@ -1392,20 +1632,18 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
+    const store = storeFor(target.system);
+    const providerCleanup = store.providerCleanup;
     const providerSessionId = String(target.providerSessionId || "").trim();
     const hasClaudeScopeWitness =
-      target.system === "claude_code" &&
+      Boolean(providerCleanup?.scopeIsSessionWitness) &&
       Boolean(target.providerScope?.scopeType && target.providerScope.scopeId);
     const cleanupParams =
-      (providerSessionId || hasClaudeScopeWitness) &&
-      (target.system === "codex" || target.system === "claude_code")
+      (providerSessionId || hasClaudeScopeWitness) && providerCleanup
         ? [
             {
-              operation:
-                target.system === "codex"
-                  ? ("codex_archive" as const)
-                  : ("claude_invalidate" as const),
-              system: target.system,
+              operation: providerCleanup.operation,
+              system: providerCleanup.system,
               conversationKey,
               instanceID: target.instanceID,
               conversationKind: target.kind,
@@ -1462,37 +1700,13 @@ export const conversationRepository = {
           }
         }
       : undefined;
-    if (target.system === "claude_code") {
-      await deleteClaudeConversationLocalRows(conversationKey, {
-        instanceID: target.instanceID,
-        conversationID: target.conversationID,
-        onBeforeCommit: target.onBeforeCommit,
-        onCommit,
-      });
-      notifyBackgroundCleanupNeeded();
-      return;
-    }
-    if (target.system === "codex") {
-      await deleteCodexConversationLocalRows(conversationKey, {
-        instanceID: target.instanceID,
-        conversationID: target.conversationID,
-        onBeforeCommit: target.onBeforeCommit,
-        onCommit,
-      });
-      releaseConversationScopeToken({
-        profileSignature: getCodexProfileSignature(),
-        conversationKey,
-        instanceID: target.instanceID,
-      });
-      notifyBackgroundCleanupNeeded();
-      return;
-    }
-    await deleteUpstreamConversationLocalRows(conversationKey, target.kind, {
+    await store.deleteLocalConversationRows(conversationKey, target.kind, {
       instanceID: target.instanceID,
       conversationID: target.conversationID,
       onBeforeCommit: target.onBeforeCommit,
       onCommit,
     });
+    store.afterDelete?.(conversationKey, target.instanceID);
     notifyBackgroundCleanupNeeded();
   },
 
@@ -1501,14 +1715,8 @@ export const conversationRepository = {
   ): Promise<void> {
     const conversationKey = normalizePositiveInt(target.conversationKey);
     if (!conversationKey) return;
-    if (target.system === "claude_code") {
-      await preflightDeleteClaudeConversationLocalRows(conversationKey);
-      return;
-    }
-    if (target.system === "codex") {
-      await preflightDeleteCodexConversationLocalRows(conversationKey);
-      return;
-    }
-    await preflightDeleteUpstreamConversationLocalRows(conversationKey);
+    await storeFor(target.system).preflightDeleteLocalConversationRows(
+      conversationKey,
+    );
   },
 };

@@ -37,6 +37,56 @@ import {
   resetPendingDeletionSubsystemForTests,
 } from "../src/modules/contextPanel/pendingDeletionWiring";
 import { t } from "../src/utils/i18n";
+import { buildDefaultClaudeGlobalConversationKey } from "../src/claudeCode/constants";
+import {
+  getLastUsedClaudeGlobalConversationKey,
+  setLastUsedClaudeGlobalConversationKey,
+} from "../src/claudeCode/prefs";
+import {
+  activeClaudeConversationModeByLibrary,
+  activeClaudeGlobalConversationByLibrary,
+  activeClaudePaperConversationByPaper,
+  buildClaudeLibraryStateKey,
+} from "../src/claudeCode/state";
+import {
+  buildDefaultCodexGlobalConversationKey,
+  buildDefaultCodexPaperConversationKey,
+} from "../src/codexAppServer/constants";
+import {
+  getLastUsedCodexGlobalConversationKey,
+  getLastUsedCodexPaperConversationKey,
+  setLastUsedCodexGlobalConversationKey,
+  setLastUsedCodexPaperConversationKey,
+} from "../src/codexAppServer/prefs";
+import {
+  activeCodexConversationModeByLibrary,
+  activeCodexGlobalConversationByLibrary,
+  activeCodexPaperConversationByPaper,
+  buildCodexLibraryStateKey,
+  buildCodexPaperStateKey,
+} from "../src/codexAppServer/state";
+import {
+  buildDefaultUpstreamGlobalConversationKey,
+  GLOBAL_CONVERSATION_KEY_BASE,
+  PAPER_CONVERSATION_KEY_BASE,
+} from "../src/modules/contextPanel/constants";
+import {
+  buildPaperStateKey,
+  getLastUsedPaperConversationKey,
+  getLastUsedUpstreamGlobalConversationKey,
+  setLastUsedPaperConversationKey,
+  setLastUsedUpstreamGlobalConversationKey,
+  setLockedGlobalConversationKey,
+} from "../src/modules/contextPanel/prefHelpers";
+import {
+  activeConversationModeByLibrary,
+  activeGlobalConversationByLibrary,
+  webChatIsolatedConversationKeys,
+} from "../src/modules/contextPanel/state";
+import {
+  installPaperRestoreDb,
+  type PaperRestoreDb,
+} from "./helpers/paperRestoreDb";
 
 const LIBRARY_ID = 7;
 const SOURCE_CONVERSATION_KEY = 2_000_000_021;
@@ -250,6 +300,8 @@ function createControllerHarness(
     item?: Zotero.Item;
     basePaperItem?: Zotero.Item;
     mode?: "global" | "paper";
+    withHistoryHeader?: boolean;
+    withLibraryChatTab?: boolean;
   } = {},
 ) {
   const doc = new FakeDocument();
@@ -266,6 +318,15 @@ function createControllerHarness(
     "span",
   ) as unknown as HTMLElement;
   const topToast = new FakeElement(doc, "div") as unknown as HTMLElement;
+  const historyBar = options.withHistoryHeader
+    ? (new FakeElement(doc, "div") as unknown as HTMLElement)
+    : null;
+  const titleStatic = options.withHistoryHeader
+    ? (new FakeElement(doc, "div") as unknown as HTMLElement)
+    : null;
+  const libraryChatTabBtn = options.withLibraryChatTab
+    ? (new FakeElement(doc, "button") as unknown as HTMLButtonElement)
+    : null;
   let currentItem: Zotero.Item | null =
     options.item || createGlobalPortalItem(LIBRARY_ID, SOURCE_CONVERSATION_KEY);
   let currentBasePaperItem = options.basePaperItem || null;
@@ -277,8 +338,8 @@ function createControllerHarness(
     inputBox,
     panelRoot,
     status,
-    historyBar: null,
-    titleStatic: null,
+    historyBar,
+    titleStatic,
     historyNewBtn: null,
     historyNewMenu: null,
     historyNewOpenBtn: null,
@@ -292,7 +353,7 @@ function createControllerHarness(
     historyUndoBtn: null,
     topToast,
     paperChatTabBtn: null,
-    libraryChatTabBtn: null,
+    libraryChatTabBtn,
     modeSwitch: null,
     getItem: () => currentItem,
     setItem: (item) => {
@@ -373,6 +434,7 @@ function createControllerHarness(
     historyUndoText: historyUndoText as unknown as FakeElement,
     topToast: topToast as unknown as FakeElement,
     status: status as unknown as FakeElement,
+    libraryChatTabBtn: libraryChatTabBtn as unknown as FakeElement | null,
   };
 }
 
@@ -1104,5 +1166,633 @@ describe("historyLifecycleController fork behavior", function () {
       },
     ]);
     assert.equal(status.textContent, "\u5bf9\u8bdd\u5df2 fork");
+  });
+});
+
+describe("historyLifecycleController active-conversation selection", function () {
+  const globalScope = globalThis as typeof globalThis & {
+    Zotero?: Record<string, any>;
+    ztoolkit?: { log?: (...args: unknown[]) => void };
+  };
+  const PAPER_ITEM_ID_FOR_SELECTION = 4_301;
+  const prefStore = new Map<string, unknown>();
+  let originalZotero: Record<string, any> | undefined;
+  let originalZtoolkit: { log?: (...args: unknown[]) => void } | undefined;
+  const repositoryMethods = [
+    "createCatalogEntry",
+    "ensureCatalogEntry",
+    "getCatalogEntry",
+    "getCatalogIdentityWitness",
+    "listCatalogEntries",
+    "loadMessages",
+    "touchEmptyCatalogActivity",
+  ] as const;
+  let originalRepository: Partial<typeof conversationRepository> = {};
+  let restoreDb: PaperRestoreDb | null = null;
+
+  const clearSelectionState = () => {
+    activeConversationModeByLibrary.clear();
+    activeGlobalConversationByLibrary.clear();
+    activePaperConversationByPaper.clear();
+    activeClaudeConversationModeByLibrary.clear();
+    activeClaudeGlobalConversationByLibrary.clear();
+    activeClaudePaperConversationByPaper.clear();
+    activeCodexConversationModeByLibrary.clear();
+    activeCodexGlobalConversationByLibrary.clear();
+    activeCodexPaperConversationByPaper.clear();
+    webChatIsolatedConversationKeys.clear();
+  };
+
+  const installZotero = () => {
+    globalScope.Zotero = {
+      ...(globalScope.Zotero || {}),
+      locale: "en-US",
+      Profile: { dir: "/tmp/zotero-selection-profile" },
+      Libraries: { userLibraryID: LIBRARY_ID },
+      Items: { get: () => null },
+      Prefs: {
+        get: (key: string) => prefStore.get(key) ?? "",
+        set: (key: string, value: unknown) => {
+          prefStore.set(key, value);
+        },
+        clear: (key: string) => {
+          prefStore.delete(key);
+        },
+      },
+      DB: globalScope.Zotero?.DB || {
+        queryAsync: async () => [],
+        executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
+      },
+      debug: () => undefined,
+    };
+  };
+
+  // The paper restore service is SQLite-backed; tables the controller reads
+  // besides it (catalog, fork links) are absent and read as empty.
+  const installRestoreDb = async () => {
+    restoreDb = await installPaperRestoreDb({
+      profileDir: "/tmp/zotero-selection-profile",
+      prefStore,
+    });
+    const db = globalScope.Zotero!.DB;
+    const queryAsync = db.queryAsync;
+    db.queryAsync = async (sql: string, params?: unknown[]) => {
+      try {
+        return await queryAsync(sql, params);
+      } catch (error) {
+        if (/no such table/i.test(String(error))) return [];
+        throw error;
+      }
+    };
+    installZotero();
+    return restoreDb;
+  };
+
+  const settle = async () => {
+    for (let round = 0; round < 20; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  const makePaperItem = (): Zotero.Item =>
+    ({
+      id: PAPER_ITEM_ID_FOR_SELECTION,
+      libraryID: LIBRARY_ID,
+      isNote: () => false,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getField: () => "",
+      getAttachments: () => [],
+    }) as unknown as Zotero.Item;
+
+  const globalKeyFor = (
+    system: "upstream" | "claude_code" | "codex",
+    slot: number,
+  ): number =>
+    system === "claude_code"
+      ? buildDefaultClaudeGlobalConversationKey(LIBRARY_ID + slot)
+      : system === "codex"
+        ? buildDefaultCodexGlobalConversationKey(LIBRARY_ID + slot)
+        : buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID + slot);
+
+  const readActiveGlobal = (
+    system: "upstream" | "claude_code" | "codex",
+  ): number | undefined =>
+    system === "claude_code"
+      ? activeClaudeGlobalConversationByLibrary.get(
+          buildClaudeLibraryStateKey(LIBRARY_ID),
+        )
+      : system === "codex"
+        ? activeCodexGlobalConversationByLibrary.get(
+            buildCodexLibraryStateKey(LIBRARY_ID),
+          )
+        : activeGlobalConversationByLibrary.get(LIBRARY_ID);
+
+  const writeActiveGlobal = (
+    system: "upstream" | "claude_code" | "codex",
+    key: number,
+  ): void => {
+    if (system === "claude_code") {
+      activeClaudeGlobalConversationByLibrary.set(
+        buildClaudeLibraryStateKey(LIBRARY_ID),
+        key,
+      );
+    } else if (system === "codex") {
+      activeCodexGlobalConversationByLibrary.set(
+        buildCodexLibraryStateKey(LIBRARY_ID),
+        key,
+      );
+    } else {
+      activeGlobalConversationByLibrary.set(LIBRARY_ID, key);
+    }
+  };
+
+  const readPersistedGlobal = (
+    system: "upstream" | "claude_code" | "codex",
+  ): number | null =>
+    system === "claude_code"
+      ? getLastUsedClaudeGlobalConversationKey(LIBRARY_ID)
+      : system === "codex"
+        ? getLastUsedCodexGlobalConversationKey(LIBRARY_ID)
+        : getLastUsedUpstreamGlobalConversationKey(LIBRARY_ID);
+
+  const writePersistedGlobal = (
+    system: "upstream" | "claude_code" | "codex",
+    key: number,
+  ): void => {
+    if (system === "claude_code") {
+      setLastUsedClaudeGlobalConversationKey(LIBRARY_ID, key);
+    } else if (system === "codex") {
+      setLastUsedCodexGlobalConversationKey(LIBRARY_ID, key);
+    } else {
+      setLastUsedUpstreamGlobalConversationKey(LIBRARY_ID, key);
+    }
+  };
+
+  beforeEach(function () {
+    originalZotero = globalScope.Zotero;
+    originalZtoolkit = globalScope.ztoolkit;
+    originalRepository = {};
+    for (const method of repositoryMethods) {
+      (originalRepository as Record<string, unknown>)[method] =
+        conversationRepository[method];
+    }
+    prefStore.clear();
+    globalScope.Zotero = undefined;
+    installZotero();
+    globalScope.ztoolkit = { log: () => undefined };
+    clearSelectionState();
+    resetPendingDeletionStoreForTests();
+    configurePendingDeletionStoreEnv({
+      setTimer: () => null,
+      clearTimer: () => {},
+      log: () => {},
+    });
+    resetPendingDeletionSubsystemForTests();
+    configurePendingDeletionSubsystem();
+    conversationRepository.loadMessages = async () => [];
+    conversationRepository.getCatalogIdentityWitness = async () => null;
+    conversationRepository.listCatalogEntries = async () => [];
+    conversationRepository.touchEmptyCatalogActivity = async () => undefined;
+  });
+
+  afterEach(async function () {
+    await settle();
+    await restoreDb?.close();
+    restoreDb = null;
+    resetPendingDeletionStoreForTests();
+    resetPendingDeletionSubsystemForTests();
+    for (const method of repositoryMethods) {
+      (conversationRepository as Record<string, unknown>)[method] = (
+        originalRepository as Record<string, unknown>
+      )[method];
+    }
+    clearSelectionState();
+    globalScope.Zotero = originalZotero;
+    if (originalZtoolkit) {
+      globalScope.ztoolkit = originalZtoolkit;
+    } else {
+      delete globalScope.ztoolkit;
+    }
+  });
+
+  for (const system of ["upstream", "codex", "claude_code"] as const) {
+    it(`switchGlobalConversation remembers a ${system} key in the active map and the pref`, async function () {
+      const targetKey = globalKeyFor(system, 1);
+      conversationRepository.ensureCatalogEntry = async (params) =>
+        makeCatalogEntry({
+          conversationKey: params.conversationKey || targetKey,
+          kind: "global",
+          libraryID: LIBRARY_ID,
+          system,
+        });
+      const { controller } = createControllerHarness({ system });
+
+      assert.isTrue(await controller.switchGlobalConversation(targetKey));
+
+      assert.equal(readActiveGlobal(system), targetKey);
+      assert.equal(readPersistedGlobal(system), targetKey);
+    });
+  }
+
+  for (const system of ["upstream", "codex", "claude_code"] as const) {
+    it(`createAndSwitchGlobalConversation offers only the active ${system} key as the current draft and remembers the new key${system === "claude_code" ? " in the map only" : " in the map and the pref"}`, async function () {
+      const activeKey = globalKeyFor(system, 1);
+      const persistedKey = globalKeyFor(system, 2);
+      const createdKey = globalKeyFor(system, 3);
+      writeActiveGlobal(system, activeKey);
+      writePersistedGlobal(system, persistedKey);
+      const inspectedKeys: number[] = [];
+      conversationRepository.getCatalogEntry = async (params) => {
+        inspectedKeys.push(params.conversationKey);
+        return null;
+      };
+      conversationRepository.createCatalogEntry = async (params) =>
+        makeCatalogEntry({
+          conversationKey: createdKey,
+          kind: params.kind,
+          libraryID: params.libraryID,
+          system,
+        });
+      // Refuse the follow-up switch, so only the creation's own writes remain.
+      conversationRepository.ensureCatalogEntry = async () => null;
+      const { controller } = createControllerHarness({ system, mode: "paper" });
+
+      assert.isFalse(await controller.createAndSwitchGlobalConversation());
+
+      assert.deepEqual(inspectedKeys, [activeKey]);
+      assert.equal(readActiveGlobal(system), createdKey);
+      assert.equal(
+        readPersistedGlobal(system),
+        system === "claude_code" ? persistedKey : createdKey,
+      );
+
+      // With no active key, the persisted pointer is not offered as a draft.
+      clearSelectionState();
+      prefStore.clear();
+      writePersistedGlobal(system, persistedKey);
+      inspectedKeys.length = 0;
+      const second = createControllerHarness({ system, mode: "paper" });
+      assert.isFalse(
+        await second.controller.createAndSwitchGlobalConversation(),
+      );
+      assert.deepEqual(inspectedKeys, []);
+    });
+  }
+
+  it("refreshGlobalHistoryHeader seeds the remembered global key of each runtime", async function () {
+    const cases: Array<{
+      system: "upstream" | "claude_code" | "codex";
+      active?: number;
+      persisted?: number;
+      expected: number | null;
+    }> = [
+      // Claude and Codex: active map, else pref.
+      {
+        system: "claude_code",
+        active: globalKeyFor("claude_code", 1),
+        persisted: globalKeyFor("claude_code", 2),
+        expected: globalKeyFor("claude_code", 1),
+      },
+      {
+        system: "claude_code",
+        persisted: globalKeyFor("claude_code", 2),
+        expected: globalKeyFor("claude_code", 2),
+      },
+      {
+        system: "codex",
+        active: globalKeyFor("codex", 1),
+        persisted: globalKeyFor("codex", 2),
+        expected: globalKeyFor("codex", 1),
+      },
+      {
+        system: "codex",
+        persisted: globalKeyFor("codex", 2),
+        expected: globalKeyFor("codex", 2),
+      },
+      // Upstream: active map only; the sentinel maps to the library default.
+      {
+        system: "upstream",
+        active: globalKeyFor("upstream", 1),
+        persisted: globalKeyFor("upstream", 2),
+        expected: globalKeyFor("upstream", 1),
+      },
+      {
+        system: "upstream",
+        persisted: globalKeyFor("upstream", 2),
+        expected: null,
+      },
+      {
+        system: "upstream",
+        active: GLOBAL_CONVERSATION_KEY_BASE,
+        expected: buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID),
+      },
+    ];
+    for (const testCase of cases) {
+      clearSelectionState();
+      prefStore.clear();
+      if (testCase.active) writeActiveGlobal(testCase.system, testCase.active);
+      if (testCase.persisted) {
+        writePersistedGlobal(testCase.system, testCase.persisted);
+      }
+      const seededGlobalKeys: number[] = [];
+      conversationRepository.getCatalogIdentityWitness = async (params) => {
+        if (params.kind === "global") {
+          seededGlobalKeys.push(params.conversationKey);
+        }
+        return null;
+      };
+      conversationRepository.ensureCatalogEntry = async () => null;
+      const { controller } = createControllerHarness({
+        system: testCase.system,
+        mode: "paper",
+        withHistoryHeader: true,
+      });
+
+      await controller.refreshGlobalHistoryHeader();
+
+      assert.deepEqual(
+        seededGlobalKeys,
+        testCase.expected === null ? [] : [testCase.expected],
+        JSON.stringify(testCase),
+      );
+    }
+  });
+
+  it("the Library chat tab recalls each runtime's remembered global key", async function () {
+    const upstreamLockedKey = globalKeyFor("upstream", 4);
+    const cases: Array<{
+      system: "upstream" | "claude_code" | "codex";
+      active?: number;
+      persisted?: number;
+      locked?: number;
+      expected: number | null;
+    }> = [
+      {
+        system: "codex",
+        active: globalKeyFor("codex", 1),
+        persisted: globalKeyFor("codex", 2),
+        expected: globalKeyFor("codex", 1),
+      },
+      {
+        system: "codex",
+        persisted: globalKeyFor("codex", 2),
+        expected: globalKeyFor("codex", 2),
+      },
+      // Upstream: the lock wins, then the active map, then the pref.
+      {
+        system: "upstream",
+        active: globalKeyFor("upstream", 1),
+        persisted: globalKeyFor("upstream", 2),
+        locked: upstreamLockedKey,
+        expected: upstreamLockedKey,
+      },
+      {
+        system: "upstream",
+        active: globalKeyFor("upstream", 1),
+        persisted: globalKeyFor("upstream", 2),
+        expected: globalKeyFor("upstream", 1),
+      },
+      {
+        system: "upstream",
+        persisted: globalKeyFor("upstream", 2),
+        expected: globalKeyFor("upstream", 2),
+      },
+      {
+        system: "upstream",
+        active: GLOBAL_CONVERSATION_KEY_BASE,
+        expected: buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID),
+      },
+      // A key outside the upstream global band is not a library chat.
+      {
+        system: "upstream",
+        active: PAPER_CONVERSATION_KEY_BASE + 5,
+        expected: null,
+      },
+    ];
+    for (const testCase of cases) {
+      clearSelectionState();
+      prefStore.clear();
+      if (testCase.active) writeActiveGlobal(testCase.system, testCase.active);
+      if (testCase.persisted) {
+        writePersistedGlobal(testCase.system, testCase.persisted);
+      }
+      if (testCase.locked) {
+        setLockedGlobalConversationKey(LIBRARY_ID, testCase.locked);
+      }
+      const switchedKeys: number[] = [];
+      let created = false;
+      conversationRepository.ensureCatalogEntry = async (params) => {
+        switchedKeys.push(params.conversationKey || 0);
+        return null;
+      };
+      conversationRepository.getCatalogEntry = async () => null;
+      conversationRepository.createCatalogEntry = async () => {
+        created = true;
+        return null;
+      };
+      const { libraryChatTabBtn } = createControllerHarness({
+        system: testCase.system,
+        mode: "paper",
+        withLibraryChatTab: true,
+      });
+
+      libraryChatTabBtn!.dispatchEvent({
+        type: "click",
+        preventDefault: () => undefined,
+        stopPropagation: () => undefined,
+      } as unknown as Event);
+      await settle();
+
+      if (testCase.expected === null) {
+        assert.deepEqual(switchedKeys, [], JSON.stringify(testCase));
+        assert.isTrue(created, JSON.stringify(testCase));
+      } else {
+        assert.deepEqual(
+          switchedKeys,
+          [testCase.expected],
+          JSON.stringify(testCase),
+        );
+      }
+    }
+  });
+
+  describe("paper conversations", function () {
+    const paperKeyFor = (system: "upstream" | "codex", slot: number) =>
+      system === "codex"
+        ? buildDefaultCodexPaperConversationKey(PAPER_ITEM_ID_FOR_SELECTION) +
+          slot
+        : PAPER_CONVERSATION_KEY_BASE + PAPER_ITEM_ID_FOR_SELECTION + slot;
+
+    const readActivePaper = (system: "upstream" | "codex") =>
+      system === "codex"
+        ? activeCodexPaperConversationByPaper.get(
+            buildCodexPaperStateKey(LIBRARY_ID, PAPER_ITEM_ID_FOR_SELECTION),
+          )
+        : activePaperConversationByPaper.get(
+            buildPaperStateKey(LIBRARY_ID, PAPER_ITEM_ID_FOR_SELECTION),
+          );
+
+    const writeActivePaper = (system: "upstream" | "codex", key: number) => {
+      if (system === "codex") {
+        activeCodexPaperConversationByPaper.set(
+          buildCodexPaperStateKey(LIBRARY_ID, PAPER_ITEM_ID_FOR_SELECTION),
+          key,
+        );
+      } else {
+        activePaperConversationByPaper.set(
+          buildPaperStateKey(LIBRARY_ID, PAPER_ITEM_ID_FOR_SELECTION),
+          key,
+        );
+      }
+    };
+
+    const readPersistedPaper = (system: "upstream" | "codex") =>
+      system === "codex"
+        ? getLastUsedCodexPaperConversationKey(
+            LIBRARY_ID,
+            PAPER_ITEM_ID_FOR_SELECTION,
+          )
+        : getLastUsedPaperConversationKey(
+            LIBRARY_ID,
+            PAPER_ITEM_ID_FOR_SELECTION,
+          );
+
+    const writePersistedPaper = (system: "upstream" | "codex", key: number) => {
+      if (system === "codex") {
+        setLastUsedCodexPaperConversationKey(
+          LIBRARY_ID,
+          PAPER_ITEM_ID_FOR_SELECTION,
+          key,
+        );
+      } else {
+        setLastUsedPaperConversationKey(
+          LIBRARY_ID,
+          PAPER_ITEM_ID_FOR_SELECTION,
+          key,
+        );
+      }
+    };
+
+    const stubPaperCatalog = (
+      system: "upstream" | "codex",
+      inspectedKeys: number[],
+      options: { webchatSession?: boolean } = {},
+    ) => {
+      const entryFor = (conversationKey: number) => ({
+        ...makeCatalogEntry({
+          conversationKey,
+          kind: "paper",
+          libraryID: LIBRARY_ID,
+          paperItemID: PAPER_ITEM_ID_FOR_SELECTION,
+          system,
+        }),
+        webchatSession: options.webchatSession,
+      });
+      const lookup = async (params: { conversationKey?: number }) => {
+        const key = Number(params.conversationKey || 0);
+        inspectedKeys.push(key);
+        return entryFor(key);
+      };
+      if (system === "upstream") {
+        conversationRepository.ensureCatalogEntry = lookup as never;
+      } else {
+        conversationRepository.getCatalogEntry = lookup as never;
+      }
+    };
+
+    for (const system of ["upstream", "codex"] as const) {
+      it(`switchPaperConversation recalls the ${system} active key, else the persisted key`, async function () {
+        const db = await installRestoreDb();
+        const activeKey = paperKeyFor(system, 1);
+        const persistedKey = paperKeyFor(system, 2);
+        db.addPaperConversation(
+          system,
+          persistedKey,
+          LIBRARY_ID,
+          PAPER_ITEM_ID_FOR_SELECTION,
+        );
+        await db.initializeAllRuntimes();
+        writePersistedPaper(system, persistedKey);
+
+        const inspectedKeys: number[] = [];
+        stubPaperCatalog(system, inspectedKeys);
+        writeActivePaper(system, activeKey);
+        const first = createControllerHarness({
+          system,
+          mode: "paper",
+          item: makePaperItem(),
+          basePaperItem: makePaperItem(),
+        });
+        assert.isTrue(await first.controller.switchPaperConversation());
+        assert.deepEqual(inspectedKeys, [activeKey]);
+
+        inspectedKeys.length = 0;
+        clearSelectionState();
+        const second = createControllerHarness({
+          system,
+          mode: "paper",
+          item: makePaperItem(),
+          basePaperItem: makePaperItem(),
+        });
+        assert.isTrue(await second.controller.switchPaperConversation());
+        assert.deepEqual(inspectedKeys, [persistedKey]);
+      });
+
+      it(`switchPaperConversation remembers a ${system} key in the active map and the restore target`, async function () {
+        const db = await installRestoreDb();
+        const targetKey = paperKeyFor(system, 3);
+        db.addPaperConversation(
+          system,
+          targetKey,
+          LIBRARY_ID,
+          PAPER_ITEM_ID_FOR_SELECTION,
+        );
+        await db.initializeAllRuntimes();
+        stubPaperCatalog(system, []);
+        const { controller } = createControllerHarness({
+          system,
+          mode: "paper",
+          item: makePaperItem(),
+          basePaperItem: makePaperItem(),
+        });
+
+        assert.isTrue(await controller.switchPaperConversation(targetKey));
+
+        assert.equal(readActivePaper(system), targetKey);
+        assert.equal(readPersistedPaper(system), targetKey);
+        assert.isFalse(webChatIsolatedConversationKeys.has(targetKey));
+      });
+    }
+
+    it("switchPaperConversation keeps an upstream webchat session out of the restore target", async function () {
+      const db = await installRestoreDb();
+      const previousKey = paperKeyFor("upstream", 2);
+      const webchatKey = paperKeyFor("upstream", 3);
+      for (const key of [previousKey, webchatKey]) {
+        db.addPaperConversation(
+          "upstream",
+          key,
+          LIBRARY_ID,
+          PAPER_ITEM_ID_FOR_SELECTION,
+        );
+      }
+      await db.initializeAllRuntimes();
+      writePersistedPaper("upstream", previousKey);
+      stubPaperCatalog("upstream", [], { webchatSession: true });
+      const { controller } = createControllerHarness({
+        system: "upstream",
+        mode: "paper",
+        item: makePaperItem(),
+        basePaperItem: makePaperItem(),
+      });
+
+      assert.isTrue(await controller.switchPaperConversation(webchatKey));
+
+      assert.equal(readActivePaper("upstream"), webchatKey);
+      // The later (non-webchat) transcript load drops the isolation mark, so
+      // the restore target is the observable: it still names the old chat.
+      assert.equal(readPersistedPaper("upstream"), previousKey);
+    });
   });
 });

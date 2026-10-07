@@ -7,6 +7,7 @@
  * - State clearing and lifecycle
  *
  * Override maps use flat composite keys: "ownerItemId:paperKey"
+ * (see composeContextStore.paperSendModes / paperSourceModes).
  */
 
 import type {
@@ -14,24 +15,9 @@ import type {
   PaperContextSendMode,
   PaperContentSourceMode,
 } from "../types";
-import {
-  selectedPaperContextCache,
-  selectedCollectionContextCache,
-  selectedTagContextCache,
-  selectedOtherRefContextCache,
-  paperContextModeOverrides,
-  paperContentSourceOverrides,
-  selectedPaperContextListExpandedCache,
-  selectedPaperPreviewExpandedCache,
-} from "../state";
-import { buildPaperKey } from "../../../services/paperContent/pdfContext";
+import { composeContextStore } from "./composeContextStore";
 import { normalizePaperContextRefs } from "../../../services/context/normalizers";
 import { sanitizeText } from "../../../utils/textSanitization";
-
-/** Builds the flat composite key for override maps. */
-function overrideKey(itemId: number, paperContext: PaperContextRef): string {
-  return `${itemId}:${buildPaperKey(paperContext)}`;
-}
 
 // ── Send mode overrides ────────────────────────────────────────────────────
 
@@ -39,9 +25,7 @@ export function getPaperModeOverride(
   itemId: number,
   paperContext: PaperContextRef,
 ): PaperContextSendMode | null {
-  return (
-    paperContextModeOverrides.get(overrideKey(itemId, paperContext)) || null
-  );
+  return composeContextStore.paperSendModes.get(itemId, paperContext);
 }
 
 export function setPaperModeOverride(
@@ -49,14 +33,11 @@ export function setPaperModeOverride(
   paperContext: PaperContextRef,
   mode: PaperContextSendMode,
 ): void {
-  paperContextModeOverrides.set(overrideKey(itemId, paperContext), mode);
+  composeContextStore.paperSendModes.set(itemId, paperContext, mode);
 }
 
 export function clearPaperModeOverrides(itemId: number): void {
-  const prefix = `${itemId}:`;
-  for (const key of Array.from(paperContextModeOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContextModeOverrides.delete(key);
-  }
+  composeContextStore.paperSendModes.clearOwner(itemId);
 }
 
 export function isPaperContextFullTextMode(
@@ -71,9 +52,7 @@ export function getPaperContentSourceOverride(
   itemId: number,
   paperContext: PaperContextRef,
 ): PaperContentSourceMode | null {
-  return (
-    paperContentSourceOverrides.get(overrideKey(itemId, paperContext)) || null
-  );
+  return composeContextStore.paperSourceModes.get(itemId, paperContext);
 }
 
 export function setPaperContentSourceOverride(
@@ -81,21 +60,18 @@ export function setPaperContentSourceOverride(
   paperContext: PaperContextRef,
   mode: PaperContentSourceMode,
 ): void {
-  paperContentSourceOverrides.set(overrideKey(itemId, paperContext), mode);
+  composeContextStore.paperSourceModes.set(itemId, paperContext, mode);
 }
 
 export function clearPaperContentSourceOverride(
   itemId: number,
   paperContext: PaperContextRef,
 ): void {
-  paperContentSourceOverrides.delete(overrideKey(itemId, paperContext));
+  composeContextStore.paperSourceModes.delete(itemId, paperContext);
 }
 
 export function clearPaperContentSourceOverrides(itemId: number): void {
-  const prefix = `${itemId}:`;
-  for (const key of Array.from(paperContentSourceOverrides.keys())) {
-    if (key.startsWith(prefix)) paperContentSourceOverrides.delete(key);
-  }
+  composeContextStore.paperSourceModes.clearOwner(itemId);
 }
 
 export function getNextContentSourceMode(
@@ -111,19 +87,19 @@ export function getNextContentSourceMode(
 // ── State clearing ──────────────────────────────────────────────────────────
 
 export function clearSelectedPaperState(itemId: number): void {
-  selectedPaperContextCache.delete(itemId);
-  selectedPaperPreviewExpandedCache.delete(itemId);
-  selectedPaperContextListExpandedCache.delete(itemId);
+  composeContextStore.papers.delete(itemId);
+  composeContextStore.paperPreviewExpanded.delete(itemId);
+  composeContextStore.paperListExpanded.delete(itemId);
   clearPaperModeOverrides(itemId);
   // Note: content source overrides are NOT cleared here because auto-loaded
-  // papers may still have overrides when selectedPaperContextCache is empty.
+  // papers may still have overrides when the papers list is empty.
 }
 
 export function clearAllRefContextState(itemId: number): void {
   clearSelectedPaperState(itemId);
-  selectedCollectionContextCache.delete(itemId);
-  selectedTagContextCache.delete(itemId);
-  selectedOtherRefContextCache.delete(itemId);
+  composeContextStore.collections.delete(itemId);
+  composeContextStore.tags.delete(itemId);
+  composeContextStore.otherRefs.delete(itemId);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

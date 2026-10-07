@@ -27,6 +27,7 @@ const SCANNED_FILES = [
   // The panel's reading of a connected runtime's items moved here; the same
   // rule follows it.
   "src/codexAppServer/nativeActivityStages.ts",
+  "src/modules/contextPanel/codexNative/turnCallbacks.ts",
 ] as const;
 
 type NameMeaningPattern = { id: string; regex: RegExp };

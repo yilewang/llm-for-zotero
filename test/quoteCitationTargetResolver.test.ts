@@ -159,6 +159,32 @@ describe("quote citation target resolver", function () {
     assert.lengthOf(attempts, 1);
   });
 
+  it("reads a paper a page cache already places the quote in before a better-labelled one", async function () {
+    const attempts: Array<{ contextItemId: number; quoteText: string }> = [];
+    const resolution = await resolveVerifiedQuoteTarget({
+      candidates: [
+        candidate(11, { authoritative: true, labelRank: 4 }),
+        {
+          ...candidate(22, { authoritative: true, labelRank: 1 }),
+          cachedPage: true,
+        },
+        // A cached page does not lift a library guess above a context paper.
+        { ...candidate(33, { labelRank: 9 }), cachedPage: true },
+      ],
+      searchTexts: ["shared sentence"],
+      verify: trackingVerifier({ 11: resolved(2), 22: NOT_FOUND }, attempts),
+    });
+
+    // The cached paper is still read, and its miss is not a jump.
+    assert.deepEqual(
+      attempts.map((attempt) => attempt.contextItemId),
+      [22, 11],
+    );
+    assert.equal(resolution.status, "resolved");
+    if (resolution.status !== "resolved") return;
+    assert.equal(resolution.contextItemId, 11);
+  });
+
   it("jumps to a near-duplicate rather than refusing when labels tie", async function () {
     // A preprint and its published version both hold the quote; sending the
     // reader to the first is far better than declining to move at all.
@@ -429,23 +455,44 @@ describe("quote citation target resolver", function () {
 });
 
 describe("untrusted quote navigation contract", function () {
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  // The verify-first navigation the untrusted path hands its click to.
   const source = readFileSync(
-    resolve(
-      dirname(fileURLToPath(import.meta.url)),
-      "../src/modules/contextPanel/assistantCitationLinks.ts",
-    ),
+    resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
     "utf8",
   );
-  const navigateSection = source.slice(
-    source.indexOf("type ResolvedQuoteCitationMatch = {"),
-    source.indexOf(
+  const navigateStart = source.indexOf("type ResolvedQuoteCitationMatch = {");
+  const verifyFirstStart = source.indexOf(
+    "export async function navigateToQuote(",
+  );
+  const navigateEnd = source.indexOf("\n}\n", verifyFirstStart);
+  const navigateSection = source.slice(navigateStart, navigateEnd);
+  const citationSource = readFileSync(
+    resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+    "utf8",
+  );
+  const untrustedCallerSection = citationSource.slice(
+    citationSource.indexOf(
+      "async function navigateUntrustedQuoteCitation(params: {",
+    ),
+    citationSource.indexOf(
       "async function resolveAndNavigateAssistantCitation(params: {",
     ),
   );
 
+  it("reads the verify-first navigation and its untrusted caller", function () {
+    assert.isAtLeast(navigateStart, 0);
+    assert.isAbove(verifyFirstStart, navigateStart);
+    assert.isAbove(navigateEnd, verifyFirstStart);
+    assert.include(untrustedCallerSection, "navigateToQuote({");
+    // One strategy serves every quote path (U1): verify first.
+    assert.notInclude(untrustedCallerSection, "strategy:");
+    assert.notInclude(source, "hint-ladder");
+  });
+
   it("never invents a page label for the reader to navigate by", function () {
-    // Zotero navigates by printed label when one is given, and printed labels
-    // need not track page order.
+    // The page index drives navigation; a label is for display and links,
+    // and printed labels need not track page order.
     assert.include(navigateSection, "pageLabel?: string;");
   });
 
@@ -457,7 +504,15 @@ describe("untrusted quote navigation contract", function () {
     );
   });
   it("re-verifies through the merge so a fallback cannot bury the first verdict", function () {
-    const start = navigateSection.indexOf("const searched = (await");
+    // The untrusted caller hands the library search over as the fallback.
+    assert.include(
+      untrustedCallerSection,
+      "moreCandidates: recordedCandidates.length",
+    );
+    assert.include(untrustedCallerSection, "await searchForCandidates()");
+    const start = navigateSection.indexOf(
+      "const searched = await req.moreCandidates()",
+    );
     assert.isAbove(start, -1, "the fallback search still runs");
     const mergeSection = navigateSection.slice(start);
     assert.include(

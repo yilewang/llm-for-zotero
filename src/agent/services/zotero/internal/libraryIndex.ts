@@ -37,16 +37,6 @@ export function indexItemHasGatewayPdf(
   );
 }
 
-export function indexItemMatchesAggregateTagScope(
-  item: LibraryIndexItem,
-  scope: "allTagged" | "untagged",
-  includeAutomatic: boolean,
-): boolean {
-  const tagged =
-    item.tags.length > 0 || (includeAutomatic && item.automaticTags.length > 0);
-  return scope === "allTagged" ? tagged : !tagged;
-}
-
 export function orderedIndexIds(
   snapshot: LibraryIndexSnapshot,
   predicate: (item: LibraryIndexItem) => boolean,

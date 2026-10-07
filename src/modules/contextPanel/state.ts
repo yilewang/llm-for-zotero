@@ -16,9 +16,10 @@ import type {
   GeneratedChatImage,
 } from "./types";
 import {
-  pdfTextCache,
-  pdfTextLoadingTasks,
-} from "../../services/paperContent/contextCache";
+  endInlineEditsForTurnStartedElsewhere,
+  releaseInlineEditsForConversation,
+} from "./inlineEditState";
+import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { TTLMap } from "../../utils/ttlMap";
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import { clearAllTaskProgress, clearTaskProgress } from "./taskProgress/store";
@@ -49,15 +50,52 @@ export const conversationForkLinks = new Map<number, ConversationForkLink>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
+/**
+ * Paper WebChat session rows (webchat_session = 1) a panel has switched to.
+ * webChatIsolatedConversationKeys also holds ordinary chats a panel emptied
+ * for WebChat in place, so it cannot tell a paper's WebChat session apart.
+ */
+export const webChatSessionConversationKeys = new Set<number>();
 const webChatForceNewChatConversationKeys = new Set<number>();
+/**
+ * Per-surface reasoning choice for a conversation, keyed by
+ * reasoningCacheKey(): the window and a sidebar panel can show the same
+ * conversation (the same item id) and each keeps its own level.
+ */
 export const selectedReasoningCache = new Map<
-  number,
+  string,
   ReasoningLevelSelection
 >();
 export const selectedReasoningProviderCache = new Map<
-  number,
+  string,
   ReasoningProviderKind
 >();
+
+// The same two values as conversationSelection's SelectionSurface, spelled out
+// here because that module imports this one.
+type ReasoningSurface = "embedded" | "standalone";
+
+export function reasoningCacheKey(
+  surface: ReasoningSurface | undefined,
+  itemId: number,
+): string {
+  return `${surface || "embedded"}:${itemId}`;
+}
+
+/** Forget one surface's reasoning choices; the other surface keeps its own. */
+export function clearSelectedReasoningForSurface(
+  surface: ReasoningSurface | undefined,
+): void {
+  const prefix = `${surface || "embedded"}:`;
+  for (const cache of [
+    selectedReasoningCache,
+    selectedReasoningProviderCache,
+  ]) {
+    for (const key of Array.from(cache.keys())) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  }
+}
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
 export const shortcutTextCache = new Map<string, string>();
@@ -158,15 +196,22 @@ export function getPendingRequestId(conversationKey: number): number {
   return pendingRequestIds.get(conversationKey) || 0;
 }
 
+/**
+ * Claims the conversation for a request. A turn starting here ends every
+ * other panel's open message edit of the conversation (see
+ * inlineEditState.ts); startingBody is the panel that starts it, if any.
+ */
 export function tryBeginRequest(
   conversationKey: number,
   requestId: number,
   abortController: AbortController | null,
+  startingBody?: Element | null,
 ): boolean {
   const key = normalizeConversationKey(conversationKey);
   if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
   pendingRequestIds.set(key, requestId);
   if (abortController) abortControllers.set(key, abortController);
+  endInlineEditsForTurnStartedElsewhere(key, startingBody);
   notifyRequestActivityChanged(key, false);
   return true;
 }
@@ -227,6 +272,9 @@ export function transferRequest(
   abortControllers.delete(fromKey);
   pendingRequestIds.set(toKey, requestId);
   if (abortController) abortControllers.set(toKey, abortController);
+  // The request's turn now runs in the target conversation. Its own panel's
+  // edit, if any, ended before the request moved.
+  endInlineEditsForTurnStartedElsewhere(toKey);
   notifyRequestActivityChanged(fromKey, true);
   notifyRequestActivityChanged(toKey, false);
   return true;
@@ -325,6 +373,7 @@ export function clearConversationOwnedRuntimeState(
   loadedConversationKeys.delete(key);
   loadingConversationTasks.delete(key);
   webChatIsolatedConversationKeys.delete(key);
+  webChatSessionConversationKeys.delete(key);
   webChatForceNewChatConversationKeys.delete(key);
   selectedRuntimeModeCache.delete(key);
   draftInputCache.delete(key);
@@ -343,20 +392,21 @@ export function clearConversationOwnedRuntimeState(
       activePaperConversationByPaper.delete(stateKey);
     }
   }
-
-  if (promptMenuTarget?.conversationKey === key) promptMenuTarget = null;
-  if (responseMenuTarget?.conversationKey === key) responseMenuTarget = null;
-  if (inlineEditTarget?.conversationKey === key) {
-    // The finalizer may run without a mounted panel, so do not invoke the DOM
-    // cleanup callback here.  Releasing the references is enough to prevent a
-    // stale callback from writing the deleted conversation back into the UI.
-    inlineEditCleanup = null;
-    inlineEditTarget = null;
-    inlineEditInputSectionEl = null;
-    inlineEditInputSectionParent = null;
-    inlineEditInputSectionNextSib = null;
-    inlineEditSavedDraft = "";
+  for (const [stateKey, activeKey] of standaloneGlobalConversationByLibrary) {
+    if (normalizeConversationKey(activeKey) === key) {
+      standaloneGlobalConversationByLibrary.delete(stateKey);
+    }
   }
+  for (const [stateKey, activeKey] of standalonePaperConversationByPaper) {
+    if (normalizeConversationKey(activeKey) === key) {
+      standalonePaperConversationByPaper.delete(stateKey);
+    }
+  }
+
+  clearMenuTargetsForConversation(key);
+  // The finalizer may run without a mounted panel, so the panels' DOM cleanup
+  // is not run; releasing the references is enough.
+  releaseInlineEditsForConversation(key);
 }
 export let panelFontScalePercent = 120; // FONT_SCALE_DEFAULT_PERCENT — overwritten by initFontScale()
 export function setPanelFontScalePercent(value: number) {
@@ -429,9 +479,87 @@ export type ResponseActionRunner = (
   target: ResponseActionTarget | null,
 ) => Promise<void>;
 
-export let responseMenuTarget: ResponseActionTarget | null = null;
-export function setResponseMenuTarget(value: typeof responseMenuTarget) {
-  responseMenuTarget = value;
+/**
+ * The turn each panel's open response / prompt menu acts on, keyed by the
+ * panel body: the window's menu can stay open while a right-click in a sidebar
+ * panel opens its own, and each menu's buttons must act on their own turn.
+ */
+export type PromptMenuTarget = {
+  item: Zotero.Item;
+  conversationKey: number;
+  userTimestamp: number;
+  assistantTimestamp: number;
+  editable?: boolean;
+};
+const responseMenuTargets = new WeakMap<Element, ResponseActionTarget>();
+const promptMenuTargets = new WeakMap<Element, PromptMenuTarget>();
+/** Bodies holding a menu target, so a deleted conversation can clear them. */
+const bodiesWithMenuTarget = new Set<Element>();
+
+function trackMenuTargetBody(body: Element): void {
+  if (responseMenuTargets.has(body) || promptMenuTargets.has(body)) {
+    bodiesWithMenuTarget.add(body);
+  } else {
+    bodiesWithMenuTarget.delete(body);
+  }
+}
+
+export function getResponseMenuTarget(
+  body: Element,
+): ResponseActionTarget | null {
+  return responseMenuTargets.get(body) || null;
+}
+export function setResponseMenuTarget(
+  body: Element,
+  value: ResponseActionTarget | null,
+): void {
+  if (value) responseMenuTargets.set(body, value);
+  else responseMenuTargets.delete(body);
+  trackMenuTargetBody(body);
+}
+export function getPromptMenuTarget(body: Element): PromptMenuTarget | null {
+  return promptMenuTargets.get(body) || null;
+}
+export function setPromptMenuTarget(
+  body: Element,
+  value: PromptMenuTarget | null,
+): void {
+  if (value) promptMenuTargets.set(body, value);
+  else promptMenuTargets.delete(body);
+  trackMenuTargetBody(body);
+}
+/** The panel bodies that hold this menu, from the menu up through its ancestors. */
+function bodiesHoldingMenu(menu: Element): Element[] {
+  const holders: Element[] = [];
+  for (let node: Element | null = menu; node; node = node.parentElement) {
+    if (bodiesWithMenuTarget.has(node)) holders.push(node);
+  }
+  return holders;
+}
+/** Forget the response-menu target of the panel whose DOM holds this menu. */
+export function clearResponseMenuTargetsContaining(menu: Element): void {
+  for (const body of bodiesHoldingMenu(menu)) setResponseMenuTarget(body, null);
+}
+/** Forget the prompt-menu target of the panel whose DOM holds this menu. */
+export function clearPromptMenuTargetsContaining(menu: Element): void {
+  for (const body of bodiesHoldingMenu(menu)) setPromptMenuTarget(body, null);
+}
+/** Forget a panel's menu targets (its teardown, or its menu closing). */
+export function releaseMenuTargets(body: Element): void {
+  responseMenuTargets.delete(body);
+  promptMenuTargets.delete(body);
+  bodiesWithMenuTarget.delete(body);
+}
+function clearMenuTargetsForConversation(conversationKey: number): void {
+  for (const body of [...bodiesWithMenuTarget]) {
+    if (responseMenuTargets.get(body)?.conversationKey === conversationKey) {
+      responseMenuTargets.delete(body);
+    }
+    if (promptMenuTargets.get(body)?.conversationKey === conversationKey) {
+      promptMenuTargets.delete(body);
+    }
+    trackMenuTargetBody(body);
+  }
 }
 
 const responseActionRunners = new WeakMap<Element, ResponseActionRunner>();
@@ -473,17 +601,6 @@ export function getForkSourceNavigationRunner(
   body: Element,
 ): ForkSourceNavigationRunner | null {
   return forkSourceNavigationRunners.get(body) || null;
-}
-
-export let promptMenuTarget: {
-  item: Zotero.Item;
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-  editable?: boolean;
-} | null = null;
-export function setPromptMenuTarget(value: typeof promptMenuTarget) {
-  promptMenuTarget = value;
 }
 
 // Screenshot selection state (per item) — capped to prevent memory growth
@@ -555,6 +672,17 @@ export const recentReaderSelectionCache = new TTLMap<number, string>(
 
 export const activePaperConversationByPaper = new Map<string, number>();
 
+// The standalone window's own selection, kept apart from the maps above (which
+// every sidebar panel shares) so the two surfaces choose independently. Keys
+// are "<system>|<runtime state key>"; nothing here is ever persisted. Read and
+// written only through conversationSelection.ts.
+export const standaloneConversationModeByLibrary = new Map<
+  string,
+  "paper" | "global"
+>();
+export const standaloneGlobalConversationByLibrary = new Map<string, number>();
+export const standalonePaperConversationByPaper = new Map<string, number>();
+
 // ── Auto-lock state (open chat locks during generation) ─────────────────────
 // Multiple conversations can be auto-locked simultaneously.
 const autoLockedGlobalConversationKeys = new Set<number>();
@@ -568,48 +696,8 @@ export function isAutoLockedGlobalConversation(key: number): boolean {
   return autoLockedGlobalConversationKeys.has(key);
 }
 
-// ── Inline edit state ───────────────────────────────────────────────────────
-
-export type InlineEditTarget = {
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-  /** Text currently typed in the inline textarea (preserved across refreshes). */
-  currentText: string;
-};
-
-export let inlineEditTarget: InlineEditTarget | null = null;
-export function setInlineEditTarget(value: InlineEditTarget | null): void {
-  inlineEditTarget = value;
-}
-
-/** Cleanup callback to restore borrowed DOM elements when the inline edit widget is dismissed. */
-export let inlineEditCleanup: (() => void) | null = null;
-export function setInlineEditCleanup(fn: (() => void) | null): void {
-  inlineEditCleanup = fn;
-}
-
-/** The .llm-input-section element borrowed into the chat widget during inline edit. */
-export let inlineEditInputSectionEl: HTMLElement | null = null;
-/** Original parent of the borrowed input section (for restoring). */
-export let inlineEditInputSectionParent: Element | null = null;
-/** Original next-sibling of the borrowed input section (for restoring). */
-export let inlineEditInputSectionNextSib: Node | null = null;
-/** Draft text that was in the inputBox when edit mode was entered. */
-export let inlineEditSavedDraft: string = "";
-
-export function setInlineEditInputSection(
-  el: HTMLElement | null,
-  parent: Element | null,
-  nextSib: Node | null,
-): void {
-  inlineEditInputSectionEl = el;
-  inlineEditInputSectionParent = parent;
-  inlineEditInputSectionNextSib = nextSib;
-}
-export function setInlineEditSavedDraft(text: string): void {
-  inlineEditSavedDraft = text;
-}
+// The message edit open in each panel lives per panel body in
+// inlineEditState.ts.
 
 /**
  * Release all module-level state.  Called on plugin shutdown to prevent
@@ -625,8 +713,7 @@ export function clearAllState(): void {
   selectedReasoningCache.clear();
   selectedReasoningProviderCache.clear();
   selectedRuntimeModeCache.clear();
-  pdfTextCache.clear();
-  pdfTextLoadingTasks.clear();
+  paperTextStore.clear();
   shortcutTextCache.clear();
   activeContextPanels.clear();
   activeContextPanelRawItems.clear();
@@ -657,6 +744,9 @@ export function clearAllState(): void {
   pinnedPaperKeys.clear();
   recentReaderSelectionCache.clear();
   activePaperConversationByPaper.clear();
+  standaloneConversationModeByLibrary.clear();
+  standaloneGlobalConversationByLibrary.clear();
+  standalonePaperConversationByPaper.clear();
   const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
   for (const key of pendingKeys) notifyRequestActivityChanged(key, true);
@@ -666,5 +756,6 @@ export function clearAllState(): void {
   autoLockedGlobalConversationKeys.clear();
   selectedTagContextCache.clear();
   webChatIsolatedConversationKeys.clear();
+  webChatSessionConversationKeys.clear();
   clearMermaidSvgCache();
 }

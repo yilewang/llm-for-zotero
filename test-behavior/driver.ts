@@ -1,4 +1,5 @@
 import { getAgentRuntime } from "../src/agent";
+import { unansweredTurnError } from "../src/agent/execution/unansweredTurn";
 import { getConversationWriteGeneration } from "../src/shared/conversationWriteFence";
 import {
   getOriginalAgentPermissionMode,
@@ -219,6 +220,10 @@ export class LiveDriver {
                 await params.onEvent?.(event);
                 await onEvent(event);
               },
+              onWaiting: async (text) => {
+                await params.onWaiting?.(text);
+                await onEvent({ type: "status", text });
+              },
             });
           });
           return observed;
@@ -233,6 +238,8 @@ export class LiveDriver {
             "Composer did not dispatch a live Original Agent turn",
           );
           result = await observed;
+          if (result?.kind === "cancelled" || result?.kind === "failed")
+            throw unansweredTurnError(result);
         } finally {
           runtime.runTurn = original;
         }
@@ -260,8 +267,13 @@ export class LiveDriver {
             userText: prompt,
           },
           onEvent,
+          onWaiting: (text) => onEvent({ type: "status", text }),
           signal: controller.signal,
         });
+        // A stopped or failed turn fails the case with its error, as it did
+        // when the runtime threw it.
+        if (result?.kind === "cancelled" || result?.kind === "failed")
+          throw unansweredTurnError(result);
         if (result?.kind === "completed")
           this.history.set(
             conversationKey,

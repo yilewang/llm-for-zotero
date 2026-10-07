@@ -135,6 +135,22 @@ export type WorkflowTestLiveChatTurn = {
   promptEditable: boolean;
 };
 
+/**
+ * Test-only read of one upstream conversation's turn state: the in-memory
+ * messages, the stored message rows exactly as their columns hold them, and
+ * the usage ledger rows.
+ */
+export type WorkflowTestChatTurnLifecycleState = {
+  /** In-memory messages, JSON-cloned (undefined fields are absent). */
+  memory: Array<Record<string, unknown>>;
+  /** Stored message rows, one object per row, keyed by column name. */
+  storedRows: Array<Record<string, unknown>>;
+  usageRows: import("../../utils/usageStore").StoredUsageEvent[];
+  requestPending: boolean;
+  /** Increments each time a panel send flow settles. */
+  sendSettledSequence: number;
+};
+
 export type WorkflowTestWebChatPdfToggleDiagnostics = {
   webChatMode: boolean;
   initialChip: WorkflowTestWebChatPdfChipState;
@@ -345,6 +361,9 @@ export type WorkflowTestReaderPopupRoutingDiagnostics = {
 export type WorkflowTestReaderPopupStandaloneRoutingDiagnostics = {
   readerTabId: string;
   addTextButtonLabel: string;
+  readerConversationKey: number;
+  readerConversationHasText: boolean;
+  readerPreviewHasText: boolean;
   standaloneConversationKey: number;
   standaloneConversationHasText: boolean;
   standalonePreviewHasText: boolean;
@@ -817,6 +836,31 @@ export type WorkflowTestApi = {
     text: string,
     timeoutMs?: number,
   ) => Promise<WorkflowTestLiveChatTurn>;
+  /**
+   * Starts the panel's own send for `text` and resolves once the send flow
+   * has handed the request to the real `sendQuestion` (not when the turn
+   * ends). `overrides` are copied onto the captured send options first.
+   */
+  startPanelChatSend: (
+    panelId: string,
+    text: string,
+    overrides?: Pick<
+      SendQuestionOptions,
+      "forcedSkillIds" | "selectedTagContexts"
+    >,
+  ) => Promise<{ conversationKey: number; sendSettledSequenceBefore: number }>;
+  /**
+   * Runs the real `retryLatestAssistantResponse` for the panel with
+   * `entryId` (default: the selected model entry), as the retry model menu
+   * does, and resolves with its return value when the retry ends.
+   */
+  retryLatestPanelResponse: (
+    panelId: string,
+    entryId?: string,
+  ) => Promise<unknown>;
+  readChatTurnLifecycle: (
+    conversationKey: number,
+  ) => Promise<WorkflowTestChatTurnLifecycleState>;
   seedPanelStoredUserMessage: (
     panelId: string,
     text: string,
@@ -987,6 +1031,7 @@ export type WorkflowTestApi = {
     selectedText: string;
   }) => Promise<WorkflowTestReaderPopupRoutingDiagnostics>;
   exerciseReaderPopupStandaloneRouting: (input: {
+    panelId: string;
     attachmentItemId: number;
     pageIndex: number;
     selectedText: string;
@@ -1038,6 +1083,21 @@ export type WorkflowTestApi = {
     query: string,
   ) => Promise<WorkflowTestHistorySearchResult>;
   failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  /** Holds a conversation's write lock until released. */
+  holdConversationWriteLock: (conversationKey: number) => Promise<void>;
+  /** Whether a write waits behind the held lock. */
+  isConversationWriteLockQueued: (conversationKey: number) => Promise<boolean>;
+  /** Treats the writes queued so far as seen. */
+  markConversationWriteLockQueue: (conversationKey: number) => Promise<void>;
+  releaseConversationWriteLock: (conversationKey: number) => Promise<void>;
+  /**
+   * Holds the next chat request after it wrote its user row, before
+   * dispatch, until released. Later requests pass.
+   */
+  holdNextFinalRequest: () => Promise<void>;
+  /** Whether the held request has reached the hold. */
+  isFinalRequestHeld: () => Promise<boolean>;
+  releaseFinalRequest: () => Promise<void>;
   forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,

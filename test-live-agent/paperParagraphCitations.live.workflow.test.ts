@@ -112,11 +112,6 @@ describe("live: full-paper paragraph citations", function () {
             .filter((event) => event.type === "tool_call")
             .map((event) => ({ name: event.name, args: event.args })),
           usage: events.filter((event) => event.type === "usage"),
-          skills: events.filter(
-            (event) =>
-              event.type === "provider_event" &&
-              event.providerType === "agent_skill_selection",
-          ),
         });
         assert.equal(result.kind, "completed");
         assert.match(
@@ -145,8 +140,14 @@ describe("live: full-paper paragraph citations", function () {
             [fixture.pdfAttachmentId, second.pdfAttachmentId],
             "the comparison cites both papers",
           );
+        // Skills are no longer selected before the turn; the model loads one
+        // with load_skill. Explaining the bound paper needs none.
         if (index < 2)
-          assert.deepEqual(reports[index].skills[0]?.payload.skillIds, []);
+          assert.notInclude(
+            reports[index].tools.map((tool: any) => tool.name),
+            "load_skill",
+            "explaining the bound paper loads no skill guidance",
+          );
         if (index === 0) {
           assert.match(result.text, /84/);
           assert.match(result.text, /82/);

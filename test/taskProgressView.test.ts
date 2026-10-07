@@ -1053,6 +1053,7 @@ describe("task progress view", function () {
             toolName: "paper_read",
             granularity: "page",
             label: "p. 3",
+            pageIndex: 2,
           },
           {
             key: "1:2",
@@ -1134,6 +1135,8 @@ describe("task progress view", function () {
       cleanedSnippet: "",
       label: "p. 3",
       granularity: "page",
+      // D5: the read's page index travels with it; the label is display.
+      pageIndex: 2,
     });
   });
 
@@ -1173,6 +1176,31 @@ describe("task progress view", function () {
     assert.exists(flash);
     flash!.callback();
     assert.isFalse(card.classList.contains("llm-task-progress-flash"));
+  });
+
+  it("jumps to the quote chip whose id contains '.' and ':', not to a look-alike", function () {
+    seedScope(5);
+    const harness = track(mount());
+    const card = new FakeElement("div");
+    card.className = "llm-quote-card llm-quote-citation-anchor";
+    card.dataset.quoteCitationId = "Q1.a:p2";
+    const decoy = new FakeElement("div");
+    decoy.className = "llm-quote-card llm-quote-citation-anchor";
+    decoy.dataset.quoteCitationId = "Q1ap2";
+    harness.chatBox.append(card, decoy);
+    beginTaskRun(KEY, { runId: "run-a" });
+    applyTaskPaperUpdate(KEY, ledgerDelta("c1", [[1, "read", "One"]]), "run-a");
+    completeTaskRun(KEY, {
+      runId: "run-a",
+      quoteCitations: [quoteCitation("Q1.a:p2", 1)],
+    });
+    harness.row.dispatchFakeEvent("click");
+    const item = harness.items()[0];
+    item.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
+    const link = item.findByClass("llm-task-paper-citation")!;
+    assert.equal(link.dataset.citationId, "Q1.a:p2");
+    link.dispatchFakeEvent("click");
+    assert.deepEqual(harness.navigated, [card]);
   });
 
   it("asks for MinerU text only for the rows on screen", async function () {

@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import {
   acceptsOpenedQuoteMatchForTests,
   locatedResultIdentifiesQuoteSourceForTests as identifiesQuoteSource,
-} from "../src/modules/contextPanel/assistantCitationLinks";
-import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
+} from "../src/modules/contextPanel/quoteNavigator";
+import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
 import { summarizeQuoteTextSupport } from "../src/services/quotes/quoteTextSearch";
 
 /**
@@ -385,11 +385,23 @@ describe("citation navigation contracts", function () {
   });
 
   it("judges a candidate on how much of the quote it accounts for", function () {
-    const verifySection = source.slice(
-      source.indexOf("function locatedResultIdentifiesQuoteSource("),
-      source.indexOf("async function locateQuoteByOpeningCitationCandidates("),
+    const navigatorSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/modules/contextPanel/quoteNavigator.ts",
+      ),
+      "utf8",
     );
+    const start = navigatorSource.indexOf(
+      "function locatedResultIdentifiesQuoteSource(",
+    );
+    const end = navigatorSource.indexOf(
+      "async function locateQuoteByOpeningCitationCandidates(",
+    );
+    const verifySection = navigatorSource.slice(start, end);
 
+    assert.isAtLeast(start, 0);
+    assert.isAbove(end, start);
     assert.include(
       verifySection,
       "sourceMatchQuoteTokenSupportCoverage",

@@ -104,10 +104,10 @@ describe("legacy startup migrations", function () {
 
 describe("conversation store startup maintenance", function () {
   it("skips repeated conversation-id maintenance after the migration ledger is applied", function () {
+    // The Claude Code and Codex stores share one runtime store factory.
     const sources = [
       readSource("../src/utils/chatStore.ts"),
-      readSource("../src/claudeCode/store.ts"),
-      readSource("../src/codexAppServer/store.ts"),
+      readSource("../src/services/providers/runtimeConversationStore.ts"),
     ];
 
     for (const source of sources) {
@@ -115,6 +115,13 @@ describe("conversation store startup maintenance", function () {
       assert.include(source, "CONVERSATION_ID_TRANSITION_MIGRATION_ID");
       assert.include(source, "conversationIDTransitionAlreadyApplied");
       assert.include(source, "if (!conversationIDTransitionAlreadyApplied)");
+    }
+    for (const runtimeStore of [
+      readSource("../src/claudeCode/store.ts"),
+      readSource("../src/codexAppServer/store.ts"),
+    ]) {
+      assert.include(runtimeStore, "createRuntimeConversationStore({");
+      assert.include(runtimeStore, "return store.initStore(...args);");
     }
   });
 });

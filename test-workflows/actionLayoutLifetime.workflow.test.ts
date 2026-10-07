@@ -166,29 +166,144 @@ describe("workflow: native action layout lifetime", function () {
     }
   });
 
-  it("releases old layout observers through repeated detach and reattach", async function () {
+  it("keeps the embedded panel and its one layout observer through repeated standalone open and close", async function () {
+    const root = await openPanel();
+    const details = win.document.getElementById("zotero-item-details");
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    await until(
+      () => observers.some((targets) => targets.has(root)),
+      "layout observer owns current root",
+    );
+    const observersOnRoot = () =>
+      observers.filter((targets) => targets.has(root)).length;
+    const baseline = observersOnRoot();
     for (let cycle = 0; cycle < 3; cycle++) {
-      const root = await openPanel();
-      await until(
-        () => observers.some((targets) => targets.has(root)),
-        "layout observer owns current root",
-      );
       await api.openStandaloneForItem(fixture.parentItemId);
-      await until(
-        () => !root.isConnected,
-        "embedded panel is replaced by the detached placeholder",
+      await Zotero.Promise.delay(300);
+      assert.isTrue(
+        root.isConnected,
+        `cycle ${cycle}: the embedded panel stays connected while the window is open`,
       );
-      await until(
-        () => observers.every((targets) => !targets.has(root)),
-        "removed panel releases its layout observer",
+      assert.strictEqual(
+        section.querySelector("#llm-main"),
+        root,
+        `cycle ${cycle}: the embedded panel is not replaced while the window is open`,
       );
+      assert.isOk(root.dataset.handlersInitialized);
       await api.closeStandalone();
-      const restored = await openPanel();
-      assert.notStrictEqual(restored, root);
+      await Zotero.Promise.delay(300);
+      assert.strictEqual(
+        section.querySelector("#llm-main"),
+        root,
+        `cycle ${cycle}: closing the window does not rebuild the embedded panel`,
+      );
+      assert.equal(
+        observersOnRoot(),
+        baseline,
+        `cycle ${cycle}: open and close add no layout observers to the panel`,
+      );
       assert.isAbove(
-        restored.querySelector(".llm-actions")!.getBoundingClientRect().width,
+        root.querySelector(".llm-actions")!.getBoundingClientRect().width,
         0,
       );
+    }
+  });
+
+  it("keeps the embedded panel's conversation and paper shortcuts while the standalone window opens and closes", async function () {
+    const root = await openPanel();
+    const details = win.document.getElementById("zotero-item-details");
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    const shortcutCount = (panel: Element) =>
+      panel.querySelectorAll("#llm-shortcuts .llm-shortcut-btn").length;
+    await until(
+      () => shortcutCount(root) > 0,
+      "embedded paper panel renders its shortcuts",
+    );
+    const snapshot = (panel: HTMLElement) => ({
+      conversationKey: panel.dataset.itemId,
+      paperItemId: panel.dataset.basePaperItemId,
+      conversationKind: panel.dataset.conversationKind,
+      conversationSystem: panel.dataset.conversationSystem,
+    });
+    const before = snapshot(root);
+    assert.isOk(before.conversationKey, "mounted panel has a conversation");
+    assert.equal(before.paperItemId, String(fixture.parentItemId));
+    assert.equal(before.conversationKind, "paper");
+
+    const assertUnchanged = (context: string) => {
+      const current = section.querySelector("#llm-main") as HTMLElement | null;
+      assert.strictEqual(current, root, `${context}: same embedded panel`);
+      assert.isTrue(root.isConnected, `${context}: panel stays connected`);
+      assert.isOk(
+        root.dataset.handlersInitialized,
+        `${context}: panel stays initialized`,
+      );
+      assert.isUndefined(root.dataset.standalone);
+      assert.deepEqual(snapshot(root), before, `${context}: same conversation`);
+      assert.isAbove(
+        shortcutCount(root),
+        0,
+        `${context}: paper-mode shortcuts stay rendered`,
+      );
+    };
+
+    await api.openStandaloneForItem(fixture.parentItemId);
+    await Zotero.Promise.delay(300);
+    assertUnchanged("while the standalone window is open");
+    await api.closeStandalone();
+    await Zotero.Promise.delay(300);
+    assertUnchanged("after the standalone window closes");
+  });
+
+  it("focuses an open standalone window from the sidebar's pop-out button without closing or retargeting it", async function () {
+    const root = await openPanel();
+    const sidebarConversation = root.dataset.itemId;
+    await api.openStandaloneForItem(fixture.parentItemId);
+    const library = await api.clickStandaloneTab("open");
+    assert.equal(library.activeTab, "open", JSON.stringify(library));
+    const standaloneWin = (Zotero as any).LLMForZotero.data
+      .standaloneWindow as Window;
+    assert.isOk(standaloneWin, "the standalone window is open");
+    const windowConversation = () =>
+      (
+        standaloneWin.document.querySelector(
+          ".llm-standalone-content #llm-main",
+        ) as HTMLElement | null
+      )?.dataset.itemId;
+    const before = windowConversation();
+    assert.isOk(before, "the window shows a conversation");
+    assert.notEqual(before, sidebarConversation);
+    let focusCalls = 0;
+    const nativeFocus = standaloneWin.focus;
+    (standaloneWin as any).focus = function (this: Window) {
+      focusCalls++;
+      return nativeFocus.call(this);
+    };
+    try {
+      (root.parentElement!.querySelector("#llm-popout") as HTMLElement).click();
+      await Zotero.Promise.delay(500);
+      assert.isFalse(standaloneWin.closed, "the window stays open");
+      assert.strictEqual(
+        (Zotero as any).LLMForZotero.data.standaloneWindow,
+        standaloneWin,
+        "no second window is opened",
+      );
+      assert.isAbove(focusCalls, 0, "the open window is focused");
+      assert.equal(
+        windowConversation(),
+        before,
+        "the window keeps its own conversation",
+      );
+      assert.strictEqual(
+        win.document
+          .getElementById("zotero-item-details")
+          .querySelector(".llm-dedicated-chat-pane #llm-main"),
+        root,
+        "the sidebar panel is untouched",
+      );
+      assert.equal(root.dataset.itemId, sidebarConversation);
+    } finally {
+      delete (standaloneWin as any).focus;
     }
   });
 });

@@ -57,6 +57,10 @@ type Turn = {
   outcome?: AgentRuntimeOutcome;
   error?: unknown;
   events: AgentEvent[];
+  /** What the turn said it waited for, before its run started. */
+  waits: string[];
+  /** The callbacks in the order the turn made them: wait, start, event. */
+  calls: Array<"wait" | "start" | "event">;
   prompts: AgentModelMessage[][];
   /** The ledger the turn held when its first model request was sent. */
   initialCheckpoint?: ExecutionCheckpoint;
@@ -157,10 +161,16 @@ async function runTurn(params: {
   userText: string;
   steps: Step[];
   signal?: AbortSignal;
-  onEvent?: (event: AgentEvent) => void;
+  onWaiting?: (text: string) => void;
   stoppedRunWaitMs?: number;
 }): Promise<Turn> {
-  const turn: Turn = { events: [], prompts: [], reads: [] };
+  const turn: Turn = {
+    events: [],
+    waits: [],
+    calls: [],
+    prompts: [],
+    reads: [],
+  };
   let requests = 0;
   const runtime = new AgentRuntime({
     registry: registry(turn.reads),
@@ -208,9 +218,17 @@ async function runTurn(params: {
         ],
       },
       signal: params.signal,
+      onStart: () => {
+        turn.calls.push("start");
+      },
       onEvent: (event) => {
         turn.events.push(event);
-        params.onEvent?.(event);
+        turn.calls.push("event");
+      },
+      onWaiting: (text) => {
+        turn.waits.push(text);
+        turn.calls.push("wait");
+        params.onWaiting?.(text);
       },
     });
   } catch (caught) {
@@ -275,10 +293,15 @@ function requestsIn(messages: readonly AgentModelMessage[]): string[] {
   );
 }
 
+/** Whether the turn said it waited; the wait is never one of its run's events. */
 function waited(turn: Turn): boolean {
-  return turn.events.some(
-    (event) => event.type === "status" && event.text === WAITING,
+  assert.isFalse(
+    turn.events.some(
+      (event) => event.type === "status" && event.text === WAITING,
+    ),
+    "the wait is not an event of the turn's run",
   );
+  return turn.waits.includes(WAITING);
 }
 
 /** "continue": read the papers the resume note names, then answer. */
@@ -347,9 +370,8 @@ describe("continue while the stopped run is still finishing", function () {
       conversationKey,
       userText: "continue",
       steps: resumer(),
-      onEvent: (event) => {
-        if (event.type === "status" && event.text === WAITING)
-          waiting.resolve();
+      onWaiting: (text) => {
+        if (text === WAITING) waiting.resolve();
       },
     });
     await Promise.race([waiting.promise, second]);
@@ -357,7 +379,7 @@ describe("continue while the stopped run is still finishing", function () {
     const [stopped, resumed] = await Promise.all([first, second]);
 
     // The stopped run kept the read Stop let finish, and settled cancelled.
-    assert.equal((stopped.error as Error)?.message, "Aborted");
+    assert.equal(stopped.outcome?.kind, "cancelled", String(stopped.error));
     assert.equal(stopStatus(stopped), "cancelled");
     const before = lastLedger(stopped);
     assert.deepEqual(before.end, { state: "cancelled" });
@@ -411,8 +433,12 @@ describe("continue while the stopped run is still finishing", function () {
       ),
       "the continue turn's answer",
     );
-    // While it waited, the turn said what for.
+    // While it waited, the turn said what for, before its run started; the
+    // run's events all come after its start.
     assert.isTrue(waited(resumed), "the turn said what it was waiting for");
+    assert.deepEqual(resumed.calls.slice(0, 2), ["wait", "start"]);
+    assert.notInclude(resumed.calls.slice(2), "start");
+    assert.notInclude(resumed.calls.slice(2), "wait");
   });
 
   it("a second continue, sent after Stop was pressed again during the wait, waits its turn behind both", async function () {
@@ -443,9 +469,8 @@ describe("continue while the stopped run is still finishing", function () {
       userText: "continue",
       signal: stopAgain.signal,
       steps: resumer(),
-      onEvent: (event) => {
-        if (event.type === "status" && event.text === WAITING)
-          firstWait.resolve();
+      onWaiting: (text) => {
+        if (text === WAITING) firstWait.resolve();
       },
     });
     await Promise.race([firstWait.promise, second]);
@@ -455,9 +480,8 @@ describe("continue while the stopped run is still finishing", function () {
       conversationKey,
       userText: "continue",
       steps: resumer(),
-      onEvent: (event) => {
-        if (event.type === "status" && event.text === WAITING)
-          secondWait.resolve();
+      onWaiting: (text) => {
+        if (text === WAITING) secondWait.resolve();
       },
     });
     await Promise.race([secondWait.promise, third]);

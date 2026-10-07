@@ -29,6 +29,7 @@ import {
   type SidebarChatModeTab,
 } from "./sidebarChatModeToggle";
 import { createSidebarModeSwitch } from "./sidebarModeSwitch";
+import { resolveSelectionSurfaceForBody } from "./panelHostOwnership";
 import { buildContextUsagePresentation } from "./textUtils";
 import { createChatLatestButton } from "./chatLatestButton";
 import { createTaskProgressToggleButton } from "./taskProgress/toggleButton";
@@ -55,6 +56,8 @@ function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
 }
 
 function buildUI(body: Element, item?: Zotero.Item | null) {
+  // Read before the rebuild clears the old panel root, which may carry it.
+  const selectionSurface = resolveSelectionSurfaceForBody(body);
   // Clear this section body before rebuilding.
   if (typeof (body as any).replaceChildren === "function") {
     (body as any).replaceChildren();
@@ -109,6 +112,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : "";
   container.dataset.conversationSystem = resolvePreferredConversationSystem({
     item,
+    surface: selectionSurface,
   });
   container.dataset.basePaperItemId =
     basePaperItemId > 0 ? `${basePaperItemId}` : "";

@@ -6,7 +6,7 @@ import {
 } from "../src/modules/contextPanel/setupHandlers/controllers/menuActionController";
 import { invokeResponseMenuActionButton } from "../src/modules/contextPanel/chat";
 import {
-  responseMenuTarget,
+  getResponseMenuTarget,
   type ResponseActionTarget,
   setResponseMenuTarget,
 } from "../src/modules/contextPanel/state";
@@ -179,7 +179,6 @@ describe("menu action controller note routing", function () {
   });
 
   afterEach(function () {
-    setResponseMenuTarget(null);
     if (originalZotero) {
       globalScope.Zotero = originalZotero;
     } else {
@@ -467,7 +466,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -555,7 +555,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -644,7 +645,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -721,7 +723,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -800,7 +803,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -982,7 +986,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test-a",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(bodyA as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -1024,7 +1029,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test-b",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(bodyB as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -1128,7 +1134,8 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => responseMenuTarget,
+      getResponseMenuTarget: () =>
+        getResponseMenuTarget(body as unknown as Element),
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -1163,5 +1170,91 @@ describe("menu action controller note routing", function () {
 
     assert.isTrue(invoked);
     assert.equal(deletionCount, 0);
+  });
+  it("each panel's open response menu acts on its own turn when another panel opens its menu", async function () {
+    const makePanel = (conversationKey: number, label: string) => {
+      const body = new FakeElement();
+      const responseMenu = new FakeElement();
+      const copyBtn = new FakeElement();
+      const noteBtn = new FakeElement();
+      const deleteBtn = new FakeElement();
+      body.ownerDocument = { defaultView: {} };
+      const item = { id: 42, libraryID: 1 } as unknown as Zotero.Item;
+      const deletions: unknown[] = [];
+      attachMenuActionController({
+        body: body as unknown as Element,
+        status: new FakeElement() as unknown as HTMLElement,
+        responseMenu: responseMenu as unknown as HTMLDivElement,
+        responseMenuCopyBtn: copyBtn as unknown as HTMLButtonElement,
+        responseMenuNoteBtn: noteBtn as unknown as HTMLButtonElement,
+        responseMenuDeleteBtn: deleteBtn as unknown as HTMLButtonElement,
+        promptMenu: null,
+        promptMenuDeleteBtn: null,
+        exportMenu: null,
+        exportMenuCopyBtn: null,
+        exportMenuNoteBtn: null,
+        exportBtn: null,
+        popoutBtn: null,
+        settingsBtn: null,
+        preferencesPaneId: `llm-for-zotero-test-${label}`,
+        getItem: () => item,
+        getResponseMenuTarget: () =>
+          getResponseMenuTarget(body as unknown as Element),
+        getPromptMenuTarget: () => null,
+        getCurrentLibraryID: () => 1,
+        getConversationSystem: () => "codex",
+        getCurrentRuntimeModeForItem: () => "agent",
+        isGlobalMode: () => true,
+        ensureConversationLoaded: async () => {},
+        getConversationKey: () => conversationKey,
+        getHistory: () => [
+          { role: "user", text: `Question ${label}`, timestamp: 100 },
+          { role: "assistant", text: `Answer ${label}`, timestamp: 200 },
+        ],
+        resolveActiveNoteSession: () => null,
+        closeResponseMenu: () =>
+          setResponseMenuTarget(body as unknown as Element, null),
+        closePromptMenu: () => {},
+        closeExportMenu: () => {},
+        closeRetryModelMenu: () => {},
+        closeSlashMenu: () => {},
+        closeHistoryNewMenu: () => {},
+        closeHistoryMenu: () => {},
+        queueTurnDeletion: async (queuedTarget) => {
+          deletions.push(queuedTarget);
+        },
+        logError: () => {},
+      });
+      const target = (): ResponseActionTarget => ({
+        item,
+        contentText: "",
+        queryText: `Question ${label}`,
+        modelName: "Codex",
+        conversationKey,
+        userTimestamp: 100,
+        assistantTimestamp: 200,
+      });
+      return { body: body as unknown as Element, deleteBtn, deletions, target };
+    };
+    const windowPanel = makePanel(101, "window");
+    const sidebarPanel = makePanel(202, "sidebar");
+
+    // The window's menu is open on its turn; a right-click in the sidebar then
+    // opens the sidebar's own menu on another turn.
+    setResponseMenuTarget(windowPanel.body, windowPanel.target());
+    setResponseMenuTarget(sidebarPanel.body, sidebarPanel.target());
+
+    await windowPanel.deleteBtn.dispatch("click");
+    await flushAsyncEvents();
+
+    assert.deepEqual(windowPanel.deletions, [
+      { conversationKey: 101, userTimestamp: 100, assistantTimestamp: 200 },
+    ]);
+    assert.deepEqual(sidebarPanel.deletions, []);
+    assert.equal(
+      getResponseMenuTarget(sidebarPanel.body)?.conversationKey,
+      202,
+      "the sidebar's open menu keeps its own turn",
+    );
   });
 });

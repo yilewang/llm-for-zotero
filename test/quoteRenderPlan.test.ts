@@ -24,6 +24,53 @@ describe("quoteRenderPlan", function () {
   const followingProse =
     "The problem is that chronic population imaging contradicts this premise.";
 
+  it("renders a model-typed quote token whose id contains '.' or ':' as a card", function () {
+    for (const id of ["x.y", "p:1", "Q1.a:2"]) {
+      const citation = buildQuoteCitation({
+        id,
+        quoteText: duplicateQuote,
+        citationLabel: "(Kim, 2026)",
+        sourceMatchText: duplicateQuote,
+        sourceMatchKind: "exact",
+        sourceMatchSource: "context-text",
+        contextItemId: 4084,
+        itemId: 4085,
+      })!;
+      assert.equal(citation.id, id);
+      const plan = buildQuoteRenderPlan({
+        markdown: `[[quote:${id}]]\n\n${followingProse}`,
+        quoteCitations: [citation],
+      });
+      assert.lengthOf(plan.occurrences, 1, id);
+      assert.equal(plan.occurrences[0].quoteCitationId, id);
+      assert.equal(plan.occurrences[0].displayText, duplicateQuote);
+      assert.notInclude(plan.displayMarkdown, `[[quote:${id}]]`);
+    }
+  });
+
+  it("reports a saved quote token with '.' or ':' unresolved when the saved quotes lack its id", function () {
+    // A row saved before the shared id rule kept the stripped id ("xy") but
+    // the answer text kept the token as the model wrote it.
+    const saved = buildQuoteCitation({
+      id: "xy",
+      quoteText: duplicateQuote,
+      citationLabel: "(Kim, 2026)",
+    })!;
+    const plan = buildQuoteRenderPlan({
+      markdown: `Claim one.\n\n[[quote:x.y]]\n\nClaim two [[quote:p:1]].`,
+      quoteCitations: [saved],
+    });
+    assert.isEmpty(plan.occurrences);
+    assert.notInclude(plan.displayMarkdown, "[[quote:");
+    assert.deepEqual(
+      plan.diagnostics.map((entry) => [entry.kind, entry.quoteCitationId]),
+      [
+        ["unresolved-anchor", "x.y"],
+        ["unresolved-anchor", "p:1"],
+      ],
+    );
+  });
+
   it("renders the saved Kim manual quote and inline anchor once before background validation", function () {
     for (const writtenQuote of [
       `> ${duplicateQuote}\n\n(Kim, 2026)`,

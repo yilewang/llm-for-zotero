@@ -11,18 +11,12 @@ import {
 import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
+import { getLockedGlobalConversationKey } from "./prefHelpers";
 import {
-  buildPaperStateKey,
-  getLastUsedUpstreamConversationMode,
-  getLastUsedUpstreamGlobalConversationKey,
-  getLastUsedPaperConversationKey,
-  getLockedGlobalConversationKey,
-} from "./prefHelpers";
-import {
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
-  activePaperConversationByPaper,
-} from "./state";
+  recall,
+  recallMode,
+  type SelectionSurface,
+} from "./conversationSelection";
 import type { ActiveNoteSession } from "./types";
 import type {
   GlobalPortalItem,
@@ -40,20 +34,8 @@ import {
   isClaudePaperPortalItem,
   resolveClaudePaperPortalBaseItem,
 } from "../../claudeCode/portal";
-import {
-  getConversationSystemPref,
-  getLastUsedClaudeConversationMode,
-  getLastUsedClaudeGlobalConversationKey,
-  getLastUsedClaudePaperConversationKey,
-  isClaudeCodeModeEnabled,
-} from "../../claudeCode/prefs";
-import {
-  activeClaudeConversationModeByLibrary,
-  activeClaudeGlobalConversationByLibrary,
-  activeClaudePaperConversationByPaper,
-  buildClaudeLibraryStateKey,
-  buildClaudePaperStateKey,
-} from "../../claudeCode/state";
+import { isClaudeCodeModeEnabled } from "../../claudeCode/prefs";
+import { surfaceChoices } from "./surfaceChoices";
 import {
   buildDefaultCodexGlobalConversationKey,
   buildDefaultCodexPaperConversationKey,
@@ -65,19 +47,7 @@ import {
   isCodexPaperPortalItem,
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
-import {
-  getLastUsedCodexConversationMode,
-  getLastUsedCodexGlobalConversationKey,
-  getLastUsedCodexPaperConversationKey,
-  isCodexAppServerModeEnabled,
-} from "../../codexAppServer/prefs";
-import {
-  activeCodexConversationModeByLibrary,
-  activeCodexGlobalConversationByLibrary,
-  activeCodexPaperConversationByPaper,
-  buildCodexLibraryStateKey,
-  buildCodexPaperStateKey,
-} from "../../codexAppServer/state";
+import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import {
   resolveNoteFocusSystemSwitch as resolveNoteFocusSystemSwitchPolicy,
   resolveNoteEditingParentItem,
@@ -300,11 +270,16 @@ export function resolveConversationSystemForItem(
 export function resolvePreferredConversationSystem(params: {
   item: Zotero.Item | null | undefined;
   preferredSystem?: ConversationSystem | null;
+  /**
+   * Whose chosen system fills in when nothing else decides
+   * (surfaceChoices.ts); the sidebar's saved one when omitted.
+   */
+  surface?: SelectionSurface;
 }): ConversationSystem {
   const preferred =
     params.preferredSystem ||
     getNoteConversation(params.item)?.system ||
-    getConversationSystemPref();
+    surfaceChoices.conversationSystem.get(params.surface);
   if (resolveActiveNoteSession(params.item)) {
     return resolvePreferredNoteFocusSystem({
       preferredSystem: preferred,
@@ -340,31 +315,42 @@ export function resolveNoteFocusSystemSwitch(params: {
   });
 }
 
+/**
+ * The library chat lock (a pref) belongs to the sidebar panels: it keeps them
+ * on a Library chat while it answers, across paper selections. The standalone
+ * window does not follow the selection in Library chat, so it has no lock and
+ * never reads this one.
+ */
+function readSurfaceLockedGlobalConversationKey(
+  libraryID: number,
+  surface: SelectionSurface | undefined,
+): number | null {
+  return surface === "standalone"
+    ? null
+    : getLockedGlobalConversationKey(libraryID);
+}
+
 function resolvePreferredConversationMode(
   libraryID: number,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): "global" | "paper" {
-  if (system === "claude_code") {
-    const rememberedMode =
-      activeClaudeConversationModeByLibrary.get(
-        buildClaudeLibraryStateKey(libraryID),
-      ) || getLastUsedClaudeConversationMode(libraryID);
+  if (system === "claude_code" || system === "codex") {
+    const rememberedMode = recallMode(system, libraryID, {
+      source: "active+persisted",
+      surface,
+    });
     return rememberedMode === "global" ? "global" : "paper";
   }
-  if (system === "codex") {
-    const rememberedMode =
-      activeCodexConversationModeByLibrary.get(
-        buildCodexLibraryStateKey(libraryID),
-      ) || getLastUsedCodexConversationMode(libraryID);
-    return rememberedMode === "global" ? "global" : "paper";
-  }
-  const rememberedMode =
-    activeConversationModeByLibrary.get(libraryID) ||
-    getLastUsedUpstreamConversationMode(libraryID);
+  const rememberedMode = recallMode("upstream", libraryID, {
+    source: "active+persisted",
+    surface,
+  });
   if (rememberedMode === "paper") {
     return "paper";
   }
-  if (getLockedGlobalConversationKey(libraryID) !== null) {
+  // Upstream only: a locked library chat implies global mode by default.
+  if (readSurfaceLockedGlobalConversationKey(libraryID, surface) !== null) {
     return "global";
   }
   return rememberedMode === "global" ? "global" : "paper";
@@ -373,14 +359,12 @@ function resolvePreferredConversationMode(
 function resolveGlobalConversationKey(
   libraryID: number,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): number {
   if (system === "claude_code") {
     return Math.floor(
       Number(
-        activeClaudeGlobalConversationByLibrary.get(
-          buildClaudeLibraryStateKey(libraryID),
-        ) ||
-          getLastUsedClaudeGlobalConversationKey(libraryID) ||
+        recall({ system, libraryID, kind: "global", surface }) ||
           buildDefaultClaudeGlobalConversationKey(libraryID),
       ),
     );
@@ -388,24 +372,21 @@ function resolveGlobalConversationKey(
   if (system === "codex") {
     return Math.floor(
       Number(
-        activeCodexGlobalConversationByLibrary.get(
-          buildCodexLibraryStateKey(libraryID),
-        ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
+        recall({ system, libraryID, kind: "global", surface }) ||
           buildDefaultCodexGlobalConversationKey(libraryID),
       ),
     );
   }
-  const lockedKey = getLockedGlobalConversationKey(libraryID);
+  // Upstream only: the lock wins, then the remembered key filtered to the
+  // upstream global key band, with the sentinel base mapped to the default.
+  const lockedKey = readSurfaceLockedGlobalConversationKey(libraryID, surface);
   if (lockedKey !== null) {
     return lockedKey === GLOBAL_CONVERSATION_KEY_BASE
       ? buildDefaultUpstreamGlobalConversationKey(libraryID)
       : lockedKey;
   }
   const activeKey = Number(
-    activeGlobalConversationByLibrary.get(libraryID) ||
-      getLastUsedUpstreamGlobalConversationKey(libraryID) ||
-      0,
+    recall({ system: "upstream", libraryID, kind: "global", surface }),
   );
   if (isUpstreamGlobalConversationKey(activeKey)) {
     return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -418,12 +399,14 @@ function resolveGlobalConversationKey(
 export function resolveRememberedGlobalPanelItem(
   libraryID: number,
   conversationSystem: ConversationSystem,
+  surface?: SelectionSurface,
 ): Zotero.Item | null {
   const normalizedLibraryID = normalizePositiveInt(libraryID);
   if (!normalizedLibraryID) return null;
   const conversationKey = resolveGlobalConversationKey(
     normalizedLibraryID,
     conversationSystem,
+    surface,
   );
   return conversationSystem === "claude_code"
     ? createClaudeGlobalPortalItem(normalizedLibraryID, conversationKey)
@@ -435,28 +418,18 @@ export function resolveRememberedGlobalPanelItem(
 export function resolvePaperConversationKeyForBaseItem(
   basePaperItem: Zotero.Item,
   system: ConversationSystem,
+  surface?: SelectionSurface,
 ): number {
   const libraryID = resolveLibraryIdFromItem(basePaperItem);
   const paperItemID = normalizePositiveInt(basePaperItem?.id) || 0;
   if (!libraryID || !paperItemID) return paperItemID;
   const rememberedPaperKey = Number(
-    system === "claude_code"
-      ? activeClaudePaperConversationByPaper.get(
-          buildClaudePaperStateKey(libraryID, paperItemID),
-        ) ||
-          getLastUsedClaudePaperConversationKey(libraryID, paperItemID) ||
-          buildDefaultClaudePaperConversationKey(paperItemID)
-      : system === "codex"
-        ? activeCodexPaperConversationByPaper.get(
-            buildCodexPaperStateKey(libraryID, paperItemID),
-          ) ||
-          getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
-          buildDefaultCodexPaperConversationKey(paperItemID)
-        : activePaperConversationByPaper.get(
-            buildPaperStateKey(libraryID, paperItemID),
-          ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          paperItemID,
+    recall({ system, libraryID, kind: "paper", paperItemID, surface }) ||
+      (system === "claude_code"
+        ? buildDefaultClaudePaperConversationKey(paperItemID)
+        : system === "codex"
+          ? buildDefaultCodexPaperConversationKey(paperItemID)
+          : paperItemID),
   );
   return Number.isFinite(rememberedPaperKey) && rememberedPaperKey > 0
     ? Math.floor(rememberedPaperKey)
@@ -491,17 +464,21 @@ export function resolveInitialPanelItemState(
   options?: {
     conversationSystem?: ConversationSystem | null;
     conversationMode?: "global" | "paper";
+    /** Whose remembered selection to read; the sidebar's when omitted. */
+    surface?: SelectionSurface;
   },
 ): {
   item: Zotero.Item | null;
   basePaperItem: Zotero.Item | null;
 } {
+  const surface = options?.surface;
   let item = initialItem || null;
   const noteSession = resolveActiveNoteSession(item);
   if (noteSession && item) {
     const system = resolvePreferredConversationSystem({
       item,
       preferredSystem: options?.conversationSystem,
+      surface,
     });
     const key = resolveConversationKeyForNoteFocus(item, {
       conversationSystem: system,
@@ -528,14 +505,15 @@ export function resolveInitialPanelItemState(
     const system = resolvePreferredConversationSystem({
       item,
       preferredSystem: options?.conversationSystem,
+      surface,
     });
     const mode =
       options?.conversationMode ||
-      resolvePreferredConversationMode(libraryID, system);
+      resolvePreferredConversationMode(libraryID, system, surface);
     return {
       item:
         !item && mode === "global"
-          ? resolveRememberedGlobalPanelItem(libraryID, system)
+          ? resolveRememberedGlobalPanelItem(libraryID, system, surface)
           : item,
       basePaperItem: null,
     };
@@ -561,13 +539,18 @@ export function resolveInitialPanelItemState(
   const conversationSystem = resolvePreferredConversationSystem({
     item,
     preferredSystem: options?.conversationSystem,
+    surface,
   });
   const preferredMode =
     options?.conversationMode ||
-    resolvePreferredConversationMode(libraryID, conversationSystem);
+    resolvePreferredConversationMode(libraryID, conversationSystem, surface);
 
   if (preferredMode === "global") {
-    item = resolveRememberedGlobalPanelItem(libraryID, conversationSystem);
+    item = resolveRememberedGlobalPanelItem(
+      libraryID,
+      conversationSystem,
+      surface,
+    );
     return { item, basePaperItem };
   }
 
@@ -575,6 +558,7 @@ export function resolveInitialPanelItemState(
   const rememberedPaperKey = resolvePaperConversationKeyForBaseItem(
     basePaperItem,
     conversationSystem,
+    surface,
   );
   if (
     Number.isFinite(rememberedPaperKey) &&
