@@ -196,11 +196,12 @@ type ConversationMessageTarget = {
 
 /**
  * Runs inside a turn deletion's transaction, before it commits, with the
- * agent runs the deleted rows named (the store kernel's
+ * agent runs and plan documents the deleted rows named (the store kernel's
  * `TurnDeletionBeforeCommit`, restated here so core does not import it).
  */
 type TurnDeletionBeforeCommit = (deleted: {
   agentRunIds: string[];
+  documentIds: string[];
 }) => Promise<void>;
 
 type DeleteTurnMessagesParams = ConversationMessageTarget & {

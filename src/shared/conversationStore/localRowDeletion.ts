@@ -78,6 +78,11 @@ export type DeletedTurnRows = {
    * turn; the conversation's other runs belong to the turns that remain.
    */
   agentRunIds: string[];
+  /**
+   * The plan documents the deleted rows named that no remaining row of the
+   * conversation names, read the same way.
+   */
+  documentIds: string[];
 };
 
 /** Runs inside a turn deletion's transaction, before it commits. */
@@ -353,9 +358,9 @@ export async function deleteConversationTurnMessages(
     normalizedAssistantTimestamp,
   );
   await Zotero.DB.executeTransaction(async () => {
-    const agentRunIds = onBeforeCommit
-      ? await readTurnAgentRunIds(messagesTable, [userRow, assistantRow])
-      : [];
+    const links = onBeforeCommit
+      ? await readTurnRowLinks(messagesTable, [userRow, assistantRow])
+      : { agentRunIds: [], documentIds: [] };
     if (normalizedUserMessageID > 0) {
       await Zotero.DB.queryAsync(
         `DELETE FROM ${messagesTable}
@@ -405,37 +410,76 @@ export async function deleteConversationTurnMessages(
         conversationKey: normalizedKey,
       });
     }
-    await onBeforeCommit?.({ agentRunIds });
+    if (onBeforeCommit) {
+      await onBeforeCommit({
+        agentRunIds: links.agentRunIds,
+        documentIds: await documentIdsNoRowNames(
+          messagesTable,
+          selector,
+          links.documentIds,
+        ),
+      });
+    }
   });
   await store.refreshSearchIndex(normalizedKey);
 }
 
 /**
- * The agent run IDs the given message rows name. A store whose messages
- * table predates the column names none.
+ * The agent run IDs and plan document IDs the given message rows name. A
+ * store whose messages table predates a column names none of it.
  */
-async function readTurnAgentRunIds(
+async function readTurnRowLinks(
   messagesTable: string,
   rows: ReadonlyArray<{ sql: string; params: unknown[] }>,
-): Promise<string[]> {
-  const runIds = new Set<string>();
+): Promise<{ agentRunIds: string[]; documentIds: string[] }> {
+  const agentRunIds = new Set<string>();
+  const documentIds = new Set<string>();
+  const text = (value: unknown) =>
+    typeof value === "string" ? value.trim() : "";
   for (const row of rows) {
-    let found: Array<{ agentRunId?: unknown }> | undefined;
+    let found:
+      | Array<{ agentRunId?: unknown; documentId?: unknown }>
+      | undefined;
     try {
       found = (await Zotero.DB.queryAsync(
-        `SELECT agent_run_id AS agentRunId FROM ${messagesTable}
+        `SELECT agent_run_id AS agentRunId, document_id AS documentId
+         FROM ${messagesTable}
          WHERE ${row.sql}`,
         row.params,
-      )) as Array<{ agentRunId?: unknown }> | undefined;
+      )) as Array<{ agentRunId?: unknown; documentId?: unknown }> | undefined;
     } catch (error) {
-      if (/no such column/i.test(String(error))) return [];
+      if (/no such column/i.test(String(error))) {
+        return { agentRunIds: [], documentIds: [] };
+      }
       throw error;
     }
     for (const entry of found || []) {
-      const runId =
-        typeof entry.agentRunId === "string" ? entry.agentRunId.trim() : "";
-      if (runId) runIds.add(runId);
+      if (text(entry.agentRunId)) agentRunIds.add(text(entry.agentRunId));
+      if (text(entry.documentId)) documentIds.add(text(entry.documentId));
     }
   }
-  return [...runIds];
+  return { agentRunIds: [...agentRunIds], documentIds: [...documentIds] };
+}
+
+/**
+ * The given plan documents that no row of the conversation names any more,
+ * read after the turn's rows are deleted: a document a remaining turn still
+ * shows is kept.
+ */
+async function documentIdsNoRowNames(
+  messagesTable: string,
+  selector: { whereSql: string; params: unknown[] },
+  documentIds: readonly string[],
+): Promise<string[]> {
+  const unnamed: string[] = [];
+  for (const documentId of documentIds) {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT id FROM ${messagesTable}
+       WHERE ${selector.whereSql} AND document_id = ?
+       LIMIT 1`,
+      [...selector.params, documentId],
+    )) as unknown[] | undefined;
+    if (!rows?.length) unnamed.push(documentId);
+  }
+  return unnamed;
 }

@@ -1,8 +1,13 @@
 import { deleteAgentEvidenceRowsInTransaction } from "../context/cacheManagement";
 import { deleteAgentCoverageRowsInTransaction } from "../context/coverageLedger";
-import { clearPlanDocumentConversationRowsInTransaction } from "../documents/store";
 import {
+  clearPlanDocumentConversationRowsInTransaction,
+  clearPlanDocumentTurnRowsInTransaction,
+} from "../documents/store";
+import {
+  deleteJournalRowsForRunsInTransaction,
   deleteJournalRowsInTransaction,
+  queueJournalRecoveryBlobCleanupForRunsInTransaction,
   queueJournalRecoveryBlobCleanupInTransaction,
 } from "./changeJournal";
 import { deleteAgentMemoryRowsInTransaction } from "./conversationMemory";
@@ -89,54 +94,80 @@ export async function purgeAgentConversation(
     db,
     key,
   );
-  return purgeAgentRows(db, key, [...runIds, ...exportRunIds], () =>
-    deleteAgentTraceRowsInTransaction(db, key, runIds),
-  );
+  return purgeAgentRows(db, key, [...runIds, ...exportRunIds], {
+    deleteTraceRows: () => deleteAgentTraceRowsInTransaction(db, key, runIds),
+    deletePlanDocuments: () =>
+      clearPlanDocumentConversationRowsInTransaction(key),
+    queueJournalBlobCleanup: () =>
+      queueJournalRecoveryBlobCleanupInTransaction(key),
+    deleteJournalRows: () => deleteJournalRowsInTransaction(db, key),
+  });
 }
 
 /**
  * The turn form of `purgeAgentConversation`, for turn deletion and edit
- * truncation: only the runs the deleted turn's rows named lose their trace.
- * Deleting one turn used to delete the trace of every turn in the chat.
+ * truncation. Deleting one turn used to delete the trace, plan documents and
+ * undo history of every turn in the chat; now only the deleted turn's go:
  *
- * Everything else is purged as for the whole conversation, in the same
- * order: the memory, transcript, tool-result handle, evidence and coverage
- * rows, the dormant plan and research rows, the plan documents and the change
- * journal are kept per conversation, so the deleted turn's content cannot
+ * - the trace of the runs the deleted rows named;
+ * - the change journal (undo history) recorded under those runs;
+ * - the plan documents the deleted rows named and no remaining row names.
+ *
+ * The memory, transcript, tool-result handle, evidence and coverage rows and
+ * the dormant plan and research rows are still purged for the whole
+ * conversation, in the same order, so the deleted turn's content cannot
  * reach the next prompt. The post-commit cleanup of the queued runs is
  * `clearQueuedAgentTraceRuns`.
  */
 export async function purgeAgentConversationTurn(
   conversationKey: number,
-  agentRunIds: readonly string[],
+  deleted: { agentRunIds: readonly string[]; documentIds: readonly string[] },
   deps: AgentConversationPurgeDeps,
 ): Promise<AgentConversationPurge> {
   const key = Math.floor(Number(conversationKey));
   if (Number.isFinite(key) && key > 0) deps.clearTaskProgress(key);
   const db = getAgentDb();
   if (!db || !Number.isFinite(key) || key <= 0) return NOTHING_TO_ROLL_BACK;
-  const runIds = Array.from(
+  const runIds = uniqueIds(deleted.agentRunIds);
+  const documentIds = uniqueIds(deleted.documentIds);
+  return purgeAgentRows(db, key, runIds, {
+    deleteTraceRows: () =>
+      deleteAgentTraceRowsForRunsInTransaction(db, key, runIds),
+    deletePlanDocuments: () =>
+      clearPlanDocumentTurnRowsInTransaction(key, documentIds),
+    queueJournalBlobCleanup: () =>
+      queueJournalRecoveryBlobCleanupForRunsInTransaction(key, runIds),
+    deleteJournalRows: () =>
+      deleteJournalRowsForRunsInTransaction(db, key, runIds),
+  });
+}
+
+function uniqueIds(ids: readonly string[]): string[] {
+  return Array.from(
     new Set(
-      agentRunIds
-        .map((runId) => (typeof runId === "string" ? runId.trim() : ""))
+      ids
+        .map((id) => (typeof id === "string" ? id.trim() : ""))
         .filter(Boolean),
     ),
-  );
-  return purgeAgentRows(db, key, runIds, () =>
-    deleteAgentTraceRowsForRunsInTransaction(db, key, runIds),
   );
 }
 
 /**
- * The shared body of both purges: remember and queue `traceRunIds`, delete
- * the trace rows as `deleteTraceRows` scopes them, then every other agent
- * row of the conversation.
+ * The shared body of both purges: remember and queue `traceRunIds`, then
+ * delete the agent rows in the fixed order. The trace, the plan documents and
+ * the change journal are deleted as `scoped` scopes them; every other row is
+ * deleted for the whole conversation.
  */
 async function purgeAgentRows(
   db: AgentPurgeDb,
   key: number,
   traceRunIds: readonly string[],
-  deleteTraceRows: () => Promise<void>,
+  scoped: {
+    deleteTraceRows: () => Promise<void>;
+    deletePlanDocuments: () => Promise<void>;
+    queueJournalBlobCleanup: () => Promise<void>;
+    deleteJournalRows: () => Promise<void>;
+  },
 ): Promise<AgentConversationPurge> {
   const forgetDeletedRuns = rememberAgentTraceRunIDsForDeletedConversation(
     key,
@@ -144,7 +175,7 @@ async function purgeAgentRows(
   );
   try {
     await queueAgentTraceFileCleanupInTransaction(key, traceRunIds);
-    await deleteTraceRows();
+    await scoped.deleteTraceRows();
     await deleteAgentMemoryRowsInTransaction(db, key);
     await deleteAgentTranscriptRowsInTransaction(db, key);
     await deleteAgentToolResultHandleRowsInTransaction(db, key);
@@ -152,13 +183,9 @@ async function purgeAgentRows(
     await deleteAgentCoverageRowsInTransaction(db, key);
     await ignoringMissingTable(clearDormantPlanRowsInTransaction(key));
     await ignoringMissingTable(clearDormantResearchRowsInTransaction(key));
-    await ignoringMissingTable(
-      clearPlanDocumentConversationRowsInTransaction(key),
-    );
-    await ignoringMissingTable(
-      queueJournalRecoveryBlobCleanupInTransaction(key),
-    );
-    await deleteJournalRowsInTransaction(db, key);
+    await ignoringMissingTable(scoped.deletePlanDocuments());
+    await ignoringMissingTable(scoped.queueJournalBlobCleanup());
+    await scoped.deleteJournalRows();
   } catch (error) {
     forgetDeletedRuns();
     throw error;
