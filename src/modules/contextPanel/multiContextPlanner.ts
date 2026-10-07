@@ -413,36 +413,16 @@ function getCollectionChildItemIds(collection: Zotero.Collection): number[] {
   }
 }
 
-function getCollectionChildCollectionIds(
-  collection: Zotero.Collection,
-): number[] {
-  try {
-    return (collection.getChildCollections?.(true, false) || [])
-      .map((id) => normalizeCollectionId(id))
-      .filter((id): id is number => Boolean(id));
-  } catch (_err) {
-    return [];
-  }
-}
-
-function collectCollectionItemIds(
-  collectionId: number,
-  seenCollections = new Set<number>(),
-): number[] {
-  if (seenCollections.has(collectionId)) return [];
-  seenCollections.add(collectionId);
+/**
+ * The papers a folder scope covers: the folder's own papers. Subfolders are
+ * not expanded, exactly as the agent's retrieval and Task progress do not
+ * (`services/libraryIndex/paperScope`), so one folder chip means the same
+ * papers in plain chat and in the agent.
+ */
+function collectCollectionItemIds(collectionId: number): number[] {
   const collection = Zotero.Collections.get(collectionId);
   if (!collection) return [];
-  const out = new Set<number>(getCollectionChildItemIds(collection));
-  for (const childCollectionId of getCollectionChildCollectionIds(collection)) {
-    for (const childItemId of collectCollectionItemIds(
-      childCollectionId,
-      seenCollections,
-    )) {
-      out.add(childItemId);
-    }
-  }
-  return Array.from(out);
+  return Array.from(new Set(getCollectionChildItemIds(collection)));
 }
 
 /**

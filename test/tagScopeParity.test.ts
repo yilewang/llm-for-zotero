@@ -511,13 +511,13 @@ describe("tag scope parity: plain-chat planner vs library index snapshot", funct
     });
   });
 
-  it("pins folders (unchanged, not a tag rule): the planner expands subfolders, the snapshot union does not", async function () {
+  it("a folder covers its own papers, not those in its subfolders, in the planner and the snapshot union alike", async function () {
     const planner = await plannerScope({
       collectionContexts: [{ collectionId: 50, name: "Cafes", libraryID: 1 }],
     });
     assert.deepEqual(planner, {
-      scopeLine: "- Cafes [collectionId=50, libraryID=1, papers=2]",
-      itemIds: [101, 110],
+      scopeLine: "- Cafes [collectionId=50, libraryID=1, papers=1]",
+      itemIds: [101],
     });
     const gateway = await new ZoteroGateway().resolveLibraryScopeItemIds({
       libraryID: 1,
