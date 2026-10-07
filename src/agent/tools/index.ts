@@ -238,7 +238,7 @@ function createLibraryUpdateTool(tools: {
           type: "string",
           enum: ["add", "move"],
           description:
-            "For kind:'collections' with action:'add': mode:'add' preserves every existing membership. mode:'move' additionally removes only the membership named by from. Omission means add-only and is never treated as a move.",
+            "For kind:'collections' with action:'add': mode:'add' preserves every existing membership. mode:'move' additionally removes only the membership named by from. Omission means add-only, never a move; to move papers, pass mode:'move' with from.",
         },
         from: {
           description:

@@ -779,6 +779,36 @@ export async function clearPlanDocumentConversationRowsInTransaction(
   }
 }
 
+/**
+ * The turn form of `clearPlanDocumentConversationRowsInTransaction`: drops
+ * this conversation's ownership of the given plan documents only (the ones
+ * a deleted turn's rows named and no remaining row names), then deletes each
+ * document no conversation owns any more. The conversation's other plan
+ * documents belong to the turns that remain.
+ */
+export async function clearPlanDocumentTurnRowsInTransaction(
+  conversationKey: number,
+  documentIds: readonly string[],
+): Promise<void> {
+  const ids = Array.from(
+    new Set(
+      documentIds
+        .map((id) => (typeof id === "string" ? id.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+  if (!ids.length) return;
+  const placeholders = ids.map(() => "?").join(", ");
+  await Zotero.DB.queryAsync(
+    `DELETE FROM ${PLAN_DOCUMENT_OWNERS_TABLE}
+     WHERE conversation_key = ? AND document_id IN (${placeholders})`,
+    [conversationKey, ...ids],
+  );
+  for (const documentId of ids) {
+    await deleteUnownedPlanDocumentInTransaction(documentId);
+  }
+}
+
 export async function sweepPlanDocumentStorage(): Promise<void> {
   await Zotero.DB.executeTransaction(async () => {
     for (const [table, predicate] of [

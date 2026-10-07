@@ -27,6 +27,7 @@ import {
   buildUserRowExistsQuery,
   latestUserRowFilter,
   storedMessageDisplayOrderSql,
+  type UpdateLatestAssistantMessageOptions,
   type UpdateLatestUserMessageOptions,
 } from "../shared/conversationMessageSql";
 import {
@@ -121,6 +122,7 @@ import {
   preflightDeleteConversationLocalRows,
   type ConversationLocalRowDeletionIdentity,
   type ConversationLocalRowStore,
+  type TurnDeletionBeforeCommit,
 } from "../shared/conversationStore/localRowDeletion";
 import { notifyConversationCatalogChanged } from "../core/conversations/conversationCatalogEvents";
 import { deleteUsageEventsForConversation } from "./usageStore";
@@ -2731,7 +2733,10 @@ export async function appendMessage(
   notifyConversationCatalogChanged("turns", normalizedKey);
 }
 
-export type { UpdateLatestUserMessageOptions };
+export type {
+  UpdateLatestAssistantMessageOptions,
+  UpdateLatestUserMessageOptions,
+};
 
 /**
  * Rewrite the conversation's latest user row, or, with
@@ -2920,6 +2925,12 @@ export async function updateLatestUserMessage(
   return true;
 }
 
+/**
+ * Rewrite the conversation's latest assistant row, or, with
+ * `options.expectedTimestamp`, the assistant row stored at that timestamp.
+ * Returns false when nothing was written: the key is not an upstream key,
+ * or no assistant row has the expected timestamp.
+ */
 export async function updateLatestAssistantMessage(
   conversationKey: number,
   message: Pick<
@@ -2946,16 +2957,33 @@ export async function updateLatestAssistantMessage(
     | "quoteCitations"
     | "generatedImages"
   >,
-): Promise<void> {
+  options: UpdateLatestAssistantMessageOptions = {},
+): Promise<boolean> {
   const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
+  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey))
+    return false;
+  const rowFilter = latestUserRowFilter(options);
 
   const timestamp = Number(message.timestamp);
   const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
   const generatedImages = normalizeGeneratedChatImages(message.generatedImages);
   const selector =
     await resolveRepairingMessageConversationSelector(normalizedKey);
+  let matched = true;
   await Zotero.DB.executeTransaction(async () => {
+    if (rowFilter.exact) {
+      const rows = (await Zotero.DB.queryAsync(
+        buildUserRowExistsQuery({
+          tableName: CHAT_MESSAGES_TABLE,
+          whereSql: selector.whereSql,
+          filterSql: rowFilter.sql,
+          role: "assistant",
+        }),
+        [...selector.params, ...rowFilter.params],
+      )) as unknown[] | undefined;
+      matched = Boolean(rows?.length);
+      if (!matched) return;
+    }
     await Zotero.DB.queryAsync(
       `UPDATE ${CHAT_MESSAGES_TABLE}
        SET text = ?,
@@ -2980,7 +3008,7 @@ export async function updateLatestAssistantMessage(
        WHERE id = (
          SELECT id
          FROM ${CHAT_MESSAGES_TABLE}
-         WHERE ${selector.whereSql} AND role = 'assistant'
+         WHERE ${selector.whereSql} AND role = 'assistant'${rowFilter.sql}
          ORDER BY timestamp DESC, id DESC
          LIMIT 1
        )`,
@@ -3009,12 +3037,15 @@ export async function updateLatestAssistantMessage(
           ? Math.floor(Number(message.contextWindow))
           : null,
         ...selector.params,
+        ...rowFilter.params,
       ],
     );
     await refreshUpstreamConversationCatalogSummary(normalizedKey);
   });
+  if (!matched) return false;
   await refreshUpstreamConversationSearchIndex(normalizedKey);
   notifyConversationCatalogChanged("turns", normalizedKey);
+  return true;
 }
 
 export async function clearConversation(
@@ -3101,7 +3132,7 @@ export async function deleteTurnMessages(
   assistantTimestamp: number,
   userMessageID?: number,
   assistantMessageID?: number,
-  onBeforeCommit?: () => Promise<void>,
+  onBeforeCommit?: TurnDeletionBeforeCommit,
 ): Promise<void> {
   await deleteConversationTurnMessages(
     UPSTREAM_LOCAL_ROW_STORE,

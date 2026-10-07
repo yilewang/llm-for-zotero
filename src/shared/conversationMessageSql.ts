@@ -67,13 +67,25 @@ export function latestUserRowFilter(options: UpdateLatestUserMessageOptions): {
   };
 }
 
-/** Selects one user row that matches a conversation selector and a filter. */
+/**
+ * Selects one row of `role` (the user row by default) that matches a
+ * conversation selector and a filter.
+ */
 export function buildUserRowExistsQuery(params: {
   tableName: string;
   whereSql: string;
   filterSql: string;
+  role?: "user" | "assistant";
 }): string {
   return `SELECT id FROM ${params.tableName}
-    WHERE ${params.whereSql} AND role = 'user'${params.filterSql}
+    WHERE ${params.whereSql} AND role = '${params.role === "assistant" ? "assistant" : "user"}'${params.filterSql}
     LIMIT 1`;
 }
+
+/**
+ * Which stored assistant row an "update latest assistant message" write
+ * targets: the row at `expectedTimestamp` when set, the latest otherwise.
+ * The filter is `latestUserRowFilter`, which does not depend on the role.
+ */
+export type UpdateLatestAssistantMessageOptions =
+  UpdateLatestUserMessageOptions;

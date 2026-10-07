@@ -14,6 +14,7 @@ import {
   LIVE_MODEL_ENTRY_ID,
   approveCardsUntil,
   describeError,
+  ensureOwnZoteroHttpServer,
   env,
   liveRuntimePrefs,
   persistenceSnapshot,
@@ -21,6 +22,7 @@ import {
   readStoredMessages,
   setPrefs,
   shortSystemName,
+  switchPanelToLibraryChat,
   workflowApi,
   type ApprovedCard,
   type LiveKind,
@@ -69,8 +71,8 @@ describe("DB upgrade seed (older build)", function () {
     const panel = await api().renderPanelForItem(state.paperItemId);
     let diag = await api().getDiagnostics(panel.panelId);
     assert.equal(diag.conversationSystem, system, "panel system");
-    if (kind === "library" && diag.conversationKind !== "global") {
-      diag = await api().togglePanelConversationMode(panel.panelId);
+    if (kind === "library") {
+      diag = await switchPanelToLibraryChat(panel.panelId);
     }
     assert.equal(
       diag.conversationKind,
@@ -112,6 +114,8 @@ describe("DB upgrade seed (older build)", function () {
     await guarded("prepare", async () => {
       state.credentials = await resolveLiveAgentCredentials();
       assert.isOk(state.credentials, "live credentials must be configured");
+      // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+      await ensureOwnZoteroHttpServer();
       await api().reset();
       setPrefs(prefsFor("upstream"));
       const fixture = await api().createPaperWithPdfFixture({
@@ -267,7 +271,7 @@ describe("DB upgrade seed (older build)", function () {
             ...paper,
           }),
         );
-        const diag = await api().togglePanelConversationMode(panel.panelId);
+        const diag = await switchPanelToLibraryChat(panel.panelId);
         assert.equal(diag.conversationKind, "global", "library chat");
         const library = await markerTurn(panel.panelId, system, "library");
         conversations.push(

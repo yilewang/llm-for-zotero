@@ -200,7 +200,10 @@ describe("action card model", function () {
           receipt({
             id: "r1",
             operation: "move_to_collection",
-            normalizedParameters: { destinationCollectionId: 7 },
+            normalizedParameters: {
+              sourceCollectionId: 3,
+              destinationCollectionId: 7,
+            },
           }),
         ]),
       ],
@@ -225,6 +228,22 @@ describe("action card model", function () {
     ]);
     assert.equal(entry.verification, "verified");
     assert.deepEqual(entry.badges, ["Verified"]);
+  });
+
+  it("calls a filing that left the item's other folders alone an add, not a move", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "r1",
+            operation: "move_to_collection",
+            normalizedParameters: { destinationCollectionId: 7 },
+          }),
+        ]),
+      ],
+      resolvers,
+    );
+    assert.equal(card!.entries[0].effects[0].label, "Added to collection");
   });
 
   it("groups receipts that share a target set into one row, in receipt order", function () {

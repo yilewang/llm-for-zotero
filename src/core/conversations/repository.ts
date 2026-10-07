@@ -194,14 +194,27 @@ type ConversationMessageTarget = {
   conversationKey: number;
 };
 
+/**
+ * Runs inside a turn deletion's transaction, before it commits, with the
+ * agent runs and plan documents the deleted rows named (the store kernel's
+ * `TurnDeletionBeforeCommit`, restated here so core does not import it).
+ */
+type TurnDeletionBeforeCommit = (deleted: {
+  agentRunIds: string[];
+  documentIds: string[];
+}) => Promise<void>;
+
 type DeleteTurnMessagesParams = ConversationMessageTarget & {
   userTimestamp: number;
   assistantTimestamp: number;
   /** Immutable row IDs captured when the turn was selected. */
   userMessageID?: number;
   assistantMessageID?: number;
-  /** Runs inside the provider's message-delete transaction before commit. */
-  onBeforeCommit?: () => Promise<void>;
+  /**
+   * Runs inside the provider's message-delete transaction before commit, with
+   * the agent runs the deleted rows named.
+   */
+  onBeforeCommit?: TurnDeletionBeforeCommit;
 };
 
 type EnsureCatalogEntryParams = ConversationCatalogScope & {
@@ -582,7 +595,7 @@ type ConversationStoreAdapter = {
     assistantTimestamp: number,
     userMessageID?: number,
     assistantMessageID?: number,
-    onBeforeCommit?: () => Promise<void>,
+    onBeforeCommit?: TurnDeletionBeforeCommit,
   ): Promise<void>;
   ensureCatalogEntry(
     params: EnsureCatalogEntryParams,

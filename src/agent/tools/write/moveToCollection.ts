@@ -185,6 +185,14 @@ export function createMoveToCollectionTool(
         args.from === "all"
           ? ("all" as const)
           : normalizePositiveInt(args.from) || undefined;
+      // A source without the move mode used to be dropped silently: the
+      // paper was only added, and the call read as the move it named.
+      if (mode !== "move" && args.from !== undefined) {
+        return fail(
+          'from is only used with mode "move". To move the items out of that collection, pass mode:"move" as well; to add them and keep their other collections, leave out from. ' +
+            'Example: { action: "add", mode: "move", from: 12, itemIds: [101], targetCollectionId: 34 }',
+        );
+      }
       if (mode === "move" && from === undefined) {
         return fail(
           'mode "move" requires from: pass from:<collectionId> to take the items out of one collection, or from:"all" to replace their collection membership entirely. ' +

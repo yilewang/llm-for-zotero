@@ -862,6 +862,7 @@ export class ZoteroGateway {
     collections: CollectionSummary[];
     items: BatchMoveItemResult[];
     priorCollections?: ItemCollectionSet[];
+    note?: string;
   }> {
     return this.collectionCapability.addItemsToCollections(params);
   }

@@ -119,6 +119,12 @@ type StoreAdapter = {
     expectedTimestamp: number,
   ): Promise<boolean>;
   updateLatestAssistant(key: number, message: StoredChatMessage): Promise<void>;
+  /** The exact-row form: only the assistant row stored at `expectedTimestamp`. */
+  updateAssistantAt(
+    key: number,
+    message: StoredChatMessage,
+    expectedTimestamp: number,
+  ): Promise<boolean>;
   clear(
     key: number,
     identity?: Identity,
@@ -241,8 +247,12 @@ function runtimeAdapter(name: "claude_code" | "codex"): StoreAdapter {
     },
     updateUserAt: (key, message, expectedTimestamp) =>
       store.updateLatestUser(key, message, { expectedTimestamp }),
-    updateLatestAssistant: (key, message) =>
-      store.updateLatestAssistant(key, message),
+    // As for updateLatestUser, the goldens record null here.
+    updateLatestAssistant: async (key, message) => {
+      await store.updateLatestAssistant(key, message);
+    },
+    updateAssistantAt: (key, message, expectedTimestamp) =>
+      store.updateLatestAssistant(key, message, { expectedTimestamp }),
     clear: (key, identity, onBeforeCommit) =>
       store.clear(key, identity, onBeforeCommit),
     deleteTurn: (key, u, a, uid, aid, onBeforeCommit) =>
@@ -295,8 +305,11 @@ const upstreamAdapter: StoreAdapter = {
   },
   updateUserAt: (key, message, expectedTimestamp) =>
     upstream.updateLatestUserMessage(key, message, { expectedTimestamp }),
-  updateLatestAssistant: (key, message) =>
-    upstream.updateLatestAssistantMessage(key, message),
+  updateLatestAssistant: async (key, message) => {
+    await upstream.updateLatestAssistantMessage(key, message);
+  },
+  updateAssistantAt: (key, message, expectedTimestamp) =>
+    upstream.updateLatestAssistantMessage(key, message, { expectedTimestamp }),
   clear: (key, identity, onBeforeCommit) =>
     upstream.clearConversation(key, identity, onBeforeCommit),
   deleteTurn: (key, u, a, uid, aid, onBeforeCommit) =>
@@ -1229,6 +1242,37 @@ describe("conversation store characterization (golden)", function () {
           absentTrace: transactionTrace(absentFrom),
           loaded: await store.load(key, 50),
         });
+      });
+
+      it("updateLatestAssistant with an expected timestamp writes only that row, and nothing when it is gone", async function () {
+        const key = await initAndCreate("global");
+        await store.append(key, plain("user", "u1", at(1)));
+        await store.append(key, plain("assistant", "a1", at(2)));
+        await store.append(key, plain("user", "u2", at(3)));
+        await store.append(key, plain("assistant", "a2", at(4)));
+        // The older pair's answer row, although a later answer row exists.
+        const matched = await store.updateAssistantAt(
+          key,
+          plain("assistant", "a1-retried", at(5)),
+          at(2),
+        );
+        assert.sameMembers(
+          messageRows(store, key).map((row) => row.text),
+          ["u1", "a1-retried", "u2", "a2"],
+          "only the row stored at the expected timestamp changes",
+        );
+        const absent = await store.updateAssistantAt(
+          key,
+          plain("assistant", "never written", at(9)),
+          at(2),
+        );
+        assert.isTrue(matched);
+        assert.isFalse(absent);
+        assert.sameMembers(
+          messageRows(store, key).map((row) => row.text),
+          ["u1", "a1-retried", "u2", "a2"],
+          "no row is written when no assistant row has the expected timestamp",
+        );
       });
 
       it("updateLatestAssistant: column set and context token merge (U6)", async function () {
