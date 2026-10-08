@@ -170,7 +170,14 @@ function setupZotero(items: Map<number, MockItem>, io: MemoryIO): void {
     },
     Libraries: {
       userLibraryID: 1,
-      getAll: () => [{ libraryID: 1, name: "My Library" }],
+      getAll: () => {
+        const libraryIDs = new Set<number>([1]);
+        for (const item of items.values()) libraryIDs.add(item.libraryID);
+        return [...libraryIDs].map((libraryID) => ({
+          libraryID,
+          name: libraryID === 1 ? "My Library" : `Library ${libraryID}`,
+        }));
+      },
     },
     Items: {
       get: (id: number) => items.get(id) || null,
@@ -1749,6 +1756,35 @@ describe("mineruSync", function () {
     assert.isFalse(await hasCachedMineruMd(999));
     const provenance = await readMineruSourceProvenance(pdf.id);
     assert.isNull(provenance);
+  });
+
+  it("keeps group-library caches during repair", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    parent.id = 20;
+    parent.key = "GROUPPARENT";
+    parent.libraryID = 2;
+    const pdf = createAttachment({
+      id: 321,
+      key: "GROUPPDF",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "group-paper.pdf",
+    });
+    pdf.libraryID = 2;
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+
+    await writeSampleCache(pdf.id);
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.checked, 1);
+    assert.equal(result.removedOrphanCaches, 0);
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
   });
 
   it("keeps source images during repair until figure crops are ready", async function () {
