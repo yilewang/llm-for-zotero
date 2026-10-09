@@ -263,6 +263,14 @@ import {
   setCodexRuntimeModelPref,
 } from "../codexAppServer/prefs";
 import {
+  getAcpAgentCommand,
+  getAcpWorkingDirectory,
+  isAcpAgentEnabled,
+  setAcpAgentCommand,
+  setAcpAgentEnabled,
+  setAcpWorkingDirectory,
+} from "../acp/prefs";
+import {
   getCodexPermissionOptionCatalog,
   getCodexPermissionStatusText,
   subscribeCodexPermissionProcessChanges,
@@ -1446,6 +1454,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const codexAppServerSettingsWrap = doc.querySelector(
     `#${config.addonRef}-codex-app-server-settings`,
   ) as HTMLDivElement | null;
+  const acpAgentEnableToggle = doc.querySelector(
+    `#${config.addonRef}-acp-agent-enable`,
+  ) as HTMLInputElement | null;
+  const acpAgentSettingsWrap = doc.querySelector(
+    `#${config.addonRef}-acp-agent-settings`,
+  ) as HTMLDivElement | null;
+  const acpAgentCommandInput = doc.querySelector(
+    `#${config.addonRef}-acp-agent-command`,
+  ) as HTMLInputElement | null;
+  const acpAgentWorkingDirectoryInput = doc.querySelector(
+    `#${config.addonRef}-acp-agent-working-directory`,
+  ) as HTMLInputElement | null;
   const codexAppServerModelSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-model`,
   ) as HTMLSelectElement | null;
@@ -3801,6 +3821,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         ? [claudeModel, selectedOptionLabel(agentPermissionModeSelect)]
         : [t("Off")],
     );
+    const acpOn = !!acpAgentEnableToggle?.checked;
+    setAgentRowSummary(
+      "acp",
+      acpOn,
+      acpOn
+        ? [acpAgentCommandInput?.value.trim() || t("Default command")]
+        : [t("Off")],
+    );
     const notesPath = inputValue("obsidian-vault-path");
     setAgentRowSummary(
       "notes",
@@ -3861,6 +3889,43 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         void refreshCodexCatalog();
         void refreshCodexPermissionOptions();
       }
+    });
+  }
+
+  // Any ACP agent, not just one vendor's: the command is the user's to write.
+  // Enabling it routes this plugin's agent turns to that command while the
+  // conversation itself keeps its own history and storage. Claude Code wins
+  // when a conversation has already switched to it, so the hint says so.
+  if (acpAgentEnableToggle) {
+    const applyAcpAgentUi = (enabled: boolean) => {
+      acpAgentEnableToggle.checked = enabled;
+      if (acpAgentSettingsWrap) {
+        acpAgentSettingsWrap.style.display = enabled ? "flex" : "none";
+      }
+      refreshAgentRowSummaries();
+    };
+    applyAcpAgentUi(isAcpAgentEnabled());
+    acpAgentEnableToggle.addEventListener("change", () => {
+      const enabled = acpAgentEnableToggle.checked;
+      applyAcpAgentUi(enabled);
+      setAcpAgentEnabled(enabled);
+    });
+  }
+  if (acpAgentCommandInput) {
+    acpAgentCommandInput.value = getAcpAgentCommand();
+    acpAgentCommandInput.addEventListener("change", () => {
+      setAcpAgentCommand(acpAgentCommandInput.value);
+      // Read back, so a cleared field shows the default it fell back to.
+      acpAgentCommandInput.value = getAcpAgentCommand();
+      refreshAgentRowSummaries();
+    });
+  }
+  if (acpAgentWorkingDirectoryInput) {
+    acpAgentWorkingDirectoryInput.value = getAcpWorkingDirectory();
+    acpAgentWorkingDirectoryInput.addEventListener("change", () => {
+      setAcpWorkingDirectory(acpAgentWorkingDirectoryInput.value);
+      acpAgentWorkingDirectoryInput.value = getAcpWorkingDirectory();
+      refreshAgentRowSummaries();
     });
   }
 

@@ -59,6 +59,8 @@ const LAYERS = [
       // Conversation backends the agent layer drives and imports back.
       "src/claudeCode/",
       "src/codexAppServer/",
+      // ACP agent backend: answers agent turns over an ACP agent's stdio.
+      "src/acp/",
       "src/webchat/",
     ],
   },
@@ -178,6 +180,8 @@ const SEALED_EXPORTS = [
       "src/agent/runtime.ts",
       // Codex and Claude Code bridge runs finish their own runs.
       "src/agent/externalBackendBridge.ts",
+      // The ACP backend finishes the run it drove over the agent's stdio.
+      "src/acp/runtime.ts",
     ],
   },
 ];
