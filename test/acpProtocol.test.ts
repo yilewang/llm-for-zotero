@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   ACP_PROTOCOL_VERSION,
   AcpProtocol,
+  buildAcpHttpMcpServer,
   buildInitializeParams,
   buildNewSessionParams,
   buildPromptParams,
@@ -39,7 +40,9 @@ describe("acp protocol", function () {
     assert.isNumber(id);
     assert.deepEqual(requestOfType("session/new")?.params, { cwd: "/tmp" });
 
-    protocol.handleLine(JSON.stringify({ jsonrpc: "2.0", id, result: { sessionId: "s1" } }));
+    protocol.handleLine(
+      JSON.stringify({ jsonrpc: "2.0", id, result: { sessionId: "s1" } }),
+    );
     assert.deepEqual(await pending, { sessionId: "s1" });
     assert.equal(protocol.pendingCount, 0);
   });
@@ -83,7 +86,10 @@ describe("acp protocol", function () {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "session/update",
-        params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk" } },
+        params: {
+          sessionId: "s1",
+          update: { sessionUpdate: "agent_message_chunk" },
+        },
       }),
     );
     assert.lengthOf(seen, 1);
@@ -92,7 +98,10 @@ describe("acp protocol", function () {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "session/update",
-        params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk" } },
+        params: {
+          sessionId: "s1",
+          update: { sessionUpdate: "agent_message_chunk" },
+        },
       }),
     );
     assert.lengthOf(seen, 1);
@@ -105,7 +114,12 @@ describe("acp protocol", function () {
     }));
 
     protocol.handleLine(
-      JSON.stringify({ jsonrpc: "2.0", id: 77, method: "session/request_permission", params: {} }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 77,
+        method: "session/request_permission",
+        params: {},
+      }),
     );
     await Promise.resolve();
     await Promise.resolve();
@@ -113,7 +127,12 @@ describe("acp protocol", function () {
     assert.deepEqual(answered?.result, { outcome: { outcome: "cancelled" } });
 
     protocol.handleLine(
-      JSON.stringify({ jsonrpc: "2.0", id: 78, method: "fs/read_text_file", params: {} }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 78,
+        method: "fs/read_text_file",
+        params: {},
+      }),
     );
     await Promise.resolve();
     const refused = written.find((message) => message.id === 78) as {
@@ -155,6 +174,46 @@ describe("acp protocol", function () {
     });
   });
 
+  it("describes an HTTP MCP server the way ACP declares it", function () {
+    const server = buildAcpHttpMcpServer({
+      name: "llm-for-zotero",
+      url: "http://127.0.0.1:23119/mcp",
+      headers: { Authorization: "Bearer abc", "X-Zotero-Scope": "scope-1" },
+    });
+    assert.equal(server.type, "http");
+    assert.equal(server.url, "http://127.0.0.1:23119/mcp");
+    // ACP takes a list of name/value pairs, where the plugin's config uses a map.
+    assert.deepEqual(server.headers, [
+      { name: "Authorization", value: "Bearer abc" },
+      { name: "X-Zotero-Scope", value: "scope-1" },
+    ]);
+    // A server with no headers is still a valid entry, not an absent one.
+    assert.deepEqual(
+      buildAcpHttpMcpServer({ name: "s", url: "u", headers: undefined })
+        .headers,
+      [],
+    );
+    assert.deepEqual(
+      buildAcpHttpMcpServer({ name: "s", url: "u", headers: [1, 2] }).headers,
+      [],
+    );
+  });
+
+  it("carries the session's MCP servers into session/new", function () {
+    const server = buildAcpHttpMcpServer({
+      name: "llm-for-zotero",
+      url: "http://127.0.0.1:23119/mcp",
+      headers: { Authorization: "Bearer abc" },
+    });
+    assert.deepEqual(
+      buildNewSessionParams({ cwd: "/tmp", mcpServers: [server] }),
+      {
+        cwd: "/tmp",
+        mcpServers: [server],
+      },
+    );
+  });
+
   it("reads the session id and model catalog out of a session/new result", function () {
     assert.isNull(readNewSessionResult({}));
     const session = readNewSessionResult({
@@ -178,13 +237,19 @@ describe("acp protocol", function () {
     const info = readInitializeResult({
       protocolVersion: 1,
       agentInfo: { name: "hermes-agent", version: "0.21.5" },
-      agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: { image: true },
+      },
       authMethods: [{ id: "custom", name: "custom runtime credentials" }],
     });
     assert.equal(info?.protocolVersion, 1);
     assert.equal(info?.agentInfo?.name, "hermes-agent");
     assert.equal(info?.agentCapabilities?.loadSession, true);
-    assert.deepEqual(info?.authMethods?.map((method) => method.id), ["custom"]);
+    assert.deepEqual(
+      info?.authMethods?.map((method) => method.id),
+      ["custom"],
+    );
     // A result without a protocol version is not a handshake.
     assert.isNull(readInitializeResult({ agentInfo: {} }));
   });
@@ -194,15 +259,24 @@ describe("acp session updates", function () {
   it("normalizes the variants the panel acts on", function () {
     const chunk = parseSessionUpdate({
       sessionId: "s1",
-      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "hi" },
+      },
     });
     assert.deepEqual(chunk?.update, { kind: "message_chunk", text: "hi" });
 
     const thought = parseSessionUpdate({
       sessionId: "s1",
-      update: { sessionUpdate: "agent_thought_chunk", content: { text: "thinking" } },
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: { text: "thinking" },
+      },
     });
-    assert.deepEqual(thought?.update, { kind: "thought_chunk", text: "thinking" });
+    assert.deepEqual(thought?.update, {
+      kind: "thought_chunk",
+      text: "thinking",
+    });
 
     const tool = parseSessionUpdate({
       sessionId: "s1",
@@ -222,7 +296,11 @@ describe("acp session updates", function () {
       sessionId: "s1",
       update: { sessionUpdate: "usage_update", used: 9850, size: 1048576 },
     });
-    assert.deepEqual(usage?.update, { kind: "usage", used: 9850, size: 1048576 });
+    assert.deepEqual(usage?.update, {
+      kind: "usage",
+      used: 9850,
+      size: 1048576,
+    });
 
     const unknown = parseSessionUpdate({
       sessionId: "s1",
@@ -297,7 +375,10 @@ describe("acp session updates", function () {
       acpUpdateToAgentEvents({ kind: "plan", entries: [{ content: "step" }] }),
       [],
     );
-    assert.deepEqual(acpUpdateToAgentEvents({ kind: "user_chunk", text: "me" }), []);
+    assert.deepEqual(
+      acpUpdateToAgentEvents({ kind: "user_chunk", text: "me" }),
+      [],
+    );
   });
 
   it("treats an absent stop reason as a clean end of turn", function () {
@@ -317,10 +398,10 @@ describe("acp session updates", function () {
       toolCall: { toolCallId: "t1", title: "Run a command" },
     });
     assert.equal(parsed.title, "Run a command");
-    assert.deepEqual(parsed.options.map((option) => option.optionId), [
-      "allow",
-      "deny",
-    ]);
+    assert.deepEqual(
+      parsed.options.map((option) => option.optionId),
+      ["allow", "deny"],
+    );
     assert.deepEqual(parsePermissionRequest(undefined).options, []);
   });
 

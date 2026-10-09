@@ -3,21 +3,32 @@ import type {
   AgentEvent,
   AgentModelCapabilities,
   AgentRuntimeOutcome,
+  AgentRuntimeRequest,
 } from "../agent/types";
-import type { RunTurnParams } from "../agent/externalBackendBridge";
+import {
+  buildZoteroMcpScopeForRequest,
+  type RunTurnParams,
+} from "../agent/externalBackendBridge";
+import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
+import {
+  buildZoteroMcpConfigValue,
+  getZoteroMcpServerName,
+  registerScopedZoteroMcpScope,
+  resolveConversationScopeToken,
+} from "../agent/mcp/server";
 import {
   appendAgentRunEvent,
   createAgentRun,
   finishAgentRun,
 } from "../agent/store/traceStore";
+import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
+import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
 import { appLogger } from "../core/logging";
 import { resolveCodexNativeRuntimeCwd } from "../codexAppServer/runtimeCwd";
-import {
-  acpUpdateToAgentEvents,
-  isAcpStopReasonComplete,
-} from "./events";
+import { acpUpdateToAgentEvents, isAcpStopReasonComplete } from "./events";
 import {
   ACP_PROTOCOL_VERSION,
+  buildAcpHttpMcpServer,
   buildInitializeParams,
   buildNewSessionParams,
   buildPromptParams,
@@ -84,6 +95,7 @@ export function resetAcpRuntime(): void {
   agentProcess = null;
   startingAgent = null;
   sessionIdByConversation.clear();
+  clearZoteroMcpScopes();
   process?.destroy();
 }
 
@@ -134,9 +146,65 @@ async function ensureAgentProcess(): Promise<AcpAgentProcess> {
   }
 }
 
+/** This conversation's Zotero MCP scope, while its ACP session is alive. */
+const mcpScopeByConversation = new Map<
+  number,
+  { token: string; clear: () => void }
+>();
+
+/**
+ * The `mcpServers` entry that gives the ACP session this plugin's Zotero tools,
+ * or nothing when that exposure is switched off.
+ *
+ * The scope is registered again on every turn on purpose: the token is stable
+ * per conversation, so the session's server configuration stays valid, while
+ * re-registering refreshes both the scope's TTL and the per-turn authority
+ * (paper scope, user text) the tools read. Registering is idempotent — it
+ * replaces the entry under the same token.
+ *
+ * The scope carries no `publishHostEvent`/`requestInteraction`: an MCP call the
+ * ACP agent makes is reported by the agent itself as one of its own tool calls,
+ * so the host does not need to mirror it into the trace.
+ */
+function refreshZoteroMcpScope(params: {
+  conversationKey: number;
+  request: AgentRuntimeRequest;
+}): unknown[] {
+  if (!isNativeZoteroMcpToolsEnabled()) return [];
+  const registered = registerScopedZoteroMcpScope(
+    buildZoteroMcpScopeForRequest(params.request, "", "acp"),
+    {
+      token: resolveConversationScopeToken({
+        conversationKey: params.conversationKey,
+      }),
+    },
+  );
+  const previous = mcpScopeByConversation.get(params.conversationKey);
+  if (previous && previous.token !== registered.token) previous.clear();
+  mcpScopeByConversation.set(params.conversationKey, registered);
+  const config = buildZoteroMcpConfigValue({ scopeToken: registered.token });
+  const url = typeof config.url === "string" ? config.url.trim() : "";
+  if (!url) return [];
+  return [
+    buildAcpHttpMcpServer({
+      // No profile signature: the ACP command and directory are plugin-wide
+      // settings, so there is no second profile to keep apart.
+      name: getZoteroMcpServerName(),
+      url,
+      headers: config.http_headers,
+    }),
+  ];
+}
+
+function clearZoteroMcpScopes(): void {
+  for (const entry of mcpScopeByConversation.values()) entry.clear();
+  mcpScopeByConversation.clear();
+}
+
 async function ensureSessionId(
   agent: AcpAgentProcess,
   conversationKey: number,
+  mcpServers: unknown[],
 ): Promise<string> {
   const existing = sessionIdByConversation.get(conversationKey);
   if (existing) return existing;
@@ -146,10 +214,11 @@ async function ensureSessionId(
       "ACP agent working directory is not set, and this plugin has no runtime directory to use instead.",
     );
   }
-  // MCP is untouched by this backend: the session is created without servers.
+  // The session gets this plugin's Zotero MCP server, so the agent's tools
+  // reach the library the turn is about.
   const result = await agent.protocol.request(
     "session/new",
-    buildNewSessionParams({ cwd, mcpServers: [] }),
+    buildNewSessionParams({ cwd, mcpServers }),
     ACP_SESSION_TIMEOUT_MS,
   );
   const session = readNewSessionResult(result);
@@ -249,7 +318,36 @@ export function getAcpRuntime(coreRuntime: AgentRuntime): AcpRuntime {
       try {
         if (!userText) throw new Error("Nothing to send to the ACP agent.");
         const agent = await ensureAgentProcess();
-        const sessionId = await ensureSessionId(agent, conversationKey);
+        // Resolving first is what gives the turn its paper scope and execution
+        // context — the same preparation the other external runtimes do.
+        const resolvedRequest = await coreRuntime.prepareExecutionRequest(
+          {
+            ...request,
+            conversationGeneration:
+              request.conversationGeneration ??
+              getConversationWriteGeneration(conversationKey),
+          },
+          {
+            signal: params.signal,
+            permissionOwner: "external_runtime",
+          },
+        );
+        const mcpServers = refreshZoteroMcpScope({
+          conversationKey,
+          request: resolvedRequest,
+        });
+        const sessionId = await ensureSessionId(
+          agent,
+          conversationKey,
+          mcpServers,
+        );
+        // The turn's Zotero context rides with the prompt, in the same shape
+        // the other external runtimes send it.
+        const contextBlock =
+          buildVisibleTurnContextBlock(resolvedRequest).trim();
+        const promptText = contextBlock
+          ? `${contextBlock}\n\nUser request:\n${userText}`
+          : userText;
 
         unsubscribeUpdate = agent.protocol.onNotification(
           "session/update",
@@ -280,7 +378,7 @@ export function getAcpRuntime(coreRuntime: AgentRuntime): AcpRuntime {
 
         const prompt = agent.protocol.request(
           "session/prompt",
-          buildPromptParams({ sessionId, text: userText }),
+          buildPromptParams({ sessionId, text: promptText }),
           // A turn has no protocol deadline of its own; Stop cancels it.
           0,
         );
@@ -304,7 +402,9 @@ export function getAcpRuntime(coreRuntime: AgentRuntime): AcpRuntime {
           | null
           | undefined;
         const stopReason =
-          typeof result?.stopReason === "string" ? result.stopReason : undefined;
+          typeof result?.stopReason === "string"
+            ? result.stopReason
+            : undefined;
         await chain;
         if (!isAcpStopReasonComplete(stopReason)) {
           await emit({

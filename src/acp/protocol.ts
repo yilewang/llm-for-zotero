@@ -72,7 +72,11 @@ export type AcpNewSessionResult = {
   };
   modes?: {
     currentModeId?: string;
-    availableModes?: Array<{ id?: string; name?: string; description?: string }>;
+    availableModes?: Array<{
+      id?: string;
+      name?: string;
+      description?: string;
+    }>;
   };
 };
 
@@ -157,7 +161,9 @@ function asText(value: unknown): string {
 }
 
 function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 /** Reads the `update` object of a `session/update` notification. */
@@ -177,15 +183,28 @@ export function parseSessionUpdate(
 
   switch (discriminant) {
     case "agent_message_chunk":
-      return { ...base, update: { kind: "message_chunk", text: asText(update.content) } };
+      return {
+        ...base,
+        update: { kind: "message_chunk", text: asText(update.content) },
+      };
     case "agent_thought_chunk":
-      return { ...base, update: { kind: "thought_chunk", text: asText(update.content) } };
+      return {
+        ...base,
+        update: { kind: "thought_chunk", text: asText(update.content) },
+      };
     case "user_message_chunk":
-      return { ...base, update: { kind: "user_chunk", text: asText(update.content) } };
+      return {
+        ...base,
+        update: { kind: "user_chunk", text: asText(update.content) },
+      };
     case "tool_call": {
       const toolCallId =
         typeof update.toolCallId === "string" ? update.toolCallId.trim() : "";
-      if (!toolCallId) return { ...base, update: { kind: "other", sessionUpdate: discriminant } };
+      if (!toolCallId)
+        return {
+          ...base,
+          update: { kind: "other", sessionUpdate: discriminant },
+        };
       return {
         ...base,
         update: {
@@ -203,7 +222,11 @@ export function parseSessionUpdate(
     case "tool_call_update": {
       const toolCallId =
         typeof update.toolCallId === "string" ? update.toolCallId.trim() : "";
-      if (!toolCallId) return { ...base, update: { kind: "other", sessionUpdate: discriminant } };
+      if (!toolCallId)
+        return {
+          ...base,
+          update: { kind: "other", sessionUpdate: discriminant },
+        };
       return {
         ...base,
         update: {
@@ -227,7 +250,8 @@ export function parseSessionUpdate(
         entries.push({
           content,
           status: typeof entry.status === "string" ? entry.status : undefined,
-          priority: typeof entry.priority === "string" ? entry.priority : undefined,
+          priority:
+            typeof entry.priority === "string" ? entry.priority : undefined,
         });
       }
       return { ...base, update: { kind: "plan", entries } };
@@ -249,16 +273,26 @@ export function parseSessionUpdate(
         ...base,
         update: {
           kind: "current_mode",
-          modeId: typeof update.currentModeId === "string" ? update.currentModeId : "",
+          modeId:
+            typeof update.currentModeId === "string"
+              ? update.currentModeId
+              : "",
         },
       };
     case "usage_update":
       return {
         ...base,
-        update: { kind: "usage", used: asNumber(update.used), size: asNumber(update.size) },
+        update: {
+          kind: "usage",
+          used: asNumber(update.used),
+          size: asNumber(update.size),
+        },
       };
     default:
-      return { ...base, update: { kind: "other", sessionUpdate: discriminant } };
+      return {
+        ...base,
+        update: { kind: "other", sessionUpdate: discriminant },
+      };
   }
 }
 
@@ -271,7 +305,8 @@ export function parsePermissionRequest(params: unknown): {
 } {
   const record = asRecord(params);
   const toolCall = record ? asRecord(record.toolCall) : null;
-  const rawOptions = record && Array.isArray(record.options) ? record.options : [];
+  const rawOptions =
+    record && Array.isArray(record.options) ? record.options : [];
   const options: AcpPermissionOption[] = [];
   for (const raw of rawOptions) {
     const option = asRecord(raw);
@@ -325,9 +360,7 @@ type PendingRequest = {
   method: string;
 };
 
-export type AcpRequestHandler = (
-  params: unknown,
-) => unknown | Promise<unknown>;
+export type AcpRequestHandler = (params: unknown) => unknown | Promise<unknown>;
 
 type AcpProtocolOptions = {
   /** Milliseconds a request waits for its response; 0 waits forever. */
@@ -392,8 +425,7 @@ export class AcpProtocol {
   request(
     method: string,
     params?: unknown,
-    timeoutMs = this.options.requestTimeoutMs ??
-      ACP_DEFAULT_REQUEST_TIMEOUT_MS,
+    timeoutMs = this.options.requestTimeoutMs ?? ACP_DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new Error(`ACP protocol closed (${method})`));
@@ -405,9 +437,7 @@ export class AcpProtocol {
           ? setTimeout(() => {
               if (!this.pendingRequests.has(id)) return;
               this.pendingRequests.delete(id);
-              reject(
-                new Error(`ACP ${method} timed out after ${timeoutMs}ms`),
-              );
+              reject(new Error(`ACP ${method} timed out after ${timeoutMs}ms`));
             }, timeoutMs)
           : null;
       this.pendingRequests.set(id, { resolve, reject, timer, method });
@@ -438,7 +468,11 @@ export class AcpProtocol {
     try {
       message = JSON.parse(trimmed);
     } catch {
-      this.report(new Error(`ACP: ignoring non-JSON stdout line: ${trimmed.slice(0, 300)}`));
+      this.report(
+        new Error(
+          `ACP: ignoring non-JSON stdout line: ${trimmed.slice(0, 300)}`,
+        ),
+      );
       return;
     }
     const record = asRecord(message);
@@ -564,6 +598,35 @@ export function buildNewSessionParams(params: {
   return { cwd: params.cwd, mcpServers: params.mcpServers ?? [] };
 }
 
+/**
+ * ACP's HTTP MCP server entry.
+ *
+ * ACP declares HTTP headers as a list of name/value pairs, where the plugin's
+ * own MCP configuration (and Claude Code's) uses a map — so the map is
+ * converted here rather than at each call site.
+ */
+export function buildAcpHttpMcpServer(params: {
+  name: string;
+  url: string;
+  headers?: unknown;
+}): {
+  name: string;
+  type: "http";
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+} {
+  const raw = params.headers;
+  const headers: Array<{ name: string; value: string }> = [];
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [name, value] of Object.entries(
+      raw as Record<string, unknown>,
+    )) {
+      headers.push({ name, value: String(value ?? "") });
+    }
+  }
+  return { name: params.name, type: "http", url: params.url, headers };
+}
+
 export function buildLoadSessionParams(params: {
   cwd: string;
   sessionId: string;
@@ -596,9 +659,10 @@ export function readNewSessionResult(
     typeof record.sessionId === "string" ? record.sessionId.trim() : "";
   if (!sessionId) return null;
   const models = asRecord(record.models);
-  const rawModels = models && Array.isArray(models.availableModels)
-    ? models.availableModels
-    : [];
+  const rawModels =
+    models && Array.isArray(models.availableModels)
+      ? models.availableModels
+      : [];
   const availableModels: AcpSessionModel[] = [];
   for (const raw of rawModels) {
     const entry = asRecord(raw);
@@ -665,7 +729,8 @@ export function readInitializeResult(
     agentInfo: agentInfo
       ? {
           name: asText(agentInfo.name),
-          title: typeof agentInfo.title === "string" ? agentInfo.title : undefined,
+          title:
+            typeof agentInfo.title === "string" ? agentInfo.title : undefined,
           version: asText(agentInfo.version),
         }
       : undefined,
