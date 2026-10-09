@@ -1363,9 +1363,17 @@ export function resolveClaudeBridgeMcpScopeToken(
   });
 }
 
-function buildClaudeZoteroMcpScope(
+/**
+ * The MCP scope a turn hands to an external runtime.
+ *
+ * One builder for every external runtime: they differ only in which runtime
+ * the scope attributes its calls to, and that string is what the MCP server
+ * reads to tell an external call from its own agent's.
+ */
+export function buildZoteroMcpScopeForRequest(
   request: AgentRuntimeRequest,
   profileSignature: string,
+  runtimeAuthority: "claude" | "codex" | "acp",
 ): ZoteroMcpActiveScope {
   const selectedPaper =
     getActiveTurnPaper(request.turnPaperScope) ||
@@ -1380,7 +1388,7 @@ function buildClaudeZoteroMcpScope(
     kind === "paper" ? selectedPaper?.itemId || activeItemId : undefined;
   const libraryID = resolveFallbackLibraryId(request);
   return {
-    runtimeAuthority: "claude",
+    runtimeAuthority,
     sourceMessageTimestamp: Number(request.metadata?.sourceMessageTimestamp),
     executionContext: request.executionContext,
     clarificationHistory: request.clarificationHistory,
@@ -3229,9 +3237,10 @@ export function createExternalBackendBridgeRuntime(options: {
           if (isNativeZoteroMcpToolsEnabled()) {
             const rawPdfMode = requestLocalDocuments(params.request).length > 0;
             const profileSignature = getClaudeProfileSignature();
-            const mcpScope = buildClaudeZoteroMcpScope(
+            const mcpScope = buildZoteroMcpScopeForRequest(
               params.request,
               profileSignature,
+              "claude",
             );
             mcpScope.publishHostEvent = emitTurnEvent;
             mcpScope.requestInteraction = async (action) => {

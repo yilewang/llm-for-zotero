@@ -1539,6 +1539,102 @@
             </html:div>
           </html:div>
 
+          <!-- ── ACP agent ── -->
+          <html:div
+            id="__addonRef__-acp-agent-card"
+            class="llm-pref-row"
+            data-llm-agent-row="acp"
+            data-open="false"
+          >
+            <html:div class="llm-pref-row-head">
+              <html:span
+                class="llm-pref-row-icon llm-pref-row-icon--acp"
+              ></html:span>
+              <html:button
+                class="llm-pref-row-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="__addonRef__-agent-row-acp-body"
+              >
+                <html:span class="llm-pref-row-name">ACP</html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="acp"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="acp"
+                  ></html:span>
+                </html:span>
+              </html:button>
+              <html:span class="llm-pref-row-tag">ACP agent</html:span>
+              <html:input
+                id="__addonRef__-acp-agent-enable"
+                class="llm-pref-switch"
+                type="checkbox"
+                aria-label="Enable an ACP agent"
+              ></html:input>
+              <html:span class="llm-pref-row-chevron">›</html:span>
+            </html:div>
+            <html:div
+              id="__addonRef__-agent-row-acp-body"
+              class="llm-pref-row-body"
+              hidden="hidden"
+            >
+              <html:span class="llm-pref-hint">
+                Runs any ACP (Agent Client Protocol) agent as a local process
+                and answers this plugin's agent turns with it. The command is
+                yours to write; the default starts Hermes in ACP mode. The
+                conversation keeps its own history and storage, and one already
+                switched to Claude Code keeps using Claude Code. ACP permission
+                requests are refused in this build.
+              </html:span>
+              <html:div
+                id="__addonRef__-acp-agent-settings"
+                style="display: none; flex-direction: column; gap: 12px"
+              >
+                <html:div class="llm-pref-section">
+                  <html:span class="llm-pref-section-title">Command</html:span>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-acp-agent-command">
+                      ACP agent command
+                    </html:label>
+                    <html:input
+                      id="__addonRef__-acp-agent-command"
+                      class="llm-pref-input"
+                      type="text"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="hermes acp --accept-hooks"
+                    ></html:input>
+                    <html:span class="llm-pref-hint">
+                      Run through your platform shell, so anything you can start
+                      in a terminal works here.
+                    </html:span>
+                  </html:div>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-acp-agent-working-directory">
+                      Working directory
+                    </html:label>
+                    <html:input
+                      id="__addonRef__-acp-agent-working-directory"
+                      class="llm-pref-input"
+                      type="text"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="Leave empty for the plugin's runtime directory"
+                    ></html:input>
+                    <html:span class="llm-pref-hint">
+                      The directory the agent session starts in. ACP requires
+                      one.
+                    </html:span>
+                  </html:div>
+                </html:div>
+              </html:div>
+            </html:div>
+          </html:div>
+
           <!-- ── Claude Code ── -->
           <html:div
             id="__addonRef__-claude-code-card"

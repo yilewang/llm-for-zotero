@@ -207,7 +207,7 @@ type ZoteroMcpScopeMetadata = {
     action: import("../types").AgentPendingAction,
   ) => Promise<import("../types").AgentConfirmationResolution>;
   clarificationHistory?: AgentRuntimeRequest["clarificationHistory"];
-  runtimeAuthority?: "claude" | "codex";
+  runtimeAuthority?: "claude" | "codex" | "acp";
   /** Host lifecycle signal; never supplied by MCP tool arguments. */
   signal?: AbortSignal;
   /** Durable provider run that owns direct document artifacts. */
@@ -760,7 +760,9 @@ function normalizeActiveScope(
   }
   const metadata: ZoteroMcpScopeMetadata = {
     runtimeAuthority:
-      scope.runtimeAuthority === "claude" || scope.runtimeAuthority === "codex"
+      scope.runtimeAuthority === "claude" ||
+      scope.runtimeAuthority === "codex" ||
+      scope.runtimeAuthority === "acp"
         ? scope.runtimeAuthority
         : undefined,
     runId: normalizeText(scope.runId, 256),
