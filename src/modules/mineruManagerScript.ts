@@ -55,6 +55,7 @@ import {
   buildMineruFilenameMatcher,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
+import { resolveActiveLibraryID } from "../utils/zoteroLibraryScope";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -293,6 +294,8 @@ export async function registerMineruManagerScript(
   // ── Data ───────────────────────────────────────────────────────────────────
   let allItems: MineruItemEntry[] = [];
   let collectionTree: MineruCollectionNode[] = [];
+  let managerLibraryID =
+    resolveActiveLibraryID() || Zotero.Libraries.userLibraryID;
   const directItemsMap = new Map<number, Set<number>>();
   const recursiveItemsMap = new Map<number, Set<number>>();
   let tagIndex = new Map<string, MineruTagInfo>();
@@ -425,9 +428,8 @@ export async function registerMineruManagerScript(
       const color = (
         Zotero as unknown as {
           Tags?: { getColor?: (libraryID: number, name: string) => unknown };
-          Libraries?: { userLibraryID?: number };
         }
-      ).Tags?.getColor?.(Zotero.Libraries.userLibraryID, name);
+      ).Tags?.getColor?.(managerLibraryID, name);
       if (typeof color === "string") return color;
       if (
         color &&
@@ -440,6 +442,25 @@ export async function registerMineruManagerScript(
       /* ignore */
     }
     return null;
+  }
+
+  function getManagerLibraryLabel(): string {
+    if (managerLibraryID === Zotero.Libraries.userLibraryID) {
+      return t("My Library");
+    }
+    try {
+      const library = (
+        Zotero.Libraries as unknown as {
+          get?: (libraryID: number) => { name?: unknown } | null;
+        }
+      ).get?.(managerLibraryID);
+      if (typeof library?.name === "string" && library.name.trim()) {
+        return library.name.trim();
+      }
+    } catch {
+      /* ignore */
+    }
+    return `Library ${managerLibraryID}`;
   }
 
   function rebuildTagIndex(): void {
@@ -843,7 +864,12 @@ export async function registerMineruManagerScript(
     parent.appendChild(inner);
     const visibleSourceItems = getManagerVisibleSourceItems();
     inner.appendChild(
-      createSidebarEntry(t("My Library"), "all", 0, visibleSourceItems.length),
+      createSidebarEntry(
+        getManagerLibraryLabel(),
+        "all",
+        0,
+        visibleSourceItems.length,
+      ),
     );
     for (const root of collectionTree) renderSidebarNode(inner, root, 1);
     const uc = visibleSourceItems.filter(
@@ -2516,7 +2542,7 @@ export async function registerMineruManagerScript(
         const ids = getProcessableFilteredItemIds();
         if (ids.length > 0) void processSelectedItems(ids);
       } else {
-        void startBatchProcessing();
+        void startBatchProcessing(managerLibraryID);
       }
     });
   }
@@ -2630,14 +2656,18 @@ export async function registerMineruManagerScript(
 
   // ── Load data & initial render ─────────────────────────────────────────────
   async function loadData(): Promise<void> {
+    managerLibraryID =
+      resolveActiveLibraryID() ||
+      managerLibraryID ||
+      Zotero.Libraries.userLibraryID;
     try {
-      allItems = await getMineruItemList();
+      allItems = await getMineruItemList(managerLibraryID);
     } catch (err) {
       appLogger.warn("LLM MinerU: getMineruItemList failed", err);
       allItems = [];
     }
     try {
-      collectionTree = getLibraryCollectionTree();
+      collectionTree = getLibraryCollectionTree(managerLibraryID);
     } catch (err) {
       appLogger.warn("LLM MinerU: getLibraryCollectionTree failed", err);
       collectionTree = [];

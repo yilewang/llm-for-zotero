@@ -1844,21 +1844,11 @@ export async function cleanupMineruArtifactsForRemovedAttachment(
 
 let migrationTask: Promise<MineruSyncMigrationResult> | null = null;
 
-async function getAllLibraryPdfAttachments(): Promise<Zotero.Item[]> {
-  const libraryID = Number(Zotero.Libraries.userLibraryID);
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return [];
-  let allItems: Zotero.Item[];
-  try {
-    allItems = await Zotero.Items.getAll(
-      Math.floor(libraryID),
-      true,
-      false,
-      false,
-    );
-  } catch {
-    return [];
-  }
-
+async function getAllLibraryPdfAttachments(
+  libraryIDs = [Number(Zotero.Libraries.userLibraryID)]
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .map((id) => Math.floor(id)),
+): Promise<Zotero.Item[]> {
   const out: Zotero.Item[] = [];
   const seen = new Set<number>();
   const addPdf = (item: Zotero.Item | null | undefined) => {
@@ -1867,13 +1857,22 @@ async function getAllLibraryPdfAttachments(): Promise<Zotero.Item[]> {
     out.push(item);
   };
 
-  for (const item of allItems) {
-    if (item?.isRegularItem?.()) {
-      for (const attachmentId of item.getAttachments?.() || []) {
-        addPdf(Zotero.Items.get(attachmentId));
+  for (const libraryID of libraryIDs) {
+    let allItems: Zotero.Item[];
+    try {
+      allItems = await Zotero.Items.getAll(libraryID, true, false, false);
+    } catch {
+      continue;
+    }
+
+    for (const item of allItems) {
+      if (item?.isRegularItem?.()) {
+        for (const attachmentId of item.getAttachments?.() || []) {
+          addPdf(Zotero.Items.get(attachmentId));
+        }
+      } else {
+        addPdf(item);
       }
-    } else {
-      addPdf(item);
     }
   }
   return out;
@@ -1915,50 +1914,52 @@ async function listLocalNumericCacheIds(): Promise<number[]> {
 }
 
 async function cleanupOrphanSyncedMineruPackages(
-  currentPdfByKey: Map<string, Zotero.Item>,
+  currentPdfByLibraryAndKey: Map<string, Zotero.Item>,
+  libraryIDs = [Number(Zotero.Libraries.userLibraryID)]
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .map((id) => Math.floor(id)),
 ): Promise<{ deleted: number; failed: number }> {
   const result = { deleted: 0, failed: 0 };
-  const libraryID = Number(Zotero.Libraries.userLibraryID);
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return result;
 
-  let items: Zotero.Item[];
-  try {
-    items = await Zotero.Items.getAll(
-      Math.floor(libraryID),
-      false,
-      false,
-      false,
-    );
-  } catch {
-    return result;
-  }
-
-  for (const item of items) {
-    if (!item?.isAttachment?.()) continue;
-    if ((item as unknown as { deleted?: boolean }).deleted) continue;
-    if (!isMineruSyncPackageAttachment(item)) continue;
-
-    let metadata: MineruSyncMetadata | null = null;
+  for (const libraryID of libraryIDs) {
+    let items: Zotero.Item[];
     try {
-      const bytes = await readAttachmentFileBytes(item);
-      metadata = bytes ? readMineruSyncMetadataFromPackageBytes(bytes) : null;
+      items = await Zotero.Items.getAll(libraryID, false, false, false);
     } catch {
-      metadata = null;
-    }
-    if (!metadata) continue;
-
-    const sourceAttachment = currentPdfByKey.get(metadata.sourceAttachmentKey);
-    if (!sourceAttachment) {
-      try {
-        await deletePackageAttachment(item);
-        result.deleted += 1;
-      } catch {
-        result.failed += 1;
-      }
       continue;
     }
 
-    await packageProvenanceMatchesSource(metadata, sourceAttachment);
+    for (const item of items) {
+      if (!item?.isAttachment?.()) continue;
+      if ((item as unknown as { deleted?: boolean }).deleted) continue;
+      if (!isMineruSyncPackageAttachment(item)) continue;
+
+      let metadata: MineruSyncMetadata | null = null;
+      try {
+        const bytes = await readAttachmentFileBytes(item);
+        metadata = bytes
+          ? readMineruSyncMetadataFromPackageBytes(bytes)
+          : null;
+      } catch {
+        metadata = null;
+      }
+      if (!metadata) continue;
+
+      const sourceAttachment = currentPdfByLibraryAndKey.get(
+        `${libraryID}:${metadata.sourceAttachmentKey}`,
+      );
+      if (!sourceAttachment) {
+        try {
+          await deletePackageAttachment(item);
+          result.deleted += 1;
+        } catch {
+          result.failed += 1;
+        }
+        continue;
+      }
+
+      await packageProvenanceMatchesSource(metadata, sourceAttachment);
+    }
   }
 
   return result;
@@ -1983,12 +1984,16 @@ export async function repairMineruCaches(
       ? Math.floor(Number(options.yieldMs))
       : 10;
 
-  const pdfAttachments = await getAllLibraryPdfAttachments();
+  const repairLibraryIDs = getKnownLibraryIds();
+  const pdfAttachments = await getAllLibraryPdfAttachments(repairLibraryIDs);
   const currentPdfIds = new Set(pdfAttachments.map((item) => item.id));
-  const currentPdfByKey = new Map<string, Zotero.Item>();
+  const currentPdfByLibraryAndKey = new Map<string, Zotero.Item>();
   for (const item of pdfAttachments) {
     const key = getItemKey(item);
-    if (key) currentPdfByKey.set(key, item);
+    const libraryID = Number(item.libraryID);
+    if (key && Number.isFinite(libraryID) && libraryID > 0) {
+      currentPdfByLibraryAndKey.set(`${Math.floor(libraryID)}:${key}`, item);
+    }
   }
 
   for (const cacheId of await listLocalNumericCacheIds()) {
@@ -2030,8 +2035,10 @@ export async function repairMineruCaches(
     }
   }
 
-  const orphanPackages =
-    await cleanupOrphanSyncedMineruPackages(currentPdfByKey);
+  const orphanPackages = await cleanupOrphanSyncedMineruPackages(
+    currentPdfByLibraryAndKey,
+    repairLibraryIDs,
+  );
   result.removedOrphanSyncPackages += orphanPackages.deleted;
   result.failed += orphanPackages.failed;
 

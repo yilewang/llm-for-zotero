@@ -86,6 +86,7 @@ const state: MineruBatchState = {
 
 let queue: QueueEntry[] = [];
 let queueBuilt = false;
+let queueLibraryID: number | null = null;
 const listeners = new Set<(s: MineruBatchState) => void>();
 let currentAbort: AbortController | null = null;
 
@@ -247,8 +248,9 @@ function getPdfAttachmentDisplayTitle(pdfAtt: Zotero.Item): string {
 
 // ── Queue building ───────────────────────────────────────────────────────────
 
-async function buildQueue(): Promise<void> {
-  const libraryID = Zotero.Libraries.userLibraryID;
+async function buildQueue(
+  libraryID = Zotero.Libraries.userLibraryID,
+): Promise<void> {
   const allItems: Zotero.Item[] = await Zotero.Items.getAll(
     libraryID,
     true,
@@ -309,6 +311,7 @@ async function buildQueue(): Promise<void> {
   state.totalCount = totalEligible;
   state.processedCount = processed;
   queueBuilt = true;
+  queueLibraryID = libraryID;
   notify();
 }
 
@@ -485,7 +488,9 @@ export function getMineruBatchState(): MineruBatchState {
   return snapshot();
 }
 
-export async function startBatchProcessing(): Promise<void> {
+export async function startBatchProcessing(
+  libraryID = Zotero.Libraries.userLibraryID,
+): Promise<void> {
   if (state.running) return;
 
   state.paused = false;
@@ -497,8 +502,12 @@ export async function startBatchProcessing(): Promise<void> {
   state.lastFailedItemId = null;
   notify();
 
-  if (!queueBuilt) {
-    await buildQueue();
+  if (
+    !queueBuilt ||
+    queue.length === 0 ||
+    (queueLibraryID !== null && queueLibraryID !== libraryID)
+  ) {
+    await buildQueue(libraryID);
   }
 
   if (queue.length === 0) {
@@ -526,6 +535,7 @@ export async function processSelectedItems(
   // Build a queue from the selected IDs. Manager-confirmed selections can
   // override parse filters; bulk/filter actions should keep them.
   queue = [];
+  queueLibraryID = null;
   const filenameMatcher =
     options.filenameMatcher || buildMineruFilenameMatcher();
   for (const attId of attachmentIds) {
@@ -571,7 +581,9 @@ export function pauseBatchProcessing(): void {
   notify();
 }
 
-export async function resetBatchQueue(): Promise<void> {
+export async function resetBatchQueue(
+  libraryID = Zotero.Libraries.userLibraryID,
+): Promise<void> {
   state.paused = true;
   state.running = false;
   state.currentItemId = null;
@@ -579,11 +591,12 @@ export async function resetBatchQueue(): Promise<void> {
   state.error = null;
   state.rateLimited = false;
   queueBuilt = false;
+  queueLibraryID = null;
   queue = [];
   notify();
 
   // Rebuild queue to get fresh counts
-  await buildQueue();
+  await buildQueue(libraryID);
 }
 
 export async function deleteAllMineruCache(): Promise<void> {
@@ -619,6 +632,7 @@ export async function deleteAllMineruCache(): Promise<void> {
 }
 
 export async function deleteMineruCacheForItem(itemId: number): Promise<void> {
+  const itemLibraryID = Number(Zotero.Items.get(itemId)?.libraryID);
   await cancelMineruTaskAndWait(itemId);
   await deleteMineruCacheArtifactsForAttachment(itemId);
   clearItemStatus(itemId);
@@ -626,8 +640,13 @@ export async function deleteMineruCacheForItem(itemId: number): Promise<void> {
   // Simplest approach: reset and rebuild
   if (queueBuilt) {
     const wasRunning = state.running;
+    const libraryID =
+      queueLibraryID ??
+      (Number.isFinite(itemLibraryID) && itemLibraryID > 0
+        ? Math.floor(itemLibraryID)
+        : Zotero.Libraries.userLibraryID);
     queueBuilt = false;
-    await buildQueue();
+    await buildQueue(libraryID);
     // Don't auto-resume if it was running — let the user restart
     if (wasRunning && !state.paused) {
       state.running = false;
@@ -708,8 +727,9 @@ export type MineruCollectionNode = {
  * Returns the full list of library items with PDF attachments and their
  * MinerU cache status. Used by the manager window to render the items list.
  */
-export async function getMineruItemList(): Promise<MineruItemEntry[]> {
-  const libraryID = Zotero.Libraries.userLibraryID;
+export async function getMineruItemList(
+  libraryID = Zotero.Libraries.userLibraryID,
+): Promise<MineruItemEntry[]> {
   const allItems: Zotero.Item[] = await Zotero.Items.getAll(
     libraryID,
     true,
@@ -808,10 +828,11 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
 }
 
 /**
- * Returns the collection tree for the user library.
+ * Returns the collection tree for the requested library.
  */
-export function getLibraryCollectionTree(): MineruCollectionNode[] {
-  const libraryID = Zotero.Libraries.userLibraryID;
+export function getLibraryCollectionTree(
+  libraryID = Zotero.Libraries.userLibraryID,
+): MineruCollectionNode[] {
   let collections: Zotero.Collection[];
   try {
     collections = Zotero.Collections.getByLibrary(libraryID, true) || [];
