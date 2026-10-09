@@ -16,6 +16,7 @@ describe("Claude bridge MCP scope token", function () {
     Zotero?: Record<string, unknown>;
   };
   const originalZotero = globalScope.Zotero;
+  const originalFetch = globalThis.fetch;
   const conversationKey = CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 73;
   const otherConversationKey = CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 74;
 
@@ -31,6 +32,7 @@ describe("Claude bridge MCP scope token", function () {
     resetConversationWriteFenceForTests();
     resetClaudeBridgeRuntime();
     globalScope.Zotero = originalZotero;
+    globalThis.fetch = originalFetch;
   });
 
   it("keeps the bridge turn scope token stable for one conversation", function () {
@@ -78,6 +80,17 @@ describe("Claude bridge MCP scope token", function () {
   });
 
   it("releases the stable token when the Claude session is invalidated", async function () {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ invalidated: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
     const profileSignature = getClaudeProfileSignature();
     const request = {
       conversationKey,
@@ -91,6 +104,19 @@ describe("Claude bridge MCP scope token", function () {
       profileSignature,
     );
     await invalidateClaudeConversationSession(null as unknown as AgentRuntime, {
+      conversationKey,
+      metadata: {
+        instanceID: "instance-bridge-scope",
+        providerSessionId: "sess-bridge-scope",
+      },
+    });
+    assert.lengthOf(requests, 1);
+    assert.equal(requests[0].url, "http://127.0.0.1:19787/invalidate-session");
+    assert.equal(requests[0].init?.method, "POST");
+    assert.deepEqual(requests[0].init?.headers, {
+      "Content-Type": "application/json",
+    });
+    assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
       conversationKey,
       metadata: {
         instanceID: "instance-bridge-scope",

@@ -1490,23 +1490,54 @@ describe("citation page cache warming", function () {
       (_value, index) =>
         `Hidden quote ${index + 1} contains enough unique words for lookup.`,
     );
-    const fullText = quotes.join(" ");
-    const restore = installPdfWorkerStub(async () => ({
-      text: fullText,
-      pageChars: [fullText.length],
-    }));
+    const firstAttachmentId = 909;
+    const restore = installPdfWorkerStub(async (itemId) => {
+      const text = quotes[itemId - firstAttachmentId];
+      return { text, pageChars: [text.length] };
+    });
 
     try {
-      for (const quote of quotes) {
-        const location = await warmQuoteLocationCacheForAttachment(909, quote);
+      for (let index = 0; index < quotes.length - 1; index += 1) {
+        const location = await warmQuoteLocationCacheForAttachment(
+          firstAttachmentId + index,
+          quotes[index],
+        );
         assert.equal(location?.pageIndex, 0);
       }
 
-      assert.isNull(lookupCachedQuoteLocationForAttachment(909, quotes[0]));
-      const fresh = await warmQuoteLocationCacheForAttachment(909, quotes[0]);
+      // Touch the oldest entry before overflow to distinguish LRU from FIFO.
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(firstAttachmentId, quotes[0])
+          ?.pageIndex,
+        0,
+      );
+      const lastIndex = quotes.length - 1;
+      const overflow = await warmQuoteLocationCacheForAttachment(
+        firstAttachmentId + lastIndex,
+        quotes[lastIndex],
+      );
+      assert.equal(overflow?.pageIndex, 0);
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(firstAttachmentId, quotes[0])
+          ?.pageIndex,
+        0,
+        "the touched oldest entry must survive overflow",
+      );
+      assert.isNull(
+        lookupCachedQuoteLocationForAttachment(
+          firstAttachmentId + 1,
+          quotes[1],
+        ),
+        "the untouched second entry must be evicted",
+      );
+      const fresh = await warmQuoteLocationCacheForAttachment(
+        firstAttachmentId + 1,
+        quotes[1],
+      );
       assert.equal(fresh?.pageIndex, 0);
       assert.equal(
-        lookupCachedQuoteLocationForAttachment(909, quotes[0])?.pageIndex,
+        lookupCachedQuoteLocationForAttachment(firstAttachmentId + 1, quotes[1])
+          ?.pageIndex,
         0,
       );
     } finally {

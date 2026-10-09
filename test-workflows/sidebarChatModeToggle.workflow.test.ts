@@ -12,6 +12,7 @@
  */
 import { assert } from "chai";
 import { getReaderContextPanelForTab } from "../src/modules/contextPanel/readerPopupPanelRouting";
+import { waitForNativeWindowFrame } from "./nativeWindowReadiness";
 import type {
   WorkflowTestApi,
   WorkflowTestDiagnostics,
@@ -24,7 +25,7 @@ type Tab = "paper" | "library";
 const PREF_PREFIX = "extensions.zotero.llmforzotero";
 const LAYOUT_PREF = `${PREF_PREFIX}.sidebarLayout`;
 
-/** Every icon in the header row; the open switch must cover none of them. */
+/** Always-present icons; the conditional Task progress action is added below. */
 const HEADER_BUTTONS = [
   "#llm-history-new",
   "#llm-history-toggle",
@@ -35,6 +36,16 @@ const HEADER_BUTTONS = [
   "#llm-export",
   "#llm-clear",
 ];
+
+function visibleTaskProgressControls(root: ParentNode): string[] {
+  const button = root.querySelector<HTMLElement>("#llm-task-progress-toggle");
+  assert.isOk(button, "the header builds its Task progress control");
+  // Dedicated Task progress tests cover applicability and the compact-layout
+  // visibility rule. Whenever shown here it must also clear the mode switch.
+  return button!.getBoundingClientRect().width > 0
+    ? ["#llm-task-progress-toggle"]
+    : [];
+}
 
 function getWorkflowTestApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
@@ -380,6 +391,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         ".llm-header-runtime-divider",
         "#llm-codex-system-toggle",
         "#llm-claude-system-toggle",
+        ...visibleTaskProgressControls(section),
         "#llm-popout",
         "#llm-settings",
         "#llm-export",
@@ -468,6 +480,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         "#llm-mode-capsule",
         "#llm-codex-system-toggle",
         "#llm-claude-system-toggle",
+        ...visibleTaskProgressControls(section),
         "#llm-popout",
         "#llm-settings",
         "#llm-export",
@@ -502,7 +515,10 @@ describe("workflow: sidebar chat mode toggle", function () {
       if (compression === 0) {
         assert.closeTo(codex.left - chip.right, 4, 0.6, "chip to Codex");
       }
-      for (const selector of HEADER_BUTTONS) {
+      for (const selector of [
+        ...HEADER_BUTTONS,
+        ...visibleTaskProgressControls(section),
+      ]) {
         const rect = section.querySelector(selector)!.getBoundingClientRect();
         assert.isFalse(
           intersects(rect, chipRect),
@@ -522,7 +538,19 @@ describe("workflow: sidebar chat mode toggle", function () {
     }
 
     /** The open switch: down from the chip, in its column, over the chat. */
-    function assertOpenSwitch(section: HTMLElement, rows: [Tab, Tab]): void {
+    async function assertOpenSwitch(
+      section: HTMLElement,
+      rows: [Tab, Tab],
+    ): Promise<void> {
+      await waitForNativeWindowFrame(win);
+      await until(() => {
+        const capsule = chipOf(section);
+        const track = capsule.querySelector(".llm-mode-switch-track")!;
+        return (
+          capsule.dataset.expanded === "true" &&
+          Math.abs(track.getBoundingClientRect().height - 52) <= 0.5
+        );
+      }, "the open switch reaches its two-row height");
       const capsule = chipOf(section);
       assert.equal(capsule.dataset.expanded, "true", "the switch is open");
       const chipRect = capsule.getBoundingClientRect();
@@ -537,7 +565,10 @@ describe("workflow: sidebar chat mode toggle", function () {
         .querySelector(".llm-header-nav-row")!
         .getBoundingClientRect();
       assert.isAbove(track.bottom, navRow.bottom, "it reaches over the chat");
-      for (const selector of HEADER_BUTTONS) {
+      for (const selector of [
+        ...HEADER_BUTTONS,
+        ...visibleTaskProgressControls(section),
+      ]) {
         const rect = section.querySelector(selector)!.getBoundingClientRect();
         assert.isAbove(rect.width, 0, `${selector} is visible`);
         assert.isFalse(
@@ -586,9 +617,31 @@ describe("workflow: sidebar chat mode toggle", function () {
     }
 
     /** At rest: the chosen mode fills the chip; the other is out of sight. */
-    function assertChipAtRest(section: HTMLElement, tab: Tab): void {
+    async function assertChipAtRest(
+      section: HTMLElement,
+      tab: Tab,
+    ): Promise<void> {
       const capsule = chipOf(section);
       const other: Tab = tab === "paper" ? "library" : "paper";
+      // Conversation selection can update before the chip's async state sync
+      // and CSS transition finish. Wait for the observable rest state rather
+      // than treating a fixed sleep as proof that those operations completed.
+      await until(() => {
+        const chip = capsule.getBoundingClientRect();
+        const selected = optionOf(section, tab);
+        const bounds = selected.getBoundingClientRect();
+        const track = capsule.querySelector(".llm-mode-switch-track")!;
+        return (
+          capsule.dataset.mode === tab &&
+          selected.getAttribute("aria-pressed") === "true" &&
+          capsule.dataset.expanded === "false" &&
+          chip.width > 0 &&
+          Math.abs(bounds.top - chip.top) <= 0.5 &&
+          Math.abs(bounds.width - chip.width) <= 0.5 &&
+          win.getComputedStyle(optionOf(section, other)).opacity === "0" &&
+          win.getComputedStyle(track).opacity === "0"
+        );
+      }, `${tab} chip reaches its closed, selected position`);
       assert.equal(capsule.dataset.expanded, "false");
       const chipRect = capsule.getBoundingClientRect();
       const shown = optionOf(section, tab).getBoundingClientRect();
@@ -647,7 +700,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       const section = await openChat("stacked", fixture.parentItemId);
       await restPointer(section);
       assertStackedRow(section);
-      assertChipAtRest(section, "paper");
+      await assertChipAtRest(section, "paper");
       assert.equal(optionLabel(optionOf(section, "paper")), "Paper chat");
       assert.equal(optionLabel(optionOf(section, "library")), "Library chat");
     });
@@ -682,7 +735,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       section.scrollIntoView?.();
       await restPointer(section);
       assertStackedRow(section);
-      assertChipAtRest(section, "library");
+      await assertChipAtRest(section, "library");
       assert.equal(root.dataset.itemId, libraryKey);
 
       // A click with no hover (as on touch) toggles the chip.
@@ -692,7 +745,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         "the chip toggles to Paper chat",
       );
       await settleMotion();
-      assertChipAtRest(section, "paper");
+      await assertChipAtRest(section, "paper");
       assertActiveTab(root, "paper");
 
       // Back to Independent: the tabs already show Paper chat.
@@ -718,7 +771,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       const root = section.querySelector("#llm-main") as HTMLElement;
       const capsule = chipOf(section);
       await restPointer(section);
-      assertChipAtRest(section, "paper");
+      await assertChipAtRest(section, "paper");
       const paperKey = root.dataset.itemId;
       const restWidth = capsule.getBoundingClientRect().width;
 
@@ -730,7 +783,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       );
       assert.isTrue(capsule.matches(":hover"), "a real hover");
       await settleMotion();
-      assertOpenSwitch(section, ["paper", "library"]);
+      await assertOpenSwitch(section, ["paper", "library"]);
       assertPillOn(section, "paper");
       assert.closeTo(
         capsule.getBoundingClientRect().width,
@@ -762,7 +815,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         "the switch stays open under the pointer",
       );
       await settleMotion();
-      assertOpenSwitch(section, ["paper", "library"]);
+      await assertOpenSwitch(section, ["paper", "library"]);
       assertPillOn(section, "library");
       // Measured against the chip: the Stacked pane itself may scroll while
       // the conversation changes.
@@ -779,7 +832,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       );
       assert.isAtLeast(Date.now() - leftAt, 155, "not before the grace ends");
       await settleMotion();
-      assertChipAtRest(section, "library");
+      await assertChipAtRest(section, "library");
       assert.closeTo(
         capsule.getBoundingClientRect().width,
         restWidth,
@@ -791,7 +844,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       hover(optionOf(section, "library"));
       await until(() => capsule.dataset.expanded === "true", "hover reopens");
       await settleMotion();
-      assertOpenSwitch(section, ["library", "paper"]);
+      await assertOpenSwitch(section, ["library", "paper"]);
       clickOn(optionOf(section, "paper"));
       await until(
         () => root.dataset.conversationKind === "paper",
@@ -807,7 +860,7 @@ describe("workflow: sidebar chat mode toggle", function () {
       hover(optionOf(section, "paper"));
       await until(() => capsule.dataset.expanded === "true", "hover reopens");
       await settleMotion();
-      assertOpenSwitch(section, ["paper", "library"]);
+      await assertOpenSwitch(section, ["paper", "library"]);
       clickOn(optionOf(section, "library"));
       await until(
         () => root.dataset.conversationKind === "global",
@@ -824,7 +877,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         "the switch closes",
       );
       await settleMotion();
-      assertChipAtRest(section, "library");
+      await assertChipAtRest(section, "library");
     });
 
     it("drives the stacked chip from the keyboard", async function () {
@@ -895,7 +948,7 @@ describe("workflow: sidebar chat mode toggle", function () {
           "and picks nothing",
         );
         await settleMotion();
-        assertOpenSwitch(section, ["paper", "library"]);
+        await assertOpenSwitch(section, ["paper", "library"]);
 
         key(paper, "ArrowDown");
         await until(
@@ -909,7 +962,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         );
         assertActiveTab(root, "library");
         await settleMotion();
-        assertOpenSwitch(section, ["paper", "library"]);
+        await assertOpenSwitch(section, ["paper", "library"]);
         assertPillOn(section, "library");
 
         key(library, "ArrowUp");
@@ -923,7 +976,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         key(paper, "Escape");
         assert.equal(capsule.dataset.expanded, "false");
         await settleMotion();
-        assertChipAtRest(section, "paper");
+        await assertChipAtRest(section, "paper");
 
         // Moving focus away closes it too.
         input.focus();
@@ -970,7 +1023,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         context.scale(scale, scale);
         context.drawWindow(win, pane.left, pane.top, width, height, "#ffffff");
         const binary = win.atob(canvas.toDataURL("image/png").split(",")[1]);
-        const path = `${Zotero.DataDirectory.dir}/${filename}`;
+        const path = PathUtils.join(Zotero.DataDirectory.dir, filename);
         await win.IOUtils.write(
           path,
           Uint8Array.from(binary, (char: string) => char.charCodeAt(0)),
@@ -982,7 +1035,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         await useTheme(theme);
         const section = await openChat("stacked", fixture.parentItemId);
         await restPointer(section);
-        assertChipAtRest(section, "paper");
+        await assertChipAtRest(section, "paper");
         await capture(`header-stacked-rest-${theme}.png`);
         hover(optionOf(section, "paper"));
         await until(
@@ -990,7 +1043,7 @@ describe("workflow: sidebar chat mode toggle", function () {
           "hover opens the switch",
         );
         await settleMotion();
-        assertOpenSwitch(section, ["paper", "library"]);
+        await assertOpenSwitch(section, ["paper", "library"]);
         await capture(`header-stacked-open-${theme}.png`);
         parkPointer(section);
         await until(

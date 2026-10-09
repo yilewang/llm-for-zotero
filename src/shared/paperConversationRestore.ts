@@ -894,26 +894,35 @@ export function forgetPaperRestoreTargetsForItem(
 }
 
 export async function clearPaperRestoreTargetsForWorkflowTests(): Promise<void> {
-  await flushPaperRestoreSelectionWrites();
-  const profileSignature = getCurrentProfileSignature();
-  for (const scopeKey of [...restoreCache.keys()]) {
-    if (!scopeKey.startsWith(`${profileSignature}:`)) continue;
-    restoreCache.delete(scopeKey);
-    committedRestoreCache.delete(scopeKey);
-    scopeGenerations.delete(scopeKey);
-  }
-  const db = getDb();
-  if (!db?.queryAsync || !db.executeTransaction) return;
-  await db.executeTransaction(async () => {
-    await db.queryAsync?.(
-      `UPDATE ${REGISTRY_TABLE}
-       SET is_paper_restore_target = 0
-       WHERE profile_signature = ?
-         AND kind = 'paper'
-         AND is_paper_restore_target = 1`,
-      [profileSignature],
-    );
+  const clear = async () => {
+    const profileSignature = getCurrentProfileSignature();
+    for (const scopeKey of [...restoreCache.keys()]) {
+      if (!scopeKey.startsWith(`${profileSignature}:`)) continue;
+      restoreCache.delete(scopeKey);
+      committedRestoreCache.delete(scopeKey);
+      scopeGenerations.delete(scopeKey);
+    }
+    const db = getDb();
+    if (!db?.queryAsync || !db.executeTransaction) return;
+    await db.executeTransaction(async () => {
+      await db.queryAsync?.(
+        `UPDATE ${REGISTRY_TABLE}
+         SET is_paper_restore_target = 0
+         WHERE profile_signature = ?
+           AND kind = 'paper'
+           AND is_paper_restore_target = 1`,
+        [profileSignature],
+      );
+    });
+  };
+  // A timed-out Mocha hook is not cancelled before its cleanup hook starts.
+  // Keep workflow resets on the same queue as runtime selection writes so two
+  // late resets cannot enter Zotero's single SQLite connection concurrently.
+  const attempt = writeQueue.then(clear, clear);
+  writeQueue = attempt.catch((error) => {
+    logRestoreError("Could not clear workflow paper restore selections", error);
   });
+  await attempt;
 }
 
 export function beginPaperRestoreSelectionShutdown(): void {

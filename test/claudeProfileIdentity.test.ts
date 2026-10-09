@@ -2,6 +2,7 @@
 
 import { assert } from "chai";
 import { afterEach, describe, it } from "mocha";
+import { join } from "node:path";
 import {
   buildClaudeProfileSignature,
   getClaudeRuntimeRootDir,
@@ -102,7 +103,10 @@ describe("Claude profile-aware identity", function () {
       kind: "global",
     });
 
-    assert.include(runtimeRoot, `/Zotero/agent-runtime/${profileSignature}`);
+    assert.include(
+      runtimeRoot,
+      join("Zotero", "agent-runtime", profileSignature),
+    );
     assert.equal(paperScope.scopeId, `${profileSignature}:7:42`);
     assert.equal(openScope.scopeId, `${profileSignature}:7`);
   });

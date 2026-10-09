@@ -116,6 +116,137 @@ describe("library text index db", function () {
       (globalThis as any).Zotero = previous;
     }
   });
+  it("closes a constructed handle when schema initialization fails", async function () {
+    const previous = (globalThis as any).Zotero;
+    const closes: unknown[][] = [];
+    class FakeConnection {
+      async queryAsync() {
+        throw new Error("schema initialization failed");
+      }
+      async executeTransaction<T>(fn: () => Promise<T>) {
+        return fn();
+      }
+      async closeDatabase(...args: unknown[]) {
+        closes.push(args);
+      }
+    }
+    (globalThis as any).Zotero = {
+      DBConnection: FakeConnection,
+      DataDirectory: { dir: "/tmp" },
+    };
+    try {
+      assert.isNull(await openLibraryTextIndexDb());
+      assert.deepEqual(
+        closes,
+        [[true]],
+        "a schema failure must permanently close its unpublished handle",
+      );
+    } finally {
+      await closeLibraryTextIndexDb();
+      (globalThis as any).Zotero = previous;
+    }
+  });
+  it("closes a delayed schema failure when close races the open", async function () {
+    const previous = (globalThis as any).Zotero;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closes: unknown[][] = [];
+    class FakeConnection {
+      async queryAsync() {
+        await gate;
+        throw new Error("schema initialization failed");
+      }
+      async executeTransaction<T>(fn: () => Promise<T>) {
+        return fn();
+      }
+      async closeDatabase(...args: unknown[]) {
+        closes.push(args);
+      }
+    }
+    (globalThis as any).Zotero = {
+      DBConnection: FakeConnection,
+      DataDirectory: { dir: "/tmp" },
+    };
+    try {
+      const opening = openLibraryTextIndexDb();
+      const closing = closeLibraryTextIndexDb();
+      release();
+      assert.isNull(await opening);
+      await closing;
+      assert.deepEqual(closes, [[true]]);
+    } finally {
+      await closeLibraryTextIndexDb();
+      (globalThis as any).Zotero = previous;
+    }
+  });
+  it("falls back and retries when schema-failure cleanup rejects", async function () {
+    const previous = (globalThis as any).Zotero;
+    let instances = 0;
+    class FakeConnection {
+      private readonly instance = ++instances;
+      async queryAsync(sql: string) {
+        if (this.instance === 1)
+          throw new Error("schema initialization failed");
+        return sql.startsWith("SELECT") ? [] : undefined;
+      }
+      async executeTransaction<T>(fn: () => Promise<T>) {
+        return fn();
+      }
+      async closeDatabase() {
+        if (this.instance === 1) throw new Error("close failed");
+      }
+    }
+    (globalThis as any).Zotero = {
+      DBConnection: FakeConnection,
+      DataDirectory: { dir: "/tmp" },
+    };
+    try {
+      assert.isNull(await openLibraryTextIndexDb());
+      assert.isOk(
+        await openLibraryTextIndexDb(),
+        "a failed cleanup must not poison the next open",
+      );
+    } finally {
+      await closeLibraryTextIndexDb();
+      (globalThis as any).Zotero = previous;
+    }
+  });
+  for (const strict of [false, true]) {
+    it(`handles close failure with strict teardown ${strict}`, async function () {
+      const previous = (globalThis as any).Zotero;
+      const failure = new Error("fixture close failed");
+      class FakeConnection {
+        async queryAsync(sql: string) {
+          return sql.startsWith("SELECT") ? [] : undefined;
+        }
+        async executeTransaction<T>(fn: () => Promise<T>) {
+          return fn();
+        }
+        async closeDatabase() {
+          throw failure;
+        }
+      }
+      (globalThis as any).Zotero = {
+        DBConnection: FakeConnection,
+        DataDirectory: { dir: "/tmp" },
+      };
+      try {
+        assert.isOk(await openLibraryTextIndexDb());
+        let caught: unknown;
+        try {
+          await closeLibraryTextIndexDb({ throwOnError: strict });
+        } catch (error) {
+          caught = error;
+        }
+        assert.strictEqual(caught, strict ? failure : undefined);
+      } finally {
+        await closeLibraryTextIndexDb();
+        (globalThis as any).Zotero = previous;
+      }
+    });
+  }
   it("close waits for an open in flight and closes that handle without deleting the file", async function () {
     const previous = (globalThis as any).Zotero;
     let release!: () => void;

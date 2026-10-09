@@ -480,6 +480,21 @@ export type LibraryRetrieveBenchResult = {
 };
 
 export type WorkflowTestApi = {
+  inspectNativeDraftPersistence: (
+    root: HTMLElement,
+    expectedKey: number,
+    expectedDraft: string,
+  ) => {
+    expectedKey: number;
+    mountedKey: number;
+    handlerKey: number;
+    handlersAttached: string;
+    handlersInitialized: string;
+    ownership: string;
+    cacheKind: "webchat" | "standard";
+    cacheHasExpectedKey: boolean;
+    cacheMatchesExpected: boolean;
+  };
   planRetrievalQuery: typeof resolveRetrievalQueryPlan;
   libraryRetrieveBench: (input: {
     query: string;

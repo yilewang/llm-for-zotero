@@ -27,6 +27,10 @@ describe("Auto and YOLO command authorization workflow", function () {
       reason: "The command implements the user's explicit request.",
     };
     globalThis.Zotero = {
+      // The fixture commands below are POSIX; do not classify them as cmd.exe
+      // merely because this mocked unit workflow runs on a Windows machine.
+      isWin: false,
+      isMac: true,
       DB: new ChangeJournalTestDb(),
       Prefs: { get: () => mode },
       Items: { get: () => null },

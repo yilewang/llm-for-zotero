@@ -137,7 +137,7 @@ describe("workflow: dedicated native chat pane", function () {
 
   /**
    * Pick a mode with the control the layout shows: the tab (Independent) or
-   * the chip (Stacked), which toggles on a click without hover.
+   * the chip (Stacked). Closed chips toggle; open chips pick the clicked row.
    */
   function pickMode(panel: Element, mode: "paper" | "library") {
     const layout = win.document.documentElement.getAttribute(
@@ -147,8 +147,10 @@ describe("workflow: dedicated native chat pane", function () {
       const chip = panel.querySelector("#llm-mode-capsule") as HTMLElement;
       assert.isAbove(chip.getBoundingClientRect().width, 0, "chip shows");
       if (chip.dataset.mode === mode) return;
+      const target =
+        chip.dataset.expanded === "true" ? mode : chip.dataset.mode;
       const shown = panel.querySelector(
-        `#llm-mode-option-${chip.dataset.mode}`,
+        `#llm-mode-option-${target}`,
       ) as HTMLElement;
       shown.dispatchEvent(
         new win.MouseEvent("click", { bubbles: true, cancelable: true }),
@@ -218,14 +220,19 @@ describe("workflow: dedicated native chat pane", function () {
     );
     const binary = target.atob(canvas.toDataURL("image/png").split(",")[1]);
     await win.IOUtils.write(
-      `${Zotero.DataDirectory.dir}/${filename}`,
+      PathUtils.join(Zotero.DataDirectory.dir, filename),
       Uint8Array.from(binary, (char: any) => char.charCodeAt(0)),
     );
   }
 
   before(async function () {
     // Native runner always launches an isolated .scaffold/test profile/data.
-    assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
+    assert.isTrue(
+      Zotero.DataDirectory.dir
+        .replace(/\\/g, "/")
+        .endsWith("/.scaffold/test/data"),
+      "native test data stays inside the isolated scaffold profile",
+    );
     api = (Zotero as any).LLMForZotero.api.workflowTest;
     await api.reset();
     originalLayout = Zotero.Prefs.get(layoutPref, true);
@@ -332,6 +339,15 @@ describe("workflow: dedicated native chat pane", function () {
       const details = win.document.getElementById("zotero-item-details");
       const section = details.querySelector(".llm-dedicated-chat-pane");
       const panel = () => section.querySelector("#llm-main");
+      // Selecting an item and opening its native pane do not await the
+      // extension's asynchronous conversation refresh. Capture the draft
+      // only after this exact paper context is bound, not a previous panel.
+      await until(
+        () =>
+          panel()?.dataset.conversationKind === "paper" &&
+          panel()?.dataset.itemId === String(fixtures[0].parentItemId),
+        "selected paper context settles before the draft snapshot",
+      );
       const previousKey = panel().dataset.itemId;
       const input = panel().querySelector("#llm-input");
       input.value = "Preserve the previous draft";
@@ -473,7 +489,7 @@ describe("workflow: dedicated native chat pane", function () {
       await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
       await until(
         () => panel().dataset.itemId === previousKey,
-        "return to the original paper chat",
+        `return to the original paper chat ${previousKey}; fixture=${fixtures[0].parentItemId}`,
       );
       assert.equal(
         panel().querySelector("#llm-input").value,
@@ -493,6 +509,20 @@ describe("workflow: dedicated native chat pane", function () {
   it("toggles chat closed and open through its rail icon without losing the draft", async function () {
     const details = await openChatPane();
     const section = details.querySelector(".llm-dedicated-chat-pane");
+    await until(() => {
+      const current = section.querySelector("#llm-main");
+      if (!current) return false;
+      const state = api.inspectNativeDraftPersistence(
+        current,
+        Number(current.dataset.itemId),
+        "",
+      );
+      return (
+        Boolean(state.handlersInitialized) &&
+        state.handlerKey === state.mountedKey &&
+        state.ownership === "match"
+      );
+    }, "the mounted conversation owns input before entering a draft");
     const root = section.querySelector("#llm-main");
     const conversationKey = root.dataset.itemId;
     const input = section.querySelector("#llm-input") as HTMLTextAreaElement;
@@ -500,7 +530,19 @@ describe("workflow: dedicated native chat pane", function () {
     const draft = "Keep this draft when toggling the chat rail";
     input.value = draft;
     input.dispatchEvent(new win.Event("input", { bubbles: true }));
+    const assertDraftStored = (stage: string) => {
+      const state = api.inspectNativeDraftPersistence(
+        section.querySelector("#llm-main"),
+        Number(conversationKey),
+        draft,
+      );
+      assert.isTrue(
+        state.cacheMatchesExpected,
+        `${stage}: addon-owned draft cache; ${JSON.stringify(state)}`,
+      );
+    };
     try {
+      assertDraftStored("immediately after input");
       await clickPane("llm-context-panel");
       assert.isTrue(
         details.sidenav._collapsed,
@@ -512,6 +554,7 @@ describe("workflow: dedicated native chat pane", function () {
       );
       assert.strictEqual(section.querySelector("#llm-main"), root);
       assert.equal(input.value, draft, "closing retains the draft");
+      assertDraftStored("after closing, before reopening");
 
       await clickPane("llm-context-panel");
       await until(
@@ -529,6 +572,16 @@ describe("workflow: dedicated native chat pane", function () {
         section.querySelector("#llm-main").dataset.itemId,
         conversationKey,
         "reopening preserves the conversation",
+      );
+      assertDraftStored("after reopening");
+      // Conversation identity is published before the asynchronous load restores
+      // its composer. Check that completion, not only a visible empty shell.
+      await until(
+        () =>
+          section.querySelector("#llm-main")?.dataset.itemId ===
+            conversationKey &&
+          section.querySelector("#llm-input")?.value === draft,
+        "the reopened conversation restores its persisted draft",
       );
       assert.equal(
         section.querySelector("#llm-input").value,
@@ -685,7 +738,7 @@ describe("workflow: dedicated native chat pane", function () {
       );
     const binary = win.atob(canvas.toDataURL("image/png").split(",")[1]);
     await (win.IOUtils as any).write(
-      `${Zotero.DataDirectory.dir}/dedicated-chat-pane.png`,
+      PathUtils.join(Zotero.DataDirectory.dir, "dedicated-chat-pane.png"),
       Uint8Array.from(binary, (char: any) => char.charCodeAt(0)),
     );
   });
@@ -824,6 +877,15 @@ describe("workflow: dedicated native chat pane", function () {
         String(fixtures[1].parentItemId),
       `paper B context follows its tab; selected=${win.Zotero_Tabs.selectedID}, roots=${JSON.stringify(Array.from(win.document.querySelectorAll("#llm-main")).map((node: any) => ({ ...node.dataset })))}`,
     );
+    await until(() => {
+      const current = panel();
+      const chip = current?.querySelector(".llm-shortcuts > .llm-shortcut-btn");
+      return (
+        current?.dataset.contextOwnerItemId ===
+          String(fixtures[1].parentItemId) &&
+        Boolean(chip && chip.getBoundingClientRect().width > 0)
+      );
+    }, "paper B shortcuts finish rendering before measuring their alignment");
     assertSidebarGaps(activeDetails());
     win.Zotero_Tabs.select(readers[0].tabID);
     await until(
@@ -883,6 +945,13 @@ describe("workflow: dedicated native chat pane", function () {
           ".llm-dedicated-chat-pane > collapsible-section",
         ).collapsible,
       );
+      // Hover opens a two-row picker; clicking the current row no longer
+      // toggles. Exercise that real state rather than assuming a closed chip.
+      const modeChip = panel().querySelector("#llm-mode-capsule");
+      modeChip.dispatchEvent(
+        new win.PointerEvent("pointerenter", { pointerType: "mouse" }),
+      );
+      assert.equal(modeChip.dataset.expanded, "true", "hover opens modes");
       pickMode(panel(), "library");
       await until(
         () => panel().dataset.conversationKind === "global",

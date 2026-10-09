@@ -5,6 +5,7 @@ import {
   interruptRecoveryScenario,
   verifyRecoveryScenario,
   cleanupRecoveryScenario,
+  disposeRecoveryScenarioResources,
 } from "./helpers/mineruRecoveryScenario";
 
 async function waitFor(test: () => boolean) {
@@ -50,6 +51,7 @@ async function close(win: Window) {
 
 describe("workflow: MinerU Partial status", function () {
   this.timeout(60000);
+  after(disposeRecoveryScenarioResources);
   it("renders a purple Partial dot with saved pages, then a green completed dot after reopening", async function () {
     const prefix = "extensions.zotero.llmforzotero.";
     const settings: Record<string, string | number | boolean> = {

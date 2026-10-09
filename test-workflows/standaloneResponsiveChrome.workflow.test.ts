@@ -1,6 +1,8 @@
 import { assert } from "chai";
 import { updateHeaderSpacing } from "../src/modules/contextPanel/setupHandlers/controllers/headerSpacing";
+import { applyTaskProgressToggleState } from "../src/modules/contextPanel/taskProgress/toggleButton";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
+import { waitForNativeWindowFrame } from "./nativeWindowReadiness";
 
 describe("workflow: standalone responsive chrome", function () {
   this.timeout(45000);
@@ -19,6 +21,7 @@ describe("workflow: standalone responsive chrome", function () {
     });
     await api.openStandaloneForItem(fixture.parentItemId);
     win = (Zotero as any).LLMForZotero.data.standaloneWindow;
+    await waitForNativeWindowFrame(win);
   });
 
   afterEach(async function () {
@@ -29,6 +32,12 @@ describe("workflow: standalone responsive chrome", function () {
 
   it("keeps each embedded header row on one line at every font size", async function () {
     const doc = win.document;
+    const layoutAttribute = "data-llm-sidebar-layout";
+    const previousLayout = doc.documentElement.getAttribute(layoutAttribute);
+    // This fixture exercises the independent, two-row embedded header.
+    // Do not inherit a previous suite's stacked layout, which deliberately
+    // hides the toggle row and narrow Task progress action.
+    doc.documentElement.setAttribute(layoutAttribute, "independent");
     const panel = doc.createElement("div");
     panel.className = "llm-panel";
     // The native XUL window has no HTML body. Keep this fixture independent
@@ -72,15 +81,33 @@ describe("workflow: standalone responsive chrome", function () {
         "#llm-header-runtime-controls",
       ) as HTMLElement;
       runtimeWrapper.style.display = "";
+      assert.deepEqual(
+        Array.from(header.querySelectorAll(".llm-header-actions > button")).map(
+          (button) => (button as HTMLElement).id,
+        ),
+        [
+          "llm-task-progress-toggle",
+          "llm-popout",
+          "llm-settings",
+          "llm-export",
+          "llm-clear",
+        ],
+        "the embedded header includes its Task progress action",
+      );
+      // The standalone source leaves its inner header button unbound/hidden.
+      // Exercise the full embedded action row, including the new control,
+      // rather than silently dropping it from the geometry checks.
+      applyTaskProgressToggleState(
+        header.querySelector<HTMLButtonElement>("#llm-task-progress-toggle")!,
+        { applies: true, shown: false },
+      );
       for (const label of ["Paper chat", "Note chat", "Web chat"]) {
         paperTabLabel.textContent = label;
         for (const scale of [0.8, 1.2, 1.8]) {
           panel.style.setProperty("--llm-font-scale", String(scale));
           for (const width of [320, 340, 380, 500]) {
             panel.style.width = `${width}px`;
-            await new Promise<void>((resolve) =>
-              win.requestAnimationFrame(() => resolve()),
-            );
+            await waitForNativeWindowFrame(win);
             updateHeaderSpacing(navRow);
             if (width >= 380) {
               assert.equal(
@@ -105,7 +132,7 @@ describe("workflow: standalone responsive chrome", function () {
                 button.getBoundingClientRect().width,
                 bounds.width <= 380 ? 24 : 28,
                 0.5,
-                `Action-button padding must be preserved: ${context}`,
+                `Action-button padding must be preserved: ${context}, ${button.id}, display=${win.getComputedStyle(button)?.display}, layout=${doc.documentElement.getAttribute(layoutAttribute)}`,
               );
             }
             for (const button of Array.from(
@@ -135,7 +162,7 @@ describe("workflow: standalone responsive chrome", function () {
             );
             assert.lengthOf(
               buttons,
-              10,
+              11,
               `All header controls visible: ${context}`,
             );
             const toggleRowRect = toggleRow.getBoundingClientRect();
@@ -206,6 +233,9 @@ describe("workflow: standalone responsive chrome", function () {
       }
     } finally {
       panel.remove();
+      if (previousLayout === null)
+        doc.documentElement.removeAttribute(layoutAttribute);
+      else doc.documentElement.setAttribute(layoutAttribute, previousLayout);
     }
   });
 
@@ -215,17 +245,13 @@ describe("workflow: standalone responsive chrome", function () {
     const before = sidebar.getBoundingClientRect().width;
     const widths: number[] = [];
     const start = win.performance!.now();
-    const sampling = new Promise<void>((resolve) => {
-      const sample = () => {
+    const sampling = (async () => {
+      do {
+        await waitForNativeWindowFrame(win);
         widths.push(sidebar.getBoundingClientRect().width);
-        if (win.performance!.now() - start < 600)
-          win.requestAnimationFrame(sample);
-        else resolve();
-      };
-      win.requestAnimationFrame(sample);
-    });
-    await api.resizeStandaloneWindow(650, 650);
-    await sampling;
+      } while (win.performance!.now() - start < 600);
+    })();
+    await Promise.all([api.resizeStandaloneWindow(650, 650), sampling]);
     assert.equal(sidebar.getAttribute("data-sidebar-state"), "collapsed");
     assert.equal(sidebar.getBoundingClientRect().width, 0);
     assert.isTrue(
@@ -257,11 +283,13 @@ describe("workflow: standalone responsive chrome", function () {
       doc.querySelector(selector)!.getBoundingClientRect();
     const actionWidth = () => rect(".llm-standalone-icon-export").width;
     await api.resizeStandaloneWindow(1000, 650);
+    await waitForNativeWindowFrame(win);
     const wideAction = actionWidth();
     for (const scale of [1, 1.8]) {
       root.style.setProperty("--llm-font-scale", String(scale));
       for (const width of [700, 550, 500]) {
         await api.resizeStandaloneWindow(width, 650);
+        await waitForNativeWindowFrame(win);
         const leading = rect(".llm-standalone-tab-row-leading");
         const tabs = rect(".llm-standalone-tab-row .llm-standalone-tab-group");
         assert.isAtMost(

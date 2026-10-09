@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { readdirSync, readFileSync, statSync } from "fs";
-import { join, relative } from "path";
+import { join, relative, sep } from "path";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { RETIRED_TOOL_HINTS } from "../src/agent/context/toolNames";
 import { computeUserTextSignals } from "../src/agent/runtime";
@@ -54,7 +54,7 @@ function readSourceFiles(): Array<{ path: string; content: string }> {
     ),
   ];
   return files.map((path) => ({
-    path: relative(root, path),
+    path: relative(root, path).split(sep).join("/"),
     content: readFileSync(path, "utf8"),
   }));
 }

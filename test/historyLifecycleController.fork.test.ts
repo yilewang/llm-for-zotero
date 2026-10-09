@@ -1582,13 +1582,19 @@ describe("historyLifecycleController active-conversation selection", function ()
       }
       const switchedKeys: number[] = [];
       let created = false;
+      let observeRepositoryCall!: () => void;
+      const repositoryCalled = new Promise<void>((resolve) => {
+        observeRepositoryCall = resolve;
+      });
       conversationRepository.ensureCatalogEntry = async (params) => {
         switchedKeys.push(params.conversationKey || 0);
+        observeRepositoryCall();
         return null;
       };
       conversationRepository.getCatalogEntry = async () => null;
       conversationRepository.createCatalogEntry = async () => {
         created = true;
+        observeRepositoryCall();
         return null;
       };
       const { libraryChatTabBtn } = createControllerHarness({
@@ -1602,7 +1608,9 @@ describe("historyLifecycleController active-conversation selection", function ()
         preventDefault: () => undefined,
         stopPropagation: () => undefined,
       } as unknown as Event);
-      await settle();
+      await repositoryCalled;
+      // Let the click handler's promise chain finish before resetting its state.
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       if (testCase.expected === null) {
         assert.deepEqual(switchedKeys, [], JSON.stringify(testCase));

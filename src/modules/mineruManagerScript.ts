@@ -1775,12 +1775,15 @@ export async function registerMineruManagerScript(
     dot: HTMLSpanElement,
   ): Promise<void> {
     const status = await getMineruStatus(attachmentId);
-    setDotDisplayStatus(dot, status);
     const entry = allItems.find((item) => item.attachmentId === attachmentId);
     if (status === "partial") {
       const progress = await getMineruCheckpointProgress(attachmentId);
+      setDotDisplayStatus(dot, status);
       dot.title = `${t("Partial")}: ${progress?.completedPages ?? 0}/${progress?.totalPages ?? 0} ${t("pages")} — ${t("Resume to continue from saved progress.")}`;
-    } else if (entry) dot.title = getAvailabilityTooltip(entry);
+    } else {
+      setDotDisplayStatus(dot, status);
+      if (entry) dot.title = getAvailabilityTooltip(entry);
+    }
   }
 
   function getSkippedLabel(item: MineruItemEntry): string {

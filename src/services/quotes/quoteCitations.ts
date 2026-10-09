@@ -4305,6 +4305,10 @@ function* finalizeAssistantQuoteCitationSteps(
     }
     index -= 1;
   }
+  // Final document passes are work too. Give the cooperative driver a chance
+  // to yield/cancel after the last quote and between cleanup stages instead
+  // of combining all of them with the final blockquote in one long step.
+  yield;
   const finalizedMarkdown = replaceQuoteCitationPlaceholdersForMarkdown(
     collapseAdjacentDuplicateQuoteCitationPlaceholders(
       normalizeSanitizedMarkdown(out.join("\n")),
@@ -4316,12 +4320,14 @@ function* finalizeAssistantQuoteCitationSteps(
       sanitizeSourceBackedBlocks: !params.quoteSourceReview,
     },
   );
+  yield;
   const cleanedMarkdown = normalizeParagraphCitations(
     cleanupRemovedMetadataQuoteArtifacts(
       cleanupEmptyCitationParentheticals(finalizedMarkdown),
     ),
     new Set(quoteCitations.map((citation) => citation.id)),
   );
+  yield;
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   const referencedCitationIds = new Set(
     Array.from(cleanedMarkdown.matchAll(QUOTE_CITATION_PATTERN)).map(
@@ -4331,6 +4337,7 @@ function* finalizeAssistantQuoteCitationSteps(
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   for (const id of paragraphCitationIds(cleanedMarkdown))
     referencedCitationIds.add(id);
+  yield;
   return {
     markdown: cleanedMarkdown,
     quoteCitations: filterMetadataQuoteCitations(

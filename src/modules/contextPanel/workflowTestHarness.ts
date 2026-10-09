@@ -24,6 +24,7 @@ import {
   flushTaskProgressPanels,
   listMountedTaskProgressPanelsForTests,
 } from "./taskProgress/panel";
+import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import {
   clearAllTaskProgress,
   getTaskProgress,
@@ -71,6 +72,8 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
   chatHistory,
+  draftInputCache,
+  webChatDraftInputCache,
   selectedRuntimeModeCache,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
@@ -209,6 +212,7 @@ import {
   bindEmbeddedPanelHost,
   bindTestPanelHost,
   capturePanelOperationLease,
+  evaluatePanelOwnership,
   resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
 import {
@@ -3097,7 +3101,19 @@ async function probeTargetedRerenderScrollStability(params: {
   const win = params.panel.body.ownerDocument.defaultView;
   if (!win) throw new Error("Workflow panel has no window");
   const nextFrame = () =>
-    new Promise<void>((resolve) => win.requestAnimationFrame(() => resolve()));
+    new Promise<void>((resolve) => {
+      // A background Zotero window can expose requestAnimationFrame while
+      // throttling it indefinitely. Use the panel scheduler's bounded fallback
+      // and dispose the losing wakeup so it cannot leak into the next test.
+      const scheduler = createCoalescedFrameScheduler({
+        getWindow: () => win,
+        run: () => {
+          scheduler.dispose();
+          resolve();
+        },
+      });
+      scheduler.schedule();
+    });
 
   const expandedWrapper = wrapperForMessage(
     params.wrappers,
@@ -3108,6 +3124,10 @@ async function probeTargetedRerenderScrollStability(params: {
     params.earlierMessage,
   );
   const conversationKey = getConversationKey(params.item);
+  const liveWrappers = () =>
+    Array.from(
+      chatBox.querySelectorAll(".llm-message-wrapper[data-message-timestamp]"),
+    ) as HTMLElement[];
   const timeline: Array<Record<string, unknown>> = [];
   const record = (label: string) => {
     const snapshot = getChatScrollSnapshot(conversationKey);
@@ -3116,8 +3136,10 @@ async function probeTargetedRerenderScrollStability(params: {
       scrollTop: chatBox.scrollTop,
       scrollHeight: chatBox.scrollHeight,
       wrapperTop:
-        expandedWrapper.getBoundingClientRect().top -
-        chatBox.getBoundingClientRect().top,
+        wrapperForMessage(
+          liveWrappers(),
+          params.expandedMessage,
+        ).getBoundingClientRect().top - chatBox.getBoundingClientRect().top,
       snapshot: snapshot
         ? `${snapshot.mode}@${snapshot.scrollTop}${snapshot.anchor ? `/${snapshot.anchor.kind}:${snapshot.anchor.quoteCitationId || snapshot.anchor.messageAnchorKey}` : ""}`
         : null,
@@ -3131,8 +3153,25 @@ async function probeTargetedRerenderScrollStability(params: {
       '.llm-quote-card[data-quote-interactive="true"]',
     ),
   ) as HTMLElement[];
-  const card = interactiveCards[interactiveCards.length - 1];
+  let card = interactiveCards[interactiveCards.length - 1];
   if (!card) throw new Error("Expanded message rendered no interactive card");
+  const citationId = card.dataset.quoteCitationId || "";
+  const occurrenceId = card.dataset.quoteOccurrenceId || "";
+  if (!occurrenceId) throw new Error("Reader quote has no occurrence identity");
+  const currentReaderCard = () => {
+    const wrapper = wrapperForMessage(liveWrappers(), params.expandedMessage);
+    const cards = Array.from(
+      wrapper.querySelectorAll(
+        `.llm-quote-card[data-quote-citation-id="${citationId}"]`,
+      ),
+    ) as HTMLElement[];
+    const current = cards.find(
+      (candidate) => candidate.dataset.quoteOccurrenceId === occurrenceId,
+    );
+    if (!current)
+      throw new Error("Reader quote disappeared during fixture setup");
+    return current;
+  };
   // The card straddles the top edge, as a card the reader has just scrolled
   // past does; the anchor search prefers exactly that card.
   chatBox.scrollTop +=
@@ -3143,6 +3182,9 @@ async function probeTargetedRerenderScrollStability(params: {
   record("after-frame-1");
   await nextFrame();
   record("after-frame-2");
+  // Rendering may legitimately replace DOM nodes during those frame waits.
+  // Track the same logical message/citation, never a detached node's zero rect.
+  card = currentReaderCard();
   // Nothing has been clicked yet: the view must still be where the reader
   // put it once the panel's deferred scroll work has run.
   const settleDrift =
@@ -3152,14 +3194,35 @@ async function probeTargetedRerenderScrollStability(params: {
   record("after-click");
   await nextFrame();
   record("after-click-frame");
-  const citationId = card.dataset.quoteCitationId || "";
-  const sameCitationCards = expandedWrapper.querySelectorAll(
+  card = currentReaderCard();
+  const sameCitationCards = wrapperForMessage(
+    liveWrappers(),
+    params.expandedMessage,
+  ).querySelectorAll(
     `.llm-quote-card[data-quote-citation-id="${citationId}"]`,
   ).length;
   const expandedBeforeRerender = card.dataset.expanded === "true";
   const scrollTopBefore = chatBox.scrollTop;
   const cardTopBefore = card.getBoundingClientRect().top;
-  const earlierHeightBefore = earlierWrapper.getBoundingClientRect().height;
+  // Deferred rendering may already have replaced an earlier message while
+  // the reader's later quote remained mounted. Measure the current wrapper,
+  // not the pre-settle snapshot retained in params.wrappers.
+  const earlierWrapperBeforeRefresh = wrapperForMessage(
+    Array.from(
+      chatBox.querySelectorAll(".llm-message-wrapper[data-message-timestamp]"),
+    ) as HTMLElement[],
+    params.earlierMessage,
+  );
+  const earlierHeightBefore =
+    earlierWrapperBeforeRefresh.getBoundingClientRect().height;
+  if (!earlierWrapperBeforeRefresh.isConnected || earlierHeightBefore <= 0) {
+    throw new Error(
+      `Earlier quote fixture must be connected and rendered before refresh: connected=${earlierWrapperBeforeRefresh.isConnected}, height=${earlierHeightBefore}`,
+    );
+  }
+  if (!card.isConnected) {
+    throw new Error("Reader quote fixture detached before targeted refresh");
+  }
 
   // An earlier message changes height above the viewport while the expanded
   // message is re-rendered with identical content under new citation identity.
@@ -3185,21 +3248,31 @@ async function probeTargetedRerenderScrollStability(params: {
 
   record("after-rerender-frame");
   const snapshotBefore = getChatScrollSnapshot(conversationKey);
+  const refreshedWrappers = Array.from(
+    chatBox.querySelectorAll(".llm-message-wrapper[data-message-timestamp]"),
+  ) as HTMLElement[];
   const expandedWrapperAfter = wrapperForMessage(
-    Array.from(
-      chatBox.querySelectorAll(".llm-message-wrapper[data-message-timestamp]"),
-    ) as HTMLElement[],
+    refreshedWrappers,
     params.expandedMessage,
+  );
+  const earlierWrapperAfter = wrapperForMessage(
+    refreshedWrappers,
+    params.earlierMessage,
   );
   const cardsAfter = Array.from(
     expandedWrapperAfter.querySelectorAll(
       `.llm-quote-card[data-quote-citation-id="${citationId}"]`,
     ),
   ) as HTMLElement[];
-  const cardAfter = cardsAfter[cardsAfter.length - 1] || null;
+  const cardAfter =
+    cardsAfter.find(
+      (candidate) => candidate.dataset.quoteOccurrenceId === occurrenceId,
+    ) || null;
   const diagnostics: Record<string, unknown> = {
     timeline,
     sameCitationCards,
+    clickedQuoteOccurrenceId: occurrenceId,
+    quoteOccurrenceIdAfter: cardAfter?.dataset.quoteOccurrenceId ?? null,
     snapshotBefore: snapshotBefore
       ? {
           mode: snapshotBefore.mode,
@@ -3209,6 +3282,11 @@ async function probeTargetedRerenderScrollStability(params: {
       : null,
     expandedWrapperReplaced: expandedWrapperAfter !== expandedWrapper,
     expandedWrapperStillConnected: expandedWrapper.isConnected,
+    earlierWrapperConnectedAfter: earlierWrapperAfter.isConnected,
+    earlierWrapperReplacedDuringSettle:
+      earlierWrapperBeforeRefresh !== earlierWrapper,
+    earlierHeightBefore,
+    earlierHeightAfter: earlierWrapperAfter.getBoundingClientRect().height,
     cardAfterIsSameNode: cardAfter === card,
     cardTopBefore,
     cardTopAfter: cardAfter?.getBoundingClientRect().top ?? null,
@@ -3222,7 +3300,7 @@ async function probeTargetedRerenderScrollStability(params: {
     diagnostics,
     chatBoxScrollable: chatBox.scrollHeight > chatBox.clientHeight + 1,
     earlierWrapperHeightDelta:
-      earlierWrapper.getBoundingClientRect().height - earlierHeightBefore,
+      earlierWrapperAfter.getBoundingClientRect().height - earlierHeightBefore,
     expandedBeforeRerender,
     expandedAfterRerender: cardAfter?.dataset.expanded === "true",
     expandedBodyTextAfterRerender: (
@@ -4948,7 +5026,7 @@ async function exerciseHighlightAwareContextRetrieval(input: {
   }
 }
 
-async function reset(): Promise<void> {
+async function performReset(): Promise<void> {
   assertWorkflowTestEnabled();
   resolveDelayedCodexPermissionCatalog?.();
   resolveDelayedCodexPermissionCatalog = null;
@@ -4990,6 +5068,17 @@ async function reset(): Promise<void> {
   forceWebChatSessionAnchorFailuresForTests(0);
   // The dragged drawer height lives for the session; a case starts without it.
   resetTaskProgressDrawerHeight();
+}
+
+let resetQueue: Promise<void> = Promise.resolve();
+
+async function reset(): Promise<void> {
+  // Mocha starts cleanup after a hook timeout without cancelling the original
+  // promise. Serialize the whole boundary so a delayed setup reset and its
+  // afterEach reset cannot tear down panels or use Zotero's DB concurrently.
+  const attempt = resetQueue.then(performReset, performReset);
+  resetQueue = attempt.catch(() => undefined);
+  await attempt;
 }
 
 function disposeWorkflowPanels(): void {
@@ -5677,6 +5766,24 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    inspectNativeDraftPersistence(root, expectedKey, expectedDraft) {
+      assertWorkflowTestEnabled();
+      const body = root.parentElement;
+      const item = body && activeContextPanels.get(body)?.();
+      const webchat = root.dataset.webchatMode === "true";
+      const cache = webchat ? webChatDraftInputCache : draftInputCache;
+      return {
+        expectedKey,
+        mountedKey: Number(root.dataset.itemId || 0),
+        handlerKey: item ? getConversationKey(item) : 0,
+        handlersAttached: root.dataset.handlersAttached || "",
+        handlersInitialized: root.dataset.handlersInitialized || "",
+        ownership: body ? evaluatePanelOwnership(body, item) : "unresolved",
+        cacheKind: webchat ? "webchat" : "standard",
+        cacheHasExpectedKey: cache.has(expectedKey),
+        cacheMatchesExpected: cache.get(expectedKey) === expectedDraft,
+      };
+    },
     planRetrievalQuery: resolveRetrievalQueryPlan,
     async libraryRetrieveBench(input) {
       const { LibraryRetrieveService } =

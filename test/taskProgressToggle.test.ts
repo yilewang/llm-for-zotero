@@ -569,7 +569,9 @@ describe("task progress button", function () {
     });
 
     it("masks the same icon in the sidebar header, pressed with its hover look", function () {
-      const icon = css.match(/\.llm-task-progress-btn::before\s*\{[^}]*\}/)?.[0];
+      const icon = css.match(
+        /\.llm-task-progress-btn::before\s*\{[^}]*\}/,
+      )?.[0];
       assert.isOk(icon);
       assert.include(icon, 'mask-image: url("icons/action-task-progress.svg")');
       const pressedRule = css.match(

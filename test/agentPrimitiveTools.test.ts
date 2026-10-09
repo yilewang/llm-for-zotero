@@ -1702,9 +1702,21 @@ Figure 2 explains the attractor-network interpretation.`;
       const validated = tool.validate({ command });
       assert.isTrue(validated.ok, command);
       if (!validated.ok) throw new Error("unreachable");
-      const plan = await tool.planInvocation?.(validated.value, context);
-      assert.exists(plan);
-      return plan!;
+      const previousPlatform = globalScope.Zotero;
+      // This table contains POSIX syntax, including $HOME expansion. Exercise
+      // that dialect explicitly without changing the host for other tests.
+      globalScope.Zotero = {
+        ...previousPlatform,
+        isWin: false,
+        isMac: true,
+      };
+      try {
+        const plan = await tool.planInvocation?.(validated.value, context);
+        assert.exists(plan);
+        return plan!;
+      } finally {
+        globalScope.Zotero = previousPlatform;
+      }
     };
 
     for (const command of [

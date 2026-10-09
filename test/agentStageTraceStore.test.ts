@@ -31,6 +31,10 @@ import {
 } from "../src/agent/store/toolResultHandles";
 import type { AgentActionReceipt, AgentEvent } from "../src/agent/types";
 import { bigPaperReadOverview } from "./helpers/bigPaperReadResult";
+import {
+  previewListing,
+  previewRows,
+} from "./helpers/toolResultPreviewPerformance";
 import { ensureConversationKeyLedgerEntry } from "../src/shared/conversationKeyLedger";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
@@ -547,57 +551,173 @@ describe("tool results in the trace store", function () {
 });
 
 describe("tool result preview cost", function () {
-  /** The median of seven runs, in milliseconds, after a warm-up run. */
-  function timed(content: unknown): { ms: number; preview: unknown } {
-    let preview = buildToolResultPreview(content);
-    const runs: number[] = [];
-    for (let run = 0; run < 7; run += 1) {
-      const start = performance.now();
-      preview = buildToolResultPreview(content);
-      runs.push(performance.now() - start);
-    }
-    runs.sort((left, right) => left - right);
-    return { ms: runs[3], preview };
+  function entryCount(value: unknown): number {
+    if (value === null || typeof value !== "object") return 0;
+    const entries = Object.values(value);
+    return (
+      entries.length +
+      entries.reduce((sum, entry) => sum + entryCount(entry), 0)
+    );
   }
 
-  const rows = (count: number) => ({
-    rows: Array.from({ length: count }, (_, index) => ({
-      id: index,
-      text: "x".repeat(250),
-      values: [index, index + 1, index + 2, index + 3, index + 4],
-    })),
+  function measuredPreview(content: unknown, exercise?: () => void) {
+    const entries = Object.entries;
+    const values = Object.values;
+    const stringify = JSON.stringify;
+    const iterator = Array.prototype[Symbol.iterator];
+    const filter = Array.prototype.filter;
+    const reduce = Array.prototype.reduce;
+    const slice = Array.prototype.slice;
+    let enumeratedEntries = 0;
+    let arrayEntriesVisited = 0;
+    let serializations = 0;
+    let compositeSerializations = 0;
+    let serializedChars = 0;
+    Object.entries = ((value: object) => {
+      const result = entries(value);
+      enumeratedEntries += result.length;
+      return result;
+    }) as typeof Object.entries;
+    Object.values = ((value: object) => {
+      const result = values(value);
+      enumeratedEntries += result.length;
+      return result;
+    }) as typeof Object.values;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      serializations += 1;
+      if (args[0] !== null && typeof args[0] === "object")
+        compositeSerializations += 1;
+      const json = stringify.apply(JSON, args);
+      serializedChars += json?.length ?? 0;
+      return json;
+    }) as typeof JSON.stringify;
+    Array.prototype[Symbol.iterator] = function* (this: unknown[]) {
+      for (let index = 0; index < this.length; index += 1) {
+        arrayEntriesVisited += 1;
+        yield this[index];
+      }
+    } as typeof iterator;
+    Array.prototype.filter = function (this: unknown[], ...args: unknown[]) {
+      arrayEntriesVisited += this.length;
+      return Reflect.apply(filter, this, args);
+    } as typeof Array.prototype.filter;
+    Array.prototype.reduce = function (this: unknown[], ...args: unknown[]) {
+      arrayEntriesVisited += this.length;
+      return Reflect.apply(reduce, this, args);
+    } as typeof Array.prototype.reduce;
+    Array.prototype.slice = function (this: unknown[], ...args: unknown[]) {
+      const result = Reflect.apply(slice, this, args) as unknown[];
+      arrayEntriesVisited += result.length;
+      return result;
+    } as typeof Array.prototype.slice;
+    try {
+      exercise?.();
+      const preview = buildToolResultPreview(content);
+      return {
+        preview,
+        enumeratedEntries,
+        arrayEntriesVisited,
+        serializations,
+        compositeSerializations,
+        serializedChars,
+      };
+    } finally {
+      Object.entries = entries;
+      Object.values = values;
+      JSON.stringify = stringify;
+      Array.prototype[Symbol.iterator] = iterator;
+      Array.prototype.filter = filter;
+      Array.prototype.reduce = reduce;
+      Array.prototype.slice = slice;
+    }
+  }
+
+  it("restores traversal and serialization APIs after successful and refused previews", function () {
+    const entries = Object.entries;
+    const values = Object.values;
+    const stringify = JSON.stringify;
+    const iterator = Array.prototype[Symbol.iterator];
+    const filter = Array.prototype.filter;
+    const reduce = Array.prototype.reduce;
+    const slice = Array.prototype.slice;
+    const refused = {
+      get text() {
+        throw new Error("unreadable result");
+      },
+    };
+    for (const content of [previewRows(30), refused]) {
+      const measured = measuredPreview(content);
+      assert.strictEqual(Object.entries, entries);
+      assert.strictEqual(Object.values, values);
+      assert.strictEqual(JSON.stringify, stringify);
+      assert.strictEqual(Array.prototype[Symbol.iterator], iterator);
+      assert.strictEqual(Array.prototype.filter, filter);
+      assert.strictEqual(Array.prototype.reduce, reduce);
+      assert.strictEqual(Array.prototype.slice, slice);
+      if (content === refused) assert.isUndefined(measured.preview);
+      else assert.exists(measured.preview);
+    }
   });
 
-  const listing = (count: number) => ({
-    entity: "items",
-    mode: "list",
-    totalCount: count,
-    items: Array.from({ length: count }, (_, index) => ({
-      itemId: index,
-      title: `A study of thing ${index} `.repeat(4),
-      creators: ["Alpha A", "Beta B", "Gamma C", "Delta D", "Eps E"],
-      tags: ["t1", "t2", "t3", "t4"],
-      collections: [1, 2, 3, 4],
-      year: "2020",
-    })),
+  it("counts negative-end slices as copied array work", function () {
+    const source = Array.from({ length: 20 }, (_, index) => index);
+    const measured = measuredPreview({ ok: true }, () => {
+      for (let index = 0; index < source.length; index += 1)
+        source.slice(0, -1);
+    });
+    assert.isAtLeast(measured.arrayEntriesVisited, 20 * 19);
   });
 
-  it("previews 3,000 rows of five-entry arrays and a 1,000-item listing in linear time", function () {
-    const big = timed(rows(3_000));
-    const small = timed(rows(1_000));
-    const items = timed(listing(1_000));
-    assert.isBelow(big.ms, 50, `3,000 rows took ${big.ms.toFixed(1)} ms`);
-    assert.isBelow(items.ms, 30, `1,000 items took ${items.ms.toFixed(1)} ms`);
-    assert.isBelow(
-      big.ms,
-      4 * Math.max(small.ms, 1),
-      `3,000 rows ${big.ms.toFixed(1)} ms vs 1,000 rows ${small.ms.toFixed(1)} ms`,
-    );
+  it("previews 3,000 rows of five-entry arrays and a 1,000-item listing with bounded linear work", function () {
+    const contents = [
+      previewRows(3_000),
+      previewRows(1_000),
+      previewListing(1_000),
+    ];
+    const originals = contents.map((content) => JSON.stringify(content));
+    const [big, small, items] = contents.map((content, index) => {
+      const inputEntries = entryCount(content);
+      const measured = measuredPreview(content);
+      // At most two copy/measurement passes and two whole-copy serializations.
+      // Count volume too: serializing a growing array repeatedly is quadratic
+      // even when the number of stringify calls is only linear.
+      assert.isAtMost(
+        measured.enumeratedEntries,
+        2 * inputEntries,
+        "enumerated entries",
+      );
+      assert.isAtMost(
+        measured.arrayEntriesVisited,
+        4 * inputEntries,
+        "array entries visited or copied",
+      );
+      assert.isAtMost(
+        measured.serializations,
+        2 * inputEntries,
+        "serialization calls",
+      );
+      assert.isAtMost(
+        measured.compositeSerializations,
+        2,
+        "whole-copy serializations",
+      );
+      assert.isAtMost(
+        measured.serializedChars,
+        2 * originals[index].length,
+        "serialized characters",
+      );
+      assert.equal(
+        JSON.stringify(content),
+        originals[index],
+        "the source is not changed",
+      );
+      return measured;
+    });
     for (const { preview } of [big, small, items]) {
       assert.exists(preview);
       assert.isAtMost(JSON.stringify(preview).length, PREVIEW_MAX_BYTES);
     }
-    const listed = items.preview as ReturnType<typeof listing>;
+    const listed = items.preview as ReturnType<typeof previewListing>;
     assert.equal(listed.mode, "list");
     assert.equal(listed.totalCount, 1_000);
     assert.isAtLeast(listed.items.length, 3);

@@ -368,6 +368,245 @@ describe("AnySearch native integration (offline)", function () {
     });
   }
 
+  for (const scenario of [
+    {
+      status: 401,
+      error:
+        "AnySearch rejected authentication or access. Check the configured key and permissions.",
+    },
+    {
+      status: 402,
+      error:
+        "AnySearch quota exhausted. No credentials were adopted and no retry was made.",
+    },
+    {
+      status: 429,
+      error: "AnySearch rate limit reached. Try again later.",
+    },
+  ] as const) {
+    it(`keeps a native extraction ${scenario.status} as a sanitized failed result after registering the search URL`, async function () {
+      setWebAccessProvider("anysearch");
+      setAnysearchApiKey("");
+      const url = "https://example.org/extract-failure";
+      const privateMarker = `synthetic-extract-${scenario.status}-secret`;
+      const headers: Record<string, string>[] = [];
+      const calls: string[] = [];
+      const disposed: number[] = [];
+      let nextContextId = 100050;
+      let fetchCalls = 0;
+      globalThis.fetch = async () => {
+        fetchCalls++;
+        throw new Error("Unexpected fetch fallback in offline extraction test");
+      };
+      Object.assign(globalThis.Zotero, {
+        HTTP: {
+          newCookieContext: () => {
+            const id = nextContextId++;
+            return { id, dispose: () => disposed.push(id) };
+          },
+          request: async (
+            method: string,
+            requestUrl: string,
+            options: {
+              headers: Record<string, string>;
+              body: string;
+              userContextId: number;
+              requestObserver: (xhr: unknown) => void;
+              anon?: boolean;
+            },
+          ) => {
+            assert.equal(method, "POST");
+            observeNativeRequest(options);
+            calls.push(requestUrl);
+            headers.push(options.headers);
+            assert.isAtLeast(options.userContextId, 100050);
+            assert.deepEqual(
+              JSON.parse(options.body),
+              requestUrl.endsWith("/search")
+                ? { query: "registered extraction URL", max_results: 1 }
+                : { url },
+            );
+            if (requestUrl.endsWith("/search")) {
+              return {
+                status: 200,
+                responseText: JSON.stringify({
+                  code: 0,
+                  request_id: "native-extract-search",
+                  data: { results: [{ url, title: "Registered result" }] },
+                }),
+              };
+            }
+            assert.equal(requestUrl, "https://api.anysearch.com/v1/extract");
+            return {
+              status: scenario.status,
+              get responseText() {
+                throw new Error(
+                  `Native extraction error body must not be read: ${privateMarker}`,
+                );
+              },
+            };
+          },
+        },
+      });
+
+      const search = createWebSearchTool();
+      const read = createWebReadTool();
+      const searchResult = await search.execute(
+        { query: "registered extraction URL", maxResults: 1 },
+        context,
+      );
+      assert.doesNotThrow(() =>
+        assertWebReadUrlsFromSearch(context.runId!, [url]),
+      );
+      const extracted = await read.execute({ urls: [url] }, context);
+
+      assert.deepEqual(calls, [
+        "https://api.anysearch.com/v1/search",
+        "https://api.anysearch.com/v1/extract",
+      ]);
+      assert.equal(fetchCalls, 0);
+      assert.deepEqual(disposed, [100050, 100051]);
+      assert.lengthOf(headers, 2);
+      for (const requestHeaders of headers) {
+        assert.notProperty(requestHeaders, "Authorization");
+        assert.notInclude(
+          JSON.stringify(requestHeaders),
+          "synthetic-tavily-key",
+        );
+      }
+      assert.lengthOf(searchResult.results, 1);
+      assert.isEmpty(extracted.pages);
+      assert.deepEqual(extracted.failedResults, [
+        { url, error: scenario.error },
+      ]);
+      assert.deepEqual(extracted.citation.availableSourceIds, []);
+      const serialized = JSON.stringify(extracted);
+      assert.notInclude(serialized, privateMarker);
+      assert.notInclude(serialized, "synthetic-tavily-key");
+    });
+  }
+
+  it("preserves successful native extraction pages and citations beside a sanitized failed result", async function () {
+    setWebAccessProvider("anysearch");
+    setAnysearchApiKey("");
+    const goodUrl = "https://example.org/extract-success";
+    const failedUrl = "https://example.org/extract-quota";
+    const privateMarker = "synthetic-partial-extract-secret";
+    const calls: string[] = [];
+    const headers: Record<string, string>[] = [];
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      throw new Error("Unexpected fetch fallback in partial extraction test");
+    };
+    Object.assign(globalThis.Zotero, {
+      HTTP: {
+        newCookieContext: () => ({ id: 100060, dispose: () => undefined }),
+        request: async (
+          method: string,
+          requestUrl: string,
+          options: {
+            headers: Record<string, string>;
+            body: string;
+            requestObserver: (xhr: unknown) => void;
+            anon?: boolean;
+          },
+        ) => {
+          assert.equal(method, "POST");
+          observeNativeRequest(options);
+          calls.push(requestUrl);
+          headers.push(options.headers);
+          if (requestUrl.endsWith("/search")) {
+            return {
+              status: 200,
+              responseText: JSON.stringify({
+                code: 0,
+                request_id: "native-partial-search",
+                data: {
+                  results: [
+                    { url: goodUrl, title: "Successful result" },
+                    { url: failedUrl, title: "Quota result" },
+                  ],
+                },
+              }),
+            };
+          }
+          const { url } = JSON.parse(options.body) as { url: string };
+          if (url === goodUrl) {
+            return {
+              status: 200,
+              responseText: JSON.stringify({
+                code: 0,
+                request_id: "native-partial-extract",
+                data: {
+                  url: goodUrl,
+                  title: "Successful result",
+                  content: "Verified extracted text",
+                },
+              }),
+            };
+          }
+          assert.equal(url, failedUrl);
+          return {
+            status: 429,
+            get responseText() {
+              throw new Error(
+                `Native partial extraction error body must not be read: ${privateMarker}`,
+              );
+            },
+          };
+        },
+      },
+    });
+
+    const search = createWebSearchTool();
+    const read = createWebReadTool();
+    const searchResult = await search.execute(
+      { query: "partial extraction", maxResults: 2 },
+      context,
+    );
+    const extracted = await read.execute(
+      { urls: [goodUrl, failedUrl] },
+      context,
+    );
+
+    assert.lengthOf(calls, 3, "one search and one extraction per URL");
+    assert.equal(calls[0], "https://api.anysearch.com/v1/search");
+    assert.sameMembers(calls.slice(1), [
+      "https://api.anysearch.com/v1/extract",
+      "https://api.anysearch.com/v1/extract",
+    ]);
+    assert.equal(fetchCalls, 0);
+    for (const requestHeaders of headers) {
+      assert.notProperty(requestHeaders, "Authorization");
+      assert.notInclude(JSON.stringify(requestHeaders), "synthetic-tavily-key");
+    }
+    assert.deepEqual(
+      extracted.pages.map((page) => ({
+        url: page.url,
+        title: page.title,
+        content: page.content,
+      })),
+      [
+        {
+          url: goodUrl,
+          title: "Successful result",
+          content: "Verified extracted text",
+        },
+      ],
+    );
+    assert.deepEqual(extracted.failedResults, [
+      {
+        url: failedUrl,
+        error: "AnySearch rate limit reached. Try again later.",
+      },
+    ]);
+    assert.deepEqual(extracted.citation.availableSourceIds, [
+      searchResult.results[0].sourceId,
+    ]);
+    assert.notInclude(JSON.stringify(extracted), privateMarker);
+  });
+
   it("refreshes registered schemas with saved provider changes, without unsupported fields or costs", function () {
     const registry = new AgentToolRegistry();
     const search = createWebSearchTool();

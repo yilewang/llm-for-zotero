@@ -29,10 +29,10 @@ Documentation:
   <img src="./assets/demo.png" alt="Screenshot of the llm-for-zotero sidebar inside the Zotero PDF reader" width="1024" />
 </p>
 
-
 ## Demo Video
 
 How to do a library chat literature review with llm-for-zotero agent
+
 <div align="center">
   <video
     src="https://github.com/user-attachments/assets/c3c80e9c-a8cd-487f-9b1c-49ff717f514c"
@@ -40,11 +40,6 @@ How to do a library chat literature review with llm-for-zotero agent
     controls>
   </video>
 </div>
-
-
-
-
-
 
 ## Table of Contents
 
@@ -421,9 +416,14 @@ silently ignored. PDF, Office and media-binary extraction are not supported.
 Search queries and requested URLs are sent to AnySearch; do not include
 credentials or private library content.
 
-Anonymous quotas and permissions are server-controlled. An exhausted quota
-produces an error; the integration does not adopt credentials from responses,
-automatically retry, switch providers, or report fictional credit usage.
+Anonymous quotas and permissions are server-controlled. Search throws mapped
+access/quota errors. Extraction instead reports per-URL errors in `failedResults`,
+including when no page succeeds, while preserving any successfully extracted
+pages. Callers must inspect `failedResults`, not treat a resolved read as proof
+that every page was retrieved. After an access/quota/rate-limit error, extraction
+requests not yet started are withheld. The integration does not adopt credentials
+from responses, automatically retry, switch providers, or report fictional credit
+usage.
 
 ## Codex Setup (ChatGPT Plus Subscribers)
 

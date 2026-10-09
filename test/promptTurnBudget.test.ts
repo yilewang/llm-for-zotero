@@ -107,13 +107,24 @@ function loadBundledSkills() {
 
 describe("per-turn prompt budget", function () {
   let previousSkills: ReturnType<typeof getAllSkills>;
+  let previousZotero: typeof globalThis.Zotero;
   before(function () {
+    previousZotero = globalThis.Zotero;
+    // Golden character caps need one reproducible platform fixture: native
+    // shell paths and examples otherwise change the prompt with the CI host.
+    // Keep the existing caps; do not shorten or omit platform guidance.
+    globalThis.Zotero = {
+      ...previousZotero,
+      isWin: false,
+      isMac: true,
+    } as never;
     previousSkills = getAllSkills();
     // Measure with the installed skill inventory a real profile renders.
     setUserSkills(loadBundledSkills());
   });
   after(function () {
     setUserSkills(previousSkills);
+    globalThis.Zotero = previousZotero;
   });
 
   for (const [name, input] of Object.entries(TURNS)) {

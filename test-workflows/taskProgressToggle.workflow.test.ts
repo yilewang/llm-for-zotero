@@ -251,8 +251,8 @@ describe("workflow: task progress button", function () {
       "#llm-task-progress-toggle",
     ) as HTMLButtonElement;
     const curtain = () =>
-      (body.querySelector(".llm-task-progress-curtain") as HTMLElement)
-        .dataset.curtain;
+      (body.querySelector(".llm-task-progress-curtain") as HTMLElement).dataset
+        .curtain;
     const settle = async (target: "open" | "closed", label: string) => {
       await until(() => {
         api.flushTaskProgress();
@@ -272,8 +272,7 @@ describe("workflow: task progress button", function () {
       Zotero.Prefs.set(layoutPref, value, true);
       await until(
         () =>
-          doc.documentElement.getAttribute("data-llm-sidebar-layout") ===
-          value,
+          doc.documentElement.getAttribute("data-llm-sidebar-layout") === value,
         `${value} layout applies`,
       );
     };

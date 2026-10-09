@@ -192,6 +192,9 @@ describe("quoteCitations", function () {
 
     let yields = 0;
     const sliceDurations: number[] = [];
+    const stepDurations: { step: number; ms: number }[] = [];
+    let clockReset = true;
+    let previousStepAt = 0;
     const finalized = await finalizeAssistantQuoteCitationsCooperatively(
       {
         markdown,
@@ -203,6 +206,19 @@ describe("quoteCitations", function () {
       {
         yieldToMain: async () => {
           yields += 1;
+          clockReset = true;
+        },
+        now: () => {
+          const current = performance.now();
+          if (!clockReset) {
+            stepDurations.push({
+              step: stepDurations.length,
+              ms: current - previousStepAt,
+            });
+          }
+          previousStepAt = current;
+          clockReset = false;
+          return current;
         },
         onSliceComplete: (elapsedMs) => {
           sliceDurations.push(elapsedMs);
@@ -215,7 +231,57 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized!.quoteCitations, 50);
     assert.notInclude(finalized!.markdown, "Not a source quote");
     assert.isAtLeast(yields, 5);
-    assert.isBelow(Math.max(...sliceDurations), 50);
+    const timings = {
+      maximumSliceMs: Math.max(...sliceDurations),
+      yields,
+      steps: stepDurations.length,
+      // Step 0 is setup; through step 99, odd steps process quote blocks and
+      // even steps blank separators. Subsequent steps are document cleanup.
+      slowestSteps: [...stepDurations]
+        .sort((left, right) => right.ms - left.ms)
+        .slice(0, 5),
+    };
+    if (process.env.LLM_FOR_ZOTERO_TEST_TIMINGS === "1") {
+      console.info("Cooperative quote timing:", JSON.stringify(timings));
+    }
+    assert.isBelow(timings.maximumSliceMs, 50, JSON.stringify(timings));
+  });
+
+  it("can cancel after the last quote before final document cleanup", async function () {
+    const quote =
+      "A final quote remains independently attributable to its original paper.";
+    let current = true;
+    let yields = 0;
+    let now = 0;
+    const result = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown: `> ${quote}`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: quote,
+              sourceLabel: "(Cleanup et al., 2026)",
+              sourceMatchSource: "pdf-page-text",
+              contextItemId: 71,
+              itemId: 70,
+              pageHintIndex: 0,
+              sourceFingerprint: "cleanup-source",
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      {
+        now: () => (now += 7),
+        shouldContinue: () => current,
+        yieldToMain: async () => {
+          yields += 1;
+          if (yields === 2) current = false;
+        },
+      },
+    );
+    assert.isNull(result, "cleanup must not publish a stale final result");
+    assert.equal(yields, 2);
   });
 
   it("cancels cooperative quote matching before stale results can be returned", async function () {

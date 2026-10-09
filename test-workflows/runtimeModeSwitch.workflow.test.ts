@@ -517,7 +517,14 @@ describe("workflow: runtime mode switch", function () {
   ): Promise<Awaited<ReturnType<WorkflowTestApi["getDiagnostics"]>>> {
     const deadline = Date.now() + 8000;
     let diagnostics = await api.getDiagnostics(panelId);
-    while (diagnostics.conversationSystem !== system && Date.now() < deadline) {
+    const settled = () =>
+      diagnostics.conversationSystem === system &&
+      diagnostics.runtimeSystemToggles
+        .filter((toggle) => toggle.visible)
+        .every((toggle) => !toggle.disabled);
+    // The conversation identity changes before the async switch finishes.
+    // Clicking back while its control is disabled is ignored by the browser.
+    while (!settled() && Date.now() < deadline) {
       await Zotero.Promise.delay(50);
       diagnostics = await api.getDiagnostics(panelId);
     }
@@ -526,6 +533,7 @@ describe("workflow: runtime mode switch", function () {
       system,
       `the panel must settle on the ${system} runtime`,
     );
+    assert.isTrue(settled(), "runtime controls must finish switching");
     return diagnostics;
   }
 

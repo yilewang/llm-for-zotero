@@ -9,6 +9,13 @@ describe("shell effect analysis for automatic execution", function () {
   const originalZotero = (globalThis as any).Zotero;
   beforeEach(function () {
     (globalThis as any).IOUtils = { exists: async () => false };
+    // These default examples use POSIX syntax. Windows-specific cases below
+    // select Windows explicitly rather than inheriting the machine running CI.
+    (globalThis as any).Zotero = {
+      ...originalZotero,
+      isWin: false,
+      isMac: true,
+    };
   });
   afterEach(function () {
     (globalThis as any).IOUtils = originalIO;

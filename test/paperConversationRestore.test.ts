@@ -9,6 +9,7 @@ import {
 } from "../src/shared/conversationRegistry";
 import {
   beginPaperRestoreSelectionShutdown,
+  clearPaperRestoreTargetsForWorkflowTests,
   flushPaperRestoreSelectionWrites,
   forgetPaperRestoreTargetsForItem,
   getPaperRestoreTarget,
@@ -438,6 +439,21 @@ describe("paper conversation restore selections", function () {
     setLastUsedPaperConversationKey(1, 31, 1303);
     await flushPaperRestoreSelectionWrites();
     assert.equal(harness.transactionCount, afterCommit);
+  });
+
+  it("serializes concurrent workflow clears on the selection write queue", async function () {
+    harness = await installHarness();
+    addConversation(harness, "upstream", 1351, 1, 35, { marker: true });
+    await initializePaperRestoreSelections(readiness({ upstream: true }));
+    const transactionBaseline = harness.transactionCount;
+
+    await Promise.all([
+      clearPaperRestoreTargetsForWorkflowTests(),
+      clearPaperRestoreTargetsForWorkflowTests(),
+    ]);
+
+    assert.deepEqual(markerKeys(harness), []);
+    assert.equal(harness.transactionCount - transactionBaseline, 2);
   });
 
   it("does not let a rejected write poison or roll back a newer selection", async function () {

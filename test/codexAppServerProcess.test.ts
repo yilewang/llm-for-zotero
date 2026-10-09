@@ -693,13 +693,16 @@ describe("codexAppServerProcess", function () {
       options: {
         userAgent?: string;
         writes?: Array<Record<string, any>>;
+        onWrite?: (message: Record<string, unknown>) => void;
         onKill?: () => void;
       } = {},
     ): TestProcess {
       const proc = CodexAppServerProcess.forTest({
         stdin: {
           write: (line: string) => {
-            options.writes?.push(JSON.parse(line));
+            const message = JSON.parse(line);
+            options.writes?.push(message);
+            options.onWrite?.(message);
           },
         },
         kill: () => options.onKill?.(),
@@ -1059,7 +1062,16 @@ describe("codexAppServerProcess", function () {
     });
 
     it("keeps the parent alive while a tracked child waits for approval", async function () {
-      const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+      let acknowledge!: (message: Record<string, unknown>) => void;
+      const acknowledged = new Promise<Record<string, unknown>>((resolve) => {
+        acknowledge = resolve;
+      });
+      const proc = createConcurrentProcess({
+        userAgent: CURRENT_USER_AGENT,
+        onWrite: (message) => {
+          if (message.id === "child-approval") acknowledge(message);
+        },
+      });
       const childThreadIds = new Set<string>();
       let approve!: (value: unknown) => void;
       const dispose = proc.onRequest(
@@ -1118,7 +1130,11 @@ describe("codexAppServerProcess", function () {
           "the parent must wait for its child's decision",
         );
         approve({ decision: "accept" });
-        await tick();
+        // Wait for the actual response, without yielding to the idle timer.
+        assert.deepEqual(await acknowledged, {
+          id: "child-approval",
+          result: { decision: "accept" },
+        });
         proc.handleMessage({
           method: "turn/completed",
           params: {

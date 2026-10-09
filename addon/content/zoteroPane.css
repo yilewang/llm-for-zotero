@@ -636,14 +636,15 @@
 /* The sidebar toggle reuses the standalone segmented tabs. It has no flyout
  * to rise above, so header menus keep painting over it. */
 .llm-header-toggle-row .llm-header-mode-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(64px, 1fr));
   z-index: auto;
 }
 
-/* Balanced tabs: equal minimum widths, labels that shrink only when the
+/* Balanced tabs: equal grid tracks, labels that shrink only when the
  * sidebar is too narrow for both. Scoped to the row to outrank the shared
  * .llm-standalone-tab padding. */
 .llm-header-toggle-row .llm-header-mode-tab {
-  flex: 0 1 auto;
   min-width: 64px;
   padding-inline: 12px;
 }

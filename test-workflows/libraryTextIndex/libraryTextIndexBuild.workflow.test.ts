@@ -7,6 +7,7 @@ import {
 import {
   closeLibraryTextIndexDb,
   openLibraryTextIndexDb,
+  refuseLibraryTextIndexOpensForQuit,
 } from "../../src/services/libraryTextIndex/db";
 import { generateSyntheticCorpus } from "../../test/helpers/syntheticLibraryCorpus";
 
@@ -41,14 +42,21 @@ describe("library text index fills in the background", function () {
   });
 
   after(async function () {
-    Zotero.Debug.removeListener(onDebug);
-    await api().setLibraryTextIndexUserIdle(null);
-    for (const id of created.reverse()) {
-      try {
-        await Zotero.Items.get(id)?.eraseTx();
-      } catch {
-        /* ignore */
+    try {
+      Zotero.Debug.removeListener(onDebug);
+      await api().setLibraryTextIndexUserIdle(null);
+      for (const id of created.reverse()) {
+        try {
+          await Zotero.Items.get(id)?.eraseTx();
+        } catch {
+          /* ignore */
+        }
       }
+    } finally {
+      // This test also opens its own bundled connection, independently of the
+      // plugin harness. Close it even if the test or fixture cleanup failed.
+      refuseLibraryTextIndexOpensForQuit();
+      await closeLibraryTextIndexDb({ throwOnError: true });
     }
   });
 

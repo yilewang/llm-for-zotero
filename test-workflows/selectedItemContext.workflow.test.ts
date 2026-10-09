@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
+import { waitForNativeWindowFrame } from "./nativeWindowReadiness";
 import type {
   WorkflowTestApi,
   WorkflowTestDiagnostics,
@@ -11,6 +12,29 @@ const CLAUDE_MODE_PREFS = {
   enableClaudeCodeMode: true,
   conversationSystem: "claude_code",
 };
+
+async function exerciseVisibleTargetedQuoteRefresh(
+  api: WorkflowTestApi,
+  panelId: string,
+) {
+  const win = Zotero.getMainWindow();
+  const host = win.document.querySelector<HTMLElement>(
+    `[data-workflow-panel-id="${panelId}"]`,
+  );
+  assert.isOk(host, "workflow panel host must be mounted");
+  const previousStyle = host.getAttribute("style");
+  try {
+    // Both callers exercise real scroll geometry. Move the synthetic host
+    // onscreen for those measurements, then restore its exact prior style.
+    host.style.left = "0";
+    host.style.zIndex = "99999";
+    await waitForNativeWindowFrame(win);
+    return await api.exerciseTargetedQuoteRefresh(panelId);
+  } finally {
+    if (previousStyle === null) host.removeAttribute("style");
+    else host.setAttribute("style", previousStyle);
+  }
+}
 
 async function withPrefs<T>(
   prefs: Record<string, unknown>,
@@ -91,7 +115,10 @@ async function diagnosticsMessage(
 }
 
 describe("workflow: selected item context send", function () {
-  this.timeout(30000);
+  // This suite follows hundreds of native workflow cases in the complete gate.
+  // A busy Zotero DB can make the test-boundary reset exceed the old 30s
+  // ceiling even though the same file is green in the standalone workflow job.
+  this.timeout(90000);
 
   let api: WorkflowTestApi;
   let fixture: WorkflowTestFixture | null = null;
@@ -449,7 +476,10 @@ describe("workflow: selected item context send", function () {
     });
 
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    const result = await api.exerciseTargetedQuoteRefresh(panel.panelId);
+    const result = await exerciseVisibleTargetedQuoteRefresh(
+      api,
+      panel.panelId,
+    );
 
     assert.equal(result.messageCount, 16);
     assert.equal(result.assistantMessageCount, 8);
@@ -468,9 +498,8 @@ describe("workflow: selected item context send", function () {
     });
 
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    const { scrollStability: probe } = await api.exerciseTargetedQuoteRefresh(
-      panel.panelId,
-    );
+    const { scrollStability: probe } =
+      await exerciseVisibleTargetedQuoteRefresh(api, panel.panelId);
 
     // The probe only proves something when the chat really scrolls and the
     // earlier message really changed height above the reader.
@@ -479,6 +508,15 @@ describe("workflow: selected item context send", function () {
       probe.earlierWrapperHeightDelta,
       0,
       "earlier message must change height",
+    );
+    assert.isTrue(probe.diagnostics.earlierWrapperConnectedAfter);
+    assert.isAbove(Number(probe.diagnostics.earlierHeightBefore), 0);
+    assert.isAbove(Number(probe.diagnostics.earlierHeightAfter), 0);
+    assert.isNotEmpty(probe.diagnostics.clickedQuoteOccurrenceId);
+    assert.equal(
+      probe.diagnostics.quoteOccurrenceIdAfter,
+      probe.diagnostics.clickedQuoteOccurrenceId,
+      "the repeated quote occurrence, not merely its shared citation, survives",
     );
     assert.isTrue(probe.expandedBeforeRerender, "card must expand on click");
     assert.isAtLeast(

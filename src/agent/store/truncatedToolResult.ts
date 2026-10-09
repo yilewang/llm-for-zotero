@@ -30,6 +30,19 @@ export const PREVIEW_ARRAY_MIN_ENTRIES = 3;
 /** Leaves room for the marker's own fields under 8 KB. */
 export const PREVIEW_MAX_BYTES = 8 * 1024 - 256;
 const PREVIEW_MAX_DEPTH = 32;
+const PREVIEW_STRING_MEASUREMENT_CACHE_LIMIT = 256;
+
+function measuredStringLength(
+  text: string,
+  cache: Map<string, number>,
+): number {
+  const cached = cache.get(text);
+  if (cached !== undefined) return cached;
+  const size = JSON.stringify(text).length;
+  if (cache.size < PREVIEW_STRING_MEASUREMENT_CACHE_LIMIT)
+    cache.set(text, size);
+  return size;
+}
 
 /**
  * An array of the copy and its JSON length; `leaf` when it holds no array,
@@ -56,12 +69,30 @@ function shortenAndMeasure(
   maxChars: number,
   depth: number,
   arrays: MeasuredArray[],
+  stringLengths: Map<string, number>,
+  shortenedStrings: Map<string, Measured>,
   withinArray = false,
 ): Measured | undefined {
   if (typeof value === "string") {
+    // Do not hash arbitrarily large source passages just to reuse a tiny
+    // prefix. Modest repeated row values can share the immutable measurement.
+    const cacheable = value.length <= PREVIEW_STRING_MAX_CHARS * 2;
+    const cached = cacheable ? shortenedStrings.get(value) : undefined;
+    if (cached) return cached;
     const text =
       value.length > maxChars ? `${value.slice(0, maxChars)}\u2026` : value;
-    return { value: text, size: JSON.stringify(text).length, hasArray: false };
+    const measured = {
+      value: text,
+      size: measuredStringLength(text, stringLengths),
+      hasArray: false,
+    };
+    if (
+      cacheable &&
+      shortenedStrings.size < PREVIEW_STRING_MEASUREMENT_CACHE_LIMIT
+    ) {
+      shortenedStrings.set(value, measured);
+    }
+    return measured;
   }
   if (value === null) return { value, size: 4, hasArray: false };
   if (typeof value !== "object") {
@@ -81,6 +112,8 @@ function shortenAndMeasure(
         maxChars,
         depth + 1,
         arrays,
+        stringLengths,
+        shortenedStrings,
         true,
       );
       out.push(measured ? measured.value : null);
@@ -102,6 +135,8 @@ function shortenAndMeasure(
       maxChars,
       depth,
       arrays,
+      stringLengths,
+      shortenedStrings,
       withinArray,
     );
   const out: Record<string, unknown> = {};
@@ -114,11 +149,13 @@ function shortenAndMeasure(
       maxChars,
       depth + 1,
       arrays,
+      stringLengths,
+      shortenedStrings,
       withinArray,
     );
     if (!measured) continue;
     out[key] = measured.value;
-    size += JSON.stringify(key).length + 1 + measured.size;
+    size += measuredStringLength(key, stringLengths) + 1 + measured.size;
     fields += 1;
     hasArray ||= measured.hasArray;
   }
@@ -166,12 +203,17 @@ function jsonLength(value: unknown): number {
  */
 export function buildToolResultPreview(content: unknown): unknown {
   try {
+    // Repeated row fields and strings need the same JSON escaping calculation.
+    // Keep the memo bounded and local to this preview; never retain result data.
+    const stringLengths = new Map<string, number>();
     let arrays: MeasuredArray[] = [];
     let measured = shortenAndMeasure(
       content,
       PREVIEW_STRING_MAX_CHARS,
       0,
       arrays,
+      stringLengths,
+      new Map(),
     );
     if (!measured) return undefined;
     if (measured.size <= PREVIEW_MAX_BYTES) return measured.value;
@@ -186,6 +228,8 @@ export function buildToolResultPreview(content: unknown): unknown {
       PREVIEW_SHORT_STRING_MAX_CHARS,
       0,
       arrays,
+      stringLengths,
+      new Map(),
     );
     if (!measured) return undefined;
     if (measured.size <= PREVIEW_MAX_BYTES) return measured.value;

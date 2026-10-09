@@ -32,6 +32,10 @@ import {
 } from "../../src/services/paperContent/pdfContext";
 import { pdfTextCache } from "../../src/services/paperContent/contextCache";
 import { buildMineruSyncPackageBytes } from "../../src/services/mineru/sync";
+import {
+  closeLibraryTextIndexDb,
+  refuseLibraryTextIndexOpensForQuit,
+} from "../../src/services/libraryTextIndex/db";
 
 export type RecoveryRecord = {
   id: number;
@@ -41,8 +45,25 @@ export type RecoveryRecord = {
   uploads: number[];
   interruptedChunk?: number;
 };
-composeRetrievalCandidateInvalidation();
+const disposeInvalidation = composeRetrievalCandidateInvalidation();
 const prefix = "extensions.zotero.llmforzotero.";
+
+/**
+ * Each workflow bundle owns a separate module graph. Text invalidation can
+ * enqueue an index row through this graph without starting the addon's index
+ * lifecycle, so the addon's quit blocker cannot close this bundle's handle.
+ * Call once from the owning suite's after hook, including failure paths.
+ */
+export async function disposeRecoveryScenarioResources(): Promise<void> {
+  // Refuse lazy invalidation imports that have not opened their handle yet,
+  // then await and close any open already in flight. Never touch Zotero.DB.
+  refuseLibraryTextIndexOpensForQuit();
+  try {
+    await closeLibraryTextIndexDb({ throwOnError: true });
+  } finally {
+    disposeInvalidation();
+  }
+}
 
 async function run(record: RecoveryRecord, stop: boolean) {
   const toolkit = (Zotero as any).LLMForZotero.data.ztoolkit;

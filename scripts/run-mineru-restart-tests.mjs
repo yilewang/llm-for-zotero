@@ -1,5 +1,5 @@
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { runMineruRestartPhase } from "./mineru-restart-phase.mjs";
 
 // The standard scaffold empties its disposable data directory on every run.
 // Preserve its stopped database and checkpoint files between two fresh Zotero
@@ -12,31 +12,21 @@ async function phase(name, test) {
   await writeFile(
     `${entries}/restart.test.ts`,
     `import { assert } from "chai";
-import { interruptRecoveryScenario, resumeRecoveryScenario, cleanupRecoveryScenario } from "${helper}";
+import { interruptRecoveryScenario, resumeRecoveryScenario, cleanupRecoveryScenario, disposeRecoveryScenarioResources } from "${helper}";
 describe("MinerU process restart: ${name}",function(){this.timeout(120000);
+after(disposeRecoveryScenarioResources);
 it("${name}",async function(){
 const io=(globalThis as any).IOUtils;
 const recordPath=PathUtils.join(Zotero.DataDirectory.dir,"mineru-restart-records.json");
 ${test}
 });});\n`,
   );
-  await new Promise((resolve, reject) => {
-    const child = spawn(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["run", "test:workflow"],
-      {
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          LLM_FOR_ZOTERO_TEST_ENTRIES: entries,
-          LLM_FOR_ZOTERO_MINERU_RESTART_PHASE: name,
-        },
-      },
-    );
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)),
-    );
+  await runMineruRestartPhase(name, {
+    env: {
+      ...process.env,
+      LLM_FOR_ZOTERO_TEST_ENTRIES: entries,
+      LLM_FOR_ZOTERO_MINERU_RESTART_PHASE: name,
+    },
   });
 }
 await phase(

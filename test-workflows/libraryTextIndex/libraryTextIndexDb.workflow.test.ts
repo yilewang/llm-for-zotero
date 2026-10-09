@@ -3,6 +3,7 @@ import {
   closeLibraryTextIndexDb,
   getLibraryTextIndexDbPath,
   openLibraryTextIndexDb,
+  refuseLibraryTextIndexOpensForQuit,
 } from "../../src/services/libraryTextIndex/db";
 
 declare const Zotero: any;
@@ -11,8 +12,18 @@ declare const IOUtils: any;
 describe("library text index database in the real Zotero runtime", function () {
   this.timeout(30000);
 
+  after(async function () {
+    // An assertion or query failure must not skip disposal of this bundle's
+    // connection and turn the original failure into a native shutdown crash.
+    refuseLibraryTextIndexOpensForQuit();
+    await closeLibraryTextIndexDb({ throwOnError: true });
+  });
+
   it("opens a separate sqlite file in the data directory, round-trips a row, and closes", async function () {
-    assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
+    assert.include(
+      Zotero.DataDirectory.dir.replace(/\\/g, "/"),
+      ".scaffold/test/data",
+    );
     const db = await openLibraryTextIndexDb();
     assert.isOk(db, "Zotero.DBConnection opened the plugin database");
     const path = getLibraryTextIndexDbPath();

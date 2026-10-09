@@ -231,7 +231,8 @@ describe("MinerU durable recovery", function () {
     const io = (globalThis as any).IOUtils;
     const write = io.write;
     io.write = async (p: string, data: Uint8Array, options: unknown) => {
-      if (p.endsWith("/manifest.json")) throw new Error("simulated disk full");
+      if (path.basename(p) === "manifest.json")
+        throw new Error("simulated disk full");
       return write(p, data, options);
     };
     let failure: unknown;
@@ -300,7 +301,7 @@ describe("MinerU durable recovery", function () {
     const write = io.write;
     let indexWrites = 0;
     io.write = async (p: string, data: Uint8Array, options: unknown) => {
-      if (p.endsWith("/checkpoint.json") && ++indexWrites === 2)
+      if (path.basename(p) === "checkpoint.json" && ++indexWrites === 2)
         throw new Error("index write failed");
       return write(p, data, options);
     };
@@ -322,7 +323,7 @@ describe("MinerU durable recovery", function () {
       release = resolve;
     });
     io.write = async (p: string, data: Uint8Array, options: unknown) => {
-      if (p.endsWith("/chunk-1.zip")) {
+      if (path.basename(p) === "chunk-1.zip") {
         reached();
         await gate;
       }

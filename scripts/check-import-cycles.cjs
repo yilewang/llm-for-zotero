@@ -71,11 +71,13 @@ function resolveRelativeImport(file, specifier, fileSet) {
   return candidates.find((candidate) => fileSet.has(candidate)) || null;
 }
 
-function buildGraph({ root, runtimeOnly }) {
+function buildGraphs(root) {
   const sourceRoot = path.join(root, "src");
   const files = walkSourceFiles(sourceRoot);
   const fileSet = new Set(files);
-  const graph = new Map();
+  const runtime = new Map();
+  const staticGraph = new Map();
+  let parseCount = 0;
 
   for (const file of files) {
     const source = ts.createSourceFile(
@@ -84,7 +86,9 @@ function buildGraph({ root, runtimeOnly }) {
       ts.ScriptTarget.Latest,
       false,
     );
-    const deps = [];
+    parseCount += 1;
+    const runtimeDeps = [];
+    const staticDeps = [];
     for (const statement of source.statements) {
       let specifier = null;
       let typeOnly = false;
@@ -102,17 +106,19 @@ function buildGraph({ root, runtimeOnly }) {
         specifier = statement.moduleSpecifier.text;
         typeOnly = isTypeOnlyExport(statement);
       }
-      if (!specifier || (runtimeOnly && typeOnly)) continue;
+      if (!specifier) continue;
       const resolved = resolveRelativeImport(file, specifier, fileSet);
-      if (resolved) deps.push(resolved);
+      if (!resolved) continue;
+      staticDeps.push(resolved);
+      if (!typeOnly) runtimeDeps.push(resolved);
     }
-    graph.set(file, deps);
+    runtime.set(file, runtimeDeps);
+    staticGraph.set(file, staticDeps);
   }
-  return { files, graph };
+  return { files, runtime, static: staticGraph, parseCount };
 }
 
-function findCycles(root, runtimeOnly) {
-  const { files, graph } = buildGraph({ root, runtimeOnly });
+function findCycles(root, files, graph) {
   const visited = new Set();
   const onStack = new Set();
   const stack = [];
@@ -165,8 +171,15 @@ function compareCycles(found, allowed) {
 }
 
 function checkImportCycles(root = process.cwd()) {
-  const runtime = findCycles(root, true);
-  const staticCycles = findCycles(root, false);
+  const startedAt = process.hrtime.bigint();
+  const {
+    files,
+    runtime: runtimeGraph,
+    static: staticGraph,
+    parseCount,
+  } = buildGraphs(root);
+  const runtime = findCycles(root, files, runtimeGraph);
+  const staticCycles = findCycles(root, files, staticGraph);
   const runtimeComparison = compareCycles(runtime, ALLOWED_RUNTIME_CYCLES);
   const staticComparison = compareCycles(staticCycles, ALLOWED_STATIC_CYCLES);
   return {
@@ -176,6 +189,11 @@ function checkImportCycles(root = process.cwd()) {
     staleAllowedRuntime: runtimeComparison.staleAllowed,
     unexpectedStatic: staticComparison.unexpected,
     staleAllowedStatic: staticComparison.staleAllowed,
+    diagnostics: {
+      fileCount: files.length,
+      parseCount,
+      elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+    },
   };
 }
 
@@ -189,6 +207,9 @@ function printCycleList(title, cycles) {
 
 if (require.main === module) {
   const result = checkImportCycles(process.cwd());
+  console.log(
+    `Import-cycle scan: ${result.diagnostics.fileCount} files, ${result.diagnostics.parseCount} parses, ${result.diagnostics.elapsedMs.toFixed(1)}ms.`,
+  );
   const failed =
     result.unexpectedRuntime.length ||
     result.unexpectedStatic.length ||

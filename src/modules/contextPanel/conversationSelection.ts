@@ -22,6 +22,12 @@
  * sidebar's. A scope without `surface` is embedded.
  */
 import type { ConversationSystem } from "../../shared/types";
+import {
+  claimMapRestore,
+  clearMapRestores,
+  invalidateMapRestore,
+  type MapRestoreClaim,
+} from "../../shared/mapRestoreOwnership";
 import { invalidatePaperRestoreTargetCache } from "../../shared/paperConversationRestore";
 import {
   getLastUsedClaudeConversationMode,
@@ -121,6 +127,10 @@ type Slot<V> = {
   get: () => V | undefined;
   set: (value: V) => void;
   delete: () => void;
+  invalidateRestore: () => void;
+  prime: (value: V) => MapRestoreClaim;
+  restoreSet: (value: V) => void;
+  restoreDelete: () => void;
 };
 
 type SelectionAdapter = {
@@ -146,16 +156,29 @@ type SelectionAdapter = {
   removePaper: (libraryID: number, paperItemID: number) => void;
 };
 
+// Slot wrappers are recreated for each call, so rollback ownership belongs to
+// the underlying map/key. Value equality alone misses a newer same-value commit.
 function slot<K, V>(map: Map<K, V>, key: K): Slot<V> {
+  const invalidateRestore = () => invalidateMapRestore(map, key);
   return {
     has: () => map.has(key),
     get: () => map.get(key),
     set: (value) => {
+      invalidateRestore();
       map.set(key, value);
     },
     delete: () => {
+      invalidateRestore();
       map.delete(key);
     },
+    invalidateRestore,
+    prime: (value) => {
+      const claim = claimMapRestore(map, key);
+      map.set(key, value);
+      return claim;
+    },
+    restoreSet: (value) => map.set(key, value),
+    restoreDelete: () => map.delete(key),
   };
 }
 
@@ -484,6 +507,7 @@ export function rememberMode(
     return;
   }
   if (options.active !== false) adapter.modeSlot(libraryID).set(mode);
+  else adapter.modeSlot(libraryID).invalidateRestore();
   adapter.setMode(libraryID, mode);
 }
 
@@ -492,6 +516,9 @@ export function rememberMode(
  * starts from the sidebar's selection and diverges from there.
  */
 export function clearStandaloneSelection(): void {
+  clearMapRestores(standaloneConversationModeByLibrary);
+  clearMapRestores(standaloneGlobalConversationByLibrary);
+  clearMapRestores(standalonePaperConversationByPaper);
   standaloneConversationModeByLibrary.clear();
   standaloneGlobalConversationByLibrary.clear();
   standalonePaperConversationByPaper.clear();
@@ -538,13 +565,14 @@ function primeEntry<V>(params: {
   const hadValue = entry.has();
   const previousValue = entry.get();
   const previousPersisted = persisted ? persisted.read() : null;
-  entry.set(value);
+  const ownership = entry.prime(value);
   persisted?.write(value);
   return {
-    isStillPrimed: () => entry.get() === value,
+    isStillPrimed: () => ownership.isCurrent() && entry.get() === value,
     restore: () => {
-      if (hadValue) entry.set(previousValue as V);
-      else entry.delete();
+      if (hadValue) entry.restoreSet(previousValue as V);
+      else entry.restoreDelete();
+      ownership.restorePrevious();
       if (!persisted) return;
       if (params.isRestorable(previousPersisted)) {
         persisted.write(previousPersisted);

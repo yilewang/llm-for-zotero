@@ -12,6 +12,7 @@ import {
   setLastUsedClaudeConversationMode,
   setLastUsedClaudeGlobalConversationKey,
 } from "../src/claudeCode/prefs";
+import { rememberClaudeConversationSelection } from "../src/claudeCode/runtime";
 import {
   activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
@@ -573,6 +574,244 @@ describe("conversationSelection", function () {
         });
       });
 
+      for (const surface of ["embedded", "standalone"] as const) {
+        it(`restores nested failed ${surface} paper primes in reverse order`, async function () {
+          const olderKey = fixture.paperKey();
+          const newerKey = olderKey + 1;
+          await initializeRestore(fixture, [olderKey, newerKey]);
+          rememberMode(fixture.system, LIBRARY_ID, "global");
+          if (surface === "standalone") {
+            rememberMode(fixture.system, LIBRARY_ID, "global", { surface });
+          }
+          const params = {
+            system: fixture.system,
+            libraryID: LIBRARY_ID,
+            mode: "paper" as const,
+            paperItemID: PAPER_ID,
+            surface,
+          };
+          const older = prime({ ...params, conversationKey: olderKey });
+          const newer = prime({ ...params, conversationKey: newerKey });
+          await flushPaperRestoreSelectionWrites();
+
+          assert.equal(recallActive({ ...paperScopeFor(), surface }), newerKey);
+          newer.restore();
+          await flushPaperRestoreSelectionWrites();
+          assert.equal(recallActive({ ...paperScopeFor(), surface }), olderKey);
+          assert.equal(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+              surface,
+            }),
+            "paper",
+          );
+
+          older.restore();
+          await flushPaperRestoreSelectionWrites();
+          assert.equal(recallActive({ ...paperScopeFor(), surface }), 0);
+          assert.equal(
+            recallMode(fixture.system, LIBRARY_ID, {
+              source: "active+persisted",
+              surface,
+            }),
+            "global",
+          );
+          assert.isNull(fixture.getPaper());
+          assert.equal(fixture.getMode(), "global");
+        });
+
+        describe(`${surface} mode priming ownership`, function () {
+          it(
+            surface === "embedded"
+              ? "does not restore global after a same-valued persisted-only paper commit"
+              : "still restores global after a no-op active:false window write",
+            function () {
+              rememberMode(fixture.system, LIBRARY_ID, "global");
+              if (surface === "standalone") {
+                rememberMode(fixture.system, LIBRARY_ID, "global", {
+                  surface,
+                });
+              }
+              const snapshot = prime({
+                system: fixture.system,
+                libraryID: LIBRARY_ID,
+                mode: "paper",
+                surface,
+              });
+              rememberMode(fixture.system, LIBRARY_ID, "paper", {
+                active: false,
+                surface,
+              });
+              assert.equal(
+                recallMode(fixture.system, LIBRARY_ID, {
+                  source: "active+persisted",
+                  surface,
+                }),
+                "paper",
+              );
+
+              snapshot.restore();
+
+              const expected = surface === "embedded" ? "paper" : "global";
+              assert.deepEqual(
+                {
+                  selected: recallMode(fixture.system, LIBRARY_ID, {
+                    source: "active+persisted",
+                    surface,
+                  }),
+                  embedded: fixture.modeMap().get(fixture.modeStateKey()),
+                  persisted: fixture.getMode(),
+                },
+                {
+                  selected: expected,
+                  embedded: expected,
+                  persisted: expected,
+                },
+              );
+            },
+          );
+
+          for (const newerWrite of ["rememberMode", "prime"] as const) {
+            it(`does not restore global after a newer same-valued paper ${newerWrite}`, function () {
+              rememberMode(fixture.system, LIBRARY_ID, "global");
+              if (surface === "standalone") {
+                rememberMode(fixture.system, LIBRARY_ID, "global", {
+                  surface,
+                });
+              }
+              const params = {
+                system: fixture.system,
+                libraryID: LIBRARY_ID,
+                mode: "paper" as const,
+                surface,
+              };
+              const older = prime(params);
+              assert.equal(
+                recallMode(fixture.system, LIBRARY_ID, {
+                  source: "active+persisted",
+                  surface,
+                }),
+                "paper",
+              );
+
+              let newer: ReturnType<typeof prime> | undefined;
+              if (newerWrite === "rememberMode") {
+                rememberMode(fixture.system, LIBRARY_ID, "paper", {
+                  surface,
+                });
+              } else {
+                newer = prime(params);
+              }
+              older.restore();
+
+              const assertPaperSelection = () => {
+                assert.deepEqual(
+                  {
+                    selected: recallMode(fixture.system, LIBRARY_ID, {
+                      source: "active+persisted",
+                      surface,
+                    }),
+                    embedded: fixture.modeMap().get(fixture.modeStateKey()),
+                    persisted: fixture.getMode(),
+                  },
+                  {
+                    selected: "paper",
+                    embedded: surface === "embedded" ? "paper" : "global",
+                    persisted: surface === "embedded" ? "paper" : "global",
+                  },
+                  "an older rollback must preserve the newer selection and surface isolation",
+                );
+              };
+              assertPaperSelection();
+              if (newer) {
+                newer.restore();
+                assertPaperSelection();
+              }
+            });
+          }
+        });
+
+        for (const kind of ["global", "paper"] as const) {
+          const writers =
+            fixture.system === "claude_code" && surface === "embedded"
+              ? (["remember", "direct Claude writer"] as const)
+              : (["remember"] as const);
+          for (const writer of writers) {
+            it(`preserves ${surface} ${kind} selection after a same-valued ${writer} commit`, async function () {
+              const embeddedScope =
+                kind === "global" ? globalScopeFor() : paperScopeFor();
+              const scope = { ...embeddedScope, surface };
+              const previousKey =
+                kind === "global" ? fixture.globalKey() : fixture.paperKey();
+              const targetKey = previousKey + 1;
+              const previousMode = kind === "global" ? "paper" : "global";
+              if (kind === "paper") {
+                await initializeRestore(fixture, [previousKey, targetKey]);
+              }
+              remember(embeddedScope, previousKey);
+              rememberMode(fixture.system, LIBRARY_ID, previousMode);
+              if (surface === "standalone") {
+                remember(scope, previousKey);
+                rememberMode(fixture.system, LIBRARY_ID, previousMode, {
+                  surface,
+                });
+              }
+              if (kind === "paper") await flushPaperRestoreSelectionWrites();
+
+              const snapshot = prime({
+                system: fixture.system,
+                libraryID: LIBRARY_ID,
+                mode: kind,
+                conversationKey: targetKey,
+                paperItemID: kind === "paper" ? PAPER_ID : undefined,
+                surface,
+              });
+              const assertTargetSelection = () => {
+                assert.deepEqual(
+                  {
+                    active: recallActive(scope),
+                    mode: recallMode(fixture.system, LIBRARY_ID, {
+                      source: "active+persisted",
+                      surface,
+                    }),
+                    embedded: recallActive(embeddedScope),
+                    persisted: recallPersisted(embeddedScope),
+                    embeddedMode: fixture.modeMap().get(fixture.modeStateKey()),
+                    persistedMode: fixture.getMode(),
+                  },
+                  {
+                    active: targetKey,
+                    mode: kind,
+                    embedded: surface === "embedded" ? targetKey : previousKey,
+                    persisted: surface === "embedded" ? targetKey : previousKey,
+                    embeddedMode: surface === "embedded" ? kind : previousMode,
+                    persistedMode: surface === "embedded" ? kind : previousMode,
+                  },
+                );
+              };
+              if (kind === "paper") await flushPaperRestoreSelectionWrites();
+              assertTargetSelection();
+
+              // Commit only the key, so mode invalidation cannot mask a missing
+              // conversation-slot ownership guard.
+              if (writer === "remember") {
+                remember(scope, targetKey);
+              } else {
+                rememberClaudeConversationSelection({
+                  libraryID: LIBRARY_ID,
+                  kind,
+                  paperItemID: kind === "paper" ? PAPER_ID : undefined,
+                  conversationKey: targetKey,
+                });
+              }
+              snapshot.restore();
+              if (kind === "paper") await flushPaperRestoreSelectionWrites();
+              assertTargetSelection();
+            });
+          }
+        }
+      }
+
       it("primes the mode and global key and restores both", function () {
         const snapshot = prime({
           system: fixture.system,
@@ -595,6 +834,66 @@ describe("conversationSelection", function () {
       });
     });
   }
+
+  it("preserves an owned rollback after other-library and other-surface commits", function () {
+    const scope: SelectionScope = {
+      system: "upstream",
+      libraryID: LIBRARY_ID,
+      kind: "global",
+    };
+    const windowScope = { ...scope, surface: "standalone" as const };
+    const otherScope = { ...scope, libraryID: LIBRARY_ID + 1 };
+    const previousKey =
+      buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID) + 1;
+    const targetKey = previousKey + 1;
+    const otherKey =
+      buildDefaultUpstreamGlobalConversationKey(otherScope.libraryID) + 1;
+    remember(scope, previousKey);
+    rememberMode("upstream", LIBRARY_ID, "paper");
+    const snapshot = prime({
+      system: "upstream",
+      libraryID: LIBRARY_ID,
+      mode: "global",
+      conversationKey: targetKey,
+    });
+    remember(otherScope, otherKey);
+    rememberMode("upstream", otherScope.libraryID, "global");
+    remember(windowScope, targetKey);
+    rememberMode("upstream", LIBRARY_ID, "global", { surface: "standalone" });
+
+    snapshot.restore();
+
+    assert.equal(recallActive(scope), previousKey);
+    assert.equal(recallPersisted(scope), previousKey);
+    assert.equal(
+      recallMode("upstream", LIBRARY_ID, { source: "active+persisted" }),
+      "paper",
+    );
+    assert.equal(
+      recallMode("upstream", LIBRARY_ID, { source: "persisted" }),
+      "paper",
+    );
+    assert.equal(recallActive(windowScope), targetKey);
+    assert.equal(
+      recallMode("upstream", LIBRARY_ID, {
+        source: "active+persisted",
+        surface: "standalone",
+      }),
+      "global",
+    );
+    assert.equal(recallActive(otherScope), otherKey);
+    assert.equal(recallPersisted(otherScope), otherKey);
+    assert.equal(
+      recallMode("upstream", otherScope.libraryID, {
+        source: "active+persisted",
+      }),
+      "global",
+    );
+    assert.equal(
+      recallMode("upstream", otherScope.libraryID, { source: "persisted" }),
+      "global",
+    );
+  });
 
   it("keeps the upstream webchat guard: an isolated key is remembered in the map only", function () {
     const key = buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID) + 9;

@@ -166,27 +166,39 @@ export async function openLibraryTextIndexDb(): Promise<LibraryTextIndexDb | nul
       );
       return null;
     }
+    let raw: LibraryTextIndexDb | null = null;
     try {
       // An absolute path makes Zotero treat this as an external database. A
       // bare name gets Zotero's main-database routine: after an unclean
       // shutdown it runs an integrity check behind the pane-wide progress
       // meter and never clears it (Zotero.locked then swallows every
       // keystroke), and it schedules idle-time .bak backups of the file.
-      const raw = new zotero.DBConnection(getLibraryTextIndexDbPath());
+      const constructed = new zotero.DBConnection(getLibraryTextIndexDbPath());
+      raw = constructed;
       // Call as methods: Zotero's connection reads `this._callbacks` inside
       // executeTransaction (see the note in utils/usageHistoryBackfill.ts).
       const db: LibraryTextIndexDb = {
         queryAsync: (sql, params, options) =>
-          raw.queryAsync(sql, params, options),
-        executeTransaction: (fn) => raw.executeTransaction(fn),
-        closeDatabase: raw.closeDatabase
-          ? (permanent) => raw.closeDatabase!(permanent)
+          constructed.queryAsync(sql, params, options),
+        executeTransaction: (fn) => constructed.executeTransaction(fn),
+        closeDatabase: constructed.closeDatabase
+          ? (permanent) => constructed.closeDatabase!(permanent)
           : undefined,
       };
       await ensureLibraryTextIndexSchema(db);
       connection = db;
       return db;
     } catch (error) {
+      if (raw?.closeDatabase) {
+        try {
+          await raw.closeDatabase(true);
+        } catch (closeError) {
+          appLogger.debug(
+            "LLM index: failed to close the library text index database after open failure",
+            closeError,
+          );
+        }
+      }
       appLogger.warn(
         "LLM index: failed to open the library text index database",
         error,
@@ -211,7 +223,9 @@ export function resetLibraryTextIndexQuitForTests(): void {
   quitting = false;
 }
 
-export async function closeLibraryTextIndexDb(): Promise<void> {
+export async function closeLibraryTextIndexDb(
+  options: { throwOnError?: boolean } = {},
+): Promise<void> {
   // An open racing shutdown must finish first, or its handle leaks.
   const pending = openPromise;
   if (!connection && pending) {
@@ -233,6 +247,9 @@ export async function closeLibraryTextIndexDb(): Promise<void> {
       await db.closeDatabase(true);
     } catch (error) {
       appLogger.debug("LLM index: close failed", error);
+      // Production shutdown remains best-effort; owned test fixtures must
+      // surface failed disposal rather than reporting a successful teardown.
+      if (options.throwOnError) throw error;
     }
   }
 }

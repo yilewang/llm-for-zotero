@@ -1,4 +1,5 @@
 import type { AgentRuntime } from "../agent/runtime";
+import { invalidateMapRestore } from "../shared/mapRestoreOwnership";
 import type {
   AgentEvent,
   AgentRuntimeOutcome,
@@ -626,6 +627,7 @@ export function rememberClaudeConversationSelection(
       summary.libraryID,
       summary.paperItemID,
     );
+    invalidateMapRestore(activeClaudePaperConversationByPaper, paperKey);
     activeClaudePaperConversationByPaper.set(paperKey, summary.conversationKey);
     setLastUsedClaudePaperConversationKey(
       summary.libraryID,
@@ -635,6 +637,7 @@ export function rememberClaudeConversationSelection(
     return;
   }
   const libraryKey = buildClaudeLibraryStateKey(summary.libraryID);
+  invalidateMapRestore(activeClaudeGlobalConversationByLibrary, libraryKey);
   activeClaudeGlobalConversationByLibrary.set(
     libraryKey,
     summary.conversationKey,
