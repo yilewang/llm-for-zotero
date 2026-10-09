@@ -118,6 +118,40 @@ describe("claimAnchoring", function () {
     assert.equal(mergeQuoteCitations(quoteCitations)[0].anchorMatch, "claim");
   });
 
+  it("drops the page and section of the chunk a re-anchored quote leaves", function () {
+    const original = buildQuoteCitation({
+      ...citation(
+        "q1",
+        "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+      ),
+      sourceMatchSource: "pdf-page-text",
+      sourceSectionLabel: "Results",
+      sourceChunkKind: "body",
+      pageHintLabel: "4",
+    })!;
+    const twoChunks = [
+      "[chunk 4]",
+      "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+      "",
+      "[chunk 9]",
+      "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+    ].join("\n");
+    const { quoteCitations } = reanchorQuoteCitationsToClaims({
+      text: "The fixed decoder declined from 80% to 62% by day 10 [[quote:q1]].",
+      quoteCitations: [original],
+      passageTextByCitationId: new Map([["q1", twoChunks]]),
+    });
+    assert.equal(
+      quoteCitations[0].quoteText,
+      "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+    );
+    assert.isUndefined(quoteCitations[0].pageHintIndex);
+    assert.isUndefined(quoteCitations[0].pageHintLabel);
+    assert.isUndefined(quoteCitations[0].sourceSectionLabel);
+    assert.isUndefined(quoteCitations[0].sourceChunkKind);
+    assert.equal(quoteCitations[0].sourceMatchSource, "context-text");
+  });
+
   it("keeps the passage anchor and marks it when nothing matches the claim", function () {
     const original = citation(
       "q1",
