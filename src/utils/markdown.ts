@@ -31,7 +31,7 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Marked, Renderer, type Tokens } from "marked";
+import { Marked, Renderer, Tokenizer, type Tokens } from "marked";
 
 // =============================================================================
 // Types
@@ -2392,12 +2392,37 @@ const literalTildeExtension = {
 };
 
 function createMarkedMarkdownRenderer(target: MarkdownRenderTarget): Marked {
+  const mathExtensions = createMathExtensions();
   return new Marked({
     async: false,
     breaks: false,
     gfm: true,
     renderer: createMarkedRenderer(target),
-    extensions: [...createMathExtensions(), literalTildeExtension],
+    extensions: [...mathExtensions, literalTildeExtension],
+    tokenizer: {
+      lheading(src) {
+        const heading = Tokenizer.prototype.lheading.call(this, src);
+        if (!heading) return undefined;
+
+        // Marked checks Setext headings before applying an extension's start()
+        // hint to paragraphs. Without blank lines, a standalone '=' inside
+        // display math can therefore turn all preceding prose into a heading.
+        // Stop this tokenizer at a complete math block and let the existing
+        // paragraph/math tokenizers consume those blocks in order.
+        const mathStartPattern = /(?:^|\n)(\$\$|\\\[)/g;
+        let match: RegExpExecArray | null;
+        while ((match = mathStartPattern.exec(heading.raw)) !== null) {
+          const mathStart = match.index + match[0].length - match[1].length;
+          if (mathExtensions[0].tokenizer(src.slice(mathStart))) {
+            return Tokenizer.prototype.lheading.call(
+              this,
+              src.slice(0, mathStart),
+            );
+          }
+        }
+        return heading;
+      },
+    },
   });
 }
 
