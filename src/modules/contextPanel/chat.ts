@@ -361,7 +361,10 @@ import {
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
 import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
-import { disposeStreamingMarkdown } from "./streamingMarkdown";
+import {
+  disposeStreamingMarkdown,
+  renderStreamingMarkdownInto,
+} from "./streamingMarkdown";
 import { getWebSourceAnchorsFromTrace } from "../../webAccess/attribution";
 import type { WebSourceAnchor } from "../../webAccess/types";
 import { decorateWebSourceIndicators } from "./webSourceIndicators";
@@ -4316,10 +4319,8 @@ export function disposeChatRendering(body: Element): void {
   const box = body.querySelector<HTMLDivElement>("#llm-chat-box");
   if (!box) return;
   disposeChatScrollViewport(box);
-  for (const view of mountedAssistantViews.get(box)?.values() || []) {
-    if (view.trace) disposeAgentTrace(view.trace);
-    if (view.answer) disposeStreamingMarkdown(view.answer);
-  }
+  for (const view of mountedAssistantViews.get(box)?.values() || [])
+    disposeMountedAssistantView(view);
   mountedAssistantViews.delete(box);
 }
 
@@ -9639,11 +9640,145 @@ type MountedAssistantView = {
   answer?: HTMLElement;
   streaming?: boolean;
   documentId?: string;
+  reasoning?: MountedReasoningPanel;
 };
 const mountedAssistantViews = new WeakMap<
   HTMLElement,
   Map<Message, MountedAssistantView>
 >();
+
+type ReasoningPart = "summary" | "details";
+type MountedReasoningPanel = {
+  panel: HTMLDetailsElement;
+  bodyWrap: HTMLElement;
+  text: Partial<Record<ReasoningPart, HTMLElement>>;
+};
+
+function disposeMountedAssistantView(view: MountedAssistantView): void {
+  if (view.trace) disposeAgentTrace(view.trace);
+  if (view.answer) disposeStreamingMarkdown(view.answer);
+  for (const text of Object.values(view.reasoning?.text || {})) {
+    if (text) disposeStreamingMarkdown(text);
+  }
+}
+
+function createReasoningPanel(
+  doc: Document,
+  msg: Message,
+  mutateWithScrollGuard: (fn: () => void) => void,
+): MountedReasoningPanel {
+  const details = doc.createElement("details") as HTMLDetailsElement;
+  details.className = "llm-agent-reasoning";
+  details.open = Boolean(msg.reasoningOpen);
+
+  const summary = doc.createElement("summary") as HTMLElement;
+  summary.className = "llm-agent-reasoning-summary";
+  summary.textContent = "Thinking";
+  const toggleReasoning = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    mutateWithScrollGuard(() => {
+      const next = !msg.reasoningOpen;
+      msg.reasoningOpen = next;
+      details.open = next;
+      setLastReasoningExpanded(next);
+    });
+  };
+  summary.addEventListener("mousedown", toggleReasoning);
+  summary.addEventListener("click", (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  summary.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      toggleReasoning(e);
+    }
+  });
+  details.appendChild(summary);
+
+  const bodyWrap = doc.createElement("div") as HTMLDivElement;
+  bodyWrap.className = "llm-agent-reasoning-body";
+  details.appendChild(bodyWrap);
+  return { panel: details, bodyWrap, text: {} };
+}
+
+/**
+ * Streaming chunks reparse only the unfinished Markdown tail, matching the
+ * answer text, instead of rebuilding the whole message per thinking chunk.
+ */
+function renderReasoningPart(
+  reasoning: MountedReasoningPanel,
+  part: ReasoningPart,
+  msg: Message,
+  doc: Document,
+  onStreamingResize?: () => void,
+): void {
+  let text = reasoning.text[part];
+  if (!text) {
+    const block = doc.createElement("div") as HTMLDivElement;
+    block.className = "llm-agent-reasoning-block";
+    const label = doc.createElement("div") as HTMLDivElement;
+    label.className = "llm-agent-reasoning-label";
+    label.textContent = part === "summary" ? "Summary" : "Details";
+    text = doc.createElement("div") as HTMLDivElement;
+    text.className = "llm-agent-reasoning-text";
+    block.append(label, text);
+    // The summary block always precedes the details block.
+    const detailsBlock =
+      part === "summary" ? reasoning.text.details?.parentElement : null;
+    reasoning.bodyWrap.insertBefore(block, detailsBlock || null);
+    reasoning.text[part] = text;
+  }
+  const markdown = buildAssistantDisplayMarkdownForRender({
+    text:
+      (part === "summary" ? msg.reasoningSummary : msg.reasoningDetails) || "",
+    quoteCitations: msg.quoteCitations,
+  });
+  if (onStreamingResize) {
+    renderStreamingMarkdownInto(text, markdown, doc, onStreamingResize);
+    return;
+  }
+  try {
+    renderRenderedMarkdownInto(text, markdown, doc);
+  } catch (err) {
+    appLogger.warn("LLM reasoning render error:", err);
+    text.textContent = markdown;
+  }
+}
+
+function updateMountedReasoningPanel(
+  view: MountedAssistantView,
+  message: Message,
+  item: Zotero.Item,
+  box: HTMLDivElement,
+): void {
+  const doc = box.ownerDocument;
+  const conversationKey = getConversationKey(item);
+  const parts: [ReasoningPart, string | undefined, string | undefined][] = [
+    ["summary", message.reasoningSummary, view.reasoningSummary],
+    ["details", message.reasoningDetails, view.reasoningDetails],
+  ];
+  for (const [part, next, previous] of parts) {
+    if (next === previous || !next?.trim()) continue;
+    if (!view.reasoning) {
+      view.reasoning = createReasoningPanel(doc, message, (fn) =>
+        withScrollGuard(box, conversationKey, fn),
+      );
+      const header = Array.from(view.bubble.children).find((child) =>
+        child.classList.contains("llm-model-header"),
+      );
+      view.bubble.insertBefore(
+        view.reasoning.panel,
+        header ? header.nextSibling : view.bubble.firstChild,
+      );
+    }
+    renderReasoningPart(view.reasoning, part, message, doc, () =>
+      scheduleChatScrollReconciliation(conversationKey, box),
+    );
+  }
+  view.reasoningSummary = message.reasoningSummary;
+  view.reasoningDetails = message.reasoningDetails;
+}
 
 /** Text/activity refreshes never rebuild the conversation or restore its scroll snapshot. */
 function updateMountedAssistantViews(
@@ -9664,11 +9799,12 @@ function updateMountedAssistantViews(
       (message.documentId || message.planDocumentId) !== view.documentId ||
       message.agentRunId !== view.runId ||
       message.generatedImages?.length ||
-      // Ordinary Chat reuses answer DOM only. Changes to its surrounding
-      // thinking/model presentation retain the established full renderer.
+      // Ordinary Chat updates its answer and growing thinking text in place.
+      // Model changes, or thinking text being cleared, use the full renderer.
       (!view.trace &&
-        (message.reasoningSummary !== view.reasoningSummary ||
-          message.reasoningDetails !== view.reasoningDetails ||
+        ((view.reasoningSummary?.trim() && !message.reasoningSummary?.trim()) ||
+          (view.reasoningDetails?.trim() &&
+            !message.reasoningDetails?.trim()) ||
           message.runMode !== view.runMode ||
           message.modelName !== view.modelName ||
           message.modelProviderLabel !== view.modelProviderLabel))
@@ -9698,6 +9834,8 @@ function updateMountedAssistantViews(
         view.trace.replaceWith(trace);
         view.trace = trace;
       }
+    } else {
+      updateMountedReasoningPanel(view, message, item, box);
     }
     if (
       message.text !== view.text ||
@@ -9948,10 +10086,8 @@ export function refreshChat(
     }
   }
   if (!useTargetedRerender) {
-    for (const view of mountedAssistantViews.get(chatBox)?.values() || []) {
-      if (view.trace) disposeAgentTrace(view.trace);
-      if (view.answer) disposeStreamingMarkdown(view.answer);
-    }
+    for (const view of mountedAssistantViews.get(chatBox)?.values() || [])
+      disposeMountedAssistantView(view);
     mountedAssistantViews.delete(chatBox);
     chatBox.innerHTML = "";
   }
@@ -10959,85 +11095,20 @@ export function refreshChat(
         !agentTraceReplacesAssistantTurn &&
         (hasReasoningSummary || hasReasoningDetails) &&
         msg.runMode !== "agent";
+      let mountedReasoning: MountedReasoningPanel | undefined;
       if (showTopReasoningPanel) {
-        const details = doc.createElement("details") as HTMLDetailsElement;
-        details.className = "llm-agent-reasoning";
-        details.open = Boolean(msg.reasoningOpen);
-
-        const summary = doc.createElement("summary") as HTMLElement;
-        summary.className = "llm-agent-reasoning-summary";
-        summary.textContent = "Thinking";
-        const toggleReasoning = (e: Event) => {
-          e.preventDefault();
-          e.stopPropagation();
-          mutateChatWithScrollGuard(() => {
-            const next = !msg.reasoningOpen;
-            msg.reasoningOpen = next;
-            details.open = next;
-            setLastReasoningExpanded(next);
-          });
-        };
-        summary.addEventListener("mousedown", toggleReasoning);
-        summary.addEventListener("click", (e: Event) => {
-          e.preventDefault();
-          e.stopPropagation();
-        });
-        summary.addEventListener("keydown", (e: KeyboardEvent) => {
-          if (e.key === "Enter" || e.key === " ") {
-            toggleReasoning(e);
-          }
-        });
-        details.appendChild(summary);
-
-        const bodyWrap = doc.createElement("div") as HTMLDivElement;
-        bodyWrap.className = "llm-agent-reasoning-body";
-
+        mountedReasoning = createReasoningPanel(
+          doc,
+          msg,
+          mutateChatWithScrollGuard,
+        );
         if (hasReasoningSummary) {
-          const summaryBlock = doc.createElement("div") as HTMLDivElement;
-          summaryBlock.className = "llm-agent-reasoning-block";
-          const label = doc.createElement("div") as HTMLDivElement;
-          label.className = "llm-agent-reasoning-label";
-          label.textContent = "Summary";
-          const text = doc.createElement("div") as HTMLDivElement;
-          text.className = "llm-agent-reasoning-text";
-          const reasoningSummaryText = buildAssistantDisplayMarkdownForRender({
-            text: msg.reasoningSummary || "",
-            quoteCitations: msg.quoteCitations,
-          });
-          try {
-            renderRenderedMarkdownInto(text, reasoningSummaryText, doc);
-          } catch (err) {
-            appLogger.warn("LLM reasoning render error:", err);
-            text.textContent = reasoningSummaryText;
-          }
-          summaryBlock.append(label, text);
-          bodyWrap.appendChild(summaryBlock);
+          renderReasoningPart(mountedReasoning, "summary", msg, doc);
         }
-
         if (hasReasoningDetails) {
-          const detailsBlock = doc.createElement("div") as HTMLDivElement;
-          detailsBlock.className = "llm-agent-reasoning-block";
-          const label = doc.createElement("div") as HTMLDivElement;
-          label.className = "llm-agent-reasoning-label";
-          label.textContent = "Details";
-          const text = doc.createElement("div") as HTMLDivElement;
-          text.className = "llm-agent-reasoning-text";
-          const reasoningDetailsText = buildAssistantDisplayMarkdownForRender({
-            text: msg.reasoningDetails || "",
-            quoteCitations: msg.quoteCitations,
-          });
-          try {
-            renderRenderedMarkdownInto(text, reasoningDetailsText, doc);
-          } catch (err) {
-            appLogger.warn("LLM reasoning render error:", err);
-            text.textContent = reasoningDetailsText;
-          }
-          detailsBlock.append(label, text);
-          bodyWrap.appendChild(detailsBlock);
+          renderReasoningPart(mountedReasoning, "details", msg, doc);
         }
-
-        details.appendChild(bodyWrap);
-        bubbleHeaderNodes.push(details);
+        bubbleHeaderNodes.push(mountedReasoning.panel);
       }
 
       if (agentTraceEl) {
@@ -11075,6 +11146,7 @@ export function refreshChat(
           documentId: msg.documentId || msg.planDocumentId,
           quoteCitations: msg.quoteCitations,
           quoteOverride: msg.quoteDisplayOverride,
+          reasoning: mountedReasoning,
         });
       }
 
