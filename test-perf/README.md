@@ -81,3 +81,29 @@ npx tsx scripts/library-index-benchmark.ts --data-dir "$HOME/Zotero" --ids <50+ 
 Per query it prints the wall time of each path, overlap@8 of (paper, chunk) pairs, the top paper of each path and whether they agree, then a summary line and a Markdown table.
 Today's path has no cross-paper full-text score, so the baseline orders every paper's candidates by their per-paper BM25 score; the index scores the same chunks with library-wide document frequencies, which is expected to move the top paper when a term is rare inside one paper but common across the library.
 The data directory is read-only: it uses the same copy-on-write overlay as `scripts/retrieval-benchmark.ts` (`installBenchmarkGlobals`).
+
+# Paper switch latency
+
+This opt-in workload measures what happens when you click from one paper to another in the library while the chat pane is open.
+It creates two papers in a fresh scaffold profile, seeds each with the same number of chat turns (20 by default), opens the chat pane, and switches between the two papers.
+Four warmup switches load both conversations; the measured switches follow.
+It never calls a model provider and never opens the normal Zotero library.
+The test skips itself unless `LLM_FOR_ZOTERO_PAPER_SWITCH_BENCH=1`, which the runner sets.
+
+```sh
+node scripts/measure-paper-switch.mjs before 3
+# Apply the production change, keeping the measurement workload identical.
+node scripts/measure-paper-switch.mjs after 3
+```
+
+The runner's arguments are `<label> [runs=3] [switches=20] [turns=20]`.
+Each switch records:
+
+- `selectMs`: how long the `selectItem` call itself blocked;
+- `visibleMs`: until the panel shows the other paper's full conversation;
+- `settledMs`: until the panel's last change (the panel then stays unchanged for 400 ms);
+- `maxFrameGapMs`: the longest gap between animation frames, which is how long the window froze;
+- `panelRebuilds`: how many times a new panel root was inserted;
+- `chatDraws`: how many times the whole conversation was drawn.
+
+Results are saved under `tmp/paper-switch-bench/<label>/`, with `summary.json` holding the median, minimum and maximum of each value over all runs.
