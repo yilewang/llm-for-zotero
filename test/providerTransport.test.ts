@@ -87,4 +87,14 @@ describe("providerTransport", function () {
       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
     );
   });
+
+  it("resolves Atlas Cloud chat-compatible endpoint from the API base", function () {
+    assert.equal(
+      resolveProviderTransportEndpoint({
+        protocol: "openai_chat_compat",
+        apiBase: "https://api.atlascloud.ai/v1",
+      }),
+      "https://api.atlascloud.ai/v1/chat/completions",
+    );
+  });
 });
