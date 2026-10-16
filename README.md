@@ -57,6 +57,7 @@ How to do a library chat literature review with llm-for-zotero agent
 - [Privacy and Data Flow](#privacy-and-data-flow)
 - [Roadmap](#roadmap)
 - [FAQ](#faq)
+- [Community Add-ons](#community-add-ons)
 - [Contributing](#contributing)
 
 ## At a Glance
@@ -865,6 +866,10 @@ Changes take effect immediately; an invalid value falls back to `warn`.
 Use Zotero's **Help → Debug Output Logging** controls to record or view the output, reproduce the problem, and then restore `warn`.
 This preference controls the plugin's diagnostic verbosity; Zotero's controls determine whether debug output is recorded or displayed.
 Other plugins' logging is unaffected.
+
+## Community Add-ons
+
+- **[LLM for Zotero — Themes Companion](https://github.com/A1exHorst/llm-for-zotero-themes-companion)**
 
 ## Contributing
 
