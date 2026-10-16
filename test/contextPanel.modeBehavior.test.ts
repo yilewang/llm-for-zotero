@@ -112,6 +112,43 @@ describe("contextPanel mode behavior", function () {
     assert.equal(cachedMode, "agent");
   });
 
+  it("gives an ACP conversation the agent path without the agent-mode pref", function () {
+    // Chat mode never calls a runtime, so ACP's turns were never dispatched.
+    assert.equal(
+      resolveRuntimeModeForConversation({ acpAgentEnabled: true }),
+      "agent",
+    );
+  });
+
+  it("lets a conversation system outrank ACP, as the runtime picker does", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        acpAgentEnabled: true,
+        runtimeConversationSystem: "codex",
+        isRuntimeConversationSystem: true,
+      }),
+      "chat",
+    );
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        acpAgentEnabled: true,
+        runtimeConversationSystem: "claude_code",
+        isRuntimeConversationSystem: true,
+      }),
+      "agent",
+    );
+  });
+
+  it("keeps webchat out of ACP's hands", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        acpAgentEnabled: true,
+        isWebChat: true,
+      }),
+      "chat",
+    );
+  });
+
   it("uses explicit cached user choices over defaults", function () {
     assert.equal(
       resolveRuntimeModeForConversation({

@@ -11,6 +11,8 @@ export type RuntimeModeResolutionInput = {
     | null;
   isWebChat?: boolean;
   agentModeEnabled?: boolean;
+  /** The ACP agent answers this conversation's turns. */
+  acpAgentEnabled?: boolean;
   displayConversationKind?: "global" | "paper" | null;
   noteKind?: "standalone" | "item" | string | null;
   /** Sticky mode from the last explicit toggle; null when never chosen. */
@@ -51,6 +53,9 @@ export function resolveRuntimeModeForConversation(
     return "agent";
   }
   if (input.isWebChat) return "chat";
+  // ACP is an agent backend, not a conversation system, but the turn it
+  // answers still needs the agent path — chat mode never calls a runtime.
+  if (input.acpAgentEnabled) return "agent";
   if (!input.agentModeEnabled) return "chat";
   if (input.cachedMode === "agent" || input.cachedMode === "chat") {
     return input.cachedMode;

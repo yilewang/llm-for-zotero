@@ -623,7 +623,7 @@ describe("architecture boundaries", function () {
     });
   });
 
-  it("lets only the agent loop and the backend bridge finish agent runs", function () {
+  it("lets only the agent loop and the run-owning backends finish agent runs", function () {
     const entry = SEALED_EXPORTS.find((candidate) =>
       candidate.exports.includes("finishAgentRun"),
     );
@@ -632,6 +632,8 @@ describe("architecture boundaries", function () {
     assert.sameMembers(entry?.importers || [], [
       "src/agent/runtime.ts",
       "src/agent/externalBackendBridge.ts",
+      // The ACP backend drives its own run and finishes it.
+      "src/acp/runtime.ts",
     ]);
   });
 

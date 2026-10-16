@@ -554,6 +554,7 @@ import {
   removeLastUsedClaudeGlobalConversationKey,
   removeLastUsedClaudePaperConversationKey,
 } from "../../claudeCode/prefs";
+import { isAcpAgentEnabled } from "../../acp/prefs";
 import {
   buildClaudeRuntimeModelEntries,
   type ClaudeModelCatalogEntry,
@@ -1006,6 +1007,14 @@ export function setupHandlers(
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
   const isRuntimeConversationSystem = () =>
     isClaudeConversationSystem() || isCodexConversationSystem();
+  // The ACP agent owns this conversation's turns the way those two do, so the
+  // mode button names it and locks to agent mode. It is deliberately NOT part
+  // of isRuntimeConversationSystem: an ACP conversation stays an upstream one
+  // (own history, own keys, own library lock) — see src/acp/runtime.
+  const isAcpRuntime = () =>
+    isAcpAgentEnabled() &&
+    !isClaudeConversationSystem() &&
+    !isCodexConversationSystem();
   const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
     shouldRenderDynamicSlashMenu({
       itemPresent: Boolean(item),
@@ -1290,6 +1299,7 @@ export function setupHandlers(
       runtimeConversationSystem: getConversationSystem(),
       isWebChat: isWebChatModeActive(),
       agentModeEnabled: getAgentModeEnabled(),
+      acpAgentEnabled: isAcpAgentEnabled(),
       displayConversationKind: resolveDisplayConversationKind(item),
       noteKind: noteSession?.noteKind || null,
       lastUsedRuntimeMode: panelChoices.getLastUsedRuntimeMode(),
@@ -1308,11 +1318,21 @@ export function setupHandlers(
     const indicator = runtimeModeBtn.querySelector(
       ".llm-agent-toggle-indicator",
     ) as HTMLSpanElement | null;
-    if (isRuntimeConversationSystem()) {
-      const labelText = isCodexConversationSystem() ? "Codex" : "Claude Code";
+    if (isRuntimeConversationSystem() || isAcpRuntime()) {
+      const labelText = isCodexConversationSystem()
+        ? "Codex"
+        : isClaudeConversationSystem()
+          ? "Claude Code"
+          : "ACP";
       const staticMode: ChatRuntimeMode = isCodexConversationSystem()
         ? "chat"
         : "agent";
+      // Codex names its runtime in the tooltip; the others show the label.
+      const staticTitle = isCodexConversationSystem()
+        ? "Codex native runtime"
+        : isAcpRuntime()
+          ? t("ACP agent runtime")
+          : labelText;
       runtimeModeBtn.style.display = "";
       const label = runtimeModeBtn.querySelector(
         ".llm-agent-toggle-label",
@@ -1323,14 +1343,11 @@ export function setupHandlers(
       runtimeModeBtn.classList.remove("llm-agent-toggle-enabled");
       runtimeModeBtn.classList.add("llm-runtime-mode-static");
       runtimeModeBtn.dataset.mode = staticMode;
-      runtimeModeBtn.dataset.system = getConversationSystem();
-      runtimeModeBtn.title = isCodexConversationSystem()
-        ? "Codex native runtime"
-        : labelText;
-      runtimeModeBtn.setAttribute(
-        "aria-label",
-        isCodexConversationSystem() ? "Codex native runtime" : labelText,
-      );
+      runtimeModeBtn.dataset.system = isAcpRuntime()
+        ? "acp"
+        : getConversationSystem();
+      runtimeModeBtn.title = staticTitle;
+      runtimeModeBtn.setAttribute("aria-label", staticTitle);
       runtimeModeBtn.setAttribute("aria-pressed", "false");
       runtimeModeBtn.setAttribute("aria-disabled", "true");
       runtimeModeBtn.disabled = true;

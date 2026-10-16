@@ -42,6 +42,7 @@ describe("Agent preference tab layout", function () {
     assert.deepEqual(rows, [
       'data-llm-agent-row="original"',
       'data-llm-agent-row="codex"',
+      'data-llm-agent-row="acp"',
       'data-llm-agent-row="claude"',
       'data-llm-agent-row="notes"',
     ]);

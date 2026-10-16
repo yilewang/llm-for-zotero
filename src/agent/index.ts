@@ -8,6 +8,8 @@ import {
   getClaudeBridgeRuntime,
   resetClaudeBridgeRuntime,
 } from "../claudeCode/runtime";
+import { isAcpAgentEnabled } from "../acp/prefs";
+import { getAcpRuntime, resetAcpRuntime } from "../acp/runtime";
 import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
 import { libraryIndexService } from "../services/libraryIndexService";
@@ -188,6 +190,7 @@ export function shutdownAgentSubsystem(): void {
   _actionRegistry = null;
   _toolRegistry = null;
   resetClaudeBridgeRuntime();
+  resetAcpRuntime();
   runtime = null;
   _zoteroGateway = null;
   setLibraryOverviewGateway(null);
@@ -207,6 +210,12 @@ export function getAgentRuntime(): AgentRuntime {
     isClaudeCodeModeEnabled()
   ) {
     return getClaudeBridgeRuntime(coreRuntime) as unknown as AgentRuntime;
+  }
+  // The ACP backend answers this conversation's agent turns instead of the
+  // in-plugin runtime. It is a backend, not a conversation system: the
+  // conversation keeps its own storage, history and keys (see src/acp/runtime).
+  if (isAcpAgentEnabled()) {
+    return getAcpRuntime(coreRuntime) as unknown as AgentRuntime;
   }
   return coreRuntime;
 }
