@@ -115,6 +115,7 @@ import {
 import { t } from "../../utils/i18n";
 import {
   resolveInitialPanelItemState,
+  resolvePreferredConversationSystem,
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
   resolveShortcutMode,
@@ -135,6 +136,7 @@ import {
 import { retainClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import {
   bindEmbeddedPanelHost,
+  getPanelHostBinding,
   canLifecycleCommitPanelConversation,
   capturePanelOperationLease,
   evaluatePanelOwnership,
@@ -260,6 +262,36 @@ function isPanelConversationLoaded(
     loadedConversationKeys.has(getConversationKey(resolvedItem))
   );
 }
+
+function resolveEmbeddedPanelItemState(
+  body: Element,
+  rawItem: Zotero.Item | null | undefined,
+) {
+  if (getPanelHostBinding(body)?.surface !== "reader") {
+    return resolveInitialPanelItemState(rawItem);
+  }
+  // A new reader starts on its own paper. Mounted panels keep their chosen scope.
+  const mountedItem = activeContextPanels.get(body)?.();
+  const libraryID = Number(rawItem?.libraryID || 0);
+  const system =
+    resolveConversationSystemForItem(mountedItem) ||
+    resolvePreferredConversationSystem({ item: rawItem });
+  const locked =
+    system !== "claude_code" &&
+    system !== "codex" &&
+    libraryID > 0 &&
+    getLockedGlobalConversationKey(libraryID) !== null;
+  return resolveInitialPanelItemState(rawItem, {
+    conversationMode: locked
+      ? "global"
+      : resolveDisplayConversationKind(mountedItem) === "global"
+        ? "global"
+        : "paper",
+  });
+}
+
+export const resolveEmbeddedPanelItemStateForTests =
+  resolveEmbeddedPanelItemState;
 
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
@@ -438,7 +470,7 @@ export function registerReaderContextPanel() {
     onItemChange: ({ body, setEnabled, tabType, item }) => {
       setEnabled(true);
       bindEmbeddedPanelHost(body, item || null, tabType);
-      const resolvedState = resolveInitialPanelItemState(item);
+      const resolvedState = resolveEmbeddedPanelItemState(body, item);
       const mountedVerdict = evaluatePanelOwnership(body, resolvedState.item);
       if (
         mountedVerdict === "host-mismatch" ||
@@ -480,7 +512,7 @@ export function registerReaderContextPanel() {
           !isPanelRootInitialized(panelRoot) ||
           Boolean(panelRoot.dataset.ownershipBlocked);
 
-        const resolvedState = resolveInitialPanelItemState(item);
+        const resolvedState = resolveEmbeddedPanelItemState(body, item);
         const expectedSystem =
           resolveConversationSystemForItem(resolvedState.item) || "upstream";
 
@@ -612,7 +644,7 @@ export function registerReaderContextPanel() {
     onAsyncRender: async ({ body, item, setEnabled }) => {
       setEnabled(true);
 
-      const resolvedInitialState = resolveInitialPanelItemState(item);
+      const resolvedInitialState = resolveEmbeddedPanelItemState(body, item);
       const resolvedItem = resolvedInitialState.item;
       const lifecycleSignature = buildPanelLifecycleSignature(
         item || null,

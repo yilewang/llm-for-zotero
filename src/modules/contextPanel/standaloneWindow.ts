@@ -408,10 +408,20 @@ export function openStandaloneChat(options?: {
             getClaudeCodeModeEnabled()
           ? "claude_code"
           : "upstream");
+  const sourceMountedItem = options?.sourceBody?.isConnected
+    ? activeContextPanels.get(options.sourceBody)?.()
+    : null;
+  const sourceKind = resolveDisplayConversationKind(sourceMountedItem);
   const resolvedSourceState = resolveInitialPanelItemState(
     sourceItemForResolution,
     {
       conversationSystem: sourceConversationSystem,
+      conversationMode:
+        sourceKind === "global"
+          ? "global"
+          : sourceKind === "paper"
+            ? "paper"
+            : undefined,
     },
   );
   let currentConversationSystem: ConversationSystem =

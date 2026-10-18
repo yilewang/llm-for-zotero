@@ -83,7 +83,7 @@ export async function loadShortcutText(file: string): Promise<string> {
 export async function renderShortcuts(
   body: Element,
   item?: Zotero.Item | null,
-  mode?: "paper" | "library",
+  _mode?: "paper" | "library",
 ) {
   const renderGeneration = (shortcutRenderGeneration.get(body) || 0) + 1;
   shortcutRenderGeneration.set(body, renderGeneration);
@@ -91,10 +91,9 @@ export async function renderShortcuts(
     shortcutRenderGeneration.get(body) === renderGeneration;
   shortcutRenderItemState.set(body, item);
 
-  // Library chat mode and note-editing mode: no shortcut buttons (actions
-  // available via / menu). Note-editing is detected from the item itself so
-  // we stay correct even if a caller forgets to pass mode="library".
-  if (mode === "library" || resolveActiveNoteSession(item)) {
+  // Paper and library conversations share the same editable prompt templates.
+  // Note editing uses its own actions.
+  if (resolveActiveNoteSession(item)) {
     const container = body.querySelector(
       "#llm-shortcuts",
     ) as HTMLDivElement | null;
