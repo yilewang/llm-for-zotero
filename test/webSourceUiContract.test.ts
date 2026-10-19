@@ -53,7 +53,7 @@ describe("web source UI contract", function () {
       );
       const tavilyStart = preferences.indexOf('id="__addonRef__-tavily-card"');
       const tavilyEnd = preferences.indexOf(
-        'id="__addonRef__-codex-app-server-card"',
+        'id="__addonRef__-deepseek-harness-card"',
       );
       const tavilyCopy = Array.from(
         preferences.slice(tavilyStart, tavilyEnd).matchAll(/>([^<>]+)</g),

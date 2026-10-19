@@ -13,6 +13,19 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  Configured: "已配置",
+  "Setup required": "待配置",
+  "Enable DeepSeek Harness": "启用 DeepSeek Harness",
+  "Enabling this card selects DeepSeek Harness for the Agent toggle in chat. Configure shared permissions and web search in the Original Agent card.":
+    "开启此卡片后，聊天中的 Agent 将使用 DeepSeek Harness。共享的权限和网页搜索配置位于原生 Agent 卡片中。",
+  "Node executable": "Node 可执行文件",
+  "Harness worker script": "Harness 工作进程脚本",
+  "DeepSeek Harness uses the selected OpenAI-compatible API provider and the Original Agent permission mode.":
+    "DeepSeek Harness 使用当前选择的 OpenAI 兼容 API 服务商和原生 Agent 权限模式。",
+  "Absolute path to Node.js 22.19+ or 24+.":
+    "Node.js 22.19+ 或 24+ 的绝对路径。",
+  "Install the integrations/deepseek-harness dependencies, then select its worker.mjs file. Text context and Zotero tools are supported.":
+    "安装 integrations/deepseek-harness 的依赖后，选择其中的 worker.mjs 文件。支持文本上下文和 Zotero 工具。",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
   "Test search (sends a public query)": "测试搜索（发送公开查询）",
@@ -1056,8 +1069,8 @@ const zhCN: Record<string, string> = {
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
 
   // ── Agent tab: collapsible runtime rows ────────────────────────────
-  "Three runtimes can answer in the chat panel. Turn on the ones you want; the runtime you pick in the chat header answers a given turn.":
-    "聊天面板中可以有三种运行时来回答。开启你需要的运行时；实际回答的是你在聊天标题栏中选择的那一个。",
+  "Configure the agents available in the chat panel. Original Agent and DeepSeek Harness share the Agent toggle; enable one to select its execution engine.":
+    "在此配置聊天面板中可用的 Agent。原生 Agent 与 DeepSeek Harness 共用聊天中的 Agent 按钮，开启对应卡片即可选择执行引擎。",
   Runtimes: "运行时",
   "Original Agent": "原生 Agent",
   "Built in · Beta": "内置 · 测试版",

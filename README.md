@@ -260,6 +260,10 @@ plugins, and many Markdown readers.
 
 ## Agent Mode (beta)
 
+Agent settings include a separate **DeepSeek Harness** card with
+the selected OpenAI-compatible API provider and Zotero's existing tool approval
+controls. See the [DeepSeek Harness setup and integration guide](integrations/deepseek-harness/README.md).
+
 Agent Mode is disabled by default. Enable it in `Preferences`, then toggle
 `Agent (beta)` in the context bar.
 

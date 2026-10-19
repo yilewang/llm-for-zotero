@@ -1100,10 +1100,11 @@
         data-pref-panel="agent"
         style="display: none; flex-direction: column"
       >
-        <html:p class="llm-pref-intro">
-          Three runtimes can answer in the chat panel. Turn on the ones you
-          want; the runtime you pick in the chat header answers a given turn.
-        </html:p>
+        <html:span class="llm-pref-intro">
+          Configure the agents available in the chat panel. Original Agent and
+          DeepSeek Harness share the Agent toggle; enable one to select its
+          execution engine.
+        </html:span>
 
         <html:div class="llm-pref-group">
           <html:span class="llm-pref-group-title">Runtimes</html:span>
@@ -1309,6 +1310,95 @@
                       </html:span>
                     </html:div>
                   </html:div>
+                </html:div>
+              </html:div>
+            </html:div>
+          </html:div>
+
+          <!-- ── DeepSeek Harness ── -->
+          <html:div
+            id="__addonRef__-deepseek-harness-card"
+            class="llm-pref-row"
+            data-llm-agent-row="harness"
+            data-open="false"
+          >
+            <html:div class="llm-pref-row-head">
+              <html:span
+                class="llm-pref-row-icon llm-pref-row-icon--preset-deepseek"
+              ></html:span>
+              <html:button
+                class="llm-pref-row-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="__addonRef__-agent-row-harness-body"
+              >
+                <html:span class="llm-pref-row-name"
+                  >DeepSeek Harness</html:span
+                >
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="harness"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="harness"
+                  ></html:span>
+                </html:span>
+              </html:button>
+              <html:span class="llm-pref-row-tag">Node.js</html:span>
+              <html:input
+                id="__addonRef__-enable-deepseek-harness"
+                class="llm-pref-switch"
+                type="checkbox"
+                aria-label="Enable DeepSeek Harness"
+              ></html:input>
+              <html:span class="llm-pref-row-chevron">›</html:span>
+            </html:div>
+            <html:div
+              id="__addonRef__-agent-row-harness-body"
+              class="llm-pref-row-body"
+              hidden="hidden"
+            >
+              <html:span class="llm-pref-hint">
+                DeepSeek Harness uses the selected OpenAI-compatible API
+                provider and the Original Agent permission mode.
+              </html:span>
+              <html:span class="llm-pref-hint">
+                Enabling this card selects DeepSeek Harness for the Agent toggle
+                in chat. Configure shared permissions and web search in the
+                Original Agent card.
+              </html:span>
+              <html:div class="llm-pref-field">
+                <html:label for="__addonRef__-deepseek-harness-node-path"
+                  >Node executable</html:label
+                >
+                <html:div class="llm-pref-control">
+                  <html:input
+                    id="__addonRef__-deepseek-harness-node-path"
+                    class="llm-pref-input"
+                    type="text"
+                  ></html:input>
+                  <html:span class="llm-pref-hint"
+                    >Absolute path to Node.js 22.19+ or 24+.</html:span
+                  >
+                </html:div>
+              </html:div>
+              <html:div class="llm-pref-field">
+                <html:label for="__addonRef__-deepseek-harness-worker-path"
+                  >Harness worker script</html:label
+                >
+                <html:div class="llm-pref-control">
+                  <html:input
+                    id="__addonRef__-deepseek-harness-worker-path"
+                    class="llm-pref-input"
+                    type="text"
+                  ></html:input>
+                  <html:span class="llm-pref-hint"
+                    >Install the integrations/deepseek-harness dependencies,
+                    then select its worker.mjs file. Text context and Zotero
+                    tools are supported.</html:span
+                  >
                 </html:div>
               </html:div>
             </html:div>

@@ -79,7 +79,7 @@ describe("bridge settings UI behavior", function () {
       'id="__addonRef__-original-agent-card"',
     );
     const originalAgentCardEnd = preferences.indexOf(
-      'id="__addonRef__-codex-app-server-card"',
+      'id="__addonRef__-deepseek-harness-card"',
     );
     const originalAgentCard = preferences.slice(
       originalAgentCardStart,
@@ -94,5 +94,35 @@ describe("bridge settings UI behavior", function () {
       'id="__addonRef__-original-agent-permission-mode"',
     );
     assert.include(originalAgentCard, 'id="__addonRef__-tavily-card"');
+  });
+
+  it("gives DeepSeek Harness its own sibling card and controls", function () {
+    const preferences = readFileSync("addon/content/preferences.xhtml", "utf8");
+    const originalStart = preferences.indexOf(
+      'id="__addonRef__-original-agent-card"',
+    );
+    const harnessStart = preferences.indexOf(
+      'id="__addonRef__-deepseek-harness-card"',
+    );
+    const codexStart = preferences.indexOf(
+      'id="__addonRef__-codex-app-server-card"',
+    );
+    assert.isAbove(harnessStart, originalStart);
+    assert.isAbove(codexStart, harnessStart);
+    const original = preferences.slice(originalStart, harnessStart);
+    const harness = preferences.slice(harnessStart, codexStart);
+    assert.notInclude(original, 'id="__addonRef__-deepseek-harness-node-path"');
+    for (const id of [
+      "enable-deepseek-harness",
+      "deepseek-harness-node-path",
+      "deepseek-harness-worker-path",
+    ]) {
+      assert.include(harness, `id="__addonRef__-${id}"`);
+    }
+    assert.include(
+      harness,
+      'aria-controls="__addonRef__-agent-row-harness-body"',
+    );
+    assert.notInclude(preferences, 'id="__addonRef__-agent-execution-engine"');
   });
 });

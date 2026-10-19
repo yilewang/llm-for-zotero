@@ -39,7 +39,9 @@
     "test:behavior:smoke": "node scripts/run-behavior-tests.mjs --tier smoke",
     "test:webchat:live": "node scripts/run-workflow-tests.mjs --webchat-live",
     "update-deps": "npm update --save",
-    "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live"
+    "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live",
+    "test:harness": "npm test --prefix integrations/deepseek-harness",
+    "test:harness:live": "node scripts/run-deepseek-harness-live.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",

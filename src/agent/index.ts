@@ -51,6 +51,11 @@ import type {
   AgentToolDefinition,
 } from "./types";
 import { unansweredTurnError } from "./execution/unansweredTurn";
+import { isDeepSeekHarnessEnabled } from "../deepseekHarness/prefs";
+import {
+  getDeepSeekHarnessRuntime,
+  stopDeepSeekHarness,
+} from "../deepseekHarness/runtime";
 
 let runtime: AgentRuntime | null = null;
 let runtimeInitTask: Promise<AgentRuntime> | null = null;
@@ -182,6 +187,7 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
 
 export function shutdownAgentSubsystem(): void {
   agentLifecycleGeneration += 1;
+  stopDeepSeekHarness();
   unregisterMcpServer();
   clearCodexZoteroMcpPreflightCache();
   runtimeInitTask = null;
@@ -208,7 +214,16 @@ export function getAgentRuntime(): AgentRuntime {
   ) {
     return getClaudeBridgeRuntime(coreRuntime) as unknown as AgentRuntime;
   }
-  return coreRuntime;
+  return getConversationSystemPref() === "upstream"
+    ? getOriginalAgentRuntime()
+    : coreRuntime;
+}
+
+export function getOriginalAgentRuntime(): AgentRuntime {
+  const coreRuntime = getCoreAgentRuntime();
+  return isDeepSeekHarnessEnabled() && _toolRegistry
+    ? getDeepSeekHarnessRuntime(coreRuntime, _toolRegistry)
+    : coreRuntime;
 }
 
 /**

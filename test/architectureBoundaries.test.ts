@@ -623,7 +623,7 @@ describe("architecture boundaries", function () {
     });
   });
 
-  it("lets only the agent loop and the backend bridge finish agent runs", function () {
+  it("lets the owning agent runtimes finish their runs", function () {
     const entry = SEALED_EXPORTS.find((candidate) =>
       candidate.exports.includes("finishAgentRun"),
     );
@@ -632,6 +632,7 @@ describe("architecture boundaries", function () {
     assert.sameMembers(entry?.importers || [], [
       "src/agent/runtime.ts",
       "src/agent/externalBackendBridge.ts",
+      "src/deepseekHarness/runtime.ts",
     ]);
   });
 

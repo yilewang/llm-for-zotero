@@ -404,7 +404,11 @@ import {
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
-import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
+import {
+  getCoreAgentRuntime,
+  getOriginalAgentRuntime,
+  initAgentSubsystem,
+} from "../../agent/index";
 import {
   appendAgentRunEventAfterLatest,
   getAgentRunTrace,
@@ -8073,7 +8077,7 @@ function buildAgentEngineDeps(
             getClaudeBridgeRuntime(getCoreAgentRuntime()),
             "claude_code",
           ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
-        : getCoreAgentRuntime(),
+        : getOriginalAgentRuntime(),
     maxSelectedImages: MAX_SELECTED_IMAGES,
   };
 }

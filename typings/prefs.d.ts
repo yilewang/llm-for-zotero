@@ -30,6 +30,9 @@ declare namespace _ZoteroTypes {
       "temperatureQuaternary": string;
       "maxTokensQuaternary": string;
       "enableAgentMode": boolean;
+      "agentExecutionEngine": string;
+      "deepseekHarnessNodePath": string;
+      "deepseekHarnessWorkerPath": string;
       "contextCacheTelemetry": string;
       "enableClaudeCodeMode": boolean;
       "agentBackendBridgeUrl": string;
