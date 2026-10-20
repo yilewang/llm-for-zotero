@@ -490,10 +490,7 @@ async function clearRememberedSelection(
       },
       { expectedKey: conversationKey },
     );
-    if (
-      target.conversationSystem === "claude_code" ||
-      target.conversationSystem === "codex"
-    ) {
+    if (target.conversationSystem !== "upstream") {
       return;
     }
     // The library lock is an upstream-only pointer.

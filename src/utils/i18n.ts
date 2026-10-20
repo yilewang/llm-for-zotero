@@ -886,6 +886,7 @@ const zhCN: Record<string, string> = {
   Medium: "中",
   High: "高",
   XHigh: "超高",
+  Max: "最大",
   auto: "自动",
   low: "低",
   medium: "中",
@@ -1120,6 +1121,50 @@ const zhCN: Record<string, string> = {
   "Enable Original Agent": "启用原生 Agent",
   "Enable Codex": "启用 Codex",
   "Enable Claude Code": "启用 Claude Code",
+
+  // ── Antigravity (agy CLI) runtime ──
+  "Enable Antigravity": "启用 Antigravity",
+  "agy CLI": "agy CLI",
+  "Runs the Antigravity CLI (": "每条消息都会运行一次 Antigravity CLI（",
+  ") for each message, using the Google account you signed in with. Run":
+    "），使用你登录的 Google 账号。启用前请先在终端运行一次",
+  "once in a terminal and sign in before turning it on. Zotero sends the paper as text and never reads your sign-in. When enabled, Zotero adds an Antigravity button to the chat header.":
+    "并完成登录。Zotero 以文本形式发送论文，从不读取你的登录凭据。启用后，Zotero 会在聊天标题栏添加 Antigravity 按钮。",
+  "Antigravity default": "Antigravity 默认模型",
+  "Models are read with": "模型列表读取自",
+  ". The default lets agy choose. Choose Customized to type a model name yourself.":
+    "。选择默认则由 agy 自行决定；选择「自定义」可手动填写模型名。",
+  Effort: "推理强度",
+  "Ask (actions that need approval are skipped)":
+    "询问（需要批准的操作会被跳过）",
+  "Plan only (read-only)": "仅规划（只读）",
+  "Allow every action": "允许所有操作",
+  "Messages run without a terminal, so agy cannot ask you. Allow every action passes":
+    "消息在没有终端的情况下运行，agy 无法向你确认。“允许所有操作”会传入",
+  "; use it only if you trust what you ask for.":
+    "；只有在你信任自己的请求时才使用。",
+  "Antigravity CLI": "Antigravity CLI",
+  "agy path": "agy 路径",
+  "Optional absolute path to agy": "可选：agy 的绝对路径",
+  "Leave blank to search your PATH and": "留空则在 PATH 和以下目录中查找：",
+  "Loading Antigravity models…": "正在加载 Antigravity 模型…",
+  "Refreshing Antigravity models…": "正在刷新 Antigravity 模型…",
+  "Could not refresh Antigravity models. Showing the last known list.":
+    "无法刷新 Antigravity 模型。显示上次获取的列表。",
+  "Could not load Antigravity models. agy will use its default model.":
+    "无法加载 Antigravity 模型。agy 将使用默认模型。",
+  "Antigravity did not return any models; agy will use its default.":
+    "Antigravity 未返回任何模型；agy 将使用默认模型。",
+  "Retry loading Antigravity models": "重试加载 Antigravity 模型",
+  "Antigravity models loaded": "已加载 Antigravity 模型",
+  "agy returned no models. Use the default, or choose Customized and type a model name.":
+    "agy 未返回模型。可使用默认模型，或选择「自定义」手动填写模型名。",
+  "Could not load Antigravity models": "无法加载 Antigravity 模型",
+  "Looking for agy…": "正在查找 agy…",
+  "Found agy at": "已找到 agy：",
+  "models available.": "个可用模型。",
+  "It returned no models. Use the default, or choose Customized and type a model name.":
+    "它没有返回模型。可使用默认模型，或选择「自定义」手动填写模型名。",
 
   // ── Agent tab: runtime rows, Codex model catalog, merged MCP panel ──
   "Web search on": "网页搜索已开启",

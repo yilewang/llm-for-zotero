@@ -37,6 +37,24 @@ import {
   touchCodexConversationTitle,
   upsertCodexConversationSummary,
 } from "../../codexAppServer/store";
+import {
+  createAntigravityGlobalConversation,
+  createAntigravityPaperConversation,
+  deleteAntigravityConversationLocalRows,
+  deleteAntigravityConversation,
+  deleteAntigravityTurnMessages,
+  ensureAntigravityGlobalConversation,
+  ensureAntigravityPaperConversation,
+  getAntigravityConversationSummary,
+  loadAntigravityConversation,
+  listAllAntigravityPaperConversationsByLibrary,
+  listAntigravityGlobalConversations,
+  listAntigravityPaperConversations,
+  preflightDeleteAntigravityConversationLocalRows,
+  setAntigravityConversationTitle,
+  touchAntigravityConversationTitle,
+  upsertAntigravityConversationSummary,
+} from "../../antigravity/store";
 import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   canMigrateLegacyAmbiguousPaperRegistryScope,
@@ -366,6 +384,20 @@ function fromUpstreamPaperSummary(
 function fromClaudeSummary(
   summary: ClaudeConversationSummary | null | undefined,
 ): ConversationCatalogEntry | null {
+  return fromClaudeShapedSummary("claude_code", summary);
+}
+
+/** The Antigravity store shares the Claude Code catalog shape. */
+function fromAntigravitySummary(
+  summary: ClaudeConversationSummary | null | undefined,
+): ConversationCatalogEntry | null {
+  return fromClaudeShapedSummary("antigravity", summary);
+}
+
+function fromClaudeShapedSummary(
+  system: "claude_code" | "antigravity",
+  summary: ClaudeConversationSummary | null | undefined,
+): ConversationCatalogEntry | null {
   if (!summary) return null;
   const conversationKey = normalizePositiveInt(summary.conversationKey);
   const libraryID = normalizePositiveInt(summary.libraryID);
@@ -377,7 +409,7 @@ function fromClaudeSummary(
     instanceID: summary.instanceID,
     conversationID: summary.conversationID,
     conversationKey,
-    system: "claude_code",
+    system,
     kind: summary.kind,
     libraryID,
     paperItemID: summary.kind === "paper" ? paperItemID : undefined,
@@ -430,7 +462,7 @@ function fromCodexSummary(
 }
 
 async function repairRuntimeRegistryFromSummary(
-  system: "claude_code" | "codex",
+  system: Exclude<ConversationSystem, "upstream">,
   summary: ClaudeConversationSummary | CodexConversationSummary,
 ): Promise<void> {
   const existing = await getRegisteredConversationScope(
@@ -879,7 +911,7 @@ const UPSTREAM_STORE: ConversationStoreAdapter = {
 
 /** The store functions a runtime backend (Claude Code, Codex) exports. */
 type RuntimeStoreFunctions = {
-  system: "claude_code" | "codex";
+  system: Exclude<ConversationSystem, "upstream">;
   fromSummary(
     summary: ClaudeConversationSummary | null | undefined,
   ): ConversationCatalogEntry | null;
@@ -1135,19 +1167,50 @@ const CODEX_STORE = createRuntimeStoreAdapter(
   },
 );
 
+// agy keeps no plugin-side provider state worth cleaning up: a deleted
+// conversation simply stops being resumed.
+const ANTIGRAVITY_STORE = createRuntimeStoreAdapter(
+  {
+    system: "antigravity",
+    fromSummary: fromAntigravitySummary,
+    getSummary: getAntigravityConversationSummary,
+    loadConversation: loadAntigravityConversation,
+    deleteTurnMessages: deleteAntigravityTurnMessages,
+    ensureGlobalConversation: ensureAntigravityGlobalConversation,
+    ensurePaperConversation: ensureAntigravityPaperConversation,
+    createGlobalConversation: createAntigravityGlobalConversation,
+    createPaperConversation: createAntigravityPaperConversation,
+    listGlobalConversations: listAntigravityGlobalConversations,
+    listPaperConversations: listAntigravityPaperConversations,
+    listAllPaperConversationsByLibrary:
+      listAllAntigravityPaperConversationsByLibrary,
+    setConversationTitle: setAntigravityConversationTitle,
+    touchConversationTitle: touchAntigravityConversationTitle,
+    upsertSummary: upsertAntigravityConversationSummary,
+    deleteConversation: deleteAntigravityConversation,
+    deleteConversationLocalRows: deleteAntigravityConversationLocalRows,
+    preflightDeleteConversationLocalRows:
+      preflightDeleteAntigravityConversationLocalRows,
+  },
+  {},
+);
+
 /**
- * The conversation stores, by system.  A value that names neither runtime
- * store is served by the upstream store, as the repository always did.
+ * The conversation stores, by system.  A value that names no runtime store
+ * is served by the upstream store, as the repository always did.
  */
 const STORES: Readonly<
-  Record<"claude_code" | "codex", ConversationStoreAdapter>
+  Record<Exclude<ConversationSystem, "upstream">, ConversationStoreAdapter>
 > = {
   claude_code: CLAUDE_CODE_STORE,
   codex: CODEX_STORE,
+  antigravity: ANTIGRAVITY_STORE,
 };
 
 function storeFor(system: ConversationSystem): ConversationStoreAdapter {
-  return system === "claude_code" || system === "codex"
+  return system === "claude_code" ||
+    system === "codex" ||
+    system === "antigravity"
     ? STORES[system]
     : UPSTREAM_STORE;
 }

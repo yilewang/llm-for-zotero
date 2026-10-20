@@ -49,6 +49,18 @@ import {
 } from "../../codexAppServer/portal";
 import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import {
+  buildDefaultAntigravityGlobalConversationKey,
+  buildDefaultAntigravityPaperConversationKey,
+} from "../../antigravity/constants";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+  isAntigravityGlobalPortalItem,
+  isAntigravityPaperPortalItem,
+  resolveAntigravityPaperPortalBaseItem,
+} from "../../antigravity/portal";
+import { isAntigravityModeEnabled } from "../../antigravity/prefs";
+import {
   resolveNoteFocusSystemSwitch as resolveNoteFocusSystemSwitchPolicy,
   resolveNoteEditingParentItem,
   resolveNoteEditingScope,
@@ -168,7 +180,8 @@ export function resolveDisplayConversationKind(
   if (!item) return null;
   return isGlobalPortalItem(item) ||
     isClaudeGlobalPortalItem(item) ||
-    isCodexGlobalPortalItem(item)
+    isCodexGlobalPortalItem(item) ||
+    isAntigravityGlobalPortalItem(item)
     ? "global"
     : "paper";
 }
@@ -192,7 +205,8 @@ export function resolveConversationBaseItem(
   if (
     isGlobalPortalItem(targetItem) ||
     isClaudeGlobalPortalItem(targetItem) ||
-    isCodexGlobalPortalItem(targetItem)
+    isCodexGlobalPortalItem(targetItem) ||
+    isAntigravityGlobalPortalItem(targetItem)
   ) {
     return null;
   }
@@ -204,6 +218,9 @@ export function resolveConversationBaseItem(
   }
   if (isCodexPaperPortalItem(targetItem)) {
     return resolveCodexPaperPortalBaseItem(targetItem);
+  }
+  if (isAntigravityPaperPortalItem(targetItem)) {
+    return resolveAntigravityPaperPortalBaseItem(targetItem);
   }
   if ((targetItem as any).isNote?.()) {
     return getNoteConversation(targetItem)?.note || targetItem;
@@ -218,7 +235,8 @@ export function resolvePaperChatSourceItem(
   if (
     isGlobalPortalItem(targetItem) ||
     isClaudeGlobalPortalItem(targetItem) ||
-    isCodexGlobalPortalItem(targetItem)
+    isCodexGlobalPortalItem(targetItem) ||
+    isAntigravityGlobalPortalItem(targetItem)
   ) {
     return null;
   }
@@ -230,6 +248,9 @@ export function resolvePaperChatSourceItem(
   }
   if (isCodexPaperPortalItem(targetItem)) {
     return resolveCodexPaperPortalBaseItem(targetItem);
+  }
+  if (isAntigravityPaperPortalItem(targetItem)) {
+    return resolveAntigravityPaperPortalBaseItem(targetItem);
   }
   if ((targetItem as any).isNote?.()) {
     return getNoteConversation(targetItem)?.note || targetItem;
@@ -260,6 +281,12 @@ export function resolveConversationSystemForItem(
   }
   if (isCodexGlobalPortalItem(item) || isCodexPaperPortalItem(item)) {
     return "codex";
+  }
+  if (
+    isAntigravityGlobalPortalItem(item) ||
+    isAntigravityPaperPortalItem(item)
+  ) {
+    return "antigravity";
   }
   if (isGlobalPortalItem(item) || isPaperPortalItem(item)) {
     return "upstream";
@@ -294,10 +321,16 @@ export function resolvePreferredConversationSystem(params: {
   if (itemSystem === "codex" && !isCodexAppServerModeEnabled()) {
     return "upstream";
   }
+  if (itemSystem === "antigravity" && !isAntigravityModeEnabled()) {
+    return "upstream";
+  }
   if (preferred === "claude_code" && !isClaudeCodeModeEnabled()) {
     return "upstream";
   }
   if (preferred === "codex" && !isCodexAppServerModeEnabled()) {
+    return "upstream";
+  }
+  if (preferred === "antigravity" && !isAntigravityModeEnabled()) {
     return "upstream";
   }
   return itemSystem || preferred;
@@ -335,7 +368,11 @@ function resolvePreferredConversationMode(
   system: ConversationSystem,
   surface?: SelectionSurface,
 ): "global" | "paper" {
-  if (system === "claude_code" || system === "codex") {
+  if (
+    system === "claude_code" ||
+    system === "codex" ||
+    system === "antigravity"
+  ) {
     const rememberedMode = recallMode(system, libraryID, {
       source: "active+persisted",
       surface,
@@ -377,6 +414,14 @@ function resolveGlobalConversationKey(
       ),
     );
   }
+  if (system === "antigravity") {
+    return Math.floor(
+      Number(
+        recall({ system, libraryID, kind: "global", surface }) ||
+          buildDefaultAntigravityGlobalConversationKey(libraryID),
+      ),
+    );
+  }
   // Upstream only: the lock wins, then the remembered key filtered to the
   // upstream global key band, with the sentinel base mapped to the default.
   const lockedKey = readSurfaceLockedGlobalConversationKey(libraryID, surface);
@@ -412,7 +457,12 @@ export function resolveRememberedGlobalPanelItem(
     ? createClaudeGlobalPortalItem(normalizedLibraryID, conversationKey)
     : conversationSystem === "codex"
       ? createCodexGlobalPortalItem(normalizedLibraryID, conversationKey)
-      : createGlobalPortalItem(normalizedLibraryID, conversationKey);
+      : conversationSystem === "antigravity"
+        ? createAntigravityGlobalPortalItem(
+            normalizedLibraryID,
+            conversationKey,
+          )
+        : createGlobalPortalItem(normalizedLibraryID, conversationKey);
 }
 
 export function resolvePaperConversationKeyForBaseItem(
@@ -429,7 +479,9 @@ export function resolvePaperConversationKeyForBaseItem(
         ? buildDefaultClaudePaperConversationKey(paperItemID)
         : system === "codex"
           ? buildDefaultCodexPaperConversationKey(paperItemID)
-          : paperItemID),
+          : system === "antigravity"
+            ? buildDefaultAntigravityPaperConversationKey(paperItemID)
+            : paperItemID),
   );
   return Number.isFinite(rememberedPaperKey) && rememberedPaperKey > 0
     ? Math.floor(rememberedPaperKey)
@@ -495,7 +547,10 @@ export function resolveInitialPanelItemState(
     ((isClaudeGlobalPortalItem(item) || isClaudePaperPortalItem(item)) &&
       !isClaudeCodeModeEnabled()) ||
     ((isCodexGlobalPortalItem(item) || isCodexPaperPortalItem(item)) &&
-      !isCodexAppServerModeEnabled())
+      !isCodexAppServerModeEnabled()) ||
+    ((isAntigravityGlobalPortalItem(item) ||
+      isAntigravityPaperPortalItem(item)) &&
+      !isAntigravityModeEnabled())
   ) {
     item = resolveConversationBaseItem(item);
   }
@@ -530,7 +585,8 @@ export function resolveInitialPanelItemState(
   if (
     isPaperPortalItem(item) ||
     (isClaudePaperPortalItem(item) && isClaudeCodeModeEnabled()) ||
-    (isCodexPaperPortalItem(item) && isCodexAppServerModeEnabled())
+    (isCodexPaperPortalItem(item) && isCodexAppServerModeEnabled()) ||
+    (isAntigravityPaperPortalItem(item) && isAntigravityModeEnabled())
   ) {
     return { item, basePaperItem };
   }
@@ -576,11 +632,16 @@ export function resolveInitialPanelItemState(
               basePaperItem,
               Math.floor(rememberedPaperKey),
             )
-          : createPaperPortalItem(
-              basePaperItem,
-              Math.floor(rememberedPaperKey),
-              0,
-            );
+          : conversationSystem === "antigravity"
+            ? createAntigravityPaperPortalItem(
+                basePaperItem,
+                Math.floor(rememberedPaperKey),
+              )
+            : createPaperPortalItem(
+                basePaperItem,
+                Math.floor(rememberedPaperKey),
+                0,
+              );
   }
 
   return { item, basePaperItem };

@@ -10,7 +10,10 @@ import type { Message } from "./types";
 function normalizeConversationSystem(
   value: unknown,
 ): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
+  return value === "upstream" ||
+    value === "claude_code" ||
+    value === "codex" ||
+    value === "antigravity"
     ? value
     : null;
 }

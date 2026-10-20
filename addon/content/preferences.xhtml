@@ -79,6 +79,9 @@
     url("chrome://__addonRef__/content/icons/icon.svg"); background-size: 130%;
     } .llm-pref-panel .llm-pref-row-icon--codex { background-image:
     url("chrome://__addonRef__/content/icons/codex-logo.svg"); } .llm-pref-panel
+    .llm-pref-row-icon--antigravity { background-color: #4285f4; mask-image:
+    url("chrome://__addonRef__/content/icons/antigravity.svg"); mask-repeat:
+    no-repeat; mask-position: center; mask-size: contain; } .llm-pref-panel
     .llm-pref-row-icon--claude { background-color: #d97757; mask-image:
     url("chrome://__addonRef__/content/icons/claude-code.svg"); mask-repeat:
     no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
@@ -1532,6 +1535,220 @@
                         ></html:span>
                         <html:span class="llm-pref-hint">
                           Leave blank to search your PATH.
+                        </html:span>
+                      </html:div>
+                    </html:div>
+                  </html:div>
+                </html:details>
+              </html:div>
+            </html:div>
+          </html:div>
+
+          <!-- ── Antigravity ── -->
+          <html:div
+            id="__addonRef__-antigravity-card"
+            class="llm-pref-row"
+            data-llm-agent-row="antigravity"
+            data-open="false"
+          >
+            <html:div class="llm-pref-row-head">
+              <html:span
+                class="llm-pref-row-icon llm-pref-row-icon--antigravity"
+              ></html:span>
+              <html:button
+                class="llm-pref-row-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="__addonRef__-agent-row-antigravity-body"
+              >
+                <html:span class="llm-pref-row-name">Antigravity</html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="antigravity"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="antigravity"
+                  ></html:span>
+                </html:span>
+              </html:button>
+              <html:span class="llm-pref-row-tag">agy CLI</html:span>
+              <html:input
+                id="__addonRef__-antigravity-enable"
+                class="llm-pref-switch"
+                type="checkbox"
+                aria-label="Enable Antigravity"
+              ></html:input>
+              <html:span class="llm-pref-row-chevron">›</html:span>
+            </html:div>
+            <html:div
+              id="__addonRef__-agent-row-antigravity-body"
+              class="llm-pref-row-body"
+              hidden="hidden"
+            >
+              <html:span class="llm-pref-hint">
+                Runs the Antigravity CLI (<html:code>agy</html:code>) for each
+                message, using the Google account you signed in with. Run
+                <html:code>agy</html:code> once in a terminal and sign in before
+                turning it on. Zotero sends the paper as text and never reads
+                your sign-in. When enabled, Zotero adds an Antigravity button to
+                the chat header.
+              </html:span>
+              <html:div
+                id="__addonRef__-antigravity-settings"
+                style="display: none; flex-direction: column; gap: 12px"
+              >
+                <html:div class="llm-pref-section">
+                  <html:span class="llm-pref-section-title">Model</html:span>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-antigravity-model">
+                      Model
+                    </html:label>
+                    <html:div class="llm-pref-control">
+                      <html:div class="llm-pref-line llm-pref-line--wrap">
+                        <html:select
+                          id="__addonRef__-antigravity-model"
+                          class="llm-pref-select"
+                          aria-describedby="__addonRef__-antigravity-model-status"
+                        >
+                          <html:option value=""
+                            >Antigravity default</html:option
+                          >
+                        </html:select>
+                        <html:button
+                          id="__addonRef__-antigravity-model-refresh"
+                          class="llm-pref-button"
+                          type="button"
+                        >
+                          Refresh
+                        </html:button>
+                      </html:div>
+                      <html:div
+                        id="__addonRef__-antigravity-custom-model-wrap"
+                        class="llm-pref-control"
+                        hidden="hidden"
+                      >
+                        <html:label for="__addonRef__-antigravity-custom-model">
+                          Customized model
+                        </html:label>
+                        <html:input
+                          id="__addonRef__-antigravity-custom-model"
+                          class="llm-pref-input"
+                          type="text"
+                          autocomplete="off"
+                          spellcheck="false"
+                          placeholder="gemini-3-pro"
+                        ></html:input>
+                      </html:div>
+                      <html:span
+                        id="__addonRef__-antigravity-model-status"
+                        class="llm-pref-hint"
+                        role="status"
+                        aria-live="polite"
+                      ></html:span>
+                      <html:span class="llm-pref-hint">
+                        Models are read with <html:code>agy models</html:code>.
+                        The default lets agy choose. Choose Customized to type a
+                        model name yourself.
+                      </html:span>
+                    </html:div>
+                  </html:div>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-antigravity-effort">
+                      Effort
+                    </html:label>
+                    <html:div class="llm-pref-control">
+                      <html:select
+                        id="__addonRef__-antigravity-effort"
+                        class="llm-pref-select"
+                      >
+                        <html:option value="auto">Auto</html:option>
+                        <html:option value="low">Low</html:option>
+                        <html:option value="medium">Medium</html:option>
+                        <html:option value="high">High</html:option>
+                        <html:option value="xhigh">XHigh</html:option>
+                        <html:option value="max">Max</html:option>
+                      </html:select>
+                    </html:div>
+                  </html:div>
+                </html:div>
+
+                <html:div class="llm-pref-section">
+                  <html:span class="llm-pref-section-title"
+                    >Permissions</html:span
+                  >
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-antigravity-permission">
+                      Permission mode
+                    </html:label>
+                    <html:div class="llm-pref-control">
+                      <html:select
+                        id="__addonRef__-antigravity-permission"
+                        class="llm-pref-select"
+                      >
+                        <html:option value="default">
+                          Ask (actions that need approval are skipped)
+                        </html:option>
+                        <html:option value="plan"
+                          >Plan only (read-only)</html:option
+                        >
+                        <html:option value="full">
+                          Allow every action
+                        </html:option>
+                      </html:select>
+                      <html:span class="llm-pref-hint">
+                        Messages run without a terminal, so agy cannot ask you.
+                        Allow every action passes
+                        <html:code>--dangerously-skip-permissions</html:code>;
+                        use it only if you trust what you ask for.
+                      </html:span>
+                    </html:div>
+                  </html:div>
+                </html:div>
+
+                <html:div class="llm-pref-section">
+                  <html:span class="llm-pref-section-title"
+                    >Connection</html:span
+                  >
+                  <html:div class="llm-pref-field">
+                    <html:label>Antigravity CLI</html:label>
+                    <html:div class="llm-pref-control">
+                      <html:div class="llm-pref-line">
+                        <html:button
+                          id="__addonRef__-antigravity-test"
+                          class="llm-pref-button llm-pref-button--accent"
+                          type="button"
+                        >
+                          Test connection
+                        </html:button>
+                      </html:div>
+                      <html:span
+                        id="__addonRef__-antigravity-status"
+                        class="llm-pref-hint"
+                        style="overflow-wrap: anywhere; min-width: 0"
+                      ></html:span>
+                    </html:div>
+                  </html:div>
+                </html:div>
+
+                <html:details class="llm-pref-advanced">
+                  <html:summary>Advanced</html:summary>
+                  <html:div class="llm-pref-advanced-body">
+                    <html:div class="llm-pref-field">
+                      <html:label for="__addonRef__-antigravity-path">
+                        agy path
+                      </html:label>
+                      <html:div class="llm-pref-control">
+                        <html:input
+                          id="__addonRef__-antigravity-path"
+                          class="llm-pref-input"
+                          type="text"
+                          placeholder="Optional absolute path to agy"
+                        ></html:input>
+                        <html:span class="llm-pref-hint">
+                          Leave blank to search your PATH and
+                          <html:code>~/.local/bin</html:code>.
                         </html:span>
                       </html:div>
                     </html:div>

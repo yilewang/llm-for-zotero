@@ -61,6 +61,15 @@ declare namespace _ZoteroTypes {
       "codexAppServerLastAllocatedConversationKeyMap": string;
       "codexAppServerLastAllocatedGlobalConversationKey": number;
       "codexAppServerLastAllocatedPaperConversationKey": number;
+      "enableAntigravityMode": boolean;
+      "antigravityPath": string;
+      "antigravityModel": string;
+      "antigravityEffort": string;
+      "antigravityPermissionMode": string;
+      "antigravityConversationModeMap": string;
+      "antigravityGlobalConversationMap": string;
+      "antigravityPaperConversationMap": string;
+      "antigravityLastAllocatedConversationKeyMap": string;
       "claudeCodeConversationModeMap": string;
       "claudeCodeGlobalConversationMap": string;
       "claudeCodePaperConversationMap": string;

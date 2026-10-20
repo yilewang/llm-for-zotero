@@ -27,7 +27,11 @@ import {
  * the transaction.
  */
 
-export type StartupSchemaStoreID = "upstream" | "claude-code" | "codex";
+export type StartupSchemaStoreID =
+  | "upstream"
+  | "claude-code"
+  | "codex"
+  | "antigravity";
 
 export type StartupSchemaPass = {
   /**

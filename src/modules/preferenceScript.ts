@@ -274,6 +274,27 @@ import {
 } from "../codexAppServer/permissionProfiles";
 import { applyCodexPermissionChoice } from "../codexAppServer/permissionState";
 import { applyCodexAppServerModePreferenceChange } from "../codexAppServer/modePreference";
+import { applyAntigravityModePreferenceChange } from "../antigravity/modePreference";
+import {
+  getAntigravityBinaryPathPref,
+  getAntigravityEffortPref,
+  getAntigravityPermissionModePref,
+  getAntigravityRuntimeModelPref,
+  isAntigravityModeEnabled,
+  setAntigravityBinaryPathPref,
+  setAntigravityEffortPref,
+  setAntigravityPermissionModePref,
+  setAntigravityRuntimeModelPref,
+} from "../antigravity/prefs";
+import {
+  listAgyModels,
+  resolveAgyBinary,
+  type AgyModel,
+} from "../antigravity/agyProcess";
+import {
+  ANTIGRAVITY_EFFORT_OPTIONS,
+  type AntigravityEffortMode,
+} from "../antigravity/constants";
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
   getCodexAppServerReasoningChoices,
@@ -3974,6 +3995,28 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         ? [claudeModel, selectedOptionLabel(agentPermissionModeSelect)]
         : [t("Off")],
     );
+    const antigravityToggle = doc.querySelector(
+      `#${config.addonRef}-antigravity-enable`,
+    ) as HTMLInputElement | null;
+    const antigravityOn = !!antigravityToggle?.checked;
+    setAgentRowSummary(
+      "antigravity",
+      antigravityOn,
+      antigravityOn
+        ? [
+            selectedOptionLabel(
+              doc.querySelector(
+                `#${config.addonRef}-antigravity-model`,
+              ) as HTMLSelectElement | null,
+            ),
+            selectedOptionLabel(
+              doc.querySelector(
+                `#${config.addonRef}-antigravity-permission`,
+              ) as HTMLSelectElement | null,
+            ),
+          ]
+        : [t("Off")],
+    );
     const notesPath = inputValue("obsidian-vault-path");
     setAgentRowSummary(
       "notes",
@@ -4036,6 +4079,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       }
     });
   }
+
+  bindAntigravityPreferences(doc);
 
   let codexReasoningCatalogRefreshId = 0;
   // The Codex CLI is the only authority on which models it accepts, so the
@@ -6140,4 +6185,175 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (_window) {
     registerUsagePreferencePanel(_window);
   }
+}
+
+/**
+ * The Antigravity card: an enable switch, the agy model and effort, the
+ * permission mode, and a connection test. Everything else agy keeps in its
+ * own settings and sign-in, which Zotero never reads.
+ */
+function bindAntigravityPreferences(doc: Document): void {
+  const byId = <T extends Element>(suffix: string) =>
+    doc.querySelector(`#${config.addonRef}-antigravity-${suffix}`) as T | null;
+  const enableToggle = byId<HTMLInputElement>("enable");
+  const settingsWrap = byId<HTMLDivElement>("settings");
+  const modelSelect = byId<HTMLSelectElement>("model");
+  const modelRefresh = byId<HTMLButtonElement>("model-refresh");
+  const modelStatus = byId<HTMLSpanElement>("model-status");
+  const effortSelect = byId<HTMLSelectElement>("effort");
+  const permissionSelect = byId<HTMLSelectElement>("permission");
+  const testButton = byId<HTMLButtonElement>("test");
+  const status = byId<HTMLSpanElement>("status");
+  const pathInput = byId<HTMLInputElement>("path");
+  if (!enableToggle) return;
+
+  const notifySummary = (target: Element | null) =>
+    target?.dispatchEvent(
+      new (doc.defaultView as any).Event("change", {
+        bubbles: true,
+      }),
+    );
+
+  const customModelWrap = byId<HTMLDivElement>("custom-model-wrap");
+  const customModelInput = byId<HTMLInputElement>("custom-model");
+  // A model agy did not list (or a build whose `agy models` prints nothing)
+  // is typed by hand, as the Codex card does.
+  const CUSTOMIZED = "__customized__";
+  const syncCustomModel = () => {
+    const customized = modelSelect?.value === CUSTOMIZED;
+    if (customModelWrap) customModelWrap.hidden = !customized;
+    if (customModelInput) customModelInput.disabled = !customized;
+  };
+  const renderModels = (models: AgyModel[]) => {
+    if (!modelSelect) return;
+    const stored = getAntigravityRuntimeModelPref();
+    const listed = [{ id: "", label: t("Antigravity default") }, ...models];
+    const values = listed.map((model) => model.id);
+    modelSelect.replaceChildren(
+      ...listed.map((model) => {
+        const option = el(doc, "option") as HTMLOptionElement;
+        option.value = model.id;
+        option.textContent = model.label;
+        if (model.id) option.title = model.id;
+        return option;
+      }),
+    );
+    const customized = el(doc, "option") as HTMLOptionElement;
+    customized.value = CUSTOMIZED;
+    customized.textContent = t("Customized");
+    modelSelect.appendChild(customized);
+    if (values.includes(stored)) {
+      modelSelect.value = stored;
+    } else {
+      modelSelect.value = CUSTOMIZED;
+      if (customModelInput) customModelInput.value = stored;
+    }
+    syncCustomModel();
+  };
+  const commitCustomModel = () => {
+    if (modelSelect?.value !== CUSTOMIZED || !customModelInput) return;
+    const model = customModelInput.value.trim();
+    if (!model) return;
+    setAntigravityRuntimeModelPref(model);
+    notifySummary(modelSelect);
+  };
+
+  let refreshId = 0;
+  const refreshModels = async () => {
+    const requestId = ++refreshId;
+    if (modelStatus) modelStatus.textContent = t("Loading Antigravity models…");
+    try {
+      const models = await listAgyModels(getAntigravityBinaryPathPref());
+      if (requestId !== refreshId) return;
+      renderModels(models);
+      if (modelStatus) {
+        modelStatus.textContent = models.length
+          ? t("Antigravity models loaded")
+          : t(
+              "agy returned no models. Use the default, or choose Customized and type a model name.",
+            );
+      }
+    } catch (error) {
+      if (requestId !== refreshId) return;
+      if (modelStatus) {
+        modelStatus.textContent = `${t("Could not load Antigravity models")}: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+    }
+    notifySummary(modelSelect);
+  };
+
+  const applyEnabledUi = (enabled: boolean) => {
+    enableToggle.checked = enabled;
+    if (settingsWrap) settingsWrap.style.display = enabled ? "flex" : "none";
+    notifySummary(enableToggle);
+  };
+
+  renderModels([]);
+  if (effortSelect) effortSelect.value = getAntigravityEffortPref();
+  if (permissionSelect) {
+    permissionSelect.value = getAntigravityPermissionModePref();
+  }
+  if (pathInput) pathInput.value = getAntigravityBinaryPathPref();
+  applyEnabledUi(isAntigravityModeEnabled());
+  if (isAntigravityModeEnabled()) void refreshModels();
+
+  enableToggle.addEventListener("change", () => {
+    const enabled = enableToggle.checked;
+    applyEnabledUi(enabled);
+    applyAntigravityModePreferenceChange(enabled);
+    if (enabled) void refreshModels();
+  });
+  modelSelect?.addEventListener("change", () => {
+    syncCustomModel();
+    if (modelSelect.value === CUSTOMIZED) {
+      commitCustomModel();
+      customModelInput?.focus();
+      return;
+    }
+    setAntigravityRuntimeModelPref(modelSelect.value);
+  });
+  customModelInput?.addEventListener("change", commitCustomModel);
+  customModelInput?.addEventListener("blur", commitCustomModel);
+  modelRefresh?.addEventListener("click", () => void refreshModels());
+  effortSelect?.addEventListener("change", () => {
+    const value = effortSelect.value as AntigravityEffortMode;
+    setAntigravityEffortPref(
+      ANTIGRAVITY_EFFORT_OPTIONS.includes(value) ? value : "auto",
+    );
+  });
+  permissionSelect?.addEventListener("change", () => {
+    const value = permissionSelect.value;
+    setAntigravityPermissionModePref(
+      value === "plan" || value === "full" ? value : "default",
+    );
+  });
+  pathInput?.addEventListener("change", () => {
+    setAntigravityBinaryPathPref(pathInput.value);
+    if (enableToggle.checked) void refreshModels();
+  });
+  testButton?.addEventListener("click", async () => {
+    if (!status) return;
+    testButton.disabled = true;
+    status.textContent = t("Looking for agy…");
+    try {
+      const binary = await resolveAgyBinary(getAntigravityBinaryPathPref());
+      const models = await listAgyModels(binary);
+      renderModels(models);
+      status.textContent = `${t("Found agy at")} ${binary}. ${
+        models.length
+          ? `${models.length} ${t("models available.")}`
+          : t(
+              "It returned no models. Use the default, or choose Customized and type a model name.",
+            )
+      }`;
+    } catch (error) {
+      status.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      testButton.disabled = false;
+      notifySummary(modelSelect);
+    }
+  });
 }

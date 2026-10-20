@@ -26,7 +26,36 @@ export const CLAUDE_GLOBAL_CONVERSATION_KEY_BASE = 3_000_000_000_000_000;
 export const CLAUDE_PAPER_CONVERSATION_KEY_BASE = 4_000_000_000_000_000;
 export const CODEX_GLOBAL_CONVERSATION_KEY_BASE = 5_000_000_000_000_000;
 export const CODEX_PAPER_CONVERSATION_KEY_BASE = 6_000_000_000_000_000;
-export const RUNTIME_CONVERSATION_KEY_END = 7_000_000_000_000_000;
+/** Exclusive end of the Codex bands (the next system's bands start here). */
+export const CODEX_CONVERSATION_KEY_END = 7_000_000_000_000_000;
+export const ANTIGRAVITY_GLOBAL_CONVERSATION_KEY_BASE =
+  CODEX_CONVERSATION_KEY_END;
+export const ANTIGRAVITY_PAPER_CONVERSATION_KEY_BASE = 8_000_000_000_000_000;
+// Still below Number.MAX_SAFE_INTEGER (~9.007e15): every key stays exact.
+export const RUNTIME_CONVERSATION_KEY_END = 9_000_000_000_000_000;
+
+type RuntimeConversationSystem = Exclude<ConversationSystem, "upstream">;
+
+const RUNTIME_KIND_BASES: Record<
+  RuntimeConversationSystem,
+  Record<ConversationKeyKind, number>
+> = {
+  claude_code: {
+    global: CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
+    paper: CLAUDE_PAPER_CONVERSATION_KEY_BASE,
+  },
+  codex: {
+    global: CODEX_GLOBAL_CONVERSATION_KEY_BASE,
+    paper: CODEX_PAPER_CONVERSATION_KEY_BASE,
+  },
+  antigravity: {
+    global: ANTIGRAVITY_GLOBAL_CONVERSATION_KEY_BASE,
+    paper: ANTIGRAVITY_PAPER_CONVERSATION_KEY_BASE,
+  },
+};
+
+// Each runtime kind band is exactly one profile-slot span wide.
+const RUNTIME_KIND_BAND_WIDTH = 1_000_000_000_000_000;
 
 function normalizeConversationKey(value: number): number | null {
   if (!Number.isFinite(value)) return null;
@@ -74,26 +103,8 @@ function fullKindRange(
           endExclusive: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
         };
   }
-  if (system === "claude_code") {
-    return kind === "global"
-      ? {
-          start: CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
-          endExclusive: CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-        }
-      : {
-          start: CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-          endExclusive: CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-        };
-  }
-  return kind === "global"
-    ? {
-        start: CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-        endExclusive: CODEX_PAPER_CONVERSATION_KEY_BASE,
-      }
-    : {
-        start: CODEX_PAPER_CONVERSATION_KEY_BASE,
-        endExclusive: RUNTIME_CONVERSATION_KEY_END,
-      };
+  const start = RUNTIME_KIND_BASES[system][kind];
+  return { start, endExclusive: start + RUNTIME_KIND_BAND_WIDTH };
 }
 
 export function getConversationKeyRange(
@@ -104,15 +115,8 @@ export function getConversationKeyRange(
   if (system === "upstream" || profileSignature === undefined) {
     return fullKindRange(system, kind);
   }
-  const base =
-    system === "claude_code"
-      ? kind === "global"
-        ? CLAUDE_GLOBAL_CONVERSATION_KEY_BASE
-        : CLAUDE_PAPER_CONVERSATION_KEY_BASE
-      : kind === "global"
-        ? CODEX_GLOBAL_CONVERSATION_KEY_BASE
-        : CODEX_PAPER_CONVERSATION_KEY_BASE;
-  const start = base + getProfileKeyOffset(profileSignature);
+  const start =
+    RUNTIME_KIND_BASES[system][kind] + getProfileKeyOffset(profileSignature);
   return {
     start,
     endExclusive: start + RUNTIME_PROFILE_KEY_MULTIPLIER,
@@ -172,7 +176,12 @@ export function classifyConversationKey(
 ): ConversationKeyClassification | null {
   const key = normalizeConversationKey(value);
   if (!key) return null;
-  const systems: ConversationSystem[] = ["upstream", "claude_code", "codex"];
+  const systems: ConversationSystem[] = [
+    "upstream",
+    "claude_code",
+    "codex",
+    "antigravity",
+  ];
   const kinds: ConversationKeyKind[] = ["global", "paper"];
   for (const system of systems) {
     for (const kind of kinds) {
@@ -206,14 +215,7 @@ export function isRuntimeAllocatedConversationKeyForKind(
   key: number,
 ): boolean {
   if (!isConversationKeyForKind(system, kind, key)) return false;
-  const base =
-    system === "claude_code"
-      ? kind === "global"
-        ? CLAUDE_GLOBAL_CONVERSATION_KEY_BASE
-        : CLAUDE_PAPER_CONVERSATION_KEY_BASE
-      : kind === "global"
-        ? CODEX_GLOBAL_CONVERSATION_KEY_BASE
-        : CODEX_PAPER_CONVERSATION_KEY_BASE;
+  const base = RUNTIME_KIND_BASES[system][kind];
   const offsetWithinProfile =
     (Math.floor(key) - base) % RUNTIME_PROFILE_KEY_MULTIPLIER;
   return offsetWithinProfile >= RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET;

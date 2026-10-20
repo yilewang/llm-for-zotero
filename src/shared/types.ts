@@ -225,7 +225,11 @@ export type ActiveNoteContext = {
   noteHtml?: string;
 };
 
-export type ConversationSystem = "upstream" | "claude_code" | "codex";
+export type ConversationSystem =
+  | "upstream"
+  | "claude_code"
+  | "codex"
+  | "antigravity";
 
 export type GlobalConversationSummary = {
   conversationID: string;

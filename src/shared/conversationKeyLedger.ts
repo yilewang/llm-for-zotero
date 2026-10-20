@@ -1,3 +1,8 @@
+import {
+  CONVERSATION_SYSTEM_SQL_VALUES,
+  isConversationSystem,
+  rebuildTableForCurrentSystemCheck,
+} from "./conversationSystems";
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { classifyConversationKey } from "./conversationKeySpace";
@@ -123,9 +128,7 @@ function normalizeText(value: unknown, maxLength = 256): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): ConversationKeyLedgerKind | null {
@@ -206,20 +209,28 @@ async function initializeConversationKeyLedgerStore(
   db: QueryableZoteroDb,
 ): Promise<void> {
   const nextRetiredConversationKeys = new Set<number>();
-  await db.queryAsync(
-    `CREATE TABLE IF NOT EXISTS ${KEY_LEDGER_TABLE} (
-      conversation_key INTEGER PRIMARY KEY,
-      instance_id TEXT NOT NULL UNIQUE,
-      conversation_id TEXT NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
-      kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
-      profile_signature TEXT NOT NULL,
-      library_id INTEGER NOT NULL,
-      paper_item_id INTEGER,
-      issued_at INTEGER NOT NULL,
-      retired_at INTEGER,
-      retirement_reason TEXT
-    )`,
+  const createLedgerTable = async () => {
+    await db.queryAsync(
+      `CREATE TABLE IF NOT EXISTS ${KEY_LEDGER_TABLE} (
+        conversation_key INTEGER PRIMARY KEY,
+        instance_id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL,
+        system TEXT NOT NULL CHECK(system IN (${CONVERSATION_SYSTEM_SQL_VALUES})),
+        kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
+        profile_signature TEXT NOT NULL,
+        library_id INTEGER NOT NULL,
+        paper_item_id INTEGER,
+        issued_at INTEGER NOT NULL,
+        retired_at INTEGER,
+        retirement_reason TEXT
+      )`,
+    );
+  };
+  await createLedgerTable();
+  await rebuildTableForCurrentSystemCheck(
+    db,
+    KEY_LEDGER_TABLE,
+    createLedgerTable,
   );
   await db.queryAsync(
     `CREATE TABLE IF NOT EXISTS ${KEY_COUNTERS_TABLE} (

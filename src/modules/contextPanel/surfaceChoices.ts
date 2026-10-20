@@ -186,7 +186,9 @@ const conversationSystem = surfaceChoice<ConversationSystem>({
   getPref: getConversationSystemPref,
   setPref: setConversationSystemPref,
   normalize: (system) =>
-    system === "claude_code" || system === "codex" ? system : "upstream",
+    system === "claude_code" || system === "codex" || system === "antigravity"
+      ? system
+      : "upstream",
 });
 
 const claudeRuntimeModel = surfaceChoice<string>({

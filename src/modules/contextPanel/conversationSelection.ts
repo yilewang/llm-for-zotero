@@ -60,6 +60,24 @@ import {
   buildCodexPaperStateKey,
 } from "../../codexAppServer/state";
 import {
+  getLastUsedAntigravityConversationMode,
+  getLastUsedAntigravityGlobalConversationKey,
+  getLastUsedAntigravityPaperConversationKey,
+  removeLastUsedAntigravityConversationMode,
+  removeLastUsedAntigravityGlobalConversationKey,
+  removeLastUsedAntigravityPaperConversationKey,
+  setLastUsedAntigravityConversationMode,
+  setLastUsedAntigravityGlobalConversationKey,
+  setLastUsedAntigravityPaperConversationKey,
+} from "../../antigravity/prefs";
+import {
+  activeAntigravityConversationModeByLibrary,
+  activeAntigravityGlobalConversationByLibrary,
+  activeAntigravityPaperConversationByPaper,
+  buildAntigravityLibraryStateKey,
+  buildAntigravityPaperStateKey,
+} from "../../antigravity/state";
+import {
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
@@ -242,6 +260,35 @@ const ADAPTERS: Record<ConversationSystem, SelectionAdapter> = {
     getPaper: getLastUsedCodexPaperConversationKey,
     setPaper: setLastUsedCodexPaperConversationKey,
     removePaper: removeLastUsedCodexPaperConversationKey,
+  },
+  antigravity: {
+    system: "antigravity",
+    libraryStateKey: buildAntigravityLibraryStateKey,
+    paperStateKey: buildAntigravityPaperStateKey,
+    modeSlot: (libraryID) =>
+      slot(
+        activeAntigravityConversationModeByLibrary,
+        buildAntigravityLibraryStateKey(libraryID),
+      ),
+    globalSlot: (libraryID) =>
+      slot(
+        activeAntigravityGlobalConversationByLibrary,
+        buildAntigravityLibraryStateKey(libraryID),
+      ),
+    paperSlot: (libraryID, paperItemID) =>
+      slot(
+        activeAntigravityPaperConversationByPaper,
+        buildAntigravityPaperStateKey(libraryID, paperItemID),
+      ),
+    getMode: getLastUsedAntigravityConversationMode,
+    setMode: setLastUsedAntigravityConversationMode,
+    removeMode: removeLastUsedAntigravityConversationMode,
+    getGlobal: getLastUsedAntigravityGlobalConversationKey,
+    setGlobal: setLastUsedAntigravityGlobalConversationKey,
+    removeGlobal: removeLastUsedAntigravityGlobalConversationKey,
+    getPaper: getLastUsedAntigravityPaperConversationKey,
+    setPaper: setLastUsedAntigravityPaperConversationKey,
+    removePaper: removeLastUsedAntigravityPaperConversationKey,
   },
 };
 
