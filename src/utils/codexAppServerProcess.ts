@@ -14,6 +14,7 @@ import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
 import { appLogger } from "../core/logging";
 import { registerAppQuitBlocker } from "./appQuitBlocker";
+import { getCliProxyOverride } from "./cliProxy";
 import {
   LocalDocumentPathStreamRedactor,
   redactAllRememberedLocalDocumentPathsFromTerminalText,
@@ -2162,8 +2163,15 @@ function buildCodexLaunchEnvironment(
     runtimeEnv.NO_PROXY,
     runtimeEnv.no_proxy,
   );
+  // Settings > Agent > Network proxy. "system" keeps Codex's own default: it
+  // reads the macOS system proxy by itself.
+  const override = getCliProxyOverride();
+  if (override?.NO_PROXY === "*") {
+    return { ...invocationEnvironment, ...override };
+  }
   return {
     ...invocationEnvironment,
+    ...override,
     NO_PROXY: noProxy,
     no_proxy: noProxy,
   };

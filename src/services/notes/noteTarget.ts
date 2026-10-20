@@ -13,6 +13,11 @@ import {
   isCodexPaperPortalItem,
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
+import {
+  isAntigravityGlobalPortalItem,
+  isAntigravityPaperPortalItem,
+  resolveAntigravityPaperPortalBaseItem,
+} from "../../antigravity/portal";
 import { resolveNoteEditingParentItem } from "./scope";
 
 export function resolveParentItemForNoteTarget(
@@ -21,7 +26,8 @@ export function resolveParentItemForNoteTarget(
   if (
     isGlobalPortalItem(item) ||
     isClaudeGlobalPortalItem(item) ||
-    isCodexGlobalPortalItem(item)
+    isCodexGlobalPortalItem(item) ||
+    isAntigravityGlobalPortalItem(item)
   ) {
     return null;
   }
@@ -31,6 +37,9 @@ export function resolveParentItemForNoteTarget(
   }
   if (isCodexPaperPortalItem(item)) {
     return resolveCodexPaperPortalBaseItem(item);
+  }
+  if (isAntigravityPaperPortalItem(item)) {
+    return resolveAntigravityPaperPortalBaseItem(item);
   }
   const noteParentItem = resolveNoteEditingParentItem(item);
   if (noteParentItem) return noteParentItem;

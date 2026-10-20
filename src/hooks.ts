@@ -24,6 +24,7 @@ import { initChatStore } from "./utils/chatStore";
 import { initUsageStore } from "./utils/usageStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
+import { initAntigravityStore } from "./antigravity/store";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
 import {
   configurePendingDeletionSubsystem,
@@ -56,6 +57,7 @@ type ConversationStoreReadiness = {
   chatStoreReady: boolean;
   claudeStoreReady: boolean;
   codexStoreReady: boolean;
+  antigravityStoreReady: boolean;
   pendingDeletionReady: boolean;
 };
 
@@ -127,6 +129,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     chatStoreReady: false,
     claudeStoreReady: false,
     codexStoreReady: false,
+    antigravityStoreReady: false,
     pendingDeletionReady: false,
   };
 
@@ -159,6 +162,12 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     appLogger.warn("LLM: Failed to initialize Codex App Server store", err);
   }
   try {
+    await measureStartupPhase("Antigravity store", initAntigravityStore);
+    readiness.antigravityStoreReady = true;
+  } catch (err) {
+    appLogger.warn("LLM: Failed to initialize Antigravity store", err);
+  }
+  try {
     await measureStartupPhase("pending deletion store", async () => {
       configurePendingDeletionSubsystem();
       await pendingDeletionStore.init();
@@ -185,6 +194,7 @@ function allConversationStoresReady(
     readiness.chatStoreReady &&
     readiness.claudeStoreReady &&
     readiness.codexStoreReady &&
+    readiness.antigravityStoreReady &&
     readiness.pendingDeletionReady
   );
 }

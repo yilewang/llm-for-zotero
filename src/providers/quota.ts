@@ -35,9 +35,15 @@ export type ClaudeQuotaTarget = {
     scopeLabel?: string;
   };
 };
+export type AntigravityQuotaTarget = {
+  kind: "antigravity";
+  binaryPath: string;
+  model: string;
+};
 export type QuotaTarget =
   | ApiQuotaTarget
   | ClaudeQuotaTarget
+  | AntigravityQuotaTarget
   | { kind: "codex"; codexPath: string };
 
 export type QuotaSnapshot = {

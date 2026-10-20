@@ -2,7 +2,7 @@ declare const Zotero: any;
 
 import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-  RUNTIME_CONVERSATION_KEY_END,
+  CODEX_CONVERSATION_KEY_END,
 } from "../shared/conversationKeySpace";
 import { cleanupRememberedConversationKeyPrefs } from "../shared/conversationKeyPrefCleanup";
 import {
@@ -292,9 +292,9 @@ async function findMisroutedCodexConversationKeys(): Promise<number[]> {
      ORDER BY conversation_key ASC`,
     [
       CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-      RUNTIME_CONVERSATION_KEY_END,
+      CODEX_CONVERSATION_KEY_END,
       CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-      RUNTIME_CONVERSATION_KEY_END,
+      CODEX_CONVERSATION_KEY_END,
     ],
   )) as Array<{ conversationKey?: unknown }> | undefined;
   return (rows || [])

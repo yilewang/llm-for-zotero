@@ -77,9 +77,10 @@ describe("conversation selection persist policy", function () {
     assert.isBelow(clearAt, open.indexOf("resolveInitialPanelItemState("));
   });
 
-  it("sidebar identity sync writes Codex and upstream paper chats to the map only", function () {
-    for (const system of ["codex", "upstream"]) {
-      const marker = `system: "${system}",\n              libraryID,\n              kind: "paper",`;
+  it("sidebar identity sync writes Codex, Antigravity and upstream paper chats to the map only", function () {
+    // Codex and Antigravity share one branch keyed by `runtimeSystem`.
+    for (const system of ["runtimeSystem", '"upstream"']) {
+      const marker = `system: ${system},\n              libraryID,\n              kind: "paper",`;
       const start = setupHandlers.indexOf(marker);
       assert.isAtLeast(start, 0, `${system} paper remember call must exist`);
       const end = setupHandlers.indexOf(");", start);
@@ -90,10 +91,10 @@ describe("conversation selection persist policy", function () {
   });
 
   it("panel identity sync remembers the mode on the panel's own surface", function () {
-    for (const system of ["claude_code", "codex", "upstream"]) {
+    for (const system of ['"claude_code"', "runtimeSystem", '"upstream"']) {
       assert.include(
         setupHandlers,
-        `rememberMode("${system}", libraryID, mode, { surface });`,
+        `rememberMode(${system}, libraryID, mode, { surface });`,
       );
     }
   });

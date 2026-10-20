@@ -42,8 +42,10 @@ describe("Agent preference tab layout", function () {
     assert.deepEqual(rows, [
       'data-llm-agent-row="original"',
       'data-llm-agent-row="codex"',
+      'data-llm-agent-row="antigravity"',
       'data-llm-agent-row="claude"',
       'data-llm-agent-row="notes"',
+      'data-llm-agent-row="proxy"',
     ]);
 
     // Every row carries a disclosure button and a live summary line, so the
@@ -87,6 +89,10 @@ describe("Agent preference tab layout", function () {
     // inside — and disappear with — the Codex row.
     assert.isAbove(notesRow, claudeCard);
     assert.isAbove(sharedTools, notesRow);
+    // The proxy reaches Codex and Antigravity alike, so it is shared too.
+    const proxyRow = panel.indexOf('data-llm-agent-row="proxy"');
+    assert.isAbove(proxyRow, notesRow);
+    assert.isAbove(sharedTools, proxyRow);
     assert.isAbove(mcpToggle, sharedTools);
     assert.notInclude(panel, 'id="__addonRef__-external-mcp-settings"');
   });

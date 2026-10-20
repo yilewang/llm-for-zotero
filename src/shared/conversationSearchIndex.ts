@@ -1,8 +1,16 @@
 import {
+  CONVERSATION_SYSTEM_SQL_VALUES,
+  isConversationSystem,
+  isSystemCheckOutdated,
+} from "./conversationSystems";
+import {
   CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
   CLAUDE_PAPER_CONVERSATION_KEY_BASE,
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_PAPER_CONVERSATION_KEY_BASE,
+  CODEX_CONVERSATION_KEY_END,
+  ANTIGRAVITY_GLOBAL_CONVERSATION_KEY_BASE,
+  ANTIGRAVITY_PAPER_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
   UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
   UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
@@ -94,9 +102,7 @@ function normalizeText(value: unknown, maxLength = 2_000_000): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): "global" | "paper" | null {
@@ -229,6 +235,17 @@ async function ensureSearchIndexSchema(db: ZoteroDb): Promise<void> {
   }
   if (Number(conversationIDColumn?.pk || 0) > 0) {
     await dropSearchIndexCache(db);
+    return;
+  }
+  // The index is a rebuildable cache: a table whose CHECK predates a system
+  // is dropped rather than migrated.
+  const rows = (await db.queryAsync?.(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [CONVERSATION_SEARCH_INDEX_TABLE],
+  )) as Array<{ sql?: unknown }> | undefined;
+  const createSql = typeof rows?.[0]?.sql === "string" ? rows[0].sql : "";
+  if (isSystemCheckOutdated(createSql)) {
+    await dropSearchIndexCache(db);
   }
 }
 
@@ -241,7 +258,7 @@ export async function initConversationSearchIndexStore(): Promise<boolean> {
       search_key TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       legacy_conversation_key INTEGER NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
+      system TEXT NOT NULL CHECK(system IN (${CONVERSATION_SYSTEM_SQL_VALUES})),
       kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
       library_id INTEGER NOT NULL,
       paper_item_id INTEGER,
@@ -400,12 +417,39 @@ const CODEX_VALIDITY_SQL = [
   "  (",
   "    c.kind = 'paper'",
   `    AND c.conversation_key >= ${CODEX_PAPER_CONVERSATION_KEY_BASE}`,
+  `    AND c.conversation_key < ${CODEX_CONVERSATION_KEY_END}`,
+  "    AND c.paper_item_id IS NOT NULL",
+  "    AND c.paper_item_id > 0",
+  "  )",
+  ")",
+].join("\n");
+
+const ANTIGRAVITY_VALIDITY_SQL = [
+  "(",
+  "  (",
+  "    c.kind = 'global'",
+  `    AND c.conversation_key >= ${ANTIGRAVITY_GLOBAL_CONVERSATION_KEY_BASE}`,
+  `    AND c.conversation_key < ${ANTIGRAVITY_PAPER_CONVERSATION_KEY_BASE}`,
+  "  )",
+  "  OR",
+  "  (",
+  "    c.kind = 'paper'",
+  `    AND c.conversation_key >= ${ANTIGRAVITY_PAPER_CONVERSATION_KEY_BASE}`,
   `    AND c.conversation_key < ${RUNTIME_CONVERSATION_KEY_END}`,
   "    AND c.paper_item_id IS NOT NULL",
   "    AND c.paper_item_id > 0",
   "  )",
   ")",
 ].join("\n");
+
+const RUNTIME_VALIDITY_SQL: Record<
+  Exclude<ConversationSystem, "upstream">,
+  string
+> = {
+  claude_code: CLAUDE_VALIDITY_SQL,
+  codex: CODEX_VALIDITY_SQL,
+  antigravity: ANTIGRAVITY_VALIDITY_SQL,
+};
 
 function getCoverageCatalogDescriptors(
   system: ConversationSystem,
@@ -428,6 +472,15 @@ function getCoverageCatalogDescriptors(
         tableName:
           CONVERSATION_STORE_TABLES_BY_SYSTEM.claude_code.catalogTables.global,
         validitySql: CLAUDE_VALIDITY_SQL,
+      },
+    ];
+  }
+  if (system === "antigravity") {
+    return [
+      {
+        tableName:
+          CONVERSATION_STORE_TABLES_BY_SYSTEM.antigravity.catalogTables.global,
+        validitySql: ANTIGRAVITY_VALIDITY_SQL,
       },
     ];
   }
@@ -566,10 +619,7 @@ export async function refreshConversationSearchIndexForSystem(
     });
     return true;
   }
-  const runtimeTables =
-    CONVERSATION_STORE_TABLES_BY_SYSTEM[
-      system === "claude_code" ? "claude_code" : "codex"
-    ];
+  const runtimeTables = CONVERSATION_STORE_TABLES_BY_SYSTEM[system];
   const catalogTable = runtimeTables.catalogTables.global;
   const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
@@ -581,8 +631,7 @@ export async function refreshConversationSearchIndexForSystem(
     activitySql: "COALESCE(MAX(m.timestamp), c.updated_at, c.created_at)",
     groupBySql:
       "c.conversation_id, c.conversation_key, c.library_id, c.kind, c.paper_item_id, c.created_at, c.updated_at, c.title",
-    validitySql:
-      system === "claude_code" ? CLAUDE_VALIDITY_SQL : CODEX_VALIDITY_SQL,
+    validitySql: RUNTIME_VALIDITY_SQL[system],
   });
   await pruneStaleSearchRows({
     system,
@@ -629,10 +678,7 @@ export async function refreshConversationSearchIndexForConversation(params: {
     });
     return true;
   }
-  const runtimeTables =
-    CONVERSATION_STORE_TABLES_BY_SYSTEM[
-      system === "claude_code" ? "claude_code" : "codex"
-    ];
+  const runtimeTables = CONVERSATION_STORE_TABLES_BY_SYSTEM[system];
   const catalogTable = runtimeTables.catalogTables.global;
   const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
@@ -644,8 +690,7 @@ export async function refreshConversationSearchIndexForConversation(params: {
     activitySql: "COALESCE(MAX(m.timestamp), c.updated_at, c.created_at)",
     groupBySql:
       "c.conversation_id, c.conversation_key, c.library_id, c.kind, c.paper_item_id, c.created_at, c.updated_at, c.title",
-    validitySql:
-      system === "claude_code" ? CLAUDE_VALIDITY_SQL : CODEX_VALIDITY_SQL,
+    validitySql: RUNTIME_VALIDITY_SQL[system],
     ...filter,
   });
   return true;
@@ -714,6 +759,7 @@ export async function refreshConversationSearchIndex(): Promise<boolean> {
   await refreshConversationSearchIndexForSystem("upstream");
   await refreshConversationSearchIndexForSystem("claude_code");
   await refreshConversationSearchIndexForSystem("codex");
+  await refreshConversationSearchIndexForSystem("antigravity");
   return true;
 }
 

@@ -3341,13 +3341,13 @@
           "type": "table",
           "name": "llm_for_zotero_conversation_key_ledger",
           "tbl_name": "llm_for_zotero_conversation_key_ledger",
-          "sql": "CREATE TABLE llm_for_zotero_conversation_key_ledger (\n      conversation_key INTEGER PRIMARY KEY,\n      instance_id TEXT NOT NULL UNIQUE,\n      conversation_id TEXT NOT NULL,\n      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),\n      kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),\n      profile_signature TEXT NOT NULL,\n      library_id INTEGER NOT NULL,\n      paper_item_id INTEGER,\n      issued_at INTEGER NOT NULL,\n      retired_at INTEGER,\n      retirement_reason TEXT\n    )"
+          "sql": "CREATE TABLE llm_for_zotero_conversation_key_ledger (\n        conversation_key INTEGER PRIMARY KEY,\n        instance_id TEXT NOT NULL UNIQUE,\n        conversation_id TEXT NOT NULL,\n        system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex', 'antigravity')),\n        kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),\n        profile_signature TEXT NOT NULL,\n        library_id INTEGER NOT NULL,\n        paper_item_id INTEGER,\n        issued_at INTEGER NOT NULL,\n        retired_at INTEGER,\n        retirement_reason TEXT\n      )"
         },
         {
           "type": "table",
           "name": "llm_for_zotero_conversation_registry",
           "tbl_name": "llm_for_zotero_conversation_registry",
-          "sql": "CREATE TABLE llm_for_zotero_conversation_registry (\n      instance_id TEXT,\n      conversation_id TEXT PRIMARY KEY,\n      legacy_conversation_key INTEGER NOT NULL,\n      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),\n      kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),\n      profile_signature TEXT NOT NULL,\n      library_id INTEGER NOT NULL,\n      paper_item_id INTEGER,\n      created_at INTEGER NOT NULL,\n      updated_at INTEGER NOT NULL,\n      title TEXT,\n      valid INTEGER NOT NULL DEFAULT 1,\n      invalid_reason TEXT,\n      is_paper_restore_target INTEGER NOT NULL DEFAULT 0\n        CHECK(is_paper_restore_target IN (0, 1))\n    )"
+          "sql": "CREATE TABLE llm_for_zotero_conversation_registry (\n      instance_id TEXT,\n      conversation_id TEXT PRIMARY KEY,\n      legacy_conversation_key INTEGER NOT NULL,\n      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex', 'antigravity')),\n      kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),\n      profile_signature TEXT NOT NULL,\n      library_id INTEGER NOT NULL,\n      paper_item_id INTEGER,\n      created_at INTEGER NOT NULL,\n      updated_at INTEGER NOT NULL,\n      title TEXT,\n      valid INTEGER NOT NULL DEFAULT 1,\n      invalid_reason TEXT,\n      is_paper_restore_target INTEGER NOT NULL DEFAULT 0\n        CHECK(is_paper_restore_target IN (0, 1))\n    )"
         },
         {
           "type": "table",
@@ -4433,8 +4433,12 @@
           "params": []
         },
         {
-          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_conversation_registry ( instance_id TEXT, conversation_id TEXT PRIMARY KEY, legacy_conversation_key INTEGER NOT NULL, system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')), kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')), profile_signature TEXT NOT NULL, library_id INTEGER NOT NULL, paper_item_id INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, title TEXT, valid INTEGER NOT NULL DEFAULT 1, invalid_reason TEXT, is_paper_restore_target INTEGER NOT NULL DEFAULT 0 CHECK(is_paper_restore_target IN (0, 1)) )",
+          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_conversation_registry ( instance_id TEXT, conversation_id TEXT PRIMARY KEY, legacy_conversation_key INTEGER NOT NULL, system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex', 'antigravity')), kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')), profile_signature TEXT NOT NULL, library_id INTEGER NOT NULL, paper_item_id INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, title TEXT, valid INTEGER NOT NULL DEFAULT 1, invalid_reason TEXT, is_paper_restore_target INTEGER NOT NULL DEFAULT 0 CHECK(is_paper_restore_target IN (0, 1)) )",
           "params": []
+        },
+        {
+          "sql": "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+          "params": ["llm_for_zotero_conversation_registry"]
         },
         {
           "sql": "PRAGMA table_info(llm_for_zotero_conversation_registry)",
@@ -4733,8 +4737,12 @@
           ]
         },
         {
-          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_conversation_key_ledger ( conversation_key INTEGER PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL, system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')), kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')), profile_signature TEXT NOT NULL, library_id INTEGER NOT NULL, paper_item_id INTEGER, issued_at INTEGER NOT NULL, retired_at INTEGER, retirement_reason TEXT )",
+          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_conversation_key_ledger ( conversation_key INTEGER PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL, system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex', 'antigravity')), kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')), profile_signature TEXT NOT NULL, library_id INTEGER NOT NULL, paper_item_id INTEGER, issued_at INTEGER NOT NULL, retired_at INTEGER, retirement_reason TEXT )",
           "params": []
+        },
+        {
+          "sql": "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+          "params": ["llm_for_zotero_conversation_key_ledger"]
         },
         {
           "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_conversation_key_counters ( range_id TEXT PRIMARY KEY, system TEXT NOT NULL, kind TEXT NOT NULL, range_start INTEGER NOT NULL, range_end_exclusive INTEGER NOT NULL, next_key INTEGER NOT NULL, updated_at INTEGER NOT NULL )",

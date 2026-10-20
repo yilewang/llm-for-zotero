@@ -9,9 +9,20 @@ export type ProviderQuota =
     }
   | {
       kind: "usage";
-      provider?: "codex" | "claude" | "glm" | "kimi" | "minimax" | "opencode";
+      provider?:
+        | "codex"
+        | "claude"
+        | "glm"
+        | "kimi"
+        | "minimax"
+        | "opencode"
+        | "antigravity";
       windows: Array<{
         usedPercent: number;
+        /** Which allowance the window counts, when a plan has several. */
+        label?: string;
+        /** Listed in the tooltip but left out of the headline percentage. */
+        secondary?: boolean;
         period?: "rolling" | "weekly" | "monthly";
         durationMins?: number;
         resetsAt?: number;

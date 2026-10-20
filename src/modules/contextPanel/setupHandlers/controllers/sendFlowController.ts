@@ -182,6 +182,7 @@ type SendFlowControllerDeps = {
   isGlobalMode: () => boolean;
   isClaudeConversationSystem: () => boolean;
   isCodexConversationSystem: () => boolean;
+  isAntigravityConversationSystem?: () => boolean;
   normalizeConversationTitleSeed: (raw: unknown) => string;
   getConversationKey: (item: Zotero.Item) => number;
   getConversationWriteGeneration?: (conversationKey: number) => number;
@@ -191,6 +192,11 @@ type SendFlowControllerDeps = {
     generation?: number,
   ) => Promise<void>;
   touchCodexConversationTitle: (
+    conversationKey: number,
+    title: string,
+    generation?: number,
+  ) => Promise<void>;
+  touchAntigravityConversationTitle?: (
     conversationKey: number,
     title: string,
     generation?: number,
@@ -329,6 +335,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       isGlobalMode: deps.isGlobalMode(),
       isClaudeConversationSystem: deps.isClaudeConversationSystem(),
       isCodexConversationSystem: deps.isCodexConversationSystem(),
+      isAntigravityConversationSystem:
+        deps.isAntigravityConversationSystem?.() === true,
       selectedProfile: panelSelectedProfile,
       currentModelName: deps.getCurrentModelName(),
       selectedReasoning: deps.getSelectedReasoning(),
@@ -662,9 +670,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           ? deps.touchClaudeConversationTitle
           : panel.isCodexConversationSystem
             ? deps.touchCodexConversationTitle
-            : panel.isGlobalMode
-              ? deps.touchGlobalConversationTitle
-              : deps.touchPaperConversationTitle;
+            : panel.isAntigravityConversationSystem &&
+                deps.touchAntigravityConversationTitle
+              ? deps.touchAntigravityConversationTitle
+              : panel.isGlobalMode
+                ? deps.touchGlobalConversationTitle
+                : deps.touchPaperConversationTitle;
         void touchTitle(
           deps.getConversationKey(item),
           titleSeed,

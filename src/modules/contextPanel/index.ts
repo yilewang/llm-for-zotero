@@ -492,7 +492,9 @@ export function registerReaderContextPanel() {
             : 0) ||
           (item ? Number(item.libraryID || 0) : 0);
         const lockedKey =
-          expectedSystem === "claude_code" || expectedSystem === "codex"
+          expectedSystem === "claude_code" ||
+          expectedSystem === "codex" ||
+          expectedSystem === "antigravity"
             ? null
             : libraryID > 0
               ? getLockedGlobalConversationKey(libraryID)

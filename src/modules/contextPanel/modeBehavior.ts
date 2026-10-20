@@ -7,6 +7,7 @@ export type RuntimeModeResolutionInput = {
     | "upstream"
     | "claude_code"
     | "codex"
+    | "antigravity"
     | string
     | null;
   isWebChat?: boolean;
@@ -43,7 +44,12 @@ export function filterManualPaperContextsAgainstAutoLoaded(
 export function resolveRuntimeModeForConversation(
   input: RuntimeModeResolutionInput,
 ): ChatRuntimeMode {
-  if (input.runtimeConversationSystem === "codex") return "chat";
+  if (
+    input.runtimeConversationSystem === "codex" ||
+    input.runtimeConversationSystem === "antigravity"
+  ) {
+    return "chat";
+  }
   if (
     input.isRuntimeConversationSystem ||
     input.runtimeConversationSystem === "claude_code"

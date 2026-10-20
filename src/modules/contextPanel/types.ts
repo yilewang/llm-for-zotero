@@ -313,6 +313,33 @@ export type CodexPaperPortalItem = {
   isRegularItem: () => boolean;
 };
 
+export type AntigravityGlobalPortalItem = {
+  __llmAntigravityGlobalPortalItem: true;
+  __llmAntigravityConversationKind: "global";
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type AntigravityPaperPortalItem = {
+  __llmAntigravityPaperPortalItem: true;
+  __llmAntigravityConversationKind: "paper";
+  __llmAntigravityPaperPortalBaseItemID: number;
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
 // ── Send flow options ─────────────────────────────────────────────────────
 
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
