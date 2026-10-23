@@ -175,6 +175,31 @@ describe("AgentFinalAnswerController", function () {
     assert.equal(decision.assistantContent, "An unsupported current claim.");
     assert.include(decision.correction, "Correct the web attribution");
   });
+
+  it("preserves the first answer when an attribution retry returns no text", async function () {
+    const controller = new AgentFinalAnswerController(makeRequest());
+    const toolExecutionRecords = [
+      { name: "web_search", ok: true, content: { results: [] } },
+    ];
+
+    const first = await controller.evaluate({
+      candidateText: "The original answer.",
+      canCorrect: true,
+      toolExecutionRecords,
+    });
+    assert.equal(first.kind, "correct");
+
+    const retry = await controller.evaluate({
+      candidateText: "",
+      canCorrect: true,
+      toolExecutionRecords,
+    });
+
+    assert.equal(retry.kind, "fail");
+    if (retry.kind !== "fail") return;
+    assert.include(retry.userMessage, "The original answer.");
+    assert.include(retry.userMessage, "not source-verified");
+  });
 });
 
 describe("AgentFinalAnswerController declared outcomes", function () {

@@ -608,7 +608,7 @@ describe("Original Agent run endings", function () {
     });
 
     const text =
-      "I used web access for this task, but could not safely attach valid paragraph-level sources to the answer.";
+      "I used web access, but could not verify valid paragraph-level sources for this answer. The answer is preserved below; its web claims are not source-verified.\n\nSecond uncited claim.";
     assert.equal(adapter.steps(), 3);
     // It answered, so it completed; the run was stored as failed.
     assert.deepInclude(ending.outcome, {

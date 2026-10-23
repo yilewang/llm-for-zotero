@@ -5,6 +5,7 @@ import type {
 } from "../types";
 import {
   assessWebAttribution,
+  stripWebSourceMarkersForDisplay,
   type WebAttributionAssessment,
 } from "../../webAccess/attribution";
 import {
@@ -60,6 +61,7 @@ const DISCOVERY_CHOICE = `Your answer was not shown: this turn ran a paper-findi
  */
 export class AgentFinalAnswerController {
   private webAttributionCorrectionUsed = false;
+  private webAttributionFallbackText?: string;
   private readonly literatureReviewCorrections = new Set<string>();
   /** The ledger's progress when the last outcome correction was given. */
   private outcomeCorrectionSignature?: string;
@@ -174,16 +176,24 @@ export class AgentFinalAnswerController {
     }
     if (!this.webAttributionCorrectionUsed && params.canCorrect) {
       this.webAttributionCorrectionUsed = true;
+      const fallbackText = stripWebSourceMarkersForDisplay(
+        webAttribution.cleanText,
+      ).trim();
+      if (fallbackText) this.webAttributionFallbackText = fallbackText;
       return {
         kind: "correct",
         correction: webAttribution.correctionPrompt,
         assistantContent: webAttribution.cleanText,
       };
     }
+    const answerText =
+      stripWebSourceMarkersForDisplay(webAttribution.cleanText).trim() ||
+      this.webAttributionFallbackText;
     return {
       kind: "fail",
-      userMessage:
-        "I used web access for this task, but could not safely attach valid paragraph-level sources to the answer.",
+      userMessage: answerText
+        ? `I used web access, but could not verify valid paragraph-level sources for this answer. The answer is preserved below; its web claims are not source-verified.\n\n${answerText}`
+        : "I used web access for this task, but could not safely attach valid paragraph-level sources to the answer.",
     };
   }
 

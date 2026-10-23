@@ -8355,11 +8355,22 @@ describe("web attribution runtime guard", function () {
 
       assert.equal(outcome.kind, "completed");
       if (outcome.kind !== "completed") return;
-      assert.include(outcome.text, "could not safely attach valid");
+      assert.include(
+        outcome.text,
+        "could not verify valid paragraph-level sources",
+      );
       const run = restoreDb.runs.get(outcome.runId);
       assert.equal(run?.status, "failed");
-      assert.notInclude(outcome.text, "First uncited claim");
-      assert.notInclude(outcome.text, "Second uncited claim");
+      assert.include(outcome.text, "Second uncited claim");
+      assert.include(outcome.text, "not source-verified");
+      assert.notInclude(outcome.text, "llm-web-source");
+      const transcript = readPersistedTranscript(restoreDb, 922);
+      assert.equal(transcript.at(-1)?.role, "assistant");
+      assert.include(
+        String(transcript.at(-1)?.content),
+        "Second uncited claim",
+      );
+      assert.include(String(transcript.at(-1)?.content), "not source-verified");
     } finally {
       restoreDb();
     }
