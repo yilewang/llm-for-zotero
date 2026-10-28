@@ -12089,6 +12089,13 @@ label.llm-search-results-item:hover {
 .llm-mermaid-window-root.llm-viewer-window-html {
   display: flex;
   flex-direction: column;
+  /* The page starts below the toolbar, like the picture stage, so the × and
+   * the traffic light strip never cover its top. */
+  padding-top: 56px;
+}
+
+:root[customtitlebar] .llm-mermaid-window-root.llm-viewer-window-html {
+  padding-top: 38px;
 }
 
 /* Flat style outside the chat. The side panel tab fills its width (the 520px
