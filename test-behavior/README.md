@@ -34,6 +34,8 @@ npm run test:behavior -- --select figures --model deepseek-flash
 `--model`, `--reasoning`, and `--timeout` are explicit overrides.
 The defaults are `deepseek-v4-flash`, `high`, and a six-hour overall deadline.
 Ordinary Agent turns have a twelve-minute cancellation deadline.
+The runner ends the run as BLOCKED if Zotero quits or stops writing its heartbeat for two minutes.
+It also ends the run as BLOCKED if Zotero does not start the suite within ten minutes.
 Do not edit/rebuild the plugin or launch another suite while a run is active.
 The development launcher watches source changes, and a reload would invalidate the running test.
 An already-started request is never silently replayed after a reload.
