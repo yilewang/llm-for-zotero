@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 7,
+  "revision": 8,
   "models": [
     {
       "match": {
@@ -464,11 +464,61 @@
     },
     {
       "match": {
+        "prefix": "claude-fable-5"
+      },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": {
+        "prefix": "claude-mythos-5"
+      },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": {
+        "prefix": "claude-opus-5"
+      },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": {
+        "prefix": "claude-opus-4-8"
+      },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": {
+        "prefix": "claude-sonnet-5"
+      },
+      "limits": {
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
+        "outputTokens": 128000
+      }
+    },
+    {
+      "match": {
         "prefix": "claude-opus-4-7"
       },
       "limits": {
-        "contextWindowTokens": 200000,
-        "inputTokens": 200000,
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
         "outputTokens": 128000
       }
     },
@@ -477,8 +527,8 @@
         "prefix": "claude-opus-4-6"
       },
       "limits": {
-        "contextWindowTokens": 200000,
-        "inputTokens": 200000,
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
         "outputTokens": 128000
       }
     },
@@ -487,8 +537,8 @@
         "prefix": "claude-sonnet-4-6"
       },
       "limits": {
-        "contextWindowTokens": 200000,
-        "inputTokens": 200000,
+        "contextWindowTokens": 1000000,
+        "inputTokens": 1000000,
         "outputTokens": 64000
       }
     },

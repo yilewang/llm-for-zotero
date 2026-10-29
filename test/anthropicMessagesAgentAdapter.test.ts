@@ -1801,7 +1801,10 @@ describe("AnthropicMessagesAgentAdapter output cap versus context window", funct
     ).ztoolkit = originalToolkit;
   });
 
-  async function captureMaxTokens(userText: string): Promise<number> {
+  async function captureMaxTokens(
+    userText: string,
+    model = "claude-opus-4-6",
+  ): Promise<number> {
     let capturedBody: Record<string, unknown> | null = null;
     (
       globalThis as typeof globalThis & {
@@ -1835,7 +1838,7 @@ describe("AnthropicMessagesAgentAdapter output cap versus context window", funct
         conversationKey: 1,
         mode: "agent",
         userText,
-        model: "claude-opus-4-6",
+        model,
         apiBase: "https://api.anthropic.com",
         apiKey: "test",
         providerProtocol: "anthropic_messages",
@@ -1854,12 +1857,18 @@ describe("AnthropicMessagesAgentAdapter output cap versus context window", funct
     assert.equal(await captureMaxTokens("Summarize this paper."), 128_000);
   });
 
-  it("shrinks max_tokens so a long prompt plus the cap still fits the 200k window", async function () {
+  it("keeps the full cap for a long prompt inside the 1M window", async function () {
     // ~100k estimated input tokens of ASCII prose (4 chars per token).
     const longText = "word ".repeat(80_000);
-    const maxTokens = await captureMaxTokens(longText);
+    assert.equal(await captureMaxTokens(longText), 128_000);
+  });
+
+  it("shrinks max_tokens so a long prompt plus the cap still fits the 200k window", async function () {
+    // ~150k estimated input tokens against Haiku 4.5's 200k window.
+    const longText = "word ".repeat(120_000);
+    const maxTokens = await captureMaxTokens(longText, "claude-haiku-4-5");
     assert.isAtLeast(maxTokens, 8_192);
-    assert.isAtMost(maxTokens, 80_000);
-    assert.isAtMost(100_000 + maxTokens, 200_000);
+    assert.isBelow(maxTokens, 64_000);
+    assert.isAtMost(150_000 + maxTokens, 200_000);
   });
 });
