@@ -2085,6 +2085,65 @@ describe("agent engine final UI release", function () {
       assert.lengthOf(record.ledger.papers["1:3"].turns[2].citations, 1);
     });
 
+    it("shows the steps Claude Code keeps as the run's checklist, from Claude", async function () {
+      const conversationKey = 703;
+      const deps = createDeps({
+        runtime: runtimeWith(async (params) => {
+          await params.onStart?.("run-steps");
+          await params.onEvent?.({
+            type: "codex_progress",
+            itemId: "codex-plan-checklist",
+            text: "• Screen\n• Skim",
+            runtime: "claude",
+            steps: [
+              { content: "Screen", status: "in_progress" },
+              { content: "Skim", status: "pending" },
+            ],
+          });
+          await params.onEvent?.({
+            type: "codex_progress",
+            itemId: "codex-plan-checklist",
+            text: "✓ Screen\n• Skim",
+            runtime: "claude",
+            steps: [
+              { content: "Screen", status: "completed" },
+              { content: "Skim", status: "in_progress" },
+            ],
+          });
+          return {
+            kind: "completed",
+            runId: "run-steps",
+            text: "Done.",
+            usedFallback: false,
+          };
+        }),
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.chatHistory.set(conversationKey, []);
+
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question: "Review the library",
+        },
+        deps,
+      );
+
+      const checklist = getTaskProgress(conversationKey)!.checklist;
+      assert.equal(checklist?.source, "claude");
+      assert.equal(checklist?.runId, "run-steps");
+      assert.deepEqual(
+        checklist?.steps.map((step) => [step.label, step.status]),
+        [
+          ["Screen", "completed"],
+          ["Skim", "in_progress"],
+        ],
+      );
+    });
+
     it("marks the run failed when the runtime throws after onStart", async function () {
       const conversationKey = 702;
       const deps = createDeps({

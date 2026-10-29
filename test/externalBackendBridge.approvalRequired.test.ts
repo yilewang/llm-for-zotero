@@ -668,6 +668,16 @@ describe("external bridge action approval handling", function () {
         capturedBody?.allowedTools,
         `mcp__${serverName}__run_command`,
       );
+      // The paper-reader subagent gets only the four Zotero read tools.
+      assert.sameMembers(
+        capturedBody?.metadata?.paperReaderTools as string[],
+        [
+          "library_search",
+          "library_read",
+          "library_retrieve",
+          "paper_read",
+        ].map((name) => `mcp__${serverName}__${name}`),
+      );
       assert.equal(mcpServers?.[serverName].type, "http");
       assert.equal(
         mcpServers?.[serverName].url,

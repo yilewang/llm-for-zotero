@@ -1220,7 +1220,7 @@ export type WorkflowTestApi = {
     planSeen: boolean;
     hydrated: boolean;
     checklist: {
-      source: "action" | "codex" | "outcomes";
+      source: "action" | "codex" | "claude" | "outcomes";
       title: string;
       steps: Array<{
         label: string;
@@ -1241,7 +1241,7 @@ export type WorkflowTestApi = {
       runId?: string;
       text?: string;
       title?: string;
-      checklistSource?: "action" | "codex" | "outcomes";
+      checklistSource?: "action" | "codex" | "claude" | "outcomes";
     }>;
     /** Each paper row's reads over every turn, by `libraryID:itemId`. */
     paperRows: Record<

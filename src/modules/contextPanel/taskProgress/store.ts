@@ -100,15 +100,18 @@ export type TaskProgressStep = {
   outcome?: TaskProgressOutcomeStep;
 };
 
+/** The runtime that keeps its own steps: Codex's plan, or Claude Code's list. */
+export type TaskProgressStepsRuntime = "codex" | "claude";
+
 /**
- * A run's steps: a built-in action's progress, the checklist Codex keeps
- * with its own plan tool, or the outcomes a run's ledger holds.
+ * A run's steps: a built-in action's progress, the checklist Codex or Claude
+ * Code keeps with its own plan tool, or the outcomes a run's ledger holds.
  */
 export type TaskProgressChecklist = {
-  source: "action" | "codex" | "outcomes";
+  source: "action" | TaskProgressStepsRuntime | "outcomes";
   /** The run the steps belong to (an action gets its own id). */
   runId: string;
-  /** The action's name; empty for Codex. */
+  /** The action's name; empty for Codex and Claude Code. */
   title: string;
   steps: TaskProgressStep[];
   /** Steps completed, and steps in all (an action announces its total). */
@@ -1185,11 +1188,11 @@ export function endTaskAction(
   changed(record);
 }
 
-/** Codex's own plan for a run: its checklist, as it stands. */
+/** Codex's plan or Claude Code's steps for a run, as they stand. */
 export function setTaskChecklist(
   conversationKey: number,
   params: {
-    source: "codex";
+    source: TaskProgressStepsRuntime;
     runId: string;
     steps: TaskProgressStep[];
     outcome?: TaskProgressChecklist["outcome"];

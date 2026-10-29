@@ -20,4 +20,27 @@ describe("mapToLlm4ZoteroEvent", () => {
       summary: undefined,
     });
   });
+
+  it("passes a step snapshot through with its runtime", () => {
+    const mapped = mapToLlm4ZoteroEvent({
+      type: "codex_progress",
+      ts: 123,
+      payload: {
+        itemId: "codex-plan-checklist",
+        text: "• Screen",
+        status: "running",
+        steps: [{ content: "Screen", status: "in_progress" }],
+        runtime: "claude",
+      },
+    });
+
+    expect(mapped).toEqual({
+      type: "codex_progress",
+      itemId: "codex-plan-checklist",
+      text: "• Screen",
+      status: "running",
+      steps: [{ content: "Screen", status: "in_progress" }],
+      runtime: "claude",
+    });
+  });
 });

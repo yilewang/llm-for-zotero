@@ -143,6 +143,25 @@ export function mapToLlm4ZoteroEvent(
         automatic: payload.automatic === true,
       };
     }
+    case "codex_progress": {
+      const steps = Array.isArray(payload.steps)
+        ? payload.steps.map((step) => {
+            const record = asRecord(step);
+            return {
+              content: asString(record.content),
+              status: asString(record.status) || undefined,
+            };
+          })
+        : [];
+      return {
+        type: "codex_progress",
+        itemId: asString(payload.itemId),
+        text: asString(payload.text),
+        status: payload.status === "completed" ? "completed" : "running",
+        steps,
+        runtime: payload.runtime === "claude" ? "claude" : "codex",
+      };
+    }
     case "fallback": {
       const reason = asString(payload.reason) || "fallback";
       return {

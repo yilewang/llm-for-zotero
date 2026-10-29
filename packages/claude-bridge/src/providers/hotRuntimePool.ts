@@ -1,5 +1,6 @@
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ProviderEvent } from "../runtime.js";
+import type { ClaudeStepTracker } from "../event-mapper/claude-step-tracker.js";
 
 type Waiter = {
   resolve: (value: IteratorResult<ProviderEvent>) => void;
@@ -35,6 +36,8 @@ export type HotRuntimeEntry = {
   lastUsageSnapshot?: { contextTokens: number; contextWindow?: number };
   currentTurn: HotRuntimeTurn | null;
   currentTurnMessage?: SDKUserMessage;
+  /** Claude's step list for this runtime; set when its reader starts. */
+  stepTracker?: ClaudeStepTracker;
   pendingEarlyRuntimeError?: Error;
   pendingEarlyRuntimeQueryOptions?: Record<string, unknown>;
 };

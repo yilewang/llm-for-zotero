@@ -21,6 +21,7 @@ import type {
   RuntimeTurnStream,
 } from "../runtime.js";
 import { mapSdkMessageToProviderEvents } from "../event-mapper/map-sdk-message.js";
+import { createClaudeStepTracker } from "../event-mapper/claude-step-tracker.js";
 import { globalPermissionStore } from "../permissions/permission-store.js";
 import type { PermissionResult } from "../permissions/permission-store.js";
 import {
@@ -280,6 +281,7 @@ const DEFAULT_BLOCKED_METADATA_KEYS = new Set<string>([
   "model",
   "mcpServers",
   "effort",
+  "paperReaderTools",
 ]);
 const IMAGE_MIME_BY_KIND: Record<
   string,
@@ -978,6 +980,68 @@ function buildLocalPdfReadHooks(
     ],
   };
 }
+// Claude Code names its subagent tool "Agent"; older builds named it "Task".
+const SUBAGENT_TOOL_NAMES = ["Agent", "Task"];
+const PAPER_READER_AGENT_NAME = "paper-reader";
+
+/**
+ * The SDK runs a subagent in the background by default and the report comes
+ * in a later turn. By then the bridge has closed the turn and the Zotero MCP
+ * scope, so the subagent's reads would fail or land in the next turn. Force
+ * each subagent call to run in the foreground so it ends inside the turn.
+ */
+function buildSubagentForegroundHooks(): {
+  PreToolUse: HookCallbackMatcher[];
+} {
+  return {
+    PreToolUse: [
+      {
+        matcher: SUBAGENT_TOOL_NAMES.join("|"),
+        hooks: [
+          async (input) => {
+            if (
+              input.hook_event_name !== "PreToolUse" ||
+              !SUBAGENT_TOOL_NAMES.includes(input.tool_name)
+            ) {
+              return { continue: true };
+            }
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                updatedInput: {
+                  ...asRecord(input.tool_input),
+                  run_in_background: false,
+                },
+              },
+            };
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * A subagent that can only call the Zotero read tools the plugin names for
+ * this turn. Without `tools`, a subagent inherits every tool of the parent.
+ */
+function buildPaperReaderAgents(
+  readTools: unknown,
+):
+  | Record<string, { description: string; prompt: string; tools: string[] }>
+  | undefined {
+  const tools = toStableStringList(readTools);
+  if (!tools) return undefined;
+  return {
+    [PAPER_READER_AGENT_NAME]: {
+      description:
+        "Reads a batch of papers from the user's Zotero library with the Zotero read tools and reports what they say.",
+      prompt:
+        "Read the papers you are given with the Zotero tools. Report only what the tools returned, and name the paper for each point.",
+      tools,
+    },
+  };
+}
 function isRuntimeEffortLevel(value: unknown): value is RuntimeEffortLevel {
   return (
     value === "low" ||
@@ -1140,6 +1204,7 @@ function buildHotRuntimeSignature(
         : null,
     mcpServers: normalizeMcpServers(queryOptions.mcpServers) ?? null,
     allowedTools: toStableStringList(queryOptions.allowedTools, true),
+    agents: queryOptions.agents ?? null,
     configSourceMode:
       typeof metadata.claudeConfigSource === "string" &&
       metadata.claudeConfigSource.trim()
@@ -1728,6 +1793,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
     const runId = randomUUID();
     const turn = createHotRuntimeTurn(runId);
     entry.currentTurn = turn;
+    entry.stepTracker?.beginTurn();
     const providerSessionId =
       request.providerSessionId || entry.providerSessionId;
     const shouldInjectCompact = options?.autoCompactNeeded === true;
@@ -1960,11 +2026,16 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
         : undefined;
     let sawSdkInit = false;
     let sawModelOutput = false;
+    // Claude's steps outlive a turn, so the tracker watches every message,
+    // including those that arrive between turns.
+    const stepTracker = createClaudeStepTracker();
+    entry.stepTracker = stepTracker;
     try {
       for await (const raw of query) {
+        const stepEvents = stepTracker.observe(raw);
         const currentTurn = entry.currentTurn;
         if (!currentTurn) continue;
-        const mapped = mapSdkMessageToProviderEvents(raw);
+        const mapped = [...mapSdkMessageToProviderEvents(raw), ...stepEvents];
         for (const event of mapped) {
           if (event.type === "provider_event") {
             const payload = event.payload as Record<string, unknown>;
@@ -2322,6 +2393,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
             sdkStream = sdkStream ?? (await createSdkStream(queryOptions));
             const sdkIterator = sdkStream[Symbol.asyncIterator]();
             let sdkNext = sdkIterator.next();
+            const stepTracker = createClaudeStepTracker();
             let permissionNext = permissionEvents.next();
             for (;;) {
               const next = await Promise.race([
@@ -2348,7 +2420,10 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
                 break;
               }
               sdkNext = sdkIterator.next();
-              const mapped = mapSdkMessageToProviderEvents(next.result.value);
+              const mapped = [
+                ...mapSdkMessageToProviderEvents(next.result.value),
+                ...stepTracker.observe(next.result.value),
+              ];
               for (const event of mapped) {
                 if (event.type === "provider_event") {
                   const payload = event.payload as Record<string, unknown>;
@@ -2844,6 +2919,14 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
     const localPdfs = collectLocalPdfs(runtimeRequest);
     const localDocumentDirectories = localPdfDirectories(localPdfs);
     const localPdfReadHooks = buildLocalPdfReadHooks(localPdfs);
+    const baseHooks = localPdfReadHooks ?? asRecord(metadata.hooks) ?? {};
+    const hooks = {
+      ...baseHooks,
+      PreToolUse: [
+        ...((baseHooks.PreToolUse as HookCallbackMatcher[] | undefined) ?? []),
+        ...buildSubagentForegroundHooks().PreToolUse,
+      ],
+    };
     const configuredAdditionalDirectories = (
       this.options.additionalDirectories || []
     )
@@ -2965,7 +3048,8 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
           ? additionalDirectories
           : undefined,
         allowedTools: allowedTools?.length ? allowedTools : undefined,
-        hooks: localPdfReadHooks ?? metadata.hooks,
+        hooks,
+        agents: buildPaperReaderAgents(rawRequestMetadata.paperReaderTools),
         mcpServers,
         settingSources: effectiveSettingSources,
         permissionMode: effectivePermissionMode,

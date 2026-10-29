@@ -32,6 +32,7 @@ import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
+  buildClaudePaperReaderToolNames,
   buildClaudeZoteroMcpServerConfig,
   preflightCodexZoteroMcpServer,
   REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES,
@@ -1168,6 +1169,8 @@ async function runExternalBridgeTurn(
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
     allowedTools?: string[];
+    /** The Zotero read tools a `paper-reader` subagent may call. */
+    paperReaderTools?: string[];
     mcpServers?: ClaudeMcpServersConfig;
     scope?: BridgeScope;
     registerPendingConfirmation?: (
@@ -1261,6 +1264,7 @@ async function runExternalBridgeTurn(
       scopeType: params.scope?.scopeType,
       scopeId: params.scope?.scopeId,
       scopeLabel: params.scope?.scopeLabel,
+      paperReaderTools: params.paperReaderTools,
       debugPermissionProbe: probeRequested,
     },
   };
@@ -3402,6 +3406,7 @@ export function createExternalBackendBridgeRuntime(options: {
         const pendingMcpActivity: Promise<void>[] = [];
         let mcpServers: ClaudeMcpServersConfig | undefined;
         let allowedTools: string[] | undefined;
+        let paperReaderTools: string[] | undefined;
         let clearScopedMcpScope: () => void = () => undefined;
         let unregisterMcpToolActivity: () => void = () => undefined;
         let scopedMcpToken = "";
@@ -3503,6 +3508,10 @@ export function createExternalBackendBridgeRuntime(options: {
             );
             mcpServers = mcpConfig.mcpServers;
             allowedTools = mcpConfig.allowedTools;
+            // Raw-PDF mode widens `allowedTools`; a subagent keeps the safe reads.
+            paperReaderTools = buildClaudePaperReaderToolNames(
+              mcpConfig.serverName,
+            );
             await emitTurnEvent(
               makeProfilingEvent("frontend.zotero_mcp.ready", {
                 serverName: mcpConfig.serverName,
@@ -3578,6 +3587,7 @@ export function createExternalBackendBridgeRuntime(options: {
               contextEnvelope,
               runtimeRequest: bridgeRuntimeRequest,
               allowedTools,
+              paperReaderTools,
               mcpServers,
               scope,
               registerPendingConfirmation: (requestId, resolve) =>

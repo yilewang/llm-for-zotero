@@ -340,6 +340,85 @@ describe("workflow: task progress unified", function () {
     }
   });
 
+  it("shows Claude Code's steps in the Steps block, from Claude, and restores them", async function () {
+    const panel = await api.renderPanelForItem(fixtures[2].parentItemId);
+    const restore = showOnScreen(panel.panelId);
+    const steps = (statuses: string[]) => ({
+      type: "codex_progress" as const,
+      itemId: "codex-plan-checklist",
+      text: "",
+      runtime: "claude" as const,
+      steps: ["Screen the papers", "Skim the relevant", "Write the review"].map(
+        (content, index) => ({ content, status: statuses[index] }),
+      ),
+    });
+    try {
+      const tp = () => view(panel.panelId);
+      // Live: Claude Code's step list moves through the agent turn's own
+      // event handler, one snapshot per change.
+      const handle = await api.startTaskProgressReplay({
+        panelId: panel.panelId,
+        historyTurns: 0,
+        user: {},
+      });
+      await handle.emit(steps(["in_progress", "pending", "pending"]));
+      await handle.emit(steps(["completed", "in_progress", "pending"]));
+      await until(
+        () => {
+          api.flushTaskProgress();
+          return tp().count().startsWith("1/3 steps");
+        },
+        () => `the row counts Claude's steps: ${tp().count()}`,
+      );
+      assert.equal(
+        api.getTaskProgressSnapshot(handle.conversationKey)?.checklist?.source,
+        "claude",
+      );
+      assert.notInclude(
+        tp().box.textContent || "",
+        "Write the review",
+        "no checklist row in the chat trace",
+      );
+      handle.finish();
+      await api.clickPanelDelete(panel.panelId).catch(() => undefined);
+
+      // Stored: the same snapshots come back after a restart.
+      const second = await api.renderPanelForItem(fixtures[3].parentItemId);
+      const runId = `tp-claude-steps-${Date.now()}`;
+      const seeded = await api.seedTaskProgressConversation({
+        panelId: second.panelId,
+        turns: [
+          {
+            runId,
+            user: { text: "Review the drift papers" },
+            answer: "Reviewed.",
+            events: [
+              steps(["in_progress", "pending", "pending"]),
+              steps(["completed", "completed", "in_progress"]),
+            ],
+          },
+        ],
+      });
+      await api.reopenTaskProgressConversation({ panelId: second.panelId });
+      await until(() => {
+        api.flushTaskProgress();
+        return Boolean(
+          api.getTaskProgressSnapshot(seeded.conversationKey)?.hydrated,
+        );
+      }, "the conversation is rebuilt");
+      const snapshot = api.getTaskProgressSnapshot(seeded.conversationKey)!;
+      assert.equal(snapshot.checklist?.source, "claude");
+      assert.deepEqual(
+        snapshot.checklist?.steps.map((step) => step.status),
+        ["completed", "completed", "in_progress"],
+      );
+      // Later scenarios render this paper as a fresh chat.
+      await api.clickPanelDelete(second.panelId);
+    } finally {
+      restore();
+    }
+  });
+
   it("lists the context bar's papers before any question, and removes them from both", async function () {
     const panel = await api.renderPanelForItem(fixtures[3].parentItemId);
     const restore = showOnScreen(panel.panelId);

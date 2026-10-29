@@ -562,6 +562,11 @@ export type AgentEvent =
        * as a trace row.
        */
       steps?: Array<{ content: string; status?: string }>;
+      /**
+       * Which runtime kept the steps. Claude Code sends its own step list as
+       * this same event; an event without the field is Codex's.
+       */
+      runtime?: "codex" | "claude";
     }
   | {
       type: "codex_tool_activity";

@@ -363,6 +363,205 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(stream.providerSessionId).toBeUndefined();
   });
 
+  describe("subagents stay inside the turn", () => {
+    type HookFn = (
+      input: unknown,
+      toolUseId: string | undefined,
+      options: unknown,
+    ) => Promise<any>;
+    type Matcher = { matcher?: string; hooks?: HookFn[] };
+
+    async function runTurn(
+      request: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> {
+      let seenOptions: Record<string, unknown> = {};
+      const runtime = new ClaudeAgentSdkRuntimeClient({
+        queryImpl(args) {
+          seenOptions = args.options;
+          return makeStream([
+            {
+              type: "result",
+              session_id: "session-sub",
+              result: "ok",
+              is_error: false,
+            },
+          ]);
+        },
+      });
+      const stream = await runtime.startTurn({
+        conversationKey: "conv-sub",
+        userMessage: "review",
+        ...request,
+      } as any);
+      for await (const _event of stream.events) void _event;
+      return seenOptions;
+    }
+
+    function agentHook(options: Record<string, unknown>): HookFn {
+      const hooks = options.hooks as { PreToolUse?: Matcher[] };
+      const matcher = hooks.PreToolUse?.find((entry) =>
+        entry.matcher?.split("|").includes("Agent"),
+      );
+      expect(matcher).toBeDefined();
+      return matcher!.hooks![0]!;
+    }
+
+    function preToolUse(toolName: string, toolInput: unknown) {
+      return {
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_use_id: "toolu-1",
+      };
+    }
+
+    it("turns a background or unset subagent call into a foreground one", async () => {
+      const hook = agentHook(await runTurn({}));
+      const base = {
+        description: "Skim batch",
+        prompt: "Read these papers",
+        subagent_type: "paper-reader",
+        name: "batch-1",
+      };
+      for (const toolName of ["Agent", "Task"]) {
+        for (const input of [
+          { ...base, run_in_background: true },
+          { ...base },
+          { ...base, run_in_background: false },
+        ]) {
+          await expect(
+            hook(preToolUse(toolName, input), "toolu-1", {}),
+          ).resolves.toEqual({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              updatedInput: { ...base, run_in_background: false },
+            },
+          });
+        }
+      }
+    });
+
+    it("ignores other tools", async () => {
+      const hook = agentHook(await runTurn({}));
+      await expect(
+        hook(
+          preToolUse("TaskCreate", { subject: "x", run_in_background: true }),
+          "toolu-1",
+          {},
+        ),
+      ).resolves.toEqual({ continue: true });
+      await expect(
+        hook(
+          { hook_event_name: "PostToolUse", tool_name: "Agent" },
+          "toolu-1",
+          {},
+        ),
+      ).resolves.toEqual({ continue: true });
+    });
+
+    it("keeps the Read hook next to the subagent hook on a PDF turn", async () => {
+      const pdfPath = await createPdfFile();
+      const options = await runTurn({
+        runtimeRequest: {
+          localDocuments: [
+            {
+              kind: "local_pdf",
+              sourceKey: "zotero-pdf:10:20",
+              itemId: 10,
+              contextItemId: 20,
+              title: "Paper",
+              name: "paper.pdf",
+              mimeType: "application/pdf",
+              absolutePath: pdfPath,
+            },
+          ],
+        },
+      });
+      const matchers = (options.hooks as { PreToolUse: Matcher[] }).PreToolUse;
+      expect(matchers.map((entry) => entry.matcher)).toEqual([
+        "Read",
+        "Agent|Task",
+      ]);
+      expect(typeof agentHook(options)).toBe("function");
+    });
+
+    it("defines paper-reader with only the tools the plugin names", async () => {
+      const readTools = [
+        "mcp__llm_for_zotero__library_search",
+        "mcp__llm_for_zotero__paper_read",
+      ];
+      const options = await runTurn({
+        allowedTools: [...readTools, "mcp__llm_for_zotero__library_update"],
+        metadata: { paperReaderTools: readTools },
+      });
+      const agents = options.agents as Record<string, any>;
+      expect(Object.keys(agents)).toEqual(["paper-reader"]);
+      expect(agents["paper-reader"].tools).toEqual(readTools);
+      expect(typeof agents["paper-reader"].description).toBe("string");
+      expect(typeof agents["paper-reader"].prompt).toBe("string");
+      expect(options.paperReaderTools).toBeUndefined();
+      expect(typeof agentHook(options)).toBe("function");
+    });
+
+    it("defines no agent when the plugin names no read tools", async () => {
+      const options = await runTurn({});
+      expect(options.agents).toBeUndefined();
+    });
+  });
+
+  it("emits Claude's steps as a codex_progress snapshot on the turn", async () => {
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl() {
+        return makeStream([
+          { type: "system", session_id: "session-steps", subtype: "init" },
+          {
+            type: "assistant",
+            session_id: "session-steps",
+            parent_tool_use_id: null,
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "todo-1",
+                  name: "TodoWrite",
+                  input: {
+                    todos: [
+                      {
+                        content: "Screen papers",
+                        status: "in_progress",
+                        activeForm: "Screening papers",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+          {
+            type: "result",
+            session_id: "session-steps",
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-steps",
+      userMessage: "review",
+    });
+    const progress: any[] = [];
+    for await (const event of stream.events) {
+      if (event.type === "codex_progress") progress.push(event);
+    }
+    expect(progress).toHaveLength(1);
+    expect(progress[0].payload).toMatchObject({
+      itemId: "codex-plan-checklist",
+      runtime: "claude",
+      steps: [{ content: "Screen papers", status: "in_progress" }],
+    });
+  });
+
   it("keeps an explicitly invoked skill on a PDF turn", async () => {
     const pdfPath = await createPdfFile();
     let seenPrompt = "";

@@ -8,6 +8,7 @@ import {
   endTaskRun,
   markTaskAnswering,
   markTaskWaiting,
+  setTaskChecklist,
   setTaskOutcomes,
   syncTaskAnswerCitations,
   taskTurnIndexFor,
@@ -364,9 +365,18 @@ export function createAgentTurnEventHandler(
         });
         syncTaskAnswerCitations(conversationKey, { runId }, assistantMessage);
         return;
+      case "codex_checklist":
+        // Claude Code's steps arrive as the event Codex's plan uses.
+        if (runId) {
+          setTaskChecklist(conversationKey, {
+            source: effect.source,
+            runId,
+            steps: effect.steps,
+          });
+        }
+        return;
       default:
-        // A Codex plan or a retired plan event never reaches this engine's
-        // Task progress: native Codex turns are wired in the chat panel.
+        // A retired plan event never reaches this engine's Task progress.
         return;
     }
   };
@@ -598,6 +608,10 @@ export function createAgentTurnEventHandler(
         break;
       case "execution_checkpoint":
       case "execution_checkpoint_delta":
+        applyTaskProgress(event);
+        break;
+      case "codex_progress":
+        // Claude Code's steps; the trace shows no row for them.
         applyTaskProgress(event);
         break;
       case "message_rollback":
