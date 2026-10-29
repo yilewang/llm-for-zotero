@@ -149,6 +149,7 @@ function createLibraryUpdateTool(tools: {
   return createDelegatingTool({
     name: "library_update",
     label: "Update Library",
+    traceIcon: "edit",
     description:
       "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links, kind:'collection' for the collection itself (create, rename, move, delete), kind:'attachment' for one attachment (rename, relink, delete), kind:'savedSearch' for a saved search (save creates or replaces one, delete trashes it).",
     executionClass: "external_effect",
@@ -455,6 +456,7 @@ function createLibraryImportTool(tools: {
   return createDelegatingTool({
     name: "library_import",
     label: "Import to Library",
+    traceIcon: "edit",
     description:
       "Add items to Zotero. kind:'identifiers' for DOI, ISBN, arXiv ID, PMID, or ADS bibcode lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
     // Adding items to Zotero. A files-mode call resolves to the local-files delegate
@@ -536,6 +538,7 @@ function createLibraryDeleteTool(tools: {
   return createDelegatingTool({
     name: "library_delete",
     label: "Delete / Restore / Merge Library Items",
+    traceIcon: "edit",
     description:
       "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
     executionClass: "external_effect",

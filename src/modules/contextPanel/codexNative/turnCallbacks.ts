@@ -54,6 +54,10 @@ import {
   isCodexNativeAgentMessageItem,
   type CodexNativeActivityTraceController,
 } from "../codexNativeTrace/controller";
+import {
+  isCodexNativeItemType,
+  mapCodexNativeItemToEvents,
+} from "../../../codexAppServer/nativeActivityStages";
 import { mergeQuoteCitations } from "../../../services/quotes/quoteCitations";
 import { getAgentApi } from "../../../agent/index";
 import { createAgentRunEventJournal } from "../../../agent/store/traceStore";
@@ -390,6 +394,34 @@ function formatCodexNativeDiagnosticsStatus(
   return `Codex app-server ${threadShort} (${source}), library ${libraryLabel}, ${mcpLabel}${historyLabel}`;
 }
 
+/**
+ * What the status line says while a native item runs.
+ *
+ * The item's protocol name ("commandExecution") means nothing to the reader,
+ * so the line names the kind of work instead; an item the trace already
+ * names some other way (a message, an MCP call) leaves the line alone.
+ */
+function describeCodexNativeItemStatus(
+  event: Parameters<CodexNativeActivityTraceController["appendItemStatus"]>[0],
+): string | null {
+  if (isCodexNativeAgentMessageItem(event)) return null;
+  if (isCodexNativeItemType(event, ["reasoning"])) return "Thinking…";
+  switch (mapCodexNativeItemToEvents(event, "started")?.activity?.toolName) {
+    case "command":
+      return "Running a command…";
+    case "file_changes":
+      return "Editing files…";
+    case "codex_web_search":
+      return "Searching the web…";
+    case "image_generation":
+      return "Generating an image…";
+    case "image_view":
+      return "Viewing an image…";
+    default:
+      return null;
+  }
+}
+
 type CodexNativeTurnCallbacks = Pick<
   Parameters<typeof runCodexAppServerNativeTurn>[0],
   | "eventJournal"
@@ -516,7 +548,11 @@ function buildCodexNativeTurnCallbacks(ctx: {
       }
     },
     onReasoning: (reasoning) => {
-      if (isLive()) handleReasoning(reasoning);
+      if (!isLive()) return;
+      codexActivityTrace?.appendReasoning(reasoning);
+      handleReasoning(reasoning);
+      if (reasoning.summary || reasoning.details)
+        setStatusSafely("Thinking…", "sending");
     },
     onUsage: (usage) => {
       if (isLive()) handleUsage(usage);
@@ -525,20 +561,14 @@ function buildCodexNativeTurnCallbacks(ctx: {
       if (!isLive()) return;
       flushResponseStream("event");
       codexActivityTrace?.appendItemStatus(event, "started");
-      const itemType = sanitizeText(event.type || "");
-      if (itemType && !isCodexNativeAgentMessageItem(event)) {
-        setStatusSafely(`Codex: ${itemType} started`, "sending");
-      }
+      const status = describeCodexNativeItemStatus(event);
+      if (status) setStatusSafely(status, "sending");
     },
     onItemCompleted: (event) => {
       if (!isLive()) return;
       flushResponseStream("event");
       codexActivityTrace?.noteAgentMessageCompleted(event);
       codexActivityTrace?.appendItemStatus(event, "completed");
-      const itemType = sanitizeText(event.type || "");
-      if (itemType && !isCodexNativeAgentMessageItem(event)) {
-        setStatusSafely(`Codex: ${itemType} completed`, "sending");
-      }
     },
     onPlanUpdated: (event) => {
       if (!isLive()) return;
@@ -575,9 +605,7 @@ function buildCodexNativeTurnCallbacks(ctx: {
           .trim();
       if (label) {
         setStatusSafely(
-          event.phase === "completed"
-            ? `Codex: used ${label}`
-            : `Codex: using ${label}`,
+          event.phase === "completed" ? `Used ${label}` : `Using ${label}…`,
           "sending",
         );
       }

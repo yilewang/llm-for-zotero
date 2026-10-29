@@ -1,6 +1,7 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import { settleExternalTurn } from "./execution/externalTurnSettlement";
+import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -3362,10 +3363,13 @@ export function createExternalBackendBridgeRuntime(options: {
             );
           },
         );
+        const stageTurnEvent = createClaudeTurnStageTracker();
         const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
-          for (const redactedEvent of eventStreamRedactor.process(event)) {
-            await appendPersistedEvent(redactedEvent);
-            await notifyIfLive(redactedEvent);
+          for (const staged of stageTurnEvent(event)) {
+            for (const redactedEvent of eventStreamRedactor.process(staged)) {
+              await appendPersistedEvent(redactedEvent);
+              await notifyIfLive(redactedEvent);
+            }
           }
         };
         const pendingMcpActivity: Promise<void>[] = [];

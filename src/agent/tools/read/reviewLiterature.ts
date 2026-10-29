@@ -116,6 +116,7 @@ export function createLiteratureReviewTool(
     spec: LITERATURE_REVIEW_SPEC,
     presentation: {
       label: "Review relevant papers",
+      traceIcon: "library",
       summaries: {
         onCall: "Preparing ranked paper shortlist",
         onPending: "Choose papers to import",

@@ -533,6 +533,7 @@ export function createNoteWriteBatchTool(
 
     presentation: {
       label: "Write Notes",
+      traceIcon: "edit",
       summaries: {
         onCall: "Preparing notes",
         onPending: "Waiting for confirmation to write notes",

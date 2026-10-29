@@ -92,6 +92,7 @@ export function createAnnotatePdfTool(
 
     presentation: {
       label: "Annotate PDF",
+      traceIcon: "edit",
       summaries: {
         onCall: "Preparing a PDF highlight",
         onPending: "Waiting for confirmation on a PDF highlight",

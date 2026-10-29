@@ -92,6 +92,22 @@ function normalizeCodexServerNameForDedupe(
     : "";
 }
 
+/**
+ * Whether a tool identifier names a tool on the plugin's own Zotero MCP
+ * server (`mcp__llm_for_zotero__paper_read` and its per-profile spellings).
+ *
+ * A connected client's call to such a tool is reported twice: once by the
+ * client as a bare call, and once by the Zotero server itself as a relayed
+ * activity row that carries the tool's words, category and receipts. The
+ * trace shows the server's row, so the client's bare call is the duplicate.
+ */
+export function isZoteroMcpServerToolName(toolName: string): boolean {
+  return (
+    /^mcp__.+__.+$/.test(sanitizeText(toolName || "").trim()) &&
+    normalizeCodexServerNameForDedupe(undefined, toolName) === "llm_for_zotero"
+  );
+}
+
 function normalizeCodexToolIdentityTextForDedupe(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")

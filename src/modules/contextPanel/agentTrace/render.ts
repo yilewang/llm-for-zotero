@@ -7,6 +7,7 @@ import type {
   AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
+import { isZoteroMcpServerToolName } from "./toolActivityDedupe";
 import type { AgentActionVerification } from "../../../agent/contracts/actionVerificationLabels";
 import {
   AGENT_ACTION_VERIFICATION_LABELS,
@@ -38,6 +39,7 @@ import type {
   AgentToolEffect,
   AgentToolPresentationSummary,
   AgentToolResultCard,
+  AgentToolTraceIcon,
   AgentTraceChip,
   AgentTraceDetail,
   AgentTraceRequestSummary,
@@ -147,7 +149,7 @@ type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
   icon: string;
-  iconName?: "library" | "web";
+  iconName?: AgentToolTraceIcon;
   text: string;
   /** Optional code block shown below the summary text (e.g. shell commands). */
   codeBlock?: string;
@@ -3198,7 +3200,11 @@ function resolveToolPresentationSummary(
  * dropped because a name matched a list written years earlier.
  */
 function isToolHiddenFromTrace(name: string): boolean {
-  return resolveAgentToolPresentation(name)?.hiddenInTrace === true;
+  return (
+    resolveAgentToolPresentation(name)?.hiddenInTrace === true ||
+    // The Zotero server's own row for the same call says it better.
+    isZoteroMcpServerToolName(name)
+  );
 }
 
 /**
@@ -3231,9 +3237,8 @@ function buildAgentTraceToolChips(
     args,
     request: requestSummary,
   });
-  if (Array.isArray(customChips) && customChips.length) {
-    return customChips;
-  }
+  // A tool that builds its own chips, even none, replaces the generic ones.
+  if (Array.isArray(customChips)) return customChips;
 
   const record = isAgentTraceRecord(args) ? args : null;
   const chips: AgentTraceChip[] = [];
@@ -3996,6 +4001,19 @@ function summarizeCodexToolActivity(input: {
   codeBlock?: string;
   artifacts?: AgentToolArtifact[];
 }): AgentTraceSummaryRow {
+  const toolName = readAgentTraceText(input.toolName);
+  // The same icon the tool's row gets in every other mode.
+  const traceIcon = toolName
+    ? resolveAgentToolPresentation(normalizeMcpToolName(toolName))?.traceIcon
+    : undefined;
+  const row = summarizeCodexToolActivityText(input, toolName || "");
+  return traceIcon ? { ...row, iconName: traceIcon } : row;
+}
+
+function summarizeCodexToolActivityText(
+  input: Parameters<typeof summarizeCodexToolActivity>[0],
+  toolName: string,
+): AgentTraceSummaryRow {
   const explicitText = readAgentTraceText(input.text);
   if (explicitText) {
     return {
@@ -4005,7 +4023,6 @@ function summarizeCodexToolActivity(input: {
       codeBlock: readAgentTraceText(input.codeBlock) || undefined,
     };
   }
-  const toolName = readAgentTraceText(input.toolName);
   const label =
     (toolName
       ? toolLabelFromEvent(toolName, input.toolLabel)
@@ -4028,6 +4045,23 @@ function summarizeCodexToolActivity(input: {
   const skillText = skillActivationText(label, input.args);
   if (skillText) {
     return { kind: "tool", icon: "⌘", text: skillText };
+  }
+  // The words the tool's own row uses when the plugin's agent calls it, so
+  // a read Claude Code or Codex ran over MCP reads the same in every mode.
+  const callText = toolName
+    ? resolveToolPresentationSummary(
+        resolveAgentToolPresentation(normalizeMcpToolName(toolName))?.summaries
+          ?.onCall,
+        { label, args: input.args },
+      )
+    : null;
+  if (callText) {
+    return {
+      kind: "tool",
+      icon: "⌘",
+      text: callText,
+      codeBlock: readAgentTraceText(input.codeBlock) || undefined,
+    };
   }
   const verb = input.phase === "completed" ? "Used" : "Using";
   return {
@@ -4266,6 +4300,9 @@ function isHiddenClaudeStartupStatus(text: string): boolean {
     // future rewording stays hidden instead of leaking into the trace.
     /^Claude runtime changed\./i.test(text) ||
     /^Claude bridge URL:/i.test(text) ||
+    // Claude Code's internal messages ("System event: thinking_tokens"),
+    // which runs recorded before the bridge stopped forwarding them.
+    /^System event(?::|$)/.test(text) ||
     text === "Claude bridge URL is empty. Falling back to local runtime."
   );
 }
@@ -4531,13 +4568,12 @@ function appendReasoningTraceItem(
     label = ctx.reasoningLabels.get(logicalKey) || "";
   }
   if (!label) {
+    // The same word in every mode, as a Claude session uses.
     if (hasExplicitStepId) {
       ctx.reasoningStepCounter += 1;
-      label = ctx.isCodexTrace
-        ? `Codex reasoning ${ctx.reasoningStepCounter}`
-        : `Thinking for step ${ctx.reasoningStepCounter}`;
+      label = `Thinking for step ${ctx.reasoningStepCounter}`;
     } else {
-      label = ctx.isCodexTrace ? "Codex reasoning" : "Thinking";
+      label = "Thinking";
     }
     ctx.reasoningLabels.set(logicalKey, label);
   }

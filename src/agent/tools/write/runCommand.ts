@@ -299,6 +299,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "Run Command",
+      traceIcon: "code",
       // The command itself is the row's content, so the row shows the tool's
       // label and the block carries the text rather than saying it twice.
       buildTraceCodeBlock: ({ args }) => {

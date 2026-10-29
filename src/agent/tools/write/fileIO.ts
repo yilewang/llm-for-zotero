@@ -760,6 +760,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "File I/O",
+      traceIcon: "file",
       buildTraceArgDetails: ({ args }) => buildFileIOTraceArgDetails(args),
       buildTraceCodeBlock: ({ args }) => buildFileIOTraceCodeBlock(args),
       summaries: {

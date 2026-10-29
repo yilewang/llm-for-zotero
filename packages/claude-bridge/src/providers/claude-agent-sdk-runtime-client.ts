@@ -2972,6 +2972,17 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
         allowDangerouslySkipPermissions:
           effectivePermissionMode === "bypassPermissions" ? true : undefined,
         includePartialMessages: this.options.includePartialMessages,
+        // Ask for a summary of Claude's thinking. Without it new models send
+        // only a running token count, and the trace has nothing to show.
+        // Passed as the CLI flag, so each model keeps its own thinking mode.
+        extraArgs: {
+          ...(metadata.extraArgs &&
+          typeof metadata.extraArgs === "object" &&
+          !Array.isArray(metadata.extraArgs)
+            ? (metadata.extraArgs as Record<string, string | null>)
+            : {}),
+          "thinking-display": "summarized",
+        },
         maxTurns: this.options.maxTurns,
         continue: localPdfs.length ? false : this.options.continue,
         persistSession: localPdfs.length ? false : undefined,

@@ -88,6 +88,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
   executionClass: "read" | "control" | "external_effect";
   workCategory: AgentWorkCategory;
   label: string;
+  traceIcon?: NonNullable<AgentToolDefinition["presentation"]>["traceIcon"];
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
   guidance?: AgentToolDefinition<DelegatedInput<any>, TResult>["guidance"];
   /**
@@ -116,6 +117,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
     guidance: params.guidance,
     presentation: {
       label: params.label,
+      ...(params.traceIcon ? { traceIcon: params.traceIcon } : {}),
       summaries: params.summaries,
     },
     validate(args) {

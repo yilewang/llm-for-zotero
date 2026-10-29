@@ -239,6 +239,13 @@ function extractResultOutput(msg: Record<string, unknown>): string {
   return "";
 }
 
+const READER_FACING_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
+  "hook_started",
+  "hook_response",
+  "init",
+  "api_retry",
+]);
+
 export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
   const msg = asRecord(raw);
   const type = typeof msg.type === "string" ? msg.type : "unknown";
@@ -349,10 +356,6 @@ export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
     if (usageEvent) {
       events.push(usageEvent);
     }
-    const hasText = contentBlocks.some(
-      (block) => block.type === "text" && typeof block.text === "string",
-    );
-    const hasToolUse = contentBlocks.some((block) => block.type === "tool_use");
     for (const block of contentBlocks) {
       if (block.type === "text" && typeof block.text === "string") {
         events.push({
@@ -364,7 +367,10 @@ export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
           },
         });
       }
-      if (hasText && hasToolUse && block.type === "tool_use") {
+      // The finished assistant message is the one place a tool call arrives
+      // with its arguments (a streamed block starts with empty input), so
+      // the trace can say which file was read or what a command was for.
+      if (block.type === "tool_use") {
         events.push({
           type: "tool_call",
           payload: {
@@ -478,6 +484,10 @@ export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
         },
       ];
     }
+    // Only the system messages a reader can act on become status lines.
+    // Everything else ("thinking_tokens", "status", "session_state_changed",
+    // ...) is Claude Code's own bookkeeping and stays a provider event.
+    if (!READER_FACING_SYSTEM_SUBTYPES.has(subtype)) return [providerEvent];
     const text =
       subtype === "hook_started"
         ? `Running ${typeof msg.hook_name === "string" && msg.hook_name.trim() ? msg.hook_name.trim() : "runtime hook"}`
@@ -485,11 +495,7 @@ export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
           ? `Finished ${typeof msg.hook_name === "string" && msg.hook_name.trim() ? msg.hook_name.trim() : "runtime hook"}`
           : subtype === "init"
             ? "Initializing Claude session"
-            : subtype === "api_retry"
-              ? formatApiRetryStatus(msg)
-              : subtype
-                ? `System event: ${subtype}`
-                : "System event";
+            : formatApiRetryStatus(msg);
     return [
       providerEvent,
       {
@@ -527,29 +533,6 @@ export function mapSdkMessageToProviderEvents(raw: unknown): ProviderEvent[] {
         includeOutputTokens: true,
       });
       return usageEvent ? [providerEvent, usageEvent] : [providerEvent];
-    }
-    if (event.type === "content_block_start") {
-      const contentBlock = asRecord(event.content_block);
-      if (contentBlock.type === "tool_use") {
-        return [
-          providerEvent,
-          {
-            type: "tool_call",
-            payload: {
-              id:
-                typeof contentBlock.id === "string"
-                  ? contentBlock.id
-                  : undefined,
-              name:
-                typeof contentBlock.name === "string"
-                  ? contentBlock.name
-                  : undefined,
-              input: contentBlock.input,
-              sessionId,
-            },
-          },
-        ];
-      }
     }
     if (event.type === "content_block_delta") {
       const delta = asRecord(event.delta);

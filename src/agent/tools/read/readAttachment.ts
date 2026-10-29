@@ -74,6 +74,7 @@ export function createReadAttachmentTool(
     },
     presentation: {
       label: "Read Attachment",
+      traceIcon: "library",
       summaries: {
         onCall: ({ args }) => {
           const a = args as Record<string, unknown> | null;

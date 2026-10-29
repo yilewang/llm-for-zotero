@@ -1187,6 +1187,7 @@ export function createPaperReadTool(
     guidance: PAPER_READ_GUIDANCE,
     presentation: {
       label: "Read Paper",
+      traceIcon: "library",
       /**
        * The same figure count, for a call a connected client relayed.
        *

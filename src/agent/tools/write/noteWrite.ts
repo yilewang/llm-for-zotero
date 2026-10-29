@@ -949,6 +949,7 @@ export function createNoteWriteTool(
     guidance: NOTE_WRITE_GUIDANCE,
     presentation: {
       label: "Write Note",
+      traceIcon: "edit",
       buildResultCards: (content) =>
         buildNoteChangeResultCards(content) ||
         buildSavedNoteResultCards(zoteroGateway, content),

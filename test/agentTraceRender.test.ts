@@ -6630,31 +6630,18 @@ describe("agentTrace render", function () {
       events,
     }) as unknown as FakeElement;
 
-    const values = trace
-      .findAllByClass("llm-agent-process-detail-value")
-      .map(collectFakeText);
-    assert.include(values, longQuery);
-    assert.include(values, longUrl);
-    assert.include(values, "connectivity pharmacology");
-    assert.include(values, longPath);
-    assert.isTrue(
-      trace
-        .findAllByClass("llm-agent-trace-code")
-        .some((entry) => entry.innerHTML.includes("python scripts/fetch.py")),
-    );
+    const code = trace
+      .findAllByClass("llm-agent-trace-code")
+      .map((entry) => entry.innerHTML)
+      .join("\n");
+    assert.include(code, longQuery);
+    assert.include(code, longUrl);
+    assert.include(code, "connectivity pharmacology");
+    assert.include(code, longPath);
+    assert.include(code, "python scripts/fetch.py");
     assert.isEmpty(trace.findAllByClass("llm-at-expand"));
-
-    const chipLabels = trace
-      .findAllByClass("llm-agent-process-chip-label")
-      .map(collectFakeText);
-    assert.includeMembers(chipLabels, [
-      "Query",
-      "URL",
-      "Pattern",
-      "Path",
-      "Status",
-    ]);
-    assert.isFalse(chipLabels.some((label) => label.includes("...")));
+    // Each row already says what Codex did, so no argument chips repeat it.
+    assert.isEmpty(trace.findAllByClass("llm-agent-process-chip-label"));
   });
 
   it("makes Claude Read calls with empty arguments distinguishable and expandable", function () {
@@ -7378,7 +7365,7 @@ describe("agentTrace render", function () {
       items.find((item) => item.type === "reasoning"),
       {
         type: "reasoning",
-        label: "Codex reasoning 1",
+        label: "Thinking for step 1",
         summary: "Inspecting Zotero context.",
       },
     );

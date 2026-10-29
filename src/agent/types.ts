@@ -1631,10 +1631,23 @@ export type AgentToolTraceCodeBlock = {
   replacesSummary?: boolean;
 };
 
+export type AgentToolTraceIcon =
+  | "library"
+  | "web"
+  | "file"
+  | "edit"
+  | "search"
+  | "code";
+
 export type AgentToolPresentation = {
   label?: string;
-  /** Optional semantic icon for this tool's compact activity-summary row. */
-  traceIcon?: "library" | "web";
+  /**
+   * Optional icon for this tool's row, naming the kind of step it is: a
+   * Zotero or paper step, reading a file, writing or editing, searching,
+   * running code, or the web. Every mode draws the same icon for the same
+   * kind of step.
+   */
+  traceIcon?: AgentToolTraceIcon;
   /**
    * Keep this tool out of the activity trace entirely.
    *

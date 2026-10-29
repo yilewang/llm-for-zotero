@@ -356,6 +356,7 @@ export function createLibraryRetrieveTool(
       }),
     presentation: {
       label: "Retrieve Library",
+      traceIcon: "library",
       summaries: {
         onCall: ({ args }) => {
           const record = validateObject<Record<string, unknown>>(args)

@@ -129,6 +129,7 @@ export function createLibraryReadTool(
     },
     presentation: {
       label: "Read Library",
+      traceIcon: "library",
       summaries: {
         onCall: "Reading structured Zotero item data",
         onSuccess: ({ content }) => {

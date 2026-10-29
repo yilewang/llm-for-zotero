@@ -8441,7 +8441,11 @@ label.llm-search-results-item:hover {
 }
 
 .llm-at-icon-library,
-.llm-at-icon-web {
+.llm-at-icon-web,
+.llm-at-icon-file,
+.llm-at-icon-edit,
+.llm-at-icon-search,
+.llm-at-icon-code {
   flex: 0 0 var(--llm-fs-12);
   width: var(--llm-fs-12);
   height: var(--llm-fs-12);
@@ -8465,6 +8469,27 @@ label.llm-search-results-item:hover {
 .llm-at-icon-web {
   mask-image: url("icons/action-mode-global.svg");
   -webkit-mask-image: url("icons/action-mode-global.svg");
+}
+
+.llm-at-icon-file {
+  mask-image: url("icons/action-file.svg");
+  -webkit-mask-image: url("icons/action-file.svg");
+}
+
+.llm-at-icon-edit {
+  mask-image: url("icons/action-edit.svg");
+  -webkit-mask-image: url("icons/action-edit.svg");
+}
+
+/* The same lens as the History pane's "Search history" nav icon. */
+.llm-at-icon-search {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+}
+
+.llm-at-icon-code {
+  mask-image: url("icons/action-source-code.svg");
+  -webkit-mask-image: url("icons/action-source-code.svg");
 }
 
 .llm-at-text {

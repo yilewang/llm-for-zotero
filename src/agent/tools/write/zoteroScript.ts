@@ -1288,6 +1288,7 @@ export function createZoteroScriptTool(
 
     presentation: {
       label: "Zotero Script",
+      traceIcon: "code",
       summaries: {
         onCall: ({ args }) => {
           const a =

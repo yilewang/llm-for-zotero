@@ -550,6 +550,8 @@ export function createAgentTurnEventHandler(
           );
         }
         reasoningRefreshes.push(`${event.summary || ""}${event.details || ""}`);
+        if (event.summary || event.details)
+          setStatusSafely("Thinking…", "sending");
         return;
       }
       case "fallback":

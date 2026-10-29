@@ -466,6 +466,7 @@ export function createLibrarySearchTool(
     guidance: LIBRARY_SEARCH_GUIDANCE,
     presentation: {
       label: "Search Library",
+      traceIcon: "library",
       summaries: {
         onCall: ({ args }) => {
           const entity =
