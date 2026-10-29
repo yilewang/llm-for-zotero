@@ -21,6 +21,7 @@ import type { TaskPaperDocumentCitation } from "../../context/taskPaperLedger";
 import { neverSelected } from "../guidance";
 import { canShowLiteratureReview } from "../read/reviewLiterature";
 import { fail, ok, validateObject } from "../shared";
+import { exclusionPaperDecisions } from "./recordPaperDecisions";
 
 /** A citation or quote token. */
 const TOKEN = /\[\[(cite|quote):([^\]]+)\]\]/g;
@@ -909,6 +910,13 @@ export function createSubmitDocumentTool(
         outsidePaperChoiceAvailable: canShowLiteratureReview(context),
       });
       const materialRef = materialRefFromDocument(document);
+      // Each paper left out is the agent's exclude decision, recorded as
+      // record_paper_decisions records one (taskPaperLedgerRecorder.ts).
+      const paperDecisions = exclusionPaperDecisions(
+        excluded || [],
+        context.request.libraryID,
+        gateway,
+      );
       return {
         // The model reads the reference from the payload; the host reads it
         // from the typed result and announces it as a run event.
@@ -935,6 +943,7 @@ export function createSubmitDocumentTool(
           verifiedQuotes: document.verifiedQuotes,
           itemOf: zoteroCitedSourceItem,
         }),
+        ...(paperDecisions.length ? { paperDecisions } : {}),
       };
     },
     resolveTerminalResult: (_input, result: AgentToolResult) => {

@@ -613,6 +613,7 @@ export class InvocationController {
             materialKind: output.materialKind,
             materialTitle: output.materialTitle,
             materialCitedSources: output.materialCitedSources,
+            paperDecisions: output.paperDecisions,
             batchItems: output.batchItems,
           },
         });

@@ -704,14 +704,17 @@ export function buildClaudeZoteroMcpAllowedToolNames(
   ).map((toolName) => qualifyZoteroMcpToolName(serverName, toolName));
 }
 
-// The paper-reader subagent gets only the four Zotero read tools. The safe
-// read list also holds outside network calls, skill loading and a chat
-// attach that edits the user's message; a subagent should not have those.
+// The paper-reader subagent gets the four Zotero read tools and
+// record_paper_decisions, so a screening batch can record what it decided.
+// The safe read list also holds outside network calls, skill loading and a
+// chat attach that edits the user's message; a subagent should not have
+// those.
 const PAPER_READER_ZOTERO_TOOL_NAMES = [
   "library_search",
   "library_read",
   "library_retrieve",
   "paper_read",
+  "record_paper_decisions",
 ] as const;
 
 export function buildClaudePaperReaderToolNames(serverName: string): string[] {

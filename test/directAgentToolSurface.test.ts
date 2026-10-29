@@ -87,10 +87,15 @@ describe("direct Agent model tool surface", function () {
     // and documentId field, +210) and the card rule widened to a literature
     // review that needs outside papers, a mixed one included (+60), raised
     // them to 27,392 and 38,594 (2026-10-29).
-    assert.isAtMost(serializedToolCharacters, 27_392);
+    // record_paper_decisions, the always-listed tool that records the
+    // agent's paper decisions, raised the tool cap by 706 and the cap with
+    // the fixed prompt by 706, to 28,098 and 39,300 (2026-10-30).
+    // review_coverage reaches Codex and Claude Code over MCP only; the
+    // plugin Agent does not list it, so it adds nothing here.
+    assert.isAtMost(serializedToolCharacters, 28_098);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      38_594,
+      39_300,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

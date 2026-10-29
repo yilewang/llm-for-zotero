@@ -86,11 +86,15 @@ import {
  * original_agent execution context, so task_update, and the digest rule in
  * its description, is not listed here; test/directAgentToolSurface.test.ts
  * measures that rule.
+ * Raised by record_paper_decisions, the always-listed tool that records the
+ * agent's include, exclude or defer decision about papers (2026-10-29), to
+ * 42,417, 41,150 and 42,515 (+706 tool characters each). review_coverage
+ * reaches Codex and Claude Code over MCP only and adds nothing here.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 41_711,
-  paper: 40_444,
-  collection: 41_809,
+  global: 42_417,
+  paper: 41_150,
+  collection: 42_515,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

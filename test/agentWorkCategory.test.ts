@@ -49,9 +49,13 @@ const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
   // change) and returns its text: it brings context in.
   past_chat_attach: "retrieval",
   load_skill: "retrieval",
+  // Reads this conversation's stored reads and decisions so far.
+  review_coverage: "retrieval",
   // Task bookkeeping.
   task_update: "planning",
   request_user_input: "planning",
+  // The agent's decisions about papers: claims about the task, not reads.
+  record_paper_decisions: "planning",
   // Authored deliverables.
   submit_document: "generation",
   // Zotero library changes.

@@ -33,6 +33,7 @@ import type {
 } from "./authorization/types";
 import type { MaterialRef } from "./documents/materialRef";
 import type {
+  TaskPaperDecisionInput,
   TaskPaperDocumentCitation,
   TaskPaperLedgerDelta,
 } from "./context/taskPaperLedger";
@@ -1207,6 +1208,13 @@ export type AgentToolResult = {
   /** Sources the finalized document cites; announced on `material_finalized`. */
   materialCitedSources?: TaskPaperDocumentCitation[];
   /**
+   * The agent's decisions about papers this call stated, each paper already
+   * resolved in the call's library. The host's ledger recorder turns them
+   * into the call's `paper_ledger_update` (taskPaperLedgerRecorder.ts), in
+   * the built-in runtime and over MCP alike.
+   */
+  paperDecisions?: TaskPaperDecisionInput[];
+  /**
    * Per-item outcomes of a durable batch. The host announces one run event
    * each, so a batch's material is recoverable per item instead of collapsing
    * into a single turn-level `materialRef`.
@@ -1295,6 +1303,8 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       materialKind?: string;
       materialTitle?: string;
       materialCitedSources?: TaskPaperDocumentCitation[];
+      /** See `AgentToolResult.paperDecisions`. */
+      paperDecisions?: TaskPaperDecisionInput[];
       batchItems?: AgentBatchItemOutcome[];
     };
 

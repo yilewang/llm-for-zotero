@@ -56,6 +56,7 @@ import type { PdfTarget } from "./pdfToolUtils";
 import { createPdfPageRenderer } from "./pdfPageRenderer";
 import {
   readDocumentsExhaustively,
+  resolveFullReadBatchTokenBudget,
   type ExhaustiveBatchAnalyzer,
   type FullReadCoverageReceipt,
   type FullReadPaperResult,
@@ -69,6 +70,7 @@ import type {
   ZoteroMetadataResolver,
 } from "../../../services/zoteroMetadata/types";
 import { resolveOutputReserve } from "../../../utils/outputTokenPolicy";
+import { resolveModelInputTokenLimit } from "../../../utils/modelInputCap";
 import { resolveAdaptiveReadingBudget } from "../../context/readingBudget";
 
 type PaperReadMode =
@@ -1564,6 +1566,21 @@ export function createPaperReadTool(
           2048,
           Math.floor(Number(context.request.advanced?.inputTokenCap || 12000)),
         );
+        // A batch is sized from the reader model's own window, up to a
+        // ceiling; the synthesis that returns to the agent stays sized from
+        // the agent's cap, so a large window does not grow it.
+        const readerWindowTokens = resolveModelInputTokenLimit(
+          nativeFullReadModel,
+          context.request.advanced?.inputTokenCap,
+          {
+            apiBase: context.request.apiBase,
+            protocol: context.request.providerProtocol,
+            authMode: context.request.authMode,
+            profileOverride: context.request.advanced?.profileOverride,
+          },
+        ).limitTokens;
+        const batchTokenBudget =
+          resolveFullReadBatchTokenBudget(readerWindowTokens);
         const nativeReaderSession =
           !fullReadAnalyzer && context.request.authMode === "codex_app_server"
             ? createCodexAppServerExhaustiveReaderSession({
@@ -1580,7 +1597,7 @@ export function createPaperReadTool(
                 input.query ||
                 context.request.userText ||
                 "Read the full text.",
-              batchTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.5)),
+              batchTokenBudget,
               finalTokenBudget: Math.max(
                 1024,
                 Math.floor(inputTokenCap * 0.45),

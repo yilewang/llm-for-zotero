@@ -71,7 +71,10 @@ import type {
   TrustedReadObservation,
   VerifiedReadSource,
 } from "../context/readObservationTypes";
-import { attestAndRecordRead } from "../context/taskPaperLedgerRecorder";
+import {
+  attestAndRecordRead,
+  recordTaskPaperDecisions,
+} from "../context/taskPaperLedgerRecorder";
 import {
   outsidePaperRecordsFromToolResult,
   prefetchOutsidePaperLookups,
@@ -127,6 +130,12 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // auto-approved here, and its MCP annotations say read-only like every
   // non-external_effect tool. Refused without a scoped conversation.
   "past_chat_attach",
+  // Not a pure read either: it records the agent's paper decisions in the
+  // scope's conversation (plugin state only, kept apart from reads), so it
+  // is auto-approved like past_chat_attach. Refused without a conversation.
+  "record_paper_decisions",
+  // Reads the scope's conversation's stored reads and decisions so far.
+  "review_coverage",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
@@ -2575,7 +2584,9 @@ async function handleToolsCall(
     let result = formatToolResult(prepared.execution);
     // One attestation site, one recorder: the read's trusted observations and
     // its Task progress delta come from the same call. Without a
-    // conversation there is nothing to record the delta in.
+    // conversation there is nothing to record the delta in. A call that is
+    // not a read may state paper decisions; the same recorder makes their
+    // delta, which rides on the activity as a read's does.
     const { observations: readObservations, paperLedgerDelta } =
       tool.spec.executionClass === "read" && !result.isError
         ? await attestAndRecordRead({
@@ -2587,7 +2598,18 @@ async function handleToolsCall(
             libraryID: callScope.libraryID,
             runId: scope?.runId,
           })
-        : { observations: [], paperLedgerDelta: null };
+        : {
+            observations: [],
+            paperLedgerDelta: result.isError
+              ? null
+              : recordTaskPaperDecisions({
+                  toolName: name,
+                  callId: prepared.execution.result.callId,
+                  decisions: prepared.execution.result.paperDecisions,
+                  conversationKey: scopeConversationKey,
+                  runId: scope?.runId,
+                }),
+          };
     rememberDocumentReadObservations(headers, readObservations);
     // The outside papers a document of this run may cite: what
     // literature_search and literature_read returned.

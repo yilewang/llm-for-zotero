@@ -22,7 +22,9 @@
     "past_chat_read",
     "past_chat_search",
     "read_attachment",
+    "record_paper_decisions",
     "request_user_input",
+    "review_coverage",
     "run_command",
     "submit_document",
     "task_update",
@@ -30,5 +32,5 @@
     "zotero_script"
   ],
   "internal": [],
-  "specBytes": 29955
+  "specBytes": 31382
 }

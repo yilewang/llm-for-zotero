@@ -20,6 +20,8 @@ import { createContextReadTool } from "./read/contextRead";
 import { createPastChatReadTool } from "./read/pastChatRead";
 import { createPastChatSearchTool } from "./read/pastChatSearch";
 import { createPastChatAttachTool } from "./control/pastChatAttach";
+import { createRecordPaperDecisionsTool } from "./control/recordPaperDecisions";
+import { createReviewCoverageTool } from "./read/reviewCoverage";
 import { createWebReadTool } from "./read/webRead";
 import { createWebSearchTool } from "./read/webSearch";
 import { AgentToolRegistry } from "./registry";
@@ -718,6 +720,8 @@ export function createBuiltInToolRegistry(
   registry.register(createPastChatReadTool());
   registry.register(createPastChatSearchTool());
   registry.register(createPastChatAttachTool());
+  registry.register(createRecordPaperDecisionsTool(deps.zoteroGateway));
+  registry.register(createReviewCoverageTool());
   registry.register(
     createLoadSkillTool({
       getToolDefinitions: (request) =>
@@ -731,6 +735,7 @@ export function createBuiltInToolRegistry(
         zoteroGateway: deps.zoteroGateway,
         pdfService: deps.pdfService,
       }),
+      papers: deps.zoteroGateway,
     }),
   );
   registry.register(createSubmitDocumentTool(deps.zoteroGateway));

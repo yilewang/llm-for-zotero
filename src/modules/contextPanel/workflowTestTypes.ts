@@ -1107,6 +1107,27 @@ export type WorkflowTestApi = {
    * One scenario of the agent stop rules (turnBoundary.ts) through the
    * panel's send flow; only the model is scripted.
    */
+  /**
+   * One Agent turn whose scripted model calls record_paper_decisions through
+   * the panel's send flow and the real stores; only the model is scripted.
+   */
+  exercisePaperDecisionsTurn: (
+    input: {
+      panelId: string;
+    } & import("./paperDecisionsReplay").PaperDecisionsTurnInput,
+  ) => Promise<import("./paperDecisionsReplay").PaperDecisionsTurnResult>;
+  /**
+   * One tools/call through the plugin's MCP endpoint under a scope for the
+   * panel's conversation, with the call's completed activity.
+   */
+  callScopedMcpToolForConversation: (input: {
+    panelId: string;
+    runId: string;
+    name: string;
+    arguments: unknown;
+  }) => ReturnType<
+    typeof import("./paperDecisionsReplay").callScopedMcpToolForConversation
+  >;
   exerciseAgentStopRules: (input: {
     panelId: string;
     scenario: import("./stopRulesReplay").StopRuleScenario;
@@ -1258,6 +1279,12 @@ export type WorkflowTestApi = {
           snippet?: string;
           whyMatched?: string;
         }>;
+        /** The paper's latest agent decision (`latestTaskPaperDecision`). */
+        decision?: import("../../agent/context/taskPaperLedger").TaskPaperDecisionRecord;
+        /** Each question's decision about the paper, by turn. */
+        decisions: Array<
+          import("../../agent/context/taskPaperLedger").TaskPaperDecisionRecord
+        >;
       }
     >;
   } | null;

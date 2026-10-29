@@ -38,6 +38,10 @@ import {
 } from "../../loop/outcomes";
 import { isExplicitContinueCommand } from "../../continuation/continueCommand";
 import { skillGuidance } from "../guidance";
+import {
+  exclusionPaperDecisions,
+  type PaperDecisionLookup,
+} from "./recordPaperDecisions";
 
 type ExpectedEffect = "read" | "artifact" | "mutation" | "reasoning" | "digest";
 
@@ -900,6 +904,12 @@ export type TaskUpdateToolDeps = {
    * declared and tracked, and nothing digests it.
    */
   digests?: DigestJobHostDeps;
+  /**
+   * Item lookups for the papers `excluded` names, so each is also recorded
+   * as the agent's exclude decision (record_paper_decisions' path). Without
+   * it the exclusions only move the parts.
+   */
+  papers?: PaperDecisionLookup;
 };
 
 type TaskUpdateResult = {
@@ -1012,11 +1022,19 @@ export function createTaskUpdateTool(
       };
       // A refused skip is the note the model must act on; it outranks the
       // reminder that progress needs no call.
-      if (refused.length)
-        return { ...reported, note: skipRefusedNote(refused), ...digests };
-      return ignored
-        ? { ...reported, note: HOST_MARKS_DONE, ...digests }
-        : { ...reported, ...digests };
+      const content: TaskUpdateResult = refused.length
+        ? { ...reported, note: skipRefusedNote(refused), ...digests }
+        : ignored
+          ? { ...reported, note: HOST_MARKS_DONE, ...digests }
+          : { ...reported, ...digests };
+      // The papers the parts leave out are the agent's exclude decisions,
+      // recorded once, as record_paper_decisions records them.
+      const paperDecisions = exclusionPaperDecisions(
+        input.excluded,
+        context.request.libraryID,
+        deps.papers,
+      );
+      return paperDecisions.length ? { content, paperDecisions } : content;
     },
   };
 }

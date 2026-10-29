@@ -594,7 +594,7 @@ describe("Codex app-server MCP setup", function () {
     );
   });
 
-  it("limits the paper-reader subagent to the four Zotero read tools", function () {
+  it("limits the paper-reader subagent to the four Zotero read tools and record_paper_decisions", function () {
     const prefix = "mcp__llm_for_zotero_profile_dev_one__";
     assert.deepEqual(
       buildClaudePaperReaderToolNames("llm_for_zotero_profile_dev_one"),
@@ -603,6 +603,7 @@ describe("Codex app-server MCP setup", function () {
         `${prefix}library_read`,
         `${prefix}library_retrieve`,
         `${prefix}paper_read`,
+        `${prefix}record_paper_decisions`,
       ],
     );
   });

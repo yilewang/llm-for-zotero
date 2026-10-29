@@ -1,7 +1,9 @@
 import { assert } from "chai";
 import type { TaskPaperScopeEntry } from "../src/agent/context/taskPaperScopeListing";
 import {
+  buildDecisionLedgerDelta,
   taskPaperDigestPartLabel,
+  type TaskPaperDecision,
   type TaskPaperLedgerDelta,
   type TaskPaperLedgerEntry,
   type TaskPaperReadEvent,
@@ -735,6 +737,158 @@ describe("task progress view", function () {
     assert.equal(formatTaskPaperTail(row("matched", "metadata")), "found");
     assert.equal(formatTaskPaperTail(row("skimmed", "abstract")), "skimmed");
     assert.equal(formatTaskPaperTail(row("skimmed", "outline")), "skimmed");
+  });
+
+  describe("agent decisions", function () {
+    function decide(
+      callId: string,
+      runId: string,
+      decisions: Array<[number, TaskPaperDecision["value"], string]>,
+    ) {
+      const delta = buildDecisionLedgerDelta({
+        runId,
+        callId,
+        toolName: "review_decide",
+        decisions: decisions.map(([itemId, value, reason]) => ({
+          paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+          value,
+          reason,
+        })),
+      });
+      applyTaskPaperUpdate(KEY, delta!, runId);
+    }
+    const tagOf = (item: FakeElement) => {
+      const tag = item.findByClass("llm-task-paper-cite")!;
+      return tag.hidden ? "" : tag.textContent;
+    };
+    const openDetails = (item: FakeElement) => {
+      item.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
+      return collectFakeText(item.findByClass("llm-task-paper-details")!);
+    };
+
+    it("adds an excluded count to the count line only above zero", function () {
+      seedScope(5);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c1", [[1, "read", "One."]]),
+        "run-a",
+      );
+      decide("d0", "run-a", [[2, "include", "Fits."]]);
+      harness.view.flush();
+      assert.equal(harness.count(), "1 of 5 read");
+      decide("d1", "run-a", [
+        [3, "exclude", "Off topic."],
+        [4, "exclude", "A review."],
+        [5, "defer", "Needs the PDF."],
+      ]);
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "1 of 5 read · 2 excluded",
+        "deferred and included papers are not counted",
+      );
+    });
+
+    it("counts the latest decision of the latest question, not an earlier question's", function () {
+      seedScope(5);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "q1", turnIndex: 1 });
+      decide("d1", "q1", [
+        [1, "exclude", "Off topic."],
+        [2, "exclude", "Off topic."],
+      ]);
+      completeTaskRun(KEY, { runId: "q1", quoteCitations: [] });
+      beginTaskRun(KEY, { runId: "q2", turnIndex: 2 });
+      applyTaskPaperUpdate(KEY, ledgerDelta("c2", [[3, "read", "Now."]]), "q2");
+      decide("d2", "q2", [
+        [1, "include", "On topic after all."],
+        [4, "exclude", "Duplicate."],
+      ]);
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "1 of 5 read · 1 excluded",
+        "question 2 changed paper 1 and added paper 4",
+      );
+    });
+
+    it("tags an excluded or deferred row, none for include", function () {
+      seedScope(4);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      decide("d1", "run-a", [
+        [1, "exclude", "Off topic."],
+        [2, "defer", "Needs the PDF."],
+        [3, "include", "Fits."],
+      ]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const items = harness.items();
+      assert.deepEqual(items.map(tagOf), ["Excluded", "Deferred", "", ""]);
+      const tag = items[0].findByClass("llm-task-paper-cite")!;
+      assert.include(
+        tag.className,
+        "llm-task-paper-cite-named",
+        "the same neutral style as the Named tag",
+      );
+    });
+
+    it("shows the reason in the opened row for an exclusion or a deferral, and no line for an inclusion", function () {
+      seedScope(3);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      decide("d1", "run-a", [
+        [1, "exclude", "Off topic."],
+        [2, "include", "Fits the drift question."],
+        [3, "defer", "Needs the full text."],
+      ]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const items = harness.items();
+      // The block is a heading, then the line, as a digest block is.
+      const decisionBlock = (item: FakeElement) => {
+        const block = item.findByClass("llm-task-paper-read")!;
+        return block.children.map((child) => [
+          child.className,
+          child.textContent,
+        ]);
+      };
+      assert.include(openDetails(items[0]), "Excluded — Off topic.");
+      assert.deepEqual(decisionBlock(items[0]), [
+        ["llm-task-paper-turn", "Decision"],
+        ["llm-task-paper-how", "Excluded — Off topic."],
+      ]);
+      assert.notInclude(openDetails(items[1]), "Fits the drift question.");
+      assert.notInclude(openDetails(items[1]), "Included");
+      assert.notInclude(openDetails(items[1]), "Decision");
+      assert.include(openDetails(items[2]), "Deferred — Needs the full text.");
+      assert.deepEqual(decisionBlock(items[2]), [
+        ["llm-task-paper-turn", "Decision"],
+        ["llm-task-paper-how", "Deferred — Needs the full text."],
+      ]);
+    });
+
+    it("shows both the read state and the tag of a paper read and excluded", function () {
+      seedScope(2);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c1", [[1, "read", "A passage about drift."]]),
+        "run-a",
+      );
+      decide("d1", "run-a", [[1, "exclude", "Wrong species."]]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const [item] = harness.items();
+      assert.equal(item.dataset.state, "read");
+      assert.equal(tagOf(item), "Excluded");
+      const details = openDetails(item);
+      assert.include(details, "A passage about drift.");
+      assert.include(details, "Excluded — Wrong species.");
+    });
   });
 
   it("counts distinct passages, and strips inline heading marks from a snippet", function () {
@@ -2827,6 +2981,56 @@ describe("task progress view of an outcome ledger", function () {
       );
     });
 
+    it("closes the line with the excluded count: 2/4 steps · 212 papers in scope · 2 excluded", function () {
+      seedScope(200);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a" });
+      setTaskOutcomes(
+        KEY,
+        "run-a",
+        outcomeCheckpoint([
+          readAll(items(212), items(212)),
+          outcomeTask("explain", {
+            description: "Explain the common thread",
+            effect: "answer",
+            status: "completed",
+          }),
+          noteAll(items(212), items(120)),
+          outcomeTask("tag", {
+            description: "Tag the papers",
+            capability: "zotero.tags",
+          }),
+        ]),
+      );
+      applyTaskPaperUpdate(
+        KEY,
+        buildDecisionLedgerDelta({
+          runId: "run-a",
+          callId: "d1",
+          toolName: "review_decide",
+          decisions: [
+            [1, "exclude"],
+            [2, "exclude"],
+            [3, "include"],
+          ].map(([itemId, value]) => ({
+            paper: {
+              libraryID: 1,
+              itemId: itemId as number,
+              title: `P${itemId}`,
+            },
+            value: value as TaskPaperDecision["value"],
+            reason: "Screened.",
+          })),
+        })!,
+        "run-a",
+      );
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "2/4 steps · 212 papers in scope · 2 excluded",
+      );
+    });
+
     it("sizes a whole-library scope that lists no papers", function () {
       const harness = track(mount());
       beginTaskRun(KEY, { runId: "run-a" });
@@ -4055,6 +4259,30 @@ describe("task progress history by question", function () {
     return collectFakeText(item.findByClass("llm-task-paper-details"));
   };
 
+  it("in the chat, a follow-up that only screens papers shows its excluded count, not No new reads", function () {
+    seedScope(5);
+    const harness = track(mount());
+    askFirst();
+    askWithoutReads(2, GAZE, false);
+    applyTaskPaperUpdate(
+      KEY,
+      buildDecisionLedgerDelta({
+        runId: "q2",
+        callId: "screen",
+        toolName: "review_decide",
+        decisions: [4, 5].map((itemId) => ({
+          paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+          value: "exclude" as const,
+          reason: "Off topic.",
+        })),
+      })!,
+      "q2",
+    );
+    completeTaskRun(KEY, { runId: "q2" });
+    harness.view.flush();
+    assert.equal(harness.count(), "0 of 5 read · 2 excluded");
+  });
+
   it("in the chat, a follow-up answered from earlier reading shows one line, not unread papers", function () {
     seedScope(5);
     const harness = track(mount());
@@ -4191,6 +4419,50 @@ describe("task progress history by question", function () {
       assert.isTrue(
         quietOf(dockedSections(harness)[2])?.hidden ?? true,
         "the first question read papers, so it has no such line",
+      );
+    });
+
+    it("keeps an earlier follow-up that only screened papers: its excluded rows, not No new reads", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askWithoutReads(2, GAZE, false);
+      applyTaskPaperUpdate(
+        KEY,
+        buildDecisionLedgerDelta({
+          runId: "q2",
+          callId: "screen",
+          toolName: "review_decide",
+          decisions: [4, 5].map((itemId) => ({
+            paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+            value: "exclude" as const,
+            reason: "Off topic.",
+          })),
+        })!,
+        "q2",
+      );
+      completeTaskRun(KEY, { runId: "q2" });
+      askWithoutReads(3, "And the third question?");
+      harness.view.flush();
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections, 3);
+      const middle = headOf(sections[1]);
+      assert.include(metaOf(middle), "Question 2");
+      assert.notInclude(metaOf(middle), "No new reads");
+      middle.dispatchFakeEvent("click");
+      dockedSections(harness)[1]
+        .findByClass("llm-task-fold")!
+        .dispatchFakeEvent("click");
+      const unrolled = dockedSections(harness)[1];
+      const screened = unrolled.findAllByClass("llm-task-paper");
+      assert.lengthOf(screened, 2, "the two papers it screened still list");
+      for (const item of screened) {
+        const tag = item.findByClass("llm-task-paper-cite")!;
+        assert.equal(tag.textContent, "Excluded");
+      }
+      assert.isTrue(
+        quietOf(unrolled)?.hidden ?? true,
+        "it is not answered from earlier reading",
       );
     });
 

@@ -64,6 +64,27 @@ export type TaskPaperReadGranularity =
    */
   | "digest";
 
+/**
+ * How much of a paper a read granularity covers, weakest first. A summary
+ * of the paper's own text (`digest`) ranks above its record and outline but
+ * below text read directly; a whole paper (`full`) ranks highest. Equal
+ * depth is not claimed between neighbours: the order only picks a paper's
+ * strongest read.
+ */
+export const TASK_PAPER_READ_GRANULARITY_RANK: Readonly<
+  Record<TaskPaperReadGranularity, number>
+> = {
+  metadata: 0,
+  abstract: 1,
+  outline: 2,
+  digest: 3,
+  figure: 4,
+  passage: 5,
+  page: 6,
+  section: 7,
+  full: 8,
+};
+
 /** How a paper bears on the request, as a host digest judged it. */
 export type TaskPaperDigestRelevance = {
   level: "direct" | "partial" | "none" | "unclear";
@@ -162,6 +183,28 @@ export type TaskPaperDocumentCitation = {
   year?: string;
 };
 
+/**
+ * What the agent decided about a paper for the task, in its own words. A
+ * claim, not a verified fact: it is kept apart from the paper's reads and
+ * never moves its state.
+ */
+export type TaskPaperDecision = {
+  value: "include" | "exclude" | "defer";
+  relevance?: "high" | "medium" | "low" | "none";
+  /** At most `TASK_PAPER_DECISION_MAX_SUBQUESTIONS` labels. */
+  subquestions?: string[];
+  /** At most `TASK_PAPER_DECISION_REASON_MAX_CHARS` characters. */
+  reason: string;
+  origin: "agent";
+};
+
+/** A decision as a turn holds it: the call and run that stated it. */
+export type TaskPaperDecisionRecord = TaskPaperDecision & {
+  callId: string;
+  runId?: string;
+  turnIndex: number;
+};
+
 export type TaskPaperDeltaPaper = {
   key: string;
   libraryID: number;
@@ -174,6 +217,11 @@ export type TaskPaperDeltaPaper = {
   itemKey?: string;
   text?: TaskPaperTextSource;
   state: TaskPaperState;
+  /**
+   * The agent's decision about the paper. A delta that only decides lists
+   * the paper (`state: "listed"`). Absent on events saved before decisions.
+   */
+  decision?: TaskPaperDecision;
 };
 
 /** What one successful read tool call added to the ledger. */
@@ -205,9 +253,14 @@ export type TaskPaperTurnRecord = {
   /** Document citations beyond the per-turn cap. */
   droppedDocumentCitations?: number;
   /**
-   * The run whose reads `reads` holds. A re-run of the question (another
-   * run id) replaces them, as its document's sources replace the earlier
-   * run's.
+   * The latest decision this turn's run stated about the paper. A re-run
+   * of the question replaces it with the reads (`readsRunId`).
+   */
+  decision?: TaskPaperDecisionRecord;
+  /**
+   * The run whose reads and decision this turn holds. A re-run of the
+   * question (another run id) replaces them, as its document's sources
+   * replace the earlier run's.
    */
   readsRunId?: string;
   /** Runs whose reads a later run of the question replaced. */
@@ -264,6 +317,13 @@ export const TASK_PAPER_SNIPPET_MAX_CHARS = 280;
 export const TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS = 1600;
 export const TASK_PAPER_WHY_MATCHED_MAX_CHARS = 120;
 export const TASK_PAPER_CITATION_QUOTE_MAX_CHARS = 160;
+/** A decision's reason, at the cap a digest's judgment reason keeps. */
+export const TASK_PAPER_DECISION_REASON_MAX_CHARS =
+  TASK_PAPER_SNIPPET_MAX_CHARS;
+/** Subquestions one decision names, as many as a citation's sections. */
+export const TASK_PAPER_DECISION_MAX_SUBQUESTIONS = 8;
+/** One subquestion label, at the cap of a document section label. */
+export const TASK_PAPER_DECISION_SUBQUESTION_MAX_CHARS = 120;
 
 /**
  * Tools whose payloads this ledger reads. Kept equal to the tools
@@ -1029,12 +1089,18 @@ function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
   const processed = Number(row.processedChunks) || 0;
   if (processed > 0 || hasRows(row, ["exactEvidence"])) {
     const total = Number(row.totalChunks) || 0;
+    // A read that stopped short is a skim of the chunks it reached, not a
+    // read of the whole paper.
+    const status = text(row.status);
+    const complete = status
+      ? status === "complete"
+      : total > 0 && processed >= total;
     return [
       {
         ref,
-        state: "read",
+        state: complete ? "read" : "skimmed",
         read: readSeed({
-          granularity: "full",
+          granularity: complete ? "full" : "digest",
           method: mode,
           label: total ? `${processed}/${total} chunks` : undefined,
         }),
@@ -1582,6 +1648,121 @@ export function buildDigestFailureLedgerDelta(
 }
 
 // ---------------------------------------------------------------------------
+// Agent decisions
+// ---------------------------------------------------------------------------
+
+const DECISION_VALUES: ReadonlySet<string> = new Set([
+  "include",
+  "exclude",
+  "defer",
+]);
+const DECISION_RELEVANCE: ReadonlySet<string> = new Set([
+  "high",
+  "medium",
+  "low",
+  "none",
+]);
+
+/**
+ * A decision with its inputs bounded, or undefined for one without a known
+ * value or a reason. Stored events are read through it too, so a malformed
+ * one is ignored rather than folded.
+ */
+export function normalizeTaskPaperDecision(
+  value: unknown,
+): TaskPaperDecision | undefined {
+  const input = record(value);
+  if (!input || typeof input.value !== "string") return undefined;
+  if (!DECISION_VALUES.has(input.value)) return undefined;
+  const reason = clipTaskPaperText(
+    input.reason,
+    TASK_PAPER_DECISION_REASON_MAX_CHARS,
+  );
+  if (!reason) return undefined;
+  const decision: TaskPaperDecision = {
+    value: input.value as TaskPaperDecision["value"],
+    reason,
+    origin: "agent",
+  };
+  if (
+    typeof input.relevance === "string" &&
+    DECISION_RELEVANCE.has(input.relevance)
+  ) {
+    decision.relevance = input.relevance as TaskPaperDecision["relevance"];
+  }
+  const subquestions = [
+    ...new Set(
+      (Array.isArray(input.subquestions) ? input.subquestions : [])
+        .map((label) =>
+          clipTaskPaperText(label, TASK_PAPER_DECISION_SUBQUESTION_MAX_CHARS),
+        )
+        .filter((label): label is string => Boolean(label)),
+    ),
+  ].slice(0, TASK_PAPER_DECISION_MAX_SUBQUESTIONS);
+  if (subquestions.length) decision.subquestions = subquestions;
+  return decision;
+}
+
+/** One paper's decision, as a caller states it. */
+export type TaskPaperDecisionInput = Omit<TaskPaperDecision, "origin"> & {
+  paper: TaskPaperDigestPaper;
+};
+
+export type BuildDecisionLedgerDeltaParams = {
+  runId?: string;
+  callId: string;
+  toolName: string;
+  turnIndex?: number;
+  decisions: readonly TaskPaperDecisionInput[];
+};
+
+/**
+ * What one call's decisions add to the ledger: each paper listed, with its
+ * decision, and no reads. A paper named twice keeps its last decision. A
+ * decision without a paper id, a known value or a reason is dropped. Null
+ * when none is left.
+ */
+export function buildDecisionLedgerDelta(
+  params: BuildDecisionLedgerDeltaParams,
+): TaskPaperLedgerDelta | null {
+  const papers = new Map<string, TaskPaperDeltaPaper>();
+  for (const input of params.decisions || []) {
+    const libraryID = positive(input?.paper?.libraryID);
+    const itemId = positive(input?.paper?.itemId);
+    if (!libraryID || !itemId) continue;
+    const decision = normalizeTaskPaperDecision(input);
+    if (!decision) continue;
+    const paper = digestPaper({ ...input.paper, libraryID, itemId }, "listed");
+    paper.decision = decision;
+    papers.delete(paper.key);
+    papers.set(paper.key, paper);
+  }
+  if (!papers.size) return null;
+  const delta: TaskPaperLedgerDelta = {
+    version: 1,
+    callId: params.callId,
+    toolName: params.toolName,
+    papers: [...papers.values()],
+    reads: [],
+  };
+  if (params.runId) delta.runId = params.runId;
+  if (params.turnIndex !== undefined) delta.turnIndex = params.turnIndex;
+  return delta;
+}
+
+/** The paper's latest decision: its latest question's that holds one. */
+export function latestTaskPaperDecision(
+  entry: TaskPaperLedgerEntry | null | undefined,
+): TaskPaperDecisionRecord | undefined {
+  let latest: TaskPaperDecisionRecord | undefined;
+  for (const [turn, record] of Object.entries(entry?.turns || {})) {
+    if (!record.decision) continue;
+    if (!latest || Number(turn) > latest.turnIndex) latest = record.decision;
+  }
+  return latest;
+}
+
+// ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
 
@@ -1649,11 +1830,12 @@ function appliedCallKey(delta: TaskPaperLedgerDelta): string {
  * only ever rise. `turnIndex` overrides the delta's own turn, for a store
  * that numbers turns from the conversation rather than from the event.
  *
- * A paper's reads for a question belong to one run: reads from another run
- * of the same question replace them, unless that run is one `options.newerRunIds`
- * names as later (history replayed after the session ran the retry) or one
- * already replaced. `options.runId`, when given, names the run over the
- * delta's own.
+ * A paper's reads and decision for a question belong to one run: reads or
+ * a decision from another run of the same question replace them, unless that
+ * run is one `options.newerRunIds` names as later (history replayed after the
+ * session ran the retry) or one already replaced. `options.runId`, when
+ * given, names the run over the delta's own. Within a run the latest
+ * decision wins; a decision never moves a state.
  */
 export function applyTaskPaperLedgerDelta(
   ledger: TaskPaperLedger,
@@ -1685,6 +1867,18 @@ export function applyTaskPaperLedgerDelta(
     const record = turnOf(entry, turn);
     record.state = strongerState(record.state, paper.state);
     record.readState = strongerState(record.readState, paper.state);
+    const decision = normalizeTaskPaperDecision(paper.decision);
+    if (
+      decision &&
+      (!runId || takesReadsFrom(record, runId, options.newerRunIds))
+    ) {
+      record.decision = {
+        ...decision,
+        callId: delta.callId,
+        ...(runId ? { runId } : {}),
+        turnIndex: turn,
+      };
+    }
   }
   for (const read of delta.reads) {
     const entry = ledger.papers[read.key];
@@ -1718,8 +1912,9 @@ function lastIndexOfNonDigest(reads: readonly TaskPaperReadEvent[]): number {
 }
 
 /**
- * Whether `record` takes a read from run `runId`: its own run's, or a newer
- * run's, which first clears the earlier run's reads.
+ * Whether `record` takes a read or a decision from run `runId`: its own
+ * run's, or a newer run's, which first clears the earlier run's reads and
+ * decision.
  */
 function takesReadsFrom(
   record: TaskPaperTurnRecord,
@@ -1737,6 +1932,7 @@ function takesReadsFrom(
     (record.supersededRunIds ||= []).push(held);
     record.reads = [];
     record.droppedReads = 0;
+    delete record.decision;
   }
   record.readsRunId = runId;
   return true;

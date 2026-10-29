@@ -42,6 +42,8 @@
  */
 import {
   TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
+  latestTaskPaperDecision,
+  type TaskPaperDecision,
   type TaskPaperLedgerEntry,
   type TaskPaperReadEvent,
   type TaskPaperState,
@@ -256,11 +258,15 @@ export function paperStateForTurn(
   return entry.turns[turn]?.state || "listed";
 }
 
-/** Whether question `turn` read, cited or found the paper. */
+/** Whether question `turn` read, cited, found or decided on the paper. */
 function touchedInTurn(entry: TaskPaperLedgerEntry, turn: number): boolean {
   const own = entry.turns[turn];
   return Boolean(
-    own && (own.state !== "listed" || own.reads.length || own.citations.length),
+    own &&
+    (own.state !== "listed" ||
+      own.reads.length ||
+      own.citations.length ||
+      own.decision),
   );
 }
 
@@ -358,7 +364,21 @@ export type TaskProgressCounts = {
   cited: number;
   /** Papers whose text a read took in (`isInDepthRead`), of `matched`. */
   inDepth: number;
+  /** Papers the agent decided to exclude in the latest question. */
+  excluded: number;
 };
+
+/**
+ * The paper's decision in question `turn`, or its latest one over every
+ * question before any (`turn` 0): the scope its read state uses.
+ */
+function decisionForTurn(
+  entry: TaskPaperLedgerEntry | undefined,
+  turn: number,
+): TaskPaperDecision | undefined {
+  if (!entry) return undefined;
+  return turn ? entry.turns[turn]?.decision : latestTaskPaperDecision(entry);
+}
 
 const STATE_RANK: Record<TaskPaperState, number> = {
   listed: 0,
@@ -393,8 +413,11 @@ export function countTaskProgress(
     read: 0,
     cited: 0,
     inDepth: 0,
+    excluded: 0,
   };
   for (const row of rows) {
+    if (decisionForTurn(row.entry, turn)?.value === "exclude")
+      counts.excluded += 1;
     const rank = STATE_RANK[row.turnState];
     if (rank >= STATE_RANK.matched) counts.matched += 1;
     if (rank >= STATE_RANK.skimmed) counts.read += 1;
@@ -500,7 +523,12 @@ export function answeredWithoutReads(
     return false;
   // A scholarly paper or web page it opened or found is a new read.
   if (countTaskOutside(record, record.turnIndex).total) return false;
-  return counts.total > 0 && counts.matched === 0;
+  if (counts.total <= 0 || counts.matched !== 0) return false;
+  // A question that only screened papers did work: it decided them.
+  const turn = summaryTurn(record);
+  return !buildTaskProgressPaperRows(record).some((row) =>
+    decisionForTurn(row.entry, turn),
+  );
 }
 
 /**
@@ -509,7 +537,8 @@ export function answeredWithoutReads(
  * so this names the scope the part froze: "2/4 steps · 212 papers in scope".
  * With nothing attached, the papers read in depth and those only found are
  * counted apart, a zero left out: "2/2 steps · 3 read in depth · 15 found ·
- * 2 cited".
+ * 2 cited". The papers the agent decided to exclude close the line, a zero
+ * left out: "... · 290 excluded".
  */
 export function formatTaskProgressCount(
   record: TaskProgressRecord | null,
@@ -536,6 +565,8 @@ export function formatTaskProgressCount(
     const parts = state === "answering" ? [t("Answering…")] : [];
     if (stepsText) parts.push(stepsText);
     parts.push(papersInScopeText(scopePapers));
+    if (counts.excluded)
+      parts.push(format("{count} excluded", { count: counts.excluded }));
     return parts.join(" · ");
   }
   // The question's scholarly papers and web pages count with its papers.
@@ -581,6 +612,8 @@ export function formatTaskProgressCount(
   }
   const cited = counts.cited + outside.cited;
   if (cited) parts.push(format("{count} cited", { count: cited }));
+  if (counts.excluded)
+    parts.push(format("{count} excluded", { count: counts.excluded }));
   return parts.join(" · ");
 }
 
@@ -1064,6 +1097,26 @@ export function formatTaskQuestionCounts(
     );
   }
   return parts.join(" · ");
+}
+
+/**
+ * The decision words: the row's tag and the opened row's line. Both name only
+ * a paper left out or put off; an included paper shows neither.
+ */
+const DECISION_WORDS: Record<
+  Exclude<TaskPaperDecision["value"], "include">,
+  string
+> = {
+  exclude: "Excluded",
+  defer: "Deferred",
+};
+
+/** The row's decision tag: "Excluded" or "Deferred", none for "include". */
+function decisionTag(row: TaskProgressPaperRow): string {
+  const value = latestTaskPaperDecision(row.entry)?.value;
+  return value === "exclude" || value === "defer"
+    ? t(DECISION_WORDS[value])
+    : "";
 }
 
 const STATE_LABELS: Record<TaskPaperState, string> = {
@@ -2457,6 +2510,21 @@ export function mountTaskProgressView(params: {
         ),
       );
     }
+    const decision = latestTaskPaperDecision(model.entry);
+    if (decision && decision.value !== "include") {
+      // The agent's claim, kept apart from the reads above.
+      const block = el(doc, "div", "llm-task-paper-read");
+      block.append(
+        el(doc, "div", "llm-task-paper-turn", t("Decision")),
+        el(
+          doc,
+          "div",
+          "llm-task-paper-how",
+          digestJudgmentText(DECISION_WORDS[decision.value], decision.reason),
+        ),
+      );
+      children.push(block);
+    }
     if (documentSections.length) {
       const citedIn = el(doc, "div", "llm-task-paper-cited");
       citedIn.append(
@@ -2484,7 +2552,11 @@ export function mountTaskProgressView(params: {
     const tail = formatTaskPaperTail(model);
     if (refs.tail.textContent !== tail) refs.tail.textContent = tail;
     const tag =
-      model.state === "cited" ? t("Cited") : model.named ? t("Named") : "";
+      model.state === "cited"
+        ? t("Cited")
+        : model.named
+          ? t("Named")
+          : decisionTag(model);
     if (refs.cite.hidden !== !tag) refs.cite.hidden = !tag;
     if (tag && refs.cite.textContent !== tag) refs.cite.textContent = tag;
     refs.cite.classList.toggle(

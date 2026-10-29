@@ -23,6 +23,7 @@ import { resolveCapabilitiesContentInputs } from "../model/contentCapabilities";
 import {
   attestAndRecordRead,
   buildPaperLedgerUpdateEvent,
+  recordTaskPaperDecisions,
 } from "../context/taskPaperLedgerRecorder";
 import {
   readObservationSourceKey,
@@ -904,6 +905,17 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
           sourceFingerprint: observation.sourceFingerprint,
         }));
       }
+    } else if (toolResult.ok && toolResult.paperDecisions?.length) {
+      // A call that states paper decisions (record_paper_decisions, or the
+      // papers a document or a part leaves out): the same recorder makes its
+      // delta, emitted at the same place as a read's.
+      paperLedgerDelta = recordTaskPaperDecisions({
+        toolName: toolResult.name,
+        callId: toolResult.callId,
+        decisions: toolResult.paperDecisions,
+        conversationKey: deps.request.conversationKey,
+        runId: deps.runId,
+      });
     }
     // The outside papers a document of this run may cite: what
     // literature_search and literature_read returned. The DOIs of papers
