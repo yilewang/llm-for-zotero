@@ -199,6 +199,16 @@ const zhCN: Record<string, string> = {
   "Start a new chat from this turn": "从此轮开始新的对话",
   "Copy chat as md": "复制对话为 Markdown",
   "Save chat as note": "保存对话为笔记",
+  "Save conversation snapshot": "保存完整对话快照",
+  "Save the loaded ChatGPT conversation with its visual formatting as an HTML attachment":
+    "将浏览器已加载的 ChatGPT 对话及排版保存为 HTML 附件",
+  "Saving conversation snapshot…": "正在保存对话快照…",
+  "Conversation snapshot saved as attachment": "已将对话快照保存为论文附件",
+  "Conversation snapshot saved with image warnings":
+    "对话快照已保存，部分图片无法离线保存",
+  "Failed to save conversation snapshot": "保存对话快照失败",
+  "Update Sync for Zotero and keep the matching ChatGPT conversation open.":
+    "请更新 Sync for Zotero，并保持对应的 ChatGPT 对话网页打开。",
   "Upload files": "上传文件",
   "Add documents or images": "添加文档或图片",
   "Select references": "选择参考文献",

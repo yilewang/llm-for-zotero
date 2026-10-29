@@ -571,7 +571,25 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Save chat as note"),
     },
   );
-  exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
+  const exportMenuSnapshotBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-export-snapshot",
+      type: "button",
+      textContent: t("Save conversation snapshot"),
+      title: t(
+        "Save the loaded ChatGPT conversation with its visual formatting as an HTML attachment",
+      ),
+    },
+  );
+  exportMenuSnapshotBtn.style.display = "none";
+  exportMenu.append(
+    exportMenuCopyBtn,
+    exportMenuNoteBtn,
+    exportMenuSnapshotBtn,
+  );
   container.appendChild(exportMenu);
 
   const slashMenu = createElement(

@@ -1,3 +1,4 @@
+import { resolveConversationBaseItem } from "../../portalScope";
 import { t } from "../../../../utils/i18n";
 import {
   copyGeneratedImageToClipboard,
@@ -713,6 +714,77 @@ export function attachMenuActionController(
     });
   }
 
+  const snapshotButton = deps.body.querySelector<HTMLButtonElement>(
+    "#llm-export-snapshot",
+  );
+  const snapshotUrlForItem = (item: Zotero.Item) =>
+    [...deps.getHistory(deps.getConversationKey(item))]
+      .reverse()
+      .find((message) => message.webchatChatUrl)?.webchatChatUrl || null;
+  let snapshotSaving = false;
+  snapshotButton?.addEventListener("click", async (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const item = deps.getItem();
+    if (!item || snapshotSaving) return;
+    const url = snapshotUrlForItem(item);
+    const parent = resolveConversationBaseItem(item);
+    if (!url || !parent?.isRegularItem()) return;
+    const ownership = captureMenuActionOwnership(
+      deps,
+      "save-conversation-snapshot",
+      deps.getConversationKey(item),
+    );
+    if (!ownership) return;
+    deps.closeExportMenu();
+    snapshotSaving = true;
+    snapshotButton.disabled = true;
+    setStatusMessage(t("Saving conversation snapshot…"), "ready");
+    try {
+      const { relayGetExtensionStatus } =
+        await import("../../../../webchat/relayServer");
+      if (relayGetExtensionStatus()?.conversationSnapshotVersion !== 1) {
+        throw new Error(
+          t(
+            "Update Sync for Zotero and keep the matching ChatGPT conversation open.",
+          ),
+        );
+      }
+      const {
+        getConversationSnapshotBroker,
+        saveConversationSnapshotAttachment,
+      } = await import("../../../../webchat/conversationSnapshot");
+      const snapshot = await getConversationSnapshotBroker().request(
+        Zotero.Utilities.randomString(32),
+        url,
+      );
+      // Bind the attachment to the original paper; a navigation cancels the save.
+      if (!ownership()) return;
+      await saveConversationSnapshotAttachment(snapshot, parent);
+      if (ownership())
+        setStatusMessage(
+          t(
+            snapshot.warnings.length
+              ? "Conversation snapshot saved with image warnings"
+              : "Conversation snapshot saved as attachment",
+          ),
+          snapshot.warnings.length ? "warning" : "ready",
+        );
+    } catch (error) {
+      deps.logError("Save conversation snapshot failed:", error);
+      if (ownership())
+        setStatusMessage(
+          error instanceof Error
+            ? error.message
+            : t("Failed to save conversation snapshot"),
+          "error",
+        );
+    } finally {
+      snapshotSaving = false;
+      snapshotButton.disabled = false;
+    }
+  });
+
   deps.exportBtn?.addEventListener("click", (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
@@ -729,6 +801,14 @@ export function attachMenuActionController(
     if (exportMenu.style.display !== "none") {
       deps.closeExportMenu();
       return;
+    }
+    if (snapshotButton) {
+      const url = snapshotUrlForItem(item);
+      snapshotButton.style.display =
+        url?.startsWith("https://chatgpt.com/c/") &&
+        resolveConversationBaseItem(item)?.isRegularItem()
+          ? ""
+          : "none";
     }
     positionMenuBelowButton(deps.body, exportMenu, exportBtn);
   });
