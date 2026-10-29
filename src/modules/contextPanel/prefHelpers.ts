@@ -179,7 +179,38 @@ const BUILTIN_SHORTCUT_IDS = new Set<string>(
 );
 const BUILTIN_IDS_RESTORED_ON_MIGRATION = new Set<string>(["mermaid-diagram"]);
 const KNOWN_OLD_BUILTIN_PROMPTS: Record<string, string[]> = {
-  summarize: ["Summarize the document in 3-5 bullet points."],
+  summarize: [
+    "Summarize the document in 3-5 bullet points.",
+    "Give a concise narrative overview of the paper in 1-2 short paragraphs, covering the research question, approach, main findings, and significance.",
+    "Give a one-sentence overview, then summarize the paper section by section under its own headings, with 1-3 sentences per section.",
+    "用中文以 1-2 个简短段落对这篇论文进行简明的叙述性概述，涵盖研究问题、方法、主要发现和意义。",
+    "用中文先以一句话概述论文，然后按论文自身的章节标题逐节总结，每节 1-3 句。",
+  ],
+  "key-points": [
+    "List the key points as concise bullet points.",
+    "用中文以简明的要点列出这篇论文的关键点。",
+  ],
+  methodology: [
+    "Describe the methodology used in the paper.",
+    "用中文描述这篇论文所使用的方法。",
+  ],
+  limitations: [
+    "Explain the limitations and potential weaknesses.",
+    "用中文解释这篇论文的局限性和潜在弱点。",
+  ],
+  "mermaid-diagram": [
+    "Generate a Mermaid flowchart to help me understand the paper’s main idea, method, key findings, and conclusion.",
+    "Generate a Mermaid flowchart to help me understand the paper's main idea, method, key findings, and conclusion.",
+    "Generate a Mermaid flowchart to help me understand the paper's main idea, method, key findings, and conclusion. Keep it compact and high-level: show only the central problem, method or architecture, key evidence/findings, and conclusion. Avoid poster-style detail dumps; use short node labels and semantic classDef/class styling where useful. Do not invent structure unsupported by the paper.",
+    "生成一个 Mermaid 流程图，帮助我理解论文的主要思想、方法、关键发现和结论。保持紧凑、高层次：只展示核心问题、方法或架构、关键证据/发现和结论。避免海报式的细节堆砌；使用简短的节点标签，并在有用时使用语义化的 classDef/class 样式。不要编造论文不支持的结构。节点文字使用中文。",
+  ],
+};
+const KNOWN_BUILTIN_DEFAULT_LABELS: Record<string, string[]> = {
+  summarize: ["Summarize", "摘要"],
+  "key-points": ["Key Points", "要点"],
+  methodology: ["Methodology", "方法论"],
+  limitations: ["Limitations", "局限性"],
+  "mermaid-diagram": ["Diagram", "流程图"],
 };
 
 export function buildPaperStateKey(
@@ -844,7 +875,11 @@ function getJsonPref(key: string): Record<string, string> {
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return {};
   try {
-    return JSON.parse(raw) || {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, string>;
   } catch {
     return {};
   }
@@ -896,6 +931,27 @@ function normalizeShortcutText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+export function isKnownBuiltinDefaultPrompt(
+  id: string,
+  prompt: string,
+): boolean {
+  if (!BUILTIN_SHORTCUT_IDS.has(id) || typeof prompt !== "string") return false;
+  const normalizedPrompt = normalizeShortcutText(prompt);
+  if (!normalizedPrompt) return false;
+  const knownPrompts = KNOWN_OLD_BUILTIN_PROMPTS[id] || [];
+  return knownPrompts.some(
+    (candidate) => normalizeShortcutText(candidate) === normalizedPrompt,
+  );
+}
+
+export function isKnownBuiltinDefaultLabel(id: string, label: string): boolean {
+  if (!BUILTIN_SHORTCUT_IDS.has(id) || typeof label !== "string") return false;
+  const trimmedLabel = label.trim();
+  if (!trimmedLabel) return false;
+  const knownLabels = KNOWN_BUILTIN_DEFAULT_LABELS[id] || [];
+  return knownLabels.some((candidate) => candidate.trim() === trimmedLabel);
+}
+
 function dedupeStrings(values: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -916,13 +972,7 @@ function normalizeShortcutOverridesForMigration(
     if (!BUILTIN_SHORTCUT_IDS.has(id) || typeof prompt !== "string") continue;
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) continue;
-    const knownOldPrompts = KNOWN_OLD_BUILTIN_PROMPTS[id] || [];
-    const normalizedPrompt = normalizeShortcutText(trimmedPrompt);
-    if (
-      knownOldPrompts.some(
-        (oldPrompt) => normalizeShortcutText(oldPrompt) === normalizedPrompt,
-      )
-    ) {
+    if (isKnownBuiltinDefaultPrompt(id, trimmedPrompt)) {
       continue;
     }
     next[id] = trimmedPrompt;
@@ -938,6 +988,9 @@ function normalizeShortcutLabelOverridesForMigration(
     if (!BUILTIN_SHORTCUT_IDS.has(id) || typeof label !== "string") continue;
     const trimmedLabel = label.trim();
     if (!trimmedLabel) continue;
+    if (isKnownBuiltinDefaultLabel(id, trimmedLabel)) {
+      continue;
+    }
     next[id] = trimmedLabel;
   }
   return next;
@@ -1061,19 +1114,27 @@ export function migrateShortcutDefaultsIfNeeded(): void {
   const prefs = getZoteroPrefs();
   const migrationPref = `${config.prefsPrefix}.${SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY}`;
   const currentVersion = Number(prefs?.get?.(migrationPref, true) || 0);
+  const rawOverrides = getShortcutOverrides();
+  const rawLabelOverrides = getShortcutLabelOverrides();
+  const overrides = normalizeShortcutOverridesForMigration(rawOverrides);
+  const labelOverrides =
+    normalizeShortcutLabelOverridesForMigration(rawLabelOverrides);
+
   if (
     Number.isFinite(currentVersion) &&
     currentVersion >= SHORTCUT_DEFAULTS_MIGRATION_VERSION
   ) {
+    if (
+      Object.keys(overrides).length !== Object.keys(rawOverrides).length ||
+      Object.keys(labelOverrides).length !==
+        Object.keys(rawLabelOverrides).length
+    ) {
+      setShortcutOverrides(overrides);
+      setShortcutLabelOverrides(labelOverrides);
+    }
     return;
   }
 
-  const overrides = normalizeShortcutOverridesForMigration(
-    getShortcutOverrides(),
-  );
-  const labelOverrides = normalizeShortcutLabelOverridesForMigration(
-    getShortcutLabelOverrides(),
-  );
   const deletedIds = dedupeStrings(getDeletedShortcutIds())
     .filter((id) => BUILTIN_SHORTCUT_IDS.has(id))
     .filter((id) => !BUILTIN_IDS_RESTORED_ON_MIGRATION.has(id));

@@ -117,6 +117,15 @@ const zhCN: Record<string, string> = {
   "Key Points": "要点",
   Methodology: "方法论",
   Limitations: "局限性",
+  Diagram: "流程图",
+  Edit: "编辑",
+  Delete: "删除",
+  Add: "添加",
+  Move: "移动",
+  "Custom Shortcut": "自定义快捷操作",
+  "Shortcut prompt cannot be empty": "快捷提示词不能为空",
+  "Maximum 20 editable shortcuts allowed": "最多允许 20 个可编辑快捷操作",
+  "Drag to reorder": "拖动以调整顺序",
 
   // ── Chat panel UI ───────────────────────────────────────────────────────
   "LLM-for-Zotero": "LLM-for-Zotero",
@@ -1782,20 +1791,43 @@ let currentLocale: string = "auto";
 /**
  * Initialize i18n — call once at plugin startup.
  */
+function normalizeConfiguredLocale(pref: unknown): string {
+  if (typeof pref !== "string") return "auto";
+  const trimmed = pref.trim();
+  if (!trimmed || trimmed === "auto") return "auto";
+  if (
+    /^(en|zh)(?:[-_][A-Za-z0-9]+)?$/i.test(trimmed) ||
+    /^[a-z]{2,3}[-_][A-Za-z]{2,4}$/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  return "auto";
+}
+
 export function initI18n(): void {
   try {
     const pref = Zotero.Prefs.get(
       "extensions.zotero.llmforzotero.locale",
       true,
     );
-    currentLocale = typeof pref === "string" ? pref : "auto";
+    currentLocale = normalizeConfiguredLocale(pref);
   } catch {
     currentLocale = "auto";
   }
 }
 
 function getEffectiveLocale(): string {
-  if (currentLocale !== "auto") return currentLocale;
+  let configured = currentLocale;
+  try {
+    const pref = Zotero.Prefs.get(
+      "extensions.zotero.llmforzotero.locale",
+      true,
+    );
+    configured = normalizeConfiguredLocale(pref);
+  } catch {
+    // Keep last initialized locale when Zotero.Prefs is unavailable.
+  }
+  if (configured !== "auto") return configured;
   try {
     return (Zotero as unknown as { locale?: string }).locale || "en-US";
   } catch {
