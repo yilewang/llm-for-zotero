@@ -5,6 +5,15 @@ import { isLiveDocument } from "./panelLiveness";
 import { splitSettledMarkdownBlocks } from "../../utils/markdown";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 
+/**
+ * Each block of a streaming answer renders into its own wrapper, so a
+ * wrapper's first and last children are not the answer's. The stylesheet
+ * keeps the final answer's spacing on them, and drops the last paragraph's
+ * gap only in the block marked as the end.
+ */
+const STREAMING_BLOCK_CLASS = "llm-streaming-block";
+const STREAMING_END_CLASS = "llm-streaming-end";
+
 /** Stable Markdown blocks share the normal renderer; only the unfinished tail is reparsed. */
 const streams = new WeakMap<
   HTMLElement,
@@ -15,6 +24,8 @@ const streams = new WeakMap<
     pending: string;
     /** Top-level elements inside committed blocks, which stay mounted. */
     committedElements: number;
+    /** The block holding the answer's last element (see STREAMING_END_CLASS). */
+    end: HTMLElement | null;
     /** When each top-level element first appeared, by position. */
     appeared: number[];
     scheduler: ReturnType<typeof createCoalescedFrameScheduler>;
@@ -37,6 +48,7 @@ export function renderStreamingMarkdownInto(
       tail,
       pending: "",
       committedElements: 0,
+      end: null as HTMLElement | null,
       // A restart redraws content the reader already saw; keep it still.
       appeared: state?.appeared ?? [],
       scheduler: null! as ReturnType<typeof createCoalescedFrameScheduler>,
@@ -67,6 +79,7 @@ export function renderStreamingMarkdownInto(
             break;
           }
           const block = doc.createElement("div");
+          block.className = STREAMING_BLOCK_CLASS;
           block.style.display = "contents";
           // The block renders off-DOM, so flat hydrators cannot see the
           // destination's scope. Copy it onto the block first.
@@ -78,6 +91,7 @@ export function renderStreamingMarkdownInto(
           committed += raw;
         }
         const tail = doc.createElement("div");
+        tail.className = STREAMING_BLOCK_CLASS;
         renderRenderedMarkdownInto(
           tail,
           next.pending.slice(committed.length),
@@ -102,6 +116,13 @@ export function renderStreamingMarkdownInto(
           } else {
             target.replaceChildren(...blocks, tail);
           }
+          // An empty tail leaves the last committed block at the end.
+          const end = tail.children.length
+            ? tail
+            : (blocks[blocks.length - 1] ?? next.end);
+          if (next.end !== end) next.end?.classList.remove(STREAMING_END_CLASS);
+          end?.classList.add(STREAMING_END_CLASS);
+          next.end = end;
           next.committed = committed;
           next.committedElements += fresh.length - tail.children.length;
           next.tail = tail;

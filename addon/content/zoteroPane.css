@@ -10540,6 +10540,31 @@ label.llm-search-results-item:hover {
   margin-bottom: 0;
 }
 
+/* A streaming answer draws each block in its own wrapper (see
+   streamingMarkdown.ts). Give the wrappers' edges the same spacing as the
+   final answer, so nothing moves when streaming ends. */
+.llm-streaming-block > h1:first-child,
+.llm-streaming-block > h2:first-child,
+.llm-streaming-block > h3:first-child,
+.llm-streaming-block > h4:first-child {
+  margin-top: 1.3em;
+}
+
+.llm-streaming-block:first-child > h1:first-child,
+.llm-streaming-block:first-child > h2:first-child,
+.llm-streaming-block:first-child > h3:first-child,
+.llm-streaming-block:first-child > h4:first-child {
+  margin-top: 0;
+}
+
+.llm-streaming-block > p:last-child {
+  margin-bottom: var(--llm-message-paragraph-spacing, 12px);
+}
+
+.llm-streaming-end > p:last-child {
+  margin-bottom: 0;
+}
+
 .llm-rendered-markdown ul,
 .llm-rendered-markdown ol {
   margin: var(--llm-message-paragraph-spacing, 12px) 0;
