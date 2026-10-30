@@ -22,6 +22,7 @@ A review is an argument about a body of work, not a catalog of it: a faithful ac
    Each result reports which papers came back complete, sampled, abstract only, or metadata only.
    When papers come back sampled, read fewer at a time or read their missing sections rather than moving on.
    As you go, note each paper's main claims, methods, and evidence, and its role in the argument: central, supporting, contradictory, theoretical, methodological, or context.
+   When a paper's own text shows it reviews or pools other studies, cite it for the field's overview or a pooled result, and cite the primary study for a specific finding when you have it.
    Use `paper_read({ mode:'targeted', query:'...' })` only to check a decisive claim, test an apparent contradiction against both papers, or find a precise location.
 3. **Select.** Decide from each paper's content which papers the review uses.
    Include every paper whose content bears on the question, whatever its field.
