@@ -204,6 +204,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     "1c3awl3",
     // v4, which named the synthesis digest the sized views omit (v5).
     "1fqhql1",
+    // v5, whose context_read paging step v6 moves into context_read's
+    // guidance (#541), as shipped and as the canonical copy carrying its
+    // native `name:` line.
+    "1nb2mr9",
+    "13a396o",
   ],
   "compare-papers.md": [
     "i0j6yq",
@@ -229,6 +234,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // as the canonical copy carrying its native `name:` line.
     "1mp6wjc",
     "1a6j60s",
+    // v11, whose task_update digest step v12 moves into task_update's
+    // guidance (#541), as shipped and as the canonical copy carrying its
+    // native `name:` line.
+    "ngexre",
+    "1m607zi",
   ],
   "analyze-figures.md": [
     "msvqtf",
@@ -270,6 +280,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     "1c1s5yg",
     "1cfk2wb",
     "3m65z4",
+    // v18, whose context_read source step v19 moves into context_read's
+    // guidance (#541), as shipped and as the canonical copy carrying its
+    // native `name:` line.
+    "1kxggv",
+    "xw13m",
   ],
   "literature-review.md": [
     "kbrknh",
@@ -308,6 +323,28 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // `name:` line.
     "15xumq",
     "1rape47",
+    // v14, whose task_update parts, digest and retry steps v15 moves into
+    // task_update's guidance (#541), as shipped and as the canonical copy
+    // carrying its native `name:` line.
+    "kl1d3v",
+    "b7qleo",
+    // v15, whose submit_document step v16 leaves to submit_document's
+    // description, as shipped and as the canonical copy carrying its native
+    // `name:` line.
+    "xfd5wu",
+    "17ofyyb",
+    // v16, whose never-review-outside-abstracts rule v17 replaces with the
+    // selection card's choice to import and cite or cite without importing,
+    // as shipped and as the canonical copy carrying its native `name:` line.
+    "16809kz",
+    "1488enc",
+  ],
+  "reorganize-library.md": [
+    // v1, whose task_update part v2 moves into task_update's guidance
+    // (#541), as shipped and as the canonical copy carrying its native
+    // `name:` line.
+    "1nlucw4",
+    "1jwuu81",
   ],
   "import-cited-reference.md": [
     "19bomz1",
@@ -316,6 +353,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     "1j1qzbc",
     "1sx03p9",
     "1mtgn5u",
+    // v6, whose web_read page step v7 moves into web_read's guidance
+    // (#541), as shipped and as the canonical copy carrying its native
+    // `name:` line.
+    "iryqnj",
+    "qquewx",
   ],
 };
 
@@ -340,6 +382,9 @@ const BUILTIN_BOOTSTRAP_BODY_HASHES: Partial<
     "1s8bw97",
     // v10, the body v11's dimension-named digest replaces.
     "dds2si",
+    // v11, the body whose task_update digest step v12 moves into
+    // task_update's guidance (#541).
+    "e98t03",
   ],
   "evidence-based-qa.md": [
     "41yh3d",

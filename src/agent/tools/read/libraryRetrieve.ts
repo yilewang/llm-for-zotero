@@ -1,4 +1,4 @@
-import type { AgentToolDefinition } from "../../types";
+import type { AgentToolDefinition, AgentToolGuidance } from "../../types";
 import { buildLibraryRetrieveModelView } from "../../services/libraryRetrieveModelView";
 import { modelViewRoomTokens } from "./modelViewRoom";
 import { matchesLibraryLevelTurn } from "./librarySearch";
@@ -196,9 +196,7 @@ export function normalizeLibraryRetrieveArgs(
 }
 
 /** The single owner of library-evidence routing and coverage rules. */
-export const LIBRARY_RETRIEVE_GUIDANCE: NonNullable<
-  AgentToolDefinition["guidance"]
-> = {
+export const LIBRARY_RETRIEVE_GUIDANCE: AgentToolGuidance = {
   matches: matchesLibraryLevelTurn,
   instruction: [
     "Use library_search for catalog discovery, library_read for structured item state, library_retrieve for evidence search and synthesis across a collection or library, and paper_read for close reading known papers.",

@@ -68,7 +68,7 @@ function bareDoi(value: unknown): string {
     .toLowerCase();
 }
 
-type PaperFields = {
+export type PaperFields = {
   title: string;
   authors: string[];
   year?: number;
@@ -183,6 +183,19 @@ export function describePaperSource(
   const fields = paperFields(raw, extraUrls);
   const identity = identityOf(fields);
   return identity ? display(fields, paperSourceId(identity)) : null;
+}
+
+/**
+ * One paper's normalized fields and its source id, read the way
+ * describePaperSource reads them; null without an identity.
+ */
+export function paperSourceIdentity(
+  raw: Record<string, unknown>,
+  extraUrls: unknown[] = [],
+): (PaperFields & { paperId: string }) | null {
+  const fields = paperFields(raw, extraUrls);
+  const identity = identityOf(fields);
+  return identity ? { ...fields, paperId: paperSourceId(identity) } : null;
 }
 
 /**

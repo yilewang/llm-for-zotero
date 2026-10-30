@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { toolGuidanceItems } from "../src/agent/tools/guidance";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
@@ -155,7 +156,7 @@ describe("tool guidance contracts", function () {
       .find((tool) => tool.name === "task_update");
     assert.equal(
       taskUpdate?.description,
-      "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason.",
+      "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason. A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.",
     );
   });
 
@@ -174,7 +175,8 @@ describe("tool guidance contracts", function () {
     for (const tool of stubRegistry().listToolDefinitions()) {
       visit(tool.spec.name, tool.spec.description);
       visit(tool.spec.name, tool.spec.inputSchema);
-      visit(tool.spec.name, tool.guidance?.instruction);
+      for (const guidance of toolGuidanceItems(tool.guidance))
+        visit(tool.spec.name, guidance.instruction);
     }
     assert.deepEqual(failures, []);
   });
@@ -350,10 +352,10 @@ describe("tool guidance contracts", function () {
       .listToolDefinitions()
       .filter((tool) => tool.spec.exposure !== "internal")
       .flatMap((tool) => {
-        const instruction = tool.guidance?.instruction || "";
-        return hiddenCallTarget.test(instruction)
-          ? [`${tool.spec.name}: ${instruction}`]
-          : [];
+        return toolGuidanceItems(tool.guidance)
+          .map((guidance) => guidance.instruction)
+          .filter((instruction) => hiddenCallTarget.test(instruction))
+          .map((instruction) => `${tool.spec.name}: ${instruction}`);
       });
     assert.deepEqual(failures, []);
   });

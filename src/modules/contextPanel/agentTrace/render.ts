@@ -1708,8 +1708,13 @@ function normalizePendingActions(action: AgentPendingAction) {
       ? action.cancelActionId
       : provided.find((entry) => entry.id === "cancel")?.id ||
         provided[provided.length - 1]?.id;
+  // A footer action has its own button beside the primary one; the rest
+  // share the primary button and the Alternatives chooser.
+  const footerActions = provided.filter(
+    (entry) => entry.id !== cancelActionId && entry.footer,
+  );
   const primaryActions = provided.filter(
-    (entry) => entry.id !== cancelActionId,
+    (entry) => entry.id !== cancelActionId && !entry.footer,
   );
   const defaultActionId =
     action.defaultActionId &&
@@ -1719,6 +1724,7 @@ function normalizePendingActions(action: AgentPendingAction) {
   return {
     actions: provided,
     primaryActions,
+    footerActions,
     cancelAction: provided.find((entry) => entry.id === cancelActionId) || null,
     defaultActionId,
     cancelActionId,
@@ -2705,6 +2711,7 @@ export function renderPendingActionCard(
   const primaryActionGroup = doc.createElement("div");
   primaryActionGroup.className = "llm-agent-hitl-footer-primary";
   let executeButton: HTMLButtonElement | null = null;
+  const footerButtons = new Map<string, HTMLButtonElement>();
   let backButton: HTMLButtonElement | null = null;
   let alternativesToggleButton: HTMLButtonElement | null = null;
   let alternativesOpen = false;
@@ -2737,16 +2744,25 @@ export function renderPendingActionCard(
   };
   const syncConfirmButton = () => {
     const isValid = isActionValid(activeActionId);
+    const selectionAction = pending.action.selectionAction;
+    const selectionValue = selectionAction
+      ? fieldAccessors
+          .find((accessor) => accessor.id === selectionAction.fieldId)
+          ?.getValue()
+      : undefined;
+    const count = Array.isArray(selectionValue) ? selectionValue.length : 0;
     if (executeButton) {
       executeButton.disabled = !isValid;
-      const selectionAction = pending.action.selectionAction;
       if (selectionAction) {
-        const value = fieldAccessors
-          .find((accessor) => accessor.id === selectionAction.fieldId)
-          ?.getValue();
-        const count = Array.isArray(value) ? value.length : 0;
         executeButton.textContent = `${selectionAction.verb} ${count} paper${count === 1 ? "" : "s"}`;
       }
+    }
+    for (const [actionId, button] of footerButtons) {
+      button.disabled = !isActionValid(actionId);
+      const label = getActionById(actionId)?.label || "";
+      button.textContent = selectionAction
+        ? label.replace("{count}", String(count))
+        : label;
     }
   };
   const syncAlternativeButtons = () => {
@@ -2937,6 +2953,24 @@ export function renderPendingActionCard(
     });
     buttons.push(backButton);
     primaryActionGroup.appendChild(backButton);
+  }
+
+  if (!isPagedReviewCard) {
+    for (const action of normalizedActions.footerActions) {
+      const footerButton = doc.createElement("button");
+      footerButton.type = "button";
+      footerButton.dataset.actionId = action.id;
+      footerButton.className =
+        action.style === "primary"
+          ? "llm-plan-action llm-plan-approve llm-agent-hitl-btn"
+          : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
+      footerButton.addEventListener("click", () => {
+        executeAction(action.id);
+      });
+      footerButtons.set(action.id, footerButton);
+      buttons.push(footerButton);
+      primaryActionGroup.appendChild(footerButton);
+    }
   }
 
   if (!isPagedReviewCard && buttonLayout.showsFooterExecuteButton) {

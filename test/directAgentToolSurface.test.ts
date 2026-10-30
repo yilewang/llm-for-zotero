@@ -75,10 +75,22 @@ describe("direct Agent model tool surface", function () {
     // rule, raised it to 37,070 (+446) (2026-10-25).
     // Per-sentence citing in the citation contract raised it to 37,269
     // (+199) (2026-10-26).
-    assert.isAtMost(serializedToolCharacters, 26_127);
+    // task_update's rule that a literature review of more than four papers
+    // declares a digest part, and one of four or fewer a read part (+450), and
+    // submit_document's rule that a literature review is always a document
+    // (+130) raised both caps by 580, to 26,707 and 37,849 (2026-10-29).
+    // The outside-paper choice (literature_search's forLiteratureReview field
+    // and sentence, submit_document's citation-source, web-page and
+    // answer-in-chat sentences) raised both caps by 475, to 27,182 and 38,324
+    // (2026-10-29).
+    // library_import's kind:'document_citations' (its sentence, enum value
+    // and documentId field, +210) and the card rule widened to a literature
+    // review that needs outside papers, a mixed one included (+60), raised
+    // them to 27,392 and 38,594 (2026-10-29).
+    assert.isAtMost(serializedToolCharacters, 27_392);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      37_269,
+      38_594,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

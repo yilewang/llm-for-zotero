@@ -713,6 +713,12 @@ export function createSearchLiteratureReviewAction(
   }
 
   const normalizedArgs = normalizeSearchReviewArgs(args);
+  // A literature review's card asks whether to import the ticked papers and
+  // cite them, or to cite them without importing.
+  const forLiteratureReview =
+    (result.content as { forLiteratureReview?: unknown })
+      .forLiteratureReview === true;
+  const submitActionIds = forLiteratureReview ? ["cite", "import"] : ["import"];
   return {
     toolName: "literature_review",
     mode: "review",
@@ -731,10 +737,30 @@ export function createSearchLiteratureReviewAction(
     ]
       .filter(Boolean)
       .join("\n"),
-    confirmLabel: "Import selected",
-    selectionAction: { fieldId: "selectedPaperIds", verb: "Import" },
+    confirmLabel: forLiteratureReview
+      ? "Import and cite selected"
+      : "Import selected",
+    selectionAction: {
+      fieldId: "selectedPaperIds",
+      verb: forLiteratureReview ? "Import and cite" : "Import",
+    },
     cancelLabel: "Cancel",
-    actions: getSearchActionButtons(prepared.kind),
+    actions: forLiteratureReview
+      ? [
+          {
+            id: "cite",
+            label: "Cite {count} without importing",
+            style: "secondary" as const,
+            footer: true,
+          },
+          {
+            id: "import",
+            label: "Import and cite selected",
+            style: "primary" as const,
+          },
+          { id: "cancel", label: "Cancel", style: "secondary" as const },
+        ]
+      : getSearchActionButtons(prepared.kind),
     defaultActionId: "import",
     cancelActionId: "cancel",
     fields: [
@@ -767,8 +793,11 @@ export function createSearchLiteratureReviewAction(
           (result.content as { outcome?: string }).outcome === "search_failed"
             ? "Retry finding more"
             : `Find ${Number((result.content as { batchSize?: number }).batchSize) || 5} more`,
-        minSelectedByAction: [{ actionId: "import", min: 1 }],
-        visibleForActionIds: ["import"],
+        minSelectedByAction: submitActionIds.map((actionId) => ({
+          actionId,
+          min: 1,
+        })),
+        visibleForActionIds: submitActionIds,
       },
     ],
   };

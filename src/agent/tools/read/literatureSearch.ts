@@ -4,6 +4,7 @@ import type {
   AgentToolContext,
   AgentToolDefinition,
   AgentTraceDetail,
+  AgentToolGuidance,
 } from "../../types";
 import {
   isOpenAlexRateLimit,
@@ -18,6 +19,7 @@ import { ToolInputRejection } from "../execution/failure";
 import { canShowLiteratureReview } from "./reviewLiterature";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
+import { outsidePaperId } from "../../context/outsidePaperRecords";
 import { neverSelected } from "../guidance";
 import {
   buildOutsideSearchReasonDetail,
@@ -77,6 +79,12 @@ type LiteratureSearchInput = {
   limit?: number;
   /** Discovery: the number of papers the user asked for. */
   count?: number;
+  /**
+   * Discovery: the papers are candidates for a literature review the Agent
+   * will write, so the card asks whether to import and cite them or to cite
+   * them without importing.
+   */
+  forLiteratureReview?: true;
   libraryID?: number;
   /**
    * The call claims need:'host_action': a host action (Discover related)
@@ -127,9 +135,7 @@ function literatureQueryLabel(input: LiteratureSearchInput): string {
   return `${input.mode} for ${seed}${source}`;
 }
 
-export const LITERATURE_SEARCH_GUIDANCE: NonNullable<
-  AgentToolDefinition["guidance"]
-> = {
+export const LITERATURE_SEARCH_GUIDANCE: AgentToolGuidance = {
   matches: neverSelected,
   instruction:
     LITERATURE_WORKFLOW_GUIDANCE +
@@ -254,7 +260,7 @@ export function createLiteratureSearchTool(
     spec: {
       name: "literature_search",
       description:
-        "Search scholarly sources outside the library. Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something, and explicit imports (then library_import). Use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently. To read a paper's abstract or full text, use literature_read. workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata. " +
+        "Search scholarly sources outside the library. Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something, and explicit imports (then library_import). Use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently. A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true. To read a paper's abstract or full text, use literature_read. workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata. " +
         OUTSIDE_SEARCH_NEED_SENTENCE +
         `; ${REVIEW_SEARCH_NEED_CLAUSE}; mode:'metadata' needs none.`,
       inputSchema: {
@@ -302,6 +308,11 @@ export function createLiteratureSearchTool(
             maximum: MAX_DISCOVERY_COUNT,
             description:
               "workflow:'review': papers the user asked for, five when unspecified.",
+          },
+          forLiteratureReview: {
+            type: "boolean",
+            description:
+              "workflow:'review': true when the papers are candidates for a literature review you will write.",
           },
           libraryID: { type: "number" },
           ...OUTSIDE_SEARCH_NEED_PROPERTIES,
@@ -463,6 +474,11 @@ export function createLiteratureSearchTool(
         ...(workflow === "review" && mode !== "metadata"
           ? { need: args.need, gap: args.gap }
           : {}),
+        ...(workflow === "review" &&
+        mode !== "metadata" &&
+        args.forLiteratureReview === true
+          ? { forLiteratureReview: true as const }
+          : {}),
       });
     },
     planInvocation: (input, context) => {
@@ -511,7 +527,7 @@ export function createLiteratureSearchTool(
         }
         throw error;
       }
-      const content = {
+      const content: Record<string, unknown> = {
         workflow: input.mode === "metadata" ? input.workflow : "answer",
         mode: input.mode,
         ...((results && typeof results === "object"
@@ -519,6 +535,19 @@ export function createLiteratureSearchTool(
           : { results }) as object),
       };
       if (input.mode === "metadata") return content;
+      // Each paper's paperId: a document cites an outside paper by it.
+      if (Array.isArray(content.results)) {
+        content.results = content.results.map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry))
+            return entry;
+          const paperId = outsidePaperId(
+            entry as Record<string, unknown>,
+            [],
+            context.request,
+          );
+          return paperId ? { ...entry, paperId } : entry;
+        });
+      }
       // Route explicit imports only where the caller can open the card (MCP
       // never offers literature_review).
       return identifyLiteratureCandidates(
@@ -530,6 +559,7 @@ export function createLiteratureSearchTool(
         turn
           ? buildOutsideSearchNote(turn, "scholarly")
           : OUTSIDE_SEARCH_STOP_NOTE,
+        input.forLiteratureReview,
       );
     },
     // A temporary side chat is read-only: its Apply would be refused, so it

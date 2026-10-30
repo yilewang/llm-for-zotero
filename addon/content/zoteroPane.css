@@ -13540,6 +13540,11 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   cursor: pointer;
 }
 
+/* " · Not in library" after an outside paper's References entry. */
+.llm-plan-document-outside-marker {
+  color: var(--fill-secondary);
+}
+
 .llm-plan-document-coverage {
   margin-top: 13px;
   padding-top: 10px;

@@ -19,10 +19,11 @@ import {
   loadPlanDocument,
   updateDocumentActionState,
 } from "./store";
-import type {
-  DocumentActionState,
-  DocumentNoteBinding,
-  PlanDocument,
+import {
+  isOutsideCitationSource,
+  type DocumentActionState,
+  type DocumentNoteBinding,
+  type PlanDocument,
 } from "./types";
 import { expandNewCitationTokens } from "../../services/notes/noteCitations";
 import {
@@ -95,7 +96,11 @@ function resolveItemByKey(
   return Zotero.Items.getByLibraryAndKey(libraryID, itemKey) || null;
 }
 
-function citedItems(document: PlanDocument): Array<{
+/**
+ * The Zotero items a document cites, once each, in citation order: the
+ * candidates for its saved note's parent.
+ */
+export function documentCitedItems(document: PlanDocument): Array<{
   libraryID: number;
   itemKey: string;
 }> {
@@ -103,6 +108,8 @@ function citedItems(document: PlanDocument): Array<{
   const out: Array<{ libraryID: number; itemKey: string }> = [];
   for (const cluster of document.citationBundle.clusters) {
     for (const source of cluster.sources) {
+      // An outside paper has no Zotero item to be a note's parent.
+      if (isOutsideCitationSource(source)) continue;
       const key = `${source.libraryID}:${source.itemKey}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -279,7 +286,7 @@ async function saveDocumentNote(
       );
   }
 
-  const cited = citedItems(document);
+  const cited = documentCitedItems(document);
   const singleParent = target
     ? Zotero.Items.get(target.parentItemId)
     : cited.length === 1

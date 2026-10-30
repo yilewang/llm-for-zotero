@@ -37,6 +37,7 @@ import {
   type OutcomeModelMark,
 } from "../../loop/outcomes";
 import { isExplicitContinueCommand } from "../../continuation/continueCommand";
+import { skillGuidance } from "../guidance";
 
 type ExpectedEffect = "read" | "artifact" | "mutation" | "reasoning" | "digest";
 
@@ -838,6 +839,61 @@ export function applyOrdinaryTaskUpdates(
   }
 }
 
+/**
+ * The skills' part, digest, and retry rules. They live here, not in the skill
+ * bodies, because task_update is the in-plugin Agent's own tool: an external
+ * runtime (Codex reading SKILL.md, Claude Code through load_skill) never sees
+ * it, so a body that named it would send that runtime to a tool it lacks
+ * (#541). Each item reaches the plugin's Agent only with its skill active.
+ * The rule for when a review takes a digest or a read part lives in
+ * task_update's description, because it holds with or without the skill.
+ */
+export const LITERATURE_REVIEW_PARTS_GUIDANCE = skillGuidance(
+  "literature-review",
+  [
+    "Literature review parts: when task_update is available, these rules take priority over the skill's Read step.",
+    "In your first step, declare the parts with `task_update`.",
+    "When the user asked for something per paper (summaries, each paper's method, a table with a row per paper), declare a digest part, and do not also declare a read part over the same papers.",
+    "Declare a review's digest part as `{ taskId:'papers', description:'For the review question \"<question>\": summarize each paper and judge how it bears on the question', expectedEffect:'digest', scope:true }` (or explicit `targetIds`).",
+    "Then declare the review (`expectedEffect:'artifact'`) and, only when the user asked to save it, the note (`expectedEffect:'mutation'`, `expectedCapability:'zotero.notes'`).",
+    "The host marks each part done from the tools' results.",
+    "Pass the `taskId` of the review part to `submit_document`.",
+    "List each paper you leave out of an answer without a document under `excluded` in `task_update`, with a one-sentence reason.",
+  ].join(" "),
+);
+
+export const LITERATURE_REVIEW_DIGEST_GUIDANCE = skillGuidance(
+  "literature-review",
+  [
+    "Literature review digest results: each result the host returns for a digest part has the answer to the part's description, a relevance line when the description names a question, facets, verified quotes with section labels, gaps, and a handle to the digest record.",
+    "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview or full mode.",
+    'A paper that failed with "No readable text" has no text to read: name it as not read, and do not retry it, read it with `paper_read`, or look for it outside the library.',
+    "If the host reports other digest failures, declare the part again once with `targetIds` of those papers only.",
+    "Then a paper whose digest failed twice may be read with an overview `paper_read` instead; name it as not read only if that read fails too.",
+    "If the part is still open after a Stop and the user says continue, call `task_update` again with the same `taskId` and no description to finish the remaining papers.",
+    "In the 'Paper summaries' section, write each paper's paragraph from that paper's digest.",
+    "In Scope and limitations, name each paper whose digest failed and the reason the host gave.",
+  ].join(" "),
+);
+
+export const COMPARE_PAPERS_DIGEST_GUIDANCE = skillGuidance(
+  "compare-papers",
+  [
+    "Compare papers: when task_update is available, these rules take priority over reading the papers with `paper_read`.",
+    "For three or more papers, declare a digest part first (`task_update` with `expectedEffect:'digest'` over the papers) whose description names the comparison dimensions, for example \"For each paper, report: question, species or system, method, main finding\".",
+    "Each result returns facets with those labels; they become the comparison's rows.",
+    "Read further only for a dimension the results leave open.",
+  ].join(" "),
+);
+
+export const REORGANIZE_LIBRARY_PARTS_GUIDANCE = skillGuidance(
+  "reorganize-library",
+  [
+    "Sort papers into folders or tags: declare the changes with `task_update` as one part: `expectedEffect:'mutation'`, `expectedCapability:'zotero.collections'` for folders or `'zotero.tags'` for tags, and `scope:true` when the turn's paper scope is exactly the papers to sort, or their `targetIds` otherwise.",
+    "Declare no read part for the survey: metadata and abstracts never complete a part that reads papers.",
+  ].join(" "),
+);
+
 export type TaskUpdateToolDeps = {
   /**
    * The host that runs a declared digest part. Without it a digest part is
@@ -862,7 +918,7 @@ export function createTaskUpdateTool(
     spec: {
       name: "task_update",
       description:
-        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason.",
+        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason. A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -883,6 +939,12 @@ export function createTaskUpdateTool(
      * trace's own plumbing.
      */
     presentation: { hiddenInTrace: true },
+    guidance: [
+      LITERATURE_REVIEW_PARTS_GUIDANCE,
+      LITERATURE_REVIEW_DIGEST_GUIDANCE,
+      COMPARE_PAPERS_DIGEST_GUIDANCE,
+      REORGANIZE_LIBRARY_PARTS_GUIDANCE,
+    ],
     isAvailable: (request) =>
       request.executionContext?.permissionOwner === "original_agent",
     validate: validateTaskUpdateInput,

@@ -7889,6 +7889,104 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("shows a footer action as its own counted button beside the primary one", function () {
+    const resolutions: AgentConfirmationResolution[] = [];
+    const action: AgentPendingAction = {
+      toolName: "literature_review",
+      mode: "review",
+      title: "Relevant papers",
+      confirmLabel: "Import and cite selected",
+      selectionAction: { fieldId: "selectedPaperIds", verb: "Import and cite" },
+      cancelLabel: "Cancel",
+      actions: [
+        {
+          id: "cite",
+          label: "Cite {count} without importing",
+          style: "secondary",
+          footer: true,
+        },
+        { id: "import", label: "Import and cite selected", style: "primary" },
+        { id: "cancel", label: "Cancel", style: "secondary" },
+      ],
+      defaultActionId: "import",
+      cancelActionId: "cancel",
+      fields: [
+        {
+          type: "paper_result_list",
+          id: "selectedPaperIds",
+          label: "Papers",
+          rows: [
+            { id: "doi:one", title: "One", checked: true },
+            { id: "doi:two", title: "Two", checked: true },
+          ],
+          loadMoreActionId: "find_more",
+          loadMoreLabel: "Find 2 more",
+          minSelectedByAction: [
+            { actionId: "cite", min: 1 },
+            { actionId: "import", min: 1 },
+          ],
+          visibleForActionIds: ["cite", "import"],
+        },
+      ],
+    };
+    assert.deepEqual(getPendingActionButtonLayout(action), {
+      hasActionChooser: false,
+      showsFooterExecuteButton: true,
+    });
+    const card = renderPendingActionCard(
+      fakeDocument,
+      { requestId: "outside-choice", action },
+      (_requestId, resolution) => {
+        resolutions.push(resolution);
+      },
+    ) as unknown as FakeElement;
+    const buttons = card.findAllByTag("button");
+    const cite = buttons.find((button) => button.dataset.actionId === "cite");
+    const execute = buttons.find((button) => button.dataset.kind === "save");
+    assert.notExists(
+      buttons.find((button) => button.dataset.kind === "alternatives"),
+      "no Alternatives toggle hides the second choice",
+    );
+    assert.exists(buttons.find((button) => button.dataset.kind === "cancel"));
+    assert.equal(cite?.textContent, "Cite 2 without importing");
+    assert.equal(
+      cite?.className,
+      "llm-agent-hitl-btn llm-agent-hitl-btn-secondary",
+    );
+    assert.equal(execute?.textContent, "Import and cite 2 papers");
+    assert.equal(execute?.dataset.actionId, "import");
+    const footer = card.findByClass("llm-agent-hitl-footer-primary");
+    assert.deepEqual(
+      footer?.children.map((child) => (child as FakeElement).dataset.actionId),
+      ["cite", "import"],
+    );
+
+    // Both submit choices count and need the ticked papers.
+    const boxes = card
+      .findAllByTag("input")
+      .filter((input) => input.className === "llm-search-results-checkbox");
+    boxes[0].checked = false;
+    boxes[0].dispatchFakeEvent("change");
+    assert.equal(cite?.textContent, "Cite 1 without importing");
+    assert.equal(execute?.textContent, "Import and cite 1 paper");
+    boxes[1].checked = false;
+    boxes[1].dispatchFakeEvent("change");
+    assert.isTrue(cite?.disabled);
+    assert.isTrue(execute?.disabled);
+    boxes[1].checked = true;
+    boxes[1].dispatchFakeEvent("change");
+    assert.isFalse(cite?.disabled);
+
+    cite?.dispatchFakeEvent("click");
+    assert.deepEqual(resolutions, [
+      {
+        approved: true,
+        actionId: "cite",
+        data: { selectedPaperIds: ["doi:two"] },
+      },
+    ]);
+  });
+
   it("wraps pending review actions in a single filled shell", function () {
     const action: AgentPendingAction = {
       toolName: "move_to_collection",

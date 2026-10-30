@@ -34,6 +34,8 @@ import type {
   ExecutionTaskStatus,
 } from "../src/agent/types";
 import { createSubmitDocumentTool } from "../src/agent/tools/control/submitDocument";
+import { paperSourceId } from "../src/webAccess/paperSources";
+import { setOutsidePaperPrefetchLookup } from "../src/agent/context/outsidePaperRecords";
 import {
   initPlanDocumentStore,
   loadPlanDocument,
@@ -552,6 +554,90 @@ describe("agent tool execution collaborator", function () {
         "a read finalizes no material",
       );
     } finally {
+      restoreDb();
+    }
+  });
+
+  it("records the outside papers literature_search and literature_read return on the run's request", async function () {
+    const restoreDb = installMockDb();
+    const prefetched: string[] = [];
+    setOutsidePaperPrefetchLookup(async (doi) => {
+      prefetched.push(doi);
+      return { volume: "7" };
+    });
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      const register = (name: string, content: unknown) =>
+        registry.register({
+          spec: {
+            name,
+            description: name,
+            inputSchema: { type: "object" },
+            executionClass: "read",
+            workCategory: "retrieval",
+          },
+          validate: (args: unknown) => ({ ok: true, value: args as never }),
+          execute: async () => ({ content }),
+        } as never);
+      register("literature_search", {
+        mode: "search",
+        results: [
+          {
+            title: "Drift",
+            authors: ["Ada Lovelace"],
+            year: 2021,
+            doi: "10.1000/drift",
+          },
+          { title: "Stable", authors: [], arxivId: "2101.00001" },
+        ],
+      });
+      register("literature_read", {
+        paper: {
+          title: "Drift",
+          authors: ["Ada Lovelace"],
+          doi: "10.1000/drift",
+        },
+        fullText: { status: "open_access" },
+        passages: [{ section: "1 Results", text: "Tuning drifts." }],
+      });
+      register("web_search", {
+        results: [{ title: "A blog", url: "https://example.com/blog" }],
+      });
+      const harness = await createHarness(registry);
+      const toolExecution = createToolExecution(harness.deps);
+      for (const [index, name] of [
+        "literature_search",
+        "literature_read",
+        "web_search",
+      ].entries()) {
+        await toolExecution.executeToolWorkflow(
+          { id: `call-${index}`, name, arguments: {} },
+          index + 1,
+          { modelCallId: `call-${index}` },
+        );
+      }
+      assert.deepEqual(
+        harness.request.outsidePaperRecords?.map((paper) => [
+          paper.paperId,
+          paper.depth,
+        ]),
+        [
+          [paperSourceId("doi:10.1000/drift"), "body"],
+          [paperSourceId("arxiv:2101.00001"), "metadata"],
+        ],
+        "one record per paper at its deepest read; web pages are never recorded",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(
+        prefetched,
+        ["10.1000/drift"],
+        "the paper read in full is looked up in the background; search rows are not",
+      );
+      assert.deepEqual(harness.request.outsidePaperLookupCache, {
+        "10.1000/drift": { volume: "7" },
+      });
+    } finally {
+      setOutsidePaperPrefetchLookup(null);
       restoreDb();
     }
   });

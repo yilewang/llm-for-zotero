@@ -7,6 +7,7 @@ import type {
   AgentToolDefinition,
   AgentToolArtifact,
   AgentToolResult,
+  AgentToolGuidance,
 } from "../../types";
 import type { QuoteCitation } from "../../../shared/types";
 import { parseDocumentReferences } from "../../../shared/documentReferences";
@@ -1060,7 +1061,7 @@ function readPaperReadModeFromArgs(args: unknown): string {
   return typeof mode === "string" ? mode.trim() : "";
 }
 
-type PaperReadGuidance = NonNullable<AgentToolDefinition["guidance"]>;
+type PaperReadGuidance = AgentToolGuidance;
 
 /**
  * The reading rules apply whenever the turn can reach paper_read: a paper, a

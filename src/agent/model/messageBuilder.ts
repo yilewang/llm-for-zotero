@@ -22,6 +22,7 @@ import {
   type AgentTurnMemory,
 } from "../store/conversationMemory";
 import { buildSkillInventory, getAllSkills } from "../skills";
+import { toolGuidanceItems } from "../tools/guidance";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
@@ -543,11 +544,11 @@ function collectMatchingToolGuidance(
     ...guidanceContext
   } = request;
   for (const tool of tools) {
-    const guidance = tool.guidance;
-    if (!guidance) continue;
-    if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
-    const instruction = guidance.instruction.trim();
-    if (instruction) instructions.add(instruction);
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
+      const instruction = guidance.instruction.trim();
+      if (instruction) instructions.add(instruction);
+    }
   }
   return [...instructions];
 }

@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { toolGuidanceItems } from "../src/agent/tools/guidance";
+import { MCP_TOOL_DESCRIPTION_NOTES } from "../src/agent/mcp/server";
 import { readFileSync } from "node:fs";
 import {
   AGENT_PERSONA_INSTRUCTIONS,
@@ -9,6 +11,7 @@ import { BUILTIN_SKILL_FILES } from "../src/agent/skills";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES } from "../src/agent/externalBackendBridge";
 import { CODEX_SEARCH_TOOL_ROUTES } from "../src/codexAppServer/nativeClient";
+import { formatMaterialOutcomeRecoveryLines } from "../src/agent/execution/materialOutcomes";
 
 /**
  * Every behavioral prompt rule has one owner. An owner is one tool (its
@@ -16,7 +19,8 @@ import { CODEX_SEARCH_TOOL_ROUTES } from "../src/codexAppServer/nativeClient";
  * persona (all its sections, the shared contracts it carries and the plugin
  * Agent's search-tool map), one shipped skill file, the message
  * builder's hard-coded prompt sections, the whole-library turn line, or
- * the Claude Code bridge's or Codex's search-tool line. A marker phrase
+ * the Claude Code bridge's or Codex's search-tool line, or the turn-start
+ * block that names the conversation's unsaved material. A marker phrase
  * distinctive for a rule must appear in exactly the expected owners.
  */
 function stubDependency(): never {
@@ -49,7 +53,9 @@ function collectOwnerTexts(): Map<string, string> {
       [
         tool.spec.description,
         modelDescriptions.get(tool.spec.name) || "",
-        tool.guidance?.instruction || "",
+        ...toolGuidanceItems(tool.guidance).map(
+          (guidance) => guidance.instruction,
+        ),
       ].join("\n"),
     );
   }
@@ -62,6 +68,30 @@ function collectOwnerTexts(): Map<string, string> {
   // Each external runtime maps the search families to its own tools.
   owners.set("runtime:claudeBridge", CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES);
   owners.set("runtime:codex", CODEX_SEARCH_TOOL_ROUTES);
+  // The block names one document that cites outside papers, so its import
+  // line is rendered.
+  owners.set(
+    "turnRecovery:materialOutcomes",
+    formatMaterialOutcomeRecoveryLines([
+      {
+        materialRef: {
+          documentId: "run-1:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:review",
+        },
+        materialTitle: "Review",
+        runId: "run-1",
+        status: "finalized",
+        outsidePaperCount: 2,
+      },
+    ]).join("\n"),
+  );
+  // MCP clients never see the native guidance; this note is the MCP surface's
+  // own owner of the import-by-document rule.
+  owners.set(
+    "mcp:library_import",
+    MCP_TOOL_DESCRIPTION_NOTES.get("library_import") || "",
+  );
   owners.set(
     "messageBuilder",
     readFileSync(
@@ -175,9 +205,83 @@ describe("prompt rules have a single owner", function () {
       owner: "persona",
     },
     {
-      rule: "a review is never written from outside abstracts",
-      marker: "outside abstracts",
+      // With or without the literature-review skill, and with nothing
+      // attached, because Task progress depends on the digest part.
+      rule: "a review of more than four papers declares a digest part",
+      marker: "more than four papers declares a digest part",
+      owner: "tool:task_update",
+    },
+    {
+      // The plugin Agent reads the registry text, MCP clients the same text
+      // in tools/list; both belong to the one tool.
+      rule: "a literature review is always delivered as a document",
+      marker: "A literature review is always delivered with this tool",
+      owner: "tool:submit_document",
+    },
+    {
+      // The card is offered for a review that needs outside papers, a mixed
+      // review included, as skill v17 says (2026-10-29).
+      rule: "a review that needs outside papers shows the card",
+      marker:
+        "or for a literature review that needs papers outside the library, including one that mixes library and outside papers",
+      owner: "persona",
+    },
+    {
+      // A later import relinks the document in a new version (maintainer
+      // decision, 2026-10-29).
+      rule: "a document's outside papers are imported later into a new version",
+      marker:
+        "imports the outside papers that document cites, then publishes a new version of it that cites the imported items",
+      owner: "tool:library_import",
+    },
+    {
+      // A later import request names the document, not the DOIs it cites
+      // (live run, 2026-10-29: the Agent imported ten DOIs and the review
+      // kept citing them as outside papers).
+      rule: "a document's outside papers are imported by documentId, not by DOI",
+      marker: "with that document's documentId, not their DOIs",
+      owner: "tool:library_import",
+    },
+    {
+      // MCP clients get the same rule as a note on the tool's MCP description.
+      rule: "an MCP client imports a document's outside papers by documentId, not by DOI",
+      marker: "with its documentId, not their DOIs",
+      owner: "mcp:library_import",
+    },
+    {
+      // The turn-start block only points at the call for one document; the
+      // rule above says why.
+      rule: "an unsaved document that cites outside papers names its import call",
+      marker: "if the user asks to import them",
+      owner: "turnRecovery:materialOutcomes",
+    },
+    {
+      // The card asks for a review; the skill says how each answer is read
+      // and cited (maintainer decision, 2026-10-29). Two markers, one per
+      // way of wording the choice.
+      rule: "a review's outside papers go through the card's import choice",
+      marker: "import and cite",
       owner: "skill:literature-review.md",
+    },
+    {
+      rule: "a review's outside papers go through the card's cite choice",
+      marker: "cite them without importing",
+      owner: "skill:literature-review.md",
+    },
+    {
+      rule: "a review finds outside papers with the review flag",
+      marker: "forLiteratureReview",
+      owner: "tool:literature_search",
+    },
+    {
+      rule: "web pages are never cited",
+      marker: "web pages are never cited",
+      owner: "tool:submit_document",
+    },
+    {
+      rule: "an unclear literature review is answered in chat",
+      marker: "If it is unclear whether the answer is a literature review",
+      owner: "tool:submit_document",
     },
     {
       rule: "the Claude Code bridge searches the web with its own tools",
@@ -223,6 +327,7 @@ describe("prompt rules have a single owner", function () {
     assert.isTrue(owners.has("turnContext:wholeLibrary"));
     assert.isTrue(owners.has("runtime:claudeBridge"));
     assert.isTrue(owners.has("runtime:codex"));
+    assert.isTrue(owners.has("turnRecovery:materialOutcomes"));
   });
 
   it("keeps no routing copy outside the search routing contract", function () {

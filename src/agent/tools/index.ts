@@ -27,7 +27,7 @@ import { AgentToolRegistry } from "./registry";
 import { ActionContractService } from "../contracts/actionContract";
 import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
 import { PdfPageService } from "../services/pdfPageService";
-import type { AgentToolDefinition } from "../types";
+import type { AgentToolDefinition, AgentToolGuidance } from "../types";
 import { createRequestUserInputTool } from "./control/requestUserInput";
 import { createSubmitDocumentTool } from "./control/submitDocument";
 import { createTaskUpdateTool } from "./control/taskUpdate";
@@ -45,6 +45,7 @@ import { createApplyTagsTool } from "./write/applyTags";
 import { createAttachmentUpdateTool } from "./write/attachmentUpdate";
 import { createCollectionUpdateTool } from "./write/collectionUpdate";
 import { createFileIOTool } from "./write/fileIO";
+import { createImportDocumentCitationsTool } from "./write/importDocumentCitations";
 import { createImportIdentifiersTool } from "./write/importIdentifiers";
 import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import {
@@ -76,7 +77,7 @@ type BuiltInAgentToolDeps = {
   retrievalService: RetrievalService;
 };
 
-type ToolGuidance = NonNullable<AgentToolDefinition["guidance"]>;
+type ToolGuidance = AgentToolGuidance;
 
 const STRING_ARRAY_SCHEMA = {
   type: "array" as const,
@@ -120,7 +121,8 @@ const LIBRARY_IMPORT_GUIDANCE: ToolGuidance = {
     userTextSignal(request, (signals) => signals.mentionsImport),
   instruction:
     "Use library_import with kind:'files' to import local files from the user's filesystem into Zotero. Use only paths the user gave or that you resolved; when one is missing, find it or ask. Importing files does not authorize running commands. A bibliography file (.ris, .bib, .enw, .nbib, RDF) has its references imported as real items; other files are attached, and PDFs go through Zotero's metadata lookup so they arrive with a title and authors. Optionally specify a targetCollectionId to file the results into a collection." +
-    "\n\nkind:'identifiers' resolves DOIs, ISBNs, PMIDs, arXiv IDs and ADS bibcodes. It cannot import from a page URL — Zotero has no translator path for that — so take the DOI or arXiv ID off the page instead.",
+    "\n\nkind:'identifiers' resolves DOIs, ISBNs, PMIDs, arXiv IDs and ADS bibcodes. It cannot import from a page URL — Zotero has no translator path for that — so take the DOI or arXiv ID off the page instead." +
+    "\n\nTo import the outside papers a document of this chat cites, call kind:'document_citations' with that document's documentId, not their DOIs; it also publishes a new version of the document that cites the imported items.",
 };
 
 const LIBRARY_DELETE_GUIDANCE: ToolGuidance = {
@@ -452,13 +454,14 @@ function createLibraryImportTool(tools: {
   importIdentifiers: AgentToolDefinition<any, any>;
   importLocalFiles: AgentToolDefinition<any, any>;
   createItems: AgentToolDefinition<any, any>;
+  importDocumentCitations: AgentToolDefinition<any, any>;
 }): AgentToolDefinition<any, unknown> {
   return createDelegatingTool({
     name: "library_import",
     label: "Import to Library",
     traceIcon: "edit",
     description:
-      "Add items to Zotero. kind:'identifiers' for DOI, ISBN, arXiv ID, PMID, or ADS bibcode lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
+      "Add items to Zotero. kind:'identifiers' for DOI, ISBN, arXiv ID, PMID, or ADS bibcode lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset). kind:'document_citations' with a documentId imports the outside papers that document cites, then publishes a new version of it that cites the imported items.",
     // Adding items to Zotero. A files-mode call resolves to the local-files delegate
     // and is labelled external_system for that call.
     executionClass: "external_effect",
@@ -470,7 +473,12 @@ function createLibraryImportTool(tools: {
       properties: {
         kind: {
           type: "string",
-          enum: ["identifiers", "files", "manual"],
+          enum: ["identifiers", "files", "manual", "document_citations"],
+        },
+        documentId: {
+          type: "string",
+          description:
+            "For kind:'document_citations': the document whose outside papers to import.",
         },
         identifiers: {
           ...STRING_ARRAY_SCHEMA,
@@ -525,7 +533,12 @@ function createLibraryImportTool(tools: {
       if (args.kind === "manual") {
         return ok({ tool: tools.createItems, args: delegateArgs });
       }
-      return fail("kind must be one of: identifiers, files, manual");
+      if (args.kind === "document_citations") {
+        return ok({ tool: tools.importDocumentCitations, args: delegateArgs });
+      }
+      return fail(
+        "kind must be one of: identifiers, files, manual, document_citations",
+      );
     },
   });
 }
@@ -688,6 +701,9 @@ export function createBuiltInToolRegistry(
       importIdentifiers,
       importLocalFiles,
       createItems,
+      importDocumentCitations: createImportDocumentCitationsTool(
+        deps.zoteroGateway,
+      ),
     }),
   );
   registry.register(

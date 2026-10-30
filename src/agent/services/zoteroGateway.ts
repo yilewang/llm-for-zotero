@@ -116,7 +116,12 @@ import {
   type DuplicateGroup,
   type RelatedPaperResult,
 } from "./zotero/itemCapability";
-import { SettingsCapability } from "./zotero/settingsCapability";
+import {
+  SettingsCapability,
+  type OutsideCslItem,
+  type StructuredBibliographyEntry,
+  type StructuredCitationItem,
+} from "./zotero/settingsCapability";
 import { TagCapability, type BatchTagItemResult } from "./zotero/tagCapability";
 
 /**
@@ -146,6 +151,11 @@ export type {
   SaveAnswerToNoteResult,
 } from "./zotero/noteCapability";
 export type { BatchTagItemResult } from "./zotero/tagCapability";
+export type {
+  OutsideCslItem,
+  StructuredBibliographyEntry,
+  StructuredCitationItem,
+} from "./zotero/settingsCapability";
 export type {
   DuplicateGroup,
   RelatedPaperResult,
@@ -1089,8 +1099,9 @@ export class ZoteroGateway {
   formatStructuredCitations(params: {
     clusters: Array<{
       citationId: string;
-      items: Array<{ itemId: number; pageIndex?: number }>;
+      items: StructuredCitationItem[];
     }>;
+    outsideItems?: readonly OutsideCslItem[];
     styleId?: string;
     locale?: string;
   }): {
@@ -1098,11 +1109,7 @@ export class ZoteroGateway {
     styleTitle: string;
     locale: string;
     clusters: Array<{ citationId: string; text: string; html: string }>;
-    bibliographyEntries: Array<{
-      itemId: number;
-      text: string;
-      html: string;
-    }>;
+    bibliographyEntries: StructuredBibliographyEntry[];
   } {
     return this.settingsCapability.formatStructuredCitations(params);
   }

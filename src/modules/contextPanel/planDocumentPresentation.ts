@@ -1,8 +1,14 @@
 import { appLogger } from "../../core/logging";
-import type {
-  PlanCitationSource,
-  PlanDocument,
+import {
+  isOutsideBibliographyEntry,
+  isOutsideCitationSource,
+  type OutsidePaperSnapshot,
+  type PlanCitationSource,
+  type PlanDocument,
+  type ZoteroCitationSource,
 } from "../../agent/documents/types";
+import { outsidePaperUri } from "../../agent/documents/outsidePaperCitations";
+import { launchInDefaultBrowser } from "./webSourcesSidePanel";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { t } from "../../utils/i18n";
 import {
@@ -79,6 +85,8 @@ export function buildDocumentCitationContext(
   }
   for (const cluster of document.citationBundle.clusters) {
     for (const source of cluster.sources) {
+      // An outside paper is not a Zotero paper the panel can scope to.
+      if (isOutsideCitationSource(source)) continue;
       const item = Zotero.Items.getByLibraryAndKey(
         source.libraryID,
         source.itemKey,
@@ -133,6 +141,7 @@ export function buildDocumentCitationContext(
   // their native links in the citation decorator after sanitization.
   for (const cluster of document.citationBundle.clusters) {
     for (const source of cluster.sources) {
+      if (isOutsideCitationSource(source)) continue;
       const href = planDocumentCitationSourceHref(source);
       displayMarkdown = displayMarkdown
         .split(`](${href})`)
@@ -268,7 +277,7 @@ export function getPlanDocumentItemTitle(
 }
 
 export function planDocumentCitationSourceHref(
-  source: PlanCitationSource,
+  source: ZoteroCitationSource,
 ): string {
   const isUserLibrary =
     source.libraryID === Number(Zotero.Libraries.userLibraryID);
@@ -318,7 +327,7 @@ function selectZoteroLibraryTab(): void {
 }
 
 export async function navigatePlanDocumentCitationSource(
-  source: PlanCitationSource,
+  source: ZoteroCitationSource,
 ): Promise<boolean> {
   const revealSource = (success: boolean): boolean => {
     if (success) Zotero.getMainWindow?.()?.focus?.();
@@ -374,7 +383,7 @@ export async function navigatePlanDocumentCitationSource(
 
 function attachSourceNavigation(
   link: HTMLAnchorElement,
-  source: PlanCitationSource,
+  source: ZoteroCitationSource,
   afterNavigate?: () => void,
 ): void {
   link.addEventListener("click", (event) => {
@@ -390,20 +399,109 @@ function attachSourceNavigation(
   });
 }
 
+/** Every form an outside paper's link takes in the rendered document. */
+function outsidePapersByHref(
+  papers: readonly OutsidePaperSnapshot[],
+): Map<string, { paper: OutsidePaperSnapshot; href: string }> {
+  const byHref = new Map<
+    string,
+    { paper: OutsidePaperSnapshot; href: string }
+  >();
+  for (const paper of papers) {
+    const href = outsidePaperUri(paper);
+    if (!href) continue;
+    byHref.set(href, { paper, href });
+    try {
+      byHref.set(decodeURI(href), { paper, href });
+    } catch {
+      // The escaped URI remains the canonical lookup key.
+    }
+  }
+  return byHref;
+}
+
+/** An outside paper's link opens its DOI or page in the user's browser. */
+function attachOutsidePaperLink(
+  link: HTMLAnchorElement,
+  paper: OutsidePaperSnapshot,
+  href: string,
+): void {
+  link.setAttribute("href", href);
+  link.dataset.llmPlanCitationSource = "outside";
+  link.title = paper.doi ? "Open at doi.org" : "Open paper page";
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    launchInDefaultBrowser(href);
+  });
+}
+
+const OUTSIDE_REFERENCE_MARKER_CLASS = "llm-plan-document-outside-marker";
+
+/**
+ * After an outside paper's References entry, a muted "Not in library". It
+ * is drawn here only: the stored Markdown, copies, notes and exports never
+ * carry it.
+ */
+function markOutsideReference(params: {
+  doc: Document;
+  link: HTMLAnchorElement;
+  document: PlanDocument;
+  paperId: string;
+}): void {
+  // A References entry is a list item's link (a loose list wraps it in <p>).
+  const tag = (element: Element | null | undefined) =>
+    element?.tagName?.toLowerCase();
+  const parent = params.link.parentElement;
+  if (
+    !parent ||
+    (tag(parent) !== "li" &&
+      !(tag(parent) === "p" && tag(parent.parentElement) === "li"))
+  )
+    return;
+  const text = (params.link.textContent || "").replace(/\s+/g, " ").trim();
+  const isEntry = params.document.citationBundle.bibliographyEntries.some(
+    (entry) =>
+      isOutsideBibliographyEntry(entry) &&
+      entry.paperId === params.paperId &&
+      entry.text.replace(/\s+/g, " ").trim() === text,
+  );
+  if (!isEntry) return;
+  const next = params.link.nextSibling as Element | null;
+  if (next?.classList?.contains?.(OUTSIDE_REFERENCE_MARKER_CLASS)) return;
+  const marker = params.doc.createElement("span");
+  marker.className = OUTSIDE_REFERENCE_MARKER_CLASS;
+  marker.textContent = ` \u00b7 ${t("Not in library")}`;
+  parent.insertBefore(marker, params.link.nextSibling);
+}
+
 export function decoratePlanDocumentCitations(params: {
   doc: Document;
   root: HTMLElement;
   document: PlanDocument;
 }): void {
+  const outsideByHref = outsidePapersByHref(
+    params.document.citationBundle.outsidePapers || [],
+  );
+  // Outside papers are decorated by their own links, below.
+  const zoteroSources = (cluster: { sources: readonly PlanCitationSource[] }) =>
+    cluster.sources.filter(
+      (source): source is ZoteroCitationSource =>
+        !isOutsideCitationSource(source),
+    );
   const singleSourceByText = new Map(
     params.document.citationBundle.clusters
-      .filter((cluster) => cluster.sources.length === 1 && cluster.text.trim())
-      .map((cluster) => [cluster.text.trim(), cluster.sources[0]]),
+      .filter(
+        (cluster) =>
+          cluster.sources.length === 1 &&
+          zoteroSources(cluster).length === 1 &&
+          cluster.text.trim(),
+      )
+      .map((cluster) => [cluster.text.trim(), zoteroSources(cluster)[0]]),
   );
-  const sources = params.document.citationBundle.clusters.flatMap(
-    (cluster) => cluster.sources,
-  );
-  const sourceByHref = new Map<string, PlanCitationSource>();
+  const sources =
+    params.document.citationBundle.clusters.flatMap(zoteroSources);
+  const sourceByHref = new Map<string, ZoteroCitationSource>();
   for (const source of sources) {
     const hrefs = [
       planDocumentCitationSourceHref(source),
@@ -427,6 +525,17 @@ export function decoratePlanDocumentCitations(params: {
       decodedHref = decodeURI(href);
     } catch {
       decodedHref = href;
+    }
+    const outside = outsideByHref.get(href) || outsideByHref.get(decodedHref);
+    if (outside) {
+      attachOutsidePaperLink(link, outside.paper, outside.href);
+      markOutsideReference({
+        doc: params.doc,
+        link,
+        document: params.document,
+        paperId: outside.paper.paperId,
+      });
+      continue;
     }
     const source =
       sourceByHref.get(href) ||

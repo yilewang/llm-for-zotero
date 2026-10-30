@@ -1,5 +1,5 @@
 import type { PaperContextRef } from "../../../shared/types";
-import type { AgentToolDefinition } from "../../types";
+import type { AgentToolDefinition, AgentToolGuidance } from "../../types";
 import {
   type LibrarySortKey,
   type LibrarySortOrder,
@@ -22,7 +22,7 @@ import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { buildLibraryListModelView } from "../../services/libraryListModelView";
 import { modelViewRoomTokens } from "./modelViewRoom";
 
-type ToolGuidance = NonNullable<AgentToolDefinition["guidance"]>;
+type ToolGuidance = AgentToolGuidance;
 
 /**
  * Library-level turns: a global (library) conversation, a selected

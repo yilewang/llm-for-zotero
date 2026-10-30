@@ -172,6 +172,8 @@ export type MaterialOutcomeEntry = Readonly<{
   actionId?: string;
   /** Receipt that proved the save, when one did. */
   receiptId?: string;
+  /** How many outside papers the stored document cites; absent when none. */
+  outsidePaperCount?: number;
 }>;
 
 export type DroppedMaterialOutcome = Readonly<{

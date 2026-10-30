@@ -296,6 +296,15 @@ describe("literature_read tool", function () {
       );
       assert.include(result.citation, "https://doi.org/10.1002/hipo.70131");
       assert.include(result.citation, "no [[cite:]] or [[quote:]] anchors");
+      // A document cites it by paperId; Markdown links are for chat.
+      assert.match(
+        result.citation,
+        /^In a chat answer, cite this outside paper/,
+      );
+      assert.include(
+        result.citation,
+        "in a submit_document document, cite it by its paperId.",
+      );
     });
 
     it("reads a non-open-access paper with a PMCID through NCBI efetch", async function () {

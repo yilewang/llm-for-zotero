@@ -9,6 +9,7 @@ import { readAgentConversationMessages } from "../../store/transcriptStore";
 import { fail, ok } from "../shared";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { readTextChunk } from "./textChunk";
+import { skillGuidance } from "../guidance";
 
 /**
  * context_read: exact stored context the prompt no longer carries in full.
@@ -440,6 +441,26 @@ function argsRecord(args: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * The skills' context_read steps. context_read reads in-plugin state an
+ * external runtime does not share, so MCP hides it and the skill bodies do
+ * not name it (#541); each item reaches the plugin's Agent with its skill.
+ */
+export const LITERATURE_REVIEW_DIGEST_HANDLE_GUIDANCE = skillGuidance(
+  "literature-review",
+  "Literature review digest results: when you need a paper's full record, read it with `context_read` `source:'tool_result'` and the handle its digest result carries.",
+);
+
+export const WRITE_NOTE_SOURCE_GUIDANCE = skillGuidance(
+  "write-note",
+  'To save an existing answer unchanged, use `context_read` with `source: "conversation"` only to recover the source identity or exact text; do not regenerate or reformat it.',
+);
+
+export const LIBRARY_ANALYSIS_PAGING_GUIDANCE = skillGuidance(
+  "library-analysis",
+  "Library results: `omitted` counts what a result left out, and `context_read` with its `toolResultHandle` pages the rest when the answer needs it.",
+);
+
 export function createContextReadTool(): AgentToolDefinition<
   ContextReadInput,
   unknown
@@ -505,6 +526,11 @@ export function createContextReadTool(): AgentToolDefinition<
       executionClass: "read",
       workCategory: "retrieval",
     },
+    guidance: [
+      LITERATURE_REVIEW_DIGEST_HANDLE_GUIDANCE,
+      WRITE_NOTE_SOURCE_GUIDANCE,
+      LIBRARY_ANALYSIS_PAGING_GUIDANCE,
+    ],
     validate: validateContextReadInput,
     planInvocation: (input) =>
       readOnlyInvocationPlan({

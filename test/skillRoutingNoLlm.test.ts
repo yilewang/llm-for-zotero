@@ -338,7 +338,9 @@ describe("skill routing without a model call", function () {
         .getTool("load_skill")!
         .execute({ id: "write-note" }, {
           request,
-          isToolVisible: (spec: { name: string }) => spec.name !== "note_write",
+          // Both tools the write-note guidance lives on are MCP-hidden.
+          isToolVisible: (spec: { name: string }) =>
+            !["note_write", "context_read"].includes(spec.name),
         } as unknown as AgentToolContext)) as Record<string, unknown>;
       assert.isTrue(result.found);
       assert.notProperty(result, "toolGuidance");

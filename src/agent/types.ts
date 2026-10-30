@@ -52,6 +52,10 @@ import type {
 } from "./contracts/types";
 import type { AgentActionVerification } from "./contracts/actionVerificationLabels";
 import type { TrustedReadObservation } from "./context/readObservationTypes";
+import type {
+  OutsidePaperLookupCache,
+  OutsidePaperRecord,
+} from "./context/outsidePaperRecords";
 import type { SkillRoutingReceipt } from "./skills/routingTypes";
 import type { LoadedSkillRecord } from "./skills/loadingTypes";
 import type {
@@ -149,6 +153,12 @@ export type AgentPendingActionButton = {
   executionMode?: "immediate" | "edit";
   submitLabel?: string;
   backLabel?: string;
+  /**
+   * A second submit button shown in the footer beside the primary one,
+   * instead of under Alternatives. On a card with a selectionAction,
+   * `{count}` in its label is the number of rows checked.
+   */
+  footer?: boolean;
 };
 
 export type AgentPendingChoiceValue =
@@ -970,6 +980,12 @@ export type AgentRuntimeRequestInput = AgentRequest & {
   documentReadObservations?: readonly TrustedReadObservation[];
   /** Host-observed tool artifacts eligible for direct document embedding. */
   documentArtifactObservations?: readonly AgentToolArtifact[];
+  /** The outside papers literature_search and literature_read returned this run. */
+  outsidePaperRecords?: readonly OutsidePaperRecord[];
+  /** The outside papers the user chose to cite; unset, every recorded one. */
+  outsidePaperSelection?: readonly string[];
+  /** The run's DOI lookups for citing outside papers; shared by reference. */
+  outsidePaperLookupCache?: OutsidePaperLookupCache;
   /** Live model-context state supplied by the runtime to capacity-aware tools. */
   runtimeContextBudget?: Readonly<{
     contextWindowTokens: number;
@@ -1249,6 +1265,11 @@ export type AgentToolReviewResolution =
         arguments: unknown;
         inheritedApproval?: AgentInheritedApproval;
       };
+      /**
+       * Without terminalText the run continues: the model reads the call's
+       * result, with this next step when the call succeeded.
+       */
+      nextStep?: string;
       terminalText?:
         | {
             onSuccess: string;
@@ -1734,7 +1755,8 @@ export type AgentToolModelView = {
 export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
   spec: ToolSpec;
   isAvailable?: (request: AgentRuntimeRequest) => boolean;
-  guidance?: AgentToolGuidance;
+  /** One guidance, or several matched and rendered one by one. */
+  guidance?: AgentToolGuidance | ReadonlyArray<AgentToolGuidance>;
   presentation?: AgentToolPresentation;
   describeAction?: (
     input: TInput,

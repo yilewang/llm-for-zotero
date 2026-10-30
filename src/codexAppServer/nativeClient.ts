@@ -3413,7 +3413,12 @@ export async function runCodexAppServerNativeTurn(input: {
               if (event.phase === "completed") {
                 hostReceipts.push(...(event.actionReceipts || []));
                 if (event.ok) successfulHostToolResults++;
-                if (event.ok && event.toolName === "submit_document") {
+                if (
+                  event.ok &&
+                  (event.toolName === "submit_document" ||
+                    (event.toolName === "library_import" &&
+                      event.publishedDocumentId))
+                ) {
                   submittedDocument = true;
                 }
               }
@@ -3967,8 +3972,9 @@ export async function runCodexAppServerNativeTurn(input: {
           candidate: CodexNativeTurnResult,
         ) =>
           candidate.turnId ? loadLatestDocumentForRun(candidate.turnId) : null;
-        // A document exists only when submit_document succeeded, keyed by
-        // the Codex turn id.
+        // A document exists only when submit_document succeeded or a
+        // library_import published a new version of one, keyed by the Codex
+        // turn id.
         const document = submittedDocument
           ? await loadSubmittedDocument(result)
           : null;

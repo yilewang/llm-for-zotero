@@ -1,7 +1,7 @@
 ---
 id: compare-papers
 description: Compare selected papers or collection papers by theme, methodology, or findings
-version: 11
+version: 12
 contexts: paper-set,library-corpus
 activation: auto
 ---
@@ -12,9 +12,6 @@ Organize the comparison around the user's question and dimensions that distingui
 Use comparable definitions, populations, datasets, measurements, and study conditions; explain when reported results cannot be compared directly.
 Connect agreements and disagreements to their evidence and limitations rather than listing independent summaries.
 
-For three or more papers, declare a digest part first (`task_update` with `expectedEffect:'digest'` over the papers) whose description names the comparison dimensions, for example "For each paper, report: question, species or system, method, main finding".
-Each result returns facets with those labels; they become the comparison's rows.
-Read further only for a dimension the results leave open.
 When the user asks what the papers have in common, state a commonality only where the facets of each paper support it.
 
 Reuse supplied paper text and the selected-paper evidence ledger.

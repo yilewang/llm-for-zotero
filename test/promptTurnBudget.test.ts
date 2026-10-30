@@ -67,11 +67,30 @@ import {
  * before its final punctuation, with an example, and give a sentence without
  * a supporting passage no token) (2026-10-26), to 40,914, 39,647 and 41,012
  * (+199 each).
+ * Raised by submit_document's sentence in the model description, that a
+ * literature review is always delivered with that tool and other answers stay
+ * in chat unless the user asks for a document or a file (130 characters,
+ * 2026-10-29), to 41,044, 39,777 and 41,142. Raised by the outside-paper
+ * choice (2026-10-29): literature_search's forLiteratureReview field and its
+ * sentence that a literature review finds outside papers with it and the
+ * card asks whether to import and cite them, and submit_document's sentences
+ * that a citation source is a Zotero item or an outside paper's paperId,
+ * web pages are never cited, and an unclear literature review is answered
+ * in chat (482 tool characters), to 41,519, 40,252 and 41,617. Raised by
+ * library_import's kind:'document_citations' (its sentence, enum value and
+ * documentId field) and the card rule widened to a literature review that
+ * needs outside papers, a mixed one included (2026-10-29), to 41,789, 40,522
+ * and 41,887 (+270 each). Lowered when the card's import-or-cite choice was
+ * stated only in the skill (2026-10-29), to 41,711, 40,444 and 41,809 (-78
+ * each). These turns carry no
+ * original_agent execution context, so task_update, and the digest rule in
+ * its description, is not listed here; test/directAgentToolSurface.test.ts
+ * measures that rule.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 40_914,
-  paper: 39_647,
-  collection: 41_012,
+  global: 41_711,
+  paper: 40_444,
+  collection: 41_809,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

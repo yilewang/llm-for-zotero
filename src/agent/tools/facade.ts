@@ -185,6 +185,17 @@ export function createDelegatingTool<TResult = unknown>(params: {
         journalToolName: context.journalToolName || params.name,
       }) as Promise<AgentToolExecutionOutput<TResult>>;
     },
+    // A delegate whose result is the turn's answer, a published document,
+    // keeps that through the facade.
+    async resolveTerminalResult(input, result, context) {
+      return (
+        (await input.delegateTool.resolveTerminalResult?.(
+          input.delegateInput,
+          result,
+          context,
+        )) ?? null
+      );
+    },
     async buildFollowupMessage(
       result: AgentToolResult,
       context: AgentToolContext,

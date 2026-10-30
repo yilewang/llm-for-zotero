@@ -109,6 +109,7 @@ import {
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import { loadLatestDocumentForRun } from "./documents/store";
+import { rememberOutsidePapers } from "./context/outsidePaperRecords";
 import { resolveAgentPromptBudgetLimits } from "./context/promptBudget";
 import {
   renderAgentPastChatMessageText,
@@ -1507,6 +1508,8 @@ function buildClaudeZoteroMcpScope(
     clarificationHistory: request.clarificationHistory,
     documentReadObservations: request.documentReadObservations,
     documentArtifactObservations: request.documentArtifactObservations,
+    outsidePaperRecords: request.outsidePaperRecords,
+    outsidePaperSelection: request.outsidePaperSelection,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
@@ -1540,6 +1543,30 @@ export function buildClaudeZoteroMcpScopeForTests(
     resolveAgentRuntimeRequest(request),
     profileSignature,
   );
+}
+
+/**
+ * Copies what a successful Zotero MCP call Claude made attested back into the
+ * run's request: its read observations and the outside papers it returned.
+ */
+export function copyMcpCallEvidenceToRequest(
+  request: AgentRuntimeRequest,
+  event: ZoteroMcpToolActivityEvent,
+): void {
+  if (event.phase !== "completed" || !event.ok) return;
+  if (event.readObservations?.length) {
+    const merged = new Map(
+      (request.documentReadObservations || []).map((entry) => [
+        entry.observationId,
+        entry,
+      ]),
+    );
+    for (const observation of event.readObservations) {
+      merged.set(observation.observationId, observation);
+    }
+    request.documentReadObservations = [...merged.values()];
+  }
+  rememberOutsidePapers(request, event.outsidePapers || []);
 }
 
 /**
@@ -3442,23 +3469,7 @@ export function createExternalBackendBridgeRuntime(options: {
                   return;
                 if (event.phase === "completed")
                   hostReceipts.push(...(event.actionReceipts || []));
-                if (
-                  event.phase === "completed" &&
-                  event.ok &&
-                  event.readObservations?.length
-                ) {
-                  const merged = new Map(
-                    (params.request.documentReadObservations || []).map(
-                      (entry) => [entry.observationId, entry],
-                    ),
-                  );
-                  for (const observation of event.readObservations) {
-                    merged.set(observation.observationId, observation);
-                  }
-                  params.request.documentReadObservations = [
-                    ...merged.values(),
-                  ];
-                }
+                copyMcpCallEvidenceToRequest(params.request, event);
                 const pending = (async () => {
                   await emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
                   // What the read read from each paper, persisted right after

@@ -66,6 +66,7 @@ import type {
   AgentToolContext,
   AgentToolDefinition,
   AgentWriteToolDefinition,
+  AgentToolGuidance,
 } from "../../types";
 import {
   fail,
@@ -87,17 +88,16 @@ type NotePatch = {
 export const SOURCE_NOTE_COPY_GUIDANCE =
   "To copy an existing note without revising its content, use mode:'create' with sourceNoteId and the requested target/collections instead of reconstructing its content. This preserves the native note, including formatting, original provenance and embedded images; do not generate a new header or perform a corrective edit.";
 
-export const NOTE_WRITE_GUIDANCE: NonNullable<AgentToolDefinition["guidance"]> =
-  {
-    matches: (request, context) =>
-      Boolean(
-        context?.matchedSkillIds.includes(WRITE_NOTE_SKILL_ID) ||
-        request.forcedSkillIds?.includes(WRITE_NOTE_SKILL_ID),
-      ),
-    instruction:
-      "Use note_write mode:'edit' against the exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure unless the user requests changing them. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Use mode:'append' to append and mode:'create' for a new note. Keep every {{kind:id}} placeholder of an embedded citation, highlight or image where its item belongs; to delete one the user names, list its id in removeEmbeds and omit its placeholder. To add a clickable Zotero citation, write {{cite item=<regular item's itemId> page=<pageLabel from paper_read>}}, or {{cite item=1 page=4; item=2 page=9}} for several works; omit page to cite a whole work. Resolve a named parent or collection before proposing the write. Pass finalized material by documentId so retries reuse exact content. Safe reviews every note write, including creation; Auto may apply routine same-library note changes directly. After verified success, do not claim that a diff is still awaiting review. " +
-      SOURCE_NOTE_COPY_GUIDANCE,
-  };
+export const NOTE_WRITE_GUIDANCE: AgentToolGuidance = {
+  matches: (request, context) =>
+    Boolean(
+      context?.matchedSkillIds.includes(WRITE_NOTE_SKILL_ID) ||
+      request.forcedSkillIds?.includes(WRITE_NOTE_SKILL_ID),
+    ),
+  instruction:
+    "Use note_write mode:'edit' against the exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure unless the user requests changing them. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Use mode:'append' to append and mode:'create' for a new note. Keep every {{kind:id}} placeholder of an embedded citation, highlight or image where its item belongs; to delete one the user names, list its id in removeEmbeds and omit its placeholder. To add a clickable Zotero citation, write {{cite item=<regular item's itemId> page=<pageLabel from paper_read>}}, or {{cite item=1 page=4; item=2 page=9}} for several works; omit page to cite a whole work. Resolve a named parent or collection before proposing the write. Pass finalized material by documentId so retries reuse exact content. Safe reviews every note write, including creation; Auto may apply routine same-library note changes directly. After verified success, do not claim that a diff is still awaiting review. " +
+    SOURCE_NOTE_COPY_GUIDANCE,
+};
 
 /**
  * Sanitise HTML before writing to a Zotero note.  Strips dangerous

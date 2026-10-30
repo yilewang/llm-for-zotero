@@ -8,6 +8,7 @@ import type { AgentSkill, LoadedSkill } from "../../skills";
 import { SKILL_SCOPE_GUARD } from "../../skills/scopeGuard";
 import type { AgentRuntimeRequest, AgentToolDefinition } from "../../types";
 import { fail, ok, validateObject } from "../shared";
+import { toolGuidanceItems } from "../guidance";
 import { isSkillWithheldForEphemeralRequest } from "../../skills/sideChatScope";
 
 export type LoadSkillInput = { id: string };
@@ -59,19 +60,20 @@ function collectSkillToolGuidance(
   const withSkill = [...new Set([...activeSkillIds, skillId])];
   const instructions = new Set<string>();
   for (const tool of tools) {
-    const guidance = tool.guidance;
-    if (!guidance) continue;
-    const instruction = guidance.instruction.trim();
-    if (!instruction) continue;
-    if (!guidance.matches(request, { matchedSkillIds: withSkill })) continue;
-    if (delivered) {
-      if (delivered.has(instruction)) continue;
-    } else {
-      if (!guidance.matches(request, { matchedSkillIds: [skillId] })) continue;
-      if (guidance.matches(request, { matchedSkillIds: activeSkillIds }))
-        continue;
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      const instruction = guidance.instruction.trim();
+      if (!instruction) continue;
+      if (!guidance.matches(request, { matchedSkillIds: withSkill })) continue;
+      if (delivered) {
+        if (delivered.has(instruction)) continue;
+      } else {
+        if (!guidance.matches(request, { matchedSkillIds: [skillId] }))
+          continue;
+        if (guidance.matches(request, { matchedSkillIds: activeSkillIds }))
+          continue;
+      }
+      instructions.add(instruction);
     }
-    instructions.add(instruction);
   }
   return [...instructions];
 }

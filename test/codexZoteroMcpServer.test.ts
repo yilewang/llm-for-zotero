@@ -13,6 +13,7 @@ import {
   releaseConversationScopeToken,
   resolveConversationScopeToken,
   unregisterMcpServer,
+  updateScopedZoteroMcpScope,
   ZOTERO_MCP_ENDPOINT_PATH,
   ZOTERO_MCP_SCOPE_HEADER,
   ZOTERO_MCP_WRITE_TOOL_NAMES,
@@ -37,6 +38,8 @@ import {
 } from "../src/agent/tools/read/outsideSearchNeed";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { paperSourceId } from "../src/webAccess/paperSources";
+import { setOutsidePaperPrefetchLookup } from "../src/agent/context/outsidePaperRecords";
 import {
   readOnlyInvocationPlan,
   stateChangeInvocationPlan,
@@ -347,6 +350,220 @@ describe("Zotero MCP server", function () {
     } finally {
       scoped.clear();
     }
+  });
+
+  it("records the outside papers literature tools return on the scope, for submit_document and the activity event", async function () {
+    const registry = new AgentToolRegistry();
+    const search = createReadTool("literature_search");
+    search.execute = async () => ({
+      mode: "search",
+      results: [
+        { title: "Drift", authors: ["Ada Lovelace"], doi: "10.1000/drift" },
+      ],
+    });
+    const read = createReadTool("literature_read");
+    read.execute = async () => ({
+      paper: {
+        title: "Drift",
+        authors: ["Ada Lovelace"],
+        doi: "10.1000/drift",
+      },
+      fullText: { status: "abstract_only" },
+      abstract: "Tuning drifts over days.",
+    });
+    let observed: AgentToolContext["request"]["outsidePaperRecords"];
+    const probe = createReadTool("library_read");
+    probe.execute = async (_input, context) => {
+      observed = context.request.outsidePaperRecords;
+      return { observed: true };
+    };
+    registry.register(search);
+    registry.register(read);
+    registry.register(probe);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 447,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+    });
+    const completed: Array<{ toolName: string; outsidePapers?: unknown[] }> =
+      [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      if (event.phase === "completed")
+        completed.push({
+          toolName: event.toolName,
+          outsidePapers: event.outsidePapers as unknown[] | undefined,
+        });
+    });
+    const call = async (
+      id: number,
+      name: string,
+      args: Record<string, unknown>,
+    ) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isUndefined(payload.result?.isError, response[2]);
+    };
+
+    try {
+      await call(1, "literature_search", { mode: "search", query: "drift" });
+      await call(2, "literature_read", { doi: "10.1000/drift" });
+      await call(3, "library_read", {});
+    } finally {
+      unregister();
+      scoped.clear();
+    }
+    const paperId = paperSourceId("doi:10.1000/drift");
+    assert.deepEqual(
+      observed?.map((paper) => [paper.paperId, paper.depth, paper.abstract]),
+      [[paperId, "abstract", "Tuning drifts over days."]],
+      "a later call of the turn sees the scope's record",
+    );
+    assert.deepEqual(
+      completed.map((event) => [
+        event.toolName,
+        (event.outsidePapers as Array<{ depth: string }> | undefined)?.map(
+          (paper) => paper.depth,
+        ),
+      ]),
+      [
+        ["literature_search", ["metadata"]],
+        ["literature_read", ["abstract"]],
+        ["library_read", undefined],
+      ],
+      "the activity event carries the call's outside papers to the Claude Code bridge",
+    );
+  });
+
+  it("prefetches the DOI of a paper literature_read returns into the scope's lookup cache", async function () {
+    const registry = new AgentToolRegistry();
+    const read = createReadTool("literature_read");
+    read.execute = async () => ({
+      paper: { title: "Drift", authors: ["Ada"], doi: "10.1000/drift" },
+      fullText: { status: "abstract_only" },
+      abstract: "Tuning drifts over days.",
+    });
+    const caches: unknown[] = [];
+    const probe = createReadTool("library_read");
+    probe.execute = async (_input, context) => {
+      caches.push(context.request.outsidePaperLookupCache);
+      return { observed: true };
+    };
+    registry.register(read);
+    registry.register(probe);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const prefetched: string[] = [];
+    setOutsidePaperPrefetchLookup(async (doi) => {
+      prefetched.push(doi);
+      return { volume: "7" };
+    });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 449,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+    });
+    const call = async (
+      id: number,
+      name: string,
+      args: Record<string, unknown>,
+    ) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isUndefined(payload.result?.isError, response[2]);
+    };
+    try {
+      await call(1, "literature_read", { doi: "10.1000/drift" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await call(2, "library_read", {});
+    } finally {
+      setOutsidePaperPrefetchLookup(null);
+      scoped.clear();
+    }
+    assert.deepEqual(prefetched, ["10.1000/drift"]);
+    assert.deepEqual(caches, [{ "10.1000/drift": { volume: "7" } }]);
+  });
+
+  it("shares one DOI lookup cache across the calls and scope updates of a turn", async function () {
+    const registry = new AgentToolRegistry();
+    const search = createReadTool("literature_search");
+    search.execute = async () => ({
+      mode: "search",
+      results: [
+        { title: "Drift", authors: ["Ada Lovelace"], doi: "10.1000/drift" },
+      ],
+    });
+    const caches: unknown[] = [];
+    const probe = createReadTool("library_read");
+    probe.execute = async (_input, context) => {
+      const cache = context.request.outsidePaperLookupCache;
+      caches.push(cache);
+      // What a submit_document lookup leaves for the next submission.
+      if (cache) cache["10.1000/drift"] = null;
+      return { observed: true };
+    };
+    registry.register(search);
+    registry.register(probe);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 448,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+    });
+    const call = async (
+      id: number,
+      name: string,
+      args: Record<string, unknown>,
+    ) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isUndefined(payload.result?.isError, response[2]);
+    };
+    try {
+      await call(1, "literature_search", { mode: "search", query: "drift" });
+      await call(2, "library_read", {});
+      updateScopedZoteroMcpScope(scoped.token, { runId: "turn-1" });
+      // Different arguments, so the read is not answered from the dedupe cache.
+      await call(3, "library_read", { itemId: 2 });
+    } finally {
+      scoped.clear();
+    }
+    assert.lengthOf(caches, 2);
+    assert.isOk(caches[0], "the scope holds a cache once it has records");
+    assert.strictEqual(caches[1], caches[0], "one cache for the whole turn");
+    assert.deepEqual(caches[1], { "10.1000/drift": null });
   });
 
   it("reads scoped task files and writes verified exports through shared file_io", async function () {

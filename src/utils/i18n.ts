@@ -13,6 +13,7 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Not in library": "不在文献库中",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
   "Test search (sends a public query)": "测试搜索（发送公开查询）",

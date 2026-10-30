@@ -4,6 +4,7 @@ import { AGENT_SEARCH_TOOL_ROUTES } from "../src/agent/model/agentPersona";
 import type { AgentToolContext } from "../src/agent/types";
 import { EPHEMERAL_PAPER_CONVERSATION_KEY_BASE } from "../src/shared/conversationKeySpace";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { paperSourceId } from "../src/webAccess/paperSources";
 
 describe("literature_search tool", function () {
   const baseContext: AgentToolContext = {
@@ -45,12 +46,20 @@ describe("literature_search tool", function () {
       tool.spec.description,
       "To read a paper's abstract or full text, use literature_read.",
     );
+    // A review's search for outside papers carries the review flag, so the
+    // card asks whether to import them (maintainer decision, 2026-10-29).
+    // The card's choice is the skill's to state, not this description's.
+    assert.include(
+      tool.spec.description,
+      "A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true.",
+    );
+    assert.notInclude(tool.spec.description, "cite them without importing");
     // A summary of the folder once turned into a discovery card of
     // external papers nobody asked for. The plugin Agent's search-tool map
     // owns that rule now; the description states mechanics only.
     assert.include(
       AGENT_SEARCH_TOOL_ROUTES,
-      "Show the paper selection card (literature_review) only when the user asks you to find or recommend papers (with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it), or for a review when the library holds no relevant papers.",
+      "Show the paper selection card (literature_review) only when the user asks you to find or recommend papers (with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it), or for a literature review that needs papers outside the library, including one that mixes library and outside papers.",
     );
     assert.notInclude(tool.spec.description, "only when the user asks to find");
   });
@@ -271,6 +280,8 @@ describe("literature_search tool", function () {
     assert.lengthOf(results, 1);
     assert.equal(results[0].title, "Related Paper");
     assert.equal(results[0].doi, "10.1000/related");
+    // A document cites an outside paper by this id: the paper's source id.
+    assert.equal(results[0].paperId, paperSourceId("doi:10.1000/related"));
     assert.equal(tool.presentation?.traceIcon, "library");
     assert.isTrue(tool.presentation?.mergeResultIntoCallTrace);
     assert.deepEqual(

@@ -9,6 +9,11 @@ import type {
 import type { MaterialRef } from "../documents/materialRef";
 import type { TrustedReadObservation } from "../context/readObservationTypes";
 import {
+  outsidePaperRecordsFromToolResult,
+  prefetchOutsidePaperLookups,
+  rememberOutsidePapers,
+} from "../context/outsidePaperRecords";
+import {
   buildArtifactFollowupMessage,
   filterFollowupMessageForCapabilities,
   type ToolWorkflowDelivery,
@@ -900,6 +905,18 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
         }));
       }
     }
+    // The outside papers a document of this run may cite: what
+    // literature_search and literature_read returned. The DOIs of papers
+    // read past their metadata are looked up in the background, for the
+    // citations of a document that cites them.
+    if (toolResult.ok) {
+      const outsidePapers = outsidePaperRecordsFromToolResult(
+        toolResult.name,
+        toolResult.content,
+      );
+      rememberOutsidePapers(deps.request, outsidePapers);
+      prefetchOutsidePaperLookups(deps.request, outsidePapers);
+    }
     let paperEvidenceFrontierState:
       | "advanced"
       | "unchanged"
@@ -1398,6 +1415,27 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
             toolResult: chainedOutcome.toolResult,
             stopRun: true,
             finalText,
+          };
+        }
+        // The run continues: the model reads the call's result with the
+        // review's next step.
+        const delivery = chainedOutcome.delivery;
+        const delivered = delivery?.content;
+        if (
+          reviewOutcome.nextStep &&
+          chainedOutcome.toolResult.ok &&
+          delivery &&
+          delivered &&
+          typeof delivered === "object" &&
+          !Array.isArray(delivered) &&
+          !("nextStep" in delivered)
+        ) {
+          return {
+            ...chainedOutcome,
+            delivery: {
+              ...delivery,
+              content: { ...delivered, nextStep: reviewOutcome.nextStep },
+            },
           };
         }
         return chainedOutcome;

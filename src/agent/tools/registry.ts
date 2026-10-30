@@ -139,7 +139,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Format Zotero CSL citations or bibliographies, or export with a translator.",
   library_settings: "Read or change supported Zotero settings and sync state.",
   library_import:
-    "Add items by DOI, ISBN, arXiv ID, PMID, or ADS bibcode, from local files, or from manual metadata.",
+    "Add items by DOI, ISBN, arXiv ID, PMID, or ADS bibcode, from local files, or from manual metadata. kind:'document_citations' with a documentId imports the outside papers that document cites, then publishes a new version of it that cites the imported items.",
   library_delete:
     "Trash or restore Zotero objects, or merge duplicates into a named master.",
   undo: "Undo the latest reversible action in this chat; count or actionIds revert several, dryRun lists them with conflicts.",
@@ -153,7 +153,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   request_user_input:
     "Ask up to three questions when required input cannot be found.",
   submit_document:
-    "Persist validated Markdown and evidence as a versioned material reference.",
+    "Persist validated Markdown and evidence as a versioned material reference. A literature review is always delivered with this tool; other answers stay in chat unless the user asks for a document or a file. A citation source is a Zotero item (libraryID, itemKey) or the paperId of an outside paper literature_search or literature_read returned in this run; web pages are never cited. If it is unclear whether the answer is a literature review, answer in chat.",
 };
 
 function modelToolSpec(spec: ToolSpec): ToolSpec {

@@ -1,8 +1,13 @@
 import type { PaperContextRef } from "../../shared/types";
 import type { AgentToolContext } from "../types";
 import type { EditableArticleMetadataPatch } from "./zoteroGateway";
+import type {
+  OutsidePaperCslEnrichment,
+  OutsidePaperCslType,
+} from "../documents/types";
 import type { ZoteroGateway } from "./zoteroGateway";
 import { appLogger } from "../../core/logging";
+import { decodeEntities } from "./literatureReadParser";
 
 type SearchMode =
   | "recommendations"
@@ -741,6 +746,98 @@ async function lookupCrossRefByDoi(
   }
 }
 
+/** Crossref work types with a clean CSL equivalent; others keep the default. */
+const CROSSREF_CSL_TYPES: Record<string, OutsidePaperCslType> = {
+  "journal-article": "article-journal",
+  "posted-content": "article",
+  "proceedings-article": "paper-conference",
+  "book-chapter": "chapter",
+  book: "book",
+};
+
+/**
+ * A Crossref string as plain text: entities ("&amp;", "&lt;i&gt;") decoded
+ * first, then tags stripped, so an escaped tag does not survive as text.
+ */
+function crossRefText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value;
+  const normalized =
+    typeof text === "string" || typeof text === "number"
+      ? stripHtmlTags(decodeEntities(String(text))).trim()
+      : "";
+  return normalized || undefined;
+}
+
+/**
+ * A DOI's citation fields from Crossref, as CSL: venue, volume, issue,
+ * pages, date, authors and type (when it maps cleanly). Null when Crossref
+ * does not know the DOI or the request fails. Separate from
+ * lookupCrossRefByDoi, whose metadata patch literature_search returns.
+ */
+async function lookupCrossRefCitationByDoi(
+  doi: string,
+): Promise<OutsidePaperCslEnrichment | null> {
+  try {
+    const data = (await fetchJson(
+      `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
+    )) as { message?: Record<string, unknown> };
+    const message = data?.message;
+    if (!message) return null;
+    const containerTitle = crossRefText(message["container-title"]);
+    const volume = crossRefText(message.volume);
+    const issue = crossRefText(message.issue);
+    const page = crossRefText(message.page);
+    const date = (message.issued ||
+      message["published-print"] ||
+      message["published-online"] ||
+      message.published) as { "date-parts"?: unknown } | undefined;
+    const dateParts = Array.isArray(date?.["date-parts"])
+      ? (date["date-parts"] as unknown[])[0]
+      : undefined;
+    const issuedParts = Array.isArray(dateParts)
+      ? dateParts.filter(
+          (part): part is number =>
+            typeof part === "number" && Number.isFinite(part),
+        )
+      : [];
+    const author = (Array.isArray(message.author) ? message.author : [])
+      .map((entry) => {
+        const name = (entry || {}) as Record<string, unknown>;
+        const family = crossRefText(name.family);
+        const given = crossRefText(name.given);
+        const suffix = crossRefText(name.suffix);
+        const literal = crossRefText(name.name);
+        if (family)
+          return {
+            family,
+            ...(given ? { given } : {}),
+            ...(suffix ? { suffix } : {}),
+          };
+        return literal ? { literal } : null;
+      })
+      .filter((name): name is NonNullable<typeof name> => Boolean(name));
+    const type =
+      typeof message.type === "string"
+        ? CROSSREF_CSL_TYPES[message.type]
+        : undefined;
+    const enrichment: OutsidePaperCslEnrichment = {
+      ...(type ? { type } : {}),
+      ...(author.length ? { author } : {}),
+      ...(issuedParts.length
+        ? { issued: { "date-parts": [issuedParts] } }
+        : {}),
+      ...(containerTitle ? { "container-title": containerTitle } : {}),
+      ...(volume ? { volume } : {}),
+      ...(issue ? { issue } : {}),
+      ...(page ? { page } : {}),
+    };
+    return Object.keys(enrichment).length ? enrichment : null;
+  } catch (err) {
+    appLogger.warn("LLM: CrossRef citation metadata fetch failed", err);
+    return null;
+  }
+}
+
 async function searchCrossRef(
   query: string,
 ): Promise<ExternalMetadataResult[]> {
@@ -940,6 +1037,17 @@ export class LiteratureSearchService {
       title = snapshot.title.trim();
     }
     return { doi, title, arxivId };
+  }
+
+  /**
+   * What a citation of the paper with this DOI can add to a search row, as
+   * CSL fields: see lookupCrossRefCitationByDoi. Crossref only, so a
+   * citation lookup never writes to the library.
+   */
+  async lookupCitationMetadataByDoi(
+    doi: string,
+  ): Promise<OutsidePaperCslEnrichment | null> {
+    return lookupCrossRefCitationByDoi(doi);
   }
 
   async execute(

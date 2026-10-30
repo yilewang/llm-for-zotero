@@ -24,6 +24,11 @@ import {
 import type { ParsedPaperSection } from "../../services/literatureReadParser";
 import { fail, ok, validateObject } from "../shared";
 import { readTextChunk } from "./textChunk";
+import {
+  literatureReadFoundPaper,
+  outsidePaperId,
+  type OutsidePaperHolder,
+} from "../../context/outsidePaperRecords";
 
 /**
  * literature_read: reads one outside paper (found by literature_search or
@@ -322,13 +327,28 @@ export function buildLiteratureReadResult(
   record: LiteratureReadRecord,
   input: Pick<LiteratureReadInput, "query" | "section" | "textOffset">,
   maxTokens = DEFAULT_MAX_TOKENS,
+  holder?: OutsidePaperHolder,
 ): Record<string, unknown> {
   const sourceLabel = sourceLabelOf(record);
   const link = linkOf(record);
   const note = fullTextNote(record);
+  const paper = boundedPaper(record.paper);
+  // The paperId a document cites the paper by, read from the fields the
+  // result shows, as the host's record of the run's outside papers reads it:
+  // the id the run already gave this paper, when an earlier call returned it.
+  const paperId = literatureReadFoundPaper(paper, record.fullText)
+    ? outsidePaperId(
+        paper,
+        [
+          clip(record.fullText.landingUrl, MAX_URL_CHARS),
+          clip(record.fullText.pdfUrl, MAX_URL_CHARS),
+        ],
+        holder,
+      )
+    : undefined;
   const base: Record<string, unknown> = {
     source: record.source,
-    paper: boundedPaper(record.paper),
+    paper: paperId ? { ...paper, paperId } : paper,
     sourceLabel,
     fullText: {
       ...record.fullText,
@@ -340,7 +360,7 @@ export function buildLiteratureReadResult(
         : {}),
       ...(note ? { note } : {}),
     },
-    citation: `Cite this outside paper as ${sourceLabel}${link ? ` with its link ${link}, and give the link a title holding the exact words you used from it, copied word for word from what you read (about 5 to 25 words, no double quotes inside): [${sourceLabel}](${link} "exact words")` : ""}. It is not in the Zotero library, so it has no [[cite:]] or [[quote:]] anchors.`,
+    citation: `In a chat answer, cite this outside paper as ${sourceLabel}${link ? ` with its link ${link}, and give the link a title holding the exact words you used from it, copied word for word from what you read (about 5 to 25 words, no double quotes inside): [${sourceLabel}](${link} "exact words")` : ""}. It is not in the Zotero library, so in chat it has no [[cite:]] or [[quote:]] anchors; in a submit_document document, cite it by its paperId.`,
   };
   let remaining =
     maxTokens -
@@ -547,10 +567,12 @@ export function createLiteratureReadTool(): AgentToolDefinition<
         reason:
           "Europe PMC, PubMed Central, arXiv or OpenAlex receives the paper identifier and returns its public abstract and open-access text without changing Zotero.",
       }),
-    execute: async (input) =>
+    execute: async (input, context) =>
       buildLiteratureReadResult(
         await loadLiteraturePaper(input.identifier),
         input,
+        undefined,
+        context.request,
       ),
   };
 }

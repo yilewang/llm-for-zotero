@@ -72,6 +72,12 @@ import type {
   VerifiedReadSource,
 } from "../context/readObservationTypes";
 import { attestAndRecordRead } from "../context/taskPaperLedgerRecorder";
+import {
+  outsidePaperRecordsFromToolResult,
+  prefetchOutsidePaperLookups,
+  rememberOutsidePapers,
+  type OutsidePaperRecord,
+} from "../context/outsidePaperRecords";
 import type { TaskPaperLedgerDelta } from "../context/taskPaperLedger";
 import {
   isRawPdfRetrievalTool,
@@ -82,6 +88,7 @@ import { resolveAgentToolCallWorkCategory } from "../workCategory";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { OUTSIDE_SEARCH_NEED_SENTENCE } from "../tools/read/outsideSearchNeed";
 import { SCOPELESS_MCP_RUN_PREFIX } from "../tools/read/outsideSearchLedger";
+import { toolGuidanceItems } from "../tools/guidance";
 import {
   PAST_CHAT_ATTACH_TOOL_NAME,
   PAST_CHAT_READ_TOOL_NAME,
@@ -190,7 +197,7 @@ const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
   [
     "literature_search",
-    "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
+    "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. Outside papers a literature review cites are cited by paperId without importing, unless the user asks to import them (then library_import). An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
       OUTSIDE_SEARCH_NEED_SENTENCE +
       "; mode:'metadata' needs none. For web pages or current facts, use your client's own web search if it has one.",
   ],
@@ -200,8 +207,12 @@ const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
  * (Claude Code, Codex, other MCP clients) never see the in-app note-editing
  * prompt, so they learn note placeholders and new citations here.
  */
-const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
+export const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
   ["note_write", NOTE_EMBED_PLACEHOLDER_GUIDANCE],
+  [
+    "library_import",
+    "To import the outside papers a document cites, use kind:'document_citations' with its documentId, not their DOIs; DOIs imported with kind:'identifiers' leave the document citing them as outside papers.",
+  ],
 ]);
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
@@ -277,6 +288,15 @@ type ZoteroMcpScopeMetadata = {
   executionContext?: AgentRuntimeRequest["executionContext"];
   documentReadObservations?: AgentRuntimeRequest["documentReadObservations"];
   documentArtifactObservations?: AgentRuntimeRequest["documentArtifactObservations"];
+  /** Host-recorded outside papers of the run; never from MCP tool arguments. */
+  outsidePaperRecords?: AgentRuntimeRequest["outsidePaperRecords"];
+  /** The outside papers the user chose to cite, once chosen. */
+  outsidePaperSelection?: AgentRuntimeRequest["outsidePaperSelection"];
+  /**
+   * The run's DOI lookups for citing outside papers. Kept by reference, so
+   * every call's request and every scope update share one cache.
+   */
+  outsidePaperLookupCache?: AgentRuntimeRequest["outsidePaperLookupCache"];
   /**
    * The past chats attached anywhere in the calling conversation: the only
    * chats past_chat_read may open. Host-set by the Codex and Claude Code
@@ -391,6 +411,7 @@ const mcpReadDedupeCache = new Map<
     expiresAt: number;
     result: McpToolCallResult;
     observations: readonly TrustedReadObservation[];
+    outsidePapers: readonly OutsidePaperRecord[];
   }
 >();
 
@@ -857,6 +878,17 @@ function normalizeActiveScope(
     documentArtifactObservations: scope.documentArtifactObservations
       ? cloneToolArtifacts(scope.documentArtifactObservations)
       : undefined,
+    outsidePaperRecords: scope.outsidePaperRecords
+      ? [...scope.outsidePaperRecords]
+      : undefined,
+    outsidePaperSelection: scope.outsidePaperSelection
+      ? [...scope.outsidePaperSelection]
+      : undefined,
+    // The same object on every update; a scope that starts with records
+    // gets its cache now, before any call can build a request from it.
+    outsidePaperLookupCache:
+      scope.outsidePaperLookupCache ??
+      (scope.outsidePaperRecords?.length ? {} : undefined),
     // Uncapped: every chat attached in the conversation stays readable.
     attachedConversationScope: attachedConversationScope.length
       ? attachedConversationScope
@@ -1177,6 +1209,7 @@ function cloneToolArtifacts(
 function getCachedMcpReadResult(key: string | null): {
   result: McpToolCallResult;
   observations: readonly TrustedReadObservation[];
+  outsidePapers: readonly OutsidePaperRecord[];
 } | null {
   if (!key) return null;
   pruneExpiredMcpReadDedupeCache();
@@ -1185,6 +1218,7 @@ function getCachedMcpReadResult(key: string | null): {
   return {
     result: cloneMcpResultWithDuplicateMarker(cached.result),
     observations: cloneTrustedReadObservations(cached.observations),
+    outsidePapers: [...cached.outsidePapers],
   };
 }
 
@@ -1376,6 +1410,7 @@ function rememberMcpReadResult(
   key: string | null,
   result: McpToolCallResult,
   observations: readonly TrustedReadObservation[],
+  outsidePapers: readonly OutsidePaperRecord[],
 ): void {
   if (!key || result.isError) return;
   pruneExpiredMcpReadDedupeCache();
@@ -1383,6 +1418,7 @@ function rememberMcpReadResult(
     expiresAt: Date.now() + MCP_READ_DEDUPE_TTL_MS,
     result,
     observations: cloneTrustedReadObservations(observations),
+    outsidePapers: [...outsidePapers],
   });
 }
 
@@ -1485,9 +1521,13 @@ function handleToolsList(
           [
             MCP_TOOL_DESCRIPTION_OVERRIDES.get(name) ?? description,
             MCP_TOOL_DESCRIPTION_NOTES.get(name),
-            MCP_GUIDANCE_TOOL_NAMES.has(name)
-              ? toolRegistry.getTool(name)?.guidance?.instruction
-              : undefined,
+            // Every item, unmatched: no tool in this set carries guidance
+            // tied to a skill (that goes on MCP-hidden tools).
+            ...(MCP_GUIDANCE_TOOL_NAMES.has(name)
+              ? toolGuidanceItems(toolRegistry.getTool(name)?.guidance).map(
+                  (guidance) => guidance.instruction,
+                )
+              : []),
             describeMcpHostAccess(name),
             // Codex code-mode discovery renders deeply nested input types as
             // `unknown`. Keep the complete contract discoverable there too;
@@ -1813,6 +1853,8 @@ function buildMcpToolActivityEvent(params: {
   workCategory?: import("../types").AgentWorkCategory;
   verifiedReadSources?: VerifiedReadSource[];
   readObservations?: readonly TrustedReadObservation[];
+  outsidePapers?: readonly OutsidePaperRecord[];
+  publishedDocumentId?: string;
   paperLedgerDelta?: TaskPaperLedgerDelta;
   mutability?: "read" | "write";
   scope: ZoteroMcpActiveScope | null;
@@ -1836,6 +1878,12 @@ function buildMcpToolActivityEvent(params: {
     quoteCitations: params.quoteCitations,
     verifiedReadSources: params.verifiedReadSources,
     readObservations: params.readObservations,
+    ...(params.outsidePapers?.length
+      ? { outsidePapers: params.outsidePapers }
+      : {}),
+    ...(params.publishedDocumentId
+      ? { publishedDocumentId: params.publishedDocumentId }
+      : {}),
     ...(params.paperLedgerDelta
       ? { paperLedgerDelta: params.paperLedgerDelta }
       : {}),
@@ -1909,6 +1957,9 @@ function createToolContext(
     clarificationHistory: scope?.clarificationHistory,
     documentReadObservations: scope?.documentReadObservations,
     documentArtifactObservations: scope?.documentArtifactObservations,
+    outsidePaperRecords: scope?.outsidePaperRecords,
+    outsidePaperSelection: scope?.outsidePaperSelection,
+    outsidePaperLookupCache: scope?.outsidePaperLookupCache,
     // past_chat_read checks every chat against this list and the call's
     // library (an explicit libraryID other than the scope's is refused). A
     // copy: past_chat_attach extends the scope's own list only through
@@ -2151,6 +2202,22 @@ function rememberDocumentReadObservations(
   ]);
 }
 
+/**
+ * Adds a call's outside papers to the scope's record of the run, and starts
+ * the background DOI lookups of papers read past their metadata on the
+ * scope's lookup cache, which every call of the turn shares.
+ */
+function rememberScopeOutsidePapers(
+  headers: Record<string, string> | undefined,
+  records: readonly OutsidePaperRecord[],
+): void {
+  if (!records.length) return;
+  const scope = resolveScopedMcpScope(headers);
+  if (!scope?.runtimeAuthority) return;
+  rememberOutsidePapers(scope, records);
+  prefetchOutsidePaperLookups(scope, records);
+}
+
 function rememberDocumentArtifacts(
   headers: Record<string, string> | undefined,
   artifacts: readonly AgentToolArtifact[],
@@ -2244,6 +2311,20 @@ function extractToolCallErrorText(
   return undefined;
 }
 
+/**
+ * The document version a successful library_import call published: only
+ * kind:'document_citations' returns a documentId.
+ */
+function publishedDocumentIdOf(
+  toolName: string,
+  result: McpToolCallResult,
+  content: unknown,
+): string | undefined {
+  if (toolName !== "library_import" || result.isError) return undefined;
+  const documentId = (content as { documentId?: unknown } | null)?.documentId;
+  return typeof documentId === "string" && documentId ? documentId : undefined;
+}
+
 async function handleToolsCall(
   params: McpToolCallParams,
   deps: McpServerDeps,
@@ -2284,6 +2365,8 @@ async function handleToolsCall(
     actionReceipts?: AgentActionReceipt[];
     verifiedReadSources?: VerifiedReadSource[];
     readObservations?: readonly TrustedReadObservation[];
+    outsidePapers?: readonly OutsidePaperRecord[];
+    publishedDocumentId?: string;
     paperLedgerDelta?: TaskPaperLedgerDelta | null;
   }) => {
     emitZoteroMcpToolActivity(
@@ -2300,6 +2383,8 @@ async function handleToolsCall(
         workCategory,
         verifiedReadSources: result.verifiedReadSources,
         readObservations: result.readObservations,
+        outsidePapers: result.outsidePapers,
+        publishedDocumentId: result.publishedDocumentId,
         paperLedgerDelta: result.paperLedgerDelta || undefined,
         mutability:
           tool?.spec.executionClass === "external_effect" ? "write" : "read",
@@ -2401,6 +2486,7 @@ async function handleToolsCall(
     const cachedReadResult = getCachedMcpReadResult(readDedupeKey);
     if (cachedReadResult) {
       rememberDocumentReadObservations(headers, cachedReadResult.observations);
+      rememberScopeOutsidePapers(headers, cachedReadResult.outsidePapers);
       rememberDocumentArtifacts(
         headers,
         extractArtifactsFromMcpToolCallResult(cachedReadResult.result) || [],
@@ -2429,6 +2515,7 @@ async function handleToolsCall(
           }),
         ),
         readObservations: cachedReadResult.observations,
+        outsidePapers: cachedReadResult.outsidePapers,
       });
       return cachedReadResult.result;
     }
@@ -2502,6 +2589,15 @@ async function handleToolsCall(
           })
         : { observations: [], paperLedgerDelta: null };
     rememberDocumentReadObservations(headers, readObservations);
+    // The outside papers a document of this run may cite: what
+    // literature_search and literature_read returned.
+    const outsidePapers = result.isError
+      ? []
+      : outsidePaperRecordsFromToolResult(
+          name,
+          prepared.execution.result.content,
+        );
+    rememberScopeOutsidePapers(headers, outsidePapers);
     rememberDocumentArtifacts(
       headers,
       prepared.execution.result.artifacts || [],
@@ -2531,10 +2627,21 @@ async function handleToolsCall(
         }),
       ),
       readObservations,
+      outsidePapers,
+      publishedDocumentId: publishedDocumentIdOf(
+        name,
+        result,
+        prepared.execution.result.content,
+      ),
       paperLedgerDelta,
     });
     clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
-    rememberMcpReadResult(readDedupeKey, result, readObservations);
+    rememberMcpReadResult(
+      readDedupeKey,
+      result,
+      readObservations,
+      outsidePapers,
+    );
     return result;
   } catch (error) {
     completeActivity({
