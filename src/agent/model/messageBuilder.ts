@@ -26,6 +26,7 @@ import { toolGuidanceItems } from "../tools/guidance";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
+import { skillBodyForRuntime } from "../skills/runtimeSections";
 import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import {
   SIDE_CHAT_READ_ONLY_INSTRUCTION,
@@ -572,7 +573,8 @@ function formatSkillGuidanceBlock(
     `Description: ${skill.description || "No description provided."}`,
     `Activation: ${activationSource}`,
     "Instructions:",
-    skill.instruction.trim(),
+    // The plugin's own Agent reads no runtime section (runtimeSections.ts).
+    skillBodyForRuntime(skill.instruction).trim(),
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -587,7 +589,7 @@ function collectSkillGuidanceInstructions(
   for (const skill of getAllSkills()) {
     if (!activeSkillIds.has(skill.id)) continue;
     if (isSkillWithheldForEphemeralRequest(skill.id, request)) continue;
-    const instruction = skill.instruction.trim();
+    const instruction = skillBodyForRuntime(skill.instruction).trim();
     if (!instruction) continue;
     blocks.push(
       formatSkillGuidanceBlock(

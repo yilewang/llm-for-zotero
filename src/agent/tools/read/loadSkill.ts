@@ -152,7 +152,11 @@ export function createLoadSkillTool(
             .sort((left, right) => left.localeCompare(right)),
         };
       }
-      const loaded = await loadSkill(skill, getShippedInstruction(skill.id));
+      // An MCP scope names its runtime (claude_code or codex); the plugin's
+      // own Agent names none, and reads no runtime section.
+      const loaded = await loadSkill(skill, getShippedInstruction(skill.id), {
+        runtime: context?.conversationSystem,
+      });
       let toolGuidance: string | undefined;
       if (context?.request) {
         const records = context.request.loadedSkillRecords || [];

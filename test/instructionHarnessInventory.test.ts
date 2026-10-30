@@ -12,6 +12,7 @@ import {
 } from "../src/shared/instructionContracts";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/utils/llmDefaults";
 import { estimateTextTokens } from "../src/utils/modelInputCap";
+import { skillBodyForRuntime } from "../src/agent/skills/runtimeSections";
 import {
   BUILTIN_SKILL_FILES,
   getAllSkills,
@@ -153,8 +154,9 @@ describe("instruction harness inventory", function () {
         );
         const text = messages.map((message) => message.content).join("\n");
         for (const skill of skills) {
+          // The plugin's own Agent reads the body without runtime sections.
           assert.equal(
-            text.includes(skill.instruction),
+            text.includes(skillBodyForRuntime(skill.instruction)),
             ids.includes(skill.id),
             skill.id,
           );
