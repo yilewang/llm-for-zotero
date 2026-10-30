@@ -101,6 +101,21 @@ describe("agent prompt budget", function () {
     assert.notProperty(limits, "toolResultMaxTokens");
   });
 
+  it("keeps one sized tool view for Claude Haiku 5.5 under its 100k-token price tier", async function () {
+    const { MODEL_VIEW_ROOM_SHARE } =
+      await import("../src/agent/tools/read/modelViewRoom");
+    const limits = resolveAgentPromptBudgetLimits({
+      model: "claude-haiku-5-5",
+      apiBase: "https://api.anthropic.com/v1",
+      providerProtocol: "anthropic_messages",
+      authMode: "api_key",
+    });
+    // Haiku 5.5 bills every token at 5x once a prompt passes 100k; a 1M
+    // registry limit sized library-wide views at 138k-158k tokens.
+    assert.equal(limits.contextWindow, 200_000);
+    assert.isBelow(limits.softLimitTokens * MODEL_VIEW_ROOM_SHARE, 50_000);
+  });
+
   it("resolves the prompt budget from the matching profile override", function () {
     const limits = resolveAgentPromptBudgetLimits({
       model: "claude-haiku-4-5",

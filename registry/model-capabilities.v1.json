@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 8,
+  "revision": 9,
   "models": [
     {
       "match": {
@@ -548,8 +548,8 @@
         "prefix": "claude-haiku-5-5"
       },
       "limits": {
-        "contextWindowTokens": 1000000,
-        "inputTokens": 1000000,
+        "contextWindowTokens": 200000,
+        "inputTokens": 200000,
         "outputTokens": 128000
       },
       "sampling": {

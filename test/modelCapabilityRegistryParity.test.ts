@@ -51,7 +51,7 @@ describe("bundled model capability registry parity", function () {
       ["claude-sonnet-5-5", 1_000_000],
       ["claude-sonnet-4-6", 1_000_000],
       ["claude-fable-5-1", 1_000_000],
-      ["claude-haiku-5-5", 1_000_000],
+      ["claude-haiku-5-5", 200_000],
       ["claude-opus-4-7[1m]", 1_000_000],
       ["claude-sonnet-4-6[1m]", 1_000_000],
       ["grok-4.1-fast", 2_000_000],
