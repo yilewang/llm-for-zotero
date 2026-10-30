@@ -145,10 +145,11 @@ describe("literature-review skill", function () {
       "gaps, a text line that says whether it read the whole text, and a handle to the digest record.",
     );
     // A digested paper is read again only by a targeted read: a decisive
-    // claim, a contradiction, or a gap its result names; never in full.
+    // claim, a contradiction, or a gap its result names; in full mode only
+    // when the user asks for the whole text.
     assert.include(
       text,
-      "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview or full mode.",
+      "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview mode, or in full mode unless the user asks for its whole text.",
     );
     // Papers outside the library are found through the selection card,
     // which asks to import and cite them or cite them without importing

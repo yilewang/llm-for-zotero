@@ -870,7 +870,7 @@ export const LITERATURE_REVIEW_DIGEST_GUIDANCE = skillGuidance(
   "literature-review",
   [
     "Literature review digest results: each result the host returns for a digest part has the answer to the part's description, a relevance line when the description names a question, facets, verified quotes with section labels, gaps, a text line that says whether it read the whole text, and a handle to the digest record.",
-    "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview or full mode.",
+    "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview mode, or in full mode unless the user asks for its whole text.",
     'A paper that failed with "No readable text" has no text to read: name it as not read, and do not retry it, read it with `paper_read`, or look for it outside the library.',
     "If the host reports other digest failures, declare the part again once with `targetIds` of those papers only.",
     "Then a paper whose digest failed twice may be read with an overview `paper_read` instead; name it as not read only if that read fails too.",
