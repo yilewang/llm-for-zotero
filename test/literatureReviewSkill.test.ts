@@ -139,6 +139,11 @@ describe("literature-review skill", function () {
     assert.notInclude(text, "do not read those papers");
     assert.notInclude(text, "write from the results");
     assert.notInclude(text, "With nothing attached, choose the papers");
+    // Each digest result names how much of the text the reader read.
+    assert.include(
+      LITERATURE_REVIEW_DIGEST_GUIDANCE.instruction,
+      "gaps, a text line that says whether it read the whole text, and a handle to the digest record.",
+    );
     // A digested paper is read again only by a targeted read: a decisive
     // claim, a contradiction, or a gap its result names; never in full.
     assert.include(

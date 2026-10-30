@@ -1,7 +1,8 @@
 import { assert } from "chai";
 import {
   DIGEST_FAILURE_REASONS,
-  DIGEST_WHOLE_TEXT_MAX_CHARS,
+  DIGEST_TEXT_MAX_CHARS,
+  renderHostPaperDigests,
   runPaperDigestJob,
   splitDigestPieces,
   type HostPaperDigest,
@@ -336,6 +337,50 @@ describe("whole-text digests of a paper longer than one call", function () {
   });
 });
 
+describe("a digest of an item longer than the digest text limit", function () {
+  it("reads at most the v3.9.15 limit of 120,000 characters and says the item was read in part", async function () {
+    assert.equal(DIGEST_TEXT_MAX_CHARS, 120_000);
+    // A book: about 250,000 characters.
+    const whole = paperText(250);
+    assert.isAbove(whole.length, DIGEST_TEXT_MAX_CHARS);
+    const asked: number[] = [];
+    const reader = fakeReader((prompt) =>
+      isMerge(prompt)
+        ? MERGED
+        : batchReply(prompt, (sections) => [finding(sections[0])]),
+    );
+    const { params, digests } = job(whole, reader, {
+      readText: async (itemId, maxChars) => {
+        asked.push(maxChars);
+        return {
+          itemId,
+          contextItemId: itemId + 100,
+          backend: "mineru",
+          title: "A long book",
+          text: whole.slice(0, maxChars),
+          totalCharacters: whole.length,
+        };
+      },
+    });
+    await runPaperDigestJob(params);
+    assert.deepEqual(asked, [120_000]);
+    assert.lengthOf(digests, 1);
+    const { source } = digests[0];
+    assert.isFalse(source.complete);
+    assert.equal(source.readCharacters, 120_000);
+    assert.equal(source.totalCharacters, whole.length);
+    // No reader call saw text past the limit.
+    const tail = finding(200);
+    assert.isTrue(reader.prompts.every((prompt) => !prompt.includes(tail)));
+    const rendered = renderHostPaperDigests(digests, []);
+    assert.include(
+      rendered,
+      `text: excerpt, 120,000 of ${whole.length.toLocaleString("en-US")} characters`,
+    );
+    assert.notInclude(rendered, "text: complete");
+  });
+});
+
 describe("digest text read for a whole-text digest", function () {
   const scope = globalThis as unknown as Record<string, unknown>;
   let hadIOUtils = false;
@@ -350,8 +395,9 @@ describe("digest text read for a whole-text digest", function () {
   });
   const paperContext = { itemId: 1, contextItemId: 101, title: "Long paper" };
 
-  it("returns the whole MinerU text of a long paper, never a sample", async function () {
-    const md = paperText(300);
+  it("returns the whole MinerU text of a long paper within the limit, never a sample", async function () {
+    const md = paperText(100);
+    assert.isBelow(md.length, DIGEST_TEXT_MAX_CHARS);
     scope.IOUtils = { read: async () => new TextEncoder().encode(md) };
     const result = await readPaperTextForDigest({
       paperContext: { ...paperContext, mineruCacheDir: "/tmp/mineru/101" },
@@ -360,7 +406,7 @@ describe("digest text read for a whole-text digest", function () {
           throw new Error("unused");
         },
       },
-      maxChars: DIGEST_WHOLE_TEXT_MAX_CHARS,
+      maxChars: DIGEST_TEXT_MAX_CHARS,
     });
     assert.equal(result?.text, md);
     assert.equal(result?.totalCharacters, md.length);
@@ -380,7 +426,7 @@ describe("digest text read for a whole-text digest", function () {
           } as never;
         },
       },
-      maxChars: DIGEST_WHOLE_TEXT_MAX_CHARS,
+      maxChars: DIGEST_TEXT_MAX_CHARS,
     });
     assert.equal(asked, Number.MAX_SAFE_INTEGER);
     assert.equal(result?.totalCharacters, result?.text.length);

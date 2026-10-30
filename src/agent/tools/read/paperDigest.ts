@@ -4,7 +4,8 @@
  * run the one digest worker (`digests/paperDigestWorker.ts`).
  *
  * Each call reads up to `PAPER_DIGEST_MAX_PAPERS_PER_CALL` papers, each
- * from its whole text (in batches when it is long), with the chat's own
+ * from its text up to `DIGEST_TEXT_MAX_CHARS` (in batches when it is long;
+ * a longer item's digest is partial), with the chat's own
  * model through its runtime's tool-free route (`reader/resolveReader.ts`),
  * and returns one row per paper: the digest, or why it failed. The rest are
  * returned as `pending`, and the next call continues them; finished papers
@@ -51,6 +52,7 @@ import {
 } from "../../reader/readerFallback";
 import {
   DIGEST_FAILURE_REASONS,
+  DIGEST_TEXT_MAX_CHARS,
   runPaperDigestJob,
   type HostPaperDigest,
   type PaperDigestCache,
@@ -545,6 +547,12 @@ export async function executePaperDigest(
   };
 }
 
+/** The long-item setting as the description states it, e.g. "120,000". */
+const DIGEST_TEXT_MAX_CHARS_LABEL = String(DIGEST_TEXT_MAX_CHARS).replace(
+  /\B(?=(\d{3})+(?!\d))/g,
+  ",",
+);
+
 export function createPaperDigestTool(
   deps: PaperDigestToolDeps,
 ): AgentToolDefinition<PaperDigestInput, PaperDigestResult> {
@@ -552,12 +560,12 @@ export function createPaperDigestTool(
     spec: {
       name: PAPER_DIGEST_TOOL_NAME,
       description: [
-        "Digest papers with the host's reader: it reads each paper's whole text with this chat's own model (in batches when long) and returns per paper the answer to `instruction`, relevance and stance when a question or claim is named, facets, verified quotes, gaps, and source.complete.",
-        "Use it when the work covers more than four papers or asks for something per paper, instead of reading each paper yourself; do not read them with paper_read first.",
+        `Digest papers with the host's reader: it reads up to ${DIGEST_TEXT_MAX_CHARS_LABEL} characters of each paper with this chat's own model (in batches when long) and returns per paper the answer to \`instruction\`, relevance and stance when a question or claim is named, facets, verified quotes, gaps, and source.complete.`,
+        "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
         `One call reads at most ${PAPER_DIGEST_MAX_PAPERS_PER_CALL} papers; the rest come back in \`pending\`: call again with the same instruction and question until nothing is pending (digested papers are not read again).`,
         "A failed paper runs again on at most two later calls.",
         "Cite a digested paper with the evidence refs this result carries.",
-        "Afterwards read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",
+        "Apart from a whole text the user asks for, read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",
       ].join(" "),
       inputSchema: {
         type: "object",

@@ -2,7 +2,8 @@
  * Host-owned per-paper digests.
  *
  * One bounded reader call per paper answers the digest part's task from the
- * paper's whole text, with the user's request as context: an answer,
+ * paper's text, up to `DIGEST_TEXT_MAX_CHARS`, with the user's request as
+ * context: an answer,
  * verified evidence, and, when the task calls for them, a relevance
  * judgment, a stance, labeled facets and gaps (schema 2). A paper longer
  * than one call is read in batches by the exhaustive reader's batching, and
@@ -176,7 +177,7 @@ export type PaperDigestJobParams = {
   instruction: string;
   /** The user's request the part serves, read as context. */
   question?: string;
-  /** The paper's whole text, up to `maxChars` (a ceiling, not a sample). */
+  /** The paper's text, up to `maxChars` (a ceiling, not a sample). */
   readText: (
     itemId: number,
     maxChars: number,
@@ -221,11 +222,20 @@ export const DIGEST_MAX_INPUT_CHARS = 120_000;
 export const DIGEST_INPUT_RESERVE_TOKENS = 12_000;
 export const DIGEST_TIMEOUT_CAP_MS = 240_000;
 /**
- * The most characters of one paper the worker reads. Far above any paper
- * (a book chapter is under 200,000); text past it is not read, and the
- * digest says so.
+ * A ceiling far above any paper (a book chapter is under 200,000
+ * characters): the value of `DIGEST_TEXT_MAX_CHARS` that would make every
+ * digest read an item's whole text, in batches.
  */
 export const DIGEST_WHOLE_TEXT_MAX_CHARS = 1_500_000;
+/**
+ * The long-item setting: the most characters of one paper a digest reads,
+ * in a digest part and in `paper_digest` alike. Decided 2026-10-30: stop at
+ * the v3.9.15 limit (`DIGEST_MAX_INPUT_CHARS`). A longer item, such as a book
+ * or a thesis, is read up to it; its digest is partial (`source.complete`
+ * false, an excerpt on its text line) and the ledger records the paper as
+ * skimmed. `paper_read` mode `full` reads the whole text when the user asks.
+ */
+export const DIGEST_TEXT_MAX_CHARS: number = DIGEST_MAX_INPUT_CHARS;
 /** The size of the pieces a batched read packs into batches. */
 export const DIGEST_BATCH_PIECE_CHARS = 4_000;
 /** Batches of one paper read at once; papers already run in parallel. */
@@ -1337,7 +1347,7 @@ export async function runPaperDigestJob(
     if (fatal) return failure(target, itemId, fatal.reason, fatal.detail);
     let source: PaperDigestSource | null;
     try {
-      source = await params.readText(itemId, DIGEST_WHOLE_TEXT_MAX_CHARS);
+      source = await params.readText(itemId, DIGEST_TEXT_MAX_CHARS);
     } catch (error) {
       return failure(
         target,

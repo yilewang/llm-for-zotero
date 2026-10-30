@@ -1602,9 +1602,20 @@ function digestReadSeeds(
 }
 
 /**
+ * A digested paper is read when the digest read its whole text, and skimmed
+ * when it read only part (`source.complete` false), as for an item longer
+ * than the digest text limit or a batch that never came back. A digest
+ * saved without the flag stays read.
+ */
+function digestPaperState(digest: TaskPaperDigestInput): TaskPaperState {
+  return digest.source?.complete === false ? "skimmed" : "read";
+}
+
+/**
  * The rows of one `paper_digest` call (the MCP host's per-paper reader), as
- * the host digest builders record them: a digested paper is read, with its
- * digest read and its evidence passages; a failed one is matched, with a
+ * the host digest builders record them: a digested paper is read (skimmed
+ * when the digest read only part of it), with its digest read and its
+ * evidence passages; a failed one is matched, with a
  * `digest` read whose `whyMatched` is the host's reason. A row the run
  * already reported (`alreadyReturned` for a digest repeated with its body,
  * `alreadyReported` for a failure) and a pending paper add nothing.
@@ -1635,7 +1646,7 @@ function paperDigestSeeds(result: unknown): Seed[] {
       ]) {
         seeds.push({
           ref,
-          state: "read",
+          state: digestPaperState(digest),
           ...(source ? { text: source } : {}),
           read,
         });
@@ -1662,7 +1673,8 @@ function paperDigestSeeds(result: unknown): Seed[] {
 }
 
 /**
- * What one completed host digest adds to the ledger: the paper read, one
+ * What one completed host digest adds to the ledger: the paper read (skimmed
+ * when the digest read only part of its text), one
  * `digest` read holding its answer (up to
  * `TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS`), its part's id and label and the
  * relevance and stance it judged, and one `passage` read per verified
@@ -1676,7 +1688,11 @@ export function buildDigestLedgerDelta(
   params: BuildDigestLedgerDeltaParams,
 ): TaskPaperLedgerDelta {
   const { digest } = params;
-  const paper = digestPaper(params.paper, "read", digest.contextItemId);
+  const paper = digestPaper(
+    params.paper,
+    digestPaperState(digest),
+    digest.contextItemId,
+  );
   const backend = digest.source?.backend;
   const source = backend ? DIGEST_TEXT_SOURCE[backend] : undefined;
   if (source) paper.text = source;

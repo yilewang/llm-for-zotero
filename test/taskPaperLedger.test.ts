@@ -1436,6 +1436,45 @@ describe("taskPaperLedger", function () {
       assert.isFalse(part.reads[0].complete);
     });
 
+    it("records a digest that read only part of the text as a skim, in both runtimes' ledgers", function () {
+      // A book cut at the digest text limit: 120,000 of 450,000 characters.
+      const partial = {
+        backend: "mineru" as const,
+        readCharacters: 120_000,
+        totalCharacters: 450_000,
+        complete: false,
+      };
+      const plugin = buildDigestLedgerDelta({
+        callId: "call-9",
+        toolName: "task_update",
+        digest: digest(5, { source: partial }),
+        paper: paper(5),
+      });
+      assert.equal(paperState(plugin, "1:5"), "skimmed");
+      assert.isFalse(plugin.reads[0].complete);
+      const whole = buildDigestLedgerDelta({
+        callId: "call-9",
+        toolName: "task_update",
+        digest: digest(6),
+        paper: paper(6),
+      });
+      assert.equal(paperState(whole, "1:6"), "read");
+      // paper_digest rows over MCP: the same rule.
+      const mcp = derive(
+        "paper_digest",
+        { targets: ["item:5", "item:6"], instruction: "Summarize each paper" },
+        {
+          label: "Summarize each paper",
+          papers: [
+            { ...digest(5, { source: partial }), status: "digested" },
+            { ...digest(6), status: "digested" },
+          ],
+        },
+      );
+      assert.equal(paperState(mcp, "1:5"), "skimmed");
+      assert.equal(paperState(mcp, "1:6"), "read");
+    });
+
     it("keeps an answer whole up to its own cap, evidence at the snippet cap, and caps the reads per paper", function () {
       // A 220-word answer is about 1,500 characters.
       const whole = "Representational drift ".repeat(65).trim();

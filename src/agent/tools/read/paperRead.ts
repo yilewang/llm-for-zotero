@@ -329,9 +329,10 @@ async function tryReadMineruOverview(
  * MinerU `full.md` when its cache is readable, else the whole extracted PDF
  * text (each chunk under its `[chunk N]` marker). Never a sample: a paper
  * longer than one model call is read in batches by the digest worker.
- * `maxChars` is only a ceiling for an extreme document; text past it is not
- * read, and `totalCharacters` then exceeds the text, so the digest reports
- * it as partial. `null` when neither source yields text.
+ * `maxChars` is the digest text limit (`DIGEST_TEXT_MAX_CHARS`, a long item
+ * such as a book passes it); text past it is not read, and
+ * `totalCharacters` then exceeds the text, so the digest reports it as
+ * partial. `null` when neither source yields text.
  */
 export async function readPaperTextForDigest(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
