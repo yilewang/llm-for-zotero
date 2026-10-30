@@ -1756,10 +1756,11 @@ export function waitForCodexAppServerTurnCompletion(params: {
           finish();
         },
       };
-      childGraceTimer = setTimeout(
-        () => childGrace?.finish(),
-        childTurnGraceMs,
-      );
+      childGraceTimer = setTimeout(() => {
+        // A straggler's later MCP call would land in the next turn's run.
+        interruptRunningChildTurns();
+        childGrace?.finish();
+      }, childTurnGraceMs);
     };
     const abortHandler = () => {
       if (childGrace) {

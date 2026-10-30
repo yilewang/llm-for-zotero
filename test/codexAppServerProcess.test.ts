@@ -1165,8 +1165,9 @@ describe("codexAppServerProcess", function () {
           settled,
           "the parent must wait for its child's decision",
         );
+        // Complete the turn in the same tick as the decision: a yield here
+        // lets a late event loop fire the 30 ms idle timer first.
         approve({ decision: "accept" });
-        await tick();
         proc.handleMessage({
           method: "turn/completed",
           params: {
@@ -1437,6 +1438,31 @@ describe("codexAppServerProcess", function () {
         const outcome = await turn.result;
         assert.equal(outcome.text, "parent answer");
         assert.isBelow(turn.settledAt() - completedAt, 260);
+        proc.destroy();
+      });
+
+      it("interrupts a child still running when the grace ends", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const turn = startParent(proc, { childTurnGraceMs: 80 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.deepEqual(
+          interrupts(writes),
+          [],
+          "no interrupt inside the grace",
+        );
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.deepEqual(interrupts(writes), [
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
         proc.destroy();
       });
 

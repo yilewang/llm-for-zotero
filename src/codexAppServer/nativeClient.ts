@@ -90,6 +90,7 @@ import {
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
+  buildCodexNativeSkillInstructionBlock,
   buildCodexNativeSkillRequest,
   resolveExplicitCodexNativeSkillIds,
   resolveCodexNativeSkills,
@@ -119,6 +120,10 @@ export {
   resolveCodexNativeRuntimeCwd,
 } from "./runtimeCwd";
 import { getCanonicalSkillFilePath } from "../agent/skills/nativeSkillPaths";
+import {
+  prepareCodexSkillProjections,
+  withCodexSkillDisableRules,
+} from "./skillProjection";
 import { loadLatestDocumentForRun } from "../agent/documents/store";
 import { areEquivalentLocalPaths } from "../utils/localPath";
 import {
@@ -2836,7 +2841,14 @@ export async function forkCodexAppServerThread(params: {
     params.targetConversationKey,
     params.targetInstanceID,
   );
-  if (config) requestParams.config = config;
+  // The fork hides the canonical copies of marked skills, as a started or
+  // resumed thread does (skillProjection.ts).
+  const skillProjection = await prepareCodexSkillProjections(proc);
+  const forkConfig = withCodexSkillDisableRules(
+    config,
+    skillProjection.projections.map((entry) => entry.canonicalPath),
+  );
+  if (forkConfig) requestParams.config = forkConfig;
   const targetConversationKey = Math.floor(
     Number(params.targetConversationKey),
   );
@@ -3293,12 +3305,24 @@ export async function runCodexAppServerNativeTurn(input: {
             rawPdfMode: currentTurnHasLocalPdfs,
           })
         : null;
-      const threadConfig = {
+      // Before any thread request: Codex-only copies of marked skills, their
+      // folder registered on this process, and their canonical copies hidden
+      // from this thread (skillProjection.ts).
+      const skillProjection = await prepareCodexSkillProjections(proc);
+      const projectedSkills = new Map(
+        skillProjection.projections.map((entry) => [entry.skillId, entry]),
+      );
+      const baseThreadConfig: Record<string, unknown> = {
         ...(mcpThreadConfig?.config || {}),
         features: {
           shell_tool: currentTurnHasLocalPdfs,
         },
       };
+      const threadConfig =
+        withCodexSkillDisableRules(
+          baseThreadConfig,
+          skillProjection.projections.map((entry) => entry.canonicalPath),
+        ) || baseThreadConfig;
       const configuredCodexNativeSkillMode = getCodexNativeSkillModePref();
       const codexNativeSkillMode = currentTurnHasLocalPdfs
         ? "off"
@@ -3654,16 +3678,34 @@ export async function runCodexAppServerNativeTurn(input: {
           params.executionRequest.executionContext;
         const turnSkillIds = resolvedSkills.matchedSkillIds;
         const turnSkillInstructionBlock = resolvedSkills.instructionBlock;
+        const selectedNativeSkillIds = currentTurnHasLocalPdfs
+          ? explicitPdfSkillIds
+          : turnSkillIds;
+        // A marked skill is sent as an item for its Codex-only copy, by exact
+        // path: both copies share a name in skills/list. Without the copies
+        // registered, it goes through the stripped instruction block.
+        const blockSkillIds = skillProjection.registered
+          ? []
+          : selectedNativeSkillIds.filter((id) => projectedSkills.has(id));
+        const projectedSkillPaths: Record<string, string> = {};
+        if (skillProjection.registered) {
+          for (const id of selectedNativeSkillIds) {
+            const entry = projectedSkills.get(id);
+            if (entry) projectedSkillPaths[id] = entry.projectedPath;
+          }
+        }
+        const exactNativeSkillPaths =
+          currentTurnHasLocalPdfs || Object.keys(projectedSkillPaths).length
+            ? { ...(explicitPdfSkillPaths || {}), ...projectedSkillPaths }
+            : undefined;
         const nativeSkillInputResolution = useNativeSkillInputs
           ? await resolveCodexNativeSkillInputItems({
               proc,
               cwd: codexNativeSkillLookupCwd,
-              skillIds: currentTurnHasLocalPdfs
-                ? explicitPdfSkillIds
-                : turnSkillIds,
-              exactSkillPaths: currentTurnHasLocalPdfs
-                ? explicitPdfSkillPaths
-                : undefined,
+              skillIds: selectedNativeSkillIds.filter(
+                (id) => !blockSkillIds.includes(id),
+              ),
+              exactSkillPaths: exactNativeSkillPaths,
             })
           : { skillInputs: [], fallbackSkillIds: [] };
         if (
@@ -3677,7 +3719,11 @@ export async function runCodexAppServerNativeTurn(input: {
           );
         }
         const skillInstructionBlock =
-          codexNativeSkillMode === "legacy" ? turnSkillInstructionBlock : "";
+          codexNativeSkillMode === "legacy"
+            ? turnSkillInstructionBlock
+            : useNativeSkillInputs && blockSkillIds.length
+              ? buildCodexNativeSkillInstructionBlock(blockSkillIds)
+              : "";
         const activatedSkillIds = currentTurnHasLocalPdfs
           ? explicitPdfSkillIds
           : turnSkillIds;
