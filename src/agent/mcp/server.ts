@@ -43,6 +43,7 @@ import type {
   AgentRuntimeRequestInput,
   AgentToolArtifact,
   AgentToolContext,
+  AgentToolDefinition,
   ExhaustiveReadBackend,
   PreparedToolExecution,
   ToolSpec,
@@ -456,6 +457,7 @@ const mcpReadDedupeCache = new Map<
     result: McpToolCallResult;
     observations: readonly TrustedReadObservation[];
     outsidePapers: readonly OutsidePaperRecord[];
+    quoteCitations: readonly QuoteCitation[];
   }
 >();
 
@@ -1267,6 +1269,7 @@ function getCachedMcpReadResult(key: string | null): {
   result: McpToolCallResult;
   observations: readonly TrustedReadObservation[];
   outsidePapers: readonly OutsidePaperRecord[];
+  quoteCitations: QuoteCitation[];
 } | null {
   if (!key) return null;
   pruneExpiredMcpReadDedupeCache();
@@ -1276,6 +1279,7 @@ function getCachedMcpReadResult(key: string | null): {
     result: cloneMcpResultWithDuplicateMarker(cached.result),
     observations: cloneTrustedReadObservations(cached.observations),
     outsidePapers: [...cached.outsidePapers],
+    quoteCitations: [...cached.quoteCitations],
   };
 }
 
@@ -1463,11 +1467,17 @@ function getRawPdfNativeFilesystemViolation(params: {
   return null;
 }
 
+/**
+ * The citations are kept beside the result, not read back from it: the text
+ * the model reads may leave them out (`modelContent`), and a repeat's
+ * activity must carry what the first call's did.
+ */
 function rememberMcpReadResult(
   key: string | null,
   result: McpToolCallResult,
   observations: readonly TrustedReadObservation[],
   outsidePapers: readonly OutsidePaperRecord[],
+  quoteCitations: readonly QuoteCitation[],
 ): void {
   if (!key || result.isError) return;
   pruneExpiredMcpReadDedupeCache();
@@ -1476,6 +1486,7 @@ function rememberMcpReadResult(
     result,
     observations: cloneTrustedReadObservations(observations),
     outsidePapers: [...outsidePapers],
+    quoteCitations: [...quoteCitations],
   });
 }
 
@@ -2224,10 +2235,20 @@ function createToolContext(
   };
 }
 
+/**
+ * The call's result as the client's model reads it. A tool that keeps fields
+ * from the model (`modelContent`: a digest's citation records) is sent its
+ * model content; the activity event carries the whole result.
+ */
 function formatToolResult(
   execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"],
+  tool: Pick<AgentToolDefinition<any, any>, "modelContent"> | undefined,
 ): McpToolCallResult {
   const { result } = execution;
+  const content =
+    result.ok && tool?.modelContent
+      ? tool.modelContent(result.content, execution.input)
+      : result.content;
   return {
     content: [
       {
@@ -2235,7 +2256,7 @@ function formatToolResult(
         text: JSON.stringify(
           {
             ok: result.ok,
-            result: result.content,
+            result: content,
             effect: result.effect,
             ...(result.actionReceipts.length
               ? { actionReceipts: result.actionReceipts }
@@ -2602,9 +2623,7 @@ async function handleToolsCall(
       );
       completeActivity({
         ok: true,
-        quoteCitations: extractQuoteCitationsFromToolContent(
-          cachedReadResult.result,
-        ),
+        quoteCitations: cachedReadResult.quoteCitations,
         artifacts: extractArtifactsFromMcpToolCallResult(
           cachedReadResult.result,
         ),
@@ -2681,7 +2700,7 @@ async function handleToolsCall(
     }
     if (scope)
       scope.clarificationHistory = toolContext.request.clarificationHistory;
-    let result = formatToolResult(prepared.execution);
+    let result = formatToolResult(prepared.execution, tool);
     // One attestation site, one recorder: the read's trusted observations and
     // its Task progress delta come from the same call. Without a
     // conversation there is nothing to record the delta in. A call that is
@@ -2733,12 +2752,14 @@ async function handleToolsCall(
         readObservations,
       ),
     ]);
+    // From the whole result: the text the model reads may leave them out.
+    const quoteCitations = extractQuoteCitationsFromToolContent(
+      prepared.execution.result.content,
+    );
     completeActivity({
       ok: !result.isError,
       error: extractToolCallErrorText(result),
-      quoteCitations: extractQuoteCitationsFromToolContent(
-        prepared.execution.result.content,
-      ),
+      quoteCitations,
       artifacts: prepared.execution.result.artifacts,
       actionReceipts: prepared.execution.result.actionReceipts,
       verifiedReadSources: readObservations.map(
@@ -2771,6 +2792,7 @@ async function handleToolsCall(
       result,
       readObservations,
       outsidePapers,
+      quoteCitations,
     );
     return result;
   } catch (error) {

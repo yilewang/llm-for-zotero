@@ -40,6 +40,17 @@ import {
   type ExhaustiveBatchAnalyzer,
 } from "../../shared/exhaustiveDocumentReader";
 import type { PdfContext } from "../../services/paperContent/types";
+import {
+  buildQuoteCitation,
+  isCanonicalQuoteSourceLabel,
+  mergeQuoteCitations,
+} from "../../services/quotes/quoteCitations";
+import { formatPaperDisplayLabel } from "../../shared/paperDisplayLabels";
+import {
+  formatPaperSourceLabel,
+  resolvePaperContextDisplayMetadata,
+} from "../../services/paperContent/paperAttribution";
+import type { PaperContextRef, QuoteCitation } from "../../shared/types";
 
 export type HostPaperDigestEvidence = {
   section?: string;
@@ -47,6 +58,12 @@ export type HostPaperDigestEvidence = {
   chunk?: number;
   /** The batch (from 0) whose text holds the quote, for a batched read. */
   batch?: number;
+  /**
+   * The host-minted passage id a chat answer cites this quote by
+   * (`[[cite:Q_...]]`), as paper_read gives; its citation is in the
+   * digest's `quoteCitations`.
+   */
+  quoteCitationId?: string;
 };
 
 export const DIGEST_RELEVANCE_LEVELS = [
@@ -86,6 +103,12 @@ export type HostPaperDigest = {
   answer: string;
   /** Verified quotes, at most six. */
   evidence: HostPaperDigestEvidence[];
+  /**
+   * One host-minted citation per verified quote (`withDigestQuoteCitations`).
+   * A record cached before digest quotes had ids lacks it and is minted
+   * again when reused; the ids are deterministic.
+   */
+  quoteCitations?: QuoteCitation[];
   /** When the request names a question, topic or idea. */
   relevance?: DigestRelevance;
   /** When the request states a claim or idea to test. */
@@ -128,6 +151,11 @@ export type PaperDigestSource = {
   contextItemId: number;
   libraryID?: number;
   title?: string;
+  /**
+   * The paper's source label (`digestSourceLabel`), as paper_read labels its
+   * quotes; without it the digest's own paper is labelled the same way.
+   */
+  sourceLabel?: string;
   backend: "mineru" | "pdf" | "text";
   text: string;
   totalCharacters: number;
@@ -691,6 +719,123 @@ export function digestCacheKey(params: {
 }
 
 /**
+ * The label a digest's quotes are cited under, the one owner of its
+ * fallback: the paper's source label, as paper_read labels its quotes, or,
+ * when the citation contract cannot read that label as a source (an
+ * undated creator of several words), the same paper as
+ * `(Creator or Title, n.d.)`. `label` is a label already formed for the
+ * paper (a digest source's); by default the paper's own.
+ */
+export function digestSourceLabel(
+  paper: PaperContextRef,
+  label: string = formatPaperSourceLabel(paper),
+): string {
+  const given = normalizeWhitespace(label);
+  if (given && isCanonicalQuoteSourceLabel(given)) return given;
+  return formatPaperDisplayLabel({
+    title: paper.title,
+    ...resolvePaperContextDisplayMetadata(paper),
+  });
+}
+
+/** The paper a digest is of, as a label is formed for it. */
+function digestPaper(digest: HostPaperDigest): PaperContextRef {
+  return {
+    itemId: digest.itemId,
+    contextItemId: digest.contextItemId,
+    title: digest.title || "",
+  };
+}
+
+/**
+ * The digest with one host-minted citation per verified Evidence quote, as
+ * paper_read mints a passage's: the quote, the paper's source label, the
+ * paper and its attachment, an exact match in the text the reader saw, and
+ * the title as metadata a quote must not be. No page is claimed; the
+ * answer-time gate locates the quote in the PDF. The id is deterministic
+ * (quote, label, attachment), so minting a cached digest again gives the
+ * same ids. A quote the contract refuses keeps no id.
+ */
+export function withDigestQuoteCitations(
+  digest: HostPaperDigest,
+  sourceLabel?: string,
+): HostPaperDigest {
+  const citationLabel = digestSourceLabel(digestPaper(digest), sourceLabel);
+  const citations: QuoteCitation[] = [];
+  const evidence = digest.evidence.map((entry) => {
+    const { quoteCitationId: _stale, ...rest } = entry;
+    const citation = buildQuoteCitation({
+      quoteText: entry.quote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      citationLabel,
+      sourceSectionLabel: entry.section,
+      contextItemId: digest.contextItemId,
+      itemId: digest.itemId,
+      metadataTexts: digest.title ? [digest.title] : [],
+      allowShortQuoteText: true,
+    });
+    if (!citation) return rest;
+    citations.push(citation);
+    return { ...rest, quoteCitationId: citation.id };
+  });
+  return {
+    ...digest,
+    evidence,
+    quoteCitations: mergeQuoteCitations(citations),
+  };
+}
+
+/**
+ * Whether a cached digest carries the ids minting it now gives: it was
+ * minted (every digest made since its quotes have ids carries the list,
+ * empty when no quote could be minted), and under the paper's current
+ * label, since the label is part of each id. A user who fixes a paper's
+ * creator or year gets the corrected label on the next reuse.
+ */
+function hasCurrentDigestQuoteCitations(
+  cached: HostPaperDigest,
+  minted: HostPaperDigest,
+): boolean {
+  if (!Array.isArray(cached.quoteCitations)) return false;
+  const ids = (digest: HostPaperDigest) =>
+    JSON.stringify([
+      (digest.quoteCitations || []).map((citation) => citation.id),
+      digest.evidence.map((entry) => entry.quoteCitationId || ""),
+    ]);
+  return ids(cached) === ids(minted);
+}
+
+/** Deeper than any digest result nests a citation list. */
+const DIGEST_MODEL_VIEW_MAX_DEPTH = 8;
+
+/**
+ * A digest result as the model reads it, in every runtime: no
+ * `quoteCitations` list at any depth down to `DIGEST_MODEL_VIEW_MAX_DEPTH`
+ * (the run's merged list, a digest's own, an MCP row's); a list nested deeper
+ * is left as it is. Each Evidence quote keeps its `quoteCitationId`, so the
+ * model cites the id it reads beside the quote; the whole result, which the
+ * run's collector and the panel read, keeps the citation records. They
+ * would double what the model reads: each repeats its quote and adds about
+ * 225 characters of fields.
+ */
+export function withoutDigestQuoteCitations<T>(value: T): T {
+  const strip = (entry: unknown, depth: number): unknown => {
+    if (!entry || typeof entry !== "object") return entry;
+    if (depth > DIGEST_MODEL_VIEW_MAX_DEPTH) return entry;
+    if (Array.isArray(entry))
+      return entry.map((item) => strip(item, depth + 1));
+    const out: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(entry)) {
+      if (key === "quoteCitations") continue;
+      out[key] = strip(field, depth + 1);
+    }
+    return out;
+  };
+  return strip(value, 0) as T;
+}
+
+/**
  * The citation source a digested paper may be cited by: the paper's key and
  * the evidence refs the host issued for its digest.
  */
@@ -747,6 +892,17 @@ function relevanceCountLine(
     .join(", ")}`;
 }
 
+/** The ids of a digest's minted Evidence quotes, once each, in order. */
+function quoteIdsOf(digest: HostPaperDigest): string[] {
+  return [
+    ...new Set(
+      digest.evidence.flatMap((entry) =>
+        entry.quoteCitationId ? [entry.quoteCitationId] : [],
+      ),
+    ),
+  ];
+}
+
 const handleLine = (handle: string) =>
   `Full digest: context_read source:'tool_result' handle:'${handle}'`;
 
@@ -754,10 +910,11 @@ const handleLine = (handle: string) =>
  * The digests as the model reads them, in order, then the failures; first a
  * relevance count line when any digest judged relevance. Up to twelve render
  * whole: coverage, relevance and stance, answer, facets, evidence, gaps, and
- * the handle the digest is stored under. More render compactly, each as its
- * title, citation source, coverage, relevance and stance, the first 400
- * characters of its answer and its handle, so the result stays bounded and
- * no verdict is lost. The callbacks receive the digest too, so two digests
+ * the handle the digest is stored under; each Evidence quote names its
+ * passage id. More render compactly, each as its title, document source,
+ * coverage, relevance and stance, the first 400 characters of its answer,
+ * its Evidence quotes' ids on one line and its handle, so the result stays
+ * bounded and no verdict is lost. The callbacks receive the digest too, so two digests
  * of one paper (two parts) each name their own handle and source.
  *
  * `headingOf` names the part a digest or a failure answers (a line such as
@@ -785,9 +942,11 @@ export function renderHostPaperDigests(
   const render = (digest: HostPaperDigest) => {
     const source = sourceOf?.(digest.itemId, digest);
     const handle = handleOf?.(digest.itemId, digest);
+    // The evidence refs name the paper for submit_document; a chat answer
+    // cites the Evidence quotes' ids instead.
     const heading = `### ${label(digest.itemId, digest.title)} (item:${digest.itemId})${
       source
-        ? ` — cite source ${JSON.stringify({
+        ? ` — document source ${JSON.stringify({
             libraryID: source.libraryID,
             itemKey: source.itemKey,
             evidenceRefs: source.evidenceRefs,
@@ -799,11 +958,20 @@ export function renderHostPaperDigests(
         digest.answer.length > DIGEST_COMPACT_ANSWER_CHARS
           ? `${digest.answer.slice(0, DIGEST_COMPACT_ANSWER_CHARS)}…`
           : digest.answer;
+      const ids = quoteIdsOf(digest);
       return [
         heading,
         textCoverage(digest.source),
         ...judgmentLines(digest),
         `Answer: ${answer}`,
+        // The ids come without their quotes: the full digest shows each
+        // quote with its id, and the model reads it there before citing.
+        // With no stored digest to read, the line would point nowhere.
+        ...(ids.length && handle
+          ? [
+              `Evidence quoteCitationIds: ${ids.join(", ")} (read each quote in the full digest before citing it)`,
+            ]
+          : []),
         handle
           ? handleLine(handle)
           : "Full digest: not stored; declare the part again for this paper to see it whole.",
@@ -824,7 +992,10 @@ export function renderHostPaperDigests(
       lines.push("Evidence:");
       for (const entry of digest.evidence) {
         const where = entry.section ? `[${entry.section}] ` : "";
-        lines.push(`- ${where}"${entry.quote}"`);
+        const id = entry.quoteCitationId
+          ? ` (quoteCitationId: ${entry.quoteCitationId})`
+          : "";
+        lines.push(`- ${where}"${entry.quote}"${id}`);
       }
     }
     if (digest.gaps.length) {
@@ -1386,7 +1557,22 @@ export async function runPaperDigestJob(
         `cache read failed: ${describeError(error)}`,
       );
     }
-    if (hit) return { kind: "digest", digest: hit };
+    if (hit) {
+      // Minted again: the same ids a fresh digest gets (quote, label,
+      // attachment).
+      const minted = withDigestQuoteCitations(hit, source.sourceLabel);
+      if (hasCurrentDigestQuoteCitations(hit, minted))
+        return { kind: "digest", digest: hit };
+      // Cached before digest quotes had ids, or under the paper's old label:
+      // store the record again once, so context_read and later reuses show
+      // the current ids.
+      try {
+        await params.cache.set(minted);
+      } catch {
+        shared.publishErrors += 1;
+      }
+      return { kind: "digest", digest: minted };
+    }
     const fatalAfterRead = fatalFailure();
     if (fatalAfterRead) {
       return failure(
@@ -1469,7 +1655,7 @@ export async function runPaperDigestJob(
       DIGEST_STANCE_POSITIONS,
     );
     const digestModel = currentModel();
-    const digest: HostPaperDigest = {
+    const unminted: HostPaperDigest = {
       schema: 2,
       itemId,
       contextItemId: source.contextItemId,
@@ -1503,6 +1689,7 @@ export async function runPaperDigestJob(
       cacheKey:
         digestModel === cacheModel ? cacheKey : cacheKeyFor(digestModel),
     };
+    const digest = withDigestQuoteCitations(unminted, source.sourceLabel);
     try {
       await params.cache.set(digest);
     } catch {

@@ -23,6 +23,7 @@ import {
   type DigestJobHostDeps,
   type DigestRunResult,
 } from "../../digests/digestJobHost";
+import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
 import {
   capabilityChanges,
   declarationChanges,
@@ -957,6 +958,9 @@ export function createTaskUpdateTool(
     ],
     isAvailable: (request) =>
       request.executionContext?.permissionOwner === "original_agent",
+    // The model cites a digest quote by the id beside it; the citation
+    // records stay with the host.
+    modelContent: (result) => withoutDigestQuoteCitations(result),
     validate: validateTaskUpdateInput,
     planInvocation: () =>
       readOnlyInvocationPlan({

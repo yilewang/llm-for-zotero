@@ -496,6 +496,16 @@ export function createAgentTurnEventHandler(
         }
         break;
       }
+      case "codex_tool_activity":
+        // A Zotero MCP call Claude Code made: its passage citations join the
+        // answer's, as the Codex panel merges them from the same activity.
+        if (event.phase === "completed" && event.ok && event.quoteCitations) {
+          assistantMessage.quoteCitations = mergeQuoteCitations(
+            assistantMessage.quoteCitations,
+            event.quoteCitations,
+          );
+        }
+        break;
       case "tool_result": {
         if (!event.ok) break;
         mergeAgentToolResultQuoteCitations(assistantMessage, event);

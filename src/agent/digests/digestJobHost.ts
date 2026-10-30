@@ -42,7 +42,8 @@ import {
   resolveReaderWithFallback,
   type ReaderFallbackNote,
 } from "../reader/readerFallback";
-import type { PaperContextRef } from "../../shared/types";
+import type { PaperContextRef, QuoteCitation } from "../../shared/types";
+import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import {
   buildDigestFailureLedgerDelta,
   buildDigestLedgerDelta,
@@ -74,6 +75,7 @@ import { readPaperTextForDigest } from "../tools/read/paperRead";
 import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import {
   DIGEST_FAILURE_REASONS,
+  digestSourceLabel,
   renderHostPaperDigests,
   runPaperDigestJob,
   type HostPaperDigest,
@@ -165,6 +167,12 @@ export type DigestRunResult = {
   }>;
   /** The citable source of each digest, as a read tool's result names it. */
   documentEvidenceRefs?: DigestEvidenceRef[];
+  /**
+   * The host-minted citations of every digest's Evidence quotes, as
+   * paper_read returns its passages': the ids a chat answer cites
+   * (`[[cite:Q_...]]`), which the run collects for the final answer.
+   */
+  quoteCitations?: QuoteCitation[];
   /** `final`: not run again; the paper failed on every allowed retry. */
   digestFailures?: Array<{
     itemId: number;
@@ -360,11 +368,24 @@ export function createHandleStorePaperDigestCache(params: {
       for (const record of records) {
         const digest = cachedDigest(record);
         if (!digest) continue;
+        // A record stored again with quote ids wins over the one stored
+        // before them, whichever the store lists first.
+        const known = digests.get(digest.cacheKey);
+        if (
+          known &&
+          Array.isArray(known.quoteCitations) &&
+          !Array.isArray(digest.quoteCitations)
+        )
+          continue;
         digests.set(digest.cacheKey, digest);
         if (
           (record.resourceSignature || "") === (params.resourceSignature || "")
         )
           handles.set(digest.cacheKey, record.handle);
+        // The served digest came from another scope: this scope's handle
+        // holds an older record, so the digest is stored under this scope
+        // when a handle is asked for.
+        else handles.delete(digest.cacheKey);
       }
       return digests;
     }));
@@ -689,6 +710,7 @@ export async function runDigestParts(params: {
           contextItemId: paper.contextItemId,
           ...(paper.libraryID ? { libraryID: paper.libraryID } : {}),
           ...(paper.title ? { title: paper.title } : {}),
+          sourceLabel: digestSourceLabel(paper),
           ...text,
         };
       },
@@ -777,6 +799,9 @@ export async function runDigestParts(params: {
         ...(ref ? { evidenceRefs: [ref] } : {}),
       });
   }
+  const quoteCitations = mergeQuoteCitations(
+    ...digests.map((digest) => digest.quoteCitations),
+  );
   const allFailures = [...failures, ...finalFailures];
   const final = new Set(finalFailures);
   const notes: string[] = [];
@@ -858,6 +883,7 @@ export async function runDigestParts(params: {
       : {}),
     ...(handles.length ? { digestHandles: handles } : {}),
     ...(evidenceRefs.length ? { documentEvidenceRefs: evidenceRefs } : {}),
+    ...(quoteCitations.length ? { quoteCitations } : {}),
     ...(allFailures.length
       ? {
           digestFailures: allFailures.map((failure) => {

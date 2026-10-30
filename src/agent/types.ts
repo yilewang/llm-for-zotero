@@ -585,6 +585,12 @@ export type AgentEvent =
       workCategory?: AgentWorkCategory;
       /** Whether the call could change library state, as the server saw it. */
       mutability?: "read" | "write";
+      /**
+       * The passage citations a completed Zotero MCP call returned (a
+       * paper_read passage, a paper_digest quote), which the chat's answer
+       * may cite; the Claude bridge relays them as the Codex panel reads them.
+       */
+      quoteCitations?: QuoteCitation[];
     }
   | {
       type: "usage";
@@ -1845,6 +1851,15 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     result: TResult,
     context: AgentToolContext,
   ) => AgentToolModelView | null;
+  /**
+   * The successful result the model reads, when the host keeps some of its
+   * fields to itself (a digest's citation records, whose ids the result
+   * already shows beside each quote). Unlike `buildModelView` it stores
+   * nothing: the trace event, the run's citation collector and the panel
+   * read the whole result, and the plugin Agent and the MCP server both
+   * send the model this one. A tool with `buildModelView` does not use it.
+   */
+  modelContent?: (result: TResult, input: TInput) => unknown;
   /**
    * Allows a host-owned terminal artifact to become the application-visible
    * answer without fabricating a provider assistant message. The exact

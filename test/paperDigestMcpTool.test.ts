@@ -42,6 +42,7 @@ import {
   clearCodexZoteroMcpPreflightCache,
 } from "../src/codexAppServer/mcpSetup";
 import type { ReaderCompletion } from "../src/shared/readerCompletion";
+import { buildClaudeMcpToolActivityEvent } from "../src/agent/externalBackendBridge";
 import type { AgentToolContext } from "../src/agent/types";
 
 const TEXT = [
@@ -207,6 +208,15 @@ describe("paper_digest MCP tool", function () {
       "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
     );
     assert.notInclude(description, "whole text with this chat's own model");
+    // A chat answer cites a quote's id; evidence refs are a document's.
+    assert.include(
+      description,
+      "Cite a verified quote in chat by its quoteCitationId; the evidence refs are for submit_document.",
+    );
+    assert.notInclude(
+      description,
+      "Cite a digested paper with the evidence refs this result carries.",
+    );
   });
 
   it("refuses the plugin Agent, which declares a task_update digest part instead", async function () {
@@ -768,6 +778,14 @@ describe("paper_digest over the MCP server", function () {
     assert.isTrue(first.alreadyReturned);
     assert.include(first.answer, "Drift did not impair decoding");
     assert.isTrue(failed.alreadyReported);
+    // The repeat shows the quote's id but no citation record, and its
+    // activity carries the same citations as the first call's.
+    assert.match(first.evidence[0].quoteCitationId, /^Q_/);
+    assert.notProperty(first, "quoteCitations");
+    const idsOf = (event: Record<string, any>) =>
+      (event.quoteCitations || []).map((citation: any) => citation.id);
+    assert.deepEqual(idsOf(completed[1]), [first.evidence[0].quoteCitationId]);
+    assert.deepEqual(idsOf(completed[1]), idsOf(completed[0]));
   });
 
   it("attests each digested paper and records one ledger row per paper", async function () {
@@ -821,9 +839,35 @@ describe("paper_digest over the MCP server", function () {
     assert.lengthOf(payload.documentEvidenceRefs, 1);
     assert.equal(payload.documentEvidenceRefs[0].itemKey, "KEY1");
     assert.deepEqual(payload.documentEvidenceRefs[0].capabilities, ["body"]);
+    // The model reads its verified quote with the host-minted id beside it,
+    // and no citation record: the host keeps those for the panel.
+    const [digested] = payload.result.papers;
+    const quoteId = digested.evidence[0].quoteCitationId;
+    assert.match(quoteId, /^Q_/);
+    assert.isString(digested.evidence[0].quote);
+    assert.notInclude(reply.result.content[0].text, "quoteCitations");
 
     assert.lengthOf(completed, 1);
     const [event] = completed;
+    // The activity carries them to the panel: Codex merges them, and the
+    // Claude bridge's trace row now carries them too.
+    assert.deepEqual(
+      (event.quoteCitations || []).map((citation: any) => [
+        citation.id,
+        citation.citationLabel,
+        citation.itemId,
+        citation.contextItemId,
+      ]),
+      [[quoteId, "(Paper 1, n.d.)", 1, 1001]],
+    );
+    const claudeRow = buildClaudeMcpToolActivityEvent(event as never);
+    assert.deepEqual(
+      (
+        (claudeRow as { quoteCitations?: Array<{ id: string }> })
+          .quoteCitations || []
+      ).map((citation) => citation.id),
+      [quoteId],
+    );
     assert.lengthOf(event.readObservations, 1);
     assert.equal(event.readObservations[0].toolName, "paper_digest");
     assert.equal(event.readObservations[0].readMode, "digest");

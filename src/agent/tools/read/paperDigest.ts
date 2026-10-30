@@ -53,7 +53,9 @@ import {
 import {
   DIGEST_FAILURE_REASONS,
   DIGEST_TEXT_MAX_CHARS,
+  digestSourceLabel,
   runPaperDigestJob,
+  withoutDigestQuoteCitations,
   type HostPaperDigest,
   type PaperDigestCache,
   type PaperDigestFailure,
@@ -432,6 +434,7 @@ export async function executePaperDigest(
             contextItemId: paper.contextItemId,
             ...(paper.libraryID ? { libraryID: paper.libraryID } : {}),
             ...(paper.title ? { title: paper.title } : {}),
+            sourceLabel: digestSourceLabel(paper),
             ...text,
           };
         },
@@ -564,7 +567,7 @@ export function createPaperDigestTool(
         "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
         `One call reads at most ${PAPER_DIGEST_MAX_PAPERS_PER_CALL} papers; the rest come back in \`pending\`: call again with the same instruction and question until nothing is pending (digested papers are not read again).`,
         "A failed paper runs again on at most two later calls.",
-        "Cite a digested paper with the evidence refs this result carries.",
+        "Cite a verified quote in chat by its quoteCitationId; the evidence refs are for submit_document.",
         "Apart from a whole text the user asks for, read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",
       ].join(" "),
       inputSchema: {
@@ -606,6 +609,9 @@ export function createPaperDigestTool(
       (request.exhaustiveReadBackend === "codex_responses" ||
         request.exhaustiveReadBackend === "claude_bridge"),
     validate: validatePaperDigestInput,
+    // The model cites a row's quote by the id beside it; the citation
+    // records ride on the call's activity to the panel.
+    modelContent: (result) => withoutDigestQuoteCitations(result),
     planInvocation: () =>
       readOnlyInvocationPlan({
         domains: [],

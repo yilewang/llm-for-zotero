@@ -320,6 +320,15 @@ describe("agent resource context plan", function () {
         scope,
       );
     }
+    // A chat answer cites a digest's quotes by their ids; the evidence refs
+    // are a document's (since v3.9.10 answers cited refs and lost every mark).
+    assert.equal(
+      text.split(
+        "the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only.",
+      ).length - 1,
+      2,
+    );
+    assert.notInclude(text, "with the evidence refs to cite");
     // A matching skill sets the parts, so it is loaded before any is
     // declared (eval b4v6, run 2: a read part declared before load_skill).
     assert.equal(

@@ -18,6 +18,11 @@ import { RetrievalService } from "../src/agent/services/retrievalService";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import { papers as corpus } from "./fixtures/qaEvaluation/corpus";
+import {
+  digestSourceLabel,
+  withDigestQuoteCitations,
+} from "../src/agent/digests/paperDigestWorker";
+import type { QuoteCitation } from "../src/shared/types";
 
 describe("QA acquisition contracts", function () {
   let previous: ReturnType<typeof snapshotTestGlobals>;
@@ -92,6 +97,53 @@ describe("QA acquisition contracts", function () {
       modelName: "test",
     } as any)) as any;
   }
+  it("gives a digest quote the id paper_read gives the same passage", async function () {
+    const result = await read({ query: "observational drift", topK: 2 });
+    const citations = (result.quoteCitations || []) as QuoteCitation[];
+    assert.isNotEmpty(citations);
+    const [passage] = citations;
+    // paper_read labels its quotes with the paper's source label.
+    assert.equal(passage.citationLabel, digestSourceLabel(refs[0]));
+    const digest = withDigestQuoteCitations(
+      {
+        schema: 2,
+        itemId: refs[0].itemId,
+        contextItemId: refs[0].contextItemId,
+        title: refs[0].title,
+        answer: "The paper reports drift.",
+        evidence: [{ quote: passage.quoteText }],
+        facets: [],
+        gaps: [],
+        source: {
+          backend: "mineru",
+          readCharacters: 1,
+          totalCharacters: 1,
+          complete: true,
+        },
+        model: "m",
+        producedAt: 1,
+        cacheKey: "k",
+      },
+      digestSourceLabel(refs[0]),
+    );
+    assert.equal(digest.evidence[0].quoteCitationId, passage.id);
+    assert.deepEqual(
+      digest.quoteCitations?.map((citation) => [
+        citation.id,
+        citation.citationLabel,
+        citation.contextItemId,
+        citation.itemId,
+      ]),
+      [
+        [
+          passage.id,
+          passage.citationLabel,
+          passage.contextItemId,
+          passage.itemId,
+        ],
+      ],
+    );
+  });
   it("keeps an Abstract-only top-one read inside Abstract", async function () {
     const result = await read({
       query: "observational drift",

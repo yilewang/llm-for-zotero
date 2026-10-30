@@ -20,7 +20,13 @@ import {
   createHandleStorePaperDigestCache,
   createZoteroPaperDigestSources,
 } from "../src/agent/digests/digestJobHost";
-import type { HostPaperDigest } from "../src/agent/digests/paperDigestWorker";
+import {
+  digestSourceLabel,
+  type HostPaperDigest,
+} from "../src/agent/digests/paperDigestWorker";
+import { PassageCitationCollector } from "../src/agent/context/passageCitationCollector";
+import { selectUsedQuoteCitations } from "../src/services/quotes/quoteCitations";
+import type { QuoteCitation } from "../src/shared/types";
 import type { MaterialRef } from "../src/agent/documents/materialRef";
 import type { TaskPaperLedgerDelta } from "../src/agent/context/taskPaperLedger";
 import {
@@ -44,6 +50,7 @@ import {
   installMockDb,
 } from "./helpers/agentRuntimeMockDb";
 import { createSubmitDocumentTool } from "../src/agent/tools/control/submitDocument";
+import { createContextReadTool } from "../src/agent/tools/read/contextRead";
 import { initPlanDocumentStore } from "../src/agent/documents/store";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { createTestActionContractService } from "./helpers/actionContractService";
@@ -420,6 +427,288 @@ describe("task_update runs a declared digest part", function () {
     assert.include(answer.digests, "Cells drift slowly.");
     assert.lengthOf(answer.digestHandles, 1);
     assert.deepEqual(answer.parts[0].done, 1);
+  });
+
+  it("gives each verified Evidence quote a Q_ id that the run collects and a chat answer cites; an evidence ref cites none", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-quotes", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    const citations = answer.quoteCitations as QuoteCitation[];
+    assert.lengthOf(citations, 2, "one per paper's verified quote");
+    const byItem = new Map(citations.map((c) => [c.itemId, c]));
+    assert.deepInclude(byItem.get(5)!, {
+      quoteText: "We recorded forty cells over ten days.",
+      citationLabel: "(Ziv, 2021)",
+      contextItemId: 105,
+      itemId: 5,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+    });
+    // A paper with no creator or year still has a canonical label.
+    assert.equal(byItem.get(6)!.citationLabel, "(Drift B, n.d.)");
+    const id5 = byItem.get(5)!.id;
+    assert.match(id5, /^Q_/);
+    assert.include(
+      answer.digests,
+      `"We recorded forty cells over ten days." (quoteCitationId: ${id5})`,
+    );
+    // The model reads each id beside its quote, never the citation records:
+    // the host keeps those for the run's collector and the panel.
+    const delivered = JSON.stringify(outcome.delivery?.content);
+    assert.include(delivered, `(quoteCitationId: ${id5})`);
+    assert.notInclude(delivered, "quoteCitations");
+    assert.notInclude(delivered, '"quoteText"');
+
+    // The runtime's collector reads the ids off the tool result event.
+    const event = harness.events.find(
+      (entry) => entry.type === "tool_result" && entry.name === "task_update",
+    );
+    assert.exists(event);
+    if (event?.type !== "tool_result") return;
+    const collector = new PassageCitationCollector();
+    collector.collect(event.content, event.artifacts);
+    assert.sameMembers(
+      collector.quoteCitations.map((c) => c.id),
+      citations.map((c) => c.id),
+    );
+    // An answer citing the id gets its citation; the final event carries
+    // what this selects.
+    assert.deepEqual(
+      selectUsedQuoteCitations({
+        text: `Place cells drift slowly [[cite:${id5}]].`,
+        quoteCitations: collector.quoteCitations,
+      }).map((c) => c.id),
+      [id5],
+    );
+    // An evidence ref is a document's source, never a chat mark.
+    assert.isEmpty(
+      selectUsedQuoteCitations({
+        text: "Place cells drift slowly [[cite:2b4cd8c1feb5:1]].",
+        quoteCitations: collector.quoteCitations,
+      }),
+    );
+  });
+
+  it("context_read shows a stored digest's quotes with their ids and keeps its citation records from the model, which the run still collects", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5],
+      (registry) => registry.register(createContextReadTool()),
+    );
+    const digestCall = await runCall(harness, "call-quotes", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = digestCall.toolResult.content as Record<string, any>;
+    const [citation] = answer.quoteCitations as QuoteCitation[];
+    const handle = answer.digestHandles[0].handle as string;
+    assert.include(
+      answer.digests,
+      `context_read source:'tool_result' handle:'${handle}'`,
+    );
+    const execution = createToolExecution(harness.deps);
+    for (const path of ["digest", "rendered"]) {
+      const read = await execution.executeToolWorkflow(
+        {
+          id: `read-${path}`,
+          name: "context_read",
+          arguments: { source: "tool_result", handle, path },
+        },
+        2,
+        { modelCallId: `read-${path}` },
+      );
+      assert.isTrue(read.toolResult.ok, path);
+      // The model sees each Evidence quote with its id, and no record.
+      const delivered = JSON.stringify(read.delivery?.content);
+      assert.include(delivered, "We recorded forty cells over ten days.", path);
+      assert.include(delivered, citation.id, path);
+      assert.notInclude(delivered, "quoteCitations", path);
+      // The full result still carries them, for the run and the panel.
+      const event = harness.events.findLast(
+        (entry) =>
+          entry.type === "tool_result" && entry.callId === `read-${path}`,
+      );
+      assert.exists(event, path);
+      if (event?.type !== "tool_result") return;
+      const collector = new PassageCitationCollector();
+      collector.collect(event.content, event.artifacts);
+      assert.deepEqual(
+        collector.quoteCitations.map((entry) => entry.id),
+        [citation.id],
+        path,
+      );
+    }
+  });
+
+  it("context_read of a task_update result the trace stored keeps its citation records from the model, which the run still collects", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5],
+      (registry) => registry.register(createContextReadTool()),
+    );
+    const digestCall = await runCall(harness, "call-stored", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = digestCall.toolResult.content as Record<string, any>;
+    const [citation] = answer.quoteCitations as QuoteCitation[];
+    assert.exists(citation);
+    // The trace keeps an oversized task_update result whole behind a handle.
+    const stored = createAgentToolResultHandleRecord({
+      conversationKey: harness.request.conversationKey,
+      toolName: "task_update",
+      toolCallId: "call-stored",
+      content: answer,
+      createdAt: 5,
+    })!;
+    await upsertAgentToolResultHandles([stored]);
+    harness.request.metadata = {
+      ...harness.request.metadata,
+      agentToolResultReadAvailable: true,
+    };
+    const execution = createToolExecution(harness.deps);
+    // A root read only lists the paths; a page of `digests` is what the model
+    // reads quotes from.
+    for (const path of ["digests"]) {
+      const id = `read-stored-${path}`;
+      const read = await execution.executeToolWorkflow(
+        {
+          id,
+          name: "context_read",
+          arguments: {
+            source: "tool_result",
+            handle: stored.handle,
+            path,
+          },
+        },
+        2,
+        { modelCallId: id },
+      );
+      assert.isTrue(read.toolResult.ok, id);
+      const delivered = JSON.stringify(read.delivery?.content);
+      assert.include(delivered, citation.id, id);
+      assert.notInclude(delivered, "quoteCitations", id);
+      const event = harness.events.findLast(
+        (entry) => entry.type === "tool_result" && entry.callId === id,
+      );
+      assert.exists(event, id);
+      if (event?.type !== "tool_result") return;
+      const collector = new PassageCitationCollector();
+      collector.collect(event.content, event.artifacts);
+      assert.deepEqual(
+        collector.quoteCitations.map((entry) => entry.id),
+        [citation.id],
+        id,
+      );
+    }
+  });
+
+  it("mints ids for a digest cached before digest quotes had them, the same ids, and stores the record again", async function () {
+    let calls = 0;
+    const digests = scriptedDigests(async () => {
+      calls += 1;
+      return reply("Cells drift slowly.");
+    });
+    const first = createHarness(digests, [5]);
+    const fresh = (await runCall(first, "call-fresh", { tasks: [SUMMARIZE] }))
+      .toolResult.content as Record<string, any>;
+    assert.equal(calls, 1);
+    const stored = first.handles.find(
+      (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+    )!;
+    const content = stored.content as {
+      cacheKey: string;
+      digest: HostPaperDigest;
+    };
+    // The record as v3.9.15 stored it: schema 2, no ids anywhere.
+    const { quoteCitations: _ids, ...digest } = content.digest;
+    const old = {
+      ...digest,
+      evidence: digest.evidence.map(
+        ({ quoteCitationId: _id, ...entry }) => entry,
+      ),
+    };
+    assert.notInclude(JSON.stringify(old), "Q_");
+    const second = createHarness(digests, [5]);
+    await upsertAgentToolResultHandles([
+      createAgentToolResultHandleRecord({
+        conversationKey: second.request.conversationKey,
+        toolName: PAPER_DIGEST_HANDLE_TOOL,
+        toolCallId: content.cacheKey,
+        resourceSignature: "scope-1",
+        content: {
+          cacheKey: content.cacheKey,
+          digest: old,
+          rendered: "stored without ids",
+        },
+        // Listed after the record stored again below (in 2096, after any
+        // clock this test runs under), so the newer listing cannot be what
+        // makes the minted one win.
+        createdAt: 4_000_000_000_000,
+      })!,
+    ]);
+    const reused = (
+      await runCall(second, "call-reused", { tasks: [SUMMARIZE] })
+    ).toolResult.content as Record<string, any>;
+    assert.equal(calls, 1, "the old record is reused, not read again");
+    assert.deepEqual(
+      (reused.quoteCitations as QuoteCitation[]).map((c) => c.id),
+      (fresh.quoteCitations as QuoteCitation[]).map((c) => c.id),
+    );
+    // The record is stored again with its ids, for context_read.
+    const again = second.handles.find(
+      (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+    );
+    assert.exists(again);
+    const againContent = again!.content as {
+      digest: HostPaperDigest;
+      rendered: string;
+    };
+    assert.deepEqual(
+      againContent.digest.quoteCitations,
+      content.digest.quoteCitations,
+    );
+    assert.include(againContent.rendered, "quoteCitationId: Q_");
+    assert.include(
+      reused.digests,
+      again!.handle,
+      "the result names the record that has the ids",
+    );
+
+    // A later turn is served the minted record and stores nothing again.
+    const third = createHarness(digests, [5]);
+    third.request.conversationKey = second.request.conversationKey;
+    const later = (await runCall(third, "call-later", { tasks: [SUMMARIZE] }))
+      .toolResult.content as Record<string, any>;
+    assert.equal(calls, 1);
+    assert.isEmpty(
+      third.handles.filter(
+        (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+      ),
+    );
+    assert.include(later.digests, again!.handle);
+  });
+
+  it("labels a digest's quotes with the paper's canonical source label", function () {
+    const paper = (extra: Partial<PaperContextRef>): PaperContextRef => ({
+      itemId: 6,
+      contextItemId: 106,
+      title: "Drift B",
+      ...extra,
+    });
+    assert.equal(
+      digestSourceLabel(paper({ firstCreator: "Ziv", year: "2021" })),
+      "(Ziv, 2021)",
+    );
+    assert.equal(digestSourceLabel(paper({})), "(Drift B, n.d.)");
+    // An undated creator the citation contract cannot read as a source.
+    assert.equal(
+      digestSourceLabel(paper({ firstCreator: "van der Berg" })),
+      "(van der Berg, n.d.)",
+    );
   });
 
   it("never caches a failure", async function () {
@@ -1153,6 +1442,67 @@ describe("task_update runs a declared digest part", function () {
       handle: records[0].handle,
     });
     assert.deepEqual(kept?.content, records[0].content);
+  });
+
+  it("serves a digest the other scope re-minted with a handle that holds the served digest", async function () {
+    const conversation = 975_900;
+    const cacheKey = "digest:v2:relabel";
+    const minted = (id: string): HostPaperDigest =>
+      ({
+        schema: 2,
+        itemId: 5,
+        contextItemId: 105,
+        title: "Drift A",
+        answer: "Cells drift slowly.",
+        evidence: [
+          {
+            quote: "We recorded forty cells over ten days.",
+            quoteCitationId: id,
+          },
+        ],
+        facets: [],
+        gaps: [],
+        source: {
+          backend: "mineru",
+          readCharacters: 4_000,
+          totalCharacters: 4_000,
+          complete: true,
+        },
+        model: "test-model",
+        producedAt: 1,
+        cacheKey,
+        quoteCitations: [{ id }],
+      }) as unknown as HostPaperDigest;
+    const cacheIn = (resourceSignature: string, at: number) =>
+      createHandleStorePaperDigestCache({
+        conversationKey: conversation,
+        resourceSignature,
+        now: () => at,
+      });
+    // Scope S1 stores the digest under the old label's id.
+    await cacheIn("S1", 1).set(minted("Q_old"));
+    // The user fixes the year and switches to S2, which re-mints it.
+    await cacheIn("S2", 2).set(minted("Q_new"));
+    // Back in S1, the store serves the newer record.
+    const back = cacheIn("S1", 3);
+    const served = await back.get(cacheKey);
+    assert.equal(served?.evidence[0].quoteCitationId, "Q_new");
+    const handle = await back.handleOf(served!);
+    const record = await getAgentToolResultHandle({
+      conversationKey: conversation,
+      handle: handle!,
+    });
+    const content = record?.content as {
+      digest: HostPaperDigest;
+      rendered: string;
+    };
+    assert.equal(
+      content.digest.evidence[0].quoteCitationId,
+      "Q_new",
+      "the handle holds the digest the model was told about",
+    );
+    assert.include(content.rendered, "Q_new");
+    assert.notInclude(content.rendered, "Q_old");
   });
 
   it("leaves a part of any other effect exactly as before", async function () {

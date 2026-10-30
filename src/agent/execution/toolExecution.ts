@@ -1240,18 +1240,26 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
       modelView,
     } = executedCall;
     const deliveryCallId = options.modelCallId || call.id;
+    // The fields the tool keeps from the model leave only its delivery; the
+    // event emitted above carried the whole result.
+    const modelContent =
+      !modelView && toolResult.ok && toolDefinition?.modelContent
+        ? toolDefinition.modelContent(toolResult.content, input as never)
+        : toolResult.content;
     const contentForModel =
       modelView ||
       (documentEvidenceRefs?.length
-        ? toolResult.content &&
-          typeof toolResult.content === "object" &&
-          !Array.isArray(toolResult.content)
+        ? modelContent &&
+          typeof modelContent === "object" &&
+          !Array.isArray(modelContent)
           ? {
-              ...(toolResult.content as Record<string, unknown>),
+              ...(modelContent as Record<string, unknown>),
               documentEvidenceRefs,
             }
-          : { content: toolResult.content, documentEvidenceRefs }
-        : undefined);
+          : { content: modelContent, documentEvidenceRefs }
+        : modelContent !== toolResult.content
+          ? modelContent
+          : undefined);
     // A call that ran while the user pressed Stop is recorded and delivered,
     // and nothing more: no terminal answer and no review card, so the run
     // ends as the user stopped it.

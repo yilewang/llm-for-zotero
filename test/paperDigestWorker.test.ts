@@ -9,11 +9,16 @@ import {
   renderHostPaperDigests,
   runPaperDigestJob,
   verifyDigestEvidence,
+  withDigestQuoteCitations,
   type HostPaperDigest,
   type PaperDigestCache,
   type PaperDigestFailure,
   type PaperDigestSource,
 } from "../src/agent/digests/paperDigestWorker";
+import {
+  buildQuoteCitationId,
+  isCanonicalQuoteSourceLabel,
+} from "../src/services/quotes/quoteCitations";
 import { readPaperTextForDigest } from "../src/agent/tools/read/paperRead";
 import { resolveUtilityReasoningPlan } from "../src/utils/utilityLLM";
 
@@ -500,11 +505,13 @@ describe("paperDigestWorker", function () {
     );
     assert.deepEqual(digest.facets, []);
     assert.deepEqual(digest.gaps, ["No behavioural readout."]);
+    assert.match(digest.quoteCitations?.[0]?.id || "", /^Q_/);
     assert.deepEqual(digest.evidence, [
       {
         section: "Discussion",
         quote: "Representational drift did not impair decoding.",
         chunk: 3,
+        quoteCitationId: digest.quoteCitations![0].id,
       },
     ]);
   });
@@ -1488,6 +1495,240 @@ describe("paperDigestWorker", function () {
     assert.include(summary, "ref-k-summary");
     assert.include(verdict, "trh_k-relevance");
     assert.include(verdict, "ref-k-relevance");
+  });
+});
+
+describe("paperDigestWorker quote citations", function () {
+  const QUOTE = "We recorded 40 cells over 10 days.";
+
+  it("mints a host Q_ passage id for each verified Evidence quote, as paper_read does", async function () {
+    const { params, digests } = job({
+      targets: ["item:1"],
+      readText: async (itemId: number) => ({
+        ...source(itemId),
+        title: "Drift paper",
+        sourceLabel: "(Ziv et al., 2013)",
+      }),
+    });
+    await runPaperDigestJob(params);
+    const [digest] = digests;
+    // The unverified second quote is dropped before minting.
+    assert.lengthOf(digest.evidence, 1);
+    const id = buildQuoteCitationId({
+      quoteText: QUOTE,
+      citationLabel: "(Ziv et al., 2013)",
+      contextItemId: 101,
+    });
+    assert.match(id, /^Q_/);
+    assert.equal(digest.evidence[0].quoteCitationId, id);
+    assert.lengthOf(digest.quoteCitations || [], 1);
+    assert.deepInclude(digest.quoteCitations![0], {
+      id,
+      quoteText: QUOTE,
+      citationLabel: "(Ziv et al., 2013)",
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      sourceSectionLabel: "Methods",
+      contextItemId: 101,
+      itemId: 1,
+    });
+    // The cached record carries the ids, so a reuse and context_read do too.
+    assert.deepEqual(
+      params.cache.entries.get(digest.cacheKey)?.quoteCitations,
+      digest.quoteCitations,
+    );
+  });
+
+  it("gives a paper with no creator or year a canonical label", async function () {
+    const { params, digests } = job({
+      targets: ["item:1"],
+      readText: async (itemId: number) => ({
+        ...source(itemId),
+        title: "Drift paper",
+      }),
+    });
+    await runPaperDigestJob(params);
+    const label = digests[0].quoteCitations?.[0]?.citationLabel || "";
+    assert.equal(label, "(Drift paper, n.d.)");
+    assert.isTrue(isCanonicalQuoteSourceLabel(label));
+    // A label the citation contract cannot accept falls back the same way.
+    const minted = withDigestQuoteCitations(
+      digestFixture({ evidence: [{ quote: QUOTE }] }),
+      "(van der Berg)",
+    );
+    assert.equal(
+      minted.quoteCitations?.[0]?.citationLabel,
+      "(Drift paper, n.d.)",
+    );
+  });
+
+  it("re-mints a cached schema 2 record without ids to the same deterministic ids, and stores it again", async function () {
+    const cache = memoryCache();
+    const first = job({ targets: ["item:1"], cache });
+    await runPaperDigestJob(first.params);
+    const fresh = first.digests[0];
+    assert.isNotEmpty(fresh.quoteCitations || []);
+    // A record cached before digest quotes had ids.
+    const { quoteCitations: _drop, ...old } = fresh;
+    cache.entries.set(fresh.cacheKey, {
+      ...old,
+      evidence: old.evidence.map(({ quoteCitationId: _id, ...entry }) => entry),
+    });
+    let called = 0;
+    const second = job({
+      targets: ["item:1"],
+      cache,
+      llm: {
+        ...LLM,
+        llmCall: async () => {
+          called += 1;
+          return complete(good());
+        },
+      },
+    });
+    await runPaperDigestJob(second.params);
+    assert.equal(called, 0, "the cached digest is reused");
+    const reused = second.digests[0];
+    assert.deepEqual(reused.quoteCitations, fresh.quoteCitations);
+    assert.deepEqual(reused.evidence, fresh.evidence);
+    assert.deepEqual(
+      cache.entries.get(fresh.cacheKey)?.quoteCitations,
+      fresh.quoteCitations,
+      "the re-minted record replaces the old one",
+    );
+  });
+
+  it("re-mints a cached digest under the paper's corrected label, stores it once, and serves it after", async function () {
+    const cache = memoryCache();
+    let stores = 0;
+    const counted: typeof cache = {
+      ...cache,
+      set: async (digest) => {
+        stores += 1;
+        await cache.set(digest);
+      },
+    };
+    const labelled = (sourceLabel: string) => async (itemId: number) => ({
+      ...source(itemId),
+      title: "Drift paper",
+      sourceLabel,
+    });
+    let called = 0;
+    const llm = {
+      ...LLM,
+      llmCall: async () => {
+        called += 1;
+        return complete(good());
+      },
+    };
+    const first = job({
+      targets: ["item:1"],
+      cache: counted,
+      llm,
+      readText: labelled("(Ziv, 2012)"),
+    });
+    await runPaperDigestJob(first.params);
+    const stale = first.digests[0];
+    assert.equal(stale.quoteCitations?.[0]?.citationLabel, "(Ziv, 2012)");
+    assert.equal(stores, 1);
+
+    // The user fixes the paper's year: the reuse cites the new label.
+    const second = job({
+      targets: ["item:1"],
+      cache: counted,
+      llm,
+      readText: labelled("(Ziv et al., 2013)"),
+    });
+    await runPaperDigestJob(second.params);
+    assert.equal(called, 1, "the cached digest is reused, not read again");
+    const fixed = second.digests[0];
+    const id = buildQuoteCitationId({
+      quoteText: QUOTE,
+      citationLabel: "(Ziv et al., 2013)",
+      contextItemId: 101,
+    });
+    assert.deepEqual(
+      fixed.quoteCitations?.map((c) => [c.id, c.citationLabel]),
+      [[id, "(Ziv et al., 2013)"]],
+    );
+    assert.equal(fixed.evidence[0].quoteCitationId, id);
+    assert.notEqual(id, stale.evidence[0].quoteCitationId);
+    assert.equal(stores, 2, "stored again once");
+    assert.deepEqual(cache.entries.get(fixed.cacheKey), fixed);
+
+    // A later reuse under the same label stores nothing.
+    const third = job({
+      targets: ["item:1"],
+      cache: counted,
+      llm,
+      readText: labelled("(Ziv et al., 2013)"),
+    });
+    await runPaperDigestJob(third.params);
+    assert.equal(called, 1);
+    assert.equal(stores, 2);
+    assert.deepEqual(third.digests[0], fixed);
+  });
+
+  it("shows each Evidence quote's id in a whole block, and an ids line per paper in a compact one", function () {
+    const digest = withDigestQuoteCitations(
+      digestFixture({ evidence: [{ section: "Methods", quote: QUOTE }] }),
+      "(Ziv et al., 2013)",
+    );
+    const id = digest.evidence[0].quoteCitationId!;
+    const whole = renderHostPaperDigests([digest], [], undefined, () => ({
+      libraryID: 1,
+      itemKey: "KEY1",
+      evidenceRefs: ["ref1"],
+    }));
+    assert.include(
+      whole,
+      `Evidence:\n- [Methods] "${QUOTE}" (quoteCitationId: ${id})`,
+    );
+    // The evidence refs are named as a document's source, not a chat cite.
+    assert.notInclude(whole, "cite source");
+    assert.include(
+      whole,
+      ` — document source ${JSON.stringify({ libraryID: 1, itemKey: "KEY1", evidenceRefs: ["ref1"] })}`,
+    );
+    const many = Array.from({ length: 13 }, (_, i) =>
+      withDigestQuoteCitations(
+        digestFixture({
+          itemId: i + 1,
+          contextItemId: i + 101,
+          title: `Paper ${i + 1}`,
+          evidence: [
+            { section: "Methods", quote: QUOTE },
+            { quote: `Paper ${i + 1} reports a second verified finding.` },
+          ],
+          cacheKey: `k${i}`,
+        }),
+        `(Author${i + 1}, 2020)`,
+      ),
+    );
+    const compact = renderHostPaperDigests(
+      many,
+      [],
+      undefined,
+      undefined,
+      (itemId) => `trh_digest${itemId}`,
+    );
+    for (const entry of many) {
+      const ids = entry.evidence.map((e) => e.quoteCitationId);
+      assert.lengthOf(ids, 2);
+      // The ids come without their quotes, so the line sends the model to
+      // the full digest, which shows each quote with its id, before it
+      // cites one.
+      assert.include(
+        compact,
+        `Evidence quoteCitationIds: ${ids.join(", ")} (read each quote in the full digest before citing it)\nFull digest: context_read`,
+      );
+    }
+    assert.notInclude(compact, QUOTE);
+    // With no stored digest to read, the ids line would point nowhere.
+    const unstored = renderHostPaperDigests(many, []);
+    assert.notInclude(unstored, "quoteCitationIds");
+    assert.notInclude(unstored, "read each quote");
+    assert.include(unstored, "Full digest: not stored");
   });
 });
 

@@ -1581,10 +1581,18 @@ export function copyMcpCallEvidenceToRequest(
  * The receipts travel with the row: they are what the verification chip reads,
  * so a write the connected client ran over MCP would otherwise reach the trace
  * with no verdict at all — indistinguishable from one nobody verified.
+ *
+ * A completed call's passage citations travel with it too, so the panel adds
+ * them to the answer's citations as the Codex panel does, whatever text the
+ * client relays as the tool's result.
  */
 export function buildClaudeMcpToolActivityEvent(
   event: ZoteroMcpToolActivityEvent,
 ): AgentEvent {
+  const quoteCitations =
+    event.phase === "completed" && event.ok && event.quoteCitations?.length
+      ? event.quoteCitations
+      : undefined;
   return {
     type: "codex_tool_activity",
     itemId: `mcp:${event.requestId || `${event.toolName}:${event.timestamp}`}`,
@@ -1599,6 +1607,7 @@ export function buildClaudeMcpToolActivityEvent(
     actionReceipts: event.actionReceipts,
     workCategory: event.workCategory,
     mutability: event.mutability,
+    ...(quoteCitations ? { quoteCitations } : {}),
   };
 }
 

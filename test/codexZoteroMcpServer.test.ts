@@ -2907,6 +2907,86 @@ describe("Zotero MCP server", function () {
     });
   });
 
+  it("sends the model a tool's model content and keeps its citations on the activity, for a deduped repeat too", async function () {
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    let runs = 0;
+    registry.register({
+      spec: {
+        name: "paper_read",
+        description: "Read paper",
+        inputSchema: { type: "object", additionalProperties: true },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async () => {
+        runs += 1;
+        return {
+          passages: [{ text: "A quoted passage.", quoteCitationId: "Q_test" }],
+          quoteCitations: [
+            {
+              id: "Q_test",
+              quoteText: "A quoted passage.",
+              citationLabel: "(Smith, 2024)",
+              contextItemId: 23,
+            },
+          ],
+        };
+      },
+      // Keeps the records from the model, as a digest result does.
+      modelContent: (result: any) => {
+        const { quoteCitations: _records, ...rest } = result;
+        return rest;
+      },
+    } as AgentToolDefinition<unknown, unknown>);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      { conversationKey: 792, libraryID: 7, kind: "global" },
+      { token: "model-content-dedupe" },
+    );
+    const completed: Array<{ quoteCitations?: Array<{ id: string }> }> = [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      if (event.phase === "completed") completed.push(event);
+    });
+    const texts: string[] = [];
+    try {
+      for (const id of ["read-1", "read-2"]) {
+        const response = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+          body: {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name: "paper_read", arguments: { mode: "targeted" } },
+          },
+        });
+        texts.push(JSON.parse(response[2]).result.content[0].text);
+      }
+    } finally {
+      unregister();
+      scoped.clear();
+    }
+    assert.equal(runs, 1, "the repeat is served from the dedupe cache");
+    assert.include(texts[1], '"duplicate": true');
+    for (const text of texts) {
+      assert.include(text, "Q_test");
+      assert.notInclude(text, "quoteCitations");
+    }
+    assert.lengthOf(completed, 2);
+    for (const event of completed) {
+      assert.deepEqual(
+        (event.quoteCitations || []).map((citation) => citation.id),
+        ["Q_test"],
+      );
+    }
+  });
+
   it("uses explicit MCP scope args as context defaults without passing them to validators", async function () {
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),

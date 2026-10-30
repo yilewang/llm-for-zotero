@@ -10,6 +10,9 @@ import { fail, ok } from "../shared";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { readTextChunk } from "./textChunk";
 import { skillGuidance } from "../guidance";
+import { PAPER_DIGEST_HANDLE_TOOL } from "../../digests/digestJobHost";
+import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
+import { extractQuoteCitationsFromToolContent } from "../../../services/quotes/quoteCitations";
 
 /**
  * context_read: exact stored context the prompt no longer carries in full.
@@ -271,6 +274,20 @@ function buildArraySlice(params: {
   return next;
 }
 
+/**
+ * The stored results that hold digests: the digest cache's records, and a
+ * paper_digest or task_update result the trace kept whole.
+ */
+const DIGEST_RESULT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  PAPER_DIGEST_HANDLE_TOOL,
+  "task_update",
+]);
+
+function isDigestResultRead(result: unknown): boolean {
+  const toolName = contentRecord(result).toolName;
+  return typeof toolName === "string" && DIGEST_RESULT_TOOL_NAMES.has(toolName);
+}
+
 async function readToolResult(
   input: ToolResultSourceInput,
   context: AgentToolContext,
@@ -333,50 +350,62 @@ async function readToolResult(
         "Stored tool result belongs to a previous Zotero resource scope. Re-run the source tool for current-scope evidence, or set allowStale true only if stale result content is explicitly acceptable.",
     };
   }
+  // A digest is paged as the model reads it when it returns: each Evidence
+  // quote with its id, and no citation record. The records ride on the
+  // result's top level, which the run's collector and the panel read and
+  // the model does not (`modelContent`).
+  const digestResult = DIGEST_RESULT_TOOL_NAMES.has(record.toolName);
+  const content = digestResult
+    ? withoutDigestQuoteCitations(record.content)
+    : record.content;
   if (!input.path) {
     return {
       ...base,
-      ...summarizeRoot(record.content),
+      ...summarizeRoot(content),
     };
   }
-  const root = contentRecord(record.content);
+  const root = contentRecord(content);
   if (!Object.prototype.hasOwnProperty.call(root, input.path)) {
     return {
       ...base,
       path: input.path,
-      availablePaths: availablePaths(record.content),
+      availablePaths: availablePaths(content),
       error: `Stored tool result has no top-level path '${input.path}'.`,
     };
   }
   const section = root[input.path];
-  if (Array.isArray(section)) {
-    return buildArraySlice({
-      base: {
+  const read = Array.isArray(section)
+    ? buildArraySlice({
+        base: {
+          ...base,
+          path: input.path,
+        },
+        items: section,
+        offset: input.offset,
+        textOffset: input.textOffset,
+        limit: input.limit,
+        maxTokens: input.maxTokens,
+      })
+    : {
         ...base,
         path: input.path,
-      },
-      items: section,
-      offset: input.offset,
-      textOffset: input.textOffset,
-      limit: input.limit,
-      maxTokens: input.maxTokens,
-    });
-  }
-  return {
-    ...base,
-    path: input.path,
-    ...(input.textOffset ||
-    estimateTextTokens(stableStringify(section)) > input.maxTokens - 256
-      ? {
-          format: typeof section === "string" ? "text" : "json",
-          ...readTextChunk(
-            stableStringify(section),
-            input.textOffset,
-            input.maxTokens - 256,
-          ),
-        }
-      : { value: section }),
-  };
+        ...(input.textOffset ||
+        estimateTextTokens(stableStringify(section)) > input.maxTokens - 256
+          ? {
+              format: typeof section === "string" ? "text" : "json",
+              ...readTextChunk(
+                stableStringify(section),
+                input.textOffset,
+                input.maxTokens - 256,
+              ),
+            }
+          : { value: section }),
+      };
+  // Added after the page is sized: the model never reads them.
+  const quoteCitations = digestResult
+    ? extractQuoteCitationsFromToolContent(record.content)
+    : [];
+  return quoteCitations.length ? { ...read, quoteCitations } : read;
 }
 
 async function readConversation(
@@ -532,6 +561,8 @@ export function createContextReadTool(): AgentToolDefinition<
       LIBRARY_ANALYSIS_PAGING_GUIDANCE,
     ],
     validate: validateContextReadInput,
+    modelContent: (result) =>
+      isDigestResultRead(result) ? withoutDigestQuoteCitations(result) : result,
     planInvocation: (input) =>
       readOnlyInvocationPlan({
         domains: [],

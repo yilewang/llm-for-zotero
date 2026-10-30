@@ -3884,6 +3884,119 @@ describe("a digest part in runtime turns", function () {
     assert.deepEqual(ledger.end, { state: "completed_with_exceptions" });
   });
 
+  it("an answer citing a digest quote's id publishes its citation; one citing an evidence ref publishes none", async function () {
+    const finalOf = (turn: Turn) => {
+      const final = turn.events.find((event) => event.type === "final");
+      assert.exists(final);
+      return final as Extract<AgentEvent, { type: "final" }>;
+    };
+    let quoteId = "";
+    let evidenceRef = "";
+    const cited = await runTurn({
+      conversationKey,
+      userText: "What do my papers say about drift?",
+      scope: { wholeLibrary: false, itemIds: [101, 102], withText: 2 },
+      attached: {
+        selectedCollectionContexts: [
+          { collectionId: 9, name: "Drift", libraryID: 1 },
+        ],
+      },
+      steps: [
+        stepOf(
+          declare("declare-digest", [
+            {
+              taskId: "summaries",
+              description: SUMMARIZE,
+              expectedEffect: "digest",
+              scope: true,
+            },
+          ]),
+        ),
+        (messages) => {
+          // The model reads each Evidence quote's id in the result.
+          const text = promptText(messages);
+          quoteId = /quoteCitationId: (Q_[a-z0-9]+)/.exec(text)?.[1] || "";
+          assert.match(quoteId, /^Q_/);
+          // The provider gets the id, never the citation record.
+          assert.notInclude(text, "quoteCitations");
+          return finalStep(
+            `Paper 101 recorded forty cells over ten days [[cite:${quoteId}]].`,
+          );
+        },
+      ],
+    });
+    assert.equal(cited.outcome?.kind, "completed", String(cited.error || ""));
+    const citations = finalOf(cited).quoteCitations || [];
+    assert.deepEqual(
+      citations.map((citation) => citation.id),
+      [quoteId],
+    );
+    assert.include(citations[0], {
+      quoteText: "We recorded forty cells over ten days.",
+      citationLabel: "(Paper 101, n.d.)",
+      itemId: 101,
+      contextItemId: 1101,
+    });
+
+    conversationKey += 1;
+    // The papers get Zotero identities, so the host issues the read
+    // observations whose evidence refs the digest names.
+    const zotero = (globalThis as unknown as { Zotero: any }).Zotero;
+    const items = zotero.Items;
+    zotero.Items = {
+      ...items,
+      get: (id: number) =>
+        id === 101 || id === 102
+          ? { id, key: `PAPER${id}`, libraryID: 1 }
+          : items.get(id),
+    };
+    const refCited = await runTurn({
+      conversationKey,
+      userText: "What do my papers say about drift?",
+      scope: { wholeLibrary: false, itemIds: [101, 102], withText: 2 },
+      attached: {
+        selectedCollectionContexts: [
+          { collectionId: 9, name: "Drift", libraryID: 1 },
+        ],
+      },
+      steps: [
+        stepOf(
+          declare("declare-digest", [
+            {
+              taskId: "summaries",
+              description: SUMMARIZE,
+              expectedEffect: "digest",
+              scope: true,
+            },
+          ]),
+        ),
+        (messages) => {
+          // The ref the digest's document source names, as the model read
+          // it.
+          const ref = /"evidenceRefs":\["([0-9a-f]{12}:\d+)"\]/.exec(
+            promptText(messages).replace(/\\"/g, '"'),
+          );
+          assert.exists(ref, "the digest result names its evidence ref");
+          evidenceRef = ref![1];
+          return finalStep(
+            `Paper 101 recorded forty cells over ten days [[cite:${evidenceRef}]].`,
+          );
+        },
+      ],
+    }).finally(() => {
+      zotero.Items = items;
+    });
+    assert.equal(
+      refCited.outcome?.kind,
+      "completed",
+      String(refCited.error || ""),
+    );
+    assert.isUndefined(
+      finalOf(refCited).quoteCitations,
+      "an evidence ref names a read, not a passage",
+    );
+  });
+
   it("a prose review over the digests, written in chat, leaves the review part open and is corrected toward submit_document", async function () {
     const REVIEW = "Write the literature review";
     const turn = await runTurn({
