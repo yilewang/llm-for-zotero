@@ -9,6 +9,9 @@ import {
 } from "../src/agent/tools/control/taskUpdate";
 import { createNoteWriteTool } from "../src/agent/tools/write/noteWrite";
 import { OUTCOME_REASONS } from "../src/agent/loop/outcomes";
+import { OPEN_PARTS_REASK_LIMIT } from "../src/agent/loop/turnBoundary";
+import { createLoadSkillTool } from "../src/agent/tools/read/loadSkill";
+import { skillGuidance } from "../src/agent/tools/guidance";
 import { PAPER_RECORD_PRIOR_TOKENS } from "../src/agent/loop/longJob";
 import { ExecutionCheckpointFold } from "../src/agent/execution/checkpointEvents";
 import { estimateContextMessagesTokens } from "../src/utils/modelInputCap";
@@ -341,6 +344,8 @@ async function runTurn(params: {
    * at once, as when the wait's bound has run out.
    */
   stoppedRunWaitMs?: number;
+  /** Registers tools beside the default ones. */
+  withTools?: (tools: AgentToolRegistry) => void;
 }): Promise<Turn> {
   const events: AgentEvent[] = [];
   const prompts: AgentModelMessage[][] = [];
@@ -363,7 +368,11 @@ async function runTurn(params: {
           },
         }
       : {}),
-    registry: registry(),
+    registry: (() => {
+      const tools = registry();
+      params.withTools?.(tools);
+      return tools;
+    })(),
     adapterFactory: (resolved) => ({
       getCapabilities: () => ({
         streaming: false,
@@ -605,7 +614,7 @@ describe("outcome ledger in runtime turns", function () {
     );
   });
 
-  it("a skip claiming delivery is refused and the part stays open; the answer that follows delivers it, with no correction", async function () {
+  it("a skip claiming delivery is refused and the part stays open; an answer in chat does not deliver it, so the host asks for the document", async function () {
     const REVIEW = "Write the literature review";
     const turn = await runTurn({
       conversationKey,
@@ -633,11 +642,22 @@ describe("outcome ledger in runtime turns", function () {
           },
         }),
         finalStep("# Review\n\nThe papers agree on drift."),
+        finalStep("# Review\n\nThe papers agree on drift."),
+        finalStep("# Review\n\nThe papers agree on drift."),
+        finalStep("# Review\n\nThe papers agree on drift."),
       ],
     });
 
     assert.equal(turn.outcome?.kind, "completed");
-    assert.equal(turn.requests, 3, "the answer can deliver the review itself");
+    assert.equal(
+      turn.requests,
+      3 + OPEN_PARTS_REASK_LIMIT,
+      "each answer in chat is corrected, up to the limit",
+    );
+    assert.include(
+      promptText(turn.prompts[3]),
+      `“${REVIEW}” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it)`,
+    );
     const refusal = promptText(turn.prompts[2]);
     assert.include(
       refusal,
@@ -648,8 +668,58 @@ describe("outcome ledger in runtime turns", function () {
       "Produce it with the tools, or, if it truly cannot be done, list it under blocked with the concrete obstacle.",
     );
     const ledger = settled(turn);
-    assert.deepEqual(ledger.end, { state: "completed" });
+    assert.deepEqual(ledger.end, { state: "completed_with_exceptions" });
+    assert.deepEqual(
+      [outcome(ledger, "review").status, outcome(ledger, "review").reason],
+      ["skipped", OUTCOME_REASONS.notDone],
+    );
+  });
+
+  it("an artifact part answered in chat is corrected once, then delivered by submit_document", async function () {
+    const REVIEW = "Write the literature review";
+    const turn = await runTurn({
+      conversationKey,
+      userText: "Write a literature review of these papers",
+      steps: [
+        stepOf(
+          declare("declare-1", [
+            {
+              taskId: "review",
+              description: REVIEW,
+              expectedEffect: "artifact",
+            },
+          ]),
+        ),
+        finalStep("# Review\n\nThe papers agree on drift."),
+        stepOf({
+          id: "submit-1",
+          name: "submit_document",
+          arguments: {
+            taskId: "review",
+            documentKind: "literature_review",
+            integrityPolicy: "authored",
+            title: "Review",
+            markdown: "# Review\n\nThe papers agree on drift.",
+            citations: [],
+            quotes: [],
+            assets: [],
+            groundingReviewed: "passed",
+            groundingIssues: [],
+          },
+        }),
+      ],
+    });
+
+    assert.equal(turn.outcome?.kind, "completed", String(turn.error || ""));
+    assert.equal(turn.requests, 3, "one correction, then the document");
+    assert.include(
+      promptText(turn.prompts[2]),
+      `“${REVIEW}” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it)`,
+    );
+    const ledger = settled(turn);
     assert.equal(outcome(ledger, "review").status, "completed");
+    assert.lengthOf(outcome(ledger, "review").materialRefs, 1);
+    assert.deepEqual(ledger.end, { state: "completed" });
   });
 
   it("a skip of a save with a delivery-worded reason is accepted, as a write is not content", async function () {
@@ -1736,6 +1806,105 @@ describe("long jobs in runtime turns", function () {
     return turn;
   }
 
+  it("keeps a skill loaded mid-turn, its tool guidance and the scope's item keys across the pager's restart (eval b4v6, run 2)", async function () {
+    const SKILL_BODY = "Drift review playbook: screen, digest, then write.";
+    const SKILL_GUIDANCE =
+      "Drift review tool rule: pass the review part's taskId to submit_document.";
+    const withSkill = (tools: AgentToolRegistry) => {
+      tools.register({
+        spec: {
+          name: "drift_helper",
+          description: "A tool whose guidance is tied to the drift skill",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+        },
+        guidance: [skillGuidance("drift-review", SKILL_GUIDANCE)],
+        validate: (args: unknown) => ({ ok: true, value: args as never }),
+        execute: async () => ({}),
+      } as never);
+      tools.register(
+        createLoadSkillTool({
+          getSkills: () => [
+            {
+              id: "drift-review",
+              description: "Review the drift literature",
+              version: 1,
+              contexts: ["paper-set"],
+              activation: "auto",
+              instruction: SKILL_BODY,
+              source: "system",
+            },
+          ],
+          getShippedInstruction: () => SKILL_BODY,
+          getToolDefinitions: (request) =>
+            tools.listToolDefinitionsForRequest(request),
+        }),
+      );
+    };
+    const paged = pagedModel();
+    let first = true;
+    const model: ScriptStep = (messages) => {
+      if (!first) return paged(messages);
+      first = false;
+      // Consume the paged model's declaration, then load the skill with it.
+      const declared = paged(messages) as AgentModelStep;
+      const calls = declared.kind === "tool_calls" ? [...declared.calls] : [];
+      return stepOf(
+        { id: "load-1", name: "load_skill", arguments: { id: "drift-review" } },
+        ...calls,
+      );
+    };
+    const turn = await runTurn({
+      conversationKey,
+      userText: "Read every paper in Drift and summarize each",
+      withTools: withSkill,
+      scope: {
+        wholeLibrary: false,
+        itemIds: PAPERS,
+        withText: PAPERS.length,
+        papers: Object.fromEntries(
+          PAPERS.map((itemId) => [
+            itemId,
+            {
+              title: `Paper ${itemId}`,
+              text: "pdf" as const,
+              itemKey: `KEY${itemId}`,
+            },
+          ]),
+        ),
+      },
+      attached: {
+        selectedCollectionContexts: [
+          { collectionId: 9, name: "Drift", libraryID: 1 },
+        ],
+        advanced: { inputTokenCap: 30_000 },
+      },
+      steps: Array.from({ length: 40 }, () => model),
+    });
+
+    assert.equal(turn.outcome?.kind, "completed", String(turn.error || ""));
+    // The first load returned the skill and its guidance.
+    const loaded = promptText(pageStart(turn, 1));
+    assert.include(loaded, SKILL_BODY);
+    assert.include(loaded, SKILL_GUIDANCE);
+    // Page 2 starts from a restarted prompt: the load_skill result is gone
+    // from it, and the host carries the skill, its guidance and the keys.
+    const restarted = pageStart(turn, 2);
+    assert.notInclude(
+      restarted
+        .filter((message) => message.role === "tool")
+        .map((message) => promptText([message]))
+        .join("\n"),
+      SKILL_BODY,
+      "the restart dropped the load_skill result itself",
+    );
+    const text = promptText(restarted);
+    assert.include(text, SKILL_BODY);
+    assert.include(text, SKILL_GUIDANCE);
+    assert.include(text, "2001=KEY2001");
+    assert.include(text, "2030=KEY2030");
+  });
+
   it("measures a page again from a prompt the budget compacted under it: later reads get a real share, and no paper's digest is empty", async function () {
     const turn = await compactedMidPage({
       outsideSections: 400,
@@ -2120,9 +2289,10 @@ describe("resuming a long job in runtime turns", function () {
       { collectionId: 9, name: "Drift", libraryID: 1 },
     ],
     // 30,500 since 2026-10-20: the fixed prompt grew with the search-routing
-    // contract; 30,700 since 2026-10-25, for the preview color sentence.
-    // These tests check long-job resume, not prompt size.
-    advanced: { inputTokenCap: 30_700 },
+    // contract; 30,700 since 2026-10-25, for the preview color sentence;
+    // 30,800 since 2026-10-30, for the load-a-skill-first line of a folder
+    // scope. These tests check long-job resume, not prompt size.
+    advanced: { inputTokenCap: 30_800 },
   } as Partial<AgentRuntimeRequestInput>;
 
   beforeEach(async function () {
@@ -3714,7 +3884,7 @@ describe("a digest part in runtime turns", function () {
     assert.deepEqual(ledger.end, { state: "completed_with_exceptions" });
   });
 
-  it("a prose review over the digests, with no citation markup, completes the review part whole, with no correction", async function () {
+  it("a prose review over the digests, written in chat, leaves the review part open and is corrected toward submit_document", async function () {
     const REVIEW = "Write the literature review";
     const turn = await runTurn({
       conversationKey,
@@ -3742,18 +3912,28 @@ describe("a digest part in runtime turns", function () {
             },
           ]),
         ),
-        finalStep(
-          "## Literature review\n\nPaper 101 and Paper 102 agree that drift is slow.",
+        ...Array.from({ length: OPEN_PARTS_REASK_LIMIT + 1 }, () =>
+          finalStep(
+            "## Literature review\n\nPaper 101 and Paper 102 agree that drift is slow.",
+          ),
         ),
       ],
     });
 
     assert.equal(turn.outcome?.kind, "completed", String(turn.error || ""));
-    assert.equal(turn.requests, 2, "no correction for the review part");
+    assert.equal(
+      turn.requests,
+      2 + OPEN_PARTS_REASK_LIMIT,
+      "the review part is corrected up to the limit",
+    );
+    assert.include(
+      promptText(turn.prompts[2]),
+      `“${REVIEW}” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it)`,
+    );
     const ledger = settled(turn);
     const review = outcome(ledger, "review");
-    assert.equal(review.status, "completed");
-    assert.notProperty(review, "exceptions", "not 0 of 3 covered");
+    assert.equal(review.status, "skipped");
+    assert.equal(review.reason, OUTCOME_REASONS.notDone);
     assert.equal(outcome(ledger, "summaries").status, "completed");
   });
 });

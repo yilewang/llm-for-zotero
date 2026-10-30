@@ -393,6 +393,21 @@ function isNoteContent(receipt: AgentActionReceipt): boolean {
   );
 }
 
+/**
+ * Whether a saved note stands for the whole of artifact part `task` beside
+ * the write part it binds: the part names no papers, or the note is on every
+ * paper it names. A note on one paper of a review over many is that paper's
+ * note, not the review.
+ */
+function noteCovers(task: Task, receipt: AgentActionReceipt): boolean {
+  const papers = (task.targets || []).filter(isPaperTarget);
+  const written = [
+    ...receipt.appliedTargets,
+    ...receipt.alreadySatisfiedTargets,
+  ];
+  return papers.every((paper) => resolveTarget(paper, written) !== undefined);
+}
+
 /** A read is not a write, so it neither closes a mutation nor becomes one. */
 function isWrite(write: Pick<Write, "capability">): boolean {
   return write.capability !== "zotero.read";
@@ -974,20 +989,25 @@ function applyReceipt(
     for (const index of targeted.length ? targeted : candidates.slice(0, 1))
       chosen.set(index, { write });
   }
+  // Written content saved as a note is the artifact a part asked for, also
+  // when a write part takes the note, as the answer never delivers one.
+  const artifact = isNoteContent(receipt)
+    ? checkpoint.tasks.findIndex(
+        (task, index) =>
+          task.status === "pending" &&
+          task.effect === "artifact" &&
+          (!chosen.size || (!chosen.has(index) && noteCovers(task, receipt))),
+      )
+    : -1;
   if (chosen.size) {
     return mapTasks(checkpoint, now, (task, index) => {
+      if (index === artifact) return bindReceipt(task, receipt, now);
       const binding = chosen.get(index);
       return binding
         ? bindReceipt(task, binding.write, now, binding.papers)
         : undefined;
     });
   }
-  // Written content saved as a note is the artifact a part asked for.
-  const artifact = isNoteContent(receipt)
-    ? checkpoint.tasks.findIndex(
-        (task) => task.status === "pending" && task.effect === "artifact",
-      )
-    : -1;
   if (artifact >= 0) {
     return mapTasks(checkpoint, now, (task, index) =>
       index === artifact ? bindReceipt(task, receipt, now) : undefined,
@@ -1010,8 +1030,9 @@ function applyReceipt(
 }
 
 /*
- * Delivered content. A document, or the accepted answer, is the artifact a
- * part asked for. A part that names papers is accounted per paper: the papers
+ * Delivered content. A document is the artifact a part asked for, and so is
+ * a saved note (`applyReceipt`); the accepted answer is not (`applyAnswer`).
+ * A part that names papers is accounted per paper: the papers
  * the content cites are done, and the rest become exceptions unless the model
  * excluded them, so "12/12" means twelve papers were covered. A part that
  * names none completes.
@@ -1473,26 +1494,25 @@ function applyDigest(
   });
 }
 
+/**
+ * The accepted answer delivers a reasoning part: it completes whole, and a
+ * paper the answer cites is not one it left out. An artifact part asked for
+ * content the host can point to, so only a document (`applyMaterial`) or a
+ * saved note (`applyReceipt`) delivers it; the answer leaves it pending.
+ */
 function applyAnswer(
   checkpoint: ExecutionCheckpoint,
   evidence: Extract<OutcomeEvidence, { kind: "answer" }>,
   now: number,
 ): EvidenceResult {
-  // Content written in the accepted answer is the artifact a part asked for.
   return mapTasks(checkpoint, now, (task) => {
     if (task.status !== "pending") return undefined;
-    // A reasoning part completes whole, and a paper the answer cites is not
-    // one it left out.
     if (!task.effect || task.effect === "answer")
       return {
         ...withoutCitedExclusions(task, evidence.citedTargets),
         status: "completed",
         updatedAt: now,
       };
-    // The runtime passes the papers the answer cites; unknown (undefined)
-    // completes the part whole.
-    if (task.effect === "artifact")
-      return coverTargets(task, evidence.citedTargets, now);
     return undefined;
   });
 }

@@ -106,6 +106,10 @@ function fakeLibrary(): {
   });
   const lookup: PaperDecisionLookup = {
     getItem: (id) => (items.get(Number(id)) as unknown as Zotero.Item) || null,
+    getItemByLibraryAndKey: (libraryID, key) =>
+      ([...items.values()].find(
+        (item) => item.libraryID === libraryID && item.key === key,
+      ) as unknown as Zotero.Item) || null,
     resolveBibliographicItem: (item) => {
       const fake = item as unknown as FakeItem | null;
       if (!fake) return null;
@@ -200,7 +204,10 @@ describe("record_paper_decisions", function () {
         [5, "This item is in another library."],
         [6, "This paper is in the trash."],
         [7, "No item with this id."],
-        [8, "target must be a Zotero item id (12 or item:12)."],
+        [
+          8,
+          "target must be a Zotero item id (12 or item:12) or item key (ABCD2345).",
+        ],
         [9, "decision must be include, exclude or defer."],
         [10, "reason is required."],
         [11, "relevance must be high, medium, low or none."],
@@ -232,6 +239,45 @@ describe("record_paper_decisions", function () {
         },
       },
     ]);
+  });
+
+  it("takes a paper's item key as well as its id, resolved in the turn's library", async function () {
+    const result = await record({
+      decisions: [
+        { target: "PAPER012", decision: "exclude", reason: "Birdsong." },
+        // A lower-case key, and the key of paper 11's PDF.
+        { target: "pdf00021", decision: "include", reason: "On drift." },
+        // A key of the group library: not one of this turn's library.
+        { target: "GROUP041", decision: "include", reason: "Group paper." },
+        { target: "NOTE0031", decision: "include", reason: "A note." },
+        { target: "UNKNOWN9", decision: "include", reason: "Unknown." },
+      ],
+    });
+    assert.isTrue(result.content.ok);
+    assert.equal(result.content.recorded, 2);
+    assert.deepEqual(
+      result.paperDecisions?.map((decision) => [
+        decision.paper.itemId,
+        decision.paper.itemKey,
+        decision.value,
+      ]),
+      [
+        [12, "PAPER012", "exclude"],
+        [11, "PAPER011", "include"],
+      ],
+    );
+    assert.deepEqual(
+      result.content.rejected.map((row: Record<string, unknown>) => [
+        row.row,
+        row.target,
+        row.reason,
+      ]),
+      [
+        [3, "GROUP041", "No item with this key in this library."],
+        [4, "NOTE0031", "This item is not a paper."],
+        [5, "UNKNOWN9", "No item with this key in this library."],
+      ],
+    );
   });
 
   it("keeps its result small: at most 20 refused rows are listed", async function () {

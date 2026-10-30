@@ -212,6 +212,10 @@ import { createAgentExecutionContext } from "./execution/context";
 import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import { journaledNoteReceipts } from "./execution/journalReceipts";
 import {
+  buildCarriedSkillsMessage,
+  buildScopeItemKeysMessage,
+} from "./context/restartCarry";
+import {
   createToolExecution,
   type ToolExecutionRecord,
 } from "./execution/toolExecution";
@@ -2039,6 +2043,14 @@ export class AgentRuntime {
               ...[
                 conversationReferenceMessage,
                 buildRetainedActionMessage(transcriptSegment.messages),
+                // What the dropped tool results gave the model mid-turn:
+                // the skills it loaded and the scope's item keys.
+                buildCarriedSkillsMessage(toolExecutionRecords, matchedSkills),
+                buildScopeItemKeysMessage(
+                  request.turnScopePapers,
+                  request.turnPaperScope.libraryID || request.libraryID,
+                  request.executionCheckpoint,
+                ),
                 longJobMessage,
               ].filter((message): message is AgentUserMessage =>
                 Boolean(message),

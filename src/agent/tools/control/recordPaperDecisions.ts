@@ -18,12 +18,14 @@ import type {
  * (taskPaperLedgerRecorder.ts), in the built-in runtime and over MCP, so they
  * reach Task progress and the conversation's stored trace like a read does.
  *
- * Each row names a paper by its Zotero item id. A row is refused when the id
- * names no item, an item in another library than the turn's, or an item that
- * is not a paper (a note, a file without a parent item, a paper in the
- * trash); a child attachment stands for its paper. A paper named twice in
- * one call keeps its last row. The same call replayed changes nothing, and
- * a later call replaces a paper's decision (taskPaperLedger.ts).
+ * Each row names a paper by its Zotero item id or its item key; a key is
+ * looked up in the turn's library, as an id is checked against it. A row is
+ * refused when the id or key names no item, an item in another library than
+ * the turn's, or an item that is not a paper (a note, a file without a parent
+ * item, a paper in the trash); a child attachment stands for its paper. A
+ * paper named twice in one call keeps its last row. The same call replayed
+ * changes nothing, and a later call replaces a paper's decision
+ * (taskPaperLedger.ts).
  *
  * It changes only plugin state, so it is a control tool with a read-only
  * invocation plan, auto-approved, as past_chat_attach.
@@ -37,6 +39,8 @@ const MAX_LISTED_REJECTIONS = 20;
 
 /** A Zotero item id as the read tools and task_update take it. */
 const PAPER_TARGET = /^(?:item:)?([1-9]\d*)$/;
+/** A Zotero item key, as library_search and cite sources name a paper. */
+const ITEM_KEY = /^[A-Z0-9]{8}$/i;
 
 const DECISIONS: ReadonlyArray<TaskPaperDecision["value"]> = [
   "include",
@@ -54,6 +58,9 @@ const NO_CONVERSATION =
   "Decisions can be recorded only in a conversation in Zotero.";
 const NO_LIBRARY = "This turn has no library to record decisions in.";
 const NOT_FOUND = "No item with this id.";
+const KEY_NOT_FOUND = "No item with this key in this library.";
+const BAD_TARGET =
+  "target must be a Zotero item id (12 or item:12) or item key (ABCD2345).";
 const OTHER_LIBRARY = "This item is in another library.";
 const NOT_PAPER = "This item is not a paper.";
 const IN_TRASH = "This paper is in the trash.";
@@ -61,6 +68,8 @@ const IN_TRASH = "This paper is in the trash.";
 /** The item lookups a decision's paper is resolved through (ZoteroGateway). */
 export type PaperDecisionLookup = {
   getItem(itemId: number | undefined): Zotero.Item | null;
+  /** Without it, a row that names its paper by item key is refused. */
+  getItemByLibraryAndKey?(libraryID: number, key: string): Zotero.Item | null;
   resolveBibliographicItem(
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null;
@@ -153,12 +162,11 @@ export function exclusionPaperDecisions(
 }
 
 type DecisionRow =
-  | {
+  | ({
       row: number;
       target: string;
-      itemId: number;
       decision: Omit<TaskPaperDecisionInput, "paper">;
-    }
+    } & ({ itemId: number } | { itemKey: string }))
   | { row: number; target: string; error: string };
 
 type RecordPaperDecisionsInput = { rows: DecisionRow[] };
@@ -187,13 +195,12 @@ function parseRow(value: unknown, row: number): DecisionRow {
         ? value.target.trim()
         : "";
   const itemId = paperDecisionTargetId(target);
-  if (!itemId) {
-    return {
-      row,
-      target,
-      error: "target must be a Zotero item id (12 or item:12).",
-    };
-  }
+  const paper = itemId
+    ? { itemId }
+    : ITEM_KEY.test(target)
+      ? { itemKey: target.toUpperCase() }
+      : undefined;
+  if (!paper) return { row, target, error: BAD_TARGET };
   const decision = value.decision;
   if (!DECISIONS.includes(decision as TaskPaperDecision["value"])) {
     return {
@@ -225,7 +232,7 @@ function parseRow(value: unknown, row: number): DecisionRow {
   return {
     row,
     target,
-    itemId,
+    ...paper,
     decision: {
       value: decision as TaskPaperDecision["value"],
       reason,
@@ -256,6 +263,20 @@ function validateRecordPaperDecisionsInput(
   });
 }
 
+/** The id of the item `key` names in the library, or undefined. */
+function keyedItemId(
+  key: string,
+  libraryID: number,
+  lookup: PaperDecisionLookup,
+): number | undefined {
+  try {
+    const id = Number(lookup.getItemByLibraryAndKey?.(libraryID, key)?.id);
+    return Number.isInteger(id) && id > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function executeRecordPaperDecisions(
   input: RecordPaperDecisionsInput,
   request: { conversationKey?: number; libraryID?: number },
@@ -280,7 +301,13 @@ function executeRecordPaperDecisions(
       rejected.push({ row: row.row, target: row.target, reason: row.error });
       continue;
     }
-    const resolved = resolveDecisionPaper(row.itemId, libraryID, lookup);
+    const itemId =
+      "itemId" in row
+        ? row.itemId
+        : keyedItemId(row.itemKey, libraryID, lookup);
+    const resolved = itemId
+      ? resolveDecisionPaper(itemId, libraryID, lookup)
+      : ({ ok: false, reason: KEY_NOT_FOUND } as const);
     if (!resolved.ok) {
       rejected.push({
         row: row.row,
@@ -344,7 +371,8 @@ export function createRecordPaperDecisionsTool(
               properties: {
                 target: {
                   type: "string",
-                  description: "Zotero item id (12 or item:12).",
+                  description:
+                    "Zotero item id (12 or item:12) or item key (ABCD2345).",
                 },
                 decision: { type: "string", enum: [...DECISIONS] },
                 relevance: { type: "string", enum: [...RELEVANCE] },

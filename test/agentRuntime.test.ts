@@ -11146,7 +11146,7 @@ describe("run event payloads", function () {
     }
   });
 
-  it("a targeted artifact part finished by an answer citing two of three papers covers those two", async function () {
+  it("a targeted artifact part answered in chat is asked for its document up to the limit, then stays not done", async function () {
     const restoreDb = installMockDb();
     try {
       const events: AgentEvent[] = [];
@@ -11170,7 +11170,11 @@ describe("run event payloads", function () {
           },
           { id: "read-1", name: "paper_read", arguments: {} },
         ]),
-        // The answer delivers the open part itself: no correction.
+        // The answer in chat delivers no artifact part: each answer is
+        // corrected, up to the limit, and the last one is accepted.
+        finalStep(answer),
+        finalStep(answer),
+        finalStep(answer),
         finalStep(answer),
       ]);
       const outcome = await runtime.runTurn({
@@ -11192,11 +11196,9 @@ describe("run event payloads", function () {
         task.taskId.endsWith(":task:summaries"),
       );
       assert.exists(part);
-      assert.equal(part!.status, "completed");
-      assert.deepEqual(part!.doneTargets, ["item:101", "item:102"]);
-      assert.deepEqual(part!.exceptions, [
-        { targets: ["item:103"], reason: OUTCOME_REASONS.notCovered },
-      ]);
+      assert.equal(part!.status, "skipped");
+      assert.equal(part!.reason, OUTCOME_REASONS.notDone);
+      assert.notProperty(part!, "doneTargets");
       assert.deepEqual(ledger!.end, { state: "completed_with_exceptions" });
     } finally {
       restoreDb();
@@ -11239,7 +11241,8 @@ describe("run event payloads", function () {
                 {
                   taskId: "summaries",
                   description: "Write a summary of each paper",
-                  expectedEffect: "artifact",
+                  // A reasoning part: the accepted answer completes it.
+                  expectedEffect: "reasoning",
                   targetIds: ["101", "102"],
                 },
               ],

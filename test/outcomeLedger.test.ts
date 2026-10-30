@@ -1292,27 +1292,25 @@ describe("outcome ledger: host evidence binding", function () {
       effect: "artifact",
       targets: ["item:1", "item:2"],
     });
-    for (const evidence of [
-      { kind: "answer" },
-      { kind: "material", materialRef: material },
-    ] as OutcomeEvidence[]) {
-      const task = find(apply(ledger, evidence).checkpoint, "summaries");
-      assert.equal(task.status, "completed", evidence.kind);
-      assert.isUndefined(task.exceptions, evidence.kind);
-    }
-    for (const evidence of [
-      { kind: "answer", citedTargets: [] },
-      { kind: "material", materialRef: material, citedTargets: [] },
-    ] as OutcomeEvidence[]) {
-      const task = find(apply(ledger, evidence).checkpoint, "summaries");
-      assert.equal(task.status, "completed", evidence.kind);
-      assert.deepEqual(task.doneTargets, [], evidence.kind);
-      assert.deepEqual(
-        task.exceptions,
-        [{ targets: ["item:1", "item:2"], reason: OUTCOME_REASONS.notCovered }],
-        evidence.kind,
-      );
-    }
+    const whole = find(
+      apply(ledger, { kind: "material", materialRef: material }).checkpoint,
+      "summaries",
+    );
+    assert.equal(whole.status, "completed");
+    assert.isUndefined(whole.exceptions);
+    const none = find(
+      apply(ledger, {
+        kind: "material",
+        materialRef: material,
+        citedTargets: [],
+      }).checkpoint,
+      "summaries",
+    );
+    assert.equal(none.status, "completed");
+    assert.deepEqual(none.doneTargets, []);
+    assert.deepEqual(none.exceptions, [
+      { targets: ["item:1", "item:2"], reason: OUTCOME_REASONS.notCovered },
+    ]);
   });
 
   it("material: a targeted part the document cites only partly completes with an exception for the rest", function () {
@@ -1343,22 +1341,29 @@ describe("outcome ledger: host evidence binding", function () {
     );
   });
 
-  it("answer: a targeted artifact part completes per cited target, the rest excepted", function () {
-    const ledger = ledgerWith({
-      taskId: "summaries",
-      description: "Summaries",
-      effect: "artifact",
-      targets: ["item:1", "item:2"],
-    });
-    const { checkpoint } = apply(ledger, {
-      kind: "answer",
-      citedTargets: ["item:2"],
-    });
-    assert.equal(find(checkpoint, "summaries").status, "completed");
-    assert.deepEqual(find(checkpoint, "summaries").doneTargets, ["item:2"]);
-    assert.deepEqual(find(checkpoint, "summaries").exceptions, [
-      { targets: ["item:1"], reason: OUTCOME_REASONS.notCovered },
-    ]);
+  it("answer: an artifact part is delivered only as a document or a note, never by the answer", function () {
+    for (const declaration of [
+      {
+        taskId: "summaries",
+        description: "Summaries",
+        effect: "artifact",
+        targets: ["item:1", "item:2"],
+      },
+      { taskId: "summaries", description: "Summaries", effect: "artifact" },
+    ] as OutcomeDeclaration[]) {
+      const ledger = ledgerWith(declaration);
+      for (const evidence of [
+        { kind: "answer" },
+        { kind: "answer", citedTargets: ["item:2"] },
+        { kind: "answer", citedTargets: [] },
+      ] as OutcomeEvidence[]) {
+        const result = apply(ledger, evidence);
+        assert.isFalse(result.changed);
+        assert.strictEqual(result.checkpoint, ledger);
+        assert.equal(find(result.checkpoint, "summaries").status, "pending");
+      }
+      assert.lengthOf(openDeclaredOutcomes(ledger), 1);
+    }
     const untargeted = ledgerWith({
       taskId: "answer",
       description: "Answer",
@@ -2205,7 +2210,7 @@ describe("outcome ledger: how models declare saves (live run, 2026-09-30)", func
     ]);
   });
 
-  it("leaves an artifact part to a write part that takes the note receipt, and closes it with the answer", function () {
+  it("closes an artifact part with the saved note a write part takes, not with the answer", function () {
     const ledger = ledgerWith(
       {
         taskId: "summary",
@@ -2214,16 +2219,36 @@ describe("outcome ledger: how models declare saves (live run, 2026-09-30)", func
       },
       { taskId: "save", description: "Save it", effect: "mutation" },
     );
+    assert.isFalse(apply(ledger, { kind: "answer" }).changed);
     const saved = apply(ledger, { kind: "receipt", receipt: receipt() });
     assert.deepEqual(
       saved.checkpoint.tasks.map((task) => task.status),
-      ["pending", "completed"],
-    );
-    const answered = apply(saved.checkpoint, { kind: "answer" });
-    assert.deepEqual(
-      answered.checkpoint.tasks.map((task) => task.status),
       ["completed", "completed"],
     );
+    assert.deepEqual(find(saved.checkpoint, "summary").verifiedReceiptIds, [
+      "receipt-1",
+    ]);
+  });
+
+  it("does not close a targeted artifact part with a saved note on only some of its papers", function () {
+    const ledger = ledgerWith(
+      {
+        taskId: "review",
+        description: "Write the review",
+        effect: "artifact",
+        targets: ["item:1", "item:2"],
+      },
+      {
+        taskId: "notes",
+        description: "Save a note on each paper",
+        effect: "mutation",
+        capability: "zotero.notes",
+        targets: ["item:1", "item:2"],
+      },
+    );
+    const saved = apply(ledger, { kind: "receipt", receipt: receipt() });
+    assert.equal(find(saved.checkpoint, "review").status, "pending");
+    assert.deepEqual(find(saved.checkpoint, "notes").doneTargets, ["item:1"]);
   });
 
   it("does not close an artifact part with a write that is not note content", function () {

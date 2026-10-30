@@ -20,6 +20,7 @@ import { setOutsidePaperPrefetchLookup } from "./context/outsidePaperRecords";
 import {
   resolveTaskPaperScopeSet,
   taskPaperScopeContextsOf,
+  withScopeItemKeys,
 } from "./context/taskPaperScopeListing";
 import { initPlanDocumentStore } from "./documents/store";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
@@ -120,9 +121,12 @@ async function createAgentSubsystemRuntime(
     resolveTurnScopePapers: async (request) => {
       const libraryID = request.turnPaperScope.libraryID || request.libraryID;
       if (!libraryID) return undefined;
-      return resolveTaskPaperScopeSet(
-        await libraryIndexService.getSnapshot(libraryID),
-        taskPaperScopeContextsOf(request.turnPaperScope),
+      return withScopeItemKeys(
+        resolveTaskPaperScopeSet(
+          await libraryIndexService.getSnapshot(libraryID),
+          taskPaperScopeContextsOf(request.turnPaperScope),
+        ),
+        (itemId) => zoteroGateway.getItem(itemId)?.key,
       );
     },
   });

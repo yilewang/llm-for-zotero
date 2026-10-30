@@ -377,7 +377,8 @@ describe("task_update: papers a synthesis leaves out", function () {
     ]);
     assert.isUndefined(part.exceptions);
     assert.equal(decideRunEnd(ledger, RUN), "completed");
-    // The accepted answer covers an artifact part the same way.
+    // The accepted answer delivers no artifact part: the review and its
+    // exclusion stay as they were.
     const answered = evidence(
       update(empty(), {
         tasks: [{ ...review, taskId: "review" }],
@@ -385,11 +386,11 @@ describe("task_update: papers a synthesis leaves out", function () {
       }).checkpoint,
       { kind: "answer", citedTargets: ["item:5", "item:6"] },
     );
-    assert.deepEqual(find(answered, "review").doneTargets, [
-      "item:5",
-      "item:6",
+    assert.equal(find(answered, "review").status, "pending");
+    assert.notProperty(find(answered, "review"), "doneTargets");
+    assert.deepEqual(find(answered, "review").excludedTargets, [
+      { targets: ["item:6"], reason: off },
     ]);
-    assert.notProperty(find(answered, "review"), "excludedTargets");
   });
 
   it("an exclusion after the document moves its Not covered exception and leaves other reasons", function () {
@@ -838,10 +839,7 @@ describe("task_update: a part replaced once it has progress", function () {
       targets: ["item:5", "item:7"],
       observationIds: ["obs-57"],
     });
-    ledger = evidence(ledger, {
-      kind: "answer",
-      citedTargets: ["item:5", "item:6", "item:7"],
-    });
+    ledger = evidence(ledger, document(["item:5", "item:6", "item:7"]));
     assert.equal(find(ledger, "read-drift").status, "completed");
     assert.equal(decideRunEnd(ledger, RUN), "completed");
     const settled = settleOutcomes(ledger, "completed", 50);

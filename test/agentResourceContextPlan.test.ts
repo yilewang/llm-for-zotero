@@ -320,6 +320,14 @@ describe("agent resource context plan", function () {
         scope,
       );
     }
+    // A matching skill sets the parts, so it is loaded before any is
+    // declared (eval b4v6, run 2: a read part declared before load_skill).
+    assert.equal(
+      text.split(
+        "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide the parts.",
+      ).length - 1,
+      2,
+    );
     // A digest is no longer reserved for a request that names every paper.
     assert.notInclude(text, "every paper");
     assert.notInclude(text, "explicitly asks to read, summarize or analyze");
