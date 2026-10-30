@@ -224,9 +224,11 @@ import {
   type TornSurface,
 } from "./conversationSelection";
 import {
+  getReaderSelectionForSurface,
   getSelectedModelEntryForSurface,
   surfaceChoices,
 } from "./surfaceChoices";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -8395,6 +8397,18 @@ async function buildAgentRuntimeRequest(
             | "max")
         : undefined,
     advanced: params.effectiveRequestConfig.advanced,
+    // The reader model picked for this runtime in the composer's model menu.
+    readerSelection:
+      getReaderSelectionForSurface(
+        readerRuntimeKeyForSystem(
+          params.effectiveRequestConfig.authMode === "codex_app_server"
+            ? "codex"
+            : params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
+              ? "claude_code"
+              : "upstream",
+        ),
+        params.surface || resolveSurfaceForMountedItem(params.item),
+      ) || undefined,
     history: params.history,
     item: params.item,
     systemPrompt: getStringPref("systemPrompt") || undefined,

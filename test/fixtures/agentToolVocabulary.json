@@ -17,6 +17,7 @@
     "load_skill",
     "note_write",
     "note_write_batch",
+    "paper_digest",
     "paper_read",
     "past_chat_attach",
     "past_chat_read",
@@ -32,5 +33,5 @@
     "zotero_script"
   ],
   "internal": [],
-  "specBytes": 31382
+  "specBytes": 32703
 }

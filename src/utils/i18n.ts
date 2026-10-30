@@ -942,6 +942,9 @@ const zhCN: Record<string, string> = {
   "Could not load Codex models. Showing current model only.":
     "无法加载 Codex 模型。仅显示当前模型。",
   "Retry loading Codex models": "重试加载 Codex 模型",
+  Main: "主模型",
+  Reader: "阅读模型",
+  "Same as main": "与主模型相同",
   "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",

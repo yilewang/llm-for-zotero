@@ -895,6 +895,7 @@ export type AgentModelStep =
 export type ExhaustiveReadBackend =
   | "request_provider"
   | "codex_responses"
+  | "claude_bridge"
   | "unavailable";
 
 /**
@@ -1016,6 +1017,12 @@ export type AgentRuntimeRequestInput = AgentRequest & {
    * Missing means the request's configured provider is the completion backend.
    */
   exhaustiveReadBackend?: ExhaustiveReadBackend;
+  /**
+   * The reader model the user picked in the composer for this runtime, by
+   * entry ID or model name (never a credential). Absent means the main
+   * model reads. Host-set; never decoded from tool arguments.
+   */
+  readerSelection?: import("../shared/readerSelection").ReaderSelection;
 };
 
 export type LegacyPaperContextField =

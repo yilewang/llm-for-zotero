@@ -201,7 +201,7 @@ describe("workflow: Codex model catalog refresh", function () {
       Array.from(
         root.querySelectorAll<HTMLButtonElement>("#llm-model-menu button"),
       ) as HTMLButtonElement[]
-    ).find((row) => !row.dataset.entryId);
+    ).find((row) => !row.dataset.entryId && !row.dataset.modelMenuTab);
     assert.isOk(retry, "failed catalog must offer retry");
     retry!.click();
     await waitFor(

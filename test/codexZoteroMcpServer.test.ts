@@ -3962,6 +3962,71 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("binds the Claude full-read backend, model and reasoning without Codex auth", async function () {
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register({
+      spec: {
+        name: "library_search",
+        description: "Query library",
+        inputSchema: { type: "object", additionalProperties: true },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (_input, context: AgentToolContext) => ({
+        request: {
+          model: context.request.model,
+          authMode: context.request.authMode,
+          providerProtocol: context.request.providerProtocol,
+          reasoning: context.request.reasoning,
+          exhaustiveReadBackend: context.request.exhaustiveReadBackend,
+        },
+      }),
+    });
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-claude-reader",
+        conversationKey: 458,
+        libraryID: 7,
+        kind: "global",
+        runtimeAuthority: "claude",
+        model: "claude-sonnet-4-5",
+        exhaustiveReadBackend: "claude_bridge",
+        reasoning: { provider: "anthropic", level: "high" },
+      },
+      { token: "scoped-claude-reader-token" },
+    );
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "library_search",
+            arguments: { entity: "items", mode: "list" },
+          },
+        },
+      });
+      const content = JSON.parse(
+        JSON.parse(response[2]).result.content[0].text,
+      );
+      assert.equal(content.ok, true, JSON.stringify(content));
+      assert.deepEqual(content.result.request, {
+        model: "claude-sonnet-4-5",
+        reasoning: { provider: "anthropic", level: "high" },
+        exhaustiveReadBackend: "claude_bridge",
+      });
+    } finally {
+      scoped.clear();
+    }
+  });
+
   it("keeps raw-PDF restrictions token-local for headerless standalone reads", async function () {
     let executionCount = 0;
     const registry = new AgentToolRegistry(

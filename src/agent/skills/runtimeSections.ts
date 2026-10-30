@@ -2,10 +2,10 @@ import type { ConversationSystem } from "../../shared/types";
 
 /**
  * Runtime sections of a skill body: lines that only one external runtime
- * should read, such as the name of its own subagent tool.
+ * should read, such as the name of its own tool.
  *
  *     <!-- runtime: claude_code -->
- *     Run each batch in the `paper-reader` subagent.
+ *     Call the digest tool through the Claude Code MCP server.
  *     <!-- /runtime -->
  *
  * The ids are the external `ConversationSystem` values. The markers are HTML

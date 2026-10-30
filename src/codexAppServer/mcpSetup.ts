@@ -11,6 +11,7 @@ import {
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SCOPE_HEADER,
+  ZOTERO_MCP_TOOL_TIMEOUT_SEC,
 } from "../agent/mcp/server";
 import { MCP_METHODS } from "../agent/mcp/protocol";
 import {
@@ -684,6 +685,10 @@ export function buildClaudeZoteroMcpServerConfig(params: {
         type: "http",
         url: serverUrl,
         headers: getConfigHeaders(configValue),
+        // Claude Code's per-server tool-call timeout in milliseconds. Without
+        // it an HTTP tool call ends after 60 s, before a paper_digest or a
+        // paper_read full call can finish.
+        timeout: ZOTERO_MCP_TOOL_TIMEOUT_SEC * 1000,
       },
     },
     allowedTools: buildClaudeZoteroMcpAllowedToolNames(
@@ -702,25 +707,6 @@ export function buildClaudeZoteroMcpAllowedToolNames(
       ? getZoteroMcpDirectPdfToolNames()
       : [...ZOTERO_MCP_SAFE_READ_TOOL_NAMES]
   ).map((toolName) => qualifyZoteroMcpToolName(serverName, toolName));
-}
-
-// The paper-reader subagent gets the four Zotero read tools and
-// record_paper_decisions, so a screening batch can record what it decided.
-// The safe read list also holds outside network calls, skill loading and a
-// chat attach that edits the user's message; a subagent should not have
-// those.
-const PAPER_READER_ZOTERO_TOOL_NAMES = [
-  "library_search",
-  "library_read",
-  "library_retrieve",
-  "paper_read",
-  "record_paper_decisions",
-] as const;
-
-export function buildClaudePaperReaderToolNames(serverName: string): string[] {
-  return PAPER_READER_ZOTERO_TOOL_NAMES.map((toolName) =>
-    qualifyZoteroMcpToolName(serverName, toolName),
-  );
 }
 
 export function assertRequiredCodexZoteroMcpToolsReady(

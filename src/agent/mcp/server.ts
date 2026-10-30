@@ -22,6 +22,11 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import type { ReasoningConfig } from "../../shared/llm";
+import {
+  decodeReaderSelection,
+  encodeReaderSelection,
+  type ReaderSelection,
+} from "../../shared/readerSelection";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../services/quotes/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
@@ -136,6 +141,9 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   "record_paper_decisions",
   // Reads the scope's conversation's stored reads and decisions so far.
   "review_coverage",
+  // The host's per-paper reader: reads papers with the chat's own model
+  // (Codex Responses or the Claude bridge); a read like paper_read.
+  "paper_digest",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
@@ -182,6 +190,14 @@ const PAST_CHAT_TOOL_NAMES = new Set<string>([
   PAST_CHAT_READ_TOOL_NAME,
   PAST_CHAT_SEARCH_TOOL_NAME,
   PAST_CHAT_ATTACH_TOOL_NAME,
+]);
+/**
+ * The tools whose library is the scope's: past chats, and the per-paper
+ * reader, which must never read a paper outside the chat's library.
+ */
+const LIBRARY_PINNED_TOOL_NAMES = new Set<string>([
+  ...PAST_CHAT_TOOL_NAMES,
+  "paper_digest",
 ]);
 const CURATED_READ_TOOL_NAMES = new Set<string>([
   ...ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
@@ -260,7 +276,20 @@ const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
   "file_io",
   "zotero_script",
 ]);
-const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set(["literature_search"]);
+// paper_digest reads Zotero's text of each paper, which a raw-PDF turn
+// reads natively instead.
+const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set([
+  "literature_search",
+  "paper_digest",
+]);
+/**
+ * The MCP tool-call timeout our server entry asks the client for, in
+ * seconds. A paper_digest call reads up to eight papers, each one or more
+ * reader calls of up to four minutes, behind a shared limit of four; a
+ * paper_read full call reads every batch of its papers. Both outlast the
+ * clients' 60-second default.
+ */
+export const ZOTERO_MCP_TOOL_TIMEOUT_SEC = 1_800;
 
 type ZoteroMcpScopeMetadata = {
   publishHostEvent?: (event: import("../types").AgentEvent) => Promise<void>;
@@ -315,8 +344,14 @@ type ZoteroMcpScopeMetadata = {
   attachedConversationScope?: AttachedConversationRef[];
   exhaustiveReadBackend?: Extract<
     ExhaustiveReadBackend,
-    "codex_responses" | "unavailable"
+    "codex_responses" | "claude_bridge" | "unavailable"
   >;
+  /**
+   * The reader model the user picked for this runtime (an entry ID or a model
+   * name, never a credential). Host-set by the Codex and Claude Code scope
+   * builders; absent means the main model reads.
+   */
+  readerSelection?: ReaderSelection;
 };
 
 export type ZoteroMcpPaperScopeInput =
@@ -605,6 +640,8 @@ export function buildZoteroMcpConfigValue(
     ...(!enabled ? { enabled: false } : {}),
     ...(enabled && params.required ? { required: true } : {}),
     default_tools_approval_mode: CODEX_MCP_EFFECT_APPROVAL_MODE,
+    // Codex's per-server tool-call timeout (its default is 60 s).
+    tool_timeout_sec: ZOTERO_MCP_TOOL_TIMEOUT_SEC,
     tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
     http_headers: {
       [ZOTERO_MCP_AUTH_HEADER]: `Bearer ${token}`,
@@ -759,6 +796,15 @@ function normalizeNoteKind(value: unknown): "item" | "standalone" | undefined {
   return value === "item" || value === "standalone" ? value : undefined;
 }
 
+/** A scope names its full-read backend; anything else cannot read in full. */
+function normalizeScopeExhaustiveReadBackend(
+  value: ZoteroMcpActiveScope["exhaustiveReadBackend"],
+): "codex_responses" | "claude_bridge" | "unavailable" {
+  return value === "codex_responses" || value === "claude_bridge"
+    ? value
+    : "unavailable";
+}
+
 function normalizeReasoningConfig(
   value: ReasoningConfig | undefined,
 ): ReasoningConfig | undefined {
@@ -902,10 +948,12 @@ function normalizeActiveScope(
     attachedConversationScope: attachedConversationScope.length
       ? attachedConversationScope
       : undefined,
-    exhaustiveReadBackend:
-      scope.exhaustiveReadBackend === "codex_responses"
-        ? "codex_responses"
-        : "unavailable",
+    exhaustiveReadBackend: normalizeScopeExhaustiveReadBackend(
+      scope.exhaustiveReadBackend,
+    ),
+    readerSelection:
+      decodeReaderSelection(encodeReaderSelection(scope.readerSelection)) ||
+      undefined,
   };
   if (scope.turnPaperScope) {
     return {
@@ -1499,6 +1547,14 @@ function isMcpToolVisibleInScope(
   // task_update tracks the in-plugin Agent's own parts.
   if (CURATED_PLAN_TOOL_NAMES.has(tool.name))
     return tool.name === "submit_document";
+  // The per-paper reader needs the chat's own runtime to read with; a
+  // client without one (no scope, or no native runtime) never sees it.
+  if (
+    tool.name === "paper_digest" &&
+    scope?.exhaustiveReadBackend !== "codex_responses" &&
+    scope?.exhaustiveReadBackend !== "claude_bridge"
+  )
+    return false;
   if (!hasRawPdfScope(scope)) return true;
   return getZoteroMcpDirectPdfToolNames().includes(tool.name);
 }
@@ -1641,16 +1697,19 @@ function resolveMcpCallScope(params: {
       `Conflicting Zotero library IDs: top-level libraryID=${scopeArgs.libraryID} but library_retrieve scope.libraryID=${retrievalLibraryID}.`,
     );
   }
-  // The past-chat tools are pinned to the scope's library: they ignore the
-  // library selected in Zotero, and a model-supplied libraryID that differs
-  // from the scope's is refused (libraryMismatch) instead of overriding it.
-  const pinnedToScopeLibrary = PAST_CHAT_TOOL_NAMES.has(params.toolName);
+  // The past-chat tools and paper_digest are pinned to the scope's library:
+  // they ignore the library selected in Zotero, and a model-supplied
+  // libraryID that differs from the scope's is refused (libraryMismatch)
+  // instead of overriding it.
+  const pinnedToScopeLibrary = LIBRARY_PINNED_TOOL_NAMES.has(params.toolName);
   const scopeLibraryID = normalizePositiveInt(scope?.libraryID) || 0;
   const libraryMismatch =
     pinnedToScopeLibrary &&
     scopeArgs.libraryID &&
     scopeArgs.libraryID !== scopeLibraryID
-      ? `Only past chats from this library can be read (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
+      ? params.toolName === "paper_digest"
+        ? `paper_digest reads only papers of this conversation's library (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
+        : `Only past chats from this library can be read (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
       : undefined;
   return {
     scopeArgs,
@@ -1939,10 +1998,9 @@ function createToolContext(
     pinnedPaperContexts?.length,
   );
   const activeNoteContext = resolveScopeActiveNoteContext(scope);
-  const exhaustiveReadBackend =
-    scope?.exhaustiveReadBackend === "codex_responses"
-      ? ("codex_responses" as const)
-      : ("unavailable" as const);
+  const exhaustiveReadBackend = normalizeScopeExhaustiveReadBackend(
+    scope?.exhaustiveReadBackend,
+  );
   const requestBase = {
     conversationKey: scope?.conversationKey || 0,
     conversationGeneration: scope?.conversationGeneration,
@@ -1977,6 +2035,9 @@ function createToolContext(
       ? [...scope.attachedConversationScope]
       : undefined,
     exhaustiveReadBackend,
+    ...(scope?.readerSelection
+      ? { readerSelection: scope.readerSelection }
+      : {}),
     activeNoteContext,
     metadata: {
       sourceMessageTimestamp: scope?.sourceMessageTimestamp,
@@ -2242,6 +2303,45 @@ function rememberDocumentArtifacts(
   );
   for (const artifact of artifacts) merged.set(artifact.storedPath, artifact);
   scope.documentArtifactObservations = cloneToolArtifacts([...merged.values()]);
+}
+
+/**
+ * The observations an earlier paper_digest call of this scope already
+ * recorded for the papers whose digest this call repeats (`alreadyReturned`).
+ * A repeat reads nothing, so it records nothing new; this only lets its
+ * body carry the same evidence refs as the first call.
+ */
+function rememberedDigestObservations(
+  toolName: string,
+  content: unknown,
+  remembered: readonly TrustedReadObservation[] | undefined,
+  current: readonly TrustedReadObservation[],
+): TrustedReadObservation[] {
+  if (toolName !== "paper_digest" || !remembered?.length) return [];
+  const rows = (content as { papers?: unknown } | null)?.papers;
+  if (!Array.isArray(rows)) return [];
+  const items = globalThis.Zotero?.Items;
+  if (!items?.get) return [];
+  const seen = new Set(current.map((entry) => entry.observationId));
+  const out: TrustedReadObservation[] = [];
+  for (const row of rows) {
+    const value = row as { alreadyReturned?: unknown; itemId?: unknown };
+    if (value?.alreadyReturned !== true) continue;
+    const item = items.get(Number(value.itemId));
+    if (!item?.key || !item.libraryID) continue;
+    for (const entry of remembered) {
+      if (
+        entry.toolName === "paper_digest" &&
+        entry.libraryID === item.libraryID &&
+        entry.itemKey === item.key &&
+        !seen.has(entry.observationId)
+      ) {
+        seen.add(entry.observationId);
+        out.push(entry);
+      }
+    }
+  }
+  return out;
 }
 
 function appendDocumentEvidenceRefs(
@@ -2624,7 +2724,15 @@ async function handleToolsCall(
       headers,
       prepared.execution.result.artifacts || [],
     );
-    result = appendDocumentEvidenceRefs(result, readObservations);
+    result = appendDocumentEvidenceRefs(result, [
+      ...readObservations,
+      ...rememberedDigestObservations(
+        name,
+        prepared.execution.result.content,
+        scope?.documentReadObservations,
+        readObservations,
+      ),
+    ]);
     completeActivity({
       ok: !result.isError,
       error: extractToolCallErrorText(result),

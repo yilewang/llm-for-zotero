@@ -10,7 +10,6 @@ import {
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
-import { buildClaudePaperReaderToolNames } from "../src/codexAppServer/mcpSetup";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import {
   createRecordPaperDecisionsTool,
@@ -790,7 +789,7 @@ describe("paper decision tools over the Zotero MCP bridge", function () {
       originalZotero;
   });
 
-  it("lists both tools as safe reads for Codex and Claude Code, and gives record_paper_decisions to the paper reader", function () {
+  it("lists both tools as safe reads for Codex and Claude Code", function () {
     for (const name of ["record_paper_decisions", "review_coverage"]) {
       assert.include(
         ZOTERO_MCP_SAFE_READ_TOOL_NAMES as readonly string[],
@@ -798,9 +797,6 @@ describe("paper decision tools over the Zotero MCP bridge", function () {
       );
       assert.notProperty(ZOTERO_MCP_EXCLUDED_TOOL_NAMES, name);
     }
-    const reader = buildClaudePaperReaderToolNames("llm_for_zotero");
-    assert.include(reader, "mcp__llm_for_zotero__record_paper_decisions");
-    assert.notInclude(reader, "mcp__llm_for_zotero__review_coverage");
   });
 
   it("carries the decisions on the activity as the call's delta, inside a conversation only", async function () {

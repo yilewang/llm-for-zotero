@@ -36,6 +36,7 @@ const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
   library_retrieve: "retrieval",
   library_cite: "retrieval",
   paper_read: "retrieval",
+  paper_digest: "retrieval",
   read_attachment: "retrieval",
   literature_search: "retrieval",
   literature_read: "retrieval",

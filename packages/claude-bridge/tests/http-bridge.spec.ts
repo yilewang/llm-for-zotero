@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeCodeRuntimeAdapter } from "../src/bridge/claude-code-runtime-adapter.js";
 import { Llm4ZoteroAgentBackendAdapter } from "../src/bridge/llm4zotero-agent-backend-adapter.js";
-import type { ClaudeCodeRuntimeClient, ProviderEvent } from "../src/runtime.js";
+import {
+  StructuredCompletionError,
+  type ClaudeCodeRuntimeClient,
+  type ProviderEvent,
+} from "../src/runtime.js";
 import { InMemorySessionMapper } from "../src/session-link/session-mapper.js";
 import { startHttpBridgeServer } from "../src/server/http-bridge.js";
 
@@ -72,6 +76,67 @@ describe("http bridge server", () => {
         expect(response.status).toBe(200);
       }
       expect(deadlines).toEqual([180000, 300000, 300000]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("answers a provider rate limit with 429 and other failures with 500, and passes usage through", async () => {
+    let mode: "usage" | "rate" | "fail" = "usage";
+    const runtimeClient: ClaudeCodeRuntimeClient = {
+      async startTurn() {
+        return { runId: "fixture", events: providerEvents([]) };
+      },
+      async completeStructured() {
+        if (mode === "rate")
+          throw new StructuredCompletionError("Rate limit exceeded", 429);
+        if (mode === "fail") throw new Error("Semantic completion failed");
+        return {
+          text: "{}",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 4,
+          },
+        };
+      },
+    };
+    const base = new ClaudeCodeRuntimeAdapter({
+      runtimeClient,
+      sessionMapper: new InMemorySessionMapper(),
+    });
+    const server = await startHttpBridgeServer({
+      adapter: new Llm4ZoteroAgentBackendAdapter({ adapter: base }),
+    });
+    const post = () =>
+      fetch(`http://${server.host}:${server.port}/structured-completion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "Read" }),
+      });
+    try {
+      const ok = await post();
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({
+        text: "{}",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 2,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 4,
+        },
+      });
+      mode = "rate";
+      const limited = await post();
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual({ error: "Rate limit exceeded" });
+      mode = "fail";
+      const failed = await post();
+      expect(failed.status).toBe(500);
+      expect(await failed.json()).toEqual({
+        error: "Semantic completion failed",
+      });
     } finally {
       await server.close();
     }

@@ -1,7 +1,6 @@
 import { assert } from "chai";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
-  buildClaudePaperReaderToolNames,
   buildClaudeZoteroMcpServerConfig,
   buildCodexZoteroMcpThreadConfig,
   clearCodexZoteroMcpPreflightCache,
@@ -591,20 +590,6 @@ describe("Codex app-server MCP setup", function () {
     assert.notInclude(
       config.allowedTools,
       "mcp__llm_for_zotero_profile_dev_one__zotero_script",
-    );
-  });
-
-  it("limits the paper-reader subagent to the four Zotero read tools and record_paper_decisions", function () {
-    const prefix = "mcp__llm_for_zotero_profile_dev_one__";
-    assert.deepEqual(
-      buildClaudePaperReaderToolNames("llm_for_zotero_profile_dev_one"),
-      [
-        `${prefix}library_search`,
-        `${prefix}library_read`,
-        `${prefix}library_retrieve`,
-        `${prefix}paper_read`,
-        `${prefix}record_paper_decisions`,
-      ],
     );
   });
 

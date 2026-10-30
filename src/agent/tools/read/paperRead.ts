@@ -63,6 +63,26 @@ import {
 } from "../../../shared/exhaustiveDocumentReader";
 import { getTurnPapersWithRoles } from "../../context/requestTurnPaperScope";
 import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppServer/exhaustiveReader";
+import { createClaudeBridgeExhaustiveReaderSession } from "../../../claudeCode/exhaustiveReader";
+import { createClaudeBridgeCompletion } from "../../../claudeCode/structuredCompletion";
+import { createCodexResponsesCompletion } from "../../../codexAppServer/readerCompletion";
+import { limitReaderCompletion } from "../../../shared/readerCompletion";
+import { hostReaderCallLimiter } from "../../reader/readerLimiter";
+import {
+  mapReaderCompletion,
+  type ReaderAdapterFactories,
+  type ReaderChoice,
+} from "../../reader/resolveReader";
+import {
+  readerChoiceFromSelection,
+  type ReaderEntryLookup,
+} from "../../reader/readerChoiceFromSelection";
+import {
+  resolveReaderWithFallback,
+  type ReaderFallbackNote,
+} from "../../reader/readerFallback";
+import { createReaderBatchAnalyzer } from "../../reader/readerBatchAnalyzer";
+import type { UtilityLLMParams } from "../../../utils/utilityLLM";
 import { createZoteroMetadataResolver } from "../../../services/zoteroMetadata/resolver";
 import { projectPaperMetadata } from "../../../services/zoteroMetadata/projections";
 import type {
@@ -122,6 +142,20 @@ export type PaperReadFullResult = {
   coverageReceipt: FullReadCoverageReceipt;
   synthesisContext: string;
   warnings: string[];
+  /** The chosen reader failed for a configuration reason; main model read. */
+  readerFallback?: ReaderFallbackNote;
+  /** The model that read, when the user picked a reader model. */
+  reader?: { route: string; model: string };
+};
+
+/** Test seams for the reader a full read uses. */
+export type PaperReadReaderOptions = {
+  /** An explicit reader; by default the request's `readerSelection`. */
+  readerChoice?: (context: AgentToolContext) => ReaderChoice | undefined;
+  /** Where a picked API reader's model entry is looked up. */
+  lookupReaderEntry?: ReaderEntryLookup;
+  readerFactories?: ReaderAdapterFactories;
+  llmCall?: UtilityLLMParams["llmCall"];
 };
 
 export type PaperReadFigureExtractionService = {
@@ -291,9 +325,13 @@ async function tryReadMineruOverview(
 }
 
 /**
- * The text a host-owned paper digest reads for one paper: MinerU `full.md`
- * when its cache is readable, else the PDF overview excerpt, exactly as the
- * overview read picks them. `null` when neither yields text.
+ * The text a host-owned paper digest reads for one paper: the whole of
+ * MinerU `full.md` when its cache is readable, else the whole extracted PDF
+ * text (each chunk under its `[chunk N]` marker). Never a sample: a paper
+ * longer than one model call is read in batches by the digest worker.
+ * `maxChars` is only a ceiling for an extreme document; text past it is not
+ * read, and `totalCharacters` then exceeds the text, so the digest reports
+ * it as partial. `null` when neither source yields text.
  */
 export async function readPaperTextForDigest(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
@@ -304,54 +342,51 @@ export async function readPaperTextForDigest(params: {
   text: string;
   totalCharacters: number;
 } | null> {
-  // Same selection as `tryReadMineruOverview`, read here because its
-  // `totalCharacters` counts the untrimmed file while the selected text is
-  // trimmed, which would report every fully read paper as sampled.
+  const ceiling = Math.max(1, Math.floor(params.maxChars));
+  const cut = (whole: string) => ({
+    text: whole.length > ceiling ? whole.slice(0, ceiling) : whole,
+    totalCharacters: whole.length,
+  });
   const cacheDir = normalizeString(params.paperContext.mineruCacheDir);
   if (cacheDir) {
     try {
       const clean = stripMineruSourceImageEmbedsFromMarkdown(
         await readTextFile(joinLocalPath(cacheDir, "full.md")),
       ).trim();
-      const { text } = selectMineruOverview(clean, params.maxChars);
-      if (text) {
-        return {
-          backend: "mineru",
-          text,
-          // Complete only when the selection is the whole paper; a stitched
-          // intro + tail can be as long without being contiguous.
-          totalCharacters:
-            text === clean
-              ? clean.length
-              : Math.max(clean.length, text.length + 1),
-        };
-      }
+      if (clean) return { backend: "mineru", ...cut(clean) };
     } catch {
       // Unreadable MinerU cache: fall back to the PDF, as the overview read does.
     }
   }
   try {
+    // An unbounded excerpt is the whole text; the excerpt samples only
+    // above its bound.
     const overview = await params.pdfService.getOverviewExcerpt({
       paperContext: params.paperContext,
-      maxChars: params.maxChars,
+      maxChars: Number.MAX_SAFE_INTEGER,
     });
-    const text = typeof overview.text === "string" ? overview.text : "";
-    if (!text.trim()) return null;
+    const text = typeof overview.text === "string" ? overview.text.trim() : "";
+    if (!text) return null;
     const chunksRead = Array.isArray(overview.chunkIndexes)
       ? overview.chunkIndexes.length
       : 0;
     const totalChunks = Number(overview.totalChunks) || 0;
-    // The excerpt does not carry chunk lengths. A complete excerpt is the
-    // whole text; a sampled one is scaled by its chunk share so the digest
-    // never reports a sample as complete.
-    const totalCharacters =
-      chunksRead >= totalChunks
-        ? text.length
-        : Math.max(
-            text.length + 1,
-            Math.round((text.length * totalChunks) / Math.max(1, chunksRead)),
-          );
-    return { backend: "pdf", text, totalCharacters };
+    const read = cut(text);
+    // An excerpt that still left chunks out is never reported as whole; its
+    // total is scaled by its chunk share.
+    return {
+      backend: "pdf",
+      text: read.text,
+      totalCharacters:
+        chunksRead >= totalChunks
+          ? read.totalCharacters
+          : Math.max(
+              read.text.length + 1,
+              Math.round(
+                (read.totalCharacters * totalChunks) / Math.max(1, chunksRead),
+              ),
+            ),
+    };
   } catch {
     return null;
   }
@@ -1102,6 +1137,7 @@ export function createPaperReadTool(
   zoteroGateway: ZoteroGateway,
   figureExtractionService?: PaperReadFigureExtractionService,
   fullReadAnalyzer?: ExhaustiveBatchAnalyzer,
+  readerOptions: PaperReadReaderOptions = {},
 ): AgentToolDefinition<PaperReadInput, unknown> {
   const pageRenderer = createPdfPageRenderer(pdfPageService);
   return {
@@ -1546,13 +1582,53 @@ export function createPaperReadTool(
           );
         }
         const nativeFullReadModel = `${context.request.model || ""}`.trim();
+        // The reader the user picked, if any. The plugin Agent always reads
+        // through the resolver; Codex and Claude Code keep their native
+        // sessions for the main model and use it only for a picked reader.
+        const readerChoice = fullReadAnalyzer
+          ? undefined
+          : readerOptions.readerChoice
+            ? readerOptions.readerChoice(context)
+            : readerChoiceFromSelection({
+                selection: context.request.readerSelection,
+                request: context.request,
+                lookupEntry: readerOptions.lookupReaderEntry,
+              });
+        const isNativeRuntime =
+          context.request.authMode === "codex_app_server" ||
+          context.request.exhaustiveReadBackend === "claude_bridge";
+        const useResolver =
+          !fullReadAnalyzer && (readerChoice !== undefined || !isNativeRuntime);
         if (
           !fullReadAnalyzer &&
+          !readerChoice &&
           context.request.authMode === "codex_app_server" &&
           (!nativeFullReadModel || nativeFullReadModel === "codex-app-server")
         ) {
           throw new Error(
             "Exhaustive paper reading cannot run because the Codex tool-free full-read backend has no selected model.",
+          );
+        }
+        const useClaudeBridgeReader =
+          !fullReadAnalyzer &&
+          !useResolver &&
+          context.request.exhaustiveReadBackend === "claude_bridge";
+        if (useClaudeBridgeReader && !nativeFullReadModel) {
+          throw new Error(
+            "Exhaustive paper reading cannot run because the Claude tool-free full-read backend has no selected model.",
+          );
+        }
+        const resolvedReader = useResolver
+          ? resolveReaderWithFallback({
+              request: context.request,
+              choice: readerChoice,
+              llmCall: readerOptions.llmCall,
+              factories: readerOptions.readerFactories,
+            })
+          : null;
+        if (resolvedReader && !resolvedReader.resolution.ok) {
+          throw new Error(
+            `Exhaustive paper reading cannot run: ${resolvedReader.resolution.detail}`,
           );
         }
         const paperInputs = [];
@@ -1566,27 +1642,61 @@ export function createPaperReadTool(
           2048,
           Math.floor(Number(context.request.advanced?.inputTokenCap || 12000)),
         );
+        const resolverReader =
+          resolvedReader && resolvedReader.resolution.ok
+            ? resolvedReader.resolution.reader
+            : null;
         // A batch is sized from the reader model's own window, up to a
         // ceiling; the synthesis that returns to the agent stays sized from
         // the agent's cap, so a large window does not grow it.
-        const readerWindowTokens = resolveModelInputTokenLimit(
-          nativeFullReadModel,
-          context.request.advanced?.inputTokenCap,
-          {
-            apiBase: context.request.apiBase,
-            protocol: context.request.providerProtocol,
-            authMode: context.request.authMode,
-            profileOverride: context.request.advanced?.profileOverride,
-          },
-        ).limitTokens;
+        const readerWindowTokens =
+          readerChoice && resolverReader
+            ? resolverReader.windowTokens
+            : resolveModelInputTokenLimit(
+                nativeFullReadModel,
+                context.request.advanced?.inputTokenCap,
+                {
+                  apiBase: context.request.apiBase,
+                  protocol: context.request.providerProtocol,
+                  authMode: context.request.authMode,
+                  profileOverride: context.request.advanced?.profileOverride,
+                },
+              ).limitTokens;
         const batchTokenBudget =
           resolveFullReadBatchTokenBudget(readerWindowTokens);
-        const nativeReaderSession =
-          !fullReadAnalyzer && context.request.authMode === "codex_app_server"
+        // Native reader calls share the host's one reader limit with
+        // paper_digest.
+        const resolverAnalyzer = resolverReader
+          ? createReaderBatchAnalyzer(
+              isNativeRuntime
+                ? mapReaderCompletion(resolverReader, (complete) =>
+                    limitReaderCompletion(complete, hostReaderCallLimiter),
+                  )
+                : resolverReader,
+            )
+          : null;
+        const nativeReaderSession = useClaudeBridgeReader
+          ? createClaudeBridgeExhaustiveReaderSession({
+              model: nativeFullReadModel,
+              reasoning: context.request.reasoning,
+              complete: limitReaderCompletion(
+                createClaudeBridgeCompletion(),
+                hostReaderCallLimiter,
+              ),
+            })
+          : !fullReadAnalyzer &&
+              !useResolver &&
+              context.request.authMode === "codex_app_server"
             ? createCodexAppServerExhaustiveReaderSession({
                 model: nativeFullReadModel,
                 reasoning: context.request.reasoning,
                 profileOverride: context.request.advanced?.profileOverride,
+                complete: limitReaderCompletion(
+                  createCodexResponsesCompletion({
+                    profileOverride: context.request.advanced?.profileOverride,
+                  }),
+                  hostReaderCallLimiter,
+                ),
               })
             : null;
         const result = await (async () => {
@@ -1603,7 +1713,9 @@ export function createPaperReadTool(
                 Math.floor(inputTokenCap * 0.45),
               ),
               analyzeBatch:
-                fullReadAnalyzer || nativeReaderSession?.analyzeBatch,
+                fullReadAnalyzer ||
+                resolverAnalyzer ||
+                nativeReaderSession?.analyzeBatch,
               signal: context.signal,
               llm: {
                 model: context.request.model,
@@ -1619,6 +1731,7 @@ export function createPaperReadTool(
             nativeReaderSession?.dispose();
           }
         })();
+        const fallbackNote = resolvedReader?.fallbackNote();
         const output: PaperReadFullResult = {
           mode: "full",
           status: result.status,
@@ -1629,6 +1742,16 @@ export function createPaperReadTool(
           coverageReceipt: result.receipt,
           synthesisContext: result.contextText,
           warnings: result.warnings,
+          // The trace names who read when the user picked the reader.
+          ...(readerChoice && resolverReader
+            ? {
+                reader: {
+                  route: resolverReader.route,
+                  model: resolverReader.model,
+                },
+              }
+            : {}),
+          ...(fallbackNote ? { readerFallback: fallbackNote } : {}),
         };
         return output;
       }

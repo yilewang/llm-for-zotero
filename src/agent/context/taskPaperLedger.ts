@@ -142,6 +142,12 @@ export type TaskPaperReadEvent = {
   relevance?: TaskPaperDigestRelevance;
   /** A `digest` read only: the stance the digest judged, when it did. */
   stance?: TaskPaperDigestStance;
+  /**
+   * A `digest` read only: whether the digest read the paper's whole text
+   * (`source.complete`). Absent on a failed digest and on rows saved before
+   * it was recorded.
+   */
+  complete?: boolean;
 };
 
 export type TaskPaperCitation = {
@@ -335,6 +341,8 @@ export const TASK_PAPER_LEDGER_TOOL_NAMES: ReadonlySet<string> = new Set([
   "library_retrieve",
   "paper_read",
   "read_attachment",
+  // The MCP host's per-paper reader: its rows are host digests.
+  "paper_digest",
 ]);
 
 export function taskPaperKey(libraryID: number, itemId: number): string {
@@ -1245,6 +1253,8 @@ function seedsFor(toolName: string, input: unknown, result: unknown): Seed[] {
       return paperReadSeeds(input, result);
     case "read_attachment":
       return readAttachmentSeeds(input, result);
+    case "paper_digest":
+      return paperDigestSeeds(result);
     default:
       return [];
   }
@@ -1408,7 +1418,7 @@ export type TaskPaperDigestInput = {
   relevance?: Readonly<TaskPaperDigestRelevance>;
   stance?: Readonly<TaskPaperDigestStance>;
   evidence?: ReadonlyArray<{ section?: string; quote: string; chunk?: number }>;
-  source?: { backend: "mineru" | "pdf" | "text" };
+  source?: { backend: "mineru" | "pdf" | "text"; complete?: boolean };
 };
 
 /** The fields of a `PaperDigestFailure` the ledger records. */
@@ -1550,6 +1560,108 @@ function digestRead(
 }
 
 /**
+ * A host digest's reads: one `digest` read holding its answer (up to
+ * `TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS`), its part's label, the
+ * relevance and stance it judged and whether it read the whole text, and
+ * one `passage` read per verified evidence quote under its section.
+ */
+function digestReadSeeds(
+  digest: TaskPaperDigestInput,
+  label: string | undefined,
+): { answer: ReadSeed; passages: ReadSeed[] } {
+  const answer = readSeed({
+    granularity: "digest",
+    method: "digest",
+    label,
+  });
+  const clipped = clipTaskPaperText(
+    digest.answer,
+    TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS,
+  );
+  if (clipped) answer.snippet = clipped;
+  const relevance = digestJudgment(digest.relevance);
+  if (relevance) answer.relevance = relevance;
+  const stance = digestJudgment(digest.stance);
+  if (stance) answer.stance = stance;
+  const complete = digest.source?.complete;
+  if (typeof complete === "boolean") answer.complete = complete;
+  const passages: ReadSeed[] = [];
+  for (const evidence of digest.evidence || []) {
+    const seed = readSeed({
+      granularity: "passage",
+      method: "digest",
+      label: evidence.section,
+      snippet: evidence.quote,
+    });
+    if (!seed.snippet) continue;
+    const chunk = nonNegative(evidence.chunk);
+    if (chunk !== undefined) seed.chunk = chunk;
+    passages.push(seed);
+  }
+  return { answer, passages };
+}
+
+/**
+ * The rows of one `paper_digest` call (the MCP host's per-paper reader), as
+ * the host digest builders record them: a digested paper is read, with its
+ * digest read and its evidence passages; a failed one is matched, with a
+ * `digest` read whose `whyMatched` is the host's reason. A row the run
+ * already reported (`alreadyReturned` for a digest repeated with its body,
+ * `alreadyReported` for a failure) and a pending paper add nothing.
+ */
+function paperDigestSeeds(result: unknown): Seed[] {
+  const output = record(result) || {};
+  const label = text(output.label);
+  const rows = Array.isArray(output.papers) ? output.papers : [];
+  const seeds: Seed[] = [];
+  for (const row of rows) {
+    const value = record(row);
+    if (
+      !value ||
+      value.alreadyReturned === true ||
+      value.alreadyReported === true
+    )
+      continue;
+    const ref = paperRef(value);
+    if (!ref) continue;
+    if (value.status === "digested" && typeof value.answer === "string") {
+      const digest = value as unknown as TaskPaperDigestInput;
+      const backend = digest.source?.backend;
+      const source = backend ? DIGEST_TEXT_SOURCE[backend] : undefined;
+      const { answer, passages } = digestReadSeeds(digest, label);
+      for (const read of [
+        answer,
+        ...passages.slice(0, TASK_PAPER_MAX_READS_PER_TURN - 1),
+      ]) {
+        seeds.push({
+          ref,
+          state: "read",
+          ...(source ? { text: source } : {}),
+          read,
+        });
+      }
+      continue;
+    }
+    if (value.status === "failed" && typeof value.reason === "string") {
+      seeds.push({
+        ref,
+        state: "matched",
+        ...(value.reason === TASK_PAPER_DIGEST_NO_TEXT_REASON
+          ? { text: "none" as const }
+          : {}),
+        read: readSeed({
+          granularity: "digest",
+          method: "digest",
+          label,
+          whyMatched: value.reason,
+        }),
+      });
+    }
+  }
+  return seeds;
+}
+
+/**
  * What one completed host digest adds to the ledger: the paper read, one
  * `digest` read holding its answer (up to
  * `TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS`), its part's id and label and the
@@ -1573,33 +1685,7 @@ export function buildDigestLedgerDelta(
     `${params.callId}:digest:${params.paper.itemId}`,
     paper,
   );
-  const answer = readSeed({
-    granularity: "digest",
-    method: "digest",
-    label: params.label,
-  });
-  const clipped = clipTaskPaperText(
-    digest.answer,
-    TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS,
-  );
-  if (clipped) answer.snippet = clipped;
-  const relevance = digestJudgment(digest.relevance);
-  if (relevance) answer.relevance = relevance;
-  const stance = digestJudgment(digest.stance);
-  if (stance) answer.stance = stance;
-  const passages: ReadSeed[] = [];
-  for (const evidence of digest.evidence || []) {
-    const seed = readSeed({
-      granularity: "passage",
-      method: "digest",
-      label: evidence.section,
-      snippet: evidence.quote,
-    });
-    if (!seed.snippet) continue;
-    const chunk = nonNegative(evidence.chunk);
-    if (chunk !== undefined) seed.chunk = chunk;
-    passages.push(seed);
-  }
+  const { answer, passages } = digestReadSeeds(digest, params.label);
   // The digest read is never dropped by the cap; the evidence fills the rest.
   const keptPassages = passages.slice(0, TASK_PAPER_MAX_READS_PER_TURN - 1);
   delta.reads = [answer, ...keptPassages].map((seed) =>

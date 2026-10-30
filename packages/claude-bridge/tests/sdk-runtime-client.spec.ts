@@ -485,20 +485,16 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       expect(typeof agentHook(options)).toBe("function");
     });
 
-    it("defines paper-reader with only the tools the plugin names", async () => {
+    it("registers no paper-reader subagent, even when an older plugin names its tools", async () => {
       const readTools = [
         "mcp__llm_for_zotero__library_search",
         "mcp__llm_for_zotero__paper_read",
       ];
       const options = await runTurn({
-        allowedTools: [...readTools, "mcp__llm_for_zotero__library_update"],
+        allowedTools: readTools,
         metadata: { paperReaderTools: readTools },
       });
-      const agents = options.agents as Record<string, any>;
-      expect(Object.keys(agents)).toEqual(["paper-reader"]);
-      expect(agents["paper-reader"].tools).toEqual(readTools);
-      expect(typeof agents["paper-reader"].description).toBe("string");
-      expect(typeof agents["paper-reader"].prompt).toBe("string");
+      expect(options.agents).toBeUndefined();
       expect(options.paperReaderTools).toBeUndefined();
       expect(typeof agentHook(options)).toBe("function");
     });

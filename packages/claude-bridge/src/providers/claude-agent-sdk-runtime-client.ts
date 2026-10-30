@@ -19,7 +19,9 @@ import type {
   RuntimePermissionModeCatalog,
   RuntimeTurnRequest,
   RuntimeTurnStream,
+  StructuredCompletionUsage,
 } from "../runtime.js";
+import { StructuredCompletionError } from "../runtime.js";
 import { mapSdkMessageToProviderEvents } from "../event-mapper/map-sdk-message.js";
 import { createClaudeStepTracker } from "../event-mapper/claude-step-tracker.js";
 import { globalPermissionStore } from "../permissions/permission-store.js";
@@ -105,6 +107,39 @@ function toFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
+}
+
+/**
+ * Token counts from a structured completion's result message. Undefined when
+ * the SDK reported no usable number, so the caller can tell "none" from zero.
+ */
+function readStructuredCompletionUsage(
+  usage: Record<string, unknown> | undefined,
+  modelUsage?: Record<string, unknown>,
+): StructuredCompletionUsage | undefined {
+  if (!usage) return undefined;
+  const input = toFiniteNumber(usage.input_tokens);
+  const output = toFiniteNumber(usage.output_tokens);
+  const cacheCreation = toFiniteNumber(usage.cache_creation_input_tokens);
+  const cacheRead = toFiniteNumber(usage.cache_read_input_tokens);
+  if (
+    input === undefined &&
+    output === undefined &&
+    cacheCreation === undefined &&
+    cacheRead === undefined
+  ) {
+    return undefined;
+  }
+  const modelNames = modelUsage ? Object.keys(modelUsage) : [];
+  return {
+    inputTokens: input ?? 0,
+    outputTokens: output ?? 0,
+    cacheCreationInputTokens: cacheCreation ?? 0,
+    cacheReadInputTokens: cacheRead ?? 0,
+    ...(modelNames.length === 1 && modelNames[0]
+      ? { model: modelNames[0] }
+      : {}),
+  };
 }
 
 function normalizeSdkContextUsage(
@@ -281,6 +316,7 @@ const DEFAULT_BLOCKED_METADATA_KEYS = new Set<string>([
   "model",
   "mcpServers",
   "effort",
+  // Retired: an older plugin may still send it; it must not reach the SDK.
   "paperReaderTools",
 ]);
 const IMAGE_MIME_BY_KIND: Record<
@@ -982,7 +1018,6 @@ function buildLocalPdfReadHooks(
 }
 // Claude Code names its subagent tool "Agent"; older builds named it "Task".
 const SUBAGENT_TOOL_NAMES = ["Agent", "Task"];
-const PAPER_READER_AGENT_NAME = "paper-reader";
 
 /**
  * The SDK runs a subagent in the background by default and the report comes
@@ -1021,27 +1056,6 @@ function buildSubagentForegroundHooks(): {
   };
 }
 
-/**
- * A subagent that can only call the Zotero read tools the plugin names for
- * this turn. Without `tools`, a subagent inherits every tool of the parent.
- */
-function buildPaperReaderAgents(
-  readTools: unknown,
-):
-  | Record<string, { description: string; prompt: string; tools: string[] }>
-  | undefined {
-  const tools = toStableStringList(readTools);
-  if (!tools) return undefined;
-  return {
-    [PAPER_READER_AGENT_NAME]: {
-      description:
-        "Reads a batch of papers from the user's Zotero library with the Zotero read tools and reports what they say.",
-      prompt:
-        "Read the papers you are given with the Zotero tools. Report only what the tools returned, and name the paper for each point.",
-      tools,
-    },
-  };
-}
 function isRuntimeEffortLevel(value: unknown): value is RuntimeEffortLevel {
   return (
     value === "low" ||
@@ -1514,13 +1528,54 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
               }),
             },
           }) as Query;
+          let assistantError: string | undefined;
+          let rateLimited = false;
           for await (const message of stream) {
-            if (message.type === "result") {
-              if (message.subtype !== "success" || message.is_error)
-                throw new Error("Semantic completion failed");
+            if (message.type === "assistant" && message.error) {
+              assistantError = message.error;
+            } else if (
+              message.type === "rate_limit_event" &&
+              message.rate_limit_info?.status === "rejected"
+            ) {
+              rateLimited = true;
+            } else if (message.type === "result") {
+              if (message.subtype !== "success" || message.is_error) {
+                const apiStatus =
+                  message.subtype === "success"
+                    ? message.api_error_status
+                    : undefined;
+                const detail = (
+                  message.subtype === "success"
+                    ? message.result
+                    : message.errors?.join("; ")
+                )
+                  ?.trim()
+                  .slice(0, 500);
+                if (
+                  apiStatus === 429 ||
+                  assistantError === "rate_limit" ||
+                  rateLimited
+                ) {
+                  throw new StructuredCompletionError(
+                    detail || "The Claude rate limit was reached",
+                    429,
+                  );
+                }
+                throw new Error(
+                  detail
+                    ? `Semantic completion failed: ${detail}`
+                    : "Semantic completion failed",
+                );
+              }
               if (!message.result?.trim())
                 throw new Error("Semantic completion was empty");
-              return { text: message.result };
+              const usage = readStructuredCompletionUsage(
+                message.usage as unknown as Record<string, unknown>,
+                message.modelUsage,
+              );
+              return usage
+                ? { text: message.result, usage }
+                : { text: message.result };
             }
           }
           throw new Error("Semantic completion did not finish");
@@ -3049,7 +3104,6 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
           : undefined,
         allowedTools: allowedTools?.length ? allowedTools : undefined,
         hooks,
-        agents: buildPaperReaderAgents(rawRequestMetadata.paperReaderTools),
         mcpServers,
         settingSources: effectiveSettingSources,
         permissionMode: effectivePermissionMode,

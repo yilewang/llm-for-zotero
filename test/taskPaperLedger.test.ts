@@ -1408,6 +1408,34 @@ describe("taskPaperLedger", function () {
       assert.deepEqual(taskPaperReadDepths(delta).text, [1]);
     });
 
+    it("marks the digest read complete only when the digest read the whole text, and keeps its granularity", function () {
+      const whole = buildDigestLedgerDelta({
+        callId: "call-8",
+        toolName: "task_update",
+        digest: digest(3),
+        paper: paper(3),
+      });
+      assert.equal(whole.reads[0].granularity, "digest");
+      assert.isTrue(whole.reads[0].complete);
+      // Only the digest read carries the flag; its evidence passages do not.
+      assert.notProperty(whole.reads[1], "complete");
+      const part = buildDigestLedgerDelta({
+        callId: "call-8",
+        toolName: "task_update",
+        digest: digest(4, {
+          source: {
+            backend: "pdf",
+            readCharacters: 1000,
+            totalCharacters: 4000,
+            complete: false,
+          },
+        }),
+        paper: paper(4),
+      });
+      assert.equal(part.reads[0].granularity, "digest");
+      assert.isFalse(part.reads[0].complete);
+    });
+
     it("keeps an answer whole up to its own cap, evidence at the snippet cap, and caps the reads per paper", function () {
       // A 220-word answer is about 1,500 characters.
       const whole = "Representational drift ".repeat(65).trim();

@@ -1692,6 +1692,8 @@ function buildCodexNativeScopedMcpScope(params: {
     executionContext:
       params.preparedRequest?.executionContext || params.executionContext,
     exhaustiveReadBackend: "codex_responses",
+    // The reader model the user picked for Codex, by entry ID or model name.
+    readerSelection: resolvedRequest.readerSelection,
     attachedConversationScope: resolvedRequest.attachedConversationScope,
     turnPaperScope: resolvedRequest.turnPaperScope,
     turnPaperScopeWarnings: resolvedRequest.turnPaperScopeWarnings,

@@ -41,6 +41,7 @@ import { t } from "../../utils/i18n";
 import { observeHistoryActivity } from "./historyActivity";
 import { isLivePanelBody } from "./panelLiveness";
 import { revealLocalPath } from "../../utils/revealLocalPath";
+import { isReaderApiEntry } from "../../agent/reader/readerChoiceFromSelection";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
@@ -474,6 +475,12 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  createReaderMenuController,
+  describeReaderSelection,
+  formatReaderTooltipLine,
+} from "./setupHandlers/controllers/readerMenuController";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import {
   MENUS_CLOSED_BY_MODEL_MENU,
   MENUS_CLOSED_BY_REASONING_MENU,
@@ -5755,10 +5762,27 @@ export function setupHandlers(
     const { choices, currentModel, currentModelDisplay, currentModelHint } =
       getSelectedModelInfo();
     const modelLabel = `${currentModelDisplay || currentModel || "default"}`;
-    const modelHint =
+    const readerRuntime = readerRuntimeKeyForSystem(getConversationSystem());
+    // Only the tooltip names the reader; the button shows the main model.
+    const readerLine = formatReaderTooltipLine(
+      describeReaderSelection({
+        runtime: readerRuntime,
+        selection: panelChoices.getReaderSelection(readerRuntime),
+        lookupEntry: getModelEntryById,
+        runtimeEntries: isClaudeConversationSystem()
+          ? getClaudeRuntimeModelEntries()
+          : isCodexConversationSystem()
+            ? getCodexRuntimeModelEntries()
+            : [],
+      }),
+    );
+    const mainModelHint =
       choices.length > 1
         ? currentModelHint
         : currentModelHint || "Only one model is configured";
+    const modelHint = readerLine
+      ? `${mainModelHint}\n${readerLine}`
+      : mainModelHint;
     // A model can keep its name while its image-input capability changes in
     // settings. Keep that real change eligible for the preview refresh too.
     const { screenshotUnsupported } = getSelectedScreenshotSupport();
@@ -5970,6 +5994,42 @@ export function setupHandlers(
       .join("\n");
   };
 
+  /** The reader half of the model menu (Main | Reader switch). */
+  const readerMenu = createReaderMenuController({
+    doc: body.ownerDocument as Document,
+    getRuntime: () => readerRuntimeKeyForSystem(getConversationSystem()),
+    getSelection: (runtime) => panelChoices.getReaderSelection(runtime),
+    setSelection: (runtime, selection) =>
+      panelChoices.setReaderSelection(runtime, selection),
+    getApiEntries: () => getAvailableModelEntries().filter(isReaderApiEntry),
+    getRuntimeEntries: () =>
+      isClaudeConversationSystem()
+        ? getClaudeRuntimeModelEntries()
+        : isCodexConversationSystem()
+          ? getCodexRuntimeModelEntries()
+          : [],
+    lookupEntry: getModelEntryById,
+    appendRuntimeCatalogStatus: (menu) => {
+      appendClaudeModelCatalogStatus(menu);
+      appendCodexModelCatalogStatus(menu);
+    },
+    appendProviderSection: appendModelProviderSection,
+    optionTitle: (entry, own) =>
+      own
+        ? getModelOptionTitle(entry)
+        : `${entry.providerLabel} · ${entry.model}`,
+    isPrimaryPointerEvent,
+    onTabChange: () => {
+      rebuildModelMenu();
+      if (modelMenu && modelBtn)
+        positionComposerMenu(body, modelMenu, modelBtn);
+    },
+    onPick: () => {
+      closeModelMenu();
+      updateModelButton();
+    },
+  });
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
     // No catalog refresh here: a refresh notifies capability listeners, which
@@ -5977,6 +6037,11 @@ export function setupHandlers(
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
+    readerMenu.appendSwitch(modelMenu);
+    if (readerMenu.getTab() === "reader") {
+      readerMenu.appendReaderList(modelMenu);
+      return;
+    }
     appendClaudeModelCatalogStatus(modelMenu);
     appendCodexModelCatalogStatus(modelMenu);
     codexDirectController?.appendCatalogStatus({
@@ -8968,6 +9033,8 @@ export function setupHandlers(
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
+    // The menu always opens on Main.
+    readerMenu.resetTab();
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();

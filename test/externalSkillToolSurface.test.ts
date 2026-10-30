@@ -122,15 +122,24 @@ describe("every text an external runtime receives names only tools it can call (
       originalZotero;
   });
 
-  // Both embedded runtimes set requestInteraction on every turn that has a
-  // Zotero MCP scope (externalBackendBridge.ts for Claude Code,
-  // codexAppServer/nativeClient.ts for Codex), so both scopes carry it.
+  // Both embedded runtimes set requestInteraction and their reader backend
+  // on every turn that has a Zotero MCP scope (externalBackendBridge.ts for
+  // Claude Code, codexAppServer/nativeClient.ts for Codex), so both scopes
+  // carry them; the backend lists paper_digest, which the skill names.
   const SCOPES = [
-    { label: "Codex", runtimeAuthority: "codex" as const },
-    { label: "Claude Code", runtimeAuthority: "claude" as const },
+    {
+      label: "Codex",
+      runtimeAuthority: "codex" as const,
+      exhaustiveReadBackend: "codex_responses" as const,
+    },
+    {
+      label: "Claude Code",
+      runtimeAuthority: "claude" as const,
+      exhaustiveReadBackend: "claude_bridge" as const,
+    },
   ];
 
-  for (const { label, runtimeAuthority } of SCOPES) {
+  for (const { label, runtimeAuthority, exhaustiveReadBackend } of SCOPES) {
     it(`names only listed tools in skill bodies, load_skill results, and tool descriptions (${label})`, async function () {
       const registry = createBuiltInToolRegistry({
         zoteroGateway: {} as never,
@@ -147,6 +156,7 @@ describe("every text an external runtime receives names only tools it can call (
         libraryID: 1,
         kind: "global",
         runtimeAuthority,
+        exhaustiveReadBackend,
         requestInteraction: async () => ({ approved: false }),
       });
       try {
@@ -163,6 +173,7 @@ describe("every text an external runtime receives names only tools it can call (
         assert.notInclude([...listedNames], "task_update");
         assert.include([...listedNames], "load_skill");
         assert.include([...listedNames], "request_user_input");
+        assert.include([...listedNames], "paper_digest");
 
         const texts: Array<{ source: string; text: string }> = [];
         for (const [file, raw] of Object.entries(BUILTIN_SKILL_FILES)) {

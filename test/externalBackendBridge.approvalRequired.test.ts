@@ -668,18 +668,9 @@ describe("external bridge action approval handling", function () {
         capturedBody?.allowedTools,
         `mcp__${serverName}__run_command`,
       );
-      // The paper-reader subagent gets only the four Zotero read tools and
-      // record_paper_decisions.
-      assert.sameMembers(
-        capturedBody?.metadata?.paperReaderTools as string[],
-        [
-          "library_search",
-          "library_read",
-          "library_retrieve",
-          "paper_read",
-          "record_paper_decisions",
-        ].map((name) => `mcp__${serverName}__${name}`),
-      );
+      // No paper-reader subagent is registered: the skill reads every paper
+      // with the host reader.
+      assert.notProperty(capturedBody?.metadata || {}, "paperReaderTools");
       assert.equal(mcpServers?.[serverName].type, "http");
       assert.equal(
         mcpServers?.[serverName].url,

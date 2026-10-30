@@ -187,6 +187,28 @@ function observationSeeds(
     return [...metadata, ...snippets];
   }
 
+  if (toolName === "paper_digest") {
+    // The MCP host's per-paper reader: each digested row read the paper's
+    // text, at body depth when the reader read all of it or at least
+    // PAPER_DIGEST_BODY_DEPTH_CHARS, else at abstract depth (as a digest
+    // part's observation). Failed and pending papers read nothing, and a
+    // row an earlier call of the run already returned (its digest repeated)
+    // or reported is not read again.
+    return seedRows(rowsAt(result, "papers"), (row) => {
+      const value = record(row) || {};
+      if (
+        value.status !== "digested" ||
+        value.alreadyReturned === true ||
+        value.alreadyReported === true
+      )
+        return [];
+      const source = record(value.source) || {};
+      return source.complete === true ||
+        Number(source.readCharacters) >= PAPER_DIGEST_BODY_DEPTH_CHARS
+        ? ["body"]
+        : ["abstract"];
+    });
+  }
   const direct = directRows(result);
   const sources = direct.length ? direct : inputCandidates(input);
   const mayUseAggregatePayload = direct.length === 0 && sources.length === 1;
@@ -252,6 +274,9 @@ function observationSeeds(
   }
   return [];
 }
+
+/** Equal to `DIGEST_BODY_DEPTH_CHARS` (digestJobHost.ts); a test keeps them equal. */
+export const PAPER_DIGEST_BODY_DEPTH_CHARS = 5_000;
 
 function zoteroIdentity(source: Candidate): {
   libraryID: number;
@@ -340,7 +365,9 @@ export async function createTrustedReadObservations(params: {
   const readMode =
     params.toolName === "paper_read"
       ? text(args.mode) || text(record(params.result)?.mode) || "overview"
-      : undefined;
+      : params.toolName === "paper_digest"
+        ? "digest"
+        : undefined;
   const inputDigest = `sha256:${await sha256Text(canonicalJson(params.input))}`;
   const resultDigest = `sha256:${await sha256Text(canonicalJson(params.result))}`;
   const callDigest = `sha256:${await sha256Text(

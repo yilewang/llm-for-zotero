@@ -23,6 +23,9 @@ declare namespace _ZoteroTypes {
       "modelProviderGroups": string;
       "modelProviderGroupsMigrationVersion": number;
       "lastUsedModelEntryId": string;
+      "readerChoiceAgent": string;
+      "readerChoiceCodex": string;
+      "readerChoiceClaude": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
       "semanticScholarApiKey": string;

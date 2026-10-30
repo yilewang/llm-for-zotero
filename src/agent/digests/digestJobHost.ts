@@ -27,8 +27,21 @@
  * failed runs again on at most two re-declarations in a run; after that its
  * failure is final.
  */
-import { DEFAULT_INPUT_TOKEN_CAP } from "../../utils/llmDefaults";
 import type { UtilityLLMParams } from "../../utils/utilityLLM";
+import {
+  mapReaderCompletion,
+  type ReaderAdapterFactories,
+  type ReaderChoice,
+  type ResolvedReader,
+} from "../reader/resolveReader";
+import {
+  readerChoiceFromSelection,
+  type ReaderEntryLookup,
+} from "../reader/readerChoiceFromSelection";
+import {
+  resolveReaderWithFallback,
+  type ReaderFallbackNote,
+} from "../reader/readerFallback";
 import type { PaperContextRef } from "../../shared/types";
 import {
   buildDigestFailureLedgerDelta,
@@ -44,6 +57,12 @@ import { canonicalJson } from "../services/libraryMutation/canonicalJson";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { applyOutcomeEvidence } from "../loop/outcomes";
 import type { PdfService } from "../services/pdfService";
+import {
+  ReaderCompletionError,
+  limitReaderCompletion,
+  type ReaderCallLimiter,
+} from "../../shared/readerCompletion";
+import { hostReaderCallLimiter } from "../reader/readerLimiter";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
   createAgentToolResultHandleRecord,
@@ -110,6 +129,10 @@ export type DigestJobHostDeps = {
   ) => Promise<DigestPaperText | null>;
   /** Test seam forwarded to `callUtilityLLM`. */
   llmCall?: UtilityLLMParams["llmCall"];
+  /** Test seam: each reader route's adapter factory. */
+  readerFactories?: ReaderAdapterFactories;
+  /** Test seam: where a picked API reader's model entry is looked up. */
+  lookupReaderEntry?: ReaderEntryLookup;
   /** Test seam; defaults to the handle-store cache. */
   createCache?: (context: AgentToolContext) => HostPaperDigestCache;
 };
@@ -156,6 +179,18 @@ export type DigestRunResult = {
   digestPending?: string[];
   /** What the model must know to go on: a batch left, or final failures. */
   digestNote?: string;
+  /**
+   * Which model read each digest, when the user picked a reader model: the
+   * trace's record of who read what.
+   */
+  digestReaders?: Array<{
+    itemId: number;
+    taskId?: string;
+    model: string;
+    route?: string;
+  }>;
+  /** The chosen reader failed for a configuration reason; main model read. */
+  readerFallback?: ReaderFallbackNote;
 };
 
 /** One digest's evidence ref, in the shape a read tool's result carries. */
@@ -217,10 +252,13 @@ function digestPaperIdentity(digest: HostPaperDigest): {
 export async function createDigestReadObservation(params: {
   callId: string;
   digest: HostPaperDigest;
+  /** The tool whose call ran the digest; `task_update` for a digest part. */
+  toolName?: string;
 }): Promise<TrustedReadObservation | null> {
   const identity = digestPaperIdentity(params.digest);
   if (!identity) return null;
   const { digest } = params;
+  const toolName = params.toolName || "task_update";
   const inputDigest = `sha256:${await sha256Text(
     canonicalJson({
       target: `item:${digest.itemId}`,
@@ -238,7 +276,7 @@ export async function createDigestReadObservation(params: {
   )}`;
   const callDigest = `sha256:${await sha256Text(
     canonicalJson({
-      toolName: "task_update",
+      toolName,
       callId: `${params.callId}:digest:${digest.itemId}`,
       inputDigest,
     }),
@@ -247,7 +285,7 @@ export async function createDigestReadObservation(params: {
     version: 1 as const,
     observationId: `${callDigest}:1`,
     issuer: "zotero_host" as const,
-    toolName: "task_update",
+    toolName,
     callDigest,
     inputDigest,
     resultDigest,
@@ -417,10 +455,12 @@ export function createZoteroPaperDigestSources(deps: {
 }
 
 /**
- * Runs each digest part's job in order, with the chat turn's model, budget
- * and Stop signal, publishing every paper's outcome as it lands. Stop ends
- * the run between papers: finished digests stay, and the papers not
- * finished are reported pending.
+ * Runs each digest part's job in order, with the reader the request's
+ * runtime reads with (the chat turn's model in the plugin Agent, Codex
+ * Responses or the Claude bridge with the chat's model) and the turn's Stop
+ * signal, publishing every paper's outcome as it lands. Stop ends the run
+ * between papers: finished digests stay, and the papers not finished are
+ * reported pending.
  */
 export async function runDigestParts(params: {
   parts: readonly DigestPartRequest[];
@@ -428,22 +468,47 @@ export async function runDigestParts(params: {
   deps: DigestJobHostDeps;
   /** The part's id as the model names it. */
   localTaskId: (taskId: string) => string;
+  /** An explicit reader; by default the main model of the runtime. */
+  readerChoice?: ReaderChoice;
+  /** Test seam; defaults to the process-wide reader limit. */
+  limiter?: ReaderCallLimiter;
 }): Promise<DigestRunResult> {
   const { context, deps } = params;
   const request = context.request;
   const signal = context.signal;
-  const llm = {
-    model: request.model,
-    apiBase: request.apiBase,
-    apiKey: request.apiKey,
-    authMode: request.authMode,
-    providerProtocol: request.providerProtocol,
-    profileOverride: request.advanced?.profileOverride,
+  const readerChoice =
+    params.readerChoice ??
+    readerChoiceFromSelection({
+      selection: request.readerSelection,
+      request,
+      lookupEntry: deps.lookupReaderEntry,
+    });
+  const { resolution, fallbackNote } = resolveReaderWithFallback({
+    request,
+    choice: readerChoice,
     llmCall: deps.llmCall,
-  };
-  const inputCapTokens =
-    request.runtimeContextBudget?.contextWindowTokens ||
-    DEFAULT_INPUT_TOKEN_CAP;
+    factories: deps.readerFactories,
+  });
+  // No reader: every paper fails as unconfigured, without a model call.
+  const unlimited: ResolvedReader = resolution.ok
+    ? resolution.reader
+    : {
+        route: "turn_model",
+        model: "",
+        complete: async () => {
+          throw new ReaderCompletionError({
+            reason: "not_configured",
+            detail: resolution.detail,
+          });
+        },
+        windowTokens: 0,
+      };
+  // Every digest call waits on the host's one reader limit, as paper_digest's
+  // do, so parts, chats and windows never read with more than that at once.
+  const reader = mapReaderCompletion(unlimited, (complete) =>
+    limitReaderCompletion(complete, params.limiter || hostReaderCallLimiter),
+  );
+  const inputCapTokens = reader.windowTokens;
   const cache =
     deps.createCache?.(context) ||
     createHandleStorePaperDigestCache({
@@ -627,7 +692,7 @@ export async function runDigestParts(params: {
           ...text,
         };
       },
-      llm,
+      reader,
       inputCapTokens,
       concurrency: DIGEST_CONCURRENCY,
       signal,
@@ -808,5 +873,18 @@ export async function runDigestParts(params: {
       : {}),
     ...(pending.length ? { digestPending: pending } : {}),
     ...(notes.length ? { digestNote: notes.join(" ") } : {}),
+    ...(readerChoice && digests.length
+      ? {
+          digestReaders: digests.map((digest) => ({
+            itemId: digest.itemId,
+            ...(partOf.get(digest)
+              ? { taskId: partOf.get(digest)!.local }
+              : {}),
+            model: digest.model,
+            ...(digest.readerRoute ? { route: digest.readerRoute } : {}),
+          })),
+        }
+      : {}),
+    ...(fallbackNote() ? { readerFallback: fallbackNote() } : {}),
   };
 }

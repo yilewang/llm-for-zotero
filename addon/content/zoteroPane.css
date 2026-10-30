@@ -17646,6 +17646,69 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   color: var(--fill-tertiary);
 }
 
+/* Main | Reader switch at the top of the model menu. It reuses the segmented
+ * control above, as a full-width row that stays at the top while the list
+ * scrolls. The segmented control is a grid item of the headers it was made
+ * for (grid-column 2, centred); the menu is a one-column grid. */
+.llm-model-menu {
+  --llm-standalone-tab-light-track-bg: color-mix(
+    in srgb,
+    var(--material-background) 88%,
+    var(--fill-primary) 12%
+  );
+  --llm-standalone-tab-light-active-bg: color-mix(
+    in srgb,
+    var(--material-background) 78%,
+    var(--fill-primary) 22%
+  );
+}
+
+.llm-model-menu .llm-model-menu-switch {
+  --llm-standalone-ui-font-size: var(--llm-fs-11);
+  --llm-standalone-ui-line-height: calc(18px * var(--llm-font-scale, 1));
+  --llm-standalone-chrome-gap: 4px;
+  grid-column: 1;
+  justify-self: stretch;
+  /* Equal tabs even in the menu's max-content width: grid 1fr tracks all
+     take the widest tab's size, where flex tabs would keep their own. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  box-sizing: border-box;
+  z-index: 1;
+  margin-bottom: 3px;
+  position: sticky;
+  top: -6px;
+  /* Hides list rows that scroll under the switch. */
+  box-shadow: 0 0 0 6px var(--material-background, #fff);
+}
+
+.llm-model-menu .llm-model-menu-switch .llm-standalone-tab {
+  min-width: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  .llm-model-menu .llm-model-menu-switch {
+    --llm-standalone-tab-track-bg: var(--llm-standalone-tab-light-track-bg);
+    --llm-standalone-tab-active-bg: var(--llm-standalone-tab-light-active-bg);
+  }
+}
+
+#llmforzotero-standalone-chat-root[data-standalone-theme="light"]
+  .llm-model-menu
+  .llm-model-menu-switch {
+  --llm-standalone-tab-track-bg: var(--llm-standalone-tab-light-track-bg);
+  --llm-standalone-tab-active-bg: var(--llm-standalone-tab-light-active-bg);
+}
+
+/* A dark window keeps the dark tab colours when the system theme is light. */
+#llmforzotero-standalone-chat-root[data-standalone-theme="dark"]
+  .llm-model-menu
+  .llm-model-menu-switch {
+  --llm-standalone-tab-track-bg: initial;
+  --llm-standalone-tab-active-bg: initial;
+}
+
 .llm-model-option:hover:not(:disabled),
 .llm-reasoning-option:hover:not(:disabled) {
   background: transparent;
