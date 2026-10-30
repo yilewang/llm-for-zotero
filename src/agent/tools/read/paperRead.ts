@@ -327,10 +327,12 @@ async function tryReadMineruOverview(
 /**
  * The text a host-owned paper digest reads for one paper: the whole of
  * MinerU `full.md` when its cache is readable, else the whole extracted PDF
- * text (each chunk under its `[chunk N]` marker). Never a sample: a paper
- * longer than one model call is read in batches by the digest worker.
- * `maxChars` is the digest text limit (`DIGEST_TEXT_MAX_CHARS`, a long item
- * such as a book passes it); text past it is not read, and
+ * text (each chunk under its `[chunk N]` marker). A paper longer than one
+ * model call is read in batches by the digest worker.
+ * `maxChars` is the digest text limit (`DIGEST_TEXT_MAX_CHARS`). Over it, the
+ * read is the v3.9.15 overview selection with that limit: the introduction
+ * and the tail from the last discussion or conclusion heading for MinerU
+ * text, and a PDF excerpt sampled across chunks for PDF text. Its
  * `totalCharacters` then exceeds the text, so the digest reports it as
  * partial. `null` when neither source yields text.
  */
@@ -344,27 +346,40 @@ export async function readPaperTextForDigest(params: {
   totalCharacters: number;
 } | null> {
   const ceiling = Math.max(1, Math.floor(params.maxChars));
-  const cut = (whole: string) => ({
-    text: whole.length > ceiling ? whole.slice(0, ceiling) : whole,
-    totalCharacters: whole.length,
-  });
   const cacheDir = normalizeString(params.paperContext.mineruCacheDir);
   if (cacheDir) {
     try {
       const clean = stripMineruSourceImageEmbedsFromMarkdown(
         await readTextFile(joinLocalPath(cacheDir, "full.md")),
       ).trim();
-      if (clean) return { backend: "mineru", ...cut(clean) };
+      if (clean && clean.length <= ceiling) {
+        return {
+          backend: "mineru",
+          text: clean,
+          totalCharacters: clean.length,
+        };
+      }
+      if (clean) {
+        const { text } = selectMineruOverview(clean, ceiling);
+        if (text) {
+          // Always partial: the selection is shorter than the whole file.
+          return {
+            backend: "mineru",
+            text,
+            totalCharacters: Math.max(clean.length, text.length + 1),
+          };
+        }
+      }
     } catch {
       // Unreadable MinerU cache: fall back to the PDF, as the overview read does.
     }
   }
   try {
-    // An unbounded excerpt is the whole text; the excerpt samples only
-    // above its bound.
+    // At or under the limit the excerpt is the whole text; over it, the
+    // excerpt samples chunks, as the v3.9.15 digest read did.
     const overview = await params.pdfService.getOverviewExcerpt({
       paperContext: params.paperContext,
-      maxChars: Number.MAX_SAFE_INTEGER,
+      maxChars: ceiling,
     });
     const text = typeof overview.text === "string" ? overview.text.trim() : "";
     if (!text) return null;
@@ -372,20 +387,17 @@ export async function readPaperTextForDigest(params: {
       ? overview.chunkIndexes.length
       : 0;
     const totalChunks = Number(overview.totalChunks) || 0;
-    const read = cut(text);
-    // An excerpt that still left chunks out is never reported as whole; its
-    // total is scaled by its chunk share.
+    // An excerpt that left chunks out is never reported as whole; its total
+    // is scaled by its chunk share.
     return {
       backend: "pdf",
-      text: read.text,
+      text,
       totalCharacters:
         chunksRead >= totalChunks
-          ? read.totalCharacters
+          ? text.length
           : Math.max(
-              read.text.length + 1,
-              Math.round(
-                (read.totalCharacters * totalChunks) / Math.max(1, chunksRead),
-              ),
+              text.length + 1,
+              Math.round((text.length * totalChunks) / Math.max(1, chunksRead)),
             ),
     };
   } catch {

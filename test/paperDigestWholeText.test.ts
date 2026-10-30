@@ -338,10 +338,10 @@ describe("whole-text digests of a paper longer than one call", function () {
 });
 
 describe("a digest of an item longer than the digest text limit", function () {
-  it("reads at most the v3.9.15 limit of 120,000 characters and says the item was read in part", async function () {
-    assert.equal(DIGEST_TEXT_MAX_CHARS, 120_000);
-    // A book: about 250,000 characters.
-    const whole = paperText(250);
+  it("reads at most the limit of 250,000 characters and says the item was read in part", async function () {
+    assert.equal(DIGEST_TEXT_MAX_CHARS, 250_000);
+    // A book: about 300,000 characters, above the limit.
+    const whole = paperText(300);
     assert.isAbove(whole.length, DIGEST_TEXT_MAX_CHARS);
     const asked: number[] = [];
     const reader = fakeReader((prompt) =>
@@ -363,19 +363,19 @@ describe("a digest of an item longer than the digest text limit", function () {
       },
     });
     await runPaperDigestJob(params);
-    assert.deepEqual(asked, [120_000]);
+    assert.deepEqual(asked, [250_000]);
     assert.lengthOf(digests, 1);
     const { source } = digests[0];
     assert.isFalse(source.complete);
-    assert.equal(source.readCharacters, 120_000);
+    assert.equal(source.readCharacters, 250_000);
     assert.equal(source.totalCharacters, whole.length);
     // No reader call saw text past the limit.
-    const tail = finding(200);
+    const tail = finding(290);
     assert.isTrue(reader.prompts.every((prompt) => !prompt.includes(tail)));
     const rendered = renderHostPaperDigests(digests, []);
     assert.include(
       rendered,
-      `text: excerpt, 120,000 of ${whole.length.toLocaleString("en-US")} characters`,
+      `text: excerpt, 250,000 of ${whole.length.toLocaleString("en-US")} characters`,
     );
     assert.notInclude(rendered, "text: complete");
   });
@@ -412,7 +412,7 @@ describe("digest text read for a whole-text digest", function () {
     assert.equal(result?.totalCharacters, md.length);
   });
 
-  it("asks the PDF path for its whole text, with no sampling bound", async function () {
+  it("asks the PDF path for an excerpt bounded by the digest text limit, which is the whole text at or under it", async function () {
     let asked = 0;
     const result = await readPaperTextForDigest({
       paperContext,
@@ -428,19 +428,92 @@ describe("digest text read for a whole-text digest", function () {
       },
       maxChars: DIGEST_TEXT_MAX_CHARS,
     });
-    assert.equal(asked, Number.MAX_SAFE_INTEGER);
+    assert.equal(asked, DIGEST_TEXT_MAX_CHARS);
     assert.equal(result?.totalCharacters, result?.text.length);
   });
 
-  it("cuts only an extreme document at the ceiling, and says the text is partial", async function () {
-    const md = "x".repeat(5_000);
+  it("reports a sampled PDF excerpt of an item over the limit as partial", async function () {
+    const result = await readPaperTextForDigest({
+      paperContext,
+      pdfService: {
+        getOverviewExcerpt: async () =>
+          ({
+            text: "[chunk 0]\nStart.\n\n[chunk 9]\nEnd.",
+            chunkIndexes: [0, 9],
+            totalChunks: 10,
+          }) as never,
+      },
+      maxChars: DIGEST_TEXT_MAX_CHARS,
+    });
+    assert.equal(result?.backend, "pdf");
+    assert.isAbove(result!.totalCharacters, result!.text.length);
+  });
+
+  it("over the limit, keeps the introduction and the tail from the last conclusion heading, and says the text is partial", async function () {
+    const md = `${paperText(300)}\n\n## Conclusion\n${finding(999)}`;
+    assert.isAbove(md.length, DIGEST_TEXT_MAX_CHARS);
+    scope.IOUtils = { read: async () => new TextEncoder().encode(md) };
+    const result = await readPaperTextForDigest({
+      paperContext: { ...paperContext, mineruCacheDir: "/tmp/mineru/101" },
+      pdfService: { getOverviewExcerpt: async () => ({}) as never },
+      maxChars: DIGEST_TEXT_MAX_CHARS,
+    });
+    assert.isAtMost(result!.text.length, DIGEST_TEXT_MAX_CHARS);
+    assert.include(result!.text, finding(0));
+    assert.include(result!.text, "## Conclusion");
+    assert.include(result!.text, finding(999));
+    assert.equal(result!.totalCharacters, md.length);
+    assert.isAbove(result!.totalCharacters, result!.text.length);
+  });
+
+  it("an over-limit item's digest reads its last part and is partial", async function () {
+    const md = `${paperText(300)}\n\n## Conclusion\n${finding(999)}`;
+    scope.IOUtils = { read: async () => new TextEncoder().encode(md) };
+    const reader = fakeReader((prompt) =>
+      isMerge(prompt)
+        ? MERGED
+        : batchReply(prompt, (sections) => [finding(sections[0])]),
+    );
+    const { params, digests } = job(md, reader, {
+      readText: async (itemId, maxChars) => {
+        const read = await readPaperTextForDigest({
+          paperContext: {
+            itemId,
+            contextItemId: itemId + 100,
+            title: "A thesis",
+            mineruCacheDir: "/tmp/mineru/101",
+          },
+          pdfService: { getOverviewExcerpt: async () => ({}) as never },
+          maxChars,
+        });
+        return {
+          itemId,
+          contextItemId: itemId + 100,
+          title: "A thesis",
+          ...read!,
+        };
+      },
+    });
+    await runPaperDigestJob(params);
+    assert.lengthOf(digests, 1);
+    assert.isFalse(digests[0].source.complete);
+    assert.equal(digests[0].source.totalCharacters, md.length);
+    // The thesis's last part reached a reader call.
+    assert.isTrue(
+      reader.prompts.some((prompt) => sectionsIn(prompt).includes(999)),
+    );
+  });
+
+  it("cuts an extreme document with no heading to its introduction and tail, and says the text is partial", async function () {
+    const md = `${"a".repeat(2_500)}${"b".repeat(2_500)}`;
     scope.IOUtils = { read: async () => new TextEncoder().encode(md) };
     const result = await readPaperTextForDigest({
       paperContext: { ...paperContext, mineruCacheDir: "/tmp/mineru/101" },
       pdfService: { getOverviewExcerpt: async () => ({}) as never },
       maxChars: 2_000,
     });
-    assert.lengthOf(result!.text, 2_000);
+    assert.isAtMost(result!.text.length, 2_000);
+    assert.include(result!.text, "b".repeat(100));
     assert.equal(result!.totalCharacters, 5_000);
   });
 });

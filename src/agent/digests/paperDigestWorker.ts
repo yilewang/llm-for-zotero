@@ -229,13 +229,16 @@ export const DIGEST_TIMEOUT_CAP_MS = 240_000;
 export const DIGEST_WHOLE_TEXT_MAX_CHARS = 1_500_000;
 /**
  * The long-item setting: the most characters of one paper a digest reads,
- * in a digest part and in `paper_digest` alike. Decided 2026-10-30: stop at
- * the v3.9.15 limit (`DIGEST_MAX_INPUT_CHARS`). A longer item, such as a book
- * or a thesis, is read up to it; its digest is partial (`source.complete`
- * false, an excerpt on its text line) and the ledger records the paper as
- * skimmed. `paper_read` mode `full` reads the whole text when the user asks.
+ * in a digest part and in `paper_digest` alike: 250,000 (decided
+ * 2026-10-30). A longer item, such as a book or a thesis, is read up to it,
+ * as the v3.9.15 selection (introduction and tail, or a PDF excerpt sampled
+ * across chunks); its digest is partial (`source.complete` false, an
+ * excerpt on its text line) and the ledger records the paper as skimmed.
+ * `paper_read` mode `full` reads the whole text when the user asks. This is
+ * not the per-call input cap (`DIGEST_MAX_INPUT_CHARS`): a paper longer than
+ * one call is read in batches.
  */
-export const DIGEST_TEXT_MAX_CHARS: number = DIGEST_MAX_INPUT_CHARS;
+export const DIGEST_TEXT_MAX_CHARS = 250_000;
 /** The size of the pieces a batched read packs into batches. */
 export const DIGEST_BATCH_PIECE_CHARS = 4_000;
 /** Batches of one paper read at once; papers already run in parallel. */

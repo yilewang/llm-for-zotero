@@ -50,6 +50,8 @@ import {
   createTaskProgressCurtain,
   createTaskProgressDrawer,
   createTaskProgressRow,
+  countTaskProgress,
+  buildTaskProgressPaperRows,
   cleanTaskPaperSnippet,
   formatTaskPaperPassageLabel,
   formatTaskPaperTail,
@@ -3256,6 +3258,43 @@ describe("task progress view of an outcome ledger", function () {
         2,
         "only the evidence passages open the source",
       );
+    });
+
+    it("a digest of part of an item's text shows as skimmed in its row and tail, and counts in the read line", function () {
+      seedScope(3);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-d" });
+      applyTaskPaperUpdate(
+        KEY,
+        digestLedgerDelta("call-p", 1, { runId: "run-d", partial: true }),
+        "run-d",
+      );
+      applyTaskPaperUpdate(
+        KEY,
+        digestLedgerDelta("call-p", 2, { runId: "run-d" }),
+        "run-d",
+      );
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const partial = paperRow(harness, "1:1");
+      assert.equal(partial.dataset.state, "skimmed");
+      assert.equal(tailOf(partial), "skimmed");
+      const whole = paperRow(harness, "1:2");
+      assert.equal(whole.dataset.state, "read");
+      assert.equal(tailOf(whole), "");
+      // A skim counts in the "read" count, as every skimmed paper does.
+      const record = getTaskProgress(KEY)!;
+      const counts = countTaskProgress(record);
+      assert.equal(counts.read, 2);
+      assert.equal(harness.count(), "2 of 3 read");
+      const states = buildTaskProgressPaperRows(record).map((row) => [
+        row.itemId,
+        row.state,
+      ]);
+      assert.deepEqual(states.slice(0, 2), [
+        [1, "skimmed"],
+        [2, "read"],
+      ]);
     });
 
     it("shows a long summary whole in its Summary block", function () {

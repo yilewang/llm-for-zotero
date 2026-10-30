@@ -547,7 +547,7 @@ export async function executePaperDigest(
   };
 }
 
-/** The long-item setting as the description states it, e.g. "120,000". */
+/** The long-item setting as the description states it, e.g. "250,000". */
 const DIGEST_TEXT_MAX_CHARS_LABEL = String(DIGEST_TEXT_MAX_CHARS).replace(
   /\B(?=(\d{3})+(?!\d))/g,
   ",",

@@ -34,6 +34,7 @@ import type {
 } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { digestLedgerDelta } from "./helpers/taskProgressFixtures";
 
 /**
  * record_paper_decisions and review_coverage (the agent's paper decisions
@@ -676,6 +677,49 @@ describe("review_coverage", function () {
     assert.deepEqual(
       readOnly.papers.map((row: Record<string, any>) => row.itemId),
       [11],
+    );
+  });
+
+  it("counts a partial digest as skimmed and a whole one as read", async function () {
+    const digest = (callId: string, itemId: number, partial: boolean) => ({
+      type: "paper_ledger_update" as const,
+      callId,
+      delta: digestLedgerDelta(callId, itemId, { runId: "run-1", partial }),
+    });
+    const source = fakeSource(
+      [
+        { role: "user", text: "Review the thesis folder" },
+        { role: "assistant", agentRunId: "run-1" },
+        { role: "user", text: "continue" },
+      ],
+      {
+        "run-1": [digest("d1", 21, true), digest("d2", 22, false)],
+      },
+    );
+    const result = await coverage(source);
+    assert.isTrue(result.ok);
+    assert.deepEqual(result.counts.byState, {
+      listed: 0,
+      matched: 0,
+      skimmed: 1,
+      read: 1,
+      cited: 0,
+    });
+    assert.deepEqual(
+      result.papers.map((row: Record<string, any>) => [
+        row.itemId,
+        row.state,
+        row.strongestGranularity,
+      ]),
+      [
+        [21, "skimmed", "digest"],
+        [22, "read", "digest"],
+      ],
+    );
+    const skimmed = await coverage(source, { states: ["skimmed"] });
+    assert.deepEqual(
+      skimmed.papers.map((row: Record<string, any>) => row.itemId),
+      [21],
     );
   });
 

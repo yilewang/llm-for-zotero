@@ -199,9 +199,9 @@ describe("paper_digest MCP tool", function () {
     // Describe, do not route (plan step 7, 2026-10-30).
     assert.notInclude(description, "more than four papers");
     assert.notInclude(description, "do not read them with paper_read first");
-    // The long-item setting: at most 120,000 characters per paper, and a
+    // The long-item setting: at most 250,000 characters per paper, and a
     // longer item says it was read in part.
-    assert.include(description, "up to 120,000 characters of each paper");
+    assert.include(description, "up to 250,000 characters of each paper");
     assert.include(
       description,
       "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",

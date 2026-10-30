@@ -1437,10 +1437,10 @@ describe("taskPaperLedger", function () {
     });
 
     it("records a digest that read only part of the text as a skim, in both runtimes' ledgers", function () {
-      // A book cut at the digest text limit: 120,000 of 450,000 characters.
+      // A book cut at the digest text limit: 250,000 of 450,000 characters.
       const partial = {
         backend: "mineru" as const,
-        readCharacters: 120_000,
+        readCharacters: 250_000,
         totalCharacters: 450_000,
         complete: false,
       };
