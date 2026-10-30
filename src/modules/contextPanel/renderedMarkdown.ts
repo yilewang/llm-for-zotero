@@ -25,7 +25,10 @@ import {
   openStandaloneViewerWindow,
 } from "./standaloneMermaidWindow";
 import { sanitizeText } from "../../utils/textSanitization";
-import { createSandboxedHtmlFrame } from "./htmlPreviewFrame";
+import {
+  createSandboxedHtmlFrame,
+  type HtmlPreviewFit,
+} from "./htmlPreviewFrame";
 import { t } from "../../utils/i18n";
 import {
   PREVIEW_SURFACE_ATTRIBUTE,
@@ -1757,6 +1760,34 @@ export function openHtmlPreviewViewer(
   );
 }
 
+/** Past this height a chat page folds, with "Show the whole page" under it. */
+const FLAT_HTML_FOLD_HEIGHT = 420;
+const FLAT_HTML_TALL_ATTRIBUTE = "data-llm-html-tall";
+
+/**
+ * A page in a chat answer is as tall as its content and uses the chat's font.
+ * A side panel tab fills its tab instead, so it does not fit.
+ */
+function htmlPreviewFitFor(
+  doc: Document,
+  preview: HTMLElement,
+): HtmlPreviewFit | undefined {
+  if (!isInFlatContentScope(preview)) return undefined;
+  if (isInStandaloneContentScope(preview)) return undefined;
+  const style = doc.defaultView?.getComputedStyle?.(preview);
+  const font = style?.fontFamily
+    ? `${style.fontSize}/${style.lineHeight} ${style.fontFamily}`
+    : undefined;
+  return {
+    font,
+    onHeight: (height) =>
+      preview.setAttribute(
+        FLAT_HTML_TALL_ATTRIBUTE,
+        height > FLAT_HTML_FOLD_HEIGHT ? "true" : "false",
+      ),
+  };
+}
+
 function attachRenderedHtmlPreviews(root: ParentNode, doc: Document): void {
   const previews = Array.from(
     root.querySelectorAll(".llm-html-preview[data-llm-html-source]"),
@@ -1768,7 +1799,13 @@ function attachRenderedHtmlPreviews(root: ParentNode, doc: Document): void {
     preview.dataset.llmHtmlHydrated = "true";
 
     const appTheme = getMermaidThemeKey(doc, preview);
-    const frame = createSandboxedHtmlFrame(doc, source, undefined, appTheme);
+    const frame = createSandboxedHtmlFrame(
+      doc,
+      source,
+      undefined,
+      appTheme,
+      htmlPreviewFitFor(doc, preview),
+    );
     if (usesPreviewTheme(source)) preview.dataset.llmPreviewTheme = appTheme;
     if (isInFlatContentScope(preview)) {
       // Only the page: the hover bar (attachFlatPreviewChrome) has the rest.
@@ -1828,6 +1865,7 @@ function syncPreviewThemes(root: ParentNode, doc: Document): boolean {
       preview.dataset.llmHtmlSource || "",
       oldFrame.getAttribute("class") || undefined,
       theme,
+      htmlPreviewFitFor(doc, preview),
     );
     preview.replaceChild(frame, oldFrame);
     preview.dataset.llmPreviewTheme = theme;

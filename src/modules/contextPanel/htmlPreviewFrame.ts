@@ -45,6 +45,7 @@ const SRCDOC_PREAMBLE_PATTERN =
 export function buildHtmlPreviewSrcdoc(
   source: string,
   appTheme?: PreviewThemeKey,
+  fit?: HtmlPreviewFit,
 ): string {
   const preamble = source.match(SRCDOC_PREAMBLE_PATTERN)?.[0] ?? "";
   const sheet = appTheme
@@ -54,7 +55,80 @@ export function buildHtmlPreviewSrcdoc(
         needsPreviewThemeSheet(source),
       )
     : "";
-  return `${preamble}${HTML_PREVIEW_CSP_META}${sheet}${source.slice(preamble.length)}`;
+  const fitPart = fit
+    ? `${buildHtmlPreviewFitSheet(previewSurfaceFor(source), fit.font)}${HTML_PREVIEW_HEIGHT_SCRIPT}`
+    : "";
+  return `${preamble}${HTML_PREVIEW_CSP_META}${sheet}${fitPart}${source.slice(preamble.length)}`;
+}
+
+/** A chat preview that takes its page's height and the chat's font. */
+export type HtmlPreviewFit = {
+  /** The chat's font as a CSS `font` value, for a page that sets none. */
+  font?: string;
+  /** Called with the page's height each time it changes. */
+  onHeight?: (height: number) => void;
+};
+
+/** The one key the page may send: its own height in pixels. */
+export const HTML_PREVIEW_HEIGHT_KEY = "llmHtmlPreviewHeight";
+
+/** A page taller than this is cut there, whatever it reports. */
+export const HTML_PREVIEW_MAX_FIT_HEIGHT = 4000;
+
+/**
+ * Runs inside the page, ahead of the model's markup: it reports the page's
+ * height to the chat whenever the layout changes. It sends a number and
+ * nothing else; the chat reads only that number (fitFrameToPage).
+ */
+export const HTML_PREVIEW_HEIGHT_SCRIPT = `<script>(()=>{let last=-1;const send=()=>{const d=document.documentElement,b=document.body;let h=d.getBoundingClientRect().height;if(b){const m=parseFloat(getComputedStyle(b).marginBottom)||0;h=Math.max(h,b.getBoundingClientRect().bottom+m);}h=Math.ceil(h);if(h===last)return;last=h;parent.postMessage({${HTML_PREVIEW_HEIGHT_KEY}:h},"*");};const ro=new ResizeObserver(send);ro.observe(document.documentElement);document.addEventListener("DOMContentLoaded",()=>{if(document.body)ro.observe(document.body);send();});addEventListener("load",send);})();</script>`;
+
+/**
+ * The page sits right on the chat: no outer margin on a themed page (its text
+ * lines up with the answer), a little room on a white card, and the chat's
+ * font until the page picks its own.
+ */
+function buildHtmlPreviewFitSheet(
+  surface: ReturnType<typeof previewSurfaceFor>,
+  font?: string,
+): string {
+  const safeFont = (font || "").replace(/[<>{};]/g, "").trim();
+  const fontRule = safeFont ? `html{font:${safeFont}}` : "";
+  const margin = surface === "themed" ? "0" : "12px 14px";
+  return `<style>${fontRule}body{margin:${margin}}</style>`;
+}
+
+/**
+ * The page reports its height (HTML_PREVIEW_HEIGHT_SCRIPT). Only a finite
+ * number from this frame's own window is read; it sets the frame's height and
+ * nothing else, so the page still has no way into the plugin.
+ */
+function fitFrameToPage(
+  doc: Document,
+  frame: HTMLIFrameElement,
+  fit: HtmlPreviewFit,
+): void {
+  const win = doc.defaultView;
+  if (!win) return;
+  let seen = false;
+  const onMessage = (event: MessageEvent) => {
+    if (seen && !frame.isConnected) {
+      win.removeEventListener("message", onMessage);
+      return;
+    }
+    if (!frame.contentWindow || event.source !== frame.contentWindow) return;
+    const data = event.data as Record<string, unknown> | null;
+    const reported =
+      data && typeof data === "object" ? data[HTML_PREVIEW_HEIGHT_KEY] : null;
+    if (typeof reported !== "number" || !Number.isFinite(reported)) return;
+    seen = true;
+    const height = Math.max(
+      1,
+      Math.min(HTML_PREVIEW_MAX_FIT_HEIGHT, Math.ceil(reported)),
+    );
+    frame.style.height = `${height}px`;
+    fit.onHeight?.(height);
+  };
+  win.addEventListener("message", onMessage);
 }
 
 export const HTML_PREVIEW_STOPPED_TEXT =
@@ -89,14 +163,16 @@ export function guardHtmlPreviewNavigation(
 }
 
 /**
- * Never add a message listener for the frame's postMessage: the page is
- * untrusted and must have no channel back into the plugin.
+ * The page is untrusted and must have no channel back into the plugin. The
+ * one exception is its height (fitFrameToPage): a number, read only from this
+ * frame, used only to size the frame. Never read anything else it sends.
  */
 export function createSandboxedHtmlFrame(
   doc: Document,
   source: string,
   className = "llm-html-preview-frame",
   appTheme?: PreviewThemeKey,
+  fit?: HtmlPreviewFit,
 ): HTMLIFrameElement {
   const frame = doc.createElementNS(XHTML_NS, "iframe") as HTMLIFrameElement;
   // The sandbox must be in place before srcdoc is set and before the frame
@@ -115,6 +191,7 @@ export function createSandboxedHtmlFrame(
     );
   }
   guardHtmlPreviewNavigation(doc, frame);
-  frame.setAttribute("srcdoc", buildHtmlPreviewSrcdoc(source, appTheme));
+  if (fit) fitFrameToPage(doc, frame, fit);
+  frame.setAttribute("srcdoc", buildHtmlPreviewSrcdoc(source, appTheme, fit));
   return frame;
 }

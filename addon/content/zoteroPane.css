@@ -11470,7 +11470,8 @@ label.llm-search-results-item:hover {
   color-scheme: light;
 }
 
-/* Web page: the top of the page in a 300px frame; a pill shows all of it. */
+/* Web page: as tall as its content, right on the chat. A page taller than
+ * 420px folds there; the pill shows all of it (htmlPreviewFitFor). */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
@@ -11478,53 +11479,60 @@ label.llm-search-results-item:hover {
   position: relative;
   margin: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 75%, transparent);
-  border-radius: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-/* A page with its own fixed colours: a white card; the fold fades to white. */
+/* A page with its own fixed colours: a white card. */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
   > .llm-html-preview[data-llm-preview-surface="paper"] {
   --llm-mermaid-canvas-bg: #ffffff;
+  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 75%, transparent);
+  border-radius: 10px;
   background: #ffffff;
   color-scheme: light;
 }
 
+/* Until the page reports its height. */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
   > .llm-html-preview
   iframe {
-  height: 300px;
+  height: 120px;
 }
 
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
-  > .llm-html-preview[data-expanded="true"]
+  > .llm-html-preview[data-llm-html-tall="true"][data-expanded="false"]
   iframe {
-  height: 520px;
+  max-height: 420px;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 64px),
+    transparent
+  );
+}
+
+/* Shown in full: room under the page for "Show less". */
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview[data-llm-html-tall="true"][data-expanded="true"] {
+  padding-bottom: 40px;
 }
 
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
-  > .llm-html-preview[data-expanded="false"]::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1;
-  height: 64px;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    var(--llm-mermaid-canvas-bg, #fff)
-  );
-  pointer-events: none;
+  > .llm-html-preview:not([data-llm-html-tall="true"])
+  > .llm-content-expand-btn {
+  display: none;
 }
 
 /* The source, when shown: one quiet surface under the caption. */

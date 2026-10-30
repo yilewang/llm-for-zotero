@@ -4,6 +4,9 @@ import {
   HTML_PREVIEW_CSP,
   HTML_PREVIEW_SANDBOX,
   buildHtmlPreviewSrcdoc,
+  HTML_PREVIEW_HEIGHT_KEY,
+  HTML_PREVIEW_HEIGHT_SCRIPT,
+  HTML_PREVIEW_MAX_FIT_HEIGHT,
   HTML_PREVIEW_STOPPED_TEXT,
   createSandboxedHtmlFrame,
   guardHtmlPreviewNavigation,
@@ -146,5 +149,77 @@ describe("sandboxed HTML preview frame", function () {
     assert.isTrue(removedSrcdoc);
     assert.deepEqual(replaced, [note, frame]);
     assert.strictEqual(note.textContent, HTML_PREVIEW_STOPPED_TEXT);
+  });
+});
+
+describe("chat HTML preview sized to its page", function () {
+  it("adds the chat font and the height report after the CSP, before the page", function () {
+    const srcdoc = buildHtmlPreviewSrcdoc("<p>x</p>", undefined, {
+      font: '16px/24px -apple-system, "Segoe UI"',
+    });
+    assert.isTrue(srcdoc.startsWith(EXACT_CSP_META));
+    assert.include(
+      srcdoc,
+      '<style>html{font:16px/24px -apple-system, "Segoe UI"}body{margin:12px 14px}</style>',
+    );
+    assert.include(srcdoc, HTML_PREVIEW_HEIGHT_SCRIPT);
+    assert.isTrue(srcdoc.endsWith(`${HTML_PREVIEW_HEIGHT_SCRIPT}<p>x</p>`));
+  });
+
+  it("keeps a font value from closing the sheet", function () {
+    const srcdoc = buildHtmlPreviewSrcdoc("<p>x</p>", undefined, {
+      font: "16px serif}</style><script>alert(1)</script>",
+    });
+    assert.notInclude(srcdoc, "alert(1)</script>");
+    assert.notInclude(srcdoc, "serif}");
+  });
+
+  it("adds nothing without fit", function () {
+    assert.strictEqual(
+      buildHtmlPreviewSrcdoc("<p>x</p>"),
+      `${EXACT_CSP_META}<p>x</p>`,
+    );
+  });
+
+  it("reads only a height number from its own frame", function () {
+    let onMessage: ((event: unknown) => void) | null = null;
+    const ownWindow = {};
+    const style: Record<string, string> = {};
+    const frame = {
+      contentWindow: ownWindow,
+      isConnected: true,
+      style,
+      setAttribute() {},
+      addEventListener() {},
+    };
+    const fakeDoc = {
+      createElementNS: () => frame,
+      defaultView: {
+        addEventListener(type: string, fn: (event: unknown) => void) {
+          if (type === "message") onMessage = fn;
+        },
+        removeEventListener() {},
+      },
+    } as unknown as Document;
+    const heights: number[] = [];
+    createSandboxedHtmlFrame(fakeDoc, "<p>x</p>", undefined, undefined, {
+      onHeight: (h) => heights.push(h),
+    });
+    assert.isNotNull(onMessage);
+    const send = (source: unknown, data: unknown) =>
+      onMessage!({ source, data });
+
+    send({}, { [HTML_PREVIEW_HEIGHT_KEY]: 200 });
+    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: "200" });
+    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: Number.NaN });
+    send(ownWindow, "200");
+    assert.deepEqual(heights, []);
+    assert.isUndefined(style.height);
+
+    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: 180.2 });
+    assert.strictEqual(style.height, "181px");
+    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: 1e9 });
+    assert.strictEqual(style.height, `${HTML_PREVIEW_MAX_FIT_HEIGHT}px`);
+    assert.deepEqual(heights, [181, HTML_PREVIEW_MAX_FIT_HEIGHT]);
   });
 });
