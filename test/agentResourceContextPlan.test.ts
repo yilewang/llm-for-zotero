@@ -316,7 +316,7 @@ describe("agent resource context plan", function () {
       );
       assert.include(
         text,
-        `For a question over more than about 200 papers in a ${scope} that no loaded skill covers, shortlist with library_retrieve first and digest the shortlist.`,
+        `For a question over a large ${scope}, shortlist with library_retrieve first and digest the shortlist.`,
         scope,
       );
     }
