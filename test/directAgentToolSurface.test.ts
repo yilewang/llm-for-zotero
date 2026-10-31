@@ -97,10 +97,15 @@ describe("direct Agent model tool surface", function () {
     // (2026-10-30).
     // zotero_script's pointer to the zotero-script skill raised both caps by
     // 90, to 28,268 and 39,470 (2026-10-31).
-    assert.isAtMost(serializedToolCharacters, 28_268);
+    // run_command's and file_io's one-sentence use and approval rules raised
+    // both caps by 352, to 28,620 and 39,822 (2026-10-31).
+    // literature_search's source and author rules, moved from never-selected
+    // guidance into its description, raised both caps by 188, to 28,808 and
+    // 40,010 (2026-10-31).
+    assert.isAtMost(serializedToolCharacters, 28_808);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      39_470,
+      40_010,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

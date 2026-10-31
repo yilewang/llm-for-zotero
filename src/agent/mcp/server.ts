@@ -96,6 +96,7 @@ import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import { resolveAgentToolCallWorkCategory } from "../workCategory";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { OUTSIDE_SEARCH_NEED_SENTENCE } from "../tools/read/outsideSearchNeed";
+import { LITERATURE_SOURCE_SENTENCE } from "../tools/read/literatureSearch";
 import { SCOPELESS_MCP_RUN_PREFIX } from "../tools/read/outsideSearchLedger";
 import { toolGuidanceItems } from "../tools/guidance";
 import {
@@ -252,7 +253,9 @@ const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
     "literature_search",
     "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. Outside papers a literature review cites are cited by paperId without importing, unless the user asks to import them (then library_import). An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
       OUTSIDE_SEARCH_NEED_SENTENCE +
-      "; mode:'metadata' needs none. For web pages or current facts, use your client's own web search if it has one.",
+      "; mode:'metadata' needs none. " +
+      LITERATURE_SOURCE_SENTENCE +
+      " For web pages or current facts, use your client's own web search if it has one.",
   ],
 ]);
 /**

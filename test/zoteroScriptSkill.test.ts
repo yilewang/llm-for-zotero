@@ -3,7 +3,9 @@
  * the env helpers, the undo rules and the copy-or-move recipe. It ships as a
  * built-in skill that installs and upgrades like the others, so a user's own
  * copy is kept. The model-facing description of zotero_script points to it,
- * and the tool carries no guidance text that no turn ever selects.
+ * and run_command and file_io state their use and approval in one sentence;
+ * none of the three carries guidance text that no turn ever selects, and
+ * literature_search's source rules live in its description alone.
  * test-workflows/zoteroScriptSkill.workflow.test.ts runs the recipe against
  * native Zotero.
  */
@@ -19,6 +21,7 @@ import { initUserSkills } from "../src/agent/skills/userSkills";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { toolGuidanceItems } from "../src/agent/tools/guidance";
 import { createLoadSkillTool } from "../src/agent/tools/read/loadSkill";
+import { LITERATURE_SEARCH_GUIDANCE } from "../src/agent/tools/read/literatureSearch";
 import { createZoteroScriptTool } from "../src/agent/tools/write/zoteroScript";
 
 const BODY_HASH_PREF_KEY = "extensions.zotero.llmForZotero.skillBodyHashes";
@@ -204,6 +207,34 @@ describe("zotero-script skill", function () {
       modelDescription("zotero_script"),
       "Before writing a write script, load the zotero-script skill: load_skill('zotero-script').",
     );
+  });
+
+  it("gives run_command and file_io one rule each, their use and their approval, and no other guidance", function () {
+    assert.include(
+      modelDescription("run_command"),
+      "for scripts, conversions and CLI tools; read papers and the library with Zotero tools. A command that only reads runs without approval; any other command goes through the caller's approval rules.",
+    );
+    assert.include(
+      modelDescription("file_io"),
+      "for data, scripts and exports; read papers with paper_read. Reads run without approval; a write can be undone and goes through the caller's approval rules.",
+    );
+    for (const name of ["run_command", "file_io"])
+      assert.isEmpty(
+        toolGuidanceItems(registry().getTool(name)!.guidance),
+        name,
+      );
+  });
+
+  it("states literature_search's source and author rules in its description only", function () {
+    assert.include(
+      modelDescription("literature_search"),
+      "Search mode can use source:'arxiv' (preprints) or source:'europepmc' (biomedical); recommendations, references and citations always use OpenAlex. Put author names in author, not in query.",
+    );
+    assert.notInclude(
+      LITERATURE_SEARCH_GUIDANCE.instruction,
+      "Source selection",
+    );
+    assert.notInclude(LITERATURE_SEARCH_GUIDANCE.instruction, "Author search");
   });
 
   describe("installation", function () {

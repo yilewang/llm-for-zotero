@@ -96,11 +96,17 @@ import {
  * Raised on 2026-10-31 by the zotero-script skill: zotero_script's model
  * description points to it (90 tool characters) and the skill inventory
  * lists it (140 fixed characters), to 42,805, 41,538 and 42,903 (+230 each).
+ * Raised on 2026-10-31 by run_command's and file_io's model descriptions,
+ * which now say what each is for and which approval it needs, in one
+ * sentence each (352 tool characters), to 43,157, 41,890 and 43,255.
+ * Raised on 2026-10-31 by literature_search's source and author rules, moved
+ * from never-selected guidance into its description (188 tool characters),
+ * to 43,345, 42,078 and 43,443.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 42_805,
-  paper: 41_538,
-  collection: 42_903,
+  global: 43_345,
+  paper: 42_078,
+  collection: 43_443,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

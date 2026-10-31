@@ -135,17 +135,18 @@ function literatureQueryLabel(input: LiteratureSearchInput): string {
   return `${input.mode} for ${seed}${source}`;
 }
 
+/**
+ * The source and author rules, in the description the plugin Agent reads and
+ * in the MCP description (server.ts). validate() already moves the
+ * recommendations, references and citations modes to OpenAlex; this tells
+ * the model which source suits a search.
+ */
+export const LITERATURE_SOURCE_SENTENCE =
+  "Search mode can use source:'arxiv' (preprints) or source:'europepmc' (biomedical); recommendations, references and citations always use OpenAlex. Put author names in author, not in query.";
+
 export const LITERATURE_SEARCH_GUIDANCE: AgentToolGuidance = {
   matches: neverSelected,
-  instruction:
-    LITERATURE_WORKFLOW_GUIDANCE +
-    "\n\nSource selection:" +
-    "\n- recommendations, references, citations modes -> always use source:'openalex' (only OpenAlex supports these)." +
-    "\n- search mode -> source:'openalex' (default, broadest coverage), source:'arxiv' (preprints, CS/ML/physics), or source:'europepmc' (biomedical/life sciences)." +
-    "\n\nAuthor search:" +
-    "\n- Encode an author filter from the prepared research scope in the 'author' parameter (e.g. author:'Adrien Peyrache')." +
-    "\n- You can combine 'author' with 'query' to find an author's papers on a specific topic." +
-    "\n- Do NOT put author names in the 'query' parameter; use 'author' instead.",
+  instruction: LITERATURE_WORKFLOW_GUIDANCE,
 };
 
 function readTraceString(value: unknown): string | undefined {
@@ -262,7 +263,8 @@ export function createLiteratureSearchTool(
       description:
         "Search scholarly sources outside the library. Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something, and explicit imports (then library_import). Use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently. A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true. To read a paper's abstract or full text, use literature_read. workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata. " +
         OUTSIDE_SEARCH_NEED_SENTENCE +
-        `; ${REVIEW_SEARCH_NEED_CLAUSE}; mode:'metadata' needs none.`,
+        `; ${REVIEW_SEARCH_NEED_CLAUSE}; mode:'metadata' needs none. ` +
+        LITERATURE_SOURCE_SENTENCE,
       inputSchema: {
         type: "object",
         required: ["mode"],

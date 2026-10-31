@@ -278,9 +278,12 @@ describe("tool guidance contracts", function () {
       paperReadGuidance,
       "Use supplied paper text directly when it supports the answer",
     );
+    // The model reads file_io's compact description, not its source text.
     assert.include(
-      fileIoTool,
-      "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read",
+      stubRegistry()
+        .listTools()
+        .find((tool) => tool.name === "file_io")!.description,
+      "read papers with paper_read",
     );
     assert.notInclude(agentPersona, "mineruCacheDir}/manifest.json");
     assert.notInclude(agentPersona, "mineruCacheDir}/full.md");
