@@ -18,7 +18,6 @@ import {
   stateChangeInvocationPlan,
 } from "../../authorization/invocationPlan";
 import type { ActionRiskSignal } from "../../authorization/types";
-import { neverSelected } from "../guidance";
 import { ok, fail, validateObject } from "../shared";
 import { currentMutationActionId } from "../../services/mutationCoordinator";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
@@ -1118,98 +1117,6 @@ function scriptHasObviousMutation(script: string): boolean {
   );
 }
 
-// ── Guidance ────────────────────────────────────────────────────────────────
-
-const ZOTERO_SCRIPT_GUIDANCE = `## zotero_script — Zotero Runtime JavaScript
-
-Your script receives two globals:
-- \`Zotero\` — the constrained library facade or privileged Zotero API selected by \`access\`
-- \`env\` — execution environment
-
-### env object
-- \`env.access\`: "library" or "privileged"
-- \`env.effect\`: "read" or "write"
-- \`env.libraryID\`: number (active library ID)
-- \`env.log(msg)\`: append output (shown to user / returned to agent)
-- \`env.snapshot(item)\`: capture item state for undo (write mode only, call BEFORE mutating)
-- \`env.addInverse(data)\`: register a supported declarative inverse as JSON data
-- \`env.recordCreatedItem(itemOrId)\`: record a newly saved item so undo can trash it
-
-### Write mode template
-\`\`\`javascript
-const items = await Zotero.Items.getAll(env.libraryID, false, false, false);
-for (const item of items) {
-  if (!item.isRegularItem()) continue;
-  env.snapshot(item);
-  const title = item.getField('title');
-  item.setField('title', title + ' — updated');
-  await item.saveTx();
-  env.log(\`Updated: \${title}\`);
-}
-\`\`\`
-
-### Read mode template
-\`\`\`javascript
-const items = await Zotero.Items.getAll(env.libraryID, false, false, false);
-let count = 0;
-for (const item of items) {
-  if (!item.isRegularItem()) continue;
-  env.log(\`\${item.id}: \${item.getField('title')}\`);
-  count++;
-}
-env.log(\`Total: \${count} items\`);
-\`\`\`
-
-### Common APIs
-With \`access:'privileged'\`, the broader local Zotero API is available when a
-semantic tool or the library facade cannot perform the requested operation:
-\`Zotero.Tags\` (rename/delete/colour a tag library-wide),
-\`Zotero.Attachments.importFromFile / linkFromFile\`,
-\`Zotero.Searches\` (saved searches),
-\`Zotero.Annotations\` (highlights and their comments),
-\`Zotero.FullText\` (reindexing),
-\`Zotero.Duplicates\`,
-\`Zotero.Translate.Export\` (BibTeX/RIS/bibliographies).
-
-- Get all items: \`await Zotero.Items.getAll(env.libraryID, false, false, false)\`
-- Get item by ID: \`Zotero.Items.get(id)\`
-- Fields: \`item.getField(name)\`, \`item.setField(name, value)\`
-- Creators: \`item.getCreatorsJSON()\`, \`item.setCreators(array)\`
-- Tags: \`item.getTags()\`, \`item.addTag(name)\`, \`item.removeTag(name)\`
-- Attachments: \`item.getAttachments()\` → array of IDs
-- Notes: \`item.getNotes()\` → array of IDs
-- Collections: \`item.getCollections()\` → array of IDs
-- Collection ops: \`item.addToCollection(id)\`, \`item.removeFromCollection(id)\`
-- Save: \`await item.saveTx()\`
-- Type checks: \`item.isRegularItem()\`, \`item.isAttachment()\`, \`item.isNote()\`
-- Attachment file: \`att.attachmentContentType\`, \`att.attachmentFilename\`, \`att.getFilePath()\`
-- Rename attachment: \`await Zotero.Attachments.renameAttachmentFile(att, newName)\`
-- Read file: \`await IOUtils.read(filePath)\` → Uint8Array, then \`new TextDecoder().decode(bytes)\`
-- Search: \`const s = new Zotero.Search({libraryID: env.libraryID}); s.addCondition(field, op, value); const ids = await s.search();\`
-- Collections: \`Zotero.Collections.getByLibrary(env.libraryID)\`
-- Create collection: \`const c = new Zotero.Collection(); c.libraryID = env.libraryID; c.name = "Name"; await c.saveTx();\`
-
-### Rules
-1. Write mode: ALWAYS call \`env.snapshot(item)\` before mutating an existing item. For newly saved items call \`env.recordCreatedItem(item)\`. For non-item changes use \`env.addInverse(data)\`; callback undo functions are rejected because they do not survive restart.
-2. Write mode: ALWAYS call \`await item.saveTx()\` after mutations
-3. Use \`env.log(msg)\` for PROGRESS ONLY — the log is capped at 8000 characters and is truncated silently past that. **Return your data instead**: whatever the script returns is delivered to you in full. \`return itemIds\` beats logging four hundred lines of them.
-3a. For results too large to hold in one turn, write them to a file with \`IOUtils.writeUTF8(path, JSON.stringify(data))\` and read them back in pages with \`file_io\`. The filesystem is your scratch space between steps.
-4. The script body is an async function — top-level await is supported
-5. Do NOT use \`eraseTx()\` — use Zotero trash instead (item.deleted = true; await item.saveTx())
-6. Do NOT create or edit Zotero notes here. Use note_write for all Zotero note creation, edits, and appends so note validation still runs.
-7. \`Zotero.DB\` is withheld from every arbitrary script facade: raw SQL emits no change notifications and cannot be confined or journalled safely, so use the item and collection APIs.
-8. Write straightforward code — no dry-run branching needed. The script runs directly, and undo uses durable snapshots and declarative inverses to revert covered effects.
-9. In any loop over more than a few dozen items, check \`env.shouldStop()\` and return early when it is true. The timeout cannot interrupt a running script — it only stops *waiting* for it — so a script that ignores this keeps mutating the library after the tool has already reported failure, and those later changes cannot be undone. Return partial results; a partial answer you can undo beats a complete one you cannot.
-   \`\`\`
-   const done = [];
-   for (const id of ids) {
-     if (env.shouldStop()) { env.log(\`stopped early after \${done.length}\`); break; }
-     ...
-     done.push(id);
-   }
-   return done;
-   \`\`\``;
-
 // ── Tool definition ─────────────────────────────────────────────────────────
 
 export function createZoteroScriptTool(
@@ -1279,11 +1186,6 @@ export function createZoteroScriptTool(
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-    },
-
-    guidance: {
-      matches: neverSelected,
-      instruction: ZOTERO_SCRIPT_GUIDANCE,
     },
 
     presentation: {

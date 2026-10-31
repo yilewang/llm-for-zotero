@@ -147,7 +147,8 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Highlight a quoted PDF passage with an optional comment; Zotero computes the placement.",
   file_io: "Read or write local files, including partial text and images.",
   run_command: "Run a host shell command and return its output and status.",
-  zotero_script: "Run Zotero JavaScript with declared access and effect.",
+  zotero_script:
+    "Run Zotero JavaScript with declared access and effect. Before writing a write script, load the zotero-script skill: load_skill('zotero-script').",
   load_skill:
     "Load an installed skill's exact instructions; grants no authority.",
   request_user_input:

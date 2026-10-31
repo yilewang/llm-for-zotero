@@ -95,10 +95,12 @@ describe("direct Agent model tool surface", function () {
     // library_delete's groups field and its clause, so one approval merges
     // several duplicate groups, raised both caps by 80, to 28,178 and 39,380
     // (2026-10-30).
-    assert.isAtMost(serializedToolCharacters, 28_178);
+    // zotero_script's pointer to the zotero-script skill raised both caps by
+    // 90, to 28,268 and 39,470 (2026-10-31).
+    assert.isAtMost(serializedToolCharacters, 28_268);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      39_380,
+      39_470,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

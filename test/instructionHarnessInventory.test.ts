@@ -116,9 +116,14 @@ describe("instruction harness inventory", function () {
       (raw) => parseSkill(raw).instruction,
     );
     const previousBodyTokens = 10355;
+    // Raised on 2026-10-31 by the zotero-script skill (2,064 tokens), which
+    // took over zotero_script's never-selected tool guidance and adds the
+    // copy-or-move recipe: the bodies then total 6,519 tokens, 1,342 over
+    // the earlier cap, so the cap grows by those 1,342 tokens.
+    const zoteroScriptSkillTokens = 1342;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),
-      previousBodyTokens / 2,
+      previousBodyTokens / 2 + zoteroScriptSkillTokens,
     );
   });
 

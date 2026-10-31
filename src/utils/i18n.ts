@@ -110,6 +110,8 @@ const zhCN: Record<string, string> = {
   "Import cited papers into your Zotero library by DOI":
     "通过 DOI 将引用的论文导入 Zotero 文库",
   "Sort papers into folders or tags": "按分类或标签整理论文",
+  "Write a zotero_script that changes the library, including copying or moving items to another library":
+    "编写修改文库的 zotero_script，包括在文库之间复制或移动条目",
   "Compact the current Codex context.": "压缩当前 Codex 上下文。",
   "Compact the current agent context.": "压缩当前助手上下文。",
 

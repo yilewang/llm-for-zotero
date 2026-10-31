@@ -26,13 +26,10 @@ const fixture = JSON.parse(
 
 /**
  * Guidance allowed past the cap, pinned at its current size so it cannot grow.
- * zotero_script's guidance is its sandbox API reference plus the undo-safety
- * rules (snapshot before mutating, shouldStop in long loops); it is not plan
- * workflow prose and has no other owner yet.
+ * None today: zotero_script's sandbox API reference and undo rules, the last
+ * exception, moved to the zotero-script skill on 2026-10-31.
  */
-const GUIDANCE_CAP_EXCEPTIONS: ReadonlyMap<string, number> = new Map([
-  ["zotero_script", 5136],
-]);
+const GUIDANCE_CAP_EXCEPTIONS: ReadonlyMap<string, number> = new Map();
 
 const stub: any = new Proxy(function () {}, {
   get: () => stub,

@@ -209,7 +209,7 @@ describe("action and skill description localization", function () {
       "Compact the current Codex context.",
       "Compact the current agent context.",
     ];
-    assert.lengthOf(descriptions, 15);
+    assert.lengthOf(descriptions, 16);
     for (const [pref, host, chinese] of [
       ["auto", "zh-CN", true],
       ["zh-CN", "en-US", true],

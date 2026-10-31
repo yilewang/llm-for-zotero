@@ -93,11 +93,14 @@ import {
  * Raised by library_delete's groups field and its clause, so one approval
  * merges several duplicate groups (2026-10-30), to 42,575, 41,308 and 42,673
  * (+158 tool characters each).
+ * Raised on 2026-10-31 by the zotero-script skill: zotero_script's model
+ * description points to it (90 tool characters) and the skill inventory
+ * lists it (140 fixed characters), to 42,805, 41,538 and 42,903 (+230 each).
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 42_575,
-  paper: 41_308,
-  collection: 42_673,
+  global: 42_805,
+  paper: 41_538,
+  collection: 42_903,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

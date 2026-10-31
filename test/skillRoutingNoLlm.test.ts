@@ -39,6 +39,7 @@ const SHIPPED_SKILL_IDS = [
   "literature-review",
   "reorganize-library",
   "write-note",
+  "zotero-script",
 ];
 
 type ToolkitGlobal = typeof globalThis & { ztoolkit?: unknown };
