@@ -49,7 +49,7 @@ describe("library_search paging for notes, tags, duplicates, and text search", f
       return {
         received,
         gateway: {
-          searchAllNotes: async (params: {
+          searchAllNotesPage: async (params: {
             limit?: number;
             offset?: number;
           }) => {
@@ -192,7 +192,7 @@ describe("library_search paging for notes, tags, duplicates, and text search", f
       return {
         received,
         gateway: {
-          listLibraryTags: async (params: {
+          listLibraryTagsPage: async (params: {
             limit?: number;
             offset?: number;
           }) => {

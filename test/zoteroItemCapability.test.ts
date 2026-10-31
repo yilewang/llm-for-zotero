@@ -938,6 +938,41 @@ describe("item capability", function () {
     });
   });
 
+  describe("text search", function () {
+    it("turns an annotation match into its paper, not the PDF between them", async function () {
+      const paper = makeItem({ id: 10, title: "Grid cells" });
+      const pdf = makeItem({ id: 20, title: "PDF" });
+      pdf.parentID = paper.id;
+      pdf.isRegularItem = () => false;
+      pdf.isAttachment = () => true;
+      const annotation = makeItem({ id: 30, title: "Highlight" });
+      annotation.parentID = pdf.id;
+      annotation.isRegularItem = () => false;
+      annotation.isAnnotation = () => true;
+      class FakeSearch {
+        addCondition() {}
+        async search() {
+          return [30];
+        }
+      }
+      installZotero({ Search: FakeSearch });
+
+      // The scope names the paper, so the annotation is kept or dropped by
+      // the paper's id, not the PDF's.
+      const found = await capability().searchAllLibraryItems({
+        libraryID: 1,
+        query: "grid",
+        allowedItemIds: [10],
+      });
+
+      assert.deepEqual(
+        found.items.map((item) => item.itemId),
+        [10],
+      );
+      assert.equal(found.totalCount, 1);
+    });
+  });
+
   describe("finding related papers and duplicates", function () {
     /** Papers with a PDF attachment, which is what a paper target requires. */
     function makePaper(seed: {
@@ -1021,6 +1056,7 @@ describe("item capability", function () {
      */
     function installDuplicates(sets: number[][], trashed: number[] = []) {
       const dropped: string[] = [];
+      const dropOptions: Array<{ noCache?: boolean } | undefined> = [];
       const constructedFor: number[] = [];
       class FakeDuplicates {
         constructor(readonly libraryID: number) {
@@ -1048,12 +1084,17 @@ describe("item capability", function () {
       installZotero({
         Duplicates: FakeDuplicates,
         DB: {
-          queryAsync: async (sql: string) => {
+          queryAsync: async (
+            sql: string,
+            _params?: unknown,
+            options?: { noCache?: boolean },
+          ) => {
             dropped.push(sql);
+            dropOptions.push(options);
           },
         },
       });
-      return { dropped, constructedFor };
+      return { dropped, dropOptions, constructedFor };
     }
 
     it("groups a metadata-only item with its PDF twin", async function () {
@@ -1065,7 +1106,9 @@ describe("item capability", function () {
         fields: { title: "Grid cells", DOI: "10.1/ABC" },
       });
       makePaper({ id: 2, title: "Grid cells", doi: "10.1/abc" });
-      const { dropped, constructedFor } = installDuplicates([[1, 2]]);
+      const { dropped, dropOptions, constructedFor } = installDuplicates([
+        [1, 2],
+      ]);
 
       const found = await capability().detectDuplicatesInLibrary({
         libraryID: 1,
@@ -1085,6 +1128,8 @@ describe("item capability", function () {
       assert.equal(found.groups[0].papers[0].itemType, "journalArticle");
       // The temp table Zotero creates for the search is dropped afterwards.
       assert.deepEqual(dropped, ["DROP TABLE IF EXISTS tmpDuplicates_fake"]);
+      // Dropped outside Zotero's statement cache, as Zotero's own drop is.
+      assert.deepEqual(dropOptions, [{ noCache: true }]);
     });
 
     it("names a title match when the group shares no DOI", async function () {

@@ -1272,7 +1272,9 @@ export class ItemCapability {
       for (const id of rawIds) {
         const item = Zotero.Items.get(id);
         if (!item) continue;
-        const topId = (item.parentID as number | false | undefined) || id;
+        // An annotation sits two levels down (annotation -> PDF -> paper), so
+        // a single parent hop would name the PDF, not the paper.
+        const topId = topLevelItemId(item);
         if (allowedItemIds && !allowedItemIds.has(topId)) continue;
         if (!seen.has(topId)) {
           seen.add(topId);
@@ -1823,7 +1825,15 @@ async function findZoteroDuplicateSets(libraryID: number): Promise<number[][]> {
     )?.value;
     if (typeof tempTable === "string" && /^\w+$/.test(tempTable)) {
       try {
-        await Zotero.DB.queryAsync(`DROP TABLE IF EXISTS ${tempTable}`);
+        // Not cached, as Zotero's own drop of this table is: a cached
+        // statement would hold a handle on the table it just removed.
+        await Zotero.DB.queryAsync(
+          `DROP TABLE IF EXISTS ${tempTable}`,
+          undefined,
+          {
+            noCache: true,
+          },
+        );
       } catch (error) {
         appLogger.warn("Could not drop the duplicates temp table", error);
       }

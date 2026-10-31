@@ -803,8 +803,27 @@ export class ZoteroGateway {
     return this.itemCapability.searchAllLibraryItems(params);
   }
 
-  /** See `NoteCapability.searchAllNotes`. */
+  /**
+   * See `NoteCapability.searchAllNotes`. Returns the page as a plain array, as
+   * this public method always has; `searchAllNotesPage` also reports the true
+   * total.
+   */
   async searchAllNotes(params: {
+    libraryID: number;
+    collectionId?: number;
+    query: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<
+    Array<
+      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
+    >
+  > {
+    return (await this.noteCapability.searchAllNotes(params)).notes;
+  }
+
+  /** See `NoteCapability.searchAllNotes`: the page and every match's count. */
+  async searchAllNotesPage(params: {
     libraryID: number;
     collectionId?: number;
     query: string;
@@ -828,8 +847,22 @@ export class ZoteroGateway {
     return this.attachmentCapability.indexPdfAttachment(params);
   }
 
-  /** See `TagCapability.listLibraryTags`. */
+  /**
+   * See `TagCapability.listLibraryTags`. Returns the page as a plain array, as
+   * this public method always has; `listLibraryTagsPage` also reports the true
+   * total.
+   */
   async listLibraryTags(params: {
+    libraryID: number;
+    query?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ name: string; type: number }[]> {
+    return (await this.tagCapability.listLibraryTags(params)).tags;
+  }
+
+  /** See `TagCapability.listLibraryTags`: the page and every match's count. */
+  async listLibraryTagsPage(params: {
     libraryID: number;
     query?: string;
     limit?: number;

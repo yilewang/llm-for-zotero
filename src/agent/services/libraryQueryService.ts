@@ -514,7 +514,7 @@ export class LibraryQueryService {
     totalCount: number;
     warnings: string[];
   }> {
-    const result = await this.zoteroGateway.searchAllNotes({
+    const result = await this.zoteroGateway.searchAllNotesPage({
       libraryID: params.libraryID,
       collectionId: params.collectionId,
       query: params.text,
@@ -619,7 +619,7 @@ export class LibraryQueryService {
     totalCount: number;
     warnings: string[];
   }> {
-    const result = await this.zoteroGateway.listLibraryTags(params);
+    const result = await this.zoteroGateway.listLibraryTagsPage(params);
     return {
       results: result.tags,
       totalCount: result.totalCount,
