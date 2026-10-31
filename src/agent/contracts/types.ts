@@ -79,6 +79,12 @@ export type AgentActionParameters = {
   deleteItems?: boolean;
   permanent?: boolean;
   filePath?: string;
+  /** An attached file is linked where it is rather than copied. */
+  linkFile?: boolean;
+  /** The web address an attach saves. */
+  url?: string;
+  /** The kind of PDF annotation a write creates. */
+  annotationType?: "highlight" | "underline" | "note";
   contentHash?: string;
   documentId?: string;
   /** Frozen with `documentId` and `contentHash` to name one exact material version. */

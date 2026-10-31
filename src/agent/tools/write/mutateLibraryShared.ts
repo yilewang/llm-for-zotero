@@ -756,6 +756,12 @@ export async function executeAndRecordUndoBatch(
   };
 }
 
+/** Library operations that fetch from the network to make their effect. */
+const NETWORK_OPERATIONS = new Set<LibraryMutationOperation["type"]>([
+  "attach_url",
+  "find_pdf",
+]);
+
 /** Build the confirmation decision from the same concrete operations that
  * will later be persisted and executed by MutationCoordinator. */
 export async function planLibraryMutations(
@@ -782,6 +788,9 @@ export async function planLibraryMutations(
     "create_items",
     "import_identifiers",
     "import_local_files",
+    "attach_file",
+    "attach_url",
+    "find_pdf",
     "save_note",
     "save_notes_batch",
     "save_saved_search",
@@ -809,7 +818,7 @@ export async function planLibraryMutations(
     ...new Set(
       operations.flatMap((operation) =>
         Object.entries(operation).flatMap(([key, value]) => {
-          if (!/(?:id|ids|path|paths)$/i.test(key)) return [];
+          if (!/(?:id|ids|path|paths|url)$/i.test(key)) return [];
           return (Array.isArray(value) ? value : [value])
             .filter(
               (entry): entry is string | number =>
@@ -820,7 +829,13 @@ export async function planLibraryMutations(
       ),
     ),
   ];
+  // Saving a web page and Find Available PDF fetch from the network to make
+  // their attachment; the plan names that domain beside the library.
+  const fetches = operations.some((operation) =>
+    NETWORK_OPERATIONS.has(operation.type),
+  );
   return stateChangeInvocationPlan({
+    ...(fetches ? { domains: ["zotero_library", "network"] } : {}),
     effects,
     targets,
     reversibility,

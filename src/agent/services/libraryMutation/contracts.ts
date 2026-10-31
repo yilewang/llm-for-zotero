@@ -305,6 +305,46 @@ export type RelinkAttachmentOperation = {
   newPath: string;
 };
 
+/** Attaches a local file to a regular item, as a stored copy or a link. */
+export type AttachFileOperation = {
+  id?: string;
+  type: "attach_file";
+  parentItemId: number;
+  filePath: string;
+  /** Link to the file where it is instead of copying it into Zotero. */
+  link?: boolean;
+};
+
+/**
+ * Saves a web page to a regular item twice: a link to the URL and a stored
+ * snapshot of the page, the two attachments the user asked for.
+ */
+export type AttachUrlOperation = {
+  id?: string;
+  type: "attach_url";
+  parentItemId: number;
+  url: string;
+};
+
+/**
+ * Runs Zotero's own Find Available PDF for one item. Finding nothing is an
+ * answer, not a failure: the item keeps the attachments it had.
+ */
+export type FindPdfOperation = {
+  id?: string;
+  type: "find_pdf";
+  itemId: number;
+};
+
+/** Edits an annotation's comment or color; the undo puts the old ones back. */
+export type UpdateAnnotationOperation = {
+  id?: string;
+  type: "update_annotation";
+  annotationId: number;
+  comment?: string;
+  color?: string;
+};
+
 export type ImportLocalFilesOperation = {
   id?: string;
   type: "import_local_files";
@@ -351,7 +391,11 @@ export type LibraryMutationOperation =
   | DeleteAttachmentOperation
   | RenameAttachmentOperation
   | RelinkAttachmentOperation
-  | ImportLocalFilesOperation;
+  | ImportLocalFilesOperation
+  | AttachFileOperation
+  | AttachUrlOperation
+  | FindPdfOperation
+  | UpdateAnnotationOperation;
 
 export type LibraryMutationInverse = {
   description: string;
@@ -425,6 +469,10 @@ export type MutationItemState = {
   deleted?: boolean;
   attachmentPath?: string;
   attachmentTitle?: string;
+  /** Zotero's link mode, captured for an attachment an attach created. */
+  attachmentLinkMode?: number;
+  /** The attachment's URL field, captured with its link mode. */
+  attachmentUrl?: string;
   childAttachmentIds?: number[];
   childNoteIds?: number[];
   noteHtml?: string;

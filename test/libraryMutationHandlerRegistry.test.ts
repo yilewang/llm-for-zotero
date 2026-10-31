@@ -38,6 +38,10 @@ describe("library mutation handler registry", function () {
     "rename_attachment",
     "relink_attachment",
     "import_local_files",
+    "attach_file",
+    "attach_url",
+    "find_pdf",
+    "update_annotation",
   ] satisfies LibraryMutationOperationType[];
 
   it("registers every operation exactly once with its safety capabilities", function () {

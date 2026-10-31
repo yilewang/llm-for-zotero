@@ -1384,6 +1384,38 @@ export class ZoteroGateway {
   }> {
     return this.attachmentCapability.relinkAttachment(params);
   }
+  /** See `AttachmentCapability.attachFile`. */
+  async attachFile(params: {
+    parentItemId: number;
+    filePath: string;
+    link?: boolean;
+  }): ReturnType<AttachmentCapability["attachFile"]> {
+    return this.attachmentCapability.attachFile(params);
+  }
+
+  /** See `AttachmentCapability.attachUrl`. */
+  async attachUrl(params: {
+    parentItemId: number;
+    libraryID: number;
+    url: string;
+  }): ReturnType<AttachmentCapability["attachUrl"]> {
+    return this.attachmentCapability.attachUrl(params);
+  }
+
+  /** See `AttachmentCapability.findAvailablePdf`. */
+  async findAvailablePdf(
+    item: Zotero.Item,
+  ): ReturnType<AttachmentCapability["findAvailablePdf"]> {
+    return this.attachmentCapability.findAvailablePdf(item);
+  }
+
+  /** See `AttachmentCapability.updateAnnotation`. */
+  async updateAnnotation(
+    params: Parameters<AttachmentCapability["updateAnnotation"]>[0],
+  ): ReturnType<AttachmentCapability["updateAnnotation"]> {
+    return this.attachmentCapability.updateAnnotation(params);
+  }
+
   // ── Embed image in note ──────────────────────────────────────────
 
   /**

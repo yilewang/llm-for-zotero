@@ -402,6 +402,14 @@ export class MutationStateReader {
         if (attachmentTitle) state.attachmentTitle = attachmentTitle;
         const attachmentPath = await readAttachmentPath(item);
         if (attachmentPath) state.attachmentPath = attachmentPath;
+        // An attach is judged by the kind of attachment it made. Part of the
+        // whole fingerprint, so the undo that trashes it reads the same
+        // fields the attach recorded.
+        if (item.isAttachment?.()) {
+          state.attachmentLinkMode = Number(item.attachmentLinkMode);
+          const url = String(item.getField?.("url") || "");
+          if (url) state.attachmentUrl = url;
+        }
         const isRegularItem =
           item.isRegularItem?.() === true ||
           (typeof item.isRegularItem !== "function" &&

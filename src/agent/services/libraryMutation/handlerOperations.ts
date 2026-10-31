@@ -180,6 +180,24 @@ export function judgeLibraryMutationTargets(
 }
 
 /**
+ * The handler's reason that a call which changed nothing found nothing to
+ * do, proved by the states around it; undefined otherwise.
+ */
+export function mutationNoChangeOutcome(
+  operation: LibraryMutationOperation,
+  result: unknown,
+  before: LibraryMutationState | MutationStateView,
+  after: LibraryMutationState | MutationStateView,
+): string | undefined {
+  return libraryMutationHandlers[operation.type].noChangeOutcome(
+    operation as never,
+    result,
+    asMutationStateView(before),
+    asMutationStateView(after),
+  );
+}
+
+/**
  * The part of `operation` a call the user stopped between its items reached,
  * from the call's result payload; undefined when the call was not stopped.
  */

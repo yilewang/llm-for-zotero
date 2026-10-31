@@ -45,6 +45,7 @@ import {
   validateObject,
 } from "./shared";
 import { createAnnotatePdfTool } from "./write/annotatePdf";
+import { createAnnotationUpdateTool } from "./write/annotationUpdate";
 import { createApplyTagsTool } from "./write/applyTags";
 import { createAttachmentUpdateTool } from "./write/attachmentUpdate";
 import { createCollectionUpdateTool } from "./write/collectionUpdate";
@@ -150,6 +151,7 @@ function createLibraryUpdateTool(tools: {
   setItemTags: AgentToolDefinition<any, any>;
   collectionUpdate: AgentToolDefinition<any, any>;
   attachmentUpdate: AgentToolDefinition<any, any>;
+  annotationUpdate: AgentToolDefinition<any, any>;
   savedSearchUpdate: AgentToolDefinition<any, any>;
 }): AgentToolDefinition<any, unknown> {
   return createDelegatingTool({
@@ -157,7 +159,7 @@ function createLibraryUpdateTool(tools: {
     label: "Update Library",
     traceIcon: "edit",
     description:
-      "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links, kind:'collection' for the collection itself (create, rename, move, delete), kind:'attachment' for one attachment (rename, relink, delete), kind:'savedSearch' for a saved search (save creates or replaces one, delete trashes it).",
+      "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links, kind:'collection' for the collection itself (create, rename, move, delete), kind:'attachment' for one attachment (rename, relink, delete) or to add one to itemId (attach_file copies filePath, or links it if link; attach_url saves url as a link and a snapshot; find_pdf runs Zotero's Find Available PDF), kind:'annotation' to edit annotationId's comment or color, kind:'savedSearch' for a saved search (save creates or replaces one, delete trashes it).",
     executionClass: "external_effect",
     workCategory: "zotero_action",
     inputSchema: {
@@ -176,6 +178,7 @@ function createLibraryUpdateTool(tools: {
             "tag",
             "collection",
             "attachment",
+            "annotation",
             "savedSearch",
           ],
         },
@@ -193,9 +196,12 @@ function createLibraryUpdateTool(tools: {
             "move",
             "relink",
             "save",
+            "attach_file",
+            "attach_url",
+            "find_pdf",
           ],
           description:
-            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given: use it only when the user asked to replace the tags, and add or remove otherwise. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'. For kind:'collection': 'create', 'rename', 'move' or 'delete'. For kind:'attachment': 'rename', 'relink' or 'delete'. For kind:'savedSearch': 'save' or 'delete'.",
+            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given: use it only when the user asked to replace the tags, and add or remove otherwise. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'. For kind:'collection': 'create', 'rename', 'move' or 'delete'. For kind:'attachment': 'rename', 'relink' or 'delete' an attachment, or 'attach_file', 'attach_url' or 'find_pdf' for itemId. For kind:'savedSearch': 'save' or 'delete'. kind:'annotation' takes no action.",
         },
         itemIds: {
           ...NUMBER_ARRAY_SCHEMA,
@@ -239,7 +245,7 @@ function createLibraryUpdateTool(tools: {
         itemId: {
           type: "number",
           description:
-            "Single Zotero item ID for kind:'metadata' or the source item for kind:'related'.",
+            "Single Zotero item ID for kind:'metadata', the source item for kind:'related', or the regular item kind:'attachment' attaches to or finds a PDF for.",
         },
         itemType: {
           type: "string",
@@ -295,6 +301,29 @@ function createLibraryUpdateTool(tools: {
           type: "number",
           description: "For kind:'attachment': the attachment's item ID.",
         },
+        filePath: {
+          type: "string",
+          description: "For action:'attach_file': the file's absolute path.",
+        },
+        link: {
+          type: "boolean",
+          description:
+            "For action:'attach_file': link to the file where it is instead of copying it into Zotero.",
+        },
+        url: {
+          type: "string",
+          description:
+            "For action:'attach_url': the web page's http or https address.",
+        },
+        annotationId: {
+          type: "number",
+          description: "For kind:'annotation': the annotation's item ID.",
+        },
+        comment: {
+          type: "string",
+          description:
+            "For kind:'annotation': the new comment; an empty string clears it.",
+        },
         newPath: {
           type: "string",
           description:
@@ -328,7 +357,7 @@ function createLibraryUpdateTool(tools: {
         color: {
           type: "string",
           description:
-            "For kind:'tag' action:'setColor': a hex colour, e.g. '#FF6666'.",
+            "For kind:'tag' action:'setColor': a hex colour, e.g. '#FF6666'. For kind:'annotation': a Zotero palette name or a hex colour.",
         },
         position: {
           type: "number",
@@ -449,11 +478,14 @@ function createLibraryUpdateTool(tools: {
       if (args.kind === "attachment") {
         return ok({ tool: tools.attachmentUpdate, args: delegateArgs });
       }
+      if (args.kind === "annotation") {
+        return ok({ tool: tools.annotationUpdate, args: delegateArgs });
+      }
       if (args.kind === "savedSearch") {
         return ok({ tool: tools.savedSearchUpdate, args: delegateArgs });
       }
       return fail(
-        "kind must be one of: tags, collections, metadata, parent, related, tag, collection, attachment, savedSearch",
+        "kind must be one of: tags, collections, metadata, parent, related, tag, collection, attachment, annotation, savedSearch",
       );
     },
   });
@@ -672,6 +704,7 @@ export function createBuiltInToolRegistry(
   const setItemTags = createSetItemTagsTool(deps.zoteroGateway);
   const collectionUpdate = createCollectionUpdateTool(deps.zoteroGateway);
   const attachmentUpdate = createAttachmentUpdateTool(deps.zoteroGateway);
+  const annotationUpdate = createAnnotationUpdateTool(deps.zoteroGateway);
   const savedSearchUpdate = createSavedSearchTool(deps.zoteroGateway);
   const mergeItems = createMergeItemsTool(deps.zoteroGateway);
   const runCommand = createRunCommandTool();
@@ -708,6 +741,7 @@ export function createBuiltInToolRegistry(
       setItemTags,
       collectionUpdate,
       attachmentUpdate,
+      annotationUpdate,
       savedSearchUpdate,
     }),
   );

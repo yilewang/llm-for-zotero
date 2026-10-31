@@ -66,3 +66,17 @@ export type BatchTagAssignment = {
   itemId: number;
   tags: string[];
 };
+
+/**
+ * One spelling of a web address, so `https://example.org` and
+ * `https://example.org/` name the same page. An address `URL` cannot parse
+ * is compared as written.
+ */
+export function normalizeWebAddress(value: string | undefined): string {
+  const text = (value || "").trim();
+  try {
+    return new URL(text).href;
+  } catch {
+    return text;
+  }
+}

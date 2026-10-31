@@ -28,6 +28,7 @@ import {
   actionDetailsForLibraryMutation,
   judgeLibraryMutationTargets,
   mutationPostconditionIsSatisfied,
+  mutationNoChangeOutcome,
   mutationReachedFromHandler,
   mutationTargetCountFromHandler,
 } from "../services/libraryMutation/handlerOperations";
@@ -526,6 +527,8 @@ export class ActionContractService {
         expected.position &&
         expected.color === parameters.annotationColor &&
         expected.comment === parameters.annotationComment &&
+        (expected.type || "highlight") ===
+          (parameters.annotationType || "highlight") &&
         (parameters.pageIndex === undefined ||
           expected.position.pageIndex === parameters.pageIndex) &&
         findQuoteSourceSpansAllowingLayoutArtifacts(
@@ -646,6 +649,34 @@ export class ActionContractService {
       innermostToolResult(params.content),
     );
     const judged = reached || operation;
+    // A call that changed nothing because there was nothing to find is an
+    // answer, not work already done: `observed`, with its reason, and its
+    // targets excepted rather than counted as done.
+    const noChange =
+      evidence && !reached && params.effect === "none"
+        ? mutationNoChangeOutcome(
+            operation,
+            innermostToolResult(params.content),
+            evidence.preState,
+            evidence.postState,
+          )
+        : undefined;
+    if (evidence && noChange) {
+      const searched = proposal.requestedTargets.length
+        ? proposal.requestedTargets
+        : evidenceTargets(evidence);
+      return {
+        ...base,
+        evidenceRef: evidence.journalStepId || base.evidenceRef,
+        verification: "verified",
+        status: "observed",
+        requestedTargets: searched,
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: searched,
+        reasons: [noChange, ...base.reasons],
+      };
+    }
     const verified = Boolean(
       evidence && mutationPostconditionIsSatisfied(judged, evidence.postState),
     );

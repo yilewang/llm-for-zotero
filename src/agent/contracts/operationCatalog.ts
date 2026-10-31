@@ -96,6 +96,22 @@ export const OPERATION_CATALOG = {
     capability: "zotero.import",
     proofDomain: "zotero_state",
   },
+  attach_file: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  attach_url: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  find_pdf: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  update_annotation: {
+    capability: "zotero.annotations",
+    proofDomain: "zotero_state",
+  },
   note_create: { capability: "zotero.notes", proofDomain: "zotero_state" },
   note_edit: { capability: "zotero.notes", proofDomain: "zotero_state" },
   note_append: { capability: "zotero.notes", proofDomain: "zotero_state" },
@@ -161,6 +177,10 @@ export const OPERATION_LABELS = {
   rename_attachment: "Renamed attachment",
   relink_attachment: "Relinked attachment",
   import_local_files: "Imported local files",
+  attach_file: "Attached file",
+  attach_url: "Saved web page",
+  find_pdf: "Searched for a PDF",
+  update_annotation: "Edited annotation",
   note_create: "Created note",
   note_edit: "Edited note",
   note_append: "Appended to note",

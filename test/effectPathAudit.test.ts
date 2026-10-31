@@ -153,6 +153,10 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
       "delete_attachment",
       "rename_attachment",
       "relink_attachment",
+      "attach_file",
+      "attach_url",
+      "find_pdf",
+      "update_annotation",
       "save_saved_search",
       "delete_saved_search",
     ],
@@ -342,13 +346,25 @@ const DELEGATE_ROUTES: Readonly<
   },
   attachment_update: {
     facade: "library_update",
-    operations: ["delete_attachment", "rename_attachment", "relink_attachment"],
+    operations: [
+      "delete_attachment",
+      "rename_attachment",
+      "relink_attachment",
+      "attach_file",
+      "attach_url",
+      "find_pdf",
+    ],
     fixture: {
       kind: "attachment",
       action: "rename",
       attachmentId: 1,
       newName: "Audit.pdf",
     },
+  },
+  annotation_update: {
+    facade: "library_update",
+    operations: ["update_annotation"],
+    fixture: { kind: "annotation", annotationId: 1, comment: "Audit" },
   },
   saved_search_update: {
     facade: "library_update",

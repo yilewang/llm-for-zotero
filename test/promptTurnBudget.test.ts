@@ -124,11 +124,14 @@ import {
  * Raised on 2026-10-31 by 99 characters: W5-B (library_update's itemType,
  * note_write_batch's mode and targetNoteId), merged onto W5-A.
  * The budgets are now 44,607, 43,280 and 44,705.
+ * Raised on 2026-10-31 by 266 tool characters: W5-C (library_update's
+ * attach_file, attach_url, find_pdf and kind:'annotation'; annotate_pdf's
+ * annotationType). The budgets are now 44,873, 43,546 and 44,971.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 44_607,
-  paper: 43_280,
-  collection: 44_705,
+  global: 44_873,
+  paper: 43_546,
+  collection: 44_971,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

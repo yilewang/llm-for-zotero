@@ -5,7 +5,9 @@ import { resolveHighlightColor } from "../../services/pdfAnnotationGeometry";
 import { resolvePdfHighlight } from "../../../services/pdf/pdfAnnotationResolver";
 import {
   annotationMatchesPayload,
+  stickyNotePosition,
   type PdfHighlightPayload,
+  type PdfPassageAnnotationType,
 } from "../../../services/pdf/pdfAnnotationState";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { LibraryMutationService } from "../../services/libraryMutationService";
@@ -18,7 +20,26 @@ type AnnotateInput = {
   occurrence?: number;
   color: string;
   comment: string;
+  annotationType: PdfPassageAnnotationType;
 };
+
+const ANNOTATION_TYPES: readonly PdfPassageAnnotationType[] = [
+  "highlight",
+  "underline",
+  "note",
+];
+
+/** The annotation a call makes, as a person reads it. */
+const TYPE_NOUN: Record<PdfPassageAnnotationType, string> = {
+  highlight: "highlight",
+  underline: "underline",
+  note: "sticky note",
+};
+
+function nounFor(args: unknown): string {
+  const type = (args as { annotationType?: unknown } | null)?.annotationType;
+  return TYPE_NOUN[type as PdfPassageAnnotationType] || "highlight";
+}
 
 /** The model chooses a passage; native PDF text determines its placement. */
 export function createAnnotatePdfTool(
@@ -40,6 +61,7 @@ export function createAnnotatePdfTool(
           expectedText: input.text,
           annotationComment: input.comment,
           annotationColor: input.color,
+          annotationType: input.annotationType,
         },
         requestedTargets: [`item:${input.attachmentId}`],
         destinationCollectionIds: [],
@@ -49,7 +71,7 @@ export function createAnnotatePdfTool(
     spec: {
       name: "annotate_pdf",
       description:
-        "Highlight an exact quoted passage in a PDF attachment and optionally add a comment. Zotero locates the text and computes the highlight. Supply text from paper_read; no coordinates, scripts, or external PDF utilities are needed. For multiple matches specify pageIndex and occurrence. If native text is unavailable, report the limitation instead of estimating coordinates or using scripts.",
+        "Highlight or underline an exact quoted passage in a PDF attachment and optionally add a comment, or put a sticky note at it (annotationType:'note'; comment is its text). Zotero locates the text and computes the position. Supply text from paper_read; no coordinates, scripts, or external PDF utilities are needed. For multiple matches specify pageIndex and occurrence. If native text is unavailable, report the limitation instead of estimating coordinates or using scripts.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -82,7 +104,13 @@ export function createAnnotatePdfTool(
           },
           comment: {
             type: "string",
-            description: "A note attached to the highlight.",
+            description:
+              "A note attached to the highlight or underline; the text of a sticky note.",
+          },
+          annotationType: {
+            type: "string",
+            enum: ["highlight", "underline", "note"],
+            description: "Default highlight.",
           },
         },
       },
@@ -94,11 +122,15 @@ export function createAnnotatePdfTool(
       label: "Annotate PDF",
       traceIcon: "edit",
       summaries: {
-        onCall: "Preparing a PDF highlight",
-        onPending: "Waiting for confirmation on a PDF highlight",
-        onApproved: "Adding the highlight",
-        onDenied: "Highlight cancelled",
-        onSuccess: "Added a highlight",
+        onCall: ({ args }) => `Preparing a PDF ${nounFor(args)}`,
+        onPending: ({ args }) =>
+          `Waiting for confirmation on a PDF ${nounFor(args)}`,
+        onApproved: ({ args }) => `Adding the ${nounFor(args)}`,
+        onDenied: ({ args }) => {
+          const noun = nounFor(args);
+          return `${noun[0].toUpperCase()}${noun.slice(1)} cancelled`;
+        },
+        onSuccess: ({ args }) => `Added a ${nounFor(args)}`,
       },
     },
 
@@ -125,13 +157,23 @@ export function createAnnotatePdfTool(
               "color",
               "pageIndex",
               "occurrence",
+              "annotationType",
             ].includes(key),
         )
       ) {
         return fail(
-          "Supply attachmentId and text, with optional comment, color, pageIndex and occurrence. Zotero computes the coordinates; do not supply rects or page dimensions.",
+          "Supply attachmentId and text, with optional comment, color, pageIndex, occurrence and annotationType. Zotero computes the coordinates; do not supply rects or page dimensions.",
         );
       }
+      const annotationType = (args.annotationType ??
+        "highlight") as PdfPassageAnnotationType;
+      if (!ANNOTATION_TYPES.includes(annotationType))
+        return fail(
+          "annotationType must be 'highlight', 'underline' or 'note'. Image and ink annotations are not offered.",
+        );
+      const comment = readString(args.comment) || "";
+      if (annotationType === "note" && !comment)
+        return fail("A sticky note needs a comment: the text it shows.");
       const pageIndex =
         args.pageIndex === undefined ? undefined : Number(args.pageIndex);
       if (
@@ -162,17 +204,26 @@ export function createAnnotatePdfTool(
         occurrence,
         color,
         text,
-        comment: readString(args.comment) || "",
+        comment,
+        annotationType,
       });
     },
 
     createPendingAction(input) {
-      const summary = `Highlight${input.comment ? " and comment" : ""}${input.pageIndex === undefined ? " in the PDF" : ` on page ${input.pageIndex + 1}`}`;
+      const noun = TYPE_NOUN[input.annotationType];
+      const where =
+        input.pageIndex === undefined
+          ? " in the PDF"
+          : ` on page ${input.pageIndex + 1}`;
+      const summary =
+        input.annotationType === "note"
+          ? `Sticky note at the passage${where}`
+          : `${noun[0].toUpperCase()}${noun.slice(1)}${input.comment ? " and comment" : ""}${where}`;
       return {
         toolName: "annotate_pdf",
-        title: "Add a PDF highlight",
+        title: `Add a ${input.annotationType === "note" ? "" : "PDF "}${noun}`,
         description: summary,
-        confirmLabel: "Add highlight",
+        confirmLabel: `Add ${noun}`,
         cancelLabel: "Cancel",
         fields: [
           ...(input.text
@@ -180,7 +231,12 @@ export function createAnnotatePdfTool(
                 {
                   type: "text" as const,
                   id: "text",
-                  label: "Highlighted text",
+                  label:
+                    input.annotationType === "highlight"
+                      ? "Highlighted text"
+                      : input.annotationType === "underline"
+                        ? "Underlined text"
+                        : "Passage",
                   value: input.text,
                 },
               ]
@@ -236,10 +292,16 @@ export function createAnnotatePdfTool(
       const resolved = await resolveHighlight(input, context.signal);
       if (context.signal?.aborted)
         throw new Error("Annotation creation was cancelled.");
+      // A note marks the passage with Zotero's note square at its first
+      // line; a highlight or an underline covers the passage's lines.
       const expectedAnnotation: PdfHighlightPayload = {
         ...resolved,
+        ...(input.annotationType === "note"
+          ? { position: stickyNotePosition(resolved.position) }
+          : {}),
         color: input.color,
         comment: input.comment,
+        type: input.annotationType,
       };
       const existing = attachment
         .getAnnotations()
@@ -261,15 +323,16 @@ export function createAnnotatePdfTool(
           },
           effect: "none" as const,
         };
+      // Zotero refuses text on a note annotation.
       const json: Record<string, unknown> = {
         key: generateAnnotationKey(),
-        type: "highlight",
+        type: input.annotationType,
         color: input.color,
-        text: resolved.text,
+        ...(input.annotationType === "note" ? {} : { text: resolved.text }),
         comment: input.comment,
         pageLabel: resolved.pageLabel,
         sortIndex: resolved.sortIndex,
-        position: resolved.position,
+        position: expectedAnnotation.position,
       };
 
       return executeExternalMutation({
@@ -278,7 +341,7 @@ export function createAnnotatePdfTool(
         plan: async () => {
           return {
             operation: "create_pdf_annotation",
-            description: "Create a PDF highlight annotation",
+            description: `Create a PDF ${TYPE_NOUN[input.annotationType]} annotation`,
             forward: { attachmentId: input.attachmentId, json },
             reversibility: "partial" as const,
             deferredInverse: true,
@@ -315,7 +378,8 @@ export function createAnnotatePdfTool(
             annotationId: annotationId || undefined,
             attachmentId: input.attachmentId,
             pageIndex: resolved.position.pageIndex,
-            rectCount: resolved.position.rects.length,
+            annotationType: input.annotationType,
+            rectCount: expectedAnnotation.position.rects.length,
             expectedAnnotation,
             status: "created",
           };
