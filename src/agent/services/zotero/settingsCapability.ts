@@ -242,12 +242,12 @@ export class SettingsCapability {
     // Deliberately synchronous and static: the async translator listing is a
     // separate call shape, and these are the formats users actually name.
     return [
-      { id: "14763d24-8ba0-45df-8f52-b8d1108e7ac9", label: "BibTeX" },
-      { id: "9cb70025-a888-4a29-a210-93ec52da40d4", label: "BibLaTeX" },
+      { id: "9cb70025-a888-4a29-a210-93ec52da40d4", label: "BibTeX" },
+      { id: "b6e39b57-8942-4d11-8259-342c46ce395f", label: "BibLaTeX" },
       { id: "32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7", label: "RIS" },
       { id: "bc03b4fe-436d-4a1f-ba59-de4d2d7a63f7", label: "CSL JSON" },
-      { id: "14763d25-8ba0-45df-8f52-b8d1108e7ac9", label: "Zotero RDF" },
-      { id: "b8f9f5e6-b6a9-4b0e-a3f0-9e29ff9e14cf", label: "Simple Evernote" },
+      { id: "14763d24-8ba0-45df-8f52-b8d1108e7ac9", label: "Zotero RDF" },
+      { id: "18dd188a-9afc-4cd6-8775-1980c3ce0fbf", label: "Simple Evernote" },
     ];
   }
 
@@ -286,6 +286,8 @@ export class SettingsCapability {
       translate: () => void;
       string?: string;
     };
+    // Zotero's item getter consumes the array it is given, so count first.
+    const itemCount = items.length;
     translation.setItems(items);
     translation.setTranslator(params.translatorId);
 
@@ -301,7 +303,7 @@ export class SettingsCapability {
         }
         resolve({
           output: String(translation.string || ""),
-          itemCount: items.length,
+          itemCount,
         });
       });
       try {
