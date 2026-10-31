@@ -1978,6 +1978,70 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(normalPrompt)).not.toContain("old answer");
   });
 
+  describe("per-snippet questions", () => {
+    async function promptFor(runtimeRequest: Record<string, unknown>) {
+      let prompt: unknown;
+      const runtime = new ClaudeAgentSdkRuntimeClient({
+        queryImpl(args) {
+          prompt = args.prompt;
+          return makeStream([
+            {
+              type: "result",
+              session_id: "session-snippet",
+              result: "ok",
+              is_error: false,
+            },
+          ]);
+        },
+      });
+      await runtime.startTurn({
+        conversationKey: "conv-snippet-questions",
+        userMessage: "hello",
+        runtimeRequest,
+      });
+      return String(prompt);
+    }
+
+    it("includes the question under its snippet", async () => {
+      const prompt = await promptFor({
+        selectedTexts: ["alpha text"],
+        selectedTextContexts: [
+          { text: "alpha text", userQuery: "What is alpha?" },
+        ],
+      });
+      expect(prompt).toContain(
+        "Selected snippets:\n\n1. alpha text\n   Question: What is alpha?",
+      );
+    });
+
+    it("pairs questions by snippet index", async () => {
+      const prompt = await promptFor({
+        selectedTexts: ["one", "two", "three"],
+        selectedTextContexts: [
+          { text: "one", userQuery: "Q1" },
+          { text: "two" },
+          { text: "three", userQuery: "Q3\nline2" },
+        ],
+      });
+      expect(prompt).toContain(
+        "1. one\n   Question: Q1\n\n2. two\n\n3. three\n   Question: Q3\n   line2",
+      );
+    });
+
+    it("leaves snippets without contexts unchanged", async () => {
+      const prompt = await promptFor({ selectedTexts: ["solo"] });
+      expect(prompt).toContain("Selected snippets:\n\n1. solo");
+      expect(prompt).not.toContain("Question:");
+    });
+
+    it("uses context text when selectedTexts is empty", async () => {
+      const prompt = await promptFor({
+        selectedTextContexts: [{ text: "ctx only", userQuery: "Why?" }],
+      });
+      expect(prompt).toContain("1. ctx only\n   Question: Why?");
+    });
+  });
+
   it("preserves history-gap continuity across compact and skill commands", async () => {
     const pdfPath = await createPdfFile();
     const seenPrompts: string[] = [];

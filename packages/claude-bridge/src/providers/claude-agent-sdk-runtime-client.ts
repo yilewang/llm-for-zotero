@@ -269,6 +269,7 @@ type RuntimeAttachment = {
 type RuntimeRequestShape = {
   userText?: unknown;
   selectedTexts?: unknown;
+  selectedTextContexts?: unknown;
   selectedPaperContexts?: unknown;
   paperContexts?: unknown;
   fullTextPaperContexts?: unknown;
@@ -738,6 +739,34 @@ function formatFallbackHistory(
     "Use this transcript only to restore conversation context for the current answer.",
   ];
 }
+function collectSelectedSnippets(
+  runtimeRequest: RuntimeRequestShape,
+): Array<{ text: string; question: string }> {
+  const contexts = Array.isArray(runtimeRequest.selectedTextContexts)
+    ? runtimeRequest.selectedTextContexts
+    : [];
+  const questionAt = (index: number): string => {
+    const context = contexts[index];
+    if (!context || typeof context !== "object") return "";
+    const query = (context as { userQuery?: unknown }).userQuery;
+    return typeof query === "string" ? query.trim() : "";
+  };
+  const textAt = (value: unknown): string =>
+    typeof value === "string" ? value.trim() : "";
+  const rawTexts = Array.isArray(runtimeRequest.selectedTexts)
+    ? runtimeRequest.selectedTexts
+    : [];
+  const sources = rawTexts.length
+    ? rawTexts.map((entry) => textAt(entry))
+    : contexts.map((context) =>
+        context && typeof context === "object"
+          ? textAt((context as { text?: unknown }).text)
+          : "",
+      );
+  return sources
+    .map((text, index) => ({ text, question: questionAt(index) }))
+    .filter((entry) => entry.text);
+}
 function buildPromptText(
   userMessage: string,
   runtimeRequest: RuntimeRequestShape | undefined,
@@ -759,15 +788,16 @@ function buildPromptText(
   if (includeFallbackHistory) {
     lines.push(...formatFallbackHistory(runtimeRequest));
   }
-  const selectedTexts = Array.isArray(runtimeRequest.selectedTexts)
-    ? runtimeRequest.selectedTexts
-        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-        .filter(Boolean)
-    : [];
-  if (selectedTexts.length) {
+  const selectedSnippets = collectSelectedSnippets(runtimeRequest);
+  if (selectedSnippets.length) {
     lines.push(
       "Selected snippets:",
-      ...selectedTexts.map((text, index) => `${index + 1}. ${text}`),
+      ...selectedSnippets.map(({ text, question }, index) => {
+        const entry = `${index + 1}. ${text}`;
+        return question
+          ? `${entry}\n   Question: ${question.replace(/\r?\n/g, "\n   ")}`
+          : entry;
+      }),
     );
   }
   const selectedCollections = collectCollectionScopeEntries(
