@@ -136,6 +136,7 @@ export function createBatchLibrary(
       ids.filter((id) => items.has(id)).map(target),
     getEditableArticleMetadata: (candidate: { id?: number } | null) =>
       candidate?.id ? metadataOf(candidate.id) : null,
+    metadataPatchRefusal: () => null,
     updateArticleMetadata: async (params: {
       item: { id: number };
       metadata: Record<string, unknown>;

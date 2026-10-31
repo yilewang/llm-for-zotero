@@ -520,6 +520,14 @@ export class ZoteroGateway {
     return this.itemCapability.getEditableArticleMetadata(item);
   }
 
+  /** See `ItemCapability.metadataPatchRefusal`. */
+  metadataPatchRefusal(
+    item: Zotero.Item,
+    patch: EditableArticleMetadataPatch,
+  ): string | null {
+    return this.itemCapability.metadataPatchRefusal(item, patch);
+  }
+
   /** See `ItemCapability.isEditableArticleMetadataFieldSupported`. */
   isEditableArticleMetadataFieldSupported(
     item: Zotero.Item | null | undefined,

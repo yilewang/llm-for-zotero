@@ -1478,6 +1478,112 @@ describe("library operations against real Zotero", function () {
       );
     });
 
+    it("refuses a DOI patch aimed at a PDF attachment before any card, and changes nothing", async function () {
+      const paper = await makeItem("journalArticle", "PdfDoiParent");
+      const attachment = await attachTextFile(paper.id, "attachment-doi");
+      const paperDoi = paper.getField("DOI");
+      const attachmentTitle = attachment.getField("title");
+
+      // Safe mode, where a card would be offered: the refusal comes first.
+      const result = await withMode("safe", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "attachment-doi",
+            name: "library_update",
+            arguments: {
+              kind: "metadata",
+              itemId: attachment.id,
+              metadata: {
+                DOI: `10.1/pdf-${SUFFIX}`,
+                publicationTitle: "Some Journal",
+              },
+            },
+          },
+          contextFor(paper, "Set this PDF's DOI and journal"),
+          { callerKind: "model" },
+        );
+        assert.equal(execution.kind, "result", "no card is offered");
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+
+      assert.isFalse(result.ok);
+      const text = JSON.stringify(result.content);
+      assert.include(text, "Unsupported metadata fields for attachment");
+      assert.include(text, "DOI");
+      assert.include(text, "publicationTitle");
+      // Independent native readback: neither record changed.
+      assert.equal(Zotero.Items.get(paper.id).getField("DOI"), paperDoi);
+      assert.equal(Zotero.Items.get(attachment.id).getField("DOI"), "");
+      assert.equal(
+        Zotero.Items.get(attachment.id).getField("title"),
+        attachmentTitle,
+      );
+    });
+
+    for (const [label, buildPatch] of [
+      ["a creators patch", () => ({})],
+      [
+        "a title and creators patch",
+        () => ({ title: `Should not land-${SUFFIX}` }),
+      ],
+    ] as Array<[string, () => Record<string, unknown>]>) {
+      it(`refuses ${label} aimed at a PDF attachment before any card, and changes nothing`, async function () {
+        const paper = await makeItem("journalArticle", "PdfCreatorsParent");
+        const attachment = await attachTextFile(
+          paper.id,
+          "attachment-creators",
+        );
+        const attachmentTitle = attachment.getField("title");
+        const paperTitle = paper.getField("title");
+
+        const result = await withMode("safe", async (registry) => {
+          const execution = await registry.prepareExecution(
+            {
+              id: "attachment-creators",
+              name: "library_update",
+              arguments: {
+                kind: "metadata",
+                itemId: attachment.id,
+                metadata: {
+                  ...buildPatch(),
+                  creators: [
+                    {
+                      firstName: "Ada",
+                      lastName: "Lovelace",
+                      creatorType: "author",
+                    },
+                  ],
+                },
+              },
+            },
+            contextFor(paper, "Set this PDF's authors"),
+            { callerKind: "model" },
+          );
+          assert.equal(execution.kind, "result", "no card is offered");
+          if (execution.kind !== "result") throw new Error("unreachable");
+          return execution.execution.result;
+        });
+
+        assert.isFalse(result.ok);
+        assert.include(
+          JSON.stringify(result.content),
+          "Creators are not supported for attachment",
+        );
+        // Native readback of the cached objects and of the stored rows: no
+        // creators, and no unsaved title left on the attachment either.
+        const freshAttachment = Zotero.Items.get(attachment.id);
+        assert.equal(freshAttachment.getField("title"), attachmentTitle);
+        assert.isFalse(
+          freshAttachment.hasChanged(),
+          "the attachment holds no unsaved change",
+        );
+        assert.lengthOf(freshAttachment.getCreators(), 0);
+        assert.lengthOf(Zotero.Items.get(paper.id).getCreators(), 0);
+        assert.equal(Zotero.Items.get(paper.id).getField("title"), paperTitle);
+      });
+    }
+
     it("shows a book's edition and series rows on the Safe-mode card, then applies them", async function () {
       const book = await makeItem("book", "EditionSeries");
       book.setField("edition", "1");
@@ -1940,6 +2046,58 @@ describe("library operations against real Zotero", function () {
       } finally {
         await workflow.reset();
       }
+    });
+
+    it("refuses a group that mixes item types before any card, naming the group, and trashes nothing", async function () {
+      const sameType = await makeGroup("MergeMixedTypesOk", 1);
+      const article = await makeItem("journalArticle", "MergeMixedTypes");
+      const paper = await makeItem("conferencePaper", "MergeMixedTypes");
+      const childNote = await addNote(paper.id);
+
+      const refused = await withMode("yolo", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "merge-mixed-types",
+            name: "library_delete",
+            arguments: {
+              mode: "merge",
+              groups: [
+                groupArgs(sameType),
+                { masterItemId: article.id, otherItemIds: [paper.id] },
+              ],
+            },
+          },
+          contextFor(article, "Merge these"),
+          { callerKind: "model" },
+        );
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+
+      assert.isFalse(refused.ok);
+      const text = JSON.stringify(refused.content);
+      assert.include(
+        text,
+        `master ${article.id}`,
+        "the refusal names the group",
+      );
+      assert.include(text, "conferencePaper");
+      assert.include(text, "journalArticle");
+      // Native readback: nothing was trashed or moved, in either group.
+      for (const itemId of [
+        sameType.master.id,
+        sameType.others[0].id,
+        article.id,
+        paper.id,
+        childNote.id,
+      ]) {
+        assert.isFalse(trashed(itemId), `item ${itemId} is not in the trash`);
+      }
+      assert.equal(
+        Zotero.Items.get(childNote.id).parentID,
+        paper.id,
+        "the other record keeps its child",
+      );
     });
 
     it("reports exact per-group results when a group fails mid-batch, keeps earlier merges, and retries only the rest", async function () {

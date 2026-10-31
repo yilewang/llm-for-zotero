@@ -1458,6 +1458,29 @@ export class ItemCapability {
     return { totalGroups: groupIds.length, groups };
   }
 
+  /**
+   * Why this patch cannot be written on this very item, or null when it can.
+   *
+   * It is the check `updateArticleMetadata` runs before it touches the item,
+   * asked earlier so a review card is never offered for a write that will then
+   * be refused: a model often names a PDF's id, and a patch of `DOI` and
+   * `publicationTitle`, or of `creators`, renders rows on an attachment that
+   * takes none of them. It asks the item itself, never its parent.
+   */
+  metadataPatchRefusal(
+    item: Zotero.Item,
+    patch: EditableArticleMetadataPatch,
+  ): string | null {
+    const refusals = [
+      unsupportedMetadataFieldsRefusal(
+        item,
+        Object.keys(patch).filter((fieldName) => fieldName !== "creators"),
+      ),
+      Array.isArray(patch.creators) ? unsupportedCreatorsRefusal(item) : null,
+    ].filter((refusal): refusal is string => Boolean(refusal));
+    return refusals.length ? refusals.join(" ") : null;
+  }
+
   async updateArticleMetadata(params: {
     item: Zotero.Item | null;
     metadata: EditableArticleMetadataPatch;
@@ -1486,19 +1509,10 @@ export class ItemCapability {
     const fieldNames = Object.keys(params.metadata).filter(
       (fieldName) => fieldName !== "creators",
     );
-    const unsupportedFields = fieldNames.filter(
-      (fieldName) => !isFieldValidForItemType(item, fieldName),
-    );
-    if (unsupportedFields.length) {
-      const itemTypeName = getItemTypeName(item) || "this item type";
-      const available = listEditableFieldsForItem(item);
-      throw new Error(
-        `Unsupported metadata fields for ${itemTypeName}: ${unsupportedFields.join(", ")}.` +
-          (available.length
-            ? ` Fields this item type accepts: ${available.join(", ")}.`
-            : ""),
-      );
-    }
+    // Before the first setField: a refused patch must leave no unsaved
+    // change on the item Zotero keeps cached.
+    const unsupported = this.metadataPatchRefusal(item, params.metadata);
+    if (unsupported) throw new Error(unsupported);
 
     const rejectedFields: string[] = [];
     for (const fieldName of fieldNames) {
@@ -1526,21 +1540,6 @@ export class ItemCapability {
     }
 
     if (Array.isArray(params.metadata.creators)) {
-      const creatorTypes = (
-        Zotero as unknown as {
-          CreatorTypes?: {
-            itemTypeHasCreators?: (itemTypeId: number) => boolean;
-          };
-        }
-      ).CreatorTypes;
-      const supportsCreators =
-        typeof creatorTypes?.itemTypeHasCreators === "function"
-          ? creatorTypes.itemTypeHasCreators(item.itemTypeID)
-          : true;
-      if (!supportsCreators) {
-        const itemTypeName = getItemTypeName(item) || "this item type";
-        throw new Error(`Creators are not supported for ${itemTypeName}`);
-      }
       item.setCreators(
         params.metadata.creators as Array<
           _ZoteroTypes.Item.CreatorJSON | _ZoteroTypes.Item.Creator
@@ -1648,7 +1647,10 @@ export class ItemCapability {
    * the one library all the groups share: Zotero cannot merge across
    * libraries, and a duplicate already in the trash is what an earlier merge
    * leaves, so re-running a group that already merged is refused here rather
-   * than merged twice.
+   * than merged twice. A group also holds one item type: Zotero's duplicate
+   * search can pair a journal article with a conference paper by DOI, but its
+   * own merge pane refuses that, since the merge would trash the other record
+   * with its children.
    */
   mergeRefusal(
     groups: ReadonlyArray<{ masterItemId: number; otherItemIds: number[] }>,
@@ -1672,6 +1674,10 @@ export class ItemCapability {
         if (libraryID === undefined) libraryID = itemLibraryID;
         if (itemLibraryID !== libraryID) {
           return `Item ${itemId} is in a different library than the other items, and Zotero cannot merge across libraries.`;
+        }
+        const master = this.deps.getItem(group.masterItemId);
+        if (master && item.itemTypeID !== master.itemTypeID) {
+          return `Item ${itemId} is a ${getItemTypeName(item) || item.itemTypeID} but its group's master ${group.masterItemId} is a ${getItemTypeName(master) || master.itemTypeID}; Zotero merges only items of the same type, so that group cannot be merged.`;
         }
       }
     }
@@ -1761,6 +1767,48 @@ export class ItemCapability {
       trashedIds,
     };
   }
+}
+
+/**
+ * The refusal for the metadata fields the item's type cannot take, naming
+ * the fields it can; null when every field is valid for it.
+ */
+function unsupportedMetadataFieldsRefusal(
+  item: Zotero.Item,
+  fieldNames: string[],
+): string | null {
+  const unsupportedFields = fieldNames.filter(
+    (fieldName) => !isFieldValidForItemType(item, fieldName),
+  );
+  if (!unsupportedFields.length) return null;
+  const itemTypeName = getItemTypeName(item) || "this item type";
+  const available = listEditableFieldsForItem(item);
+  return (
+    `Unsupported metadata fields for ${itemTypeName}: ${unsupportedFields.join(", ")}.` +
+    (available.length
+      ? ` Fields this item type accepts: ${available.join(", ")}.`
+      : "")
+  );
+}
+
+/**
+ * The refusal for creators on an item type that has none (an attachment or
+ * a note); null when the item's own type takes them.
+ */
+function unsupportedCreatorsRefusal(item: Zotero.Item): string | null {
+  const creatorTypes = (
+    Zotero as unknown as {
+      CreatorTypes?: {
+        itemTypeHasCreators?: (itemTypeId: number) => boolean;
+      };
+    }
+  ).CreatorTypes;
+  const supportsCreators =
+    typeof creatorTypes?.itemTypeHasCreators === "function"
+      ? creatorTypes.itemTypeHasCreators(item.itemTypeID)
+      : true;
+  if (supportsCreators) return null;
+  return `Creators are not supported for ${getItemTypeName(item) || "this item type"}.`;
 }
 
 /**

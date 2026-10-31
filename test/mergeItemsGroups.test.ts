@@ -120,16 +120,23 @@ describe("merge_items duplicate groups", function () {
     type FakeItem = {
       id: number;
       libraryID: number;
+      itemTypeID?: number;
       deleted?: boolean;
       isRegularItem: () => boolean;
       isNote: () => boolean;
     };
     const items = new Map<number, FakeItem>();
-    function regular(id: number, libraryID = 1, deleted = false) {
+    function regular(
+      id: number,
+      libraryID = 1,
+      deleted = false,
+      itemTypeID = 1,
+    ) {
       items.set(id, {
         id,
         libraryID,
         deleted,
+        itemTypeID,
         isRegularItem: () => true,
         isNote: () => false,
       });
@@ -188,6 +195,39 @@ describe("merge_items duplicate groups", function () {
         capability.mergeRefusal([{ masterItemId: 10, otherItemIds: [11] }]) ||
           "",
         /11.*regular/i,
+      );
+    });
+
+    it("refuses a group that mixes item types, naming the group", function () {
+      const scope = globalThis as { Zotero?: unknown };
+      const original = scope.Zotero;
+      scope.Zotero = {
+        ItemTypes: {
+          getName: (id: number) =>
+            id === 1 ? "journalArticle" : "conferencePaper",
+        },
+      };
+      try {
+        regular(21, 1, false, 2);
+        const refusal =
+          capability.mergeRefusal([
+            { masterItemId: 10, otherItemIds: [11] },
+            { masterItemId: 20, otherItemIds: [21] },
+          ]) || "";
+        assert.match(refusal, /21.*conferencePaper/);
+        assert.match(refusal, /master 20.*journalArticle/);
+        assert.match(refusal, /same type/i);
+      } finally {
+        scope.Zotero = original;
+      }
+    });
+
+    it("refuses a mixed-type group whose master is the odd one out", function () {
+      regular(10, 1, false, 2);
+      assert.match(
+        capability.mergeRefusal([{ masterItemId: 10, otherItemIds: [11] }]) ||
+          "",
+        /11.*master 10.*same type/i,
       );
     });
 

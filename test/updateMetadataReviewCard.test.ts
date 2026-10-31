@@ -10,6 +10,7 @@ import type {
   AgentToolContext,
   AgentToolResult,
 } from "../src/agent/types";
+import { ItemCapability } from "../src/agent/services/zotero/itemCapability";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
 /**
@@ -49,6 +50,7 @@ describe("metadata review card rows", function () {
     return {
       resolveMetadataWriteTarget: () => ({ item: book }),
       getEditableArticleMetadata: () => bookSnapshot,
+      metadataPatchRefusal: () => null,
     } as never;
   }
 
@@ -193,6 +195,7 @@ describe("metadata review card rows", function () {
       },
       getEditableArticleMetadata: (item: { id: number }) =>
         snapshots[item.id] || null,
+      metadataPatchRefusal: () => null,
     } as never;
     const result: AgentToolResult = {
       callId: "call-b",
@@ -272,6 +275,163 @@ describe("metadata review card rows", function () {
         "paperContext",
         "the open paper's context never redirects the write",
       );
+    });
+  });
+
+  /**
+   * A model often names a PDF's id. A patch of DOI and publicationTitle on an
+   * attachment rendered rows, the user approved, and the write then threw
+   * "Unsupported metadata fields for attachment".
+   */
+  describe("a patch the target's item type cannot take", function () {
+    const pdf = { id: 20, libraryID: 1 };
+    const unsupported =
+      "Unsupported metadata fields for attachment: DOI, publicationTitle. Fields this item type accepts: title, url.";
+    const refusals: Array<[unknown, unknown]> = [];
+    function pdfGateway() {
+      return {
+        resolveMetadataWriteTarget: () => ({ item: pdf }),
+        getEditableArticleMetadata: () => ({
+          itemId: 20,
+          itemType: "attachment",
+          title: "PDF",
+          fields: { title: "PDF" },
+          creators: [],
+        }),
+        metadataPatchRefusal: (item: unknown, patch: unknown) => {
+          refusals.push([item, patch]);
+          return unsupported;
+        },
+      } as never;
+    }
+    const patch = { DOI: "10.1/x", publicationTitle: "Journal" };
+
+    beforeEach(function () {
+      refusals.length = 0;
+    });
+
+    it("builds no update card, and says which fields the type cannot take", function () {
+      assert.throws(
+        () =>
+          buildUpdateMetadataReviewField(
+            {
+              id: "op-1",
+              type: "update_metadata",
+              itemId: 20,
+              metadata: patch as never,
+            },
+            pdfGateway(),
+            context,
+            "PDF",
+            false,
+          ),
+        /Unsupported metadata fields for attachment: DOI, publicationTitle/,
+      );
+      assert.deepEqual(refusals, [[pdf, patch]], "asked of the resolved item");
+    });
+
+    it("offers no literature-search card for the write", function () {
+      const result: AgentToolResult = {
+        callId: "call-pdf",
+        name: "literature_search",
+        ok: true,
+        content: {
+          mode: "metadata",
+          results: [{ source: "Zotero translator", title: "Paper", patch }],
+        },
+      };
+      const action = createSearchLiteratureReviewAction(
+        result,
+        context,
+        { itemId: 20 },
+        pdfGateway(),
+      );
+      assert.isNull(action);
+      assert.deepEqual(refusals, [[pdf, patch]]);
+    });
+
+    describe("creators on an attachment, through the capability's own check", function () {
+      const scope = globalThis as { Zotero?: unknown };
+      const originalZotero = scope.Zotero;
+      const attachment = { id: 20, libraryID: 1, itemTypeID: 3 };
+      const capability = new ItemCapability({
+        getItem: () => null,
+        getCollectionSummary: () => null,
+        resolveBibliographicItem: (item) => item ?? null,
+      });
+      const creators = [
+        { firstName: "A", lastName: "B", creatorType: "author" },
+      ];
+
+      beforeEach(function () {
+        scope.Zotero = {
+          ItemTypes: { getName: () => "attachment" },
+          CreatorTypes: { itemTypeHasCreators: () => false },
+        };
+      });
+      afterEach(function () {
+        scope.Zotero = originalZotero;
+      });
+
+      function attachmentGateway() {
+        return {
+          resolveMetadataWriteTarget: () => ({ item: attachment }),
+          getEditableArticleMetadata: () => ({
+            itemId: 20,
+            itemType: "attachment",
+            title: "PDF",
+            fields: { title: "PDF" },
+            creators: [],
+          }),
+          metadataPatchRefusal: (item: never, patch: never) =>
+            capability.metadataPatchRefusal(item, patch),
+        } as never;
+      }
+
+      it("builds no update card for a creators-only patch", function () {
+        assert.throws(
+          () =>
+            buildUpdateMetadataReviewField(
+              {
+                id: "op-1",
+                type: "update_metadata",
+                itemId: 20,
+                metadata: { creators } as never,
+              },
+              attachmentGateway(),
+              context,
+              "PDF",
+              false,
+            ),
+          /Creators are not supported for attachment/,
+        );
+      });
+
+      it("offers no literature-search card for a creators-only patch", function () {
+        const result: AgentToolResult = {
+          callId: "call-creators",
+          name: "literature_search",
+          ok: true,
+          content: {
+            mode: "metadata",
+            results: [
+              {
+                source: "Zotero translator",
+                title: "Paper",
+                patch: { creators },
+              },
+            ],
+          },
+        };
+        assert.isNull(
+          createSearchLiteratureReviewAction(
+            result,
+            context,
+            { itemId: 20 },
+            attachmentGateway(),
+          ),
+        );
+      });
     });
   });
 });

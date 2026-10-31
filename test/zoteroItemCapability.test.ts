@@ -737,6 +737,32 @@ describe("item capability", function () {
       );
     });
 
+    it("asks the same question before the write, so a card is never offered for a refused patch", async function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const article = makeItem({ id: 6, itemTypeID: 1 });
+      const patch = { accessDate: "2024-01-01", title: "T" } as never;
+
+      const refusal = capability().metadataPatchRefusal(
+        chapter as unknown as Zotero.Item,
+        patch,
+      );
+
+      assert.include(
+        refusal || "",
+        "Unsupported metadata fields for bookSection: accessDate",
+      );
+      assert.notInclude(refusal || "", "title.");
+      assert.isNull(
+        capability().metadataPatchRefusal(
+          article as unknown as Zotero.Item,
+          patch,
+        ),
+      );
+      assert.equal(chapter.saves, 0, "asking writes nothing");
+      assert.isEmpty(chapter.setFieldCalls);
+    });
+
     it("refuses a value Zotero itself would not take", async function () {
       installZotero();
       const item = makeItem({ id: 5 });
@@ -775,6 +801,53 @@ describe("item capability", function () {
 
       assert.include(message, "Creators are not supported for bookSection");
       assert.equal(chapter.saves, 0);
+    });
+
+    it("refuses creators before any field is set, so a mixed patch leaves no unsaved change", async function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const patch = {
+        title: "New title",
+        creators: [{ firstName: "A", lastName: "B", creatorType: "author" }],
+      } as never;
+
+      assert.equal(
+        capability().metadataPatchRefusal(
+          chapter as unknown as Zotero.Item,
+          patch,
+        ),
+        "Creators are not supported for bookSection.",
+      );
+      let message = "";
+      try {
+        await capability().updateArticleMetadata({
+          item: chapter as unknown as Zotero.Item,
+          metadata: patch,
+        });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      assert.include(message, "Creators are not supported for bookSection");
+      assert.isEmpty(chapter.setFieldCalls, "no field was set on the item");
+      assert.equal(chapter.fields.title, "Paper 5");
+      assert.equal(chapter.saves, 0);
+    });
+
+    it("joins a field refusal and a creators refusal in one message", function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const refusal = capability().metadataPatchRefusal(
+        chapter as unknown as Zotero.Item,
+        {
+          accessDate: "2024-01-01",
+          creators: [{ firstName: "A", lastName: "B", creatorType: "author" }],
+        } as never,
+      );
+      assert.match(
+        refusal || "",
+        /Unsupported metadata fields for bookSection: accessDate.*Creators are not supported for bookSection/,
+      );
     });
 
     it("writes to the child attachment the caller named, never its parent", async function () {

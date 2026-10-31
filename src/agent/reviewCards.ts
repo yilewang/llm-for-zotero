@@ -527,7 +527,9 @@ function normalizeSearchReviewArgs(args: unknown): SearchReviewArgs {
 /** What the metadata cards need from Zotero: the write target and its fields. */
 export type SearchReviewMetadataGateway = Pick<
   ZoteroGateway,
-  "resolveMetadataWriteTarget" | "getEditableArticleMetadata"
+  | "resolveMetadataWriteTarget"
+  | "getEditableArticleMetadata"
+  | "metadataPatchRefusal"
 >;
 
 /**
@@ -559,7 +561,11 @@ function buildMetadataDiffRows(
   patch: EditableArticleMetadataPatch,
   target: Zotero.Item,
   zoteroGateway: SearchReviewMetadataGateway,
-): SearchReviewMetadataRow[] {
+): SearchReviewMetadataRow[] | null {
+  // A patch the target's item type cannot take (a DOI on a PDF the model
+  // named by id) would be approved and then refused by the write, so it gets
+  // no rows and no card.
+  if (zoteroGateway.metadataPatchRefusal(target, patch)) return null;
   const rows: SearchReviewMetadataRow[] = [];
   // The same snapshot the write's own readback and the update card read:
   // every field the item's type has, base-mapped (publicationTitle is
@@ -650,6 +656,7 @@ export function createSearchLiteratureReviewAction(
           target.item,
           zoteroGateway,
         );
+        if (!diffRows) return null;
         return {
           toolName: "literature_search",
           mode: "review",

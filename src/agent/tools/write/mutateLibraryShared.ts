@@ -599,6 +599,13 @@ export function buildUpdateMetadataReviewField(
   showTitle: boolean,
 ): Extract<AgentPendingField, { type: "review_table" }> {
   const item = resolveMetadataWriteItem(operation, zoteroGateway, context);
+  // The write throws on a field its item type cannot take (a DOI on a PDF),
+  // so the card is refused here rather than approved and then failed.
+  const unsupported = zoteroGateway.metadataPatchRefusal(
+    item,
+    operation.metadata,
+  );
+  if (unsupported) throw new Error(unsupported);
   const snapshot = zoteroGateway.getEditableArticleMetadata(item);
   const rows: Extract<AgentPendingField, { type: "review_table" }>["rows"] = [];
   const beforeFields = (snapshot?.fields || {}) as Record<string, string>;
