@@ -2030,7 +2030,7 @@ describe("LibraryIndexService", function () {
       ],
     });
 
-    const results = await new ZoteroGateway().searchAllNotes({
+    const { notes: results } = await new ZoteroGateway().searchAllNotes({
       libraryID: 1,
       query: "needle",
     });

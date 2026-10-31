@@ -12,7 +12,7 @@ describe("note discovery collection scope", function () {
         },
         searchAllNotes: async (params: Record<string, unknown>) => {
           received = params;
-          return [];
+          return { notes: [], totalCount: 0 };
         },
       } as never);
       const parsed = tool.validate({

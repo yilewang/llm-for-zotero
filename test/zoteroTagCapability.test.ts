@@ -124,23 +124,49 @@ describe("tag capability", function () {
 
   describe("reading the tags a library holds", function () {
     it("returns every tag with its type", async function () {
-      const tags = await capability().listLibraryTags({ libraryID: 1 });
+      const result = await capability().listLibraryTags({ libraryID: 1 });
 
-      assert.deepEqual(tags, [
+      assert.deepEqual(result.tags, [
         { name: "Neuroscience", type: 0 },
         { name: "machine learning", type: 1 },
         { name: "ML", type: 0 },
       ]);
+      assert.equal(result.totalCount, 3);
     });
 
     it("matches a query case-insensitively and honours the limit", async function () {
-      const tags = await capability().listLibraryTags({
+      const result = await capability().listLibraryTags({
         libraryID: 1,
         query: "M",
         limit: 1,
       });
 
-      assert.deepEqual(tags, [{ name: "machine learning", type: 1 }]);
+      assert.deepEqual(result.tags, [{ name: "machine learning", type: 1 }]);
+      // The limit caps the page, not the count: two tags contain "m".
+      assert.equal(result.totalCount, 2);
+    });
+
+    it("pages with offset so every tag is reachable", async function () {
+      const first = await capability().listLibraryTags({
+        libraryID: 1,
+        limit: 2,
+      });
+      const second = await capability().listLibraryTags({
+        libraryID: 1,
+        limit: 2,
+        offset: 2,
+      });
+
+      assert.deepEqual(
+        first.tags.map((tag) => tag.name),
+        ["Neuroscience", "machine learning"],
+      );
+      assert.deepEqual(
+        second.tags.map((tag) => tag.name),
+        ["ML"],
+      );
+      assert.equal(first.totalCount, 3);
+      assert.equal(second.totalCount, 3);
     });
 
     it("refuses to guess a library", async function () {

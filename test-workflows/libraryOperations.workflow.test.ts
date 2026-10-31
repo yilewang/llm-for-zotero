@@ -840,6 +840,433 @@ describe("library operations against real Zotero", function () {
     });
   });
 
+  // ── W1: filters next to conditions, and pages past a limit ────────────────
+
+  describe("library_search filters and paging", function () {
+    // Full-text words are letters only, so the run suffix is spelled out.
+    const WORD = `drift${SUFFIX.replace(/\d/g, (digit) =>
+      String.fromCharCode(97 + Number(digit)),
+    )}`;
+
+    function searchTool() {
+      return Zotero.LLMForZotero.api.agent.getToolDefinition("library_search");
+    }
+
+    async function runSearch(args: Record<string, unknown>) {
+      const tool = searchTool();
+      const parsed = tool.validate({ libraryID: libraryID(), ...args });
+      assert.isTrue(parsed.ok, JSON.stringify(parsed));
+      return (await tool.execute(parsed.value, {
+        request: {
+          conversationKey: 1,
+          libraryID: libraryID(),
+          mode: "agent",
+          userText: "Search the library",
+        },
+        item: null,
+        modelName: "workflow",
+        currentAnswerText: "",
+      } as never)) as any;
+    }
+
+    async function attachIndexedText(parentItemID: number, body: string) {
+      const path = PathUtils.join(
+        Zotero.getTempDirectory().path,
+        `fulltext-${parentItemID}-${SUFFIX}.txt`,
+      );
+      await IOUtils.writeUTF8(path, body);
+      const attachment = await Zotero.Attachments.importFromFile({
+        file: path,
+        parentItemID,
+      });
+      await IOUtils.remove(path, { ignoreAbsent: true });
+      created.items.push(attachment.id);
+      await Zotero.Fulltext.indexItems([attachment.id]);
+      return attachment;
+    }
+
+    /** Walks every page with offset and returns each page's result. */
+    async function walk(args: Record<string, unknown>) {
+      const pages: any[] = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined && pages.length < 20) {
+        const page = await runSearch({ ...args, offset });
+        pages.push(page);
+        offset = page.nextOffset;
+      }
+      return pages;
+    }
+
+    it("keeps a full-text match to filters.collectionId", async function () {
+      const collection = await makeCollection("Fulltext-Scope");
+      const inside = await makeItem("journalArticle", "Fulltext inside");
+      const outside = await makeItem("journalArticle", "Fulltext outside");
+      const insideNoHit = await makeItem("journalArticle", "Fulltext no hit");
+      for (const paper of [inside, insideNoHit]) {
+        paper.addToCollection(collection.id);
+        await paper.saveTx();
+      }
+      const insidePdf = await attachIndexedText(inside.id, `About ${WORD}.`);
+      const outsidePdf = await attachIndexedText(outside.id, `Also ${WORD}.`);
+      await attachIndexedText(insideNoHit.id, "Nothing relevant here.");
+
+      // Native readback: the word is indexed on both attachments, and the
+      // collection holds the two papers that were filed.
+      const raw = new Zotero.Search({ libraryID: libraryID() });
+      raw.addCondition("fulltextContent", "contains", WORD);
+      assert.sameMembers((await raw.search()).map(Number), [
+        insidePdf.id,
+        outsidePdf.id,
+      ]);
+      const members = (
+        (await Zotero.DB.columnQueryAsync(
+          "SELECT itemID FROM collectionItems WHERE collectionID=?",
+          [collection.id],
+        )) || []
+      ).map(Number);
+      assert.sameMembers(members, [inside.id, insideNoHit.id]);
+
+      const conditions = [
+        { condition: "fulltextContent", operator: "contains", value: WORD },
+      ];
+      const unscoped = await runSearch({
+        entity: "items",
+        mode: "search",
+        conditions,
+        resolveToParents: true,
+      });
+      assert.sameMembers(
+        unscoped.results.map((row: any) => row.itemId),
+        [inside.id, outside.id],
+      );
+
+      const scoped = await runSearch({
+        entity: "items",
+        mode: "search",
+        conditions,
+        resolveToParents: true,
+        filters: { collectionId: collection.id },
+      });
+      assert.deepEqual(
+        scoped.results.map((row: any) => row.itemId),
+        [inside.id],
+      );
+      assert.equal(scoped.totalCount, 1);
+      assert.isFalse(scoped.limited);
+    });
+
+    it("reports the true notes total past the limit and pages every note", async function () {
+      const parent = await makeItem("journalArticle", "Paged notes parent");
+      const noteIds: number[] = [];
+      for (let index = 0; index < 7; index += 1) {
+        const note = new Zotero.Item("note");
+        note.libraryID = libraryID();
+        if (index % 2) note.parentID = parent.id;
+        note.setNote(`<h1>Paged note ${index} ${WORD}</h1>`);
+        await note.saveTx();
+        created.items.push(note.id);
+        noteIds.push(note.id);
+      }
+      // Native readback of what a notes search should find.
+      const raw = new Zotero.Search({ libraryID: libraryID() });
+      raw.addCondition("itemType", "is", "note");
+      raw.addCondition("quicksearch-everything", "contains", WORD);
+      assert.sameMembers((await raw.search()).map(Number), noteIds);
+
+      const args = { entity: "notes", mode: "search", text: WORD, limit: 3 };
+      const pages = await walk(args);
+      assert.equal(pages.length, 3);
+      assert.deepEqual(
+        pages.map((page) => page.totalCount),
+        [7, 7, 7],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.limited),
+        [true, true, false],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.returnedCount),
+        [3, 3, 1],
+      );
+      const seen = pages.flatMap((page) =>
+        page.results.map((row: any) => row.itemId),
+      );
+      assert.lengthOf(seen, 7, "no note appears on two pages");
+      assert.sameMembers(seen, noteIds);
+    });
+
+    it("pages the standalone notes list so every note appears exactly once", async function () {
+      const collection = await makeCollection("Paged-Note-List");
+      const noteIds: number[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        const note = new Zotero.Item("note");
+        note.libraryID = libraryID();
+        note.addToCollection(collection.id);
+        note.setNote(`<h1>Listed note ${index} ${SUFFIX}</h1>`);
+        await note.saveTx();
+        created.items.push(note.id);
+        noteIds.push(note.id);
+      }
+      // Native readback: the collection holds exactly these standalone notes.
+      const native = (
+        (await Zotero.DB.columnQueryAsync(
+          "SELECT itemID FROM collectionItems WHERE collectionID=?",
+          [collection.id],
+        )) || []
+      )
+        .map(Number)
+        .filter((id: number) => Zotero.Items.get(id)?.isNote());
+      assert.sameMembers(native, noteIds);
+
+      const pages = await walk({
+        entity: "notes",
+        mode: "list",
+        filters: { collectionId: collection.id },
+        limit: 2,
+      });
+      assert.equal(pages.length, 3);
+      assert.deepEqual(
+        pages.map((page) => page.totalCount),
+        [5, 5, 5],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.limited),
+        [true, true, false],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.nextOffset),
+        [2, 4, undefined],
+      );
+      const seen = pages.flatMap((page) =>
+        page.results.map((row: any) => row.itemId),
+      );
+      assert.lengthOf(seen, 5, "no note appears on two pages");
+      assert.sameMembers(seen, noteIds);
+    });
+
+    it("reports the true tag total past the limit and pages every tag", async function () {
+      const holder = await makeItem("journalArticle", "Paged tags holder");
+      const prefix = `tagpage-${SUFFIX}`;
+      const names = Array.from({ length: 5 }, (_v, i) => `${prefix}-${i}`);
+      for (const name of names) {
+        holder.addTag(name);
+        created.tags.push(name);
+      }
+      await holder.saveTx();
+      // Native readback: Zotero holds exactly these five tags for the prefix.
+      const native = (await Zotero.Tags.getAll(libraryID()))
+        .map((tag: { tag: string }) => tag.tag)
+        .filter((name: string) => name.startsWith(prefix));
+      assert.sameMembers(native, names);
+
+      const pages = await walk({
+        entity: "tags",
+        mode: "search",
+        text: prefix,
+        limit: 2,
+      });
+      assert.equal(pages.length, 3);
+      assert.deepEqual(
+        pages.map((page) => page.totalCount),
+        [5, 5, 5],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.limited),
+        [true, true, false],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.nextOffset),
+        [2, 4, undefined],
+      );
+      const seen = pages.flatMap((page) =>
+        page.results.map((row: any) => row.name),
+      );
+      assert.lengthOf(seen, 5, "no tag appears on two pages");
+      assert.sameMembers(seen, names);
+    });
+
+    /** Zotero's own duplicate set for an item, read straight from its engine. */
+    async function nativeDuplicateSet(itemID: number): Promise<number[]> {
+      const engine = new Zotero.Duplicates(libraryID());
+      const search = await engine.getSearchObject();
+      const table = Object.values(
+        search.conditions as Record<string, any>,
+      ).find((condition: any) => condition.condition === "tempTable")?.value;
+      try {
+        await search.search();
+        return engine.getSetItemsByItemID(itemID).map(Number);
+      } finally {
+        if (table) await Zotero.DB.queryAsync(`DROP TABLE IF EXISTS ${table}`);
+      }
+    }
+
+    async function makeDoiItem(title: string, doi: string) {
+      const item = await makeItem("journalArticle", title);
+      item.setField("DOI", doi);
+      await item.saveTx();
+      return item;
+    }
+
+    it("groups a metadata-only item with its PDF twin as one duplicate group", async function () {
+      const doi = `10.5555/${SUFFIX}.twin`;
+      const bare = await makeDoiItem("Duplicate twin record", doi);
+      const withPdf = await makeDoiItem("Duplicate twin with file", doi);
+      const pdf = await PDFDocument.create();
+      pdf.addPage([612, 792]);
+      const pdfPath = PathUtils.join(
+        Zotero.getTempDirectory().path,
+        `duplicate-twin-${SUFFIX}.pdf`,
+      );
+      await IOUtils.write(pdfPath, await pdf.save());
+      const attachment = await Zotero.Attachments.importFromFile({
+        file: pdfPath,
+        parentItemID: withPdf.id,
+      });
+      await IOUtils.remove(pdfPath, { ignoreAbsent: true });
+      created.items.push(attachment.id);
+
+      // Native readback: only one twin has a file, and Zotero's own engine
+      // puts both in one set.
+      assert.lengthOf(Zotero.Items.get(bare.id).getAttachments(), 0);
+      assert.deepEqual(Zotero.Items.get(withPdf.id).getAttachments(), [
+        attachment.id,
+      ]);
+      assert.sameMembers(await nativeDuplicateSet(bare.id), [
+        bare.id,
+        withPdf.id,
+      ]);
+
+      const pages = await walk({
+        entity: "items",
+        mode: "duplicates",
+        limit: 50,
+      });
+      const groups = pages.flatMap((page) => page.results);
+      const ours = groups.filter((group: any) =>
+        group.papers.some((paper: any) =>
+          [bare.id, withPdf.id].includes(paper.itemId),
+        ),
+      );
+      assert.lengthOf(ours, 1, "both twins sit in a single group");
+      assert.sameMembers(
+        ours[0].papers.map((paper: any) => paper.itemId),
+        [bare.id, withPdf.id],
+      );
+      assert.equal(ours[0].matchReason, `Same DOI: ${doi.toLowerCase()}`);
+      const byId = new Map(
+        ours[0].papers.map((paper: any) => [paper.itemId, paper]),
+      );
+      assert.lengthOf((byId.get(bare.id) as any).attachments, 0);
+      assert.deepEqual(
+        (byId.get(withPdf.id) as any).attachments.map(
+          (entry: any) => entry.contextItemId,
+        ),
+        [attachment.id],
+      );
+    });
+
+    it("reports the true duplicate group total and pages every group once", async function () {
+      const baseline = (
+        await runSearch({ entity: "items", mode: "duplicates", limit: 1 })
+      ).totalCount as number;
+      const pairs: Array<[number, number]> = [];
+      for (let index = 0; index < 7; index += 1) {
+        const doi = `10.5555/${SUFFIX}.page${index}`;
+        const first = await makeDoiItem(`Paged duplicate ${index} first`, doi);
+        const second = await makeDoiItem(
+          `Paged duplicate ${index} second`,
+          doi,
+        );
+        pairs.push([first.id, second.id]);
+      }
+      // Native readback: Zotero's engine pairs each fixture, and only it.
+      for (const pair of pairs) {
+        assert.sameMembers(await nativeDuplicateSet(pair[0]), pair);
+      }
+
+      const total = baseline + 7;
+      const pages = await walk({
+        entity: "items",
+        mode: "duplicates",
+        limit: 3,
+      });
+      const pageCount = Math.ceil(total / 3);
+      assert.lengthOf(pages, pageCount);
+      for (const [index, page] of pages.entries()) {
+        const isLast = index === pageCount - 1;
+        assert.equal(page.totalCount, total);
+        assert.equal(page.totalGroups, total);
+        assert.equal(page.offset, index * 3);
+        assert.equal(page.limited, !isLast);
+        assert.equal(page.nextOffset, isLast ? undefined : (index + 1) * 3);
+      }
+      assert.equal(pages[0].returnedCount, Math.min(3, total));
+      const groups = pages.flatMap((page) => page.results);
+      assert.lengthOf(groups, total);
+      const allIds = groups.flatMap((group: any) =>
+        group.papers.map((paper: any) => paper.itemId),
+      );
+      assert.equal(
+        new Set(allIds).size,
+        allIds.length,
+        "no item appears in two groups or on two pages",
+      );
+      for (const pair of pairs) {
+        const group = groups.find((entry: any) =>
+          entry.papers.some((paper: any) => paper.itemId === pair[0]),
+        );
+        assert.exists(group);
+        assert.sameMembers(
+          group.papers.map((paper: any) => paper.itemId),
+          pair,
+        );
+      }
+    });
+
+    it("returns the next rows on text-search page 2", async function () {
+      const ids: number[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        ids.push((await makeItem("journalArticle", `PageProbe ${index}`)).id);
+      }
+      const text = `PageProbe`;
+      const all = await runSearch({
+        entity: "items",
+        mode: "search",
+        text: `${text} ${SUFFIX}`,
+        limit: 50,
+      });
+      const allIds = all.results.map((row: any) => row.itemId);
+      assert.sameMembers(allIds, ids);
+      assert.equal(all.totalCount, 5);
+
+      const pageArgs = {
+        entity: "items",
+        mode: "search",
+        text: `${text} ${SUFFIX}`,
+        limit: 2,
+      };
+      const first = await runSearch({ ...pageArgs });
+      const second = await runSearch({ ...pageArgs, offset: 2 });
+      assert.deepEqual(
+        first.results.map((row: any) => row.itemId),
+        allIds.slice(0, 2),
+      );
+      assert.deepEqual(
+        second.results.map((row: any) => row.itemId),
+        allIds.slice(2, 4),
+      );
+      assert.equal(second.totalCount, 5);
+      assert.isTrue(second.limited);
+      assert.equal(second.nextOffset, 4);
+      const last = await runSearch({ ...pageArgs, offset: 4 });
+      assert.deepEqual(
+        last.results.map((row: any) => row.itemId),
+        allIds.slice(4),
+      );
+      assert.isFalse(last.limited);
+    });
+  });
+
   // ── Stage 2: metadata beyond the allowlist ────────────────────────────────
 
   describe("metadata fields", function () {

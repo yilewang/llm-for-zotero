@@ -581,7 +581,7 @@ async function fetchExistingLibraryTags(
 ): Promise<string[]> {
   if (typeof ctx.zoteroGateway.listLibraryTags === "function") {
     try {
-      const tags = await ctx.zoteroGateway.listLibraryTags({
+      const { tags } = await ctx.zoteroGateway.listLibraryTags({
         libraryID: ctx.libraryID,
       });
       return Array.from(

@@ -313,6 +313,34 @@ function withResultCounts<T extends { results: unknown[] }>(
   };
 }
 
+/**
+ * Counts for a page taken at `offset`: `limited` and `nextOffset` say more
+ * matches remain past this page, and are absent on the last one.
+ */
+function withPageCounts<T extends { results: unknown[] }>(
+  payload: T,
+  params: { totalCount: number; offset?: number },
+): T & {
+  totalCount: number;
+  returnedCount: number;
+  offset: number;
+  nextOffset?: number;
+  limited: boolean;
+} {
+  const returnedCount = payload.results.length;
+  const totalCount = Math.max(0, Math.floor(params.totalCount));
+  const offset = params.offset && params.offset > 0 ? params.offset : 0;
+  const end = offset + returnedCount;
+  return {
+    ...payload,
+    totalCount,
+    returnedCount,
+    offset,
+    ...(end < totalCount ? { nextOffset: end } : {}),
+    limited: end < totalCount,
+  };
+}
+
 export function createLibrarySearchTool(
   zoteroGateway: ZoteroGateway,
 ): AgentToolDefinition<QueryLibraryInput, unknown> {
@@ -431,7 +459,7 @@ export function createLibrarySearchTool(
           offset: {
             type: "number",
             description:
-              "Skip this many results before returning. Use with limit to page through a large result set across several calls. Applies to entity:'items' with mode:'list'.",
+              "Skip this many results before returning. Use with limit to page through a large result set across several calls; a capped result says limited:true with the true totalCount and the nextOffset to pass next. Applies to entity:'items' (mode:'list', mode:'search', mode:'duplicates' where it counts groups, and conditions[]), to entity:'notes' (mode:'list' and mode:'search'), and to entity:'tags'.",
           },
           sort: {
             type: "string",
@@ -577,7 +605,8 @@ export function createLibrarySearchTool(
         // hasPdf routes to a different engine entirely and untagged is a JS
         // filter applied after the fact, so neither can honour a condition
         // set. Silently ignoring one of them would return a confidently wrong
-        // result.
+        // result. The other simple filters are honoured by intersection (see
+        // ItemCapability.searchItemsByConditions).
         const filters = normalizedArgs.filters as
           | Record<string, unknown>
           | undefined;
@@ -712,6 +741,7 @@ export function createLibrarySearchTool(
             joinMode: input.joinMode,
             resolveToParents: input.resolveToParents,
             includeTrashed: input.filters?.deleted === true,
+            filters: input.filters,
             limit: input.limit,
             offset: input.offset,
           });
@@ -746,29 +776,33 @@ export function createLibrarySearchTool(
             collectionId: input.filters?.collectionId,
             text: input.text || "",
             limit: input.limit,
+            offset: input.offset,
           });
-          return withResultCounts({
-            entity: input.entity,
-            mode: input.mode,
-            results: result.results,
-            warnings: result.warnings,
-          });
+          return withPageCounts(
+            {
+              entity: input.entity,
+              mode: input.mode,
+              results: result.results,
+              warnings: result.warnings,
+            },
+            { totalCount: result.totalCount, offset: input.offset },
+          );
         }
         // list mode
         const result = await queryService.listStandaloneNotes({
           libraryID,
           collectionId: input.filters?.collectionId,
           limit: input.limit,
+          offset: input.offset,
         });
-        return withResultCounts(
+        return withPageCounts(
           {
             entity: input.entity,
             mode: input.mode,
-            totalCount: result.totalCount,
             results: result.results,
             warnings: result.warnings,
           },
-          { totalCount: result.totalCount },
+          { totalCount: result.totalCount, offset: input.offset },
         );
       }
       if (input.entity === "savedSearches") {
@@ -791,13 +825,17 @@ export function createLibrarySearchTool(
           libraryID,
           query: input.mode === "search" ? input.text : undefined,
           limit: input.limit,
+          offset: input.offset,
         });
-        return withResultCounts({
-          entity: input.entity,
-          mode: input.mode,
-          results: result.results,
-          warnings: result.warnings,
-        });
+        return withPageCounts(
+          {
+            entity: input.entity,
+            mode: input.mode,
+            results: result.results,
+            warnings: result.warnings,
+          },
+          { totalCount: result.totalCount, offset: input.offset },
+        );
       }
       if (input.entity === "collections") {
         if (input.mode === "list" && input.view === "tree") {
@@ -831,19 +869,20 @@ export function createLibrarySearchTool(
           text: input.text || "",
           filters: input.filters,
           limit: input.limit,
+          offset: input.offset,
           include: input.include,
           excludeContextItemId:
             zoteroGateway.getActiveContextItem(context.item)?.id || null,
         });
         return withEmptySearchGuidance(
-          withResultCounts(
+          withPageCounts(
             {
               entity: input.entity,
               mode: input.mode,
               results: result.results,
               warnings: result.warnings,
             },
-            { totalCount: result.totalCount },
+            { totalCount: result.totalCount, offset: input.offset },
           ),
           input,
         );
@@ -898,15 +937,19 @@ export function createLibrarySearchTool(
       const result = await queryService.detectDuplicates({
         libraryID,
         limit: input.limit,
+        offset: input.offset,
         include: input.include,
       });
-      return {
-        entity: input.entity,
-        mode: input.mode,
-        totalGroups: result.totalGroups,
-        results: result.results,
-        warnings: result.warnings,
-      };
+      return withPageCounts(
+        {
+          entity: input.entity,
+          mode: input.mode,
+          totalGroups: result.totalGroups,
+          results: result.results,
+          warnings: result.warnings,
+        },
+        { totalCount: result.totalGroups, offset: input.offset },
+      );
     },
   };
 }

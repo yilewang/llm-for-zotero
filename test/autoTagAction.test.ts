@@ -881,10 +881,12 @@ describe("autoTag action", function () {
           ],
           totalCount: 1,
         }),
-        listLibraryTags: async () =>
-          ["memory", "attention", "cortex", "neurons", "perception"].map(
+        listLibraryTags: async () => ({
+          tags: ["memory", "attention", "cortex", "neurons", "perception"].map(
             (name) => ({ name, type: 0 }),
           ),
+          totalCount: 5,
+        }),
         getEditableArticleMetadata: () => ({ fields: { abstractNote: "" } }),
         getItem: (itemId: number) => ({ id: itemId }),
       } as never,
@@ -936,7 +938,10 @@ describe("autoTag action", function () {
           ),
           totalCount: 11,
         }),
-        listLibraryTags: async () => [{ name: "neural memory", type: 0 }],
+        listLibraryTags: async () => ({
+          tags: [{ name: "neural memory", type: 0 }],
+          totalCount: 1,
+        }),
         getEditableArticleMetadata: () => ({
           fields: {
             abstractNote: "A neural memory paper with learning dynamics",
@@ -981,7 +986,10 @@ describe("autoTag action", function () {
           ),
           totalCount: 11,
         }),
-        listLibraryTags: async () => [{ name: "neural memory", type: 0 }],
+        listLibraryTags: async () => ({
+          tags: [{ name: "neural memory", type: 0 }],
+          totalCount: 1,
+        }),
         getEditableArticleMetadata: () => ({
           fields: {
             abstractNote: "A neural memory paper with learning dynamics",
@@ -1032,7 +1040,10 @@ describe("autoTag action", function () {
           ),
           totalCount: 60,
         }),
-        listLibraryTags: async () => [{ name: "neural memory", type: 0 }],
+        listLibraryTags: async () => ({
+          tags: [{ name: "neural memory", type: 0 }],
+          totalCount: 1,
+        }),
         getEditableArticleMetadata: () => ({
           fields: {
             abstractNote: "A neural memory paper with learning dynamics",
@@ -1081,7 +1092,10 @@ describe("autoTag action", function () {
           items: [makeBibliographicTarget(1, "Neural Memory Paper")],
           totalCount: 1,
         }),
-        listLibraryTags: async () => [{ name: "neural memory", type: 0 }],
+        listLibraryTags: async () => ({
+          tags: [{ name: "neural memory", type: 0 }],
+          totalCount: 1,
+        }),
         getEditableArticleMetadata: () => ({
           fields: {
             abstractNote: "A neural memory paper with learning dynamics",
@@ -1136,7 +1150,10 @@ describe("autoTag action", function () {
           ),
           totalCount: 6,
         }),
-        listLibraryTags: async () => [{ name: "existing", type: 0 }],
+        listLibraryTags: async () => ({
+          tags: [{ name: "existing", type: 0 }],
+          totalCount: 1,
+        }),
         getEditableArticleMetadata: () => ({
           fields: { abstractNote: "An abstract" },
         }),

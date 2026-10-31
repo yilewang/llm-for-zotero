@@ -54,6 +54,12 @@ export type PaperNoteRecord = {
   wordCount: number;
 };
 
+/** One notes-search row; a child note names the paper it hangs from. */
+export type NoteSearchResult = LibraryItemTarget & {
+  parentItemId?: number;
+  parentItemTitle?: string;
+};
+
 export type PaperAnnotationRecord = {
   annotationId: number;
   type: string;
@@ -207,10 +213,15 @@ export class NoteCapability {
     invalidateCachedContextText(Math.floor(params.noteId));
   }
 
+  /**
+   * Standalone notes in index order, paged with `offset`/`limit`;
+   * `totalCount` counts every standalone note in scope, not the page.
+   */
   async listStandaloneNotes(params: {
     libraryID: number;
     collectionId?: number;
     limit?: number;
+    offset?: number;
   }): Promise<{ notes: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
@@ -224,10 +235,14 @@ export class NoteCapability {
         (!params.collectionId ||
           item.collectionIds.includes(params.collectionId)),
     );
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
     return {
       notes: buildItemTargetsForIds(
         this.itemLookup,
-        pageIds(ids, params.limit),
+        pageIds(ids.slice(offset), params.limit),
       ),
       totalCount: ids.length,
     };
@@ -250,59 +265,61 @@ export class NoteCapability {
     };
   }
 
+  /**
+   * Finds notes whose title or text matches the query.
+   *
+   * Every match is counted before the page is cut, so `totalCount` is the
+   * true number of matches and `offset` walks the rest. The page used to stop
+   * at its limit and report itself as the whole answer.
+   */
   async searchAllNotes(params: {
     libraryID: number;
     collectionId?: number;
     query: string;
     limit?: number;
-  }): Promise<
-    Array<
-      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-    >
-  > {
+    offset?: number;
+  }): Promise<{ notes: NoteSearchResult[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
       : 0;
     if (!libraryID) throw new Error("No active library available");
     const query = params.query?.trim();
-    if (!query) return [];
+    if (!query) return { notes: [], totalCount: 0 };
     const normalizedLimit = Number.isFinite(params.limit)
       ? Math.max(1, Math.floor(params.limit as number))
       : 200;
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
+    let matches: NoteSearchResult[];
     try {
       const search = new Zotero.Search({ libraryID });
       search.addCondition("itemType", "is", "note");
       search.addCondition("quicksearch-everything", "contains", query);
       const noteIds: number[] = await search.search();
-      return this._buildNoteResults(
-        noteIds,
-        normalizedLimit,
-        params.collectionId,
-      );
+      matches = this._buildNoteResults(noteIds, params.collectionId);
     } catch (_error) {
       void _error;
       // Fallback: in-memory scan across all items and child notes
-      return this._searchAllNotesInMemory({
+      matches = await this._searchAllNotesInMemory({
         libraryID,
         collectionId: params.collectionId,
         query,
-        limit: normalizedLimit,
       });
     }
+    return {
+      notes: matches.slice(offset, offset + normalizedLimit),
+      totalCount: matches.length,
+    };
   }
 
   private _buildNoteResults(
     noteIds: number[],
-    limit: number,
     collectionId?: number,
-  ): Array<
-    LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-  > {
-    const results: Array<
-      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-    > = [];
+  ): NoteSearchResult[] {
+    const results: NoteSearchResult[] = [];
     for (const noteId of noteIds) {
-      if (results.length >= limit) break;
       const noteItem = this.deps.getItem(noteId);
       if (!noteItem?.isNote?.()) continue;
       const owner = noteItem.parentID
@@ -345,19 +362,11 @@ export class NoteCapability {
     libraryID: number;
     collectionId?: number;
     query: string;
-    limit: number;
-  }): Promise<
-    Array<
-      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-    >
-  > {
+  }): Promise<NoteSearchResult[]> {
     const queryLower = params.query.toLowerCase();
     const snapshot = await libraryIndexService.getSnapshot(params.libraryID);
-    const results: Array<
-      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-    > = [];
+    const results: NoteSearchResult[] = [];
     for (const itemId of snapshot.topLevelItemOrder) {
-      if (results.length >= params.limit) break;
       const indexed = snapshot.itemById.get(itemId);
       const item = this.deps.getItem(itemId);
       if (!indexed || indexed.deleted || !item) continue;
@@ -385,7 +394,6 @@ export class NoteCapability {
         normalizeText(item.getDisplayTitle?.() || "").trim() ||
         `Item ${item.id}`;
       for (const noteId of noteIds) {
-        if (results.length >= params.limit) break;
         const noteItem = Zotero.Items.get(noteId);
         if (
           !noteItem?.isNote?.() ||

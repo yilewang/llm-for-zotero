@@ -670,6 +670,7 @@ export class ZoteroGateway {
     joinMode?: "all" | "any";
     resolveToParents?: boolean;
     includeTrashed?: boolean;
+    filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
   }): Promise<{
@@ -767,6 +768,7 @@ export class ZoteroGateway {
     libraryID: number;
     collectionId?: number;
     limit?: number;
+    offset?: number;
   }): Promise<{ notes: LibraryItemTarget[]; totalCount: number }> {
     return this.noteCapability.listStandaloneNotes(params);
   }
@@ -796,6 +798,7 @@ export class ZoteroGateway {
     filters?: AgentLibraryFilters;
     allowedItemIds?: number[];
     limit?: number;
+    offset?: number;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.searchAllLibraryItems(params);
   }
@@ -806,11 +809,13 @@ export class ZoteroGateway {
     collectionId?: number;
     query: string;
     limit?: number;
-  }): Promise<
-    Array<
+    offset?: number;
+  }): Promise<{
+    notes: Array<
       LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
-    >
-  > {
+    >;
+    totalCount: number;
+  }> {
     return this.noteCapability.searchAllNotes(params);
   }
 
@@ -828,7 +833,8 @@ export class ZoteroGateway {
     libraryID: number;
     query?: string;
     limit?: number;
-  }): Promise<{ name: string; type: number }[]> {
+    offset?: number;
+  }): Promise<{ tags: { name: string; type: number }[]; totalCount: number }> {
     return this.tagCapability.listLibraryTags(params);
   }
 
@@ -1177,6 +1183,7 @@ export class ZoteroGateway {
   async detectDuplicatesInLibrary(params: {
     libraryID: number;
     limit?: number;
+    offset?: number;
   }): Promise<{
     totalGroups: number;
     groups: DuplicateGroup[];

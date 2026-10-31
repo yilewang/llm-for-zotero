@@ -71,11 +71,17 @@ export class TagCapability {
       this.deps.resolveBibliographicItem(item),
   };
 
+  /**
+   * The library's tags in Zotero's name order, paged with `offset`/`limit`.
+   * `totalCount` is every tag that matches `query`, not the page size, so a
+   * capped list can say how much it left out.
+   */
   async listLibraryTags(params: {
     libraryID: number;
     query?: string;
     limit?: number;
-  }): Promise<{ name: string; type: number }[]> {
+    offset?: number;
+  }): Promise<{ tags: { name: string; type: number }[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
       : 0;
@@ -89,7 +95,12 @@ export class TagCapability {
     const normalizedLimit = Number.isFinite(params.limit)
       ? Math.max(1, Math.floor(params.limit as number))
       : undefined;
-    return normalizedLimit ? tags.slice(0, normalizedLimit) : tags;
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
+    const end = normalizedLimit ? offset + normalizedLimit : undefined;
+    return { tags: tags.slice(offset, end), totalCount: tags.length };
   }
 
   async listUntaggedPaperTargets(params: {

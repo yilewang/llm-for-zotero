@@ -71,9 +71,13 @@ export type RelatedPaperResult = LibraryPaperTarget & {
   matchReasons: string[];
 };
 
+/**
+ * One set of items Zotero considers duplicates. `papers` holds every regular
+ * item in the set, with or without an attachment.
+ */
 export type DuplicateGroup = {
   matchReason: string;
-  papers: LibraryPaperTarget[];
+  papers: LibraryItemTarget[];
 };
 
 /**
@@ -462,6 +466,13 @@ export class ItemCapability {
    * - **Never omit the library.** A `Zotero.Search` with no `libraryID`
    *   searches *every* library, including group libraries the user did not ask
    *   about.
+   *
+   * The simple `filters` (collection, unfiled, item type, author, tag, year)
+   * narrow the result by intersection with their own search, never by adding
+   * clauses to the condition search: a `fulltextContent` clause matches the
+   * child PDF while `collectionID` matches the parent paper, so one
+   * joinMode-all search would match nothing. `hasPdf` is not a search clause
+   * and is refused rather than ignored.
    */
   async searchItemsByConditions(params: {
     libraryID: number;
@@ -469,6 +480,7 @@ export class ItemCapability {
     joinMode?: "all" | "any";
     resolveToParents?: boolean;
     includeTrashed?: boolean;
+    filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
   }): Promise<{
@@ -494,6 +506,22 @@ export class ItemCapability {
         .join("; ");
       throw new Error(`Invalid search conditions: ${detail}`);
     }
+    const filters = params.filters || {};
+    if (filters.hasPdf !== undefined) {
+      throw new Error(
+        "filters.hasPdf cannot be combined with search conditions, because it is applied outside Zotero's search engine.",
+      );
+    }
+    const narrowsByFilters = Boolean(
+      filters.collectionId ||
+      filters.unfiled ||
+      filters.itemType ||
+      filters.author ||
+      filters.tag ||
+      filters.yearFrom != null ||
+      filters.yearTo != null,
+    );
+    const narrowsByYear = filters.yearFrom != null || filters.yearTo != null;
 
     const search = new Zotero.Search({ libraryID });
     for (const step of planSearchConditions(params)) {
@@ -514,8 +542,11 @@ export class ItemCapability {
       if (!item) continue;
       let targetId = Number(id);
       if (params.resolveToParents) {
-        const parentID = (item as { parentID?: number | false }).parentID;
-        if (parentID) targetId = Number(parentID);
+        // Walk to the top-level item: an annotation's parent is its PDF, and
+        // the paper is one level further up. Stopping after one step
+        // returned the attachment, which neither deduped with the paper's own
+        // match nor passed a collection or tag filter.
+        targetId = topLevelItemId(item);
       } else if (
         (item as { parentID?: number | false }).parentID ||
         item.isAnnotation?.()
@@ -525,6 +556,36 @@ export class ItemCapability {
       if (seen.has(targetId)) continue;
       seen.add(targetId);
       resolved.push(targetId);
+    }
+
+    let matching = resolved;
+    if (narrowsByFilters) {
+      const filterSearch = buildAgentLibrarySearch(libraryID, {
+        ...filters,
+        deleted: params.includeTrashed === true,
+      });
+      const allowed = new Set<number>();
+      for (const id of (await filterSearch.search()) as number[]) {
+        const item = Zotero.Items.get(id);
+        // Top-level rows only, as the filtered list keeps them.
+        if (!item || item.parentID || item.isAnnotation?.()) continue;
+        allowed.add(Number(id));
+      }
+      matching = matching.filter((id) => allowed.has(id));
+    }
+    // The SQL date clause only narrows; the exact year bound needs the parsed
+    // year, so those targets are built here and reused for the page.
+    const prebuilt = new Map<number, LibraryItemTarget>();
+    if (narrowsByYear) {
+      matching = matching.filter((id) => {
+        const item = this.deps.getItem(id);
+        const target = item ? buildItemTargetFromItem(item) : null;
+        if (!target || !libraryItemTargetMatchesYear(target, filters)) {
+          return false;
+        }
+        prebuilt.set(id, target);
+        return true;
+      });
     }
 
     const offset =
@@ -542,10 +603,15 @@ export class ItemCapability {
     );
     // The window is taken on ids, so enrichment only runs for what is
     // actually returned.
-    const page = resolved.slice(offset, offset + limit);
+    const page = matching.slice(offset, offset + limit);
 
     const items: LibraryItemTarget[] = [];
     for (const itemId of page) {
+      const cached = prebuilt.get(itemId);
+      if (cached) {
+        items.push(cached);
+        continue;
+      }
       const item = this.deps.getItem(itemId);
       if (!item) continue;
       const target = buildItemTargetFromItem(item);
@@ -555,10 +621,10 @@ export class ItemCapability {
     const nextOffset = offset + page.length;
     return {
       items,
-      totalCount: resolved.length,
+      totalCount: matching.length,
       returnedCount: items.length,
       offset,
-      nextOffset: nextOffset < resolved.length ? nextOffset : undefined,
+      nextOffset: nextOffset < matching.length ? nextOffset : undefined,
     };
   }
 
@@ -1168,6 +1234,7 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     allowedItemIds?: number[];
     limit?: number;
+    offset?: number;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
@@ -1176,6 +1243,10 @@ export class ItemCapability {
       return { items: [], totalCount: 0 };
     }
     const normalizedLimit = normalizeResultLimit(params.limit) || 50;
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
     const allowedItemIds = Array.isArray(params.allowedItemIds)
       ? new Set(
           params.allowedItemIds
@@ -1222,10 +1293,7 @@ export class ItemCapability {
         }
       }
       return {
-        items:
-          normalizedLimit && targets.length > normalizedLimit
-            ? targets.slice(0, normalizedLimit)
-            : targets,
+        items: targets.slice(offset, offset + normalizedLimit),
         totalCount: targets.length,
       };
     } catch (error) {
@@ -1331,9 +1399,23 @@ export class ItemCapability {
     };
   }
 
+  /**
+   * Duplicate groups as Zotero's own Duplicate Items view finds them.
+   *
+   * Grouping is `Zotero.Duplicates`: same ISBN (books), same DOI, or same
+   * normalised title with a shared creator and a year within one, never
+   * across a conflicting DOI or ISBN; trashed items are excluded. It runs
+   * over every regular item, so a metadata-only record and its PDF-backed
+   * twin land in one group. The scan this replaced walked PDF-backed papers
+   * only and reported the capped page size as the total.
+   *
+   * Groups are ordered by their lowest item id so `offset` pages stably;
+   * `totalGroups` counts every group, not the page.
+   */
   async detectDuplicatesInLibrary(params: {
     libraryID: number;
     limit?: number;
+    offset?: number;
   }): Promise<{
     totalGroups: number;
     groups: DuplicateGroup[];
@@ -1346,54 +1428,32 @@ export class ItemCapability {
       Number.isFinite(params.limit) && (params.limit as number) > 0
         ? Math.floor(params.limit as number)
         : 20;
-    const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    const byDoi = new Map<string, LibraryPaperTarget[]>();
-    const byNormalizedTitle = new Map<string, LibraryPaperTarget[]>();
-    for (const candidateId of orderedGatewayPaperIds(snapshot)) {
-      const item = this.deps.resolveBibliographicItem(
-        this.deps.getItem(candidateId),
-      );
-      if (!item) continue;
-      const target = buildPaperTargetFromItem(item);
-      if (!target) continue;
-      const doi = normalizeText(
-        String(item.getField?.("DOI") ?? ""),
-      ).toLowerCase();
-      if (doi) {
-        const existing = byDoi.get(doi) || [];
-        existing.push(target);
-        byDoi.set(doi, existing);
-      }
-      const normalizedTitle = normalizeText(target.title)
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (normalizedTitle.length > 10) {
-        const existing = byNormalizedTitle.get(normalizedTitle) || [];
-        existing.push(target);
-        byNormalizedTitle.set(normalizedTitle, existing);
-      }
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
+
+    const idSets = await findZoteroDuplicateSets(libraryID);
+    const groupIds: number[][] = [];
+    for (const ids of idSets) {
+      const members = ids.filter((id) => {
+        const item = this.deps.getItem(id);
+        return Boolean(item?.isRegularItem?.() && !item.deleted);
+      });
+      if (members.length >= 2) groupIds.push(members);
     }
+
     const groups: DuplicateGroup[] = [];
-    const seenItemIds = new Set<number>();
-    for (const [doi, papers] of byDoi) {
-      if (papers.length < 2) continue;
-      if (groups.length >= limit) break;
-      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
-      if (newPapers.length < 2) continue;
-      groups.push({ matchReason: `Same DOI: ${doi}`, papers: newPapers });
-      for (const p of newPapers) seenItemIds.add(p.itemId);
+    for (const ids of groupIds.slice(offset, offset + limit)) {
+      const members = ids
+        .map((id) => this.deps.getItem(id))
+        .filter((item): item is Zotero.Item => Boolean(item));
+      const papers = members
+        .map((item) => buildItemTargetFromItem(item))
+        .filter((target): target is LibraryItemTarget => Boolean(target));
+      groups.push({ matchReason: duplicateMatchReason(members), papers });
     }
-    for (const [, papers] of byNormalizedTitle) {
-      if (papers.length < 2) continue;
-      if (groups.length >= limit) break;
-      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
-      if (newPapers.length < 2) continue;
-      groups.push({ matchReason: "Same title", papers: newPapers });
-      for (const p of newPapers) seenItemIds.add(p.itemId);
-    }
-    return { totalGroups: groups.length, groups };
+    return { totalGroups: groupIds.length, groups };
   }
 
   async updateArticleMetadata(params: {
@@ -1662,4 +1722,122 @@ export class ItemCapability {
       trashedIds,
     };
   }
+}
+
+/**
+ * The id of the top-level item above `item`: the paper for an annotation
+ * (annotation -> PDF -> paper), a note or attachment's parent, or the item
+ * itself when it has no parent. The visited set stops a corrupt parent cycle.
+ */
+function topLevelItemId(item: Zotero.Item): number {
+  let current: Zotero.Item = item;
+  const visited = new Set<number>([Number(current.id)]);
+  for (;;) {
+    const parentID = Number(
+      (current as { parentID?: number | false }).parentID || 0,
+    );
+    if (!parentID || visited.has(parentID)) break;
+    const parent = Zotero.Items.get(parentID) as Zotero.Item | false | null;
+    if (!parent) return parentID;
+    visited.add(parentID);
+    current = parent;
+  }
+  return Number(current.id);
+}
+
+type ZoteroDuplicatesEngine = {
+  getSearchObject(): Promise<{
+    conditions?: Record<
+      string,
+      { condition?: string; operator?: string; value?: unknown }
+    >;
+    search(): Promise<number[]>;
+  }>;
+  getSetItemsByItemID(itemID: number): number[];
+};
+
+/**
+ * Every duplicate set in the library, from Zotero's own engine, each sorted
+ * by item id and the sets ordered by their lowest id.
+ *
+ * `getSearchObject` runs the matching and backs its search with a temporary
+ * table that Zotero's own caller drops when the view closes, so it is
+ * dropped here once the ids are read.
+ */
+async function findZoteroDuplicateSets(libraryID: number): Promise<number[][]> {
+  const Duplicates = (
+    Zotero as unknown as {
+      Duplicates?: new (libraryID: number) => ZoteroDuplicatesEngine;
+    }
+  ).Duplicates;
+  if (typeof Duplicates !== "function") {
+    throw new Error(
+      "This Zotero build does not expose Zotero.Duplicates, so duplicates cannot be detected.",
+    );
+  }
+  const duplicates = new Duplicates(libraryID);
+  const search = await duplicates.getSearchObject();
+  let ids: number[];
+  try {
+    ids = (await search.search()).map(Number);
+  } finally {
+    const tempTable = Object.values(search.conditions || {}).find(
+      (condition) => condition?.condition === "tempTable",
+    )?.value;
+    if (typeof tempTable === "string" && /^\w+$/.test(tempTable)) {
+      try {
+        await Zotero.DB.queryAsync(`DROP TABLE IF EXISTS ${tempTable}`);
+      } catch (error) {
+        appLogger.warn("Could not drop the duplicates temp table", error);
+      }
+    }
+  }
+  const live = new Set(ids);
+  const assigned = new Set<number>();
+  const sets: number[][] = [];
+  for (const id of [...live].sort((a, b) => a - b)) {
+    if (assigned.has(id)) continue;
+    const members = duplicates
+      .getSetItemsByItemID(id)
+      .map(Number)
+      .filter((member) => live.has(member) && !assigned.has(member))
+      .sort((a, b) => a - b);
+    for (const member of members) assigned.add(member);
+    if (members.length >= 2) sets.push(members);
+  }
+  return sets;
+}
+
+/**
+ * Why a set matched, from the fields Zotero's engine compares: a DOI or ISBN
+ * two members share, otherwise the title rule.
+ */
+function duplicateMatchReason(items: Zotero.Item[]): string {
+  const shared = (read: (item: Zotero.Item) => string): string | undefined => {
+    const seen = new Set<string>();
+    for (const item of items) {
+      const value = read(item);
+      if (!value) continue;
+      if (seen.has(value)) return value;
+      seen.add(value);
+    }
+    return undefined;
+  };
+  const field = (item: Zotero.Item, name: string): string => {
+    try {
+      return normalizeText(String(item.getField?.(name) ?? ""));
+    } catch {
+      // getField throws for a field the item type does not have.
+      return "";
+    }
+  };
+  const doi = shared((item) => field(item, "DOI").toLowerCase());
+  if (doi) return `Same DOI: ${doi}`;
+  const isbn = shared((item) =>
+    field(item, "ISBN")
+      .replace(/[^0-9X]/gi, "")
+      .toUpperCase(),
+  );
+  if (isbn) return `Same ISBN: ${isbn}`;
+  return "Same title";
 }

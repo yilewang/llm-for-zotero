@@ -1014,27 +1014,149 @@ describe("item capability", function () {
       );
     });
 
-    it("groups duplicates by DOI first and then by normalised title", async function () {
-      makePaper({ id: 1, title: "A study of things", doi: "10.1/abc" });
-      makePaper({ id: 2, title: "Something else entirely", doi: "10.1/ABC" });
-      makePaper({ id: 3, title: "A different long title here" });
-      makePaper({ id: 4, title: "A different long title here!" });
-      installZotero();
+    /**
+     * Zotero's own duplicate engine, faked at its public surface: the search
+     * whose results are every duplicate id (backed by a temp table the
+     * caller must drop) and the set lookup by item id.
+     */
+    function installDuplicates(sets: number[][], trashed: number[] = []) {
+      const dropped: string[] = [];
+      const constructedFor: number[] = [];
+      class FakeDuplicates {
+        constructor(readonly libraryID: number) {
+          constructedFor.push(libraryID);
+        }
+        async getSearchObject() {
+          return {
+            libraryID: this.libraryID,
+            conditions: {
+              0: {
+                condition: "tempTable",
+                operator: "is",
+                value: "tmpDuplicates_fake",
+              },
+            },
+            // A real search excludes trashed items.
+            search: async () =>
+              sets.flat().filter((id) => !trashed.includes(id)),
+          };
+        }
+        getSetItemsByItemID(itemID: number) {
+          return sets.find((set) => set.includes(itemID)) || [itemID];
+        }
+      }
+      installZotero({
+        Duplicates: FakeDuplicates,
+        DB: {
+          queryAsync: async (sql: string) => {
+            dropped.push(sql);
+          },
+        },
+      });
+      return { dropped, constructedFor };
+    }
+
+    it("groups a metadata-only item with its PDF twin", async function () {
+      // The audit case: the old scan walked PDF-backed papers only, so the
+      // DOI-only record never met its twin.
+      makeItem({
+        id: 1,
+        title: "Grid cells",
+        fields: { title: "Grid cells", DOI: "10.1/ABC" },
+      });
+      makePaper({ id: 2, title: "Grid cells", doi: "10.1/abc" });
+      const { dropped, constructedFor } = installDuplicates([[1, 2]]);
 
       const found = await capability().detectDuplicatesInLibrary({
         libraryID: 1,
       });
 
-      assert.equal(found.totalGroups, 2);
+      assert.deepEqual(constructedFor, [1]);
+      assert.equal(found.totalGroups, 1);
       assert.equal(found.groups[0].matchReason, "Same DOI: 10.1/abc");
       assert.deepEqual(
         found.groups[0].papers.map((paper) => paper.itemId),
         [1, 2],
       );
-      assert.equal(found.groups[1].matchReason, "Same title");
       assert.deepEqual(
-        found.groups[1].papers.map((paper) => paper.itemId),
+        found.groups[0].papers.map((paper) => paper.attachments.length),
+        [0, 1],
+      );
+      assert.equal(found.groups[0].papers[0].itemType, "journalArticle");
+      // The temp table Zotero creates for the search is dropped afterwards.
+      assert.deepEqual(dropped, ["DROP TABLE IF EXISTS tmpDuplicates_fake"]);
+    });
+
+    it("names a title match when the group shares no DOI", async function () {
+      makeItem({ id: 3, title: "A different long title here" });
+      makeItem({ id: 4, title: "A different long title here!" });
+      installDuplicates([[4, 3]]);
+
+      const found = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+      });
+
+      assert.equal(found.groups[0].matchReason, "Same title");
+      assert.deepEqual(
+        found.groups[0].papers.map((paper) => paper.itemId),
         [3, 4],
+      );
+    });
+
+    it("reports the true group total and pages the rest with offset", async function () {
+      const sets: number[][] = [];
+      for (let index = 0; index < 7; index += 1) {
+        const a = 10 + index * 2;
+        makeItem({ id: a, title: `Twin ${index}` });
+        makeItem({ id: a + 1, title: `Twin ${index}` });
+        sets.push([a + 1, a]);
+      }
+      installDuplicates(sets);
+
+      const first = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+        limit: 3,
+      });
+      const last = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+        limit: 3,
+        offset: 6,
+      });
+
+      assert.equal(first.totalGroups, 7, "the total ignores the page limit");
+      assert.lengthOf(first.groups, 3);
+      assert.deepEqual(
+        first.groups.map((group) => group.papers[0].itemId),
+        [10, 12, 14],
+      );
+      assert.equal(last.totalGroups, 7);
+      assert.deepEqual(
+        last.groups.map((group) => group.papers.map((paper) => paper.itemId)),
+        [[22, 23]],
+      );
+    });
+
+    it("drops a group left with one live member", async function () {
+      makeItem({ id: 1, title: "Kept" });
+      makeItem({ id: 2, title: "Kept" });
+      makeItem({ id: 3, title: "Trashed twin" });
+      makeItem({ id: 4, title: "Trashed twin", deleted: true });
+      installDuplicates(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        [4],
+      );
+
+      const found = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+      });
+
+      assert.equal(found.totalGroups, 1);
+      assert.deepEqual(
+        found.groups[0].papers.map((paper) => paper.itemId),
+        [1, 2],
       );
     });
   });

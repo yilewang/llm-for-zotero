@@ -445,6 +445,7 @@ export class LibraryQueryService {
     text: string;
     filters?: QueryLibraryFilters;
     limit?: number;
+    offset?: number;
     include?: QueryLibraryInclude[];
     excludeContextItemId?: number | null;
     allItemTypes?: boolean;
@@ -458,6 +459,7 @@ export class LibraryQueryService {
       query: params.text,
       filters: params.filters,
       limit: params.limit,
+      offset: params.offset,
     });
     const enriched = results.items.map((item) =>
       enrichItemTarget(item, this.zoteroGateway, params.include),
@@ -469,6 +471,7 @@ export class LibraryQueryService {
     libraryID: number;
     collectionId?: number;
     limit?: number;
+    offset?: number;
   }): Promise<{
     results: QueryLibraryItemResult[];
     totalCount: number;
@@ -478,6 +481,7 @@ export class LibraryQueryService {
       libraryID: params.libraryID,
       collectionId: params.collectionId,
       limit: params.limit,
+      offset: params.offset,
     });
     const enriched = result.notes.map(
       (note) =>
@@ -499,6 +503,7 @@ export class LibraryQueryService {
     collectionId?: number;
     text: string;
     limit?: number;
+    offset?: number;
   }): Promise<{
     results: Array<
       QueryLibraryItemResult & {
@@ -506,15 +511,21 @@ export class LibraryQueryService {
         parentItemTitle?: string;
       }
     >;
+    totalCount: number;
     warnings: string[];
   }> {
-    const results = await this.zoteroGateway.searchAllNotes({
+    const result = await this.zoteroGateway.searchAllNotes({
       libraryID: params.libraryID,
       collectionId: params.collectionId,
       query: params.text,
       limit: params.limit,
+      offset: params.offset,
     });
-    return { results, warnings: [] };
+    return {
+      results: result.notes,
+      totalCount: result.totalCount,
+      warnings: [],
+    };
   }
 
   async findRelatedItems(params: {
@@ -557,6 +568,7 @@ export class LibraryQueryService {
   async detectDuplicates(params: {
     libraryID: number;
     limit?: number;
+    offset?: number;
     include?: QueryLibraryInclude[];
   }): Promise<{
     totalGroups: number;
@@ -575,6 +587,7 @@ export class LibraryQueryService {
     const result = await this.zoteroGateway.detectDuplicatesInLibrary({
       libraryID: params.libraryID,
       limit: params.limit,
+      offset: params.offset,
     });
     return {
       totalGroups: result.totalGroups,
@@ -600,12 +613,18 @@ export class LibraryQueryService {
     libraryID: number;
     query?: string;
     limit?: number;
+    offset?: number;
   }): Promise<{
     results: { name: string; type: number }[];
+    totalCount: number;
     warnings: string[];
   }> {
-    const results = await this.zoteroGateway.listLibraryTags(params);
-    return { results, warnings: [] };
+    const result = await this.zoteroGateway.listLibraryTags(params);
+    return {
+      results: result.tags,
+      totalCount: result.totalCount,
+      warnings: [],
+    };
   }
 
   async browseCollectionTree(params: { libraryID: number }): Promise<{

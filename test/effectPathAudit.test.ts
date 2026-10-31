@@ -421,7 +421,7 @@ function auditGateway(live: Record<string, unknown> = {}) {
     listCollectionItemTargets: async () => ({ items: [] }),
     listCollectionPaperTargets: async () => ({ papers: [] }),
     getCollectionNativeState: () => null,
-    listLibraryTags: () => [],
+    listLibraryTags: () => ({ tags: [], totalCount: 0 }),
     getSavedSearch: () => null,
     listSavedSearches: () => [],
     ...live,
