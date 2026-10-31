@@ -24,6 +24,7 @@ import {
   digestSourceLabel,
   type HostPaperDigest,
 } from "../src/agent/digests/paperDigestWorker";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
 import { PassageCitationCollector } from "../src/agent/context/passageCitationCollector";
 import { selectUsedQuoteCitations } from "../src/services/quotes/quoteCitations";
 import type { QuoteCitation } from "../src/shared/types";
@@ -1840,6 +1841,128 @@ describe("a digest part reads what its read scope names", function () {
       { itemId: 5, scope: "abstract" },
       { itemId: 7, scope: "abstract" },
     ]);
+  });
+
+  it("names a paper with none of the named sections, limits the read, and reads nothing else for it", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("unused")),
+        readText: async (paper, _maxChars, scope) => {
+          reads.push({ itemId: paper.itemId, scope: scope?.source });
+          return {
+            backend: "pdf",
+            text: "",
+            totalCharacters: 0,
+            covered: [],
+            unmatched: ["abstract", "results"],
+          };
+        },
+      },
+      [7],
+    );
+    const outcome = await runCall(harness, "call-sections", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["7"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.equal(
+      answer.digestFailures[0]?.reason,
+      "None of the named sections were found",
+    );
+    assert.include(answer.digestNote, "Nothing read for Drift C (item:7");
+    assert.include(answer.digestNote, "abstract, results");
+    assert.include(answer.digestNote, SECTIONS_NOT_FOUND_RULE);
+    assert.deepEqual(reads, [{ itemId: 7, scope: "sections" }]);
+  });
+
+  it("states the not-found rule once for several papers that lack a named section, and not twice beside a paper with none", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("A reading of the results.")),
+        readText: async (paper, _maxChars, scope) => {
+          reads.push({ itemId: paper.itemId, scope: scope?.source });
+          if (paper.itemId === 7)
+            return {
+              backend: "pdf",
+              text: "",
+              totalCharacters: 0,
+              covered: [],
+              unmatched: ["abstract", "results"],
+            };
+          return {
+            backend: "mineru",
+            text: TEXT,
+            totalCharacters: TEXT.length,
+            covered: ["Abstract"],
+            unmatched: ["results"],
+            bounds: "exact",
+            textSource: "MinerU sections",
+          };
+        },
+      },
+      [5, 6, 7],
+    );
+    const outcome = await runCall(harness, "call-partial", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["5", "6", "7"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    const countOf = (text: string) =>
+      text.split(SECTIONS_NOT_FOUND_RULE).length - 1;
+    // Each partial-match paper keeps its short line; the rule is not in it.
+    assert.equal(
+      (answer.digests.match(/not in this paper: results/g) || []).length,
+      2,
+    );
+    assert.equal(countOf(answer.digests), 0);
+    // A paper with none of the names and two with some: one rule.
+    assert.equal(countOf(answer.digestNote), 1);
+    // Two partial-match papers alone: one rule.
+    const partialOnly = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("A reading of the results.")),
+        readText: async () => ({
+          backend: "mineru",
+          text: TEXT,
+          totalCharacters: TEXT.length,
+          covered: ["Abstract"],
+          unmatched: ["results"],
+          bounds: "exact",
+          textSource: "MinerU sections",
+        }),
+      },
+      [5, 6],
+    );
+    const second = await runCall(partialOnly, "call-partial-only", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["5", "6"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const only = second.toolResult.content as Record<string, any>;
+    assert.equal(countOf(only.digestNote || ""), 1);
+    assert.equal(countOf(only.digests), 0);
   });
 
   it("reads a paper an override names for its own scope", async function () {

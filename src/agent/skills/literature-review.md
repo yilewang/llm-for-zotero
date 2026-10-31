@@ -1,7 +1,7 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 18
+version: 19
 contexts: paper-set,library-corpus
 activation: auto
 ---
@@ -21,7 +21,7 @@ A review is an argument about a body of work, not a catalog of it: a faithful ac
 2. **Read.** When the tools hand the papers to the host, write from its results and skip the first read below; otherwise read the scope's papers with `paper_read`, passing them as `targets` and grouping related papers in one call.
    Read only what the user asked to read: when they limited it (only the abstracts, named sections), read just that, for example with `paper_read` `sections` and no query.
    Each result reports which papers came back complete, sampled, abstract only, or metadata only.
-   When papers come back sampled, read fewer at a time or read their missing sections rather than moving on.
+   When papers come back sampled, read fewer at a time or read the sections they did not return.
    As you go, note each paper's main claims, methods, and evidence, and its role in the argument: central, supporting, contradictory, theoretical, methodological, or context.
    When a paper's own text shows it reviews or pools other studies, cite it for the field's overview or a pooled result, and cite the primary study for a specific finding when you have it.
    Use `paper_read({ mode:'targeted', query:'...' })` only to check a decisive claim, test an apparent contradiction against both papers, or find a precise location.

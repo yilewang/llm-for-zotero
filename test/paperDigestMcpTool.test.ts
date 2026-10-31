@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
@@ -308,6 +309,92 @@ describe("paper_digest MCP tool", function () {
     assert.lengthOf(next.papers, 16);
     assert.notProperty(next, "pending");
     assert.lengthOf(reader.calls, 16);
+  });
+
+  it("names a paper with none of the named sections and limits the read to them", async function () {
+    const reader = fakeReader(() => {
+      throw new Error("no model may read a paper with nothing in scope");
+    });
+    const tool = createPaperDigestTool(
+      deps(reader, memoryCache(), {
+        readText: async () => ({
+          backend: "pdf",
+          text: "",
+          totalCharacters: 0,
+          covered: [],
+          unmatched: ["abstract", "results"],
+        }),
+      }),
+    );
+    const result = await call(
+      tool,
+      {
+        targets: ["item:1"],
+        instruction: "Summarize the findings",
+        read: { source: "sections", sections: ["abstract", "results"] },
+      },
+      context("run-no-sections"),
+    );
+    assert.equal(reader.calls, 0);
+    assert.include(result.note || "", "Nothing read for");
+    assert.include(result.note || "", SECTIONS_NOT_FOUND_RULE);
+  });
+
+  it("limits the read to the named sections once for papers that lack one", async function () {
+    const reader = fakeReader();
+    const tool = createPaperDigestTool(
+      deps(reader, memoryCache(), {
+        readText: async (paper) =>
+          paper.itemId === 3
+            ? {
+                backend: "pdf",
+                text: "",
+                totalCharacters: 0,
+                covered: [],
+                unmatched: ["abstract", "results"],
+              }
+            : {
+                backend: "pdf",
+                text: TEXT,
+                totalCharacters: TEXT.length,
+                covered: ["Abstract"],
+                unmatched: ["results"],
+              },
+      }),
+    );
+    const count = (text: string) =>
+      text.split(SECTIONS_NOT_FOUND_RULE).length - 1;
+    const result = await call(
+      tool,
+      {
+        targets: ["item:1", "item:2", "item:3"],
+        instruction: "Summarize the findings",
+        read: { source: "sections", sections: ["abstract", "results"] },
+      },
+      context("run-partial-sections"),
+    );
+    const digested = result.papers.filter((row) => row.status === "digested");
+    assert.lengthOf(digested, 2);
+    for (const row of digested)
+      assert.deepEqual(
+        (row as { source: { unmatched?: string[] } }).source.unmatched,
+        ["results"],
+      );
+    // Two partial matches and one paper with none: one rule in the note.
+    assert.equal(count(result.note || ""), 1);
+    assert.equal(count(JSON.stringify(result.papers)), 0);
+    // Two partial matches alone: one rule.
+    const partialOnly = await call(
+      tool,
+      {
+        targets: ["item:1", "item:2"],
+        instruction: "Summarize the findings, again",
+        read: { source: "sections", sections: ["abstract", "results"] },
+      },
+      context("run-partial-only"),
+    );
+    assert.equal(count(partialOnly.note || ""), 1);
+    assert.notInclude(partialOnly.note || "", "Nothing read for");
   });
 
   it("reports a failed paper once: a repeat call flags it as already reported", async function () {

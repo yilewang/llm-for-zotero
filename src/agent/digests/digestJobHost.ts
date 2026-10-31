@@ -79,6 +79,7 @@ import {
 import { readPaperScopeText } from "../tools/read/paperRead";
 import { warmPageTextCacheForAttachment } from "../../services/pdf/livePdfSelectionLocator";
 import {
+  SECTIONS_NOT_FOUND_RULE,
   digestReadCapabilities,
   isFullReadScope,
   type ReadScope,
@@ -87,6 +88,7 @@ import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import {
   DIGEST_FAILURE_REASONS,
   DIGEST_SCOPE_EMPTY_REASONS,
+  digestMissesNamedSections,
   digestSourceLabel,
   renderHostPaperDigests,
   runPaperDigestJob,
@@ -994,6 +996,14 @@ export async function runDigestParts(params: {
           ", ",
         )}: the paper has none of what the part's read scope names, and no other text was read in its place. Name ${outOfScope.length === 1 ? "it" : "them"} as not read for that scope.`,
     );
+  // The rule once per result, whether a paper has some or none of the names.
+  if (
+    digests.some((digest) => digestMissesNamedSections(digest.source)) ||
+    outOfScope.some(
+      (failure) => failure.reason === DIGEST_FAILURE_REASONS.noMatchingSections,
+    )
+  )
+    notes.push(SECTIONS_NOT_FOUND_RULE);
   const retriable = finalFailures.filter(
     (failure) =>
       failure.reason !== DIGEST_FAILURE_REASONS.noText &&

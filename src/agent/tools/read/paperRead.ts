@@ -95,6 +95,7 @@ import { resolveModelInputTokenLimit } from "../../../utils/modelInputCap";
 import { resolveAdaptiveReadingBudget } from "../../context/readingBudget";
 import {
   READ_SCOPE_TEXT_SOURCES,
+  SECTIONS_NOT_FOUND_RULE,
   isFullReadScope,
   type ReadScope,
   type ScopedPaperText,
@@ -960,6 +961,7 @@ async function readWholeSections(params: {
     params.targets,
     params.zoteroGateway,
   );
+  let anyNotFound = false;
   for (const paperContext of targets) {
     const citationLabel = formatPaperCitationLabel(paperContext);
     const sourceLabel = formatPaperSourceLabel(paperContext);
@@ -1088,12 +1090,19 @@ async function readWholeSections(params: {
       warnings.push(
         `No readable text for ${citationLabel}: ${unreadableNames.join(", ")}.`,
       );
-    if (row.unmatched.length && row.sections.length)
-      warnings.push(
-        `Not found in ${citationLabel}: ${row.unmatched.join(", ")}.`,
-      );
+    // A name the paper has no section for; a section found without
+    // readable text is reported above, not here.
+    const notFound = row.unmatched.filter(
+      (name) => !unreadableNames.includes(name),
+    );
+    if (notFound.length) {
+      warnings.push(`Not found in ${citationLabel}: ${notFound.join(", ")}.`);
+      anyNotFound = true;
+    }
     papers.push(row);
   }
+  // The rule once per result, not once per paper.
+  if (anyNotFound) warnings.push(SECTIONS_NOT_FOUND_RULE);
   return {
     mode: "targeted",
     read: "whole_sections",

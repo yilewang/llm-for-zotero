@@ -182,8 +182,8 @@ describe("literature-review skill", function () {
     assert.include(text, "same `taskId` and no description");
   });
 
-  it("ships as version 18", function () {
-    assert.equal(skill.version, 18);
+  it("ships as version 19", function () {
+    assert.equal(skill.version, 19);
   });
 
   it("reads and cites a chosen outside paper by paperId, an imported one by item key", function () {

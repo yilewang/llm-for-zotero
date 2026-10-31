@@ -8,6 +8,7 @@ import { buildChunkMetadata } from "../src/services/paperContent/pdfContext";
 import type { PdfContext } from "../src/services/paperContent/types";
 import type { QuoteCitation } from "../src/shared/types";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
 
 /**
  * paper_read with `sections` and no query reads the whole named sections
@@ -115,6 +116,7 @@ type SectionRow = {
 type PaperRow = {
   paperContext: { itemId: number };
   status: string;
+  citationLabel: string;
   covered: string[];
   unmatched: string[];
   bounds?: string;
@@ -287,6 +289,8 @@ describe("paper_read whole sections", function () {
       (entry) => entry.id === row.passages[0].quoteCitationId,
     );
     assert.equal(abstractCitation?.sourceChunkKind, "abstract");
+    // Every named section was found: no not-found sentence.
+    assert.notInclude(JSON.stringify(output), SECTIONS_NOT_FOUND_RULE);
   });
 
   it("reads plain PDF sections by chunk kind, flagged approximate, and reports a name it cannot find", async function () {
@@ -310,6 +314,16 @@ describe("paper_read whole sections", function () {
       "acknowledgements",
       "the unmatched name is reported",
     );
+    // A partial match names only the missing section, and limits the read.
+    assert.include(
+      output.warnings || [],
+      `Not found in ${row.citationLabel}: acknowledgements.`,
+    );
+    assert.equal(
+      (output.warnings || []).filter((w) => w === SECTIONS_NOT_FOUND_RULE)
+        .length,
+      1,
+    );
   });
 
   it("names a requested section that has no readable text and does not call the paper complete", async function () {
@@ -326,6 +340,72 @@ describe("paper_read whole sections", function () {
     assert.deepEqual(row.unmatched, ["results"]);
     assert.notEqual(row.status, "complete");
     assert.include((output.warnings || []).join("\n"), "results");
+  });
+
+  it("does not call a section without readable text not found", async function () {
+    const tool = makeTool({
+      abstractNotes: { 40: "The record's own abstract of a scanned paper." },
+    });
+    const { output } = await read(tool, {
+      mode: "targeted",
+      sections: ["abstract", "results"],
+      targets: [{ itemId: 40 }],
+    });
+    const row = rowOf(output, 40);
+    const warnings = output.warnings || [];
+    // The paper has this section: it is "no readable text", never "not found".
+    assert.deepEqual(warnings, ["No readable text for Ito, 2022: results."]);
+    assert.notInclude(warnings, SECTIONS_NOT_FOUND_RULE);
+  });
+
+  it("states the not-found rule once for several papers, and once for a partial and a no-match paper together", async function () {
+    const tool = makeTool({
+      abstractNotes: {
+        10: "The Zotero record's own abstract says that drift leaves decoding intact.",
+      },
+    });
+    const ruleCount = (output: Output) =>
+      (output.warnings || []).filter((w) => w === SECTIONS_NOT_FOUND_RULE)
+        .length;
+    const notFoundLines = (output: Output) =>
+      (output.warnings || []).filter((w) => w.startsWith("Not found in"));
+    // Two partial-match papers.
+    const partial = (
+      await read(tool, {
+        mode: "targeted",
+        sections: ["results", "acknowledgements"],
+        targets: [{ itemId: 10 }, { itemId: 20 }],
+      })
+    ).output;
+    assert.equal(rowOf(partial, 10).status, "complete");
+    assert.deepEqual(rowOf(partial, 10).unmatched, ["acknowledgements"]);
+    assert.deepEqual(rowOf(partial, 20).unmatched, ["acknowledgements"]);
+    assert.lengthOf(notFoundLines(partial), 2);
+    assert.equal(ruleCount(partial), 1);
+    for (const line of notFoundLines(partial))
+      assert.notInclude(line, SECTIONS_NOT_FOUND_RULE);
+    // One partial-match paper and one with none of the names.
+    const mixed = (
+      await read(tool, {
+        mode: "targeted",
+        sections: ["results", "acknowledgements"],
+        targets: [{ itemId: 20 }, { itemId: 30 }],
+      })
+    ).output;
+    assert.equal(rowOf(mixed, 20).covered.length, 1);
+    assert.equal(rowOf(mixed, 30).status, "no_matching_sections");
+    assert.lengthOf(notFoundLines(mixed), 2);
+    assert.equal(ruleCount(mixed), 1);
+    assert.include(mixed.note || "", "Nothing read for");
+    // Every name found: no rule.
+    const found = (
+      await read(tool, {
+        mode: "targeted",
+        sections: ["results"],
+        targets: [{ itemId: 10 }, { itemId: 20 }],
+      })
+    ).output;
+    assert.equal(ruleCount(found), 0);
   });
 
   it("caps an explicit maxChars at the adaptive reading budget", async function () {
@@ -372,6 +452,16 @@ describe("paper_read whole sections", function () {
     assert.deepEqual(none.sections, []);
     assert.include(output.note || "", "Nothing read for");
     assert.include(output.note || "", "Park");
+    // The paper is named with what was not found, and is not read another way.
+    assert.include(
+      output.warnings || [],
+      `Not found in ${none.citationLabel}: results.`,
+    );
+    assert.equal(
+      (output.warnings || []).filter((w) => w === SECTIONS_NOT_FOUND_RULE)
+        .length,
+      1,
+    );
     assert.notInclude(
       JSON.stringify(output),
       "Representational drift was measured",

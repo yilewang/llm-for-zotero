@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { DatabaseSync } from "node:sqlite";
 import {
+  SECTIONS_NOT_FOUND_RULE,
   digestReadCapabilities,
   parseReadScope,
   type ReadScope,
@@ -174,6 +175,37 @@ describe("digest worker read scope", function () {
       renderHostPaperDigests([digest], []),
       "text: sections results only; read Results (MinerU sections)",
     );
+    // Every named section was found: no not-found sentence.
+    assert.notInclude(
+      renderHostPaperDigests([digest], []),
+      SECTIONS_NOT_FOUND_RULE,
+    );
+  });
+
+  it("names a section a partial match did not find, in a short line without the rule", async function () {
+    const run = job({
+      scope: scope({ source: "sections", sections: ["abstract", "results"] }),
+      readText: async (itemId) => ({
+        itemId,
+        contextItemId: 101,
+        title: "Drift in place cells",
+        backend: "mineru",
+        text: PAPER,
+        totalCharacters: PAPER.length,
+        covered: ["Abstract"],
+        unmatched: ["results"],
+        bounds: "exact",
+        textSource: "MinerU sections",
+      }),
+    });
+    const result = await runPaperDigestJob(run.params);
+    const digest = result.digests[0];
+    assert.deepEqual(digest.source.unmatched, ["results"]);
+    const rendered = renderHostPaperDigests([digest], []);
+    // The paper keeps its short line; the rule is the result note's, once.
+    assert.include(rendered, "not in this paper: results");
+    assert.notInclude(rendered, SECTIONS_NOT_FOUND_RULE);
+    assert.notInclude(rendered, "abstract, results.");
   });
 
   it("never answers a scoped request from a full-text cache entry over the same text", async function () {

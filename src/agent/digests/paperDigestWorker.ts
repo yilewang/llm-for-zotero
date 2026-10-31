@@ -924,6 +924,13 @@ function groupedNumber(value: number): string {
   );
 }
 
+/** A sections read that left a named section out because the paper has none. */
+export function digestMissesNamedSections(
+  source: HostPaperDigest["source"],
+): boolean {
+  return source.scope?.source === "sections" && !!source.unmatched?.length;
+}
+
 /** How much of the paper's text the worker read. */
 function textCoverage(source: HostPaperDigest["source"]): string {
   if (!isFullReadScope(source.scope)) {

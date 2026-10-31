@@ -60,6 +60,7 @@ import {
   DIGEST_FAILURE_REASONS,
   DIGEST_SCOPE_EMPTY_REASONS,
   DIGEST_TEXT_MAX_CHARS,
+  digestMissesNamedSections,
   digestSourceLabel,
   runPaperDigestJob,
   withoutDigestQuoteCitations,
@@ -70,6 +71,7 @@ import {
 import {
   READ_SCOPE_JSON_SCHEMA,
   READ_SCOPE_OVERRIDES_JSON_SCHEMA,
+  SECTIONS_NOT_FOUND_RULE,
   isFullReadScope,
   parseReadScope,
   readScopeKey,
@@ -638,6 +640,16 @@ export async function executePaperDigest(
       } as not read for that scope.`,
     );
   }
+  // The rule once per result, whether a paper has some or none of the names.
+  if (
+    papers.some(
+      (row) =>
+        (row.status === "digested" && digestMissesNamedSections(row.source)) ||
+        (row.status === "failed" &&
+          row.reason === DIGEST_FAILURE_REASONS.noMatchingSections),
+    )
+  )
+    notes.push(SECTIONS_NOT_FOUND_RULE);
   const finalFailures = papers.filter(
     (row) =>
       row.status === "failed" &&

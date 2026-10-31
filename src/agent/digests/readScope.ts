@@ -100,6 +100,16 @@ export const READ_SCOPE_TEXT_SOURCES = Object.freeze({
   pdfText: "PDF text",
 });
 
+/**
+ * What a sections read tells the model of a named section the paper does
+ * not have: the read stays limited to the names, and the answer names what
+ * was not found (the user's rule, 2026-10-31). A tool result carries it
+ * once, however many papers lack a name; each paper carries only its own
+ * missing names.
+ */
+export const SECTIONS_NOT_FOUND_RULE =
+  "The read was limited to the named sections: do not read the paper another way to find them; say in the answer which part was not found.";
+
 /** A paper's text cut to a scope, with what the cut covered. */
 export type ScopedPaperText = {
   backend: "mineru" | "pdf" | "text";

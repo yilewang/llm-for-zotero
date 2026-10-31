@@ -349,6 +349,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // `name:` line.
     "127dobw",
     "1al1wxd",
+    // v18, whose Read step v19 words as reading the sections a sampled paper
+    // did not return (not sections the paper lacks), as shipped and as the
+    // canonical copy carrying its native `name:` line.
+    "kj0v8e",
+    "evtk2r",
   ],
   "reorganize-library.md": [
     // v1, whose task_update part v2 moves into task_update's guidance
