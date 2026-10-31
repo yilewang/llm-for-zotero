@@ -145,6 +145,13 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // The host's per-paper reader: reads papers with the chat's own model
   // (Codex Responses or the Claude bridge); a read like paper_read.
   "paper_digest",
+  // Formats citations and exports BibTeX through Zotero's own engines; it
+  // changes nothing.
+  "library_cite",
+  // Reads a non-PDF attachment's text. attachFile:true is refused over MCP
+  // (see MCP_REFUSED_TOOL_ARGUMENTS): its "after user review" has no review
+  // here.
+  "read_attachment",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
@@ -161,14 +168,29 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "annotate_pdf",
   "file_io",
   "run_command",
+  // list and syncStatus read; set changes a Zotero preference. The client's
+  // own approval covers the set, like every other write here.
+  "library_settings",
+  // Writes every listed note: there is no per-note checklist over MCP, so the
+  // client's approval covers the whole batch (see MCP_TOOL_DESCRIPTION_NOTES).
+  "note_write_batch",
 ] as const;
 
 /**
- * Registered tools deliberately NOT exposed over MCP, and why.
+ * Registered tools deliberately NOT exposed over MCP, and why: the single
+ * owner of every plugin-only reason.
  *
  * This list exists so a missing tool reads as a decision rather than drift —
  * the registry and these curated arrays are maintained by hand and have
- * silently diverged before.
+ * silently diverged before. test/mcpSurfaceDrift.test.ts derives the expected
+ * list from the registry and fails for a tool that is neither exposed, named
+ * here, nor `localAgentOnly`.
+ *
+ * Not listed here, by design: the tools the registry marks `localAgentOnly`.
+ * `registry.listTools()` never lists them to an external client, and the
+ * spec flag is their one owner. They are web_search and web_read (the MCP
+ * client has its own web tools) and workflow_script (it also needs the
+ * in-plugin `context.invokeRegisteredOperation`, which an MCP call lacks).
  */
 export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
   literature_review:
@@ -218,9 +240,14 @@ const MCP_GUIDANCE_TOOL_NAMES = new Set<string>([
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 /**
  * MCP-only descriptions for tools whose in-plugin description routes through
- * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES).
+ * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES), or
+ * promises a review MCP has no channel for (MCP_REFUSED_TOOL_ARGUMENTS).
  */
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
+  [
+    "read_attachment",
+    "Read a non-PDF attachment's text by target.contextItemId (the Zotero attachment item ID). For PDFs use paper_read.",
+  ],
   [
     "literature_search",
     "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. Outside papers a literature review cites are cited by paperId without importing, unless the user asks to import them (then library_import). An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
@@ -238,6 +265,28 @@ export const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
   [
     "library_import",
     "To import the outside papers a document cites, use kind:'document_citations' with its documentId, not their DOIs; DOIs imported with kind:'identifiers' leave the document citing them as outside papers.",
+  ],
+  [
+    "note_write_batch",
+    "Over MCP every listed note is written: there is no checklist to uncheck notes, so list only the notes you want. Sending the same notes again continues the same batch and writes nothing twice while Zotero stays open; to continue an interrupted batch, pass resumeBatchId alone.",
+  ],
+]);
+/**
+ * Arguments an MCP client may not use, by tool, with the message it gets.
+ * The tool's in-plugin contract assumes a review that MCP has no channel for.
+ * The argument is also removed from the tool's MCP schema.
+ */
+const MCP_REFUSED_TOOL_ARGUMENTS: ReadonlyMap<
+  string,
+  { argument: string; message: string }
+> = new Map([
+  [
+    "read_attachment",
+    {
+      argument: "attachFile",
+      message:
+        "read_attachment attachFile:true is not available over MCP: it sends the whole file to the model after the user reviews it, and an MCP call has no such review. Read the attachment's text with target.contextItemId instead, or use paper_read for a PDF.",
+    },
   ],
 ]);
 const READ_ONLY_TOOL_ANNOTATIONS = {
@@ -1588,7 +1637,7 @@ function handleToolsList(
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
-      const schema = decorateMcpToolSchema(inputSchema);
+      const schema = decorateMcpToolSchema(inputSchema, name);
       return {
         name,
         title: formatToolTitle(name),
@@ -1749,7 +1798,7 @@ function decorateMcpToolDescription(
   mutability: "read" | "write",
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID to use the exact turn-scoped chat library when a scope header is present, or the library currently selected in Zotero for a standalone MCP client. Omit activeItemId and activeContextItemId to use the current turn-scoped chat item when available. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly sources outside the library: workflow:'answer' returns scholarly results for source-cited answers, and workflow:'review' with mode:'metadata' proposes metadata changes for the user to approve. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID to use the exact turn-scoped chat library when a scope header is present, or the library currently selected in Zotero for a standalone MCP client. Omit activeItemId and activeContextItemId to use the current turn-scoped chat item when available. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly sources outside the library: workflow:'answer' returns scholarly results for source-cited answers, and workflow:'review' with mode:'metadata' proposes metadata changes for the user to approve. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
       ? "The calling agent owns approval for zotero_script. Zotero applies its facade, integrity, and recovery checks. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
@@ -1768,7 +1817,7 @@ function decorateMcpToolDescription(
     .join("\n\n");
 }
 
-function decorateMcpToolSchema(inputSchema: object): object {
+function decorateMcpToolSchema(inputSchema: object, toolName: string): object {
   if (
     !inputSchema ||
     typeof inputSchema !== "object" ||
@@ -1777,7 +1826,9 @@ function decorateMcpToolSchema(inputSchema: object): object {
     return inputSchema;
   }
   const record = inputSchema as Record<string, unknown>;
-  const rawProperties = normalizeRecord(record.properties);
+  const rawProperties = { ...normalizeRecord(record.properties) };
+  const refused = MCP_REFUSED_TOOL_ARGUMENTS.get(toolName);
+  if (refused) delete rawProperties[refused.argument];
   return {
     ...record,
     properties: {
@@ -2538,6 +2589,20 @@ async function handleToolsCall(
     completeActivity({ ok: false, error: text });
     return {
       content: [{ type: "text", text }],
+      isError: true,
+    };
+  }
+
+  const refusedArgument = MCP_REFUSED_TOOL_ARGUMENTS.get(name);
+  if (refusedArgument && scopeArgs.toolArgs[refusedArgument.argument]) {
+    completeActivity({ ok: false, error: refusedArgument.message });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: false, error: refusedArgument.message }),
+        },
+      ],
       isError: true,
     };
   }

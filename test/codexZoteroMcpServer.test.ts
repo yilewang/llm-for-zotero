@@ -1632,6 +1632,114 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("leaves the full-read rule to paper_read's own description", async function () {
+    const registry = new AgentToolRegistry();
+    const paperRead = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    registry.register(paperRead);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const response = await invokeMcpEndpoint({
+      token: getOrCreateZoteroMcpBearerToken(),
+      body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    });
+    const description = JSON.parse(response[2]).result.tools.find(
+      (entry: { name: string }) => entry.name === "paper_read",
+    ).description as string;
+    assert.notInclude(description, "only for explicit exhaustive");
+    assert.include(description, "mode:'full' for comprehensive");
+  });
+
+  it("lists library_cite, read_attachment, library_settings and note_write_batch with MCP-specific wording", async function () {
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register(createReadTool("library_cite"));
+    const attachment = createReadTool("read_attachment");
+    attachment.spec.description =
+      "Read a non-PDF attachment by target; attachFile:true sends the whole file after user review.";
+    attachment.spec.inputSchema = {
+      type: "object",
+      properties: {
+        target: { type: "object" },
+        attachFile: { type: "boolean" },
+      },
+    };
+    registry.register(attachment);
+    registry.register(createWriteTool("library_settings"));
+    registry.register(createWriteTool("note_write_batch"));
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const response = await invokeMcpEndpoint({
+      token: getOrCreateZoteroMcpBearerToken(),
+      body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    });
+    const tools = JSON.parse(response[2]).result.tools as Array<{
+      name: string;
+      description: string;
+      inputSchema: { properties: Record<string, unknown> };
+      annotations: { readOnlyHint: boolean };
+    }>;
+    const named = (name: string) => tools.find((entry) => entry.name === name)!;
+    assert.deepEqual(tools.map((entry) => entry.name).sort(), [
+      "library_cite",
+      "library_settings",
+      "note_write_batch",
+      "read_attachment",
+    ]);
+    assert.isTrue(named("library_cite").annotations.readOnlyHint);
+    assert.isFalse(named("note_write_batch").annotations.readOnlyHint);
+    assert.include(
+      named("note_write_batch").description,
+      "every listed note is written",
+    );
+    assert.include(named("note_write_batch").description, "resumeBatchId");
+    assert.notInclude(
+      named("read_attachment").description,
+      "after user review",
+    );
+    assert.notProperty(
+      named("read_attachment").inputSchema.properties,
+      "attachFile",
+    );
+    assert.property(named("read_attachment").inputSchema.properties, "target");
+  });
+
+  it("refuses read_attachment attachFile:true over MCP and still reads inline", async function () {
+    const registry = new AgentToolRegistry();
+    const executed: unknown[] = [];
+    const attachment = createReadTool("read_attachment");
+    attachment.execute = async (input) => {
+      executed.push(input);
+      return { ok: true, text: "inline" };
+    };
+    registry.register(attachment);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const call = (id: number, args: Record<string, unknown>) =>
+      invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "read_attachment", arguments: args },
+        },
+      });
+    const refused = JSON.parse(
+      (await call(1, { target: { contextItemId: 5 }, attachFile: true }))[2],
+    ).result;
+    assert.isTrue(refused.isError);
+    assert.include(refused.content[0].text, "attachFile:true is not available");
+    assert.lengthOf(executed, 0, "the tool must not run");
+    const allowed = JSON.parse(
+      (await call(2, { target: { contextItemId: 5 }, attachFile: false }))[2],
+    ).result;
+    assert.isUndefined(allowed.isError);
+    assert.lengthOf(executed, 1);
+  });
+
   it("does not send MCP clients to literature_review, which MCP does not expose", async function () {
     const registry = new AgentToolRegistry();
     const literature = createLiteratureSearchTool({} as never);
