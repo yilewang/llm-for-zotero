@@ -117,12 +117,15 @@ import {
  * (+96 fixed characters) and its job-page clause (+31), to 43,788, 42,461 and
  * 43,886 (2026-10-31).
  * Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
- * The budgets are now 43,884, 42,557 and 43,982.
+ * Raised on 2026-10-31 by 423 tool characters: W5-A reads (reader_open, library_search's statistics entity, sections field and year, creator and dateModified sort keys, library_read's relatedLinks section).
+ * The budgets are now 44,307, 42,980 and 44,405.
+ * Changed on 2026-10-31 by +201 characters: W5-A review fixes (statistics sections enum +153; reader_open's "when the user asks" and "0-based" +62; library_read's description without relatedLinks -14).
+ * The budgets are now 44,508, 43,181 and 44,606.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_884,
-  paper: 42_557,
-  collection: 43_982,
+  global: 44_508,
+  paper: 43_181,
+  collection: 44_606,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

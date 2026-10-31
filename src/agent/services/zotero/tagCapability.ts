@@ -58,6 +58,45 @@ export type TagCapabilityDeps = {
   ): Zotero.Item | null;
 };
 
+function tagCountKey(name: string, type: number): string {
+  return `${type}\u0000${name}`;
+}
+
+/**
+ * Items per (tag name, tag type), straight from `itemTags`: every non-trashed
+ * top-level item that holds the tag, in the library or in one collection's
+ * direct members. Child notes, child attachments and annotations are left
+ * out, so the count matches what listing the items by that tag returns.
+ */
+async function countTagItems(
+  libraryID: number,
+  collectionId: number,
+): Promise<Map<string, number>> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT T.name AS name, IT.type AS type, COUNT(DISTINCT IT.itemID) AS n
+     FROM itemTags IT
+     JOIN tags T ON T.tagID = IT.tagID
+     JOIN items I ON I.itemID = IT.itemID
+     WHERE I.libraryID = ?
+       AND I.itemID NOT IN (SELECT itemID FROM deletedItems)
+       AND I.itemID NOT IN (SELECT itemID FROM itemAnnotations)
+       AND I.itemID NOT IN (SELECT itemID FROM itemNotes WHERE parentItemID IS NOT NULL)
+       AND I.itemID NOT IN (SELECT itemID FROM itemAttachments WHERE parentItemID IS NOT NULL)` +
+      (collectionId
+        ? `
+       AND I.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)`
+        : "") +
+      `
+     GROUP BY T.name, IT.type`,
+    collectionId ? [libraryID, collectionId] : [libraryID],
+  )) as Array<{ name: string; type: number; n: number }>;
+  const counts = new Map<string, number>();
+  for (const row of rows || []) {
+    counts.set(tagCountKey(row.name, Number(row.type) || 0), Number(row.n));
+  }
+  return counts;
+}
+
 export class TagCapability {
   constructor(private readonly deps: TagCapabilityDeps) {}
 
@@ -75,22 +114,44 @@ export class TagCapability {
    * The library's tags in Zotero's name order, paged with `offset`/`limit`.
    * `totalCount` is every tag that matches `query`, not the page size, so a
    * capped list can say how much it left out.
+   *
+   * With `withCounts` (or a `collectionId`), each row carries `itemCount`: the
+   * non-trashed top-level items that hold that tag (not child notes,
+   * attachments or annotations), as `itemTags` records them. A
+   * `collectionId` limits both the counts and the list to that collection's
+   * direct members, so a tag no member holds is absent.
    */
   async listLibraryTags(params: {
     libraryID: number;
     query?: string;
     limit?: number;
     offset?: number;
-  }): Promise<{ tags: { name: string; type: number }[]; totalCount: number }> {
+    withCounts?: boolean;
+    collectionId?: number;
+  }): Promise<{
+    tags: { name: string; type: number; itemCount?: number }[];
+    totalCount: number;
+  }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
       : 0;
     if (!libraryID) throw new Error("No active library available");
     const raw = await Zotero.Tags.getAll(libraryID);
-    let tags = raw.map((t) => ({ name: t.tag, type: t.type ?? 0 }));
+    let tags: { name: string; type: number; itemCount?: number }[] = raw.map(
+      (t) => ({ name: t.tag, type: t.type ?? 0 }),
+    );
     if (params.query) {
       const q = params.query.toLowerCase();
       tags = tags.filter((t) => t.name.toLowerCase().includes(q));
+    }
+    const collectionId = Number(params.collectionId) || 0;
+    if (params.withCounts || collectionId) {
+      const counts = await countTagItems(libraryID, collectionId);
+      tags = tags.map((tag) => ({
+        ...tag,
+        itemCount: counts.get(tagCountKey(tag.name, tag.type)) || 0,
+      }));
+      if (collectionId) tags = tags.filter((tag) => (tag.itemCount || 0) > 0);
     }
     const normalizedLimit = Number.isFinite(params.limit)
       ? Math.max(1, Math.floor(params.limit as number))

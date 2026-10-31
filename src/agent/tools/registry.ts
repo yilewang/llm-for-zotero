@@ -114,7 +114,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   workflow_script:
     "Compose tool loops or conditions; each call keeps its permission and receipt boundary.",
   library_search:
-    "Find or count Zotero items, collections, notes, tags, searches, or libraries. Look a named paper up by title or author first.",
+    "Find or count Zotero items, collections, notes, tags, searches, libraries, or statistics. Look a named paper up by title or author first.",
   library_read:
     "Read Zotero metadata, notes, annotations, attachments, or memberships.",
   library_retrieve:

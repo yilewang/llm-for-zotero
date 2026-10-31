@@ -17,6 +17,7 @@ export type ReadLibrarySection =
   | "annotations"
   | "attachments"
   | "collections"
+  | "relatedLinks"
   | "content";
 
 export type ReadLibraryResultEntry = {
@@ -27,6 +28,16 @@ export type ReadLibraryResultEntry = {
   annotations?: PaperAnnotationRecord[];
   attachments?: LibraryItemTargetAttachment[];
   collections?: CollectionSummary[];
+  /**
+   * Zotero "Related" links, as the item records them (not a similarity
+   * search). `deleted` marks a linked item that is in the trash.
+   */
+  relatedLinks?: Array<{
+    itemId: number;
+    key: string;
+    title: string;
+    deleted?: true;
+  }>;
 };
 
 export type ReadLibraryServiceResult = {
@@ -143,6 +154,9 @@ export class LibraryReadService {
                 )
                 .filter((entry): entry is CollectionSummary => Boolean(entry))
             : undefined,
+          relatedLinks: sectionSet.has("relatedLinks")
+            ? this.zoteroGateway.getRelatedItemLinks(itemId)
+            : undefined,
         };
         addUnsupportedSectionWarnings(
           itemId,
@@ -152,6 +166,7 @@ export class LibraryReadService {
             "notes",
             "content",
             "collections",
+            "relatedLinks",
           ]),
         );
         continue;
@@ -178,6 +193,9 @@ export class LibraryReadService {
                 )
                 .filter((entry): entry is CollectionSummary => Boolean(entry))
             : undefined,
+          relatedLinks: sectionSet.has("relatedLinks")
+            ? this.zoteroGateway.getRelatedItemLinks(itemId)
+            : undefined,
         };
         addUnsupportedSectionWarnings(
           itemId,
@@ -186,6 +204,7 @@ export class LibraryReadService {
             "metadata",
             "collections",
             "annotations",
+            "relatedLinks",
           ]),
         );
         continue;
@@ -228,6 +247,9 @@ export class LibraryReadService {
                 this.zoteroGateway.getCollectionSummary(collectionId),
               )
               .filter((entry): entry is CollectionSummary => Boolean(entry))
+          : undefined,
+        relatedLinks: sectionSet.has("relatedLinks")
+          ? this.zoteroGateway.getRelatedItemLinks(itemId)
           : undefined,
       };
     }

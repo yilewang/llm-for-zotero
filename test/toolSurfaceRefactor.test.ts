@@ -279,6 +279,7 @@ describe("semantic tool surface", function () {
       "past_chat_read",
       "past_chat_search",
       "read_attachment",
+      "reader_open",
       "record_paper_decisions",
       "request_user_input",
       "run_command",

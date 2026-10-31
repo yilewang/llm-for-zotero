@@ -43,6 +43,7 @@
  */
 
 import { libraryIndexService } from "../../services/libraryIndexService";
+import type { LibrarySortKey, LibrarySortOrder } from "./librarySortKeys";
 import { resolvePaperScope } from "../../services/libraryIndex/paperScope";
 import type { NoteImageImportInput } from "../../services/notes/noteImages";
 import {
@@ -759,14 +760,21 @@ export class ZoteroGateway {
     return this.itemCapability.relateItems(params);
   }
 
+  /** See `ItemCapability.getRelatedItemLinks`. */
+  getRelatedItemLinks(
+    itemId: number,
+  ): ReturnType<ItemCapability["getRelatedItemLinks"]> {
+    return this.itemCapability.getRelatedItemLinks(itemId);
+  }
+
   /** See `ItemCapability.listItemsByFilters`. */
   async listItemsByFilters(params: {
     libraryID: number;
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.listItemsByFilters(params);
   }
@@ -875,7 +883,12 @@ export class ZoteroGateway {
     query?: string;
     limit?: number;
     offset?: number;
-  }): Promise<{ tags: { name: string; type: number }[]; totalCount: number }> {
+    withCounts?: boolean;
+    collectionId?: number;
+  }): Promise<{
+    tags: { name: string; type: number; itemCount?: number }[];
+    totalCount: number;
+  }> {
     return this.tagCapability.listLibraryTags(params);
   }
 

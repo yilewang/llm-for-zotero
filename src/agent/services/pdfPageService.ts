@@ -693,18 +693,64 @@ async function navigateReaderToPage(
   }
 }
 
-async function openReaderForItem(
+/** Where to open a reader: a page, or one annotation by its key. */
+export type ReaderOpenLocation = {
+  pageIndex?: number;
+  pageLabel?: string;
+  annotationKey?: string;
+};
+
+/**
+ * The `Zotero.Reader` location object for a requested location.
+ *
+ * Zotero's reader selects an annotation by `annotationID`, which holds the
+ * annotation item's key. The `annotationKey` field in zotero-types is not read
+ * by the reader (checked in a real reader, W5-A).
+ */
+function toReaderApiLocation(
+  location: ReaderOpenLocation,
+): _ZoteroTypes.Reader.Location | undefined {
+  if (location.annotationKey) {
+    return {
+      annotationID: location.annotationKey,
+    } as unknown as _ZoteroTypes.Reader.Location;
+  }
+  const pageLabel = sanitizeText(location.pageLabel);
+  if (location.pageIndex !== undefined) {
+    return {
+      pageIndex: Math.max(0, Math.floor(location.pageIndex)),
+      ...(pageLabel ? { pageLabel } : {}),
+    };
+  }
+  return pageLabel ? { pageLabel } : undefined;
+}
+
+async function navigateReaderToLocation(
+  reader: any,
+  location: ReaderOpenLocation,
+): Promise<boolean> {
+  if (location.pageIndex !== undefined) {
+    return navigateReaderToPage(reader, location.pageIndex, location.pageLabel);
+  }
+  const apiLocation = toReaderApiLocation(location);
+  if (!apiLocation || typeof reader?.navigate !== "function") return false;
+  try {
+    await reader.navigate(apiLocation);
+    return true;
+  } catch (_error) {
+    void _error;
+    return false;
+  }
+}
+
+export async function openReaderForItem(
   targetItemId: number,
-  location?: { pageIndex: number; pageLabel?: string },
+  location?: ReaderOpenLocation,
 ): Promise<any | null> {
   const activeReader = getActiveReaderForSelectedTab();
   if (getReaderItemId(activeReader) === Math.floor(targetItemId)) {
     if (location) {
-      await navigateReaderToPage(
-        activeReader,
-        location.pageIndex,
-        location.pageLabel,
-      );
+      await navigateReaderToLocation(activeReader, location);
     }
     return activeReader;
   }
@@ -719,22 +765,73 @@ async function openReaderForItem(
   if (typeof readerApi?.open === "function") {
     const opened = await readerApi.open(
       Math.floor(targetItemId),
-      location
-        ? {
-            pageIndex: Math.floor(location.pageIndex),
-            ...(location.pageLabel
-              ? { pageLabel: sanitizeText(location.pageLabel) }
-              : {}),
-          }
-        : undefined,
+      location ? toReaderApiLocation(location) : undefined,
     );
     if (opened) return opened;
   }
   const waited = await waitForReaderForItem(targetItemId);
   if (waited && location) {
-    await navigateReaderToPage(waited, location.pageIndex, location.pageLabel);
+    await navigateReaderToLocation(waited, location);
   }
   return waited;
+}
+
+/**
+ * The PDF's page count from Zotero's PDF worker, which parses the file (the
+ * extraction stops after page 1). Null when the worker cannot tell.
+ */
+export async function getPdfAttachmentPageCount(
+  attachmentId: number,
+): Promise<number | null> {
+  try {
+    const worker = (
+      Zotero as unknown as {
+        PDFWorker?: {
+          getFullText?: (
+            itemID: number,
+            maxPages: number,
+            isPriority?: boolean,
+          ) => Promise<{ totalPages?: number } | null>;
+        };
+      }
+    ).PDFWorker;
+    const result = await worker?.getFullText?.(
+      Math.floor(attachmentId),
+      1,
+      true,
+    );
+    const total = Number(result?.totalPages);
+    return Number.isFinite(total) && total > 0 ? Math.floor(total) : null;
+  } catch (_error) {
+    void _error;
+    return null;
+  }
+}
+
+/**
+ * Waits for the reader to show the page labelled `expected`, as the viewer
+ * names it (its page label, or the page number when the PDF has no labels).
+ * `shown` is the label on screen at the end, empty when the PDF never loaded.
+ */
+export async function waitForReaderPageLabel(
+  reader: any,
+  expected: string,
+  timeoutMs = 3000,
+): Promise<{ verified: boolean; shown: string }> {
+  const wanted = sanitizeText(expected);
+  const startedAt = Date.now();
+  let shown = "";
+  do {
+    const viewer = getPdfViewerApplication(reader)?.pdfViewer;
+    if (viewer && Number(viewer.pagesCount) > 0) {
+      shown = sanitizeText(
+        viewer.currentPageLabel ?? String(viewer.currentPageNumber),
+      );
+      if (shown === wanted) return { verified: true, shown };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  } while (Date.now() - startedAt < timeoutMs);
+  return { verified: false, shown };
 }
 
 /**

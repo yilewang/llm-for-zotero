@@ -20,6 +20,7 @@ import { createContextReadTool } from "./read/contextRead";
 import { createPastChatReadTool } from "./read/pastChatRead";
 import { createPastChatSearchTool } from "./read/pastChatSearch";
 import { createPastChatAttachTool } from "./control/pastChatAttach";
+import { createReaderOpenTool } from "./control/readerOpen";
 import { createRecordPaperDecisionsTool } from "./control/recordPaperDecisions";
 import { createReviewCoverageTool } from "./read/reviewCoverage";
 import { createPaperDigestTool } from "./read/paperDigest";
@@ -731,6 +732,7 @@ export function createBuiltInToolRegistry(
   registry.register(createPastChatReadTool());
   registry.register(createPastChatSearchTool());
   registry.register(createPastChatAttachTool());
+  registry.register(createReaderOpenTool(deps.zoteroGateway));
   registry.register(createRecordPaperDecisionsTool(deps.zoteroGateway));
   registry.register(createReviewCoverageTool());
   registry.register(

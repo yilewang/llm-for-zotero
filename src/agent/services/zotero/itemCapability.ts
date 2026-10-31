@@ -30,6 +30,7 @@ import {
   resolveMatrixItem,
   resolveRegularItem,
 } from "./internal/itemResolution";
+import type { LibrarySortKey, LibrarySortOrder } from "../librarySortKeys";
 import {
   buildAgentLibrarySearch,
   indexItemMatchesType,
@@ -935,6 +936,41 @@ export class ItemCapability {
   }
 
   /**
+   * The items an item is linked to under Zotero's "Related" box, from its own
+   * `relatedItems` keys. A key whose item is gone is skipped; a linked item in
+   * the trash is kept and marked `deleted: true`.
+   */
+  getRelatedItemLinks(itemId: number): Array<{
+    itemId: number;
+    key: string;
+    title: string;
+    deleted?: true;
+  }> {
+    const item = this.deps.getItem(itemId);
+    if (!item) return [];
+    const links: Array<{
+      itemId: number;
+      key: string;
+      title: string;
+      deleted?: true;
+    }> = [];
+    for (const key of item.relatedItems || []) {
+      const other = Zotero.Items.getByLibraryAndKey(item.libraryID, key);
+      if (!other) continue;
+      links.push({
+        itemId: other.id,
+        key,
+        title:
+          normalizeText(other.getField?.("title")) ||
+          normalizeText(other.getDisplayTitle?.()) ||
+          `Item ${other.id}`,
+        ...(other.deleted ? { deleted: true as const } : {}),
+      });
+    }
+    return links;
+  }
+
+  /**
    * Adds or removes Zotero's "Related" links between items.
    *
    * Relations are bidirectional in Zotero, so both sides are saved together;
@@ -1095,8 +1131,8 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
@@ -1175,8 +1211,8 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const filters = params.filters || {};
     const snapshot = await libraryIndexService.getSnapshot(params.libraryID);

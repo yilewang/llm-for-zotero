@@ -13,6 +13,15 @@ import type {
   AgentSearchCondition,
   ZoteroGateway,
 } from "../../services/zoteroGateway";
+import {
+  computeLibraryStatistics,
+  STATISTICS_SECTIONS,
+  type StatisticsSection,
+} from "../../actions/libraryStatistics";
+import {
+  LIBRARY_SORT_KEYS,
+  isLibrarySortKey,
+} from "../../services/librarySortKeys";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 import {
   SEARCH_CONDITION_SCHEMA,
@@ -87,6 +96,7 @@ type QueryLibraryInput = {
   order?: LibrarySortOrder;
   include?: QueryLibraryInclude[];
   view?: "flat" | "tree";
+  sections?: StatisticsSection[];
   conditions?: AgentSearchCondition[];
   joinMode?: "all" | "any";
   resolveToParents?: boolean;
@@ -115,6 +125,24 @@ function normalizeInclude(value: unknown): QueryLibraryInclude[] | undefined {
       VALID_INCLUDE.has(entry as QueryLibraryInclude),
     );
   return includes.length ? Array.from(new Set(includes)) : undefined;
+}
+
+/** undefined when absent; null when it names a section that does not exist. */
+function normalizeStatisticsSections(
+  value: unknown,
+): StatisticsSection[] | undefined | null {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const names = value.map((entry) =>
+    typeof entry === "string" ? entry.trim() : "",
+  );
+  if (
+    names.some(
+      (name) => !STATISTICS_SECTIONS.includes(name as StatisticsSection),
+    )
+  ) {
+    return null;
+  }
+  return Array.from(new Set(names)) as StatisticsSection[];
 }
 
 function normalizeConditions(
@@ -207,6 +235,24 @@ function normalizeFilters(value: unknown): QueryLibraryFilters | undefined {
         : undefined,
     deleted: value.deleted === true || value.deleted === "true",
   };
+}
+
+/**
+ * What a statistics call carries that it would silently ignore: every filter
+ * except collectionId, and text. A filter that is off (false, empty) is fine.
+ */
+function statisticsIgnoredInputs(args: Record<string, unknown>): string[] {
+  const ignored: string[] = [];
+  if (typeof args.text === "string" && args.text.trim()) ignored.push("text");
+  const filters = normalizeFilters(args.filters);
+  if (filters) {
+    for (const [key, value] of Object.entries(filters)) {
+      if (key === "collectionId") continue;
+      const set = key === "hasPdf" ? value !== undefined : Boolean(value);
+      if (set) ignored.push(`filters.${key}`);
+    }
+  }
+  return ignored;
 }
 
 function normalizeLegacyQueryLibraryArgs(
@@ -365,9 +411,10 @@ export function createLibrarySearchTool(
               "libraries",
               "itemTypes",
               "savedSearches",
+              "statistics",
             ],
             description:
-              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group), 'itemTypes' to discover Zotero's item types and the exact fields and creator types each one accepts (use this before creating an item or setting an unfamiliar field — a field the type does not have is rejected, not ignored), 'savedSearches' to list the library's saved searches and the conditions behind them.",
+              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group), 'itemTypes' to discover Zotero's item types and the exact fields and creator types each one accepts (use this before creating an item or setting an unfamiliar field — a field the type does not have is rejected, not ignored), 'savedSearches' to list the library's saved searches and the conditions behind them, 'statistics' (mode:'list') for counts by type, year, author, journal, tag, collection and annotation over the library or filters.collectionId's direct members (subcollections not included); limit sets the length of top lists.",
           },
           mode: {
             type: "string",
@@ -463,15 +510,15 @@ export function createLibrarySearchTool(
           },
           sort: {
             type: "string",
-            enum: ["dateAdded", "title"],
+            enum: [...LIBRARY_SORT_KEYS],
             description:
-              "Order results before limit/offset are applied. Use sort:'dateAdded' for requests like 'the most recently added papers'. Applies to entity:'items' with mode:'list'; text search returns relevance order and ignores this.",
+              "Order results before limit/offset are applied. Use sort:'dateAdded' for requests like 'the most recently added papers'; creator sorts by first author. Applies to entity:'items' with mode:'list'; text search returns relevance order and ignores this.",
           },
           order: {
             type: "string",
             enum: ["asc", "desc"],
             description:
-              "Sort direction. Defaults to 'desc' for dates (newest first) and 'asc' for title.",
+              "Sort direction. Defaults to 'desc' for dates and year (newest first) and 'asc' for title and creator.",
           },
           include: {
             type: "array",
@@ -485,6 +532,11 @@ export function createLibrarySearchTool(
                 "abstract",
               ],
             },
+          },
+          sections: {
+            type: "array",
+            items: { type: "string", enum: [...STATISTICS_SECTIONS] },
+            description: "For entity:'statistics': which parts. Default: all.",
           },
         },
       },
@@ -520,6 +572,13 @@ export function createLibrarySearchTool(
             Array.isArray((content as { results?: unknown[] }).results)
               ? (content as { results: unknown[] }).results
               : [];
+          if (
+            content &&
+            typeof content === "object" &&
+            (content as { entity?: unknown }).entity === "statistics"
+          ) {
+            return "Computed library statistics";
+          }
           if (treeCollections.length > 0) {
             return `Loaded collection tree (${treeCollections.length} top-level folder${
               treeCollections.length === 1 ? "" : "s"
@@ -564,7 +623,8 @@ export function createLibrarySearchTool(
         normalizedArgs.entity === "tags" ||
         normalizedArgs.entity === "libraries" ||
         normalizedArgs.entity === "itemTypes" ||
-        normalizedArgs.entity === "savedSearches"
+        normalizedArgs.entity === "savedSearches" ||
+        normalizedArgs.entity === "statistics"
           ? (normalizedArgs.entity as QueryLibraryEntity)
           : null;
       const mode =
@@ -594,6 +654,26 @@ export function createLibrarySearchTool(
       }
       if (entity === "savedSearches" && !["list", "search"].includes(mode)) {
         return fail("savedSearches only support mode:'list' or mode:'search'");
+      }
+      if (entity === "statistics" && mode !== "list") {
+        return fail("statistics only supports mode:'list'");
+      }
+      const sections =
+        entity === "statistics"
+          ? normalizeStatisticsSections(normalizedArgs.sections)
+          : undefined;
+      if (sections === null) {
+        return fail(
+          `sections must be some of: ${STATISTICS_SECTIONS.join(", ")}`,
+        );
+      }
+      if (entity === "statistics") {
+        const ignored = statisticsIgnoredInputs(normalizedArgs);
+        if (ignored.length) {
+          return fail(
+            `statistics counts the whole library or filters.collectionId's direct members; it cannot apply ${ignored.join(", ")}. Drop ${ignored.length === 1 ? "it" : "them"}, or list the items with entity:'items'.`,
+          );
+        }
       }
       const conditions = normalizeConditions(normalizedArgs.conditions);
       if (conditions && entity !== "items") {
@@ -667,10 +747,9 @@ export function createLibrarySearchTool(
           Number(normalizedArgs.offset) > 0
             ? Math.floor(Number(normalizedArgs.offset))
             : undefined,
-        sort:
-          normalizedArgs.sort === "dateAdded" || normalizedArgs.sort === "title"
-            ? normalizedArgs.sort
-            : undefined,
+        sort: isLibrarySortKey(normalizedArgs.sort)
+          ? normalizedArgs.sort
+          : undefined,
         // Pass the direction through verbatim. Collapsing anything that was
         // not "asc" to undefined made an explicit order:'desc' on a title
         // sort silently return A-Z.
@@ -679,6 +758,7 @@ export function createLibrarySearchTool(
             ? normalizedArgs.order
             : undefined,
         include: normalizeInclude(normalizedArgs.include),
+        sections,
         view,
       });
     },
@@ -769,6 +849,23 @@ export function createLibrarySearchTool(
           input,
         );
       }
+      if (input.entity === "statistics") {
+        const collectionId = input.filters?.collectionId;
+        const statistics = await computeLibraryStatistics({
+          libraryID,
+          zoteroGateway,
+          scope: collectionId ? "collection" : "all",
+          collectionId,
+          sections: input.sections,
+          topN: input.limit,
+        });
+        if (!statistics.ok) throw new Error(statistics.error);
+        return {
+          entity: input.entity,
+          mode: input.mode,
+          statistics: statistics.output,
+        };
+      }
       if (input.entity === "notes") {
         if (input.mode === "search") {
           const result = await queryService.searchNotes({
@@ -826,6 +923,7 @@ export function createLibrarySearchTool(
           query: input.mode === "search" ? input.text : undefined,
           limit: input.limit,
           offset: input.offset,
+          collectionId: input.filters?.collectionId,
         });
         return withPageCounts(
           {

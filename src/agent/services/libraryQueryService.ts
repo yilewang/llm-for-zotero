@@ -9,6 +9,12 @@ import type {
   RelatedPaperResult,
   ZoteroGateway,
 } from "./zoteroGateway";
+import {
+  compareSortValues,
+  isLibrarySortKey,
+  type LibrarySortKey,
+  type LibrarySortOrder,
+} from "./librarySortKeys";
 
 export type QueryLibraryEntity =
   | "items"
@@ -17,7 +23,8 @@ export type QueryLibraryEntity =
   | "tags"
   | "libraries"
   | "itemTypes"
-  | "savedSearches";
+  | "savedSearches"
+  | "statistics";
 export type QueryLibraryMode = "search" | "list" | "related" | "duplicates";
 export type QueryLibraryInclude =
   | "metadata"
@@ -165,21 +172,14 @@ function applyLimit<T>(items: T[], limit: unknown): T[] {
     : items;
 }
 
-/**
- * `dateModified` is deliberately absent: neither LibraryPaperTarget nor
- * LibraryItemTarget carries the field, so sorting by it would read "" for
- * every row and silently do nothing. Add the field to those targets before
- * adding the key back.
- */
-export type LibrarySortKey = "dateAdded" | "title";
-export type LibrarySortOrder = "asc" | "desc";
+export type { LibrarySortKey, LibrarySortOrder };
 
 function readSortValue(entry: unknown, key: LibrarySortKey): string {
   const record =
     entry && typeof entry === "object"
       ? (entry as Record<string, unknown>)
       : {};
-  const value = record[key];
+  const value = record[key === "creator" ? "firstCreator" : key];
   return typeof value === "string" ? value : "";
 }
 
@@ -192,27 +192,17 @@ function readSortValue(entry: unknown, key: LibrarySortKey): string {
  * internally.
  */
 export function applySort<T>(items: T[], sort: unknown, order: unknown): T[] {
-  if (sort !== "dateAdded" && sort !== "title") {
+  if (!isLibrarySortKey(sort)) {
     return items;
   }
-  const key = sort as LibrarySortKey;
-  // Titles default ascending, dates default descending ("most recent first"
-  // is what someone asking for recent papers means).
-  const descending = key === "title" ? order === "desc" : order !== "asc";
-  return [...items].sort((left, right) => {
-    const a = readSortValue(left, key);
-    const b = readSortValue(right, key);
-    // Empty values sort last in BOTH directions, so undated items never
-    // displace real hits. Reversing a sorted array would have floated them to
-    // the top of a descending list, which is why the direction is applied
-    // inside the comparator rather than afterwards.
-    if (!a && !b) return 0;
-    if (!a) return 1;
-    if (!b) return -1;
-    const compared =
-      key === "title" ? a.localeCompare(b) : a < b ? -1 : a > b ? 1 : 0;
-    return descending ? -compared : compared;
-  });
+  return [...items].sort((left, right) =>
+    compareSortValues(
+      sort,
+      readSortValue(left, sort),
+      readSortValue(right, sort),
+      order,
+    ),
+  );
 }
 
 /**
@@ -614,12 +604,16 @@ export class LibraryQueryService {
     query?: string;
     limit?: number;
     offset?: number;
+    collectionId?: number;
   }): Promise<{
-    results: { name: string; type: number }[];
+    results: { name: string; type: number; itemCount?: number }[];
     totalCount: number;
     warnings: string[];
   }> {
-    const result = await this.zoteroGateway.listLibraryTagsPage(params);
+    const result = await this.zoteroGateway.listLibraryTagsPage({
+      ...params,
+      withCounts: true,
+    });
     return {
       results: result.tags,
       totalCount: result.totalCount,

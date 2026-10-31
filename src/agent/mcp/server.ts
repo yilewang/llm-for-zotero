@@ -153,6 +153,10 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // (see MCP_REFUSED_TOOL_ARGUMENTS): its "after user review" has no review
   // here.
   "read_attachment",
+  // Opens a PDF in a reader tab at a page or an annotation. It changes what
+  // the user sees, not the library, so it is auto-approved like the other
+  // reads.
+  "reader_open",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
