@@ -556,7 +556,7 @@ function createLibraryDeleteTool(tools: {
     label: "Delete / Restore / Merge Library Items",
     traceIcon: "edit",
     description:
-      "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
+      "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item, or several duplicate groups at once with groups.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
     inputSchema: {
@@ -590,6 +590,16 @@ function createLibraryDeleteTool(tools: {
           ...NUMBER_ARRAY_SCHEMA,
           description:
             "Duplicate item IDs to merge into the master when mode:'merge'.",
+        },
+        groups: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              masterItemId: { type: "number" },
+              otherItemIds: NUMBER_ARRAY_SCHEMA,
+            },
+          },
         },
       },
     },

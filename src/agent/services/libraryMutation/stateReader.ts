@@ -210,6 +210,25 @@ function readItemCollections(item: Zotero.Item | null): number[] {
   }
 }
 
+/** A regular item's live (untrashed) child attachments and notes, sorted. */
+function readItemChildIds(item: Zotero.Item): {
+  childAttachmentIds: number[];
+  childNoteIds: number[];
+} {
+  const ids = (values: unknown[] | undefined) =>
+    Array.from(
+      new Set(
+        (values || [])
+          .map((value: unknown) => Math.floor(Number(value)))
+          .filter((value: number) => Number.isFinite(value) && value > 0),
+      ),
+    ).sort((left, right) => left - right);
+  return {
+    childAttachmentIds: ids(item.getAttachments?.()),
+    childNoteIds: ids(item.getNotes?.()),
+  };
+}
+
 async function readAttachmentPath(item: Zotero.Item | null): Promise<string> {
   if (!item?.isAttachment?.()) return "";
   try {
@@ -343,6 +362,10 @@ export class MutationStateReader {
           ).trim() || undefined;
         state.attachmentPath = (await readAttachmentPath(item)) || undefined;
       }
+      // A merge moves every child of a duplicate onto the master; its
+      // postcondition reads what each item still holds.
+      if (operation.type === "merge_items" && item.isRegularItem?.() === true)
+        Object.assign(state, readItemChildIds(item));
       const captureCompleteItemFingerprint =
         mutationUsesDeferredInverse(operation) ||
         operation.type === "trash_items" ||
@@ -378,22 +401,7 @@ export class MutationStateReader {
           (typeof item.isRegularItem !== "function" &&
             item.isNote?.() !== true &&
             item.isAttachment?.() !== true);
-        if (isRegularItem) {
-          state.childAttachmentIds = Array.from(
-            new Set(
-              (item.getAttachments?.() || [])
-                .map((value: unknown) => Math.floor(Number(value)))
-                .filter((value: number) => Number.isFinite(value) && value > 0),
-            ),
-          ).sort((left, right) => left - right);
-          state.childNoteIds = Array.from(
-            new Set(
-              (item.getNotes?.() || [])
-                .map((value: unknown) => Math.floor(Number(value)))
-                .filter((value: number) => Number.isFinite(value) && value > 0),
-            ),
-          ).sort((left, right) => left - right);
-        }
+        if (isRegularItem) Object.assign(state, readItemChildIds(item));
         if (item.isNote?.()) {
           state.noteHtml = item.getNote?.() || "";
           state.noteHtmlChecksum = await sha256Text(state.noteHtml);

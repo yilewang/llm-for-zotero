@@ -1,4 +1,5 @@
 import { executeNoteCreation } from "../noteCreation";
+import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import type { NativeNoteWriteEvidence } from "./contracts";
@@ -477,6 +478,11 @@ export const noteLifecycleExecutors = {
     };
   },
   merge_items: async (operation, context, zoteroGateway) => {
+    // Re-checked at the group's own turn: in a batch of groups an earlier
+    // merge, or the user, may have trashed or erased one of these items since
+    // the card. Nothing has been written, so the refusal is proof of no effect.
+    const refusal = zoteroGateway.mergeRefusal([operation]);
+    if (refusal) throw new MutationNoEffectError(refusal);
     const result = await zoteroGateway.mergeItems({
       masterItemId: operation.masterItemId,
       otherItemIds: operation.otherItemIds,

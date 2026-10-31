@@ -46,6 +46,17 @@ export type CoordinatedMutationResult = {
   affectedCount: number;
   results: LibraryMutationExecutionResult[];
   actionEvidence: AgentActionEvidence[];
+  /**
+   * The operation that stopped the action, when the caller asked for the
+   * outcome instead of a throw. `results` and `actionEvidence` then hold the
+   * operations before it, which stay applied; the ones after it never ran.
+   */
+  failure?: {
+    index: number;
+    message: string;
+    /** The operation had started, so it may have applied. */
+    uncertain: boolean;
+  };
 };
 
 function inversePayload(operations: LibraryMutationOperation[] | undefined) {
@@ -397,6 +408,12 @@ export async function executeLibraryMutationAction(params: {
   operations: LibraryMutationOperation[];
   context: AgentToolContext;
   facadeToolName: string;
+  /**
+   * Return a failed operation as `failure`, with the results and evidence of
+   * the operations already applied, rather than throwing them away. The
+   * journal records the action exactly as it does for a throw.
+   */
+  reportFailure?: boolean;
 }): Promise<CoordinatedMutationResult> {
   const { service, operations, context, facadeToolName } = params;
   const journalToolName = context.journalToolName || facadeToolName;
@@ -609,6 +626,16 @@ export async function executeLibraryMutationAction(params: {
       ).catch(() => undefined);
     }
     const message = error instanceof Error ? error.message : String(error);
+    if (params.reportFailure) {
+      return {
+        actionId: actionId || undefined,
+        effect: changedOutcomes.length ? "partial" : "none",
+        affectedCount,
+        results,
+        actionEvidence,
+        failure: { index: results.length, message, uncertain },
+      };
+    }
     if (changedOutcomes.length) throw new Error(`${message} (${recovery})`);
     if (uncertain) throw new Error(`${message} (${recovery})`);
     throw error;

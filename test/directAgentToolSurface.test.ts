@@ -92,10 +92,13 @@ describe("direct Agent model tool surface", function () {
     // the fixed prompt by 706, to 28,098 and 39,300 (2026-10-30).
     // review_coverage reaches Codex and Claude Code over MCP only; the
     // plugin Agent does not list it, so it adds nothing here.
-    assert.isAtMost(serializedToolCharacters, 28_098);
+    // library_delete's groups field and its clause, so one approval merges
+    // several duplicate groups, raised both caps by 80, to 28,178 and 39,380
+    // (2026-10-30).
+    assert.isAtMost(serializedToolCharacters, 28_178);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      39_300,
+      39_380,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

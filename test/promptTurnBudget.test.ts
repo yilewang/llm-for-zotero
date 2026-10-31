@@ -90,11 +90,14 @@ import {
  * agent's include, exclude or defer decision about papers (2026-10-29), to
  * 42,417, 41,150 and 42,515 (+706 tool characters each). review_coverage
  * reaches Codex and Claude Code over MCP only and adds nothing here.
+ * Raised by library_delete's groups field and its clause, so one approval
+ * merges several duplicate groups (2026-10-30), to 42,575, 41,308 and 42,673
+ * (+158 tool characters each).
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 42_417,
-  paper: 41_150,
-  collection: 42_515,
+  global: 42_575,
+  paper: 41_308,
+  collection: 42_673,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

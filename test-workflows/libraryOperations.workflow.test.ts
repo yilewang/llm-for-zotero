@@ -1668,6 +1668,411 @@ describe("library operations against real Zotero", function () {
     });
   });
 
+  describe("merging duplicate groups with one approval", function () {
+    function contextFor(item: { id: number }, userText: string) {
+      return {
+        request: resolvedAgentRequest({
+          conversationKey: item.id,
+          mode: "agent",
+          userText,
+          libraryID: libraryID(),
+          activeItemId: item.id,
+          executionContext: {
+            version: 1,
+            executionId: `merge-groups:${SUFFIX}:${item.id}`,
+            conversationKey: item.id,
+            conversationGeneration: 0,
+            chatLibraryID: libraryID(),
+            permissionOwner: "original_agent",
+            workspaceSnapshot: {
+              selectedPapers: [],
+              selectedCollections: [],
+            },
+            configuredAccess: {
+              libraryIDs: [libraryID()],
+              outputDirectories: [],
+            },
+          },
+        }),
+        item: Zotero.Items.get(item.id),
+        modelName: "workflow",
+        currentAnswerText: "",
+        runId: `merge-groups-run:${SUFFIX}:${item.id}`,
+      } as AgentToolContext;
+    }
+
+    async function withMode<T>(
+      mode: "safe" | "yolo",
+      body: (registry: AgentToolRegistry) => Promise<T>,
+    ): Promise<T> {
+      const originalMode = getOriginalAgentPermissionMode();
+      try {
+        await initAgentChangeJournal();
+        setOriginalAgentPermissionMode(mode);
+        const registry = new AgentToolRegistry(
+          new ActionContractService(gateway()),
+        );
+        registry.register(
+          Zotero.LLMForZotero.api.agent.getToolDefinition("library_delete"),
+        );
+        return await body(registry);
+      } finally {
+        setOriginalAgentPermissionMode(originalMode);
+      }
+    }
+
+    async function addNote(parentItemID: number) {
+      const note = new Zotero.Item("note");
+      note.libraryID = libraryID();
+      note.parentID = parentItemID;
+      note.setNote(`<p>note on ${parentItemID}</p>`);
+      await note.saveTx();
+      created.items.push(note.id);
+      return note;
+    }
+
+    async function addAttachment(parentItemID: number) {
+      const path = PathUtils.join(
+        Zotero.getTempDirectory().path,
+        `merge-${parentItemID}-${SUFFIX}.txt`,
+      );
+      await IOUtils.writeUTF8(path, `attachment body ${parentItemID}`);
+      const attachment = await Zotero.Attachments.importFromFile({
+        file: path,
+        parentItemID,
+      });
+      await IOUtils.remove(path, { ignoreAbsent: true });
+      created.items.push(attachment.id);
+      return attachment;
+    }
+
+    /** A master and its duplicates, all one title so they are duplicates. */
+    async function makeGroup(name: string, duplicates: number) {
+      const master = await makeItem("journalArticle", name);
+      const others = [];
+      for (let index = 0; index < duplicates; index += 1)
+        others.push(await makeItem("journalArticle", name));
+      return { master, others };
+    }
+
+    function groupArgs(group: {
+      master: { id: number };
+      others: Array<{ id: number }>;
+    }) {
+      return {
+        masterItemId: group.master.id,
+        otherItemIds: group.others.map((item) => item.id),
+      };
+    }
+
+    function trashed(itemId: number): boolean {
+      return Boolean(Zotero.Items.get(itemId)?.deleted);
+    }
+
+    it("merges three groups from one card: every master kept, every duplicate trashed, children moved", async function () {
+      const groups = [
+        await makeGroup("MergeGroupOne", 2),
+        await makeGroup("MergeGroupTwo", 1),
+        await makeGroup("MergeGroupThree", 1),
+      ];
+      const note = await addNote(groups[0].others[0].id);
+      const attachment = await addAttachment(groups[0].others[1].id);
+      const secondNote = await addNote(groups[1].others[0].id);
+      const secondAttachment = await addAttachment(groups[2].others[0].id);
+      const workflow = Zotero.LLMForZotero.api.workflowTest as WorkflowTestApi;
+      const doc: Document = Zotero.getMainWindow().document;
+
+      try {
+        const result = await withMode("safe", async (registry) => {
+          const execution = await registry.prepareExecution(
+            {
+              id: "merge-three-groups",
+              name: "library_delete",
+              arguments: { mode: "merge", groups: groups.map(groupArgs) },
+            },
+            contextFor(groups[0].master, "Merge these duplicates"),
+            { callerKind: "model" },
+          );
+          assert.equal(execution.kind, "confirmation", "one card for all");
+          if (execution.kind !== "confirmation") throw new Error("unreachable");
+
+          const panel = await workflow.renderPanelForItem(groups[0].master.id);
+          const pending = workflow.renderPendingActionForPanel(panel.panelId, {
+            requestId: "merge-three-groups-card",
+            action: execution.action,
+          });
+          const card = doc.querySelector<HTMLElement>(
+            '[data-request-id="merge-three-groups-card"]',
+          )!;
+          assert.exists(card);
+          const checklists = [
+            ...card.querySelectorAll<HTMLElement>(".llm-agent-hitl-checklist"),
+          ] as HTMLElement[];
+          assert.deepEqual(
+            checklists.map((list) =>
+              (
+                [
+                  ...list.querySelectorAll<HTMLInputElement>(
+                    ".llm-agent-hitl-checklist-checkbox",
+                  ),
+                ] as HTMLInputElement[]
+              ).map((box) => Number(box.value)),
+            ),
+            groups.map((group) => group.others.map((item) => item.id)),
+            "each group lists its own duplicates",
+          );
+          assert.equal(
+            (card.textContent || "").split("not fully reversible").length - 1,
+            1,
+            "the irreversibility warning appears once",
+          );
+          assert.isFalse(
+            trashed(groups[0].others[0].id),
+            "the card writes nothing",
+          );
+
+          card.querySelector<HTMLButtonElement>('[data-kind="save"]')!.click();
+          const resolution = await pending;
+          assert.isTrue(resolution.approved);
+          const applied = await execution.execute(resolution);
+          assert.equal(applied.kind, "result", "one approval runs every group");
+          if (applied.kind !== "result") throw new Error("unreachable");
+          return applied.execution.result;
+        });
+
+        assert.isTrue(result.ok, JSON.stringify(result.content));
+        // Independent native readback, not the tool's account.
+        for (const group of groups) {
+          const master = Zotero.Items.get(group.master.id);
+          assert.exists(master);
+          assert.isFalse(Boolean(master.deleted), "the master is kept");
+          for (const other of group.others)
+            assert.isTrue(trashed(other.id), `duplicate ${other.id} trashed`);
+        }
+        assert.equal(Zotero.Items.get(note.id).parentID, groups[0].master.id);
+        assert.equal(
+          Zotero.Items.get(attachment.id).parentID,
+          groups[0].master.id,
+        );
+        assert.equal(
+          Zotero.Items.get(secondNote.id).parentID,
+          groups[1].master.id,
+        );
+        assert.equal(
+          Zotero.Items.get(secondAttachment.id).parentID,
+          groups[2].master.id,
+        );
+        const receipts = result.actionReceipts || [];
+        assert.lengthOf(receipts, 3, "one receipt per group");
+        assert.deepEqual(
+          receipts.map((receipt) => receipt.verification),
+          ["verified", "verified", "verified"],
+        );
+      } finally {
+        await workflow.reset();
+      }
+    });
+
+    it("leaves an unchecked duplicate untrashed, and a group with nothing checked unmerged", async function () {
+      const first = await makeGroup("MergeUncheckOne", 2);
+      const second = await makeGroup("MergeUncheckTwo", 1);
+      const kept = first.others[1];
+      const workflow = Zotero.LLMForZotero.api.workflowTest as WorkflowTestApi;
+      const doc: Document = Zotero.getMainWindow().document;
+
+      try {
+        const result = await withMode("safe", async (registry) => {
+          const execution = await registry.prepareExecution(
+            {
+              id: "merge-unchecked",
+              name: "library_delete",
+              arguments: {
+                mode: "merge",
+                groups: [groupArgs(first), groupArgs(second)],
+              },
+            },
+            contextFor(first.master, "Merge these duplicates"),
+            { callerKind: "model" },
+          );
+          assert.equal(execution.kind, "confirmation");
+          if (execution.kind !== "confirmation") throw new Error("unreachable");
+
+          const panel = await workflow.renderPanelForItem(first.master.id);
+          const pending = workflow.renderPendingActionForPanel(panel.panelId, {
+            requestId: "merge-unchecked-card",
+            action: execution.action,
+          });
+          const card = doc.querySelector<HTMLElement>(
+            '[data-request-id="merge-unchecked-card"]',
+          )!;
+          const uncheck = (itemId: number) => {
+            const box = card.querySelector<HTMLInputElement>(
+              `.llm-agent-hitl-checklist-checkbox[value="${itemId}"]`,
+            )!;
+            box.checked = false;
+            box.dispatchEvent(new Event("change", { bubbles: true }));
+          };
+          uncheck(kept.id);
+          uncheck(second.others[0].id);
+          const save =
+            card.querySelector<HTMLButtonElement>('[data-kind="save"]')!;
+          assert.isFalse(
+            save.disabled,
+            "a group left with nothing checked does not block the others",
+          );
+          save.click();
+          const resolution = await pending;
+          assert.isTrue(resolution.approved);
+          const applied = await execution.execute(resolution);
+          assert.equal(applied.kind, "result");
+          if (applied.kind !== "result") throw new Error("unreachable");
+          return applied.execution.result;
+        });
+
+        assert.isTrue(result.ok, JSON.stringify(result.content));
+        assert.isTrue(trashed(first.others[0].id), "the checked one merged");
+        assert.isFalse(trashed(kept.id), "the unchecked duplicate stays");
+        assert.isFalse(
+          trashed(second.others[0].id),
+          "the unchecked group merged nothing",
+        );
+        assert.isFalse(Boolean(Zotero.Items.get(second.master.id).deleted));
+      } finally {
+        await workflow.reset();
+      }
+    });
+
+    it("reports exact per-group results when a group fails mid-batch, keeps earlier merges, and retries only the rest", async function () {
+      const groups = [
+        await makeGroup("MergeFailOne", 1),
+        await makeGroup("MergeFailTwo", 2),
+        await makeGroup("MergeFailThree", 1),
+      ];
+      const vanishing = groups[1].others[0];
+      // The duplicate disappears while the batch runs, after the first
+      // group's real merge and before the second group starts.
+      const realMerge = Zotero.Items.merge;
+      let merges = 0;
+      Zotero.Items.merge = async function (...args: unknown[]) {
+        const merged = await realMerge.apply(Zotero.Items, args);
+        merges += 1;
+        if (merges === 1) await Zotero.Items.get(vanishing.id).eraseTx();
+        return merged;
+      };
+      let result: AgentToolResult;
+      try {
+        result = await withMode("yolo", async (registry) => {
+          const execution = await registry.prepareExecution(
+            {
+              id: "merge-fails-midway",
+              name: "library_delete",
+              arguments: { mode: "merge", groups: groups.map(groupArgs) },
+            },
+            contextFor(groups[0].master, "Merge these duplicates"),
+            { callerKind: "model" },
+          );
+          assert.equal(execution.kind, "result");
+          if (execution.kind !== "result") throw new Error("unreachable");
+          return execution.execution.result;
+        });
+      } finally {
+        Zotero.Items.merge = realMerge;
+      }
+
+      const content = result.content as {
+        groups: Array<{ masterItemId: number; status: string; error?: string }>;
+        remainingGroups: Array<{
+          masterItemId: number;
+          otherItemIds: number[];
+        }>;
+      };
+      assert.isTrue(result.ok, JSON.stringify(result.content));
+      assert.equal(result.effect, "partial");
+      assert.deepEqual(
+        content.groups.map((group) => [group.masterItemId, group.status]),
+        [
+          [groups[0].master.id, "merged"],
+          [groups[1].master.id, "failed"],
+          [groups[2].master.id, "not_run"],
+        ],
+      );
+      assert.include(content.groups[1].error, String(vanishing.id));
+      assert.deepEqual(
+        content.remainingGroups,
+        [groupArgs(groups[1]), groupArgs(groups[2])],
+        "exactly the groups that did not merge",
+      );
+      // Native state: the first group stays merged; nothing after it moved.
+      assert.isTrue(trashed(groups[0].others[0].id));
+      assert.isFalse(trashed(groups[1].others[1].id));
+      assert.isFalse(trashed(groups[2].others[0].id));
+      const receipts = result.actionReceipts || [];
+      assert.lengthOf(receipts, 3);
+      assert.equal(receipts[0].verification, "verified");
+      assert.notEqual(receipts[1].verification, "verified");
+      assert.notEqual(receipts[2].verification, "verified");
+
+      // A retry that repeats the merged group is refused before any write.
+      const repeated = await withMode("yolo", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "merge-retry-repeats",
+            name: "library_delete",
+            arguments: {
+              mode: "merge",
+              groups: [
+                groupArgs(groups[0]),
+                {
+                  masterItemId: groups[1].master.id,
+                  otherItemIds: [groups[1].others[1].id],
+                },
+              ],
+            },
+          },
+          contextFor(groups[0].master, "Merge the rest"),
+          { callerKind: "model" },
+        );
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+      assert.isFalse(repeated.ok);
+      assert.include(JSON.stringify(repeated.content), "already in the trash");
+      assert.isFalse(
+        trashed(groups[1].others[1].id),
+        "the refusal wrote nothing",
+      );
+
+      // The retry of the remaining groups merges exactly those.
+      const retried = await withMode("yolo", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "merge-retry-rest",
+            name: "library_delete",
+            arguments: {
+              mode: "merge",
+              groups: [
+                {
+                  masterItemId: groups[1].master.id,
+                  otherItemIds: [groups[1].others[1].id],
+                },
+                groupArgs(groups[2]),
+              ],
+            },
+          },
+          contextFor(groups[0].master, "Merge the rest"),
+          { callerKind: "model" },
+        );
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+      assert.isTrue(retried.ok, JSON.stringify(retried.content));
+      assert.isTrue(trashed(groups[1].others[1].id));
+      assert.isTrue(trashed(groups[2].others[0].id));
+      assert.isFalse(Boolean(Zotero.Items.get(groups[1].master.id).deleted));
+      assert.isFalse(Boolean(Zotero.Items.get(groups[2].master.id).deleted));
+    });
+  });
+
   // ── Stage 2e: create / reparent / relate ──────────────────────────────────
 
   describe("creating and restructuring items", function () {

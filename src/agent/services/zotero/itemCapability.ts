@@ -1640,6 +1640,43 @@ export class ItemCapability {
   // ── Merge duplicates ──────────────────────────────────────────────
 
   /**
+   * Why these duplicate groups may not be merged, or null when they may.
+   *
+   * Every item must exist, be a regular item, be out of the trash, and sit in
+   * the one library all the groups share: Zotero cannot merge across
+   * libraries, and a duplicate already in the trash is what an earlier merge
+   * leaves, so re-running a group that already merged is refused here rather
+   * than merged twice.
+   */
+  mergeRefusal(
+    groups: ReadonlyArray<{ masterItemId: number; otherItemIds: number[] }>,
+  ): string | null {
+    let libraryID: number | undefined;
+    for (const group of groups) {
+      for (const itemId of [group.masterItemId, ...group.otherItemIds]) {
+        const role =
+          itemId === group.masterItemId ? "Master item" : "Duplicate item";
+        const item = this.deps.getItem(itemId);
+        if (!item) {
+          return `${role} ${itemId} no longer exists, so its group (master ${group.masterItemId}) cannot be merged.`;
+        }
+        if (item.isRegularItem?.() !== true) {
+          return `${role} ${itemId} is not a regular item (notes, attachments and annotations cannot be merged).`;
+        }
+        if ((item as Zotero.Item & { deleted?: boolean }).deleted) {
+          return `${role} ${itemId} is already in the trash, as a merged duplicate is; leave it out, or restore it before merging.`;
+        }
+        const itemLibraryID = Number(item.libraryID);
+        if (libraryID === undefined) libraryID = itemLibraryID;
+        if (itemLibraryID !== libraryID) {
+          return `Item ${itemId} is in a different library than the other items, and Zotero cannot merge across libraries.`;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Merges duplicates, delegating to Zotero's own merge.
    *
    * This used to be hand-rolled, and diverged from Zotero in ways that

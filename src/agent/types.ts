@@ -169,6 +169,10 @@ export type AgentPendingChoiceValue =
 type AgentPendingFieldBase = {
   id: string;
   visibleForActionIds?: string[];
+  /**
+   * The actions this field must be filled for. Absent, it is required for
+   * every action it is visible for; an empty list requires it for none.
+   */
   requiredForActionIds?: string[];
 };
 

@@ -415,6 +415,7 @@ function auditGateway(live: Record<string, unknown> = {}) {
     getSettingNativeState: () => null,
     resolveMetadataItem: () => null,
     resolveMetadataWriteTarget: () => ({ refusal: "No item" }),
+    mergeRefusal: () => null,
     getEditableArticleMetadata: () => null,
     resolveRegularItem: () => null,
     resolveLibraryID: () => 1,

@@ -1826,7 +1826,9 @@ function isFieldRequiredForAction(
   field: AgentPendingField,
   actionId: string,
 ): boolean {
-  if (field.requiredForActionIds?.length) {
+  // An explicit empty list means the field is required for no action: a
+  // checklist that may be left with nothing checked.
+  if (field.requiredForActionIds) {
     return field.requiredForActionIds.includes(actionId);
   }
   return isFieldVisibleForAction(field, actionId);

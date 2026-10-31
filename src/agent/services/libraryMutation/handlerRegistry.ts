@@ -971,11 +971,18 @@ export const libraryMutationHandlers = {
       reason:
         "Merging can move and deduplicate child objects, so it has no lossless inverse.",
     }),
+    // The master survives, and each duplicate is gone or trashed with no
+    // attachment or note left on it: Zotero moved them to the master.
     postconditionSatisfied: (operation, state) =>
       Boolean(state.item(operation.masterItemId)?.exists) &&
       operation.otherItemIds.every((itemId) => {
         const item = state.item(itemId);
-        return !item?.exists || item.deleted === true;
+        return (
+          !item?.exists ||
+          (item.deleted === true &&
+            !item.childAttachmentIds?.length &&
+            !item.childNoteIds?.length)
+        );
       }),
     targetCount: (operation) => operation.otherItemIds.length,
     affectedCount: (_operation, result) => resultCount(result, "mergedCount"),

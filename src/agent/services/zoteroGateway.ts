@@ -1231,6 +1231,13 @@ export class ZoteroGateway {
     return this.collectionCapability.restoreSavedSearches(params);
   }
 
+  /** See `ItemCapability.mergeRefusal`. */
+  mergeRefusal(
+    groups: ReadonlyArray<{ masterItemId: number; otherItemIds: number[] }>,
+  ): string | null {
+    return this.itemCapability.mergeRefusal(groups);
+  }
+
   /** See `ItemCapability.mergeItems`. */
   async mergeItems(params: {
     masterItemId: number;
