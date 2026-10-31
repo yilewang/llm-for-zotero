@@ -232,6 +232,7 @@ type RuntimeAttachment = {
 
 type RuntimeRequestShape = {
   userText?: unknown;
+  selectedTextContexts?: unknown;
   selectedTexts?: unknown;
   selectedPaperContexts?: unknown;
   paperContexts?: unknown;
@@ -721,15 +722,34 @@ function buildPromptText(
   if (includeFallbackHistory) {
     lines.push(...formatFallbackHistory(runtimeRequest));
   }
+  const selectedContexts = Array.isArray(runtimeRequest.selectedTextContexts)
+    ? runtimeRequest.selectedTextContexts.flatMap((entry) => {
+        const context = asRecord(entry);
+        const text =
+          typeof context?.text === "string" ? context.text.trim() : "";
+        if (!text) return [];
+        const question =
+          typeof context?.userQuery === "string"
+            ? context.userQuery.trim()
+            : "";
+        return [{ text, question }];
+      })
+    : [];
   const selectedTexts = Array.isArray(runtimeRequest.selectedTexts)
     ? runtimeRequest.selectedTexts
         .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
         .filter(Boolean)
     : [];
-  if (selectedTexts.length) {
+  const snippets = selectedContexts.length
+    ? selectedContexts
+    : selectedTexts.map((text) => ({ text, question: "" }));
+  if (snippets.length) {
     lines.push(
       "Selected snippets:",
-      ...selectedTexts.map((text, index) => `${index + 1}. ${text}`),
+      ...snippets.map(
+        ({ text, question }, index) =>
+          `${index + 1}. ${text}${question ? `\nQuestion about this text:\n${question}` : ""}`,
+      ),
     );
   }
   const selectedCollections = collectCollectionScopeEntries(
