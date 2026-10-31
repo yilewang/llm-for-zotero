@@ -8173,6 +8173,84 @@
   margin-bottom: 0;
 }
 
+/* Trace text that is the answer looks as it will in the bubble. */
+.llm-agent-activity-answer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.llm-agent-activity-answer > .llm-agent-inline-answer,
+.llm-agent-activity-list > .llm-agent-process-message.llm-agent-inline-answer {
+  font-size: var(--llm-fs-13);
+  line-height: 1.5;
+  padding-top: 0;
+  color: var(--fill-primary);
+}
+
+/* Codex agent messages stay among the steps at the answer's left edge. The
+   list drops its rail and each step draws its own piece of it, reaching half
+   way into the 10px gap on each side so neighbouring steps join. */
+.llm-agent-activity-details
+  > .llm-agent-activity-list.llm-agent-activity-list-flush {
+  padding-left: 11px;
+  border-left: 0;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-inline-answer {
+  margin-left: -11px;
+}
+
+.llm-agent-activity-list-flush > :not(.llm-agent-inline-answer) {
+  position: relative;
+}
+
+.llm-agent-activity-list-flush > :not(.llm-agent-inline-answer)::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: -5px;
+  bottom: -5px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+  pointer-events: none;
+}
+
+.llm-agent-activity-list-flush
+  > :not(.llm-agent-inline-answer):first-child::before {
+  top: 0;
+}
+
+.llm-agent-activity-list-flush
+  > :not(.llm-agent-inline-answer):last-child::before {
+  bottom: 0;
+}
+
+/* Steps with their own margins reach across them to the same rail. */
+.llm-agent-activity-list-flush > .llm-agent-reasoning::before {
+  top: -9px;
+  bottom: -7px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-reasoning:first-child::before {
+  top: -4px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-reasoning:last-child::before {
+  bottom: -2px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-image-artifacts::before {
+  left: -29px;
+  top: -3px;
+  bottom: -7px;
+}
+
+.llm-agent-inline-text.llm-plan-document-lead {
+  font-size: var(--llm-fs-13);
+  padding-top: 0;
+}
+
 .llm-agent-process-action {
   display: flex;
   flex-direction: column;

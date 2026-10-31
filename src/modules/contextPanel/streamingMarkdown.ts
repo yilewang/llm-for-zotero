@@ -1,5 +1,8 @@
 import { withChatContentScrollGuard } from "./chatScrollSnapshots";
-import { renderRenderedMarkdownInto } from "./renderedMarkdown";
+import {
+  attachStreamingTailChrome,
+  renderRenderedMarkdownInto,
+} from "./renderedMarkdown";
 import { copyFlatContentScope } from "./contentChrome";
 import { isLiveDocument } from "./panelLiveness";
 import { splitSettledMarkdownBlocks } from "../../utils/markdown";
@@ -92,6 +95,7 @@ export function renderStreamingMarkdownInto(
         }
         const tail = doc.createElement("div");
         tail.className = STREAMING_BLOCK_CLASS;
+        copyFlatContentScope(target, tail);
         renderRenderedMarkdownInto(
           tail,
           next.pending.slice(committed.length),
@@ -101,6 +105,7 @@ export function renderStreamingMarkdownInto(
             deferEnrichment: true,
           },
         );
+        attachStreamingTailChrome(tail, doc);
         const fresh = [...blocks, tail].flatMap((block) =>
           Array.from(block.children),
         ) as HTMLElement[];

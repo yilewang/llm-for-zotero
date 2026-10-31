@@ -7,6 +7,7 @@ import { setAgentToolPresentationResolverForTests } from "../src/modules/context
 import type { AgentConfirmationResolution } from "../src/agent/types";
 import { readFileSync } from "node:fs";
 import type { Message } from "../src/modules/contextPanel/types";
+import { CONTENT_FLAT_SCOPE_CLASS } from "../src/modules/contextPanel/contentChrome";
 import {
   buildAgentTraceChipDetails,
   buildAgentTraceDisplayItems,
@@ -2527,6 +2528,32 @@ describe("agentTrace render", function () {
       ],
       "both agent messages stay inside the open activity container",
     );
+    // Every agent message is drawn in the answer's look, in the steps; the
+    // status line keeps the step look.
+    for (const node of workingDetails!.findAllByClass(
+      "llm-agent-process-message",
+    )) {
+      const agentMessage = node.innerHTML.includes("<p>");
+      assert.equal(
+        node.classList.contains("llm-agent-inline-answer"),
+        agentMessage,
+      );
+      assert.equal(
+        node.classList.contains(CONTENT_FLAT_SCOPE_CLASS),
+        agentMessage,
+      );
+    }
+    assert.isTrue(
+      workingTrace
+        .findByClass("llm-agent-activity-list")!
+        .classList.contains("llm-agent-activity-list-flush"),
+    );
+    assert.isUndefined(
+      workingTrace.children.find((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      ),
+      "no Codex message is drawn below the steps",
+    );
     assert.isNotNull(
       workingDetails?.findByClass("llm-agent-process-action") || null,
       "the interleaved tool trace stays in the same container",
@@ -2586,6 +2613,175 @@ describe("agentTrace render", function () {
     assert.isNotNull(
       completedTrace.findByClass("llm-agent-output-divider"),
       "the canonical final answer is rendered below the completed trace",
+    );
+  });
+
+  it("keeps trace text that stands in for the answer in one node below the steps while it grows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 280_000,
+      runMode: "agent" as const,
+      streaming: true,
+    };
+    const record = (
+      seq: number,
+      payload: AgentRunEventRecord["payload"],
+    ): AgentRunEventRecord => ({
+      runId: "run-inline-answer",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    });
+    const events: AgentRunEventRecord[] = [
+      record(1, { type: "message_delta", text: "Let me read the paper." }),
+      record(2, {
+        type: "tool_call",
+        callId: "call-1",
+        name: "paper_read",
+        args: { operation: "overview" },
+      }),
+      record(3, {
+        type: "tool_result",
+        callId: "call-1",
+        name: "paper_read",
+        ok: true,
+        content: { text: "paper text" },
+      }),
+      record(4, { type: "message_delta", text: "The answer begins.\n\n" }),
+    ];
+    const answerHostOf = (trace: FakeElement) =>
+      trace.children.filter((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      );
+
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    const [host] = answerHostOf(first);
+    assert.isOk(host, "the answer text is drawn below the disclosure");
+    const node = host.children[0];
+    assert.isTrue(node.classList.contains("llm-agent-inline-answer"));
+    assert.isTrue(node.classList.contains(CONTENT_FLAT_SCOPE_CLASS));
+    assert.lengthOf(
+      first
+        .findByClass("llm-agent-activity-list")!
+        .findAllByClass("llm-agent-inline-answer"),
+      0,
+    );
+
+    // A text-only refresh grows the same node where it is.
+    events.push(record(5, { type: "message_delta", text: "It continues." }));
+    const next = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      previous: first as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    assert.deepEqual(answerHostOf(next), [host]);
+    assert.deepEqual(host.children, [node]);
+  });
+
+  it("keeps a streaming Codex message in one node and one look when a tool call follows it", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 270_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const commentary: AgentRunEventRecord = {
+      runId: "run-answer-host",
+      seq: 1,
+      eventType: "codex_progress",
+      payload: {
+        type: "codex_progress",
+        itemId: "assistant-1",
+        text: "Let me check the methods section.",
+        status: "running",
+        kind: "assistant_message",
+      },
+      createdAt: 1_000,
+    };
+    const tool: AgentRunEventRecord = {
+      runId: "run-answer-host",
+      seq: 2,
+      eventType: "codex_tool_activity",
+      payload: {
+        type: "codex_tool_activity",
+        itemId: "tool-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read paper",
+        ok: true,
+        text: "Read paper",
+      },
+      createdAt: 2_000,
+    };
+    const listOf = (trace: FakeElement) =>
+      trace.findByClass("llm-agent-activity-list")!;
+    const noteIn = (trace: FakeElement) => {
+      const notes = trace
+        .findAllByClass("llm-agent-process-message")
+        .filter((node) => node.innerHTML.includes("methods section"));
+      assert.lengthOf(notes, 1, "the note is drawn once");
+      return notes[0];
+    };
+
+    const streaming = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [commentary],
+    }) as unknown as FakeElement;
+    const note = noteIn(streaming);
+    assert.strictEqual(note.parentElement, listOf(streaming));
+    assert.isTrue(note.classList.contains("llm-agent-inline-answer"));
+    assert.isTrue(note.classList.contains(CONTENT_FLAT_SCOPE_CLASS));
+    assert.isTrue(
+      listOf(streaming).classList.contains("llm-agent-activity-list-flush"),
+    );
+    const classes = note.className;
+
+    const afterTool = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [commentary, tool],
+      previous: streaming as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    assert.strictEqual(afterTool, streaming);
+    assert.strictEqual(noteIn(afterTool), note, "the same node stays");
+    assert.equal(note.className, classes, "its look does not change");
+    assert.strictEqual(note.parentElement, listOf(afterTool));
+    const rows = listOf(afterTool).children;
+    const toolRow = rows.findIndex((row) =>
+      row.classList.contains("llm-agent-process-stage"),
+    );
+    assert.isAbove(
+      toolRow,
+      rows.indexOf(note),
+      "the note stays before the tool row",
+    );
+    assert.isTrue(
+      listOf(afterTool).classList.contains("llm-agent-activity-list-flush"),
+    );
+    assert.isUndefined(
+      afterTool.children.find((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      ),
+    );
+
+    // A trace without agent messages keeps the ordinary indented list.
+    const toolOnly = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...message, timestamp: 271_000 },
+      events: [tool],
+    }) as unknown as FakeElement;
+    assert.isFalse(
+      listOf(toolOnly).classList.contains("llm-agent-activity-list-flush"),
     );
   });
 

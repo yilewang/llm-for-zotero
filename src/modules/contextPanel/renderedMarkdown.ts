@@ -3606,6 +3606,26 @@ export function renderRenderedMathPreviewInto(
   }
 }
 
+/**
+ * Gives a streaming tail (rendered with deferEnrichment) the same flat chrome
+ * as settled text, so code, tables and math do not show the old boxed look
+ * while they stream. Diagrams and web pages are not drawn: their source is
+ * still growing, so they wait until their block settles.
+ */
+export function attachStreamingTailChrome(
+  target: HTMLElement,
+  doc: Document,
+): void {
+  attachRenderedCodeBlockControls(target, doc);
+  attachRenderedCopyButtons(target, doc);
+  attachRenderedCodeBlockMoveButtons(target, doc);
+  attachFlatCodeBlockChrome(target, doc);
+  attachFlatPreviewChrome(target, doc);
+  attachFlatTableChrome(target, doc);
+  attachFlatMathChrome(target, doc);
+  attachFlatInlineImageChrome(target, doc);
+}
+
 export function renderRenderedMarkdownInto(
   target: HTMLElement,
   text: string,

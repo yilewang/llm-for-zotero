@@ -197,6 +197,8 @@ type AgentTraceDisplayItem =
       tone: "neutral" | "success" | "warning";
       text: string;
       markdown?: boolean;
+      /** A Codex agent message: always drawn in the answer's look. */
+      agentMessage?: boolean;
     }
   | {
       type: "action";
@@ -242,7 +244,12 @@ type AgentTraceDisplayItem =
       summary?: string;
       details?: string;
     }
-  | { type: "inline_text"; text: string };
+  | {
+      type: "inline_text";
+      text: string;
+      /** Drawn as the answer, below the activity rather than in it. */
+      answer?: boolean;
+    };
 
 type RenderAgentTraceParams = {
   doc: Document;
@@ -5054,6 +5061,7 @@ function appendCodexAgentTraceEvent(
           tone: "neutral",
           text: progressText,
           markdown: true,
+          agentMessage: true,
         });
       }
       return true;
@@ -5966,10 +5974,24 @@ function projectAgentTrace(
           )
         : items
     : replaceInlineTextWithDraftingAction(items);
+  // Text that stands in for the answer takes the answer's look and place, so
+  // nothing changes when the bubble takes it over. Only the last item can be
+  // the answer; notes between tool calls keep the step look. Codex agent
+  // messages keep the answer's look in the steps instead (see the renderer).
+  const lastItem = displayItems[displayItems.length - 1];
+  const answerItem =
+    (assistantMessage?.streaming === true || inlineTextReplacesAssistantText) &&
+    lastItem?.type === "inline_text" &&
+    !adapterContext.intermediateInlineTextItems.has(lastItem)
+      ? lastItem
+      : undefined;
+  const answerMarkedItems = answerItem
+    ? [...displayItems.slice(0, -1), { ...answerItem, answer: true }]
+    : displayItems;
 
   const presentedItems = labels
-    ? projectPaperReferencesOntoTraceItems(displayItems, labels)
-    : displayItems;
+    ? projectPaperReferencesOntoTraceItems(answerMarkedItems, labels)
+    : answerMarkedItems;
   const lastShown = presentedItems[presentedItems.length - 1];
   return {
     projection: {
@@ -6866,6 +6888,8 @@ type TraceView = {
   formattingVersion?: number;
   /** The figure strip below the activity; rebuilt only when its images change. */
   figures?: { signature: string; node: HTMLElement };
+  /** Holds the item drawn as the answer, just below the disclosure. */
+  answerHost?: HTMLElement;
 };
 const traceViews = new WeakMap<HTMLElement, TraceView>();
 
@@ -6902,6 +6926,11 @@ function updateReasoningText(target: HTMLElement, rawNext: string): void {
   } else target.textContent = next;
   committedReasoningText.set(target, next);
 }
+
+/** Trace text that is the answer, drawn like the answer in the bubble. */
+const INLINE_ANSWER_CLASS = "llm-agent-inline-answer";
+/** A step list whose answer-look messages reach the answer's left edge. */
+const FLUSH_LIST_CLASS = "llm-agent-activity-list-flush";
 
 /**
  * A row's signature: the item itself, except where the projection shares a
@@ -7050,10 +7079,12 @@ export function renderAgentTrace({
     }
     wrap.replaceChildren(renderPendingCard(pending));
     view.items.clear();
+    view.answerHost = undefined;
     return wrap;
   }
   const hasFinalResponse = scan.hasFinal;
   const nextViews = new Map<string, TraceItemView>();
+  let answerPlaced = false;
   // Stage groups nest their rows, so placement walks one container at a time
   // and recurses into a stage's body with the same retained-view cache.
   const renderTraceItemsInto = (
@@ -7064,9 +7095,23 @@ export function renderAgentTrace({
     let cursor: ChildNode | null = container.firstChild;
     let currentKey = "";
     let currentSignature = "";
+    let currentIsAnswer = false;
     const place = (node: HTMLElement, reasoningText?: HTMLElement | null) => {
-      if (node !== cursor) container.insertBefore(node, cursor);
-      cursor = node.nextSibling;
+      if (currentIsAnswer) {
+        // The answer sits below the disclosure. A node already there is left
+        // in place: moving it would restart its fade-in.
+        if (node === cursor) cursor = node.nextSibling;
+        if (!view.answerHost) {
+          view.answerHost = doc.createElement("div");
+          view.answerHost.className = "llm-agent-activity-answer";
+        }
+        if (node.parentElement !== view.answerHost)
+          view.answerHost.replaceChildren(node);
+        answerPlaced = true;
+      } else {
+        if (node !== cursor) container.insertBefore(node, cursor);
+        cursor = node.nextSibling;
+      }
       nextViews.set(currentKey, {
         signature: currentSignature,
         node,
@@ -7074,6 +7119,10 @@ export function renderAgentTrace({
       });
     };
     for (const [itemIndex, itemEntry] of itemsToRender.entries()) {
+      currentIsAnswer =
+        keyPrefix === "" &&
+        itemEntry.type === "inline_text" &&
+        itemEntry.answer === true;
       currentKey =
         keyPrefix +
         (itemEntry.type === "reasoning"
@@ -7138,7 +7187,14 @@ export function renderAgentTrace({
         place(old.node);
         continue;
       }
-      if (old && itemEntry.type === "inline_text" && message.streaming) {
+      // A node that changes between answer and step is rebuilt in its look.
+      if (
+        old &&
+        itemEntry.type === "inline_text" &&
+        message.streaming &&
+        old.node.classList.contains(INLINE_ANSWER_CLASS) ===
+          Boolean(itemEntry.answer)
+      ) {
         const streamed = planAgentTraceMarkdownForRender(
           itemEntry.text,
           message,
@@ -7151,6 +7207,8 @@ export function renderAgentTrace({
       if (itemEntry.type === "inline_text") {
         const inlineEl = doc.createElement("div");
         inlineEl.className = "llm-agent-inline-text";
+        if (itemEntry.answer)
+          inlineEl.classList.add(INLINE_ANSWER_CLASS, CONTENT_FLAT_SCOPE_CLASS);
         const { markdown: inlineText, occurrences } =
           planAgentTraceMarkdownForRender(itemEntry.text, message);
         bindQuoteRenderOccurrences(inlineEl, occurrences);
@@ -7166,6 +7224,13 @@ export function renderAgentTrace({
       if (itemEntry.type === "message") {
         const messageEl = doc.createElement("div");
         messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
+        // A Codex agent message may be the answer: it has the answer's look
+        // from its first word, so it never changes when a tool call follows.
+        if (itemEntry.agentMessage)
+          messageEl.classList.add(
+            INLINE_ANSWER_CLASS,
+            CONTENT_FLAT_SCOPE_CLASS,
+          );
         if (itemEntry.markdown) {
           messageEl.classList.add("llm-agent-process-message-markdown");
           const { markdown: markdownText, occurrences } =
@@ -7351,7 +7416,25 @@ export function renderAgentTrace({
       cursor = next;
     }
   };
+  // Codex agent messages sit at the answer's left edge: the list drops its
+  // indent and each step row draws its own piece of the rail.
+  list.classList.toggle(
+    FLUSH_LIST_CLASS,
+    processItems.some((item) => item.type === "message" && item.agentMessage),
+  );
   renderTraceItemsInto(list, processItems, "");
+  if (!answerPlaced) {
+    view.answerHost?.remove();
+    view.answerHost = undefined;
+  }
+  // Right after the disclosure; moved only when something displaced it.
+  const mountAnswerHost = () => {
+    const details = list.parentElement;
+    const host = view.answerHost;
+    if (host && details?.parentElement === wrap && details.nextSibling !== host)
+      wrap.insertBefore(host, details.nextSibling);
+  };
+  mountAnswerHost();
   for (const [key, old] of view.items) {
     if (nextViews.get(key)?.node !== old.node)
       disposeStreamingMarkdown(old.node);
@@ -7375,7 +7458,8 @@ export function renderAgentTrace({
         child !== view.document?.caption &&
         child !== view.document?.lead?.node &&
         child !== view.discovery?.node &&
-        child !== view.figures?.node
+        child !== view.figures?.node &&
+        child !== view.answerHost
       )
         child?.remove();
     }
@@ -7389,6 +7473,7 @@ export function renderAgentTrace({
     scan,
     forceOpen: Boolean(pending),
   });
+  mountAnswerHost();
 
   let hasSavedNote = false;
   let actionSummaryCard: AgentActionSummaryResultCard | undefined;
