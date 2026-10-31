@@ -18885,14 +18885,26 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
 /* In the standalone window the row lines up with the History pane's second
    row (Search history), as the title row does with New chat: the card's
    header sits on that row's 38px band, its border just outside. The
-   chat runs 5px up under the title row and the panel pads 5px, so the
-   card would start at the title row's lower edge; 1px more puts its
-   border 1px below that edge. */
+   shell's top depends on the chat's state:
+   - Start page: the header is hidden, so the shell starts at the panel's 5px
+     padding. 1px more puts the card's border 1px below the title row's lower
+     edge.
+   - With turns: the header shows, runs 5px up under the title row
+     (margin-top -5px) and the panel's gap under it is taken back
+     (margin-bottom -10px), so the shell starts 5px higher; 6px puts the card
+     at the same place. */
 [data-standalone="true"]
   .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="opening"],
 [data-standalone="true"]
   .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="open"] {
   margin-top: 1px;
+}
+
+.llm-panel[data-standalone="true"]:not([data-start-page-active="true"])
+  .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="opening"],
+.llm-panel[data-standalone="true"]:not([data-start-page-active="true"])
+  .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="open"] {
+  margin-top: 6px;
 }
 
 :root:not([data-llm-pane-view="stacked"])
