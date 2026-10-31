@@ -226,6 +226,7 @@ describe("workflow: streaming answer look", function () {
         name: "paper_read",
         ok: true,
         content: { text: "Methods text." },
+        actionReceipts: [],
       });
       await handle.emit({ type: "message_delta", text: `${first}\n\n` });
       await handle.emit({ type: "message_delta", text: `${second}\n\n` });

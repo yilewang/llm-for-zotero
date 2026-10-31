@@ -151,7 +151,11 @@ function installMockSkillEnvironment(
     debug: () => undefined,
   };
   globalScope.IOUtils = {
-    exists: async (path: string) => dirs.has(path) || path in files,
+    // As with IOUtils, a folder exists when a file lies under it.
+    exists: async (path: string) =>
+      dirs.has(path) ||
+      path in files ||
+      Object.keys(files).some((file) => file.startsWith(`${path}/`)),
     makeDirectory: async (path: string) => {
       dirs.add(path);
     },
@@ -345,11 +349,18 @@ describe("user skill bootstrap upgrades", function () {
     installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
     const shipped = BUILTIN_SKILL_FILES["write-note.md"];
     // Simulate a user on an older shipped managed block who appended a
-    // customization section after MANAGED-END (the supported flow).
-    const oldManagedOnDisk = spliceManagedBlock(
-      shipped,
-      "\nOLD MANAGED CONTENT — previous shipped version.\n",
-    );
+    // customization section after MANAGED-END (the supported flow). The
+    // block must be one that shipped: a tracked block no release holds is
+    // the user's own text.
+    const oldBlock = extractManagedBlock(
+      readFileSync(
+        new URL("./fixtures/skillUpgrades/write-note-v18.md", import.meta.url),
+        "utf8",
+      ),
+    ).block as string;
+    assert.isString(oldBlock);
+    assert.notEqual(oldBlock, extractManagedBlock(shipped).block);
+    const oldManagedOnDisk = spliceManagedBlock(shipped, oldBlock);
     assert.isString(oldManagedOnDisk);
     const customization =
       "\n\n## Your customizations\n\nPath pattern: `{papertitle}/{papertitle}.md`\n";
@@ -373,7 +384,7 @@ describe("user skill bootstrap upgrades", function () {
     await initUserSkills();
 
     const canonicalWriteNote = files[writeNotePath];
-    assert.notInclude(canonicalWriteNote, "OLD MANAGED CONTENT");
+    assert.notInclude(canonicalWriteNote, oldBlock);
     assert.equal(
       extractManagedBlock(canonicalWriteNote).block,
       extractManagedBlock(shipped).block,
@@ -630,6 +641,7 @@ describe("user skill bootstrap upgrades", function () {
     "evidence-based-qa-v9",
     "evidence-based-qa-v10",
     "evidence-based-qa-v12",
+    "compare-papers-v6",
     "compare-papers-v7",
     "compare-papers-v9",
     "compare-papers-v10",

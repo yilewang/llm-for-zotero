@@ -371,7 +371,7 @@ function atomizeLibraryOperations(
  * The operations to replay for a step's library inverse.
  *
  * Journal rows written before metadata edits recorded only the fields they
- * set carry an `update_metadata` inverse naming every field of the item type.
+ * set carry a metadata inverse naming every field of the item type.
  * Undo compares what that would restore with the edit's post-image, which
  * holds only the fields the edit set, so such a row could never match. Trim
  * it to the keys of the forward patch (the creators only when the patch set
