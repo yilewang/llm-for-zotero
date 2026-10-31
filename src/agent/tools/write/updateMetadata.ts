@@ -17,6 +17,7 @@ import {
 } from "../../actions/pagedWorkflow";
 import {
   LibraryMutationService,
+  type ChangeItemTypeOperation,
   type UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
@@ -29,17 +30,26 @@ import {
   normalizeToolPaperContext,
 } from "../shared";
 import {
+  buildItemTypeChangeReviewField,
   buildUpdateMetadataReviewField,
   executeAndRecordUndo,
   executeAndRecordUndoBatch,
   normalizeMetadataPatch,
   planLibraryMutations,
+  prepareItemTypeChange,
   resolveMetadataWriteItem,
 } from "./mutateLibraryShared";
 
 type UpdateMetadataInput = {
-  operations: UpdateMetadataOperation[];
+  operations: UpdateMetadataOperation[] | [ChangeItemTypeOperation];
 };
+
+function itemTypeChangeOf(
+  input: UpdateMetadataInput,
+): ChangeItemTypeOperation | undefined {
+  const [operation] = input.operations;
+  return operation?.type === "change_item_type" ? operation : undefined;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,7 +91,7 @@ export function createUpdateMetadataTool(
 
   return {
     describeAction: describeLibraryMutationInput,
-    effectOperations: ["update_metadata"],
+    effectOperations: ["update_metadata", "change_item_type"],
     spec: {
       name: "update_metadata",
       description:
@@ -194,6 +204,25 @@ export function createUpdateMetadataTool(
         );
       }
 
+      // A type change stands alone: the new type's fields are set after it.
+      if (args.itemType !== undefined) {
+        const itemType =
+          typeof args.itemType === "string" ? args.itemType.trim() : "";
+        const itemId = normalizePositiveInt(args.itemId);
+        if (
+          !itemType ||
+          !itemId ||
+          args.metadata !== undefined ||
+          args.operations !== undefined
+        )
+          return fail(
+            "itemType needs exactly one itemId and no metadata. Change the type first, then set the new type's fields in a second call.",
+          );
+        return ok({
+          operations: [{ type: "change_item_type", itemId, itemType }],
+        });
+      }
+
       // Batch mode: { operations: [...] }
       if (
         Object.prototype.hasOwnProperty.call(args, "operations") &&
@@ -254,10 +283,31 @@ export function createUpdateMetadataTool(
     },
 
     createPendingAction(input, context) {
-      const isBatch = input.operations.length > 1;
-      const pageMeta = readPagedOperationMeta(input.operations[0]?.id);
-      const pageLabel = readPagedOperationLabel(input.operations[0]?.id);
-      const reviewFields = input.operations.map((operation) => {
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) {
+        const field = buildItemTypeChangeReviewField(typeChange, zoteroGateway);
+        const item = zoteroGateway.getItem(typeChange.itemId);
+        const dropped = field.rows.slice(1).map((row) => row.label);
+        return {
+          toolName: "update_metadata",
+          mode: "review",
+          title: `Change item type for ${
+            zoteroGateway.getEditableArticleMetadata(item)?.title ||
+            `Item ${typeChange.itemId}`
+          }`,
+          description: dropped.length
+            ? `Changing the type drops ${dropped.length} field${dropped.length === 1 ? "" : "s"}: ${dropped.join(", ")}. Undo restores them.`
+            : "Changing the type drops no fields.",
+          confirmLabel: "Apply",
+          cancelLabel: "Cancel",
+          fields: [field],
+        };
+      }
+      const operations = input.operations as UpdateMetadataOperation[];
+      const isBatch = operations.length > 1;
+      const pageMeta = readPagedOperationMeta(operations[0]?.id);
+      const pageLabel = readPagedOperationLabel(operations[0]?.id);
+      const reviewFields = operations.map((operation) => {
         const item = resolveMetadataWriteItem(
           operation,
           zoteroGateway,
@@ -277,9 +327,9 @@ export function createUpdateMetadataTool(
       });
 
       const title = isBatch
-        ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${input.operations.length} items`
+        ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${operations.length} items`
         : `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${(() => {
-            const op = input.operations[0];
+            const op = operations[0];
             const item = resolveMetadataWriteItem(op, zoteroGateway, context);
             return (
               zoteroGateway.getEditableArticleMetadata(item)?.title ||
@@ -312,10 +362,15 @@ export function createUpdateMetadataTool(
       return ok(input);
     },
 
-    planInvocation: (input, context) =>
-      planLibraryMutations(mutationService, input.operations, context),
+    planInvocation: (input, context) => {
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) prepareItemTypeChange(typeChange, zoteroGateway);
+      return planLibraryMutations(mutationService, input.operations, context);
+    },
 
     async execute(input, context) {
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) prepareItemTypeChange(typeChange, zoteroGateway);
       if (input.operations.length === 1) {
         return executeAndRecordUndo(
           mutationService,

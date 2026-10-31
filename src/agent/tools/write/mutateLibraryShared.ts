@@ -9,6 +9,7 @@ import {
 import type { ActionEffect } from "../../authorization/types";
 import type {
   ApplyTagsOperation,
+  ChangeItemTypeOperation,
   LibraryMutationOperation,
   LibraryMutationService,
   MoveToCollectionOperation,
@@ -202,7 +203,7 @@ function normalizeDisplayText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function formatItemTypeLabel(itemType: string | undefined): string {
+export function formatItemTypeLabel(itemType: string | undefined): string {
   if (!itemType) return "";
   if (itemType === "journalArticle") return "Journal article";
   if (itemType === "conferencePaper") return "Conference paper";
@@ -639,6 +640,57 @@ export function buildUpdateMetadataReviewField(
     id: `metadataReview:${operation.id}`,
     label: showTitle ? itemTitle : undefined,
     rows,
+  };
+}
+
+/**
+ * Freeze what a type change drops, once, before the card or the write: the
+ * user approves these exact fields, and the write refuses any others.
+ */
+export function prepareItemTypeChange(
+  operation: ChangeItemTypeOperation,
+  zoteroGateway: ZoteroGateway,
+): void {
+  if (operation.restore || operation.droppedFields) return;
+  const plan = zoteroGateway.planItemTypeChange(
+    zoteroGateway.getItem(operation.itemId),
+    operation.itemType,
+  );
+  if ("refusal" in plan) throw new Error(plan.refusal);
+  operation.droppedFields = plan.droppedFields;
+  operation.expectedCreators = plan.after.creators;
+  operation.expectedFields = plan.after.fields;
+}
+
+/**
+ * The type-change card: the type row, then one row per field the change
+ * drops, with the value it loses.
+ */
+export function buildItemTypeChangeReviewField(
+  operation: ChangeItemTypeOperation,
+  zoteroGateway: ZoteroGateway,
+): Extract<AgentPendingField, { type: "review_table" }> {
+  prepareItemTypeChange(operation, zoteroGateway);
+  const item = zoteroGateway.getItem(operation.itemId)!;
+  const record = zoteroGateway.readItemTypeRecord(item);
+  return {
+    type: "review_table",
+    id: `itemTypeReview:${operation.id || operation.itemId}`,
+    rows: [
+      {
+        key: "itemType",
+        label: "Item type",
+        before: formatItemTypeLabel(record.itemType),
+        after: formatItemTypeLabel(operation.itemType),
+      },
+      ...(operation.droppedFields || []).map((field) => ({
+        key: field,
+        label: metadataFieldLabel(field),
+        before: record.fields[field] || "",
+        after: "",
+        multiline: field === "abstractNote",
+      })),
+    ],
   };
 }
 

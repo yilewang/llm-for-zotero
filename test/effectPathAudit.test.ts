@@ -142,6 +142,7 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
       "move_to_collection",
       "remove_from_collection",
       "update_metadata",
+      "change_item_type",
       "reparent_items",
       "relate_items",
       "update_library_tag",
@@ -321,7 +322,7 @@ const DELEGATE_ROUTES: Readonly<
   },
   update_metadata: {
     facade: "library_update",
-    operations: ["update_metadata"],
+    operations: ["update_metadata", "change_item_type"],
     fixture: { kind: "metadata", itemId: 1, metadata: { title: "Audit" } },
   },
   reparent_items: {

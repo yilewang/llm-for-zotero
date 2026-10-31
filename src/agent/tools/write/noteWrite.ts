@@ -1039,20 +1039,26 @@ export function createNoteWriteTool(
         typeof args.documentId === "string"
           ? args.documentId.trim()
           : undefined;
+      // A finalized document goes to exactly one named destination: a
+      // parent item, or a standalone note (collections imply standalone).
+      const documentStandalone =
+        args.target === "standalone" ||
+        Boolean(normalizePositiveIntArray(args.collections)?.length);
       if (
         args.documentId !== undefined &&
         (!documentId ||
           hasContent ||
           hasPatches ||
           sourceNoteId ||
-          args.target === "standalone" ||
-          !(mode === "create"
-            ? normalizePositiveInt(args.targetItemId)
-            : normalizePositiveInt(args.targetNoteId)) ||
-          args.collections !== undefined)
+          (mode === "create"
+            ? Boolean(normalizePositiveInt(args.targetItemId)) ===
+              documentStandalone
+            : !normalizePositiveInt(args.targetNoteId) ||
+              args.target === "standalone" ||
+              args.collections !== undefined))
       )
         return fail(
-          "documentId requires the exact parent targetItemId for create, or targetNoteId for edit/append, without substituted content, patches, or collections.",
+          "documentId requires, for create, either the exact parent targetItemId or target:'standalone' (optionally with collections); for edit/append, targetNoteId. No substituted content or patches.",
         );
       if (
         args.sourceNoteId !== undefined &&
@@ -1135,7 +1141,7 @@ export function createNoteWriteTool(
       }
 
       const target =
-        args.target === "standalone"
+        args.target === "standalone" || (documentId && documentStandalone)
           ? ("standalone" as const)
           : ("item" as const);
 
@@ -1382,25 +1388,36 @@ export function createNoteWriteTool(
       prepareNoteWriteInput(zoteroGateway, input, context);
       if (input.documentId && input.mode === "create") {
         const documentId = input.documentId;
+        const standalone = input.target === "standalone";
+        const libraryID = context.request.libraryID!;
         return executeExternalMutation({
           context,
           toolName: "note_write",
           plan: {
             operation: "save_workflow_document",
-            description: "Attach the exact finalized summary to its paper",
+            description: standalone
+              ? "Save the exact finalized document as a standalone note"
+              : "Attach the exact finalized summary to its paper",
             forward: {
               documentId,
               targetItemId: input.targetItemId,
+              ...(standalone ? { collections: input.collections || [] } : {}),
               contentHash: input._documentMaterialRef?.contentHash,
             },
             reversibility: "full",
             deferredInverse: true,
           },
           execute: async () => {
-            const saved = await savePlanDocumentAsNote(documentId, {
-              parentItemId: input.targetItemId!,
-              libraryID: context.request.libraryID!,
-            });
+            const saved = await savePlanDocumentAsNote(
+              documentId,
+              standalone
+                ? {
+                    standalone: true,
+                    libraryID,
+                    collectionIds: input.collections,
+                  }
+                : { parentItemId: input.targetItemId!, libraryID },
+            );
             const note = zoteroGateway.getItem(saved.itemId)!;
             return {
               result: {
@@ -1408,6 +1425,9 @@ export function createNoteWriteTool(
                 documentId,
                 title: note.getNoteTitle(),
                 status: saved.created ? "created" : "already_satisfied",
+                ...(input.collections?.length
+                  ? { collections: input.collections }
+                  : {}),
                 warnings: saved.warnings,
                 noteVerification: saved.noteVerification,
               },
@@ -1426,8 +1446,11 @@ export function createNoteWriteTool(
                 kind: "created_item" as const,
                 itemId: saved.itemId,
                 exists: true,
-                parentItemId: input.targetItemId!,
+                parentItemId: standalone ? null : input.targetItemId!,
                 htmlChecksum: await sha256Text(note.getNote()),
+                ...(standalone
+                  ? { collections: note.getCollections?.() || [] }
+                  : {}),
               },
             };
           },

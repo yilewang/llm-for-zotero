@@ -1,4 +1,6 @@
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
+import { MutationNoEffectError } from "../externalMutationCoordinator";
+import { canonicalJsonEqual } from "./canonicalJson";
 import {
   buildMetadataInverse,
   buildTagInverse,
@@ -9,6 +11,7 @@ import {
 
 type DomainOperation =
   | "update_metadata"
+  | "change_item_type"
   | "apply_tags"
   | "remove_tags"
   | "set_item_tags"
@@ -39,6 +42,64 @@ export const itemMetadataTagRelationExecutors = {
         result,
       },
       inverse: previousSnapshot ? buildMetadataInverse(previousSnapshot) : null,
+    };
+  },
+  change_item_type: async (operation, context, zoteroGateway) => {
+    const item = zoteroGateway.getItem(operation.itemId);
+    if (!item)
+      throw new MutationNoEffectError(`Item ${operation.itemId} was not found`);
+    assertItemInActiveLibrary(item, context, "item type change");
+    // The undo: the recorded type, fields and creators, put back exactly.
+    if (operation.restore) {
+      await zoteroGateway.restoreItemTypeRecord({
+        item,
+        record: { itemType: operation.itemType, ...operation.restore },
+      });
+      return {
+        result: {
+          operation: operation.type,
+          operationId: operation.id,
+          result: {
+            status: "restored",
+            itemId: item.id,
+            itemType: operation.itemType,
+          },
+        },
+      };
+    }
+    const plan = zoteroGateway.planItemTypeChange(item, operation.itemType);
+    if ("refusal" in plan) throw new MutationNoEffectError(plan.refusal);
+    const changed = plan.fromType !== plan.toType;
+    // The user approved dropping these fields and no others.
+    if (
+      changed &&
+      operation.droppedFields &&
+      !canonicalJsonEqual(
+        [...plan.droppedFields].sort(),
+        [...operation.droppedFields].sort(),
+      )
+    )
+      throw new MutationNoEffectError(
+        `Item ${item.id} changed since the review: the type change would now drop ${plan.droppedFields.join(", ") || "no fields"}. Nothing was changed; review it again.`,
+      );
+    if (changed)
+      await zoteroGateway.changeItemType({
+        item,
+        itemType: operation.itemType,
+      });
+    return {
+      result: {
+        operation: operation.type,
+        operationId: operation.id,
+        result: {
+          status: changed ? "updated" : "unchanged",
+          itemId: item.id,
+          fromType: plan.fromType,
+          itemType: plan.toType,
+          // The result carries what the card showed: an MCP client has no card.
+          droppedFields: changed ? plan.droppedFields : [],
+        },
+      },
     };
   },
   apply_tags: async (operation, context, zoteroGateway) => {

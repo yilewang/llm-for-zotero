@@ -11,6 +11,7 @@ import type {
   AgentBatchItemOutcome,
   AgentToolContext,
   AgentWriteToolDefinition,
+  NoteAppendGuard,
 } from "../../types";
 import type { MaterialRef } from "../../documents/materialRef";
 import {
@@ -19,6 +20,10 @@ import {
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
+import { documentNoteParts } from "../../documents/actions";
+import type { PlanDocument } from "../../documents/types";
+import { composeNoteAppend } from "./preparedNoteChange";
+import { canonicalNoteHtml } from "../../../utils/noteHtml";
 import { loadPlanDocument } from "../../documents/store";
 import {
   assertMaterialRefMatches,
@@ -62,6 +67,9 @@ type PreparedBatchItem = {
   preview: string;
   /** Why this item has no material; it is recorded failed and never written. */
   failure?: string;
+  /** For an append: the note and its checksums around the write. */
+  targetNoteId?: number;
+  append?: NoteAppendGuard;
 };
 
 /** One row a resume has to correct, once the call is authorized to run. */
@@ -111,6 +119,9 @@ type StoredBatchNote = {
   itemKey: string;
   targetItemId: number;
   collections?: number[];
+  /** For an append: the note, and its checksums frozen before the write. */
+  targetNoteId?: number;
+  append?: NoteAppendGuard;
 };
 
 type NoteWriteBatchInput = {
@@ -176,6 +187,34 @@ export function createNoteWriteBatchTool(
   }
 
   /**
+   * The checksums of a note before and after its append, from the native
+   * note as the user approves it. The executor composes the same HTML.
+   */
+  async function appendGuardFor(
+    noteId: number,
+    document: PlanDocument,
+    context: AgentToolContext,
+  ): Promise<NoteAppendGuard> {
+    const note = zoteroGateway.getItem(noteId);
+    if (!note?.isNote?.() || note.deleted)
+      throw new Error(`Note ${noteId} was not found, or is not a live note`);
+    if (
+      context.request.libraryID &&
+      note.libraryID !== context.request.libraryID
+    )
+      throw new Error(`Note ${noteId} is in another library`);
+    const before = note.getNote();
+    // The executor composes the same way: the body carries no root, and the
+    // cited works are registered in the note's own root.
+    const body = documentNoteParts(document.visibleHtml, note.libraryID);
+    const after = composeNoteAppend(before, body.html, body.citationItems);
+    return {
+      beforeChecksum: await sha256Text(canonicalNoteHtml(before)),
+      afterChecksum: await sha256Text(canonicalNoteHtml(after)),
+    };
+  }
+
+  /**
    * Freeze every body as its own durable document before the user is asked.
    *
    * Preparation, not execution, is where this belongs: the confirmation card
@@ -195,6 +234,7 @@ export function createNoteWriteBatchTool(
     const runId = context.runId;
     if (!runId) throw new Error("The note batch has no run identity");
     const now = Date.now();
+    const append = resolvedOperation(input).mode === "append";
     const notes = resolvedOperation(input).notes;
     const keys = batchItemKeys(notes);
     const items: PreparedBatchItem[] = [];
@@ -216,6 +256,16 @@ export function createNoteWriteBatchTool(
           ...base,
           material: materialRefFromDocument(document),
           preview: previewOf(document.visibleMarkdown),
+          ...(append && note.targetNoteId
+            ? {
+                targetNoteId: note.targetNoteId,
+                append: await appendGuardFor(
+                  note.targetNoteId,
+                  document,
+                  context,
+                ),
+              }
+            : {}),
         });
       } catch (error) {
         // One body the host cannot finalize must not cost the other
@@ -335,9 +385,15 @@ export function createNoteWriteBatchTool(
         position: row.position,
         material: row.materialRef,
         preview: previewOf(resolved.body),
+        ...(descriptor.targetNoteId
+          ? { targetNoteId: descriptor.targetNoteId, append: descriptor.append }
+          : {}),
       });
       notes.push({
         targetItemId: descriptor.targetItemId,
+        ...(descriptor.targetNoteId
+          ? { targetNoteId: descriptor.targetNoteId }
+          : {}),
         content: resolved.body,
         ...(descriptor.collections?.length
           ? { collections: descriptor.collections }
@@ -348,6 +404,7 @@ export function createNoteWriteBatchTool(
       type: "save_notes_batch",
       notes,
       target: storedInput.target,
+      ...(storedInput.mode === "append" ? { mode: "append" as const } : {}),
     };
     input._items = items;
     input._resume = resume;
@@ -422,6 +479,7 @@ export function createNoteWriteBatchTool(
         position: item.position,
         material: item.material,
         failure: item.failure,
+        ...(item.append ? { append: item.append } : {}),
       })),
     };
   }
@@ -444,11 +502,17 @@ export function createNoteWriteBatchTool(
         action: "note_write_batch",
         input: {
           target: resolvedOperation(input).target,
+          ...(resolvedOperation(input).mode === "append"
+            ? { mode: "append" }
+            : {}),
           // Stored once, so continuing the batch never has to ask the model
           // which paper an item belonged to or where its note should be filed.
           notes: items.map((item, index) => ({
             itemKey: item.itemKey,
             targetItemId: item.targetItemId,
+            ...(item.targetNoteId
+              ? { targetNoteId: item.targetNoteId, append: item.append }
+              : {}),
             ...(resolvedOperation(input).notes[index]?.collections?.length
               ? {
                   collections:
@@ -499,11 +563,15 @@ export function createNoteWriteBatchTool(
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["targetItemId", "content"],
+              required: ["content"],
               properties: {
                 targetItemId: {
                   type: "number",
                   description: "The item the note is attached to.",
+                },
+                targetNoteId: {
+                  type: "number",
+                  description: "For mode:'append': the note to append to.",
                 },
                 content: {
                   type: "string",
@@ -517,6 +585,12 @@ export function createNoteWriteBatchTool(
                 },
               },
             },
+          },
+          mode: {
+            type: "string",
+            enum: ["create", "append"],
+            description:
+              "'append' adds each entry's content to its targetNoteId once.",
           },
           target: {
             type: "string",
@@ -552,9 +626,14 @@ export function createNoteWriteBatchTool(
             inner.result && typeof inner.result === "object"
               ? (inner.result as Record<string, unknown>)
               : {};
+          const appended = Number(innermost.appendedCount || 0);
           const created = Number(innermost.createdCount || 0);
           const alreadySaved = Number(innermost.alreadySavedCount || 0);
           const failed = Number(innermost.failedCount || 0);
+          if (appended)
+            return `Appended to ${appended} note${appended === 1 ? "" : "s"}${
+              failed ? ` (${failed} failed)` : ""
+            }`;
           if (!created)
             return alreadySaved
               ? `${alreadySaved} note${alreadySaved === 1 ? " was" : "s were"} already written`
@@ -589,12 +668,38 @@ export function createNoteWriteBatchTool(
           "notes must be a non-empty array of { targetItemId, content }.",
         );
       }
+      const append = args.mode === "append";
       const notes: SaveNotesBatchOperation["notes"] = [];
-      for (const raw of args.notes) {
+      for (const [index, raw] of args.notes.entries()) {
         if (!validateObject<Record<string, unknown>>(raw)) continue;
-        const targetItemId = normalizePositiveInt(raw.targetItemId);
         const content = typeof raw.content === "string" ? raw.content : "";
-        if (!targetItemId || !content.trim()) continue;
+        // The schema requires only `content`, so a strict-schema provider
+        // does not enforce the id. An entry without the id its mode needs
+        // fails the whole call; dropping it would write the other entries
+        // and leave this one unwritten without a word.
+        const idName = append ? "targetNoteId" : "targetItemId";
+        const entryId = normalizePositiveInt(raw[idName]);
+        if (!entryId)
+          return fail(
+            `Note entry ${index + 1} has no ${idName}. ${
+              append
+                ? "Each entry of an append names the note to append to as targetNoteId."
+                : "Each entry names the item to write onto as targetItemId."
+            } Nothing was written.`,
+          );
+        if (append) {
+          // The item an append writes onto is the note itself.
+          const targetNoteId = entryId;
+          if (!content.trim()) continue;
+          if (notes.some((note) => note.targetNoteId === targetNoteId))
+            return fail(
+              `Note ${targetNoteId} appears twice; give each note one entry with all its content.`,
+            );
+          notes.push({ targetItemId: targetNoteId, targetNoteId, content });
+          continue;
+        }
+        const targetItemId = entryId;
+        if (!content.trim()) continue;
         notes.push({
           targetItemId,
           content,
@@ -607,7 +712,7 @@ export function createNoteWriteBatchTool(
       }
       if (!notes.length) {
         return fail(
-          "Every note needs a targetItemId and non-empty content. Nothing valid was provided.",
+          `Every note needs a ${append ? "targetNoteId" : "targetItemId"} and non-empty content. Nothing valid was provided.`,
         );
       }
       return ok({
@@ -615,6 +720,7 @@ export function createNoteWriteBatchTool(
           type: "save_notes_batch" as const,
           notes,
           target: args.target === "standalone" ? "standalone" : "item",
+          ...(append ? { mode: "append" as const } : {}),
         },
       });
     },
@@ -622,13 +728,17 @@ export function createNoteWriteBatchTool(
     createPendingAction(input) {
       const notes = notesOf(input);
       const continuing = Boolean(input._resume);
+      const append = input.operation?.mode === "append";
+      const count = `${notes.length} note${notes.length === 1 ? "" : "s"}`;
       return {
         toolName: "note_write_batch",
-        title: `Write ${notes.length} note${notes.length === 1 ? "" : "s"}`,
+        title: append ? `Append to ${count}` : `Write ${count}`,
         description: continuing
-          ? `Continue an interrupted batch by writing its remaining ${notes.length} note${notes.length === 1 ? "" : "s"}. These are the bodies the batch already prepared; nothing was written again. Uncheck any you do not want. This can be undone.`
-          : `Write a note onto ${notes.length} item${notes.length === 1 ? "" : "s"}. Uncheck any you do not want. This can be undone.`,
-        confirmLabel: "Write notes",
+          ? `Continue an interrupted batch by ${append ? "appending to" : "writing"} its remaining ${count}. These are the bodies the batch already prepared; nothing was written again. Uncheck any you do not want. This can be undone.`
+          : append
+            ? `Append to ${count}. Uncheck any you do not want. This can be undone.`
+            : `Write a note onto ${notes.length} item${notes.length === 1 ? "" : "s"}. Uncheck any you do not want. This can be undone.`,
+        confirmLabel: append ? "Append" : "Write notes",
         cancelLabel: "Cancel",
         fields: [
           {
@@ -873,7 +983,7 @@ function writtenItemKeys(result: { content: unknown }): Set<string> {
   return new Set(
     notes.flatMap((note) =>
       validateObject<Record<string, unknown>>(note) &&
-      note.status === "created" &&
+      (note.status === "created" || note.status === "appended") &&
       typeof note.itemKey === "string"
         ? [note.itemKey]
         : [],
@@ -942,6 +1052,8 @@ function previewOf(content: string): string {
  */
 function parseStoredBatchInput(inputJson: string | undefined): {
   target: SaveNotesBatchOperation["target"];
+  /** A job stored before appends existed has no mode: it created notes. */
+  mode: NonNullable<SaveNotesBatchOperation["mode"]>;
   notes: StoredBatchNote[];
 } {
   let parsed: unknown;
@@ -954,15 +1066,30 @@ function parseStoredBatchInput(inputJson: string | undefined): {
   const notes = Array.isArray(record.notes) ? record.notes : [];
   return {
     target: record.target === "standalone" ? "standalone" : "item",
+    mode: record.mode === "append" ? "append" : "create",
     notes: notes.flatMap((entry) => {
       if (!validateObject<Record<string, unknown>>(entry)) return [];
       const targetItemId = normalizePositiveInt(entry.targetItemId);
       const itemKey = typeof entry.itemKey === "string" ? entry.itemKey : "";
       if (!targetItemId || !itemKey) return [];
+      const targetNoteId = normalizePositiveInt(entry.targetNoteId);
+      const guard = validateObject<Record<string, unknown>>(entry.append)
+        ? entry.append
+        : undefined;
       return [
         {
           itemKey,
           targetItemId,
+          ...(targetNoteId ? { targetNoteId } : {}),
+          ...(typeof guard?.beforeChecksum === "string" &&
+          typeof guard.afterChecksum === "string"
+            ? {
+                append: {
+                  beforeChecksum: guard.beforeChecksum,
+                  afterChecksum: guard.afterChecksum,
+                },
+              }
+            : {}),
           ...(Array.isArray(entry.collections)
             ? {
                 collections: entry.collections

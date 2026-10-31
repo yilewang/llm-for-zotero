@@ -335,6 +335,12 @@ export class MutationStateReader {
           }
         }
       }
+      if (operation.type === "change_item_type") {
+        const record = this.zoteroGateway.readItemTypeRecord(item);
+        state.itemType = record.itemType;
+        state.fields = record.fields;
+        state.creators = record.creators;
+      }
       if (
         operation.type === "apply_tags" ||
         operation.type === "remove_tags" ||

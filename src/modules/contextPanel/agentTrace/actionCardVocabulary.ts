@@ -19,6 +19,7 @@ export type { ActionCardVerb };
 
 export const OPERATION_VERBS = {
   update_metadata: {},
+  change_item_type: {},
   apply_tags: { glyph: "+" },
   remove_tags: { glyph: "−", destructive: true },
   move_to_collection: { glyph: "→" },

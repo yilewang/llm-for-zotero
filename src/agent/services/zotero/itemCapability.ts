@@ -21,6 +21,8 @@ import type {
   EditableArticleMetadataField,
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
+  ItemTypeChangePlan,
+  ItemTypeRecord,
 } from "../libraryMutation/valueTypes";
 import type { AgentRuntimeRequest } from "../../types";
 import {
@@ -1596,6 +1598,136 @@ export class ItemCapability {
       title: snapshot?.title || `Item ${item.id}`,
       changedFields,
     };
+  }
+
+  /** The item's type with its exact non-empty fields and creators. */
+  readItemTypeRecord(item: Zotero.Item): ItemTypeRecord {
+    const native = item as Zotero.Item & {
+      getUsedFields: (asNames: true) => string[];
+    };
+    const fields: Record<string, string> = {};
+    for (const name of native.getUsedFields(true)) {
+      const value = String(item.getField(name as _ZoteroTypes.Item.ItemField));
+      if (value) fields[name] = value;
+    }
+    return {
+      itemType: getItemTypeName(item),
+      fields,
+      creators: (item.getCreatorsJSON?.() || []) as ItemTypeRecord["creators"],
+    };
+  }
+
+  /**
+   * What changing a regular item's type does, worked out on an unsaved copy
+   * so the item is untouched: the fields that lose their value, and the
+   * record after Zotero moves base-mapped fields and remaps creator types.
+   */
+  planItemTypeChange(
+    item: Zotero.Item | null | undefined,
+    itemType: string,
+  ): ItemTypeChangePlan | { refusal: string } {
+    if (!item || item.deleted || !item.isRegularItem())
+      return {
+        refusal: `Item ${item?.id ?? "?"} is not a regular item; only a regular item's type can change.`,
+      };
+    const typeID = Zotero.ItemTypes.getID(itemType);
+    if (
+      !typeID ||
+      ["note", "attachment", "annotation"].includes(itemType) ||
+      Zotero.ItemTypes.getName(typeID) !== itemType
+    )
+      return {
+        refusal: `"${itemType}" is not a regular Zotero item type; library_search entity:'itemTypes' lists them.`,
+      };
+    const before = this.readItemTypeRecord(item);
+    // The fields and creators `clone()` copies, without its tags and
+    // relations: the change touches neither.
+    const copy = new Zotero.Item(
+      getItemTypeName(item) as ConstructorParameters<typeof Zotero.Item>[0],
+    );
+    copy.libraryID = item.libraryID;
+    for (const fieldID of item.getUsedFields())
+      copy.setField(fieldID, item.getField(fieldID));
+    copy.setCreators(item.getCreators());
+    copy.setType(typeID);
+    const after = this.readItemTypeRecord(copy);
+    const obsolete = new Set(
+      (item.getFieldsNotInType(typeID, true) || []).map((fieldID) =>
+        Zotero.ItemFields.getName(fieldID),
+      ),
+    );
+    // Zotero also empties some fields both types have (a book section's
+    // title moves to bookTitle), so a value the copy lost counts as dropped.
+    // That over-reports in one case: a book section with an empty bookTitle
+    // changed to a book has its title moved into `title`, yet `bookTitle` is
+    // listed. An over-report only makes the card more cautious.
+    // A base-mapped field such as publicationTitle on a type that maps it
+    // (bookSection's bookTitle) is not obsolete and is not listed.
+    const droppedFields = Object.keys(before.fields).filter(
+      (name) =>
+        obsolete.has(name) ||
+        (Zotero.ItemFields.isValidForType(name, typeID) && !after.fields[name]),
+    );
+    return {
+      fromType: before.itemType,
+      toType: itemType,
+      droppedFields,
+      after,
+    };
+  }
+
+  /** Change the item's type; Zotero drops the fields the plan named. */
+  async changeItemType(params: {
+    item: Zotero.Item;
+    itemType: string;
+  }): Promise<void> {
+    const typeID = Zotero.ItemTypes.getID(params.itemType);
+    if (!typeID)
+      throw new Error(`Item type "${params.itemType}" is unknown to Zotero`);
+    params.item.setType(typeID);
+    await params.item.saveTx();
+  }
+
+  /**
+   * Put the type, every field and every creator back exactly as recorded.
+   * Any value Zotero refuses throws: a partial restore must not pass as an
+   * undo.
+   */
+  async restoreItemTypeRecord(params: {
+    item: Zotero.Item;
+    record: ItemTypeRecord;
+  }): Promise<void> {
+    const { item, record } = params;
+    const typeID = Zotero.ItemTypes.getID(record.itemType);
+    if (!typeID)
+      throw new Error(`Item type "${record.itemType}" is unknown to Zotero`);
+    if (item.itemTypeID !== typeID) item.setType(typeID);
+    const itemFields = Zotero.ItemFields as unknown as {
+      getItemTypeFields: (itemTypeID: number) => number[];
+      getName: (fieldID: number) => string;
+    };
+    const typeFields = itemFields
+      .getItemTypeFields(typeID)
+      .map((fieldID) => itemFields.getName(fieldID));
+    const foreign = Object.keys(record.fields).filter(
+      (name) => !typeFields.includes(name),
+    );
+    if (foreign.length)
+      throw new Error(
+        `Fields ${foreign.join(", ")} do not exist on ${record.itemType}; the item was not restored.`,
+      );
+    for (const name of typeFields) {
+      const value = record.fields[name] ?? "";
+      item.setField(name as _ZoteroTypes.Item.ItemField, value);
+      if (String(item.getField(name as _ZoteroTypes.Item.ItemField)) !== value)
+        throw new Error(
+          `Zotero rejected the recorded value of ${name}; the item was not restored.`,
+        );
+    }
+    item.setCreators(record.creators as _ZoteroTypes.Item.CreatorJSON[], {
+      strict: true,
+    });
+    await item.saveTx();
   }
 
   async trashItems(params: { itemIds: number[] }): Promise<{

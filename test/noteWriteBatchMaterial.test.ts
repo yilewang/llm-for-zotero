@@ -27,6 +27,8 @@ import {
 } from "../src/agent/contracts/actionOperationEvidence";
 import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
 import { canonicalJsonEqual } from "../src/agent/services/libraryMutation/canonicalJson";
+import { libraryMutationHandlers } from "../src/agent/services/libraryMutation/handlerRegistry";
+import { MutationStateView } from "../src/agent/services/libraryMutation/stateView";
 import type { AgentToolContext } from "../src/agent/types";
 import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 import { innermostToolResult } from "../src/agent/contracts/toolResultEnvelope";
@@ -685,6 +687,126 @@ describe("note batch material", function () {
     );
     assert.isEmpty(receipt.reasons);
     assert.include(receipt.facts, `created_note:item:${rows[0].noteId}`);
+  });
+
+  it("verifies a cited batch note against the chip text it stored, not the citation request", async function () {
+    citablePapers();
+    const tool = createNoteWriteBatchTool(gateway);
+    const input = tool.validate({
+      notes: [
+        { targetItemId: 1, content: "Drift is fast {{cite item=1 page=4}}." },
+      ],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const output = await tool.execute(
+      await prepare(tool, input.value),
+      context(),
+    );
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    const stored = native.notes.get(rows[0].noteId!)?.stored || "";
+    assert.include(stored, 'class="citation-item">Smith, 2020, p. 4</span>');
+    const handler = libraryMutationHandlers.save_notes_batch;
+    const operation = input.value.operation!;
+    const state = (noteHtml: string) =>
+      new MutationStateView({
+        version: 1,
+        operation: "save_notes_batch",
+        items: [
+          {
+            itemId: rows[0].noteId!,
+            exists: true,
+            parentItemId: 1,
+            noteHtml,
+          },
+        ],
+      });
+    assert.isTrue(handler.postconditionSatisfied(operation, state(stored)));
+    // A body that is not the one approved still fails.
+    assert.isFalse(
+      handler.postconditionSatisfied(
+        operation,
+        state(stored.replace("Drift is fast", "Drift is slow")),
+      ),
+    );
+    // A request that cannot be expanded is compared as written, so it fails.
+    assert.isFalse(
+      handler.postconditionSatisfied(
+        {
+          ...operation,
+          notes: [{ targetItemId: 1, content: "Drift {{cite item=99}}." }],
+        },
+        state(stored),
+      ),
+    );
+  });
+
+  it("tells apart two cited works that share a label, and looks nothing up for a note without citations", async function () {
+    citablePapers();
+    const tool = createNoteWriteBatchTool(gateway);
+    const input = tool.validate({
+      notes: [
+        { targetItemId: 1, content: "Drift is fast {{cite item=1 page=4}}." },
+      ],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const output = await tool.execute(
+      await prepare(tool, input.value),
+      context(),
+    );
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    const stored = native.notes.get(rows[0].noteId!)?.stored || "";
+    const handler = libraryMutationHandlers.save_notes_batch;
+    const judge = (content: string, noteHtml = stored) =>
+      handler.postconditionSatisfied(
+        {
+          type: "save_notes_batch",
+          target: "item",
+          notes: [{ targetItemId: 1, content }],
+        },
+        new MutationStateView({
+          version: 1,
+          operation: "save_notes_batch",
+          items: [
+            {
+              itemId: rows[0].noteId!,
+              exists: true,
+              parentItemId: 1,
+              noteHtml,
+            },
+          ],
+        }),
+      );
+    // Papers 1 and 2 show the same label, "Smith, 2020, p. 4", but cite
+    // different items; the stored chip cites paper 1.
+    assert.isTrue(judge("Drift is fast {{cite item=1 page=4}}."));
+    assert.isFalse(judge("Drift is fast {{cite item=2 page=4}}."));
+    // The same item at another page is another chip.
+    assert.isFalse(
+      judge(
+        "Drift is fast {{cite item=1 page=4}}.",
+        stored.replace(/p\. 4/g, "p. 5"),
+      ),
+    );
+
+    // A note without a citation request needs no library lookup.
+    const zotero = globalScope.Zotero as any;
+    const lookups: unknown[] = [];
+    const items = zotero.Items;
+    zotero.Items = {
+      ...items,
+      get: (id: number) => {
+        lookups.push(id);
+        return items.get(id);
+      },
+    };
+    try {
+      assert.isTrue(judge("Plain text.", "<p>Plain text.</p>"));
+      assert.isEmpty(lookups, "no lookup for a body without citations");
+    } finally {
+      zotero.Items = items;
+    }
   });
 
   it("fails only the batch item whose citation request is malformed", async function () {

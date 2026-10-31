@@ -9,6 +9,7 @@ import {
 } from "./handlerDefinition";
 import {
   describeItemIds,
+  batchNoteMatcher,
   noteContentMatches,
   onePer,
   restoreCollectionState,
@@ -186,6 +187,57 @@ export const libraryMutationHandlers = {
           : current.fields?.[field] === value,
       );
     },
+  }),
+  change_item_type: defineHandler("change_item_type", {
+    actionCapability: "zotero.metadata",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.itemId],
+    actionParameters: (operation) => ({
+      metadataFields: ["itemType", ...(operation.droppedFields || [])],
+      metadataValues: { itemType: operation.itemType },
+    }),
+    stateSections: ["items"],
+    replay: "state-aware",
+    // The type, then the exact fields and creators it had.
+    planInverse: (operation, state) => {
+      const item = state.item(operation.itemId);
+      return item?.exists && item.itemType && item.fields && item.creators
+        ? {
+            inverseOperations: [
+              {
+                type: "change_item_type",
+                itemId: operation.itemId,
+                itemType: item.itemType,
+                restore: { fields: item.fields, creators: item.creators },
+              },
+            ],
+          }
+        : {};
+    },
+    postconditionSatisfied: (operation, state) => {
+      const current = state.item(operation.itemId);
+      if (!current?.exists || current.itemType !== operation.itemType)
+        return false;
+      if (operation.restore)
+        return (
+          canonicalJsonEqual(current.fields, operation.restore.fields) &&
+          canonicalJsonEqual(current.creators, operation.restore.creators)
+        );
+      return (
+        (operation.expectedCreators === undefined ||
+          canonicalJsonEqual(current.creators, operation.expectedCreators)) &&
+        // A field the plan said would keep its value must still hold it; a
+        // value Zotero emptied would otherwise read as a verified change.
+        Object.entries(operation.expectedFields || {}).every(
+          ([field, value]) => current.fields?.[field] === value,
+        ) &&
+        (operation.droppedFields || []).every(
+          (field) => !current.fields?.[field],
+        )
+      );
+    },
+    affectedCount: (_operation, result) =>
+      resultStatus(result, "updated") || resultStatus(result, "restored"),
   }),
   apply_tags: defineHandler("apply_tags", {
     actionCapability: "zotero.tags",
@@ -418,7 +470,9 @@ export const libraryMutationHandlers = {
       operation.notes.map((entry) => entry.targetItemId),
     destinationCollectionIds: (operation) =>
       operation.notes.flatMap((entry) => entry.collections || []),
-    actionParameters: () => ({ noteMode: "create" }),
+    actionParameters: (operation) => ({
+      noteMode: operation.mode === "append" ? "append" : "create",
+    }),
     stateSections: ["items"],
     deferredInverse: () => true,
     createdItemIds: (result) =>
@@ -430,23 +484,44 @@ export const libraryMutationHandlers = {
       }),
     executionDomain: "notes-lifecycle",
     postconditionSatisfied: (operation, state) => {
+      // An append is judged on the note it named, not on a parent.
+      if (operation.mode === "append")
+        return operation.notes.every((expected) => {
+          const note = state.item(
+            expected.targetNoteId ?? expected.targetItemId,
+          );
+          return Boolean(
+            note?.exists &&
+            !note.deleted &&
+            batchNoteMatcher(
+              expected.content,
+              expected.targetNoteId ?? expected.targetItemId,
+            )(note.noteHtml),
+          );
+        });
       const notes = (state.items || []).filter((item) => item.exists);
       return (
         notes.length >= operation.notes.length &&
-        operation.notes.every((expected) =>
-          notes.some(
+        operation.notes.every((expected) => {
+          const matches = batchNoteMatcher(
+            expected.content,
+            expected.targetItemId,
+          );
+          return notes.some(
             (actual) =>
               actual.parentItemId === expected.targetItemId &&
-              noteContentMatches(actual.noteHtml, expected.content) &&
+              matches(actual.noteHtml) &&
               (expected.collections || []).every((collectionId) =>
                 (actual.collectionIds || []).includes(collectionId),
               ),
-          ),
-        )
+          );
+        })
       );
     },
     targetCount: (operation) => operation.notes.length,
-    affectedCount: (_operation, result) => resultCount(result, "createdCount"),
+    affectedCount: (_operation, result) =>
+      resultCount(result, "createdCount") +
+      resultCount(result, "appendedCount"),
     // A stopped batch reports how many of its notes it reached; they are the
     // first ones, in order, because it stops only between two notes.
     reached: (operation, result) => {

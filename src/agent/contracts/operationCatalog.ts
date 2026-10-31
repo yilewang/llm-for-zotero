@@ -19,6 +19,10 @@ export const OPERATION_CATALOG = {
     capability: "zotero.metadata",
     proofDomain: "zotero_state",
   },
+  change_item_type: {
+    capability: "zotero.metadata",
+    proofDomain: "zotero_state",
+  },
   apply_tags: { capability: "zotero.tags", proofDomain: "zotero_state" },
   remove_tags: { capability: "zotero.tags", proofDomain: "zotero_state" },
   move_to_collection: {
@@ -131,6 +135,7 @@ export const ACTION_CAPABILITIES = new Set<AgentActionCapability>(
  */
 export const OPERATION_LABELS = {
   update_metadata: "Updated metadata",
+  change_item_type: "Changed item type",
   apply_tags: "Added tags",
   remove_tags: "Removed tags",
   move_to_collection: "Moved to collection",

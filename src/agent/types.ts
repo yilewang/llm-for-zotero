@@ -1240,6 +1240,16 @@ export type AgentToolResult = {
 };
 
 /**
+ * The canonical checksums of a note before and after one batch append,
+ * frozen before the first write. A resume that finds the after-checksum
+ * knows the append landed, even when its row was never marked saved.
+ */
+export type NoteAppendGuard = {
+  beforeChecksum: string;
+  afterChecksum: string;
+};
+
+/**
  * Host-owned binding between a batch operation's items and their durable rows.
  *
  * It travels on the tool context rather than inside the operation: the
@@ -1258,6 +1268,8 @@ export type AgentBatchBinding = {
     material?: MaterialRef;
     /** Why this item has no material; it is recorded failed and never written. */
     failure?: string;
+    /** For an append: the note's checksums around the write. */
+    append?: NoteAppendGuard;
   }>;
 };
 

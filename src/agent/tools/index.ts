@@ -241,6 +241,11 @@ function createLibraryUpdateTool(tools: {
           description:
             "Single Zotero item ID for kind:'metadata' or the source item for kind:'related'.",
         },
+        itemType: {
+          type: "string",
+          description:
+            "For kind:'metadata': itemId's new type, e.g. 'book'. The result names the fields it drops.",
+        },
         relatedItemIds: {
           ...NUMBER_ARRAY_SCHEMA,
           description: "For kind:'related': the items to link to or unlink.",

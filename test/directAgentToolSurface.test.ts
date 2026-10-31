@@ -119,10 +119,12 @@ describe("direct Agent model tool surface", function () {
     // Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
     // Raised on 2026-10-31 by 423 characters: W5-A reads (reader_open +283; library_search's statistics entity, sections field and year, creator and dateModified sort keys +124; library_read's relatedLinks section +16), to 30,287 and 41,811.
     // Changed on 2026-10-31 by +201 characters: W5-A review fixes (statistics sections enum +153; reader_open's "when the user asks" and "0-based" +62; library_read's description without relatedLinks -14), to 30,488 and 42,012.
-    assert.isAtMost(serializedToolCharacters, 30_488);
+    // Raised on 2026-10-31 by 99 characters: W5-B (library_update's itemType,
+    // note_write_batch's mode and targetNoteId), merged onto W5-A: 30,587 and 42,111.
+    assert.isAtMost(serializedToolCharacters, 30_587);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      42_012,
+      42_111,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

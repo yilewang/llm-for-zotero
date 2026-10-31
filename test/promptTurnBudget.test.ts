@@ -121,11 +121,14 @@ import {
  * The budgets are now 44,307, 42,980 and 44,405.
  * Changed on 2026-10-31 by +201 characters: W5-A review fixes (statistics sections enum +153; reader_open's "when the user asks" and "0-based" +62; library_read's description without relatedLinks -14).
  * The budgets are now 44,508, 43,181 and 44,606.
+ * Raised on 2026-10-31 by 99 characters: W5-B (library_update's itemType,
+ * note_write_batch's mode and targetNoteId), merged onto W5-A.
+ * The budgets are now 44,607, 43,280 and 44,705.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 44_508,
-  paper: 43_181,
-  collection: 44_606,
+  global: 44_607,
+  paper: 43_280,
+  collection: 44_705,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

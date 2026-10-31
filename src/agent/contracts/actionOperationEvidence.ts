@@ -381,14 +381,19 @@ export async function nativeNoteWriteFacts(
   const facts: string[] = [];
   const reasons: string[] = [];
   for (const write of noteWrites || []) {
+    const append = write.mode === "append";
     const verification = await verifyNoteWriteTarget(
       {
         ...proposal,
-        operation: "note_create",
-        parameters: {
-          noteMode: "create",
-          ...(write.parentItemId ? { targetItemId: write.parentItemId } : {}),
-        },
+        operation: append ? "note_append" : "note_create",
+        parameters: append
+          ? { noteMode: "append", targetNoteId: write.noteId }
+          : {
+              noteMode: "create",
+              ...(write.parentItemId
+                ? { targetItemId: write.parentItemId }
+                : {}),
+            },
         destinationCollectionIds: write.collections || [],
       },
       { noteId: write.noteId, noteVerification: write.verification },
@@ -399,7 +404,9 @@ export async function nativeNoteWriteFacts(
       continue;
     }
     facts.push(
-      ...verification.targets.map((target) => `created_note:${target}`),
+      ...verification.targets.map(
+        (target) => `${append ? "appended_note" : "created_note"}:${target}`,
+      ),
       ...verification.facts,
     );
   }

@@ -64,6 +64,8 @@ import type {
   EditableArticleMetadataField,
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
+  ItemTypeChangePlan,
+  ItemTypeRecord,
 } from "./libraryMutation/valueTypes";
 export type {
   BatchTagAssignment,
@@ -1243,6 +1245,35 @@ export class ZoteroGateway {
     groups: DuplicateGroup[];
   }> {
     return this.itemCapability.detectDuplicatesInLibrary(params);
+  }
+
+  /** See `ItemCapability.readItemTypeRecord`. */
+  readItemTypeRecord(item: Zotero.Item): ItemTypeRecord {
+    return this.itemCapability.readItemTypeRecord(item);
+  }
+
+  /** See `ItemCapability.planItemTypeChange`. */
+  planItemTypeChange(
+    item: Zotero.Item | null | undefined,
+    itemType: string,
+  ): ItemTypeChangePlan | { refusal: string } {
+    return this.itemCapability.planItemTypeChange(item, itemType);
+  }
+
+  /** See `ItemCapability.changeItemType`. */
+  async changeItemType(params: {
+    item: Zotero.Item;
+    itemType: string;
+  }): Promise<void> {
+    return this.itemCapability.changeItemType(params);
+  }
+
+  /** See `ItemCapability.restoreItemTypeRecord`. */
+  async restoreItemTypeRecord(params: {
+    item: Zotero.Item;
+    record: ItemTypeRecord;
+  }): Promise<void> {
+    return this.itemCapability.restoreItemTypeRecord(params);
   }
 
   /** See `ItemCapability.updateArticleMetadata`. */

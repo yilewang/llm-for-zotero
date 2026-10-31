@@ -12,6 +12,7 @@ import { MutationStateView } from "../src/agent/services/libraryMutation/stateVi
 describe("library mutation handler registry", function () {
   const operationTypes = [
     "update_metadata",
+    "change_item_type",
     "apply_tags",
     "remove_tags",
     "move_to_collection",
