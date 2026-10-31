@@ -10,19 +10,33 @@ import type {
   ApplyTagsOperation,
   LibraryMutationInverse,
   MoveToCollectionOperation,
+  UpdateMetadataOperation,
 } from "./contracts";
 
+/**
+ * The undo of a metadata edit: the previous values of exactly the fields the
+ * edit set. Undo compares what it would restore with the edit's post-image,
+ * which holds only those fields, and restoring others could also overwrite
+ * a change made to them since.
+ */
 export function buildMetadataInverse(
   snapshot: EditableArticleMetadataSnapshot,
+  patch: Readonly<Record<string, unknown>>,
 ): LibraryMutationInverse {
   const { itemId, fields, creators, title } = snapshot;
+  const restored: Record<string, unknown> = {};
+  for (const field of Object.keys(patch)) {
+    if (field === "creators") restored.creators = creators;
+    else if (Object.prototype.hasOwnProperty.call(fields, field))
+      restored[field] = fields[field as keyof typeof fields];
+  }
   return {
     description: `Undo metadata edit for "${title}"`,
     inverseOperations: [
       {
         type: "update_metadata",
         itemId,
-        metadata: { ...fields, creators },
+        metadata: restored as UpdateMetadataOperation["metadata"],
       },
     ],
   };

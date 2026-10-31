@@ -41,7 +41,9 @@ export const itemMetadataTagRelationExecutors = {
         operationId: operation.id,
         result,
       },
-      inverse: previousSnapshot ? buildMetadataInverse(previousSnapshot) : null,
+      inverse: previousSnapshot
+        ? buildMetadataInverse(previousSnapshot, operation.metadata)
+        : null,
     };
   },
   change_item_type: async (operation, context, zoteroGateway) => {

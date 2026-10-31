@@ -217,6 +217,16 @@ export type AgentLibraryMutationEvidence = {
    * one per note the call physically created.
    */
   noteWrites?: readonly NativeNoteWriteEvidence[];
+  /**
+   * For an operation a checkpointed batch ran one item at a time and did not
+   * finish cleanly: each one-item part and how it ended. A part that ran is
+   * judged on the states above; one that failed or never started is not.
+   */
+  checkpointParts?: ReadonlyArray<{
+    operationValue: LibraryMutationOperation;
+    outcome: "ran" | "failed" | "not_started";
+    error?: string;
+  }>;
 };
 
 /**

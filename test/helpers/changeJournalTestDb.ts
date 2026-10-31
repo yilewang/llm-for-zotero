@@ -241,6 +241,37 @@ export class ChangeJournalTestDb {
       return [];
     }
 
+    // freezeJournalActionOperations: an action-level inline payload.
+    if (
+      statement.startsWith(`INSERT INTO ${JOURNAL_PAYLOADS_TABLE}`) &&
+      statement.includes("VALUES (?, ?, NULL, ?, 'inline'")
+    ) {
+      const [payloadId, actionId, kind, inlineJson, sizeBytes, createdAt] =
+        params;
+      this.payloads.set(String(payloadId), {
+        payload_id: payloadId,
+        action_id: actionId,
+        step_id: null,
+        kind,
+        storage_kind: "inline",
+        inline_json: inlineJson,
+        blob_path: null,
+        checksum: null,
+        size_bytes: sizeBytes,
+        created_at: createdAt,
+      });
+      return [];
+    }
+    if (
+      statement.startsWith(`SELECT inline_json FROM ${JOURNAL_PAYLOADS_TABLE}`)
+    ) {
+      return asRows(this.payloads.values()).filter(
+        (row) =>
+          row.action_id === params[0] &&
+          row.kind === params[1] &&
+          row.storage_kind === "inline",
+      );
+    }
     if (statement.startsWith(`INSERT INTO ${JOURNAL_PAYLOADS_TABLE}`)) {
       const [
         payloadId,
@@ -510,7 +541,8 @@ export class ChangeJournalTestDb {
 
     if (
       statement.startsWith(`UPDATE ${JOURNAL_STEPS_TABLE}`) &&
-      statement.includes("SET forward_json = '{}'")
+      (statement.includes("SET forward_json = '{}'") ||
+        statement.includes("SET forward_json = CASE"))
     ) {
       const terminalActionIds = statement.includes(
         `SELECT action_id FROM ${JOURNAL_ACTIONS_TABLE}`,
@@ -525,6 +557,22 @@ export class ChangeJournalTestDb {
               .map((row) => String(row.action_id)),
           )
         : null;
+      const frozenActionIds = new Set(
+        [...this.payloads.values()]
+          .filter((row) => row.kind === "frozen_operations")
+          .map((row) => String(row.action_id)),
+      );
+      const liveBatchActionIds = new Set(
+        [...this.actions.values()]
+          .filter(
+            (row) =>
+              frozenActionIds.has(String(row.action_id)) &&
+              !["failed", "no_effect", "irreversible"].includes(
+                String(row.status),
+              ),
+          )
+          .map((row) => String(row.action_id)),
+      );
       for (const row of this.steps.values()) {
         if (
           terminalActionIds
@@ -534,6 +582,18 @@ export class ChangeJournalTestDb {
               )
             : row.action_id !== params[0]
         ) {
+          continue;
+        }
+        // The retirement keeps the forward payload of a live checkpointed
+        // batch, whose frozen list is matched against it.
+        if (
+          statement.includes("frozen_operations") &&
+          liveBatchActionIds.has(String(row.action_id))
+        ) {
+          row.inverse_json = null;
+          row.precondition_json = null;
+          row.expected_postcondition_json = null;
+          row.result_json = null;
           continue;
         }
         row.forward_json = "{}";

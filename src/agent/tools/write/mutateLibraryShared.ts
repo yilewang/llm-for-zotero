@@ -16,6 +16,10 @@ import type {
   UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import { executeLibraryMutationAction } from "../../services/mutationCoordinator";
+import {
+  describeCheckpointedBatch,
+  type CheckpointedBatchReport,
+} from "../../services/checkpointedBatch";
 import type {
   EditableArticleCreator,
   EditableArticleMetadataField,
@@ -715,10 +719,29 @@ export async function executeAndRecordUndo(
   return {
     content: {
       actionId: coordinated.actionId,
-      result: coordinated.results[0],
+      result: coordinated.checkpoint
+        ? checkpointResult(operation.type, coordinated.checkpoint)
+        : coordinated.results[0],
     },
     effect: coordinated.effect,
     actionEvidence: coordinated.actionEvidence,
+  };
+}
+
+/**
+ * The result of a checkpointed batch: its counts and the sentence that names
+ * what was done and what remains, instead of one row per item.
+ */
+export function checkpointResult(
+  operation: LibraryMutationOperation["type"],
+  checkpoint: CheckpointedBatchReport,
+) {
+  return {
+    operation,
+    result: {
+      checkpointedBatch: checkpoint,
+      message: describeCheckpointedBatch(checkpoint),
+    },
   };
 }
 
@@ -749,7 +772,9 @@ export async function executeAndRecordUndoBatch(
     content: {
       actionId: coordinated.actionId,
       appliedCount: coordinated.affectedCount,
-      results: coordinated.results,
+      results: coordinated.checkpoint
+        ? [checkpointResult(operations[0].type, coordinated.checkpoint)]
+        : coordinated.results,
     },
     effect: coordinated.effect,
     actionEvidence: coordinated.actionEvidence,

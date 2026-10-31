@@ -127,11 +127,14 @@ import {
  * Raised on 2026-10-31 by 266 tool characters: W5-C (library_update's
  * attach_file, attach_url, find_pdf and kind:'annotation'; annotate_pdf's
  * annotationType). The budgets are now 44,873, 43,546 and 44,971.
+ * Raised on 2026-10-31 by 34 characters: W5-D (library_update's
+ * resumeBatchId), merged onto W5-C. The budgets are now 44,907, 43,580
+ * and 45,005.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 44_873,
-  paper: 43_546,
-  collection: 44_971,
+  global: 44_907,
+  paper: 43_580,
+  collection: 45_005,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

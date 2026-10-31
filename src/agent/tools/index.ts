@@ -62,6 +62,7 @@ import { createLibrarySettingsTool } from "./write/librarySettings";
 import { createMergeItemsTool } from "./write/mergeItems";
 import { createMoveToCollectionTool } from "./write/moveToCollection";
 import { createRestoreFromTrashTool } from "./write/restoreFromTrash";
+import { createResumeLibraryBatchTool } from "./write/resumeLibraryBatch";
 import { createRunCommandTool } from "./write/runCommand";
 import { createSavedSearchTool } from "./write/savedSearches";
 import {
@@ -153,6 +154,7 @@ function createLibraryUpdateTool(tools: {
   attachmentUpdate: AgentToolDefinition<any, any>;
   annotationUpdate: AgentToolDefinition<any, any>;
   savedSearchUpdate: AgentToolDefinition<any, any>;
+  resumeBatch: AgentToolDefinition<any, any>;
 }): AgentToolDefinition<any, unknown> {
   return createDelegatingTool({
     name: "library_update",
@@ -376,6 +378,11 @@ function createLibraryUpdateTool(tools: {
           description: "Batch metadata operations when kind:'metadata'.",
         },
         paperContext: PAPER_CONTEXT_REF_SCHEMA,
+        resumeBatchId: {
+          type: "string",
+          description:
+            "Continue a stopped batch by the id its result names. Pass it alone with kind.",
+        },
       },
     },
     summaries: {
@@ -398,6 +405,18 @@ function createLibraryUpdateTool(tools: {
       }
       const delegateArgs = { ...args };
       delete delegateArgs.kind;
+      if (args.resumeBatchId !== undefined) {
+        // The batch already holds its items; anything else sent with the id
+        // would be a change that silently never ran.
+        const extra = Object.keys(delegateArgs).filter(
+          (key) => key !== "resumeBatchId",
+        );
+        return extra.length
+          ? fail(
+              `Pass resumeBatchId alone; the batch already holds its items (remove ${extra.join(", ")}).`,
+            )
+          : ok({ tool: tools.resumeBatch, args: delegateArgs });
+      }
       if (args.kind === "tags") {
         // "set" is a different operation, not a variant of add: it replaces
         // the item's whole tag list rather than merging into it.
@@ -743,6 +762,7 @@ export function createBuiltInToolRegistry(
       attachmentUpdate,
       annotationUpdate,
       savedSearchUpdate,
+      resumeBatch: createResumeLibraryBatchTool(deps.zoteroGateway),
     }),
   );
   registry.register(createNoteWriteTool(deps.zoteroGateway));
