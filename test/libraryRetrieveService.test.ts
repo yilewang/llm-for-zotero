@@ -1057,6 +1057,162 @@ describe("LibraryRetrieveService", function () {
     });
   });
 
+  describe("verify mode cites a snippet's body text", function () {
+    async function verify(query: string, chunk: string) {
+      const service = new LibraryRetrieveService(
+        makeGateway([
+          makeItem(1, "Neutral title", "A method paper.", { hasPdf: true }),
+        ]) as any,
+        {
+          ensurePaperContext: async () => makePdfContext([chunk]),
+        } as any,
+        async () => [],
+      );
+      const result = await service.retrieve({
+        query,
+        depth: "verify",
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: `Verify ${query}`,
+          libraryID: 1,
+        },
+      });
+      assert.lengthOf(result.snippets, 1);
+      return {
+        snippet: result.snippets[0],
+        quotes: result.quoteCitations || [],
+      };
+    }
+    const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+    const unescapedDollars = (text: string) =>
+      (text.match(/(?<!\\)\$/g) || []).length;
+
+    it("starts the quote at the body when the snippet opens with a heading", async function () {
+      const body =
+        "Organisms continually tune their perceptual systems to the features they encounter in their environment. We have studied how ongoing experience reorganizes the synaptic connectivity of neurons in the olfactory cortex of the mouse.";
+      const { snippet, quotes } = await verify(
+        "synaptic connectivity",
+        `# Summary\n\n${body}`,
+      );
+      // The model still sees the snippet as before.
+      assert.equal(snippet.snippet, `# Summary ${body}`);
+      assert.lengthOf(quotes, 1);
+      assert.equal(snippet.quoteCitationId, quotes[0].id);
+      assert.equal(quotes[0].quoteText, body);
+      assert.include(flat(snippet.snippet), flat(quotes[0].quoteText));
+    });
+
+    it("starts the quote at the body when a heading line runs straight into it", async function () {
+      const body =
+        "In the rodent brain, the main olfactory bulb is one of two regions where neurogenesis persists throughout the lifetime of the animal.";
+      const { snippet, quotes } = await verify(
+        "olfactory bulb",
+        `## Introduction\n${body}`,
+      );
+      assert.equal(snippet.snippet, `## Introduction ${body}`);
+      assert.lengthOf(quotes, 1);
+      assert.equal(quotes[0].quoteText, body);
+    });
+
+    it("never runs a quote across a heading inside the snippet", async function () {
+      const before =
+        "The recordings were stable across all sessions of the experiment, and the cells kept their place fields.";
+      const after =
+        "We recorded the activity of hippocampal neurons across many days while mice explored a familiar track.";
+      const { snippet, quotes } = await verify(
+        "place fields",
+        `${before}\n\n# 4 | DISCUSSION\n\n${after}`,
+      );
+      assert.equal(snippet.snippet, `${before} # 4 | DISCUSSION ${after}`);
+      assert.lengthOf(quotes, 1);
+      assert.equal(quotes[0].quoteText, before);
+    });
+
+    it("drops the tail of a heading the window cut into", async function () {
+      const earlier =
+        "Earlier sections describe the surgery and the training schedule in full detail for every animal.";
+      const heading = "# Summary of the recorded population activity";
+      const lead = [1, 2, 3, 4, 5]
+        .map(
+          (i) => `Session ${i} kept the same decoding performance as before.`,
+        )
+        .join(" ");
+      const body = `${lead} Ongoing experience reorganizes the synaptic connectivity of cortical neurons.`;
+      const { snippet, quotes } = await verify(
+        "synaptic connectivity",
+        `${earlier} ${earlier}\n\n${heading}\n\n${body}`,
+      );
+      // The window opens inside the heading line.
+      assert.isTrue(snippet.snippet.startsWith("..."), snippet.snippet);
+      assert.notInclude(snippet.snippet, "# Summary");
+      assert.include(snippet.snippet, "population activity");
+      assert.lengthOf(quotes, 1);
+      assert.isTrue(
+        quotes[0].quoteText.startsWith("Session 1"),
+        quotes[0].quoteText,
+      );
+      assert.include(flat(snippet.snippet), flat(quotes[0].quoteText));
+    });
+
+    it("mints no quote for a snippet that is only a heading", async function () {
+      const { snippet, quotes } = await verify(
+        "hippocampal place codes",
+        "# Slow drift of hippocampal place codes across many weeks of maze training",
+      );
+      assert.isEmpty(quotes);
+      assert.notProperty(snippet, "quoteCitationId");
+    });
+
+    it("trims a quote the snippet window cut inside a formula", async function () {
+      const head =
+        "The model predicted steering in synthetic settings with high accuracy.";
+      const filler = [1, 2, 3, 4, 5]
+        .map(
+          (i) => ` Session ${i} kept the same decoding performance as before.`,
+        )
+        .join("");
+      // The window ends 360 characters after the match, inside the formula.
+      const formula = " $( \\rho = 0 . 7 7$ , $p \\dot < 0 . 0 0 1$ ) for all.";
+      const chunk = `${head}${filler}${formula} The fit held for every animal in the second cohort.`;
+      const { snippet, quotes } = await verify("predicted steering", chunk);
+      assert.equal(
+        unescapedDollars(snippet.snippet) % 2,
+        1,
+        "the window cut the formula",
+      );
+      assert.lengthOf(quotes, 1);
+      const quote = quotes[0].quoteText;
+      assert.equal(unescapedDollars(quote) % 2, 0, quote);
+      assert.notInclude(quote, "\\rho");
+      assert.include(flat(snippet.snippet), flat(quote));
+      assert.isTrue(quote.startsWith(head), quote);
+      assert.isTrue(quote.endsWith("as before."), quote);
+    });
+
+    it("keeps an ordinary snippet as its quote", async function () {
+      const chunk =
+        "Results\nThe calcium imaging analysis pipeline used deconvolution with $\\tau = 0 . 5$ s and recovered spikes reliably.";
+      const { snippet, quotes } = await verify(
+        "calcium imaging analysis",
+        chunk,
+      );
+      assert.lengthOf(quotes, 1);
+      assert.equal(quotes[0].quoteText, snippet.snippet);
+    });
+
+    it("never shows the model the quote's internal source text", async function () {
+      const { snippet } = await verify(
+        "synaptic connectivity",
+        "# Summary\n\nWe have studied how ongoing experience reorganizes the synaptic connectivity of neurons in the cortex.",
+      );
+      assert.deepEqual(
+        Object.keys(snippet).filter((key) => /quoteSource/i.test(key)),
+        [],
+      );
+    });
+  });
+
   it("searches explicit item scopes even when metadata and quicksearch do not match", async function () {
     const entries = [
       makeItem(7, "Unrelated title", "", {

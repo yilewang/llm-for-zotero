@@ -231,6 +231,89 @@ describe("default paper prompt context", function () {
     );
   });
 
+  describe("passage IDs cite body text", function () {
+    const prepare = (text: string) =>
+      preparePaperPromptContext(request(), {
+        tokenBudget: 5000,
+        load: async () => ({
+          ...context,
+          chunks: [text],
+          chunkMeta: [{ ...context.chunkMeta[0], text, normalizedText: text }],
+        }),
+      });
+    const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+    const unescapedDollars = (text: string) =>
+      (text.match(/(?<!\\)\$/g) || []).length;
+
+    it("gives a heading paragraph no ID and starts a heading-led paragraph's quote at its body", async function () {
+      const title = "# Slow drift of hippocampal place codes across many weeks";
+      const body =
+        "Organisms continually tune their perceptual systems to the features they encounter in their environment.";
+      const text = `${title}\n\n## Summary\n${body}\n\n${chunks[2]}`;
+      const prepared = await prepare(text);
+      assert.deepEqual(
+        prepared.quoteCitations.map((citation) => citation.quoteText),
+        [body, chunks[2]],
+      );
+      // The model still reads every paragraph, the headings included.
+      assert.include(prepared.blocks[0], `[no passage ID]\n${title}`);
+      assert.include(
+        prepared.blocks[0],
+        `[passage ${prepared.quoteCitations[0].id}]\n## Summary\n${body}`,
+      );
+    });
+
+    it("trims a quote that a long-passage cut left inside a formula", async function () {
+      // One long sentence, so the only sentence-shaped cut near the middle is
+      // the ". B" inside the formula.
+      const words = (count: number) =>
+        Array.from({ length: count }, (_, i) => `step${i}`).join(" ");
+      const tail =
+        "Then the decoder was retrained on every session of the second cohort of animals.";
+      const text = `Population activity was measured ${words(80)} with $\\alpha = 1 . B_{2}$ as the gain ${words(60)}. ${tail}`;
+      assert.isAbove(text.length, 1000);
+      const prepared = await prepare(text);
+      assert.isNotEmpty(prepared.quoteCitations);
+      for (const citation of prepared.quoteCitations) {
+        assert.equal(
+          unescapedDollars(citation.quoteText) % 2,
+          0,
+          citation.quoteText,
+        );
+        assert.include(flat(text), flat(citation.quoteText));
+      }
+      assert.include(
+        prepared.quoteCitations.map((citation) => citation.quoteText),
+        tail,
+      );
+    });
+
+    it("never cuts a long passage inside a formula, so the formula keeps its passage ID", async function () {
+      const words = (count: number) =>
+        Array.from({ length: count }, (_, i) => `step${i}`).join(" ");
+      const formula = "$\\alpha = 1 . B_{2}$";
+      const text = `Population activity in the cortex was measured ${words(75)} with ${formula} as the gain ${words(75)}.`;
+      assert.isAbove(text.length, 1000);
+      const prepared = await prepare(text);
+      const pieces = prepared.blocks
+        .join("\n")
+        .split(/\n\n/)
+        .filter((piece) => /^\[(passage [^\]]+|no passage ID)\]/.test(piece));
+      assert.isAtLeast(pieces.length, 1);
+      for (const piece of pieces) {
+        assert.equal(unescapedDollars(piece) % 2, 0, piece);
+      }
+      const holder = pieces.find((piece) => piece.includes("1 . B_{2}"));
+      assert.isDefined(holder);
+      assert.match(holder!, /^\[passage [^\]]+\]/);
+      assert.isTrue(
+        prepared.quoteCitations.some((citation) =>
+          citation.quoteText.includes(formula),
+        ),
+      );
+    });
+  });
+
   it("counts the chunks that fit when the budget cuts the paper", async function () {
     for (const tokenBudget of [200, 230, 260, 290]) {
       const partial = await preparePaperPromptContext(request(), {

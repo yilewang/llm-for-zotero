@@ -264,9 +264,10 @@ describe("quote card UI contract", function () {
   });
 
   it("renders completed quote-card bodies lazily through the markdown renderer", function () {
-    const renderSource = source(
-      "src/modules/contextPanel/assistantCitationLinks.ts",
-    );
+    // The body renderer is shared with Task progress's cited passages.
+    const renderSource =
+      source("src/modules/contextPanel/assistantCitationLinks.ts") +
+      source("src/modules/contextPanel/quoteCardMarkdown.ts");
 
     assert.include(renderSource, "renderQuoteCardBodyMarkdown");
     assert.include(renderSource, "renderRenderedMarkdownInto(container");

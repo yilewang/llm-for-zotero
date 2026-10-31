@@ -126,7 +126,10 @@ describe("streaming answer blocks", function () {
 
 describe("quote bodies and citation text", function () {
   it("copy the answer's flat scope onto the container they render in", function () {
-    const source = read("src/modules/contextPanel/assistantCitationLinks.ts");
+    // The lazily rendered card body's renderer is shared with Task progress.
+    const source =
+      read("src/modules/contextPanel/assistantCitationLinks.ts") +
+      read("src/modules/contextPanel/quoteCardMarkdown.ts");
     // Replacement text, the lazily rendered card body and the batch of
     // immediate bodies each render into a detached container.
     assert.include(source, "copyFlatContentScope(element, container)");

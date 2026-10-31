@@ -4,6 +4,7 @@ import {
   TASK_ANSWER_CITATION_QUOTE_MAX_CHARS,
   buildTaskAnswerCitations,
   isTaskAnswerCitationOf,
+  taskAnswerCitationDisplayQuote,
 } from "../src/modules/contextPanel/taskProgress/answerCitations";
 import {
   buildQuoteRenderPlan,
@@ -108,6 +109,58 @@ describe("buildTaskAnswerCitations", function () {
     assert.isTrue(entries[1].quote.endsWith("…"));
     assert.notProperty(entries[1], "itemId");
     assert.notProperty(entries[1], "pageIndex");
+  });
+
+  it("clips a long passage outside its math, so no formula is cut open", function () {
+    const head = "word ".repeat(116); // 580 characters before the formula
+    const formula = "$1 \\% - 3 \\% + 4 \\%$";
+    const [entry] = buildTaskAnswerCitations({
+      text: "A claim [[cite:Q_a]].",
+      quoteCitations: [
+        citation("Q_a", {
+          quoteText: `${head}${formula} and then more words.`,
+        }),
+      ],
+    });
+    assert.isAtMost(entry.quote.length, TASK_ANSWER_CITATION_QUOTE_MAX_CHARS);
+    assert.isTrue(entry.quote.endsWith("…"));
+    assert.equal(
+      entry.quote.split("$").length % 2,
+      1,
+      `an even count of $: ${entry.quote.slice(-40)}`,
+    );
+    assert.equal(entry.quote, `${head.trimEnd()}…`);
+  });
+
+  it("keeps a clip of a passage that opens with a long formula from collapsing to an ellipsis", function () {
+    const formula = `$${"a + ".repeat(150)}b$`; // starts at 0, ends past 600
+    const [entry] = buildTaskAnswerCitations({
+      text: "A claim [[cite:Q_a]].",
+      quoteCitations: [
+        citation("Q_a", { quoteText: `${formula} and then more words.` }),
+      ],
+    });
+    assert.isAtMost(entry.quote.length, TASK_ANSWER_CITATION_QUOTE_MAX_CHARS);
+    assert.isTrue(entry.quote.endsWith("…"));
+    assert.isAbove(entry.quote.length, 500);
+  });
+
+  it("draws a legacy quote that starts with a heading marker as plain text, keeping the raw quote", function () {
+    const [entry] = buildTaskAnswerCitations({
+      text: "A claim [[cite:Q_a]].",
+      quoteCitations: [
+        citation("Q_a", { quoteText: "# Results\n\nNeurons fired in bursts." }),
+      ],
+    });
+    assert.equal(entry.quote, "# Results Neurons fired in bursts.");
+    assert.equal(
+      taskAnswerCitationDisplayQuote(entry.quote),
+      "Results Neurons fired in bursts.",
+    );
+    assert.equal(
+      taskAnswerCitationDisplayQuote("Body # not a marker"),
+      "Body # not a marker",
+    );
   });
 
   it("reads the answer as it shows, after quote validation", function () {

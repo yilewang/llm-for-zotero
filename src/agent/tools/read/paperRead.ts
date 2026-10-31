@@ -44,6 +44,10 @@ import {
   QUOTE_ANCHOR_MAX_CHARS,
   QUOTE_ANCHOR_MIN_CHARS,
 } from "../../../services/quotes/claimAnchoring";
+import {
+  splitBodyBlocks,
+  splitSentences,
+} from "../../../services/quotes/sentenceSplit";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 import {
   PAPER_TARGET_SELECTOR_SCHEMA,
@@ -956,7 +960,7 @@ function splitSectionPassages(text: string): SectionPassage[] {
 
 /** The text a passage's quote is cut from: no leading heading lines. */
 function passageQuoteText(text: string): string {
-  return text.replace(/^(?:\s*#{1,6}\s+[^\n]*\n+)+/, "").trim();
+  return text.replace(/^(?:\s*#{1,6}\s+[^\n]*(?:\n+|$))+/, "").trim();
 }
 
 /**
@@ -1122,13 +1126,8 @@ async function readWholeSections(params: {
             ? { chunkIndex: passage.chunkIndex }
             : {}),
         };
-        const quote = passageQuoteText(passage.text);
-        const candidates = splitOverviewQuoteCandidates(quote);
-        // One id per passage, as a targeted passage has.
-        const [citation] = buildRegisteredQuoteCitations(
-          result,
-          candidates.length ? candidates : [quote],
-        );
+        // One id per passage with body text, as a targeted passage has.
+        const [citation] = buildChunkQuoteCitations(result, passage.text);
         if (citation) quoteCitations.push(citation);
         row.passages.push({
           text: passage.text,
@@ -1195,9 +1194,9 @@ async function readWholeSections(params: {
 }
 
 /**
- * A full read's exact evidence chunks, each with one citation id minted
- * from its own text, as a targeted passage has; the records go to
- * `collector`.
+ * A full read's exact evidence chunks, each with body text given one
+ * citation id minted from its own text, as a targeted passage has; a chunk
+ * that is only a heading gets none. The records go to `collector`.
  */
 function withFullReadQuoteCitations(
   paper: FullReadPaperResult,
@@ -1752,55 +1751,103 @@ function buildQuoteCitationsFromResult(
   result: Record<string, unknown>,
   maxQuotes: number,
 ): QuoteCitation[] {
-  const resultText = normalizeString(result.text) || "";
-  const candidates = splitOverviewQuoteCandidates(resultText);
-  return buildRegisteredQuoteCitations(
+  return buildChunkQuoteCitations(
     result,
-    candidates.length ? candidates : [resultText],
+    normalizeString(result.text) || "",
   ).slice(0, Math.max(1, Math.floor(maxQuotes)));
 }
 
-function splitOverviewQuoteCandidates(text: string): string[] {
-  const withoutChunkMarkers = text.replace(/^\s*\[chunk\s+\d+\]\s*$/gim, "");
-  const blocks = withoutChunkMarkers
-    .split(/\n{2,}/)
-    .map((block) =>
-      block
-        .split("\n")
-        .map((line) => line.replace(/^#{1,6}\s+/, "").trim())
-        .filter(Boolean)
-        .join(" "),
-    )
-    .map((block) => block.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const block of blocks) {
-    const sentences = block.match(/[^.!?。！？]+[.!?。！？]+(?=\s|$)/g) || [
-      block,
-    ];
-    let candidate = "";
-    for (const sentence of sentences) {
-      const next = `${candidate}${candidate ? " " : ""}${sentence.trim()}`;
-      if (next.length > MAX_OVERVIEW_QUOTE_CHARS) break;
-      candidate = next;
-      if (candidate.length >= MIN_OVERVIEW_QUOTE_CHARS) break;
+const QUOTE_METADATA_LINE =
+  /^(?:title|authors?|date|publication|doi|abstract):/i;
+
+/**
+ * The texts a chunk's one id may be cut from, in text order: the first
+ * eligible sentence run of the first block that has one comes first. The id
+ * names the chunk, so the order only picks the text it shows and locates by
+ * default.
+ */
+function chunkQuoteTexts(text: string): string[] {
+  return splitOverviewQuoteCandidates(text, Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * The citations a chunk's text yields. A chunk with no quotable sentence, or
+ * whose sentences all fail to build, falls back to its text below its
+ * headings; a chunk that is only headings yields nothing.
+ */
+function buildChunkQuoteCitations(
+  result: Record<string, unknown>,
+  text: string,
+): QuoteCitation[] {
+  const candidates = chunkQuoteTexts(text);
+  const built = buildRegisteredQuoteCitations(result, candidates);
+  if (built.length) return built;
+  const fallback = passageQuoteText(text);
+  return fallback && !candidates.includes(fallback)
+    ? buildRegisteredQuoteCitations(result, [fallback])
+    : [];
+}
+
+/**
+ * A chunk's blocks as single lines: chunk markers are dropped, and a heading
+ * line ends a block and is dropped, so a heading neither becomes a quote nor
+ * joins the text on both sides of it.
+ */
+function quotableBlocks(text: string): string[] {
+  return splitBodyBlocks(text.replace(/^\s*\[chunk\s+\d+\]\s*$/gim, ""));
+}
+
+/**
+ * A block's quotable sentence runs: each sentence of the shared splitter,
+ * extended forward to the quote-anchor bounds, cut from the block itself.
+ */
+function blockQuoteRuns(block: string): string[] {
+  const sentences = splitSentences(block);
+  const runs: string[] = [];
+  for (let i = 0; i < sentences.length; i++) {
+    const start = sentences[i].start;
+    let end = sentences[i].end;
+    for (
+      let j = i + 1;
+      end - start < MIN_OVERVIEW_QUOTE_CHARS && j < sentences.length;
+      j++
+    ) {
+      if (sentences[j].end - start > MAX_OVERVIEW_QUOTE_CHARS) break;
+      end = sentences[j].end;
     }
-    candidate = candidate || block;
+    const run = block.slice(start, end);
     if (
-      candidate.length < MIN_OVERVIEW_QUOTE_CHARS ||
-      candidate.length > MAX_OVERVIEW_QUOTE_CHARS
+      run.length < MIN_OVERVIEW_QUOTE_CHARS ||
+      run.length > MAX_OVERVIEW_QUOTE_CHARS ||
+      QUOTE_METADATA_LINE.test(run)
     ) {
       continue;
     }
-    if (/^(?:title|authors?|date|publication|doi|abstract):/i.test(candidate)) {
-      continue;
-    }
+    runs.push(run);
+  }
+  return runs;
+}
+
+/**
+ * One quote text per block, up to `limit`: the block's first sentence run.
+ * A front-matter block yields none.
+ */
+function splitOverviewQuoteCandidates(
+  text: string,
+  limit = MAX_OVERVIEW_QUOTES_PER_RESULT,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const block of quotableBlocks(text)) {
+    if (QUOTE_METADATA_LINE.test(block)) continue;
+    const runs = blockQuoteRuns(block);
+    const candidate = runs[0];
+    if (!candidate) continue;
     const key = candidate.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(candidate);
-    if (out.length >= MAX_OVERVIEW_QUOTES_PER_RESULT) break;
+    if (out.length >= limit) break;
   }
   return out;
 }

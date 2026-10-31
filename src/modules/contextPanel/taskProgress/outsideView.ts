@@ -23,8 +23,10 @@ import {
 } from "../../../services/quotes/paragraphCitations";
 import { closedSentenceBefore } from "../../../services/quotes/answerSentence";
 import { foldAnswerWords } from "../answerQuoteHighlight";
+import { renderQuoteCardMarkdownInto } from "../quoteCardMarkdown";
 import {
   isTaskAnswerCitationOf,
+  taskAnswerCitationDisplayQuote,
   type TaskAnswerCitation,
 } from "./answerCitations";
 import {
@@ -1248,6 +1250,9 @@ function createTaskCitedBlock(
     source?: HTMLButtonElement;
     onShow?: () => void;
     named?: boolean;
+    /** The text is a cited passage: it renders as the answer's quote card
+     * shows it, Markdown and math included. */
+    passage?: boolean;
   },
 ): HTMLElement {
   const item = el(doc, "div", "llm-task-paper-read llm-task-cited-item");
@@ -1263,7 +1268,11 @@ function createTaskCitedBlock(
   head.append(how);
   if (options.source) head.append(options.source);
   item.append(head);
-  if (options.text)
+  if (options.text && options.passage) {
+    const snippet = el(doc, "blockquote", "llm-task-paper-snippet");
+    renderQuoteCardMarkdownInto(snippet, options.text, doc);
+    item.append(snippet);
+  } else if (options.text)
     item.append(el(doc, "blockquote", "llm-task-paper-snippet", options.text));
   if (options.onShow) {
     const foot = el(doc, "div", "llm-task-cited-foot");
@@ -1394,7 +1403,8 @@ export function createTaskCitedBlocks(
       createTaskCitedBlock(doc, {
         ...(passage.number !== undefined ? { number: passage.number } : {}),
         label: formatTaskCitedLabel(passage),
-        text: passage.quote,
+        text: taskAnswerCitationDisplayQuote(passage.quote),
+        passage: true,
         source: sourceButton(doc, (from) =>
           handlers.onOpenPassage(passage, from),
         ),
