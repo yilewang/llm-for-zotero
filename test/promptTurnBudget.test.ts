@@ -102,11 +102,13 @@ import {
  * Raised on 2026-10-31 by literature_search's source and author rules, moved
  * from never-selected guidance into its description (188 tool characters),
  * to 43,345, 42,078 and 43,443.
+ * Raised on 2026-10-31 by 13 tool characters in run_command's and file_io's
+ * approval wording, to 43,358, 42,091 and 43,456.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_345,
-  paper: 42_078,
-  collection: 43_443,
+  global: 43_358,
+  paper: 42_091,
+  collection: 43_456,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

@@ -332,7 +332,7 @@ return item.id;`,
         assert.isTrue(Zotero.Items.get(id).deleted, `undo trashes child ${id}`);
     });
 
-    it("moves the item: trashes the original only after its copy is verified, never erases it", async function () {
+    it("moves the item but keeps the original out of the trash while a linked file is skipped", async function () {
       const before = new Set(
         (await copiesInGroup()).map((entry: any) => entry.id),
       );
@@ -346,24 +346,114 @@ return item.id;`,
         }),
       );
       assertSkippedLinkedFile(returnValue);
-      assert.isTrue(returnValue[0].trashed);
+      assert.isFalse(returnValue[0].trashed);
+      assert.isTrue(returnValue[0].awaitingUserDecision);
       const copies = (await copiesInGroup()).filter(
         (entry: any) => !before.has(entry.id),
       );
       assert.lengthOf(copies, 1);
       await assertCopy(copies[0]);
 
-      const trashed = Zotero.Items.get(original.id);
+      await original.reload();
+      assert.isFalse(original.deleted, "the original stays where it is");
+      assert.lengthOf(original.getAttachments(), 2);
+
+      await call("undo", { actionId });
+      await original.reload();
+      assert.isFalse(original.deleted);
+      assert.isTrue(Zotero.Items.get(copies[0].id).deleted);
+    });
+
+    const sourceWithPdf = async (title: string, annotations: number) => {
+      const item = await makeItem(title);
+      const pdf = await PDFDocument.create();
+      pdf.addPage([612, 792]);
+      const attachment = await Zotero.Attachments.importFromFile({
+        file: await tempFile(`${title}.pdf`, await pdf.save()),
+        parentItemID: item.id,
+      });
+      created.push(attachment.id);
+      for (let index = 0; index < annotations; index++) {
+        const annotation = new Zotero.Item("annotation");
+        annotation.libraryID = libraryID();
+        annotation.parentID = attachment.id;
+        annotation.annotationType = "highlight";
+        annotation.annotationText = `${title} text`;
+        annotation.annotationColor = "#ffd400";
+        annotation.annotationPageLabel = "1";
+        annotation.annotationSortIndex = "00000|000000|00080";
+        annotation.annotationPosition = JSON.stringify({
+          pageIndex: 0,
+          rects: [[72, 698, 230, 712]],
+        });
+        await annotation.saveTx();
+      }
+      return item;
+    };
+    const copiesTitled = async (title: string) =>
+      (await Zotero.Items.getAll(group.libraryID, false, true, false)).filter(
+        (entry: any) =>
+          entry.isRegularItem() && entry.getField("title") === title,
+      );
+
+    it("trashes the original of a move when nothing was skipped, and undo restores it", async function () {
+      const title = `${suffix} plain move`;
+      const item = await sourceWithPdf(title, 0);
+      const { returnValue, actionId } = await script(
+        "privileged",
+        "write",
+        installedRecipe(skillBody, {
+          sourceItemIds: [item.id],
+          targetLibraryID: group.libraryID,
+          move: true,
+        }),
+      );
+      assert.isEmpty(returnValue[0].skipped, JSON.stringify(returnValue));
+      assert.isTrue(returnValue[0].verified);
+      assert.isTrue(returnValue[0].trashed);
+      const copies = await copiesTitled(title);
+      assert.lengthOf(copies, 1);
+      assert.lengthOf(copies[0].getAttachments(), 1);
+      const trashed = Zotero.Items.get(item.id);
       assert.exists(trashed, "the original is not erased");
       await trashed.reload();
       assert.isTrue(trashed.deleted, "the original is in the trash");
-      assert.lengthOf(trashed.getAttachments(true), 2);
-      assert.exists(Zotero.Items.get(linkedAttachment.id));
 
       await call("undo", { actionId });
       await trashed.reload();
       assert.isFalse(trashed.deleted, "undo restores the original");
       assert.isTrue(Zotero.Items.get(copies[0].id).deleted);
+    });
+
+    it("lists a PDF's annotations as skipped and leaves a moved original untrashed", async function () {
+      const title = `${suffix} annotated move`;
+      const item = await sourceWithPdf(title, 1);
+      const { returnValue } = await script(
+        "privileged",
+        "write",
+        installedRecipe(skillBody, {
+          sourceItemIds: [item.id],
+          targetLibraryID: group.libraryID,
+          move: true,
+        }),
+      );
+      assert.lengthOf(returnValue[0].skipped, 1, JSON.stringify(returnValue));
+      assert.match(
+        returnValue[0].skipped[0].reason,
+        /1 annotations not copied/,
+      );
+      assert.isTrue(returnValue[0].verified);
+      assert.isFalse(returnValue[0].trashed);
+      assert.isTrue(returnValue[0].awaitingUserDecision);
+      const copies = await copiesTitled(title);
+      assert.lengthOf(copies, 1);
+      assert.lengthOf(
+        copies[0].getAttachments(),
+        1,
+        "the file is still copied",
+      );
+      await item.reload();
+      assert.isFalse(item.deleted, "the original stays where it is");
     });
   });
 });

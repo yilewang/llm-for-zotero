@@ -120,7 +120,12 @@ describe("instruction harness inventory", function () {
     // took over zotero_script's never-selected tool guidance and adds the
     // copy-or-move recipe: the bodies then total 6,519 tokens, 1,342 over
     // the earlier cap, so the cap grows by those 1,342 tokens.
-    const zoteroScriptSkillTokens = 1342;
+    // Raised on 2026-10-31 by 235 tokens (to 1,577) for the recipe's review
+    // fixes: a move trashes only when nothing was skipped, lost annotations
+    // are listed, and a failed or unrun item is reported (bodies total 6,754).
+    // Raised on 2026-10-31 by 27 tokens (to 1,604): a rerun first trashes the
+    // partial copy, so the target gets no duplicate (bodies total 6,781).
+    const zoteroScriptSkillTokens = 1604;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),
       previousBodyTokens / 2 + zoteroScriptSkillTokens,

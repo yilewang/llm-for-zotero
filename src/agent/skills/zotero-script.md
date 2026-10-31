@@ -18,7 +18,7 @@ The script also has `atob`, `btoa`, `TextEncoder` and `TextDecoder`, and `fetch`
 
 - `env.libraryID`: the active library; `env.access` and `env.effect` echo the call.
 - `env.log(msg)`: progress lines only; the log is cut at 8000 characters. Return your data instead: the return value reaches you in full.
-- `env.shouldStop()` and `env.remainingMs()`: in a loop over more than a few dozen items, return partial results once `env.shouldStop()` is true. The timeout cannot interrupt a running script, and undo cannot reverse changes it makes after the tool has returned.
+- `env.shouldStop()` and `env.remainingMs()`: in a loop over more than a few dozen items, return partial results once `env.shouldStop()` is true. The timeout cannot interrupt a running script, and the tool waits for it to settle; undo misses only changes made by a promise the script does not await.
 - Write scripts only: `env.snapshot(item)` before you change an existing item, `env.recordCreatedItem(itemOrId)` after you save a new item, and `env.addInverse(data)` for a declarative inverse (JSON of kind `library_operations`, `note_html`, `file` or `preference`; functions are refused). A write script that calls none of the three is refused.
 
 ### Zotero API
@@ -64,24 +64,16 @@ if (!target || !target.editable)
   throw new Error("The target library is not editable.");
 const LM = Zotero.Attachments;
 const results = [];
-for (const id of sourceItemIds) {
-  if (env.shouldStop()) break;
+async function copyOne(id, result) {
   const item = Zotero.Items.get(id);
   if (!item || !item.isRegularItem()) {
-    results.push({ id, error: "not a regular item" });
-    continue;
+    result.error = "not a regular item";
+    return;
   }
   const copy = item.clone(targetLibraryID);
   await copy.saveTx();
   env.recordCreatedItem(copy);
-  const result = {
-    id,
-    copyId: copy.id,
-    notes: [],
-    attachments: [],
-    skipped: [],
-    trashed: false,
-  };
+  result.copyId = copy.id;
   for (const note of Zotero.Items.get(item.getNotes())) {
     const noteCopy = note.clone(targetLibraryID);
     noteCopy.parentID = copy.id;
@@ -120,6 +112,10 @@ for (const id of sourceItemIds) {
       skip("the file is missing on this computer");
       continue;
     }
+    const annotations = att.isFileAttachment()
+      ? att.getAnnotations().length
+      : 0;
+    if (annotations) skip(`${annotations} annotations not copied`);
     const fileCopy =
       mode === LM.LINK_MODE_LINKED_FILE
         ? await LM.linkFromFile({ file: path, parentItemID: copy.id, title })
@@ -147,11 +143,34 @@ for (const id of sourceItemIds) {
       verified = false;
   }
   result.verified = verified;
-  if (move && verified) {
+  if (move && verified && result.skipped.length === 0) {
     env.snapshot(item);
     item.deleted = true;
     await item.saveTx();
     result.trashed = true;
+  } else if (move) {
+    result.awaitingUserDecision = true;
+  }
+}
+for (const id of sourceItemIds) {
+  if (env.shouldStop()) {
+    results.push({ id, error: "not run: out of time" });
+    continue;
+  }
+  const result = {
+    id,
+    copyId: null,
+    notes: [],
+    attachments: [],
+    skipped: [],
+    trashed: false,
+  };
+  try {
+    await copyOne(id, result);
+  } catch (error) {
+    result.error = String(error && error.message ? error.message : error);
+    result.verified = false;
+    if (move) result.awaitingUserDecision = true;
   }
   results.push(result);
 }
@@ -161,8 +180,10 @@ return results;
 The copy keeps the item's fields, creators and tags; it gets no collections and no related items, and it keeps no link to the original.
 Child notes are copied unchanged; images embedded in a note are not, and the note is listed in `skipped`.
 Stored files are imported into the target library, a web snapshot as its main file only; a linked file is linked again only if the target allows linked files (a group library does not); web links are copied.
-PDF annotations are not copied.
+PDF annotations are not copied; the script lists each file that has some in `skipped`.
 Name every entry in `skipped` to the user with its reason.
-For a move, the script trashes an original only after it verified the copy; anything skipped stays with the original in the trash.
-Before a move, check with a read script which attachments would be skipped, and tell the user.
+An entry with `error` did not finish, such as one marked "not run: out of time"; report it, and before you run its ID again, trash the partial copy named by its `copyId` (or undo the script), so the target gets no duplicate.
+For a move, the script trashes an original only when its copy is verified and nothing was skipped.
+Otherwise it sets `awaitingUserDecision`: report each skipped entry and ask the user before you trash the original.
+Before a move, a read script can check the target: `Zotero.Libraries.isFilesEditable(id)`, and `Zotero.Libraries.getType(id) === 'user'` for linked files.
 Undo of the script trashes every copy and restores each trashed original.

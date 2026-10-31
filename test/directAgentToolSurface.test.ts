@@ -102,10 +102,12 @@ describe("direct Agent model tool surface", function () {
     // literature_search's source and author rules, moved from never-selected
     // guidance into its description, raised both caps by 188, to 28,808 and
     // 40,010 (2026-10-31).
-    assert.isAtMost(serializedToolCharacters, 28_808);
+    // "Zotero asks no approval for ..." in run_command's and file_io's rules
+    // raised both caps by 13, to 28,821 and 40,023 (2026-10-31).
+    assert.isAtMost(serializedToolCharacters, 28_821);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      40_010,
+      40_023,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),
