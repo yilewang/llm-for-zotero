@@ -732,7 +732,7 @@ describe("primitive agent tools", function () {
       libraryID: 2,
     };
     const tool = createUpdateMetadataTool({
-      resolveMetadataItem: () => foreignItem,
+      resolveMetadataWriteTarget: () => ({ item: foreignItem }),
       getEditableArticleMetadata: () => makeMetadataSnapshot(7, "Foreign Item"),
       updateArticleMetadata: async () => {
         updateCalled = true;

@@ -10,16 +10,13 @@ import type {
   AgentToolResult,
 } from "./types";
 import { normalizeNoteSourceText } from "../services/notes/noteRendering";
-import type {
-  EditableArticleMetadataPatch,
-  EditableArticleMetadataField,
-} from "./services/zoteroGateway";
-import { EDITABLE_ARTICLE_METADATA_FIELDS } from "./services/zoteroGateway";
+import type { EditableArticleMetadataPatch } from "./services/zoteroGateway";
 import type { PaperContextRef } from "../shared/types";
 import { normalizeToolPaperContext } from "./tools/shared";
 import {
-  METADATA_FIELD_DISPLAY_LABELS,
   formatCreatorsDisplay,
+  metadataFieldLabel,
+  metadataPatchFieldNames,
 } from "./tools/write/mutateLibraryShared";
 
 type LiteratureSearchMode =
@@ -545,11 +542,25 @@ function buildMetadataDiffRows(
     paperContext?.itemId ||
     readPositiveInt(context.request.activeItemId);
 
+  // The fields the patch writes, not a fixed article list: a translator's
+  // book patch (edition, series) otherwise produced a card with no rows.
+  const fieldNames = metadataPatchFieldNames(patch);
+
   // We'll try to read from the context item if available
   if (context.item) {
     try {
-      for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-        const val = context.item.getField?.(fieldName);
+      for (const fieldName of fieldNames) {
+        // includeBaseMapped, as the write's own readback reads it:
+        // publicationTitle is bookTitle on a book section.
+        const val = (
+          context.item as unknown as {
+            getField?: (
+              name: string,
+              unformatted?: boolean,
+              includeBaseMapped?: boolean,
+            ) => unknown;
+          }
+        ).getField?.(fieldName, false, true);
         if (typeof val === "string" && val.trim()) {
           currentFields[fieldName] = val.trim();
         }
@@ -572,13 +583,13 @@ function buildMetadataDiffRows(
     }
   }
 
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(patch, fieldName)) continue;
-    const newValue = patch[fieldName as EditableArticleMetadataField] ?? "";
+  for (const fieldName of fieldNames) {
+    const value = (patch as Record<string, unknown>)[fieldName];
+    const newValue = value === undefined || value === null ? "" : String(value);
     const before = currentFields[fieldName] ?? "";
     // Skip fields where value is identical
     if (before === newValue) continue;
-    const label = METADATA_FIELD_DISPLAY_LABELS[fieldName] || fieldName;
+    const label = metadataFieldLabel(fieldName);
     rows.push({
       key: fieldName,
       label,

@@ -905,6 +905,231 @@ describe("library operations against real Zotero", function () {
     });
   });
 
+  // ── W1: a metadata write lands on the object it names ─────────────────────
+
+  describe("metadata writes through library_update", function () {
+    function contextFor(item: { id: number }, userText: string) {
+      return {
+        request: resolvedAgentRequest({
+          conversationKey: item.id,
+          mode: "agent",
+          userText,
+          libraryID: libraryID(),
+          activeItemId: item.id,
+          executionContext: {
+            version: 1,
+            executionId: `metadata-target:${SUFFIX}:${item.id}`,
+            conversationKey: item.id,
+            conversationGeneration: 0,
+            chatLibraryID: libraryID(),
+            permissionOwner: "original_agent",
+            workspaceSnapshot: {
+              selectedPapers: [],
+              selectedCollections: [],
+            },
+            configuredAccess: {
+              libraryIDs: [libraryID()],
+              outputDirectories: [],
+            },
+          },
+        }),
+        item: Zotero.Items.get(item.id),
+        modelName: "workflow",
+        currentAnswerText: "",
+        runId: `metadata-target-run:${SUFFIX}:${item.id}`,
+      } as AgentToolContext;
+    }
+
+    async function withMode<T>(
+      mode: "safe" | "yolo",
+      body: (registry: AgentToolRegistry) => Promise<T>,
+    ): Promise<T> {
+      const originalMode = getOriginalAgentPermissionMode();
+      try {
+        await initAgentChangeJournal();
+        setOriginalAgentPermissionMode(mode);
+        const registry = new AgentToolRegistry(
+          new ActionContractService(gateway()),
+        );
+        registry.register(
+          Zotero.LLMForZotero.api.agent.getToolDefinition("library_update"),
+        );
+        return await body(registry);
+      } finally {
+        setOriginalAgentPermissionMode(originalMode);
+      }
+    }
+
+    async function attachTextFile(parentItemID: number, name: string) {
+      const path = PathUtils.join(
+        Zotero.getTempDirectory().path,
+        `${name}-${SUFFIX}.txt`,
+      );
+      await IOUtils.writeUTF8(path, "attachment body");
+      const attachment = await Zotero.Attachments.importFromFile({
+        file: path,
+        parentItemID,
+      });
+      await IOUtils.remove(path, { ignoreAbsent: true });
+      created.items.push(attachment.id);
+      return attachment;
+    }
+
+    it("edits a child attachment's title on the attachment, leaving its parent alone", async function () {
+      const paper = await makeItem("journalArticle", "AttachmentParent");
+      const attachment = await attachTextFile(paper.id, "attachment-title");
+      const parentTitle = paper.getField("title");
+      const newTitle = `Renamed attachment-${SUFFIX}`;
+
+      const result = await withMode("yolo", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "attachment-title",
+            name: "library_update",
+            arguments: {
+              kind: "metadata",
+              itemId: attachment.id,
+              metadata: { title: newTitle },
+            },
+          },
+          contextFor(paper, "Rename this attachment"),
+          { callerKind: "model" },
+        );
+        assert.equal(execution.kind, "result");
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+
+      assert.isTrue(result.ok, JSON.stringify(result.content));
+      // Independent native readback, not the tool's account.
+      assert.equal(Zotero.Items.get(attachment.id).getField("title"), newTitle);
+      assert.equal(
+        Zotero.Items.get(paper.id).getField("title"),
+        parentTitle,
+        "the parent was never the target",
+      );
+      const [receipt] = result.actionReceipts || [];
+      assert.equal(receipt?.verification, "verified");
+    });
+
+    it("refuses a metadata edit on a standalone note, naming note_write, and changes nothing", async function () {
+      const paper = await makeItem("journalArticle", "OpenPaper");
+      const paperTitle = paper.getField("title");
+      const note = new Zotero.Item("note");
+      note.libraryID = libraryID();
+      note.setNote("<p>standalone note body</p>");
+      await note.saveTx();
+      created.items.push(note.id);
+
+      const result = await withMode("yolo", async (registry) => {
+        const execution = await registry.prepareExecution(
+          {
+            id: "note-metadata",
+            name: "library_update",
+            arguments: {
+              kind: "metadata",
+              itemId: note.id,
+              metadata: { title: `Should not land-${SUFFIX}` },
+            },
+          },
+          // The open paper is what the old fallback wrote instead.
+          contextFor(paper, "Retitle that note"),
+          { callerKind: "model" },
+        );
+        assert.equal(execution.kind, "result");
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+
+      assert.isFalse(result.ok);
+      assert.include(JSON.stringify(result.content), "note_write");
+      assert.equal(Zotero.Items.get(paper.id).getField("title"), paperTitle);
+      assert.equal(
+        Zotero.Items.get(note.id).getNote(),
+        "<p>standalone note body</p>",
+      );
+    });
+
+    it("shows a book's edition and series rows on the Safe-mode card, then applies them", async function () {
+      const book = await makeItem("book", "EditionSeries");
+      book.setField("edition", "1");
+      book.setField("series", `Old Series-${SUFFIX}`);
+      await book.saveTx();
+      const workflow = Zotero.LLMForZotero.api.workflowTest as WorkflowTestApi;
+      const doc: Document = Zotero.getMainWindow().document;
+      const newSeries = `New Series-${SUFFIX}`;
+
+      try {
+        const result = await withMode("safe", async (registry) => {
+          const execution = await registry.prepareExecution(
+            {
+              id: "edition-series",
+              name: "library_update",
+              arguments: {
+                kind: "metadata",
+                itemId: book.id,
+                metadata: { edition: "2", series: newSeries },
+              },
+            },
+            contextFor(book, "Set the edition and series"),
+            { callerKind: "model" },
+          );
+          assert.equal(execution.kind, "confirmation", "Safe mode asks first");
+          if (execution.kind !== "confirmation") throw new Error("unreachable");
+
+          const panel = await workflow.renderPanelForItem(book.id);
+          const pending = workflow.renderPendingActionForPanel(panel.panelId, {
+            requestId: "edition-series-card",
+            action: execution.action,
+          });
+          const card = doc.querySelector<HTMLElement>(
+            '[data-request-id="edition-series-card"]',
+          )!;
+          assert.exists(card);
+          const rows = (
+            [
+              ...card.querySelectorAll<HTMLElement>(
+                ".llm-agent-hitl-review-item",
+              ),
+            ] as HTMLElement[]
+          ).map((row) => ({
+            label:
+              row.querySelector(".llm-agent-hitl-review-label")?.textContent ||
+              "",
+            text: row.textContent || "",
+          }));
+          assert.deepEqual(
+            rows.map((row) => row.label),
+            ["Edition", "Series"],
+            "every changed field has a row",
+          );
+          assert.include(rows[1].text, `Old Series-${SUFFIX}`);
+          assert.include(rows[1].text, newSeries);
+          assert.equal(
+            Zotero.Items.get(book.id).getField("edition"),
+            "1",
+            "the card itself writes nothing",
+          );
+
+          card.querySelector<HTMLButtonElement>('[data-kind="save"]')!.click();
+          const resolution = await pending;
+          assert.isTrue(resolution.approved);
+          const applied = await execution.execute(resolution);
+          assert.equal(applied.kind, "result");
+          if (applied.kind !== "result") throw new Error("unreachable");
+          return applied.execution.result;
+        });
+
+        assert.isTrue(result.ok, JSON.stringify(result.content));
+        const fresh = Zotero.Items.get(book.id);
+        assert.equal(fresh.getField("edition"), "2");
+        assert.equal(fresh.getField("series"), newSeries);
+      } finally {
+        await workflow.reset();
+      }
+    });
+  });
+
   // ── Stage 2e: create / reparent / relate ──────────────────────────────────
 
   describe("creating and restructuring items", function () {

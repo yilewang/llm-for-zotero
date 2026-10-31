@@ -189,6 +189,53 @@ export class ItemCapability {
     return resolveRegularItem(params.item || null);
   }
 
+  /**
+   * The object a metadata write lands on, or why it may not.
+   *
+   * `resolveMetadataItem` is a read resolver: it turns a PDF into its paper
+   * and falls back to the open item when the id names nothing it likes. On
+   * the write path that meant a child attachment's title edit rewrote the
+   * parent, and a standalone note's id edited whatever paper was open. A
+   * named id is therefore taken exactly as named, and refused rather than
+   * redirected; only a write that names no id keeps the paper-context and
+   * open-item path.
+   */
+  resolveMetadataWriteTarget(params: {
+    request?: AgentRuntimeRequest;
+    item?: Zotero.Item | null;
+    itemId?: number;
+    paperContext?: PaperContextRef | null;
+  }): { item: Zotero.Item } | { refusal: string } {
+    const itemId = Number(params.itemId);
+    if (Number.isFinite(itemId) && itemId > 0) {
+      const resolution = resolveMatrixItem(
+        this.deps.getItem(itemId),
+        itemId,
+        "update",
+      );
+      if ("refusal" in resolution) return resolution;
+      const target = resolution.item;
+      if (target.isNote?.()) {
+        return {
+          refusal: `Item ${itemId} is a note, which has no metadata fields; edit its text with note_write instead`,
+        };
+      }
+      if (target.isAnnotation?.()) {
+        return {
+          refusal: `Item ${itemId} is an annotation, which has no metadata fields`,
+        };
+      }
+      return { item: target };
+    }
+    const fallback = this.resolveMetadataItem({ ...params, itemId: undefined });
+    return fallback
+      ? { item: fallback }
+      : {
+          refusal:
+            "No item to update: name an itemId, or open the paper whose metadata should change",
+        };
+  }
+
   getEditableArticleMetadata(
     item: Zotero.Item | null | undefined,
   ): EditableArticleMetadataSnapshot | null {

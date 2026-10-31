@@ -241,13 +241,20 @@ export class MutationStateReader {
           ? createdIds.itemIds
           : Array.from(new Set([...itemIds, ...createdIds.itemIds]));
     }
-    if (operation.type === "update_metadata" && !itemIds.length) {
-      const target = this.zoteroGateway.resolveMetadataItem({
+    // The write resolver, not the read one: reading back a PDF's parent
+    // after writing the PDF confirmed a change on an object never edited.
+    const metadataWriteTarget = () => {
+      if (operation.type !== "update_metadata") return null;
+      const target = this.zoteroGateway.resolveMetadataWriteTarget({
         request: context.request,
         item: context.item,
         itemId: operation.itemId,
         paperContext: operation.paperContext,
       });
+      return "item" in target ? target.item : null;
+    };
+    if (operation.type === "update_metadata" && !itemIds.length) {
+      const target = metadataWriteTarget();
       if (target) itemIds = [target.id];
     }
 
@@ -258,12 +265,7 @@ export class MutationStateReader {
           ? this.zoteroGateway.getItem(itemId)
           : null;
       if (!item && operation.type === "update_metadata") {
-        item = this.zoteroGateway.resolveMetadataItem({
-          request: context.request,
-          item: context.item,
-          itemId: operation.itemId,
-          paperContext: operation.paperContext,
-        });
+        item = metadataWriteTarget();
       }
       if (!item) {
         states.push({ itemId, exists: false });

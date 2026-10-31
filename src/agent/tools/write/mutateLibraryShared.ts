@@ -520,33 +520,97 @@ export function formatCreatorsDisplay(
     .join("; ");
 }
 
+/**
+ * The object a metadata operation will write, resolved the way the executor
+ * resolves it. A refusal is thrown so a card is never shown for a write that
+ * cannot happen, or for an object other than the one named.
+ */
+export function resolveMetadataWriteItem(
+  operation: UpdateMetadataOperation,
+  zoteroGateway: ZoteroGateway,
+  context: AgentToolContext,
+): Zotero.Item {
+  const target = zoteroGateway.resolveMetadataWriteTarget({
+    itemId: operation.itemId,
+    paperContext: operation.paperContext,
+    request: context.request,
+    item: context.item,
+  });
+  if ("refusal" in target) throw new Error(target.refusal);
+  return target.item;
+}
+
+/**
+ * The label a review row shows for a Zotero field: the card's own wording for
+ * the well-known fields, else Zotero's localized field name, else the field
+ * name spelled out ("seriesNumber" -> "Series number").
+ */
+export function metadataFieldLabel(fieldName: string): string {
+  const known = METADATA_FIELD_DISPLAY_LABELS[fieldName];
+  if (known) return known;
+  try {
+    const localized = (
+      globalThis as {
+        Zotero?: {
+          ItemFields?: { getLocalizedString?: (field: string) => unknown };
+        };
+      }
+    ).Zotero?.ItemFields?.getLocalizedString?.(fieldName);
+    if (typeof localized === "string" && localized.trim()) {
+      return localized.trim();
+    }
+  } catch {
+    // An unlocalized field still gets a readable label below.
+  }
+  const words = fieldName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : fieldName;
+}
+
+/**
+ * The fields a metadata patch writes, in card order: the well-known fields
+ * first, as the card always listed them, then every other key in the order
+ * the patch gives it.
+ */
+export function metadataPatchFieldNames(
+  patch: EditableArticleMetadataPatch,
+): string[] {
+  const keys = Object.keys(patch).filter((key) => key !== "creators");
+  const known = (EDITABLE_ARTICLE_METADATA_FIELDS as readonly string[]).filter(
+    (fieldName) => keys.includes(fieldName),
+  );
+  return [...known, ...keys.filter((key) => !known.includes(key))];
+}
+
+/**
+ * One review row per field the operation writes. The rows come from the
+ * operation's own keys, not a fixed field list: walking 18 article fields
+ * gave a book's `edition` or `series` change a card with no rows, and the
+ * user approved a write they could not see. A card that would show no rows
+ * is refused rather than shown.
+ */
 export function buildUpdateMetadataReviewField(
   operation: UpdateMetadataOperation,
   zoteroGateway: ZoteroGateway,
   context: AgentToolContext,
   itemTitle: string,
   showTitle: boolean,
-): Extract<AgentPendingField, { type: "review_table" }> | null {
-  const item = zoteroGateway.resolveMetadataItem({
-    itemId: operation.itemId,
-    paperContext: operation.paperContext,
-    request: context.request,
-    item: context.item,
-  });
+): Extract<AgentPendingField, { type: "review_table" }> {
+  const item = resolveMetadataWriteItem(operation, zoteroGateway, context);
   const snapshot = zoteroGateway.getEditableArticleMetadata(item);
   const rows: Extract<AgentPendingField, { type: "review_table" }>["rows"] = [];
+  const beforeFields = (snapshot?.fields || {}) as Record<string, string>;
+  const patch = operation.metadata as Record<string, unknown>;
 
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(operation.metadata, fieldName))
-      continue;
-    const newValue = operation.metadata[fieldName] ?? "";
-    const label = METADATA_FIELD_DISPLAY_LABELS[fieldName] || fieldName;
-    const before = snapshot?.fields[fieldName] ?? "";
+  for (const fieldName of metadataPatchFieldNames(operation.metadata)) {
+    const value = patch[fieldName];
     rows.push({
       key: fieldName,
-      label,
-      before,
-      after: newValue,
+      label: metadataFieldLabel(fieldName),
+      before: beforeFields[fieldName] ?? "",
+      after: value === undefined || value === null ? "" : String(value),
       multiline: fieldName === "abstractNote",
     });
   }
@@ -557,7 +621,11 @@ export function buildUpdateMetadataReviewField(
     rows.push({ key: "creators", label: "Authors", before, after });
   }
 
-  if (!rows.length) return null;
+  if (!rows.length) {
+    throw new Error(
+      `The metadata review for ${itemTitle} has no rows to show, so it was not offered for approval.`,
+    );
+  }
 
   return {
     type: "review_table",

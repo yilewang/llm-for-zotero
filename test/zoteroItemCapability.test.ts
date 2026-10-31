@@ -517,6 +517,112 @@ describe("item capability", function () {
 
       assert.equal(resolved?.id, 2);
     });
+
+    it("still reads a PDF attachment's parent for metadata reads", function () {
+      // Read callers (page text, literature search, library_read) want the
+      // paper a PDF belongs to; only writes take the named object.
+      installZotero();
+      const parent = makeItem({ id: 5, title: "Parent paper" });
+      const attachment = makeItem({ id: 6, title: "PDF" });
+      attachment.parentID = parent.id;
+      attachment.isRegularItem = () => false;
+      attachment.isAttachment = () => true;
+
+      const resolved = capability().resolveMetadataItem({ itemId: 6 });
+
+      assert.equal(resolved?.id, 5);
+    });
+  });
+
+  describe("resolving a metadata write target", function () {
+    function childAttachment() {
+      const parent = makeItem({ id: 5, title: "Parent paper" });
+      const attachment = makeItem({ id: 6, title: "PDF" });
+      attachment.parentID = parent.id;
+      attachment.isRegularItem = () => false;
+      attachment.isAttachment = () => true;
+      return { parent, attachment };
+    }
+
+    it("takes a named child attachment itself, never its parent", function () {
+      installZotero();
+      childAttachment();
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 6,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.deepEqual(
+        "item" in resolved ? resolved.item.id : resolved.refusal,
+        6,
+      );
+    });
+
+    it("refuses a named standalone note, naming note_write, and never falls back to the active item", function () {
+      installZotero();
+      const note = makeItem({ id: 7, title: "" });
+      note.isRegularItem = () => false;
+      note.isNote = () => true;
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 7,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.isTrue("refusal" in resolved, JSON.stringify(resolved));
+      if (!("refusal" in resolved)) return;
+      assert.include(resolved.refusal, "note_write");
+      assert.include(resolved.refusal, "7");
+    });
+
+    it("refuses a named id that does not exist instead of writing the active item", function () {
+      installZotero();
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 404,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.isTrue("refusal" in resolved, JSON.stringify(resolved));
+      if (!("refusal" in resolved)) return;
+      assert.include(resolved.refusal, "404");
+    });
+
+    it("keeps today's paper context, then active item, path when no id is named", function () {
+      installZotero();
+      childAttachment();
+      makeItem({ id: 2, title: "Active" });
+
+      const byActive = capability().resolveMetadataWriteTarget({
+        request: { activeItemId: 2 } as never,
+      });
+      const byPaper = capability().resolveMetadataWriteTarget({
+        paperContext: { itemId: 5, contextItemId: 6, title: "Parent" },
+        request: { activeItemId: 2 } as never,
+      });
+      // An open PDF stands for its paper, as it always has.
+      const byOpenPdf = capability().resolveMetadataWriteTarget({
+        request: { activeItemId: 6 } as never,
+      });
+
+      assert.equal("item" in byActive ? byActive.item.id : 0, 2);
+      assert.equal("item" in byPaper ? byPaper.item.id : 0, 5);
+      assert.equal("item" in byOpenPdf ? byOpenPdf.item.id : 0, 5);
+    });
+
+    it("refuses when no id is named and nothing is open", function () {
+      installZotero();
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        request: {} as never,
+      });
+
+      assert.isTrue("refusal" in resolved);
+    });
   });
 
   describe("reading editable metadata", function () {

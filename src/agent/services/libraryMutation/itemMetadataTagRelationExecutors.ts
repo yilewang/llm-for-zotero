@@ -17,12 +17,14 @@ type DomainOperation =
 
 export const itemMetadataTagRelationExecutors = {
   update_metadata: async (operation, context, zoteroGateway) => {
-    const targetItem = zoteroGateway.resolveMetadataItem({
+    const target = zoteroGateway.resolveMetadataWriteTarget({
       request: context.request,
       item: context.item,
       itemId: operation.itemId,
       paperContext: operation.paperContext,
     });
+    if ("refusal" in target) throw new Error(target.refusal);
+    const targetItem = target.item;
     assertItemInActiveLibrary(targetItem, context, "metadata update");
     const previousSnapshot =
       zoteroGateway.getEditableArticleMetadata(targetItem);

@@ -438,6 +438,16 @@ export class ZoteroGateway {
     return this.itemCapability.resolveMetadataItem(params);
   }
 
+  /** See `ItemCapability.resolveMetadataWriteTarget`. */
+  resolveMetadataWriteTarget(params: {
+    request?: AgentRuntimeRequest;
+    item?: Zotero.Item | null;
+    itemId?: number;
+    paperContext?: PaperContextRef | null;
+  }): { item: Zotero.Item } | { refusal: string } {
+    return this.itemCapability.resolveMetadataWriteTarget(params);
+  }
+
   getActiveContextItem(
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null {

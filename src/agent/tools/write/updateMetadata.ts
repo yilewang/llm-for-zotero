@@ -20,7 +20,6 @@ import {
   type UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../../services/zoteroGateway";
 import {
   ok,
   fail,
@@ -35,6 +34,7 @@ import {
   executeAndRecordUndoBatch,
   normalizeMetadataPatch,
   planLibraryMutations,
+  resolveMetadataWriteItem,
 } from "./mutateLibraryShared";
 
 type UpdateMetadataInput = {
@@ -219,11 +219,11 @@ export function createUpdateMetadataTool(
       const metadata = normalizeMetadataPatch(args.metadata);
       if (!metadata) {
         return fail(
-          "metadata must be an object with at least one recognized field. " +
+          "metadata must be an object with at least one field. " +
             "Example: { metadata: { title: 'Updated Title', DOI: '10.1234/example' } } " +
-            "Supported fields: " +
-            EDITABLE_ARTICLE_METADATA_FIELDS.join(", ") +
-            ", creators.",
+            "Any Zotero field the item's type has can be set (for a book, " +
+            "e.g. edition, series, numPages), plus creators; library_search with " +
+            "entity:'itemTypes' lists the fields of a type.",
         );
       }
 
@@ -257,38 +257,30 @@ export function createUpdateMetadataTool(
       const isBatch = input.operations.length > 1;
       const pageMeta = readPagedOperationMeta(input.operations[0]?.id);
       const pageLabel = readPagedOperationLabel(input.operations[0]?.id);
-      const reviewFields = input.operations
-        .map((operation) => {
-          const item = zoteroGateway.resolveMetadataItem({
-            itemId: operation.itemId,
-            paperContext: operation.paperContext,
-            request: context.request,
-            item: context.item,
-          });
-          const title =
-            zoteroGateway.getEditableArticleMetadata(item)?.title ||
-            operation.paperContext?.title ||
-            `Item ${operation.itemId ?? "active item"}`;
-          return buildUpdateMetadataReviewField(
-            operation,
-            zoteroGateway,
-            context,
-            title,
-            isBatch,
-          );
-        })
-        .filter((f): f is NonNullable<typeof f> => Boolean(f));
+      const reviewFields = input.operations.map((operation) => {
+        const item = resolveMetadataWriteItem(
+          operation,
+          zoteroGateway,
+          context,
+        );
+        const title =
+          zoteroGateway.getEditableArticleMetadata(item)?.title ||
+          operation.paperContext?.title ||
+          `Item ${operation.itemId ?? "active item"}`;
+        return buildUpdateMetadataReviewField(
+          operation,
+          zoteroGateway,
+          context,
+          title,
+          isBatch,
+        );
+      });
 
       const title = isBatch
         ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${input.operations.length} items`
         : `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${(() => {
             const op = input.operations[0];
-            const item = zoteroGateway.resolveMetadataItem({
-              itemId: op.itemId,
-              paperContext: op.paperContext,
-              request: context.request,
-              item: context.item,
-            });
+            const item = resolveMetadataWriteItem(op, zoteroGateway, context);
             return (
               zoteroGateway.getEditableArticleMetadata(item)?.title ||
               op.paperContext?.title ||
