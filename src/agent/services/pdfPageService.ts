@@ -778,11 +778,15 @@ export async function openReaderForItem(
 
 /**
  * The PDF's page count from Zotero's PDF worker, which parses the file (the
- * extraction stops after page 1). Null when the worker cannot tell.
+ * extraction stops after page 1). Null when the worker cannot tell, or when
+ * it has not answered within `timeoutMs`: the worker runs one job at a time,
+ * so a long extraction ahead of this one would otherwise delay the reader.
  */
 export async function getPdfAttachmentPageCount(
   attachmentId: number,
+  timeoutMs = 1500,
 ): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const worker = (
       Zotero as unknown as {
@@ -795,16 +799,21 @@ export async function getPdfAttachmentPageCount(
         };
       }
     ).PDFWorker;
-    const result = await worker?.getFullText?.(
-      Math.floor(attachmentId),
-      1,
-      true,
-    );
+    const pending = worker?.getFullText?.(Math.floor(attachmentId), 1, true);
+    if (!pending) return null;
+    const result = await Promise.race([
+      pending,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
     const total = Number(result?.totalPages);
     return Number.isFinite(total) && total > 0 ? Math.floor(total) : null;
   } catch (_error) {
     void _error;
     return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

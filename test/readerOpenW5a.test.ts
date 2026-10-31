@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { createReaderOpenTool } from "../src/agent/tools/control/readerOpen";
+import { getPdfAttachmentPageCount } from "../src/agent/services/pdfPageService";
 import type { AgentToolContext } from "../src/agent/types";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
@@ -196,6 +197,14 @@ describe("W5-A reader_open", function () {
     const result = await run({ attachmentId: 11, pageIndex: 40 });
     assert.equal(result.ok, true);
     assert.lengthOf(opens, 1);
+  });
+
+  it("gives up on the page count when the PDF worker is busy", async function () {
+    const zotero = globalScope.Zotero as any;
+    zotero.PDFWorker = { getFullText: () => new Promise(() => {}) };
+    const started = Date.now();
+    assert.isNull(await getPdfAttachmentPageCount(11, 30));
+    assert.isBelow(Date.now() - started, 1000);
   });
 
   it("verifies a page label from the page the reader shows", async function () {
