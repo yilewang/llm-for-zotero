@@ -114,6 +114,8 @@ describe("literature_search tool", function () {
 
     const tool = createLiteratureSearchTool({
       resolveMetadataItem: () => null,
+      // The item an applied result would write; a card is only offered for one.
+      resolveMetadataWriteTarget: () => ({ item: { id: 7 } }),
       getEditableArticleMetadata: () => null,
       fetchMetadataByIdentifier: async () => null,
     } as never);

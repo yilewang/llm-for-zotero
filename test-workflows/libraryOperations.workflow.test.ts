@@ -12,6 +12,7 @@ import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
 import { createLibrarySearchTool } from "../src/agent/tools/read/librarySearch";
 import { createSavedSearchTool } from "../src/agent/tools/write/savedSearches";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
+import { buildActionCallDigest } from "../src/agent/authorization/proposal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import {
@@ -1554,6 +1555,116 @@ describe("library operations against real Zotero", function () {
       } finally {
         await workflow.reset();
       }
+    });
+
+    it("shows a named item's before values on the literature-search card and writes that item, not the open paper", async function () {
+      const paperA = await makeItem("journalArticle", "OpenPaperA");
+      paperA.setField("date", "2020");
+      paperA.setField("DOI", `10.1/a-${SUFFIX}`);
+      await paperA.saveTx();
+      const paperB = await makeItem("journalArticle", "NamedPaperB");
+      paperB.setField("date", "2020");
+      await paperB.saveTx();
+      const aTitle = paperA.getField("title");
+      const bTitle = paperB.getField("title");
+      const newTitle = `Corrected B-${SUFFIX}`;
+      const newDoi = `10.1/b-${SUFFIX}`;
+
+      // Paper A is open and is the turn's paper; the call names paper B.
+      const base = contextFor(paperA, "Fix the other paper's metadata");
+      const context = {
+        ...base,
+        request: resolvedAgentRequest({
+          ...base.request,
+          selectedPaperContexts: [
+            { itemId: paperA.id, contextItemId: paperA.id, title: aTitle },
+          ],
+        }),
+      } as AgentToolContext;
+      const search =
+        Zotero.LLMForZotero.api.agent.getToolDefinition("literature_search");
+      const input = { workflow: "review", mode: "metadata", itemId: paperB.id };
+      // A translator result for B, as the network lookup would return it.
+      const searchResult: AgentToolResult = {
+        callId: "lit-named",
+        name: "literature_search",
+        ok: true,
+        actionReceipts: [],
+        content: {
+          workflow: "review",
+          mode: "metadata",
+          results: [
+            {
+              source: "Zotero translator",
+              title: newTitle,
+              patch: { title: newTitle, date: "2020", DOI: newDoi },
+            },
+          ],
+        },
+      };
+
+      const card = await search.createResultReviewAction(
+        input,
+        searchResult,
+        context,
+      );
+      const diff = card?.fields.find(
+        (field: { id: string }) => field.id === "metadataDiff",
+      ) as { rows: Array<{ key: string; before?: string; after: string }> };
+      assert.exists(diff, "the high-confidence card shows a diff");
+      assert.deepEqual(
+        diff.rows.map((row) => [row.key, row.before, row.after]),
+        [
+          ["title", bTitle, newTitle],
+          ["DOI", "", newDoi],
+        ],
+        "before values are paper B's, and no row is hidden by paper A's",
+      );
+
+      const resolved = await search.resolveResultReview(
+        input,
+        searchResult,
+        { approved: true, actionId: "apply_direct" },
+        context,
+      );
+      assert.equal(resolved.kind, "invoke_tool");
+      const call = resolved.call as {
+        name: string;
+        arguments: Record<string, unknown>;
+        inheritedApproval: Record<string, unknown>;
+      };
+      assert.equal(call.arguments.itemId, paperB.id);
+
+      const result = await withMode("safe", async (registry) => {
+        const execution = await registry.prepareExecution(
+          { id: "lit-named-apply", name: call.name, arguments: call.arguments },
+          context,
+          {
+            callerKind: "model",
+            inheritedApproval: {
+              ...call.inheritedApproval,
+              approvedCallDigest: buildActionCallDigest(
+                call.name,
+                call.arguments,
+              ),
+            } as never,
+          },
+        );
+        assert.equal(execution.kind, "result", "the card was the approval");
+        if (execution.kind !== "result") throw new Error("unreachable");
+        return execution.execution.result;
+      });
+
+      assert.isTrue(result.ok, JSON.stringify(result.content));
+      // Independent native readback, not the tool's account.
+      const freshB = Zotero.Items.get(paperB.id);
+      assert.equal(freshB.getField("title"), newTitle);
+      assert.equal(freshB.getField("DOI"), newDoi);
+      const freshA = Zotero.Items.get(paperA.id);
+      assert.equal(freshA.getField("title"), aTitle, "the open paper is left");
+      assert.equal(freshA.getField("DOI"), `10.1/a-${SUFFIX}`);
+      const [receipt] = result.actionReceipts || [];
+      assert.equal(receipt?.verification, "verified");
     });
   });
 

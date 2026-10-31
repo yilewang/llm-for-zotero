@@ -243,7 +243,12 @@ export function createLiteratureReviewTool(
       return discoveryContent(discovery.record);
     },
     createResultReviewAction: (_input, result, context) =>
-      createSearchLiteratureReviewAction(result, context, result.content),
+      createSearchLiteratureReviewAction(
+        result,
+        context,
+        result.content,
+        gateway,
+      ),
     resolveResultReview: async (_input, result, resolution, context) => {
       const content = result.content as {
         sessionId?: string;
@@ -285,6 +290,7 @@ export function createLiteratureReviewTool(
         result,
         resolution,
         context,
+        gateway,
       );
       if (action !== "import") return outcome;
       // The imported papers are cited as Zotero items: no outside paper is.

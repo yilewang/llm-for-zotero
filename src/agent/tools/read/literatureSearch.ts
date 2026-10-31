@@ -568,9 +568,20 @@ export function createLiteratureSearchTool(
       input.mode === "metadata" &&
       input.workflow === "review" &&
       !isEphemeralConversationKey(context.request.conversationKey)
-        ? createSearchLiteratureReviewAction(result, context, input)
+        ? createSearchLiteratureReviewAction(
+            result,
+            context,
+            input,
+            zoteroGateway,
+          )
         : null,
     resolveResultReview: (input, result, resolution, context) =>
-      resolveSearchLiteratureReview(input, result, resolution, context),
+      resolveSearchLiteratureReview(
+        input,
+        result,
+        resolution,
+        context,
+        zoteroGateway,
+      ),
   };
 }
