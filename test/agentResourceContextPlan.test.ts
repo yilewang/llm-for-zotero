@@ -311,7 +311,7 @@ describe("agent resource context plan", function () {
     for (const scope of ["collection", "tag"]) {
       assert.include(
         text,
-        `When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole ${scope}, or targetIds for chosen papers) whose description states that per-paper result;`,
+        `When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole ${scope}, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read;`,
         scope,
       );
       assert.include(
@@ -333,7 +333,7 @@ describe("agent resource context plan", function () {
     // declared (eval b4v6, run 2: a read part declared before load_skill).
     assert.equal(
       text.split(
-        "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide the parts.",
+        "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
       ).length - 1,
       2,
     );

@@ -80,7 +80,7 @@ const NO_SHELL_RULE =
  * an offer to search outside (user decision 2a; 2026-10-20).
  */
 const NOTHING_ATTACHED_RULE =
-  "With nothing attached, search the library first, in a step of its own, for any need it could hold, unless the user named an outside source or papers not in it; then answer from its relevant papers and offer to search outside, or, if it holds none, search outside without asking.";
+  "With nothing attached, search the library first, in a step of its own, for any need it could hold, unless the user named an outside source or papers not in it; then answer from its relevant papers and offer to search outside, or, if it holds none, search outside without asking, unless the user limited the answer to the library.";
 
 /**
  * Claude and Codex native web search have no tool description of their own

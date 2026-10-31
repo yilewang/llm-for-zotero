@@ -107,11 +107,17 @@ import {
  * Merged with W2's read scope: paper_read's guidance naming the
  * whole-sections read (+13 guidance characters each), to 43,371, 42,104 and
  * 43,469 (2026-10-31).
+ * Raised on 2026-10-31 by user instructions coming first: submit_document's
+ * "unless the user asks for a chat answer" (+32 tool characters), the fixed
+ * prompt's chat-answer and library-only clauses (+99), and paper_read's and
+ * library_retrieve's read-what-the-user-named clauses (+159 guidance
+ * characters in library turns, +99 in a paper turn), to 43,661, 42,334 and
+ * 43,759.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_371,
-  paper: 42_104,
-  collection: 43_469,
+  global: 43_661,
+  paper: 42_334,
+  collection: 43_759,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

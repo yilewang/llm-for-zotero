@@ -107,10 +107,16 @@ describe("direct Agent model tool surface", function () {
     // Merged with W2's read scope: task_update's read and overrides fields
     // (+343) and the named override and page-range properties for Gemini
     // (+482) raise both caps by 825, to 29,646 and 40,848 (2026-10-31).
-    assert.isAtMost(serializedToolCharacters, 29_646);
+    // User instructions come first: task_update's sentence that a digest
+    // reads the whole text unless its read names the source the user limited
+    // it to (+186) and submit_document's "unless the user asks for a chat
+    // answer" (+32) raise the tool cap by 218, to 29,864; the fixed prompt's
+    // chat-answer and library-only clauses (+99) raise the total by 317, to
+    // 41,165 (2026-10-31).
+    assert.isAtMost(serializedToolCharacters, 29_864);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      40_848,
+      41_165,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

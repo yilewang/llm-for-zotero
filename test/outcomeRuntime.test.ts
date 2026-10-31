@@ -2291,8 +2291,11 @@ describe("resuming a long job in runtime turns", function () {
     // 30,500 since 2026-10-20: the fixed prompt grew with the search-routing
     // contract; 30,700 since 2026-10-25, for the preview color sentence;
     // 30,800 since 2026-10-30, for the load-a-skill-first line of a folder
-    // scope. These tests check long-job resume, not prompt size.
-    advanced: { inputTokenCap: 30_800 },
+    // scope; 31,000 since 2026-10-31, for the user-instructions-first
+    // clauses (a digest's read limit, the skill deciding only what the
+    // request leaves open). These tests check long-job resume, not prompt
+    // size.
+    advanced: { inputTokenCap: 31_000 },
   } as Partial<AgentRuntimeRequestInput>;
 
   beforeEach(async function () {

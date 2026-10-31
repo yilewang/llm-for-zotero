@@ -706,7 +706,7 @@ export function createPaperDigestTool(
         `Digest papers with the host's reader: it reads up to ${DIGEST_TEXT_MAX_CHARS_LABEL} characters of each paper with this chat's own model (in batches when long) and returns per paper the answer to \`instruction\`, relevance and stance when a question or claim is named, facets, verified quotes, gaps, and source.complete.`,
         "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
         `One call reads at most ${PAPER_DIGEST_MAX_PAPERS_PER_CALL} papers; the rest come back in \`pending\`: call again with the same instruction and question until nothing is pending (digested papers are not read again).`,
-        `\`read\` reads only what the user named, e.g. {source:'abstract'} (as written, no model call, up to ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} a call) or {source:'sections', sections:['abstract','results']}.`,
+        `If the user limits what to read, set \`read\`, e.g. {source:'abstract'} (as written, no model call, up to ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} a call) or {source:'sections', sections:['abstract','results']}.`,
         "A failed paper runs again on at most two later calls.",
         "Cite a verified quote in chat by its quoteCitationId; the evidence refs are for submit_document.",
         "Apart from a whole text the user asks for, read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",

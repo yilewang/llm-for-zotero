@@ -1438,6 +1438,40 @@ describe("outcome ledger: host evidence binding", function () {
     }
   });
 
+  it("mark: accepts a skip whose reason is the user's own instruction", function () {
+    // User instructions come first (2026-10-31): the open-parts correction
+    // sends a part the user's instruction rules out to skipped, so a chat
+    // answer or a source limit is a reason, not a delivery claim.
+    for (const [part, reason] of [
+      [
+        {
+          taskId: "review",
+          description: "Review",
+          effect: "artifact" as const,
+        },
+        "The user asked for an answer in chat, not a document",
+      ],
+      [
+        {
+          taskId: "summaries",
+          description: "Summarize each paper",
+          effect: "digest" as const,
+          targets: ["item:1"],
+        },
+        "The user asked for the abstracts only",
+      ],
+    ] as const) {
+      const ledger = ledgerWith(part);
+      const result = markOutcomes(
+        ledger,
+        [{ taskId: taskId(part.taskId), status: "skipped", reason }],
+        30,
+      );
+      assert.lengthOf(result.refused, 0, reason);
+      assert.equal(find(result.checkpoint, part.taskId).status, "skipped");
+    }
+  });
+
   it("mark: refuses a delivery-claiming skip on a digest part with no evidence", function () {
     const ledger = ledgerWith({
       taskId: "summaries",

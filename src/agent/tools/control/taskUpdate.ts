@@ -947,11 +947,11 @@ export function applyOrdinaryTaskUpdates(
 export const LITERATURE_REVIEW_PARTS_GUIDANCE = skillGuidance(
   "literature-review",
   [
-    "Literature review parts: when task_update is available, these rules take priority over the skill's Read step.",
-    "In your first step, declare the parts with `task_update`.",
+    "Literature review parts: when task_update is available, these parts hand the papers to the host in place of the skill's first read.",
+    "Declare the parts with `task_update` before reading; with nothing attached, after `library_retrieve` has chosen the papers.",
     "When the user asked for something per paper (summaries, each paper's method, a table with a row per paper), declare a digest part, and do not also declare a read part over the same papers.",
-    "Declare a review's digest part as `{ taskId:'papers', description:'For the review question \"<question>\": summarize each paper and judge how it bears on the question', expectedEffect:'digest', scope:true }` (or explicit `targetIds`).",
-    "Then declare the review (`expectedEffect:'artifact'`) and, only when the user asked to save it, the note (`expectedEffect:'mutation'`, `expectedCapability:'zotero.notes'`).",
+    "Declare a review's digest part as `{ taskId:'papers', description:'For the review question \"<question>\": summarize each paper and judge how it bears on the question', expectedEffect:'digest', scope:true }` (or explicit `targetIds`); when the user limited what to read, add that `read`, e.g. `read:{ source:'abstract' }` or `read:{ source:'sections', sections:['abstract','results'] }`.",
+    "Then declare the review (`expectedEffect:'artifact'`) unless the user asked for a chat answer, and, only when the user asked to save it, the note (`expectedEffect:'mutation'`, `expectedCapability:'zotero.notes'`).",
     "The host marks each part done from the tools' results.",
     "Pass the `taskId` of the review part to `submit_document`.",
     "List each paper you leave out of an answer without a document under `excluded` in `task_update`, with a one-sentence reason.",
@@ -975,8 +975,9 @@ export const LITERATURE_REVIEW_DIGEST_GUIDANCE = skillGuidance(
 export const COMPARE_PAPERS_DIGEST_GUIDANCE = skillGuidance(
   "compare-papers",
   [
-    "Compare papers: when task_update is available, these rules take priority over reading the papers with `paper_read`.",
+    "Compare papers: when task_update is available, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
     "For three or more papers, declare a digest part first (`task_update` with `expectedEffect:'digest'` over the papers) whose description names the comparison dimensions, for example \"For each paper, report: question, species or system, method, main finding\".",
+    "When the user limited what to read, give the part that `read`, e.g. `read:{ source:'abstract' }`.",
     "Each result returns facets with those labels; they become the comparison's rows.",
     "Read further only for a dimension the results leave open.",
   ].join(" "),
@@ -1020,7 +1021,7 @@ export function createTaskUpdateTool(
     spec: {
       name: "task_update",
       description:
-        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason. A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.",
+        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. A digest reads each paper's whole text unless its read names a source; when the user limits what to read (abstracts, sections, pages, notes), set read to that, e.g. {source:'abstract'}. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason. A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

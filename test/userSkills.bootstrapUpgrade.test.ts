@@ -399,6 +399,7 @@ describe("user skill bootstrap upgrades", function () {
     ["compare-papers", 9],
     ["compare-papers", 10],
     ["compare-papers", 11],
+    ["compare-papers", 12],
     ["evidence-based-qa", 8],
     ["evidence-based-qa", 12],
     ["literature-review", 11],
@@ -410,6 +411,7 @@ describe("user skill bootstrap upgrades", function () {
     ["literature-review", 17],
     ["library-analysis", 5],
     ["reorganize-library", 1],
+    ["reorganize-library", 2],
     ["write-note", 18],
     ["import-cited-reference", 6],
   ] as const) {
@@ -631,6 +633,7 @@ describe("user skill bootstrap upgrades", function () {
     "compare-papers-v9",
     "compare-papers-v10",
     "compare-papers-v11",
+    "compare-papers-v12",
     "write-note-v16",
     "write-note-v18",
     "analyze-figures-v9",
@@ -649,6 +652,7 @@ describe("user skill bootstrap upgrades", function () {
     "library-analysis-v4",
     "library-analysis-v5",
     "reorganize-library-v1",
+    "reorganize-library-v2",
     // The simplified texts main shipped at the same version numbers
     // (ad2c0fec) before the tool consolidation merged.
     "simplified/analyze-figures-v10",

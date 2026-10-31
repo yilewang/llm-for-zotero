@@ -1,7 +1,7 @@
 ---
 id: reorganize-library
 description: Sort papers into folders or tags
-version: 2
+version: 3
 contexts: paper-set,library-corpus
 activation: auto
 ---
@@ -11,7 +11,7 @@ activation: auto
 Place each paper from its metadata first: title, authors, year, venue, abstract and existing tags.
 List them with `library_search` using the scope's filter (`collectionId` or `unfiled`) and `include:['abstract']`, paged with `limit` and `offset`, or with `library_retrieve` and `depth:'metadata'`.
 Do not list them with a `zotero_script`: Zotero's own top-level item list also returns annotations and other items that cannot be filed.
-Read further only for a paper its metadata cannot place, such as one without an abstract, or when the user's criterion lives in the body, such as the recording method used: then read that paper's relevant section with a targeted `paper_read`, not its full text, and never read every paper by default.
+Read further only for a paper its metadata cannot place, such as one without an abstract, or when the user's criterion lives in the body, such as the recording method used: then read that paper's relevant section with a targeted `paper_read`; read a full text, or every paper, only when the user asks.
 
 Before creating, moving or tagging anything, show the proposed grouping in the chat: each folder's or tag's name, its paper count, and two or three example titles.
 Reuse an existing collection or tag that fits rather than creating a duplicate.

@@ -420,7 +420,7 @@ function discoveryInstruction(record: AgentToolResultHandleRecord): string {
   const s = record.content as LiteratureDiscoverySession;
   const select = `titles and abstracts and select ${s.request.batchSize} ${s.papers.length ? "additional " : ""}genuinely relevant papers in ranked order${s.papers.length ? "" : " (pass the number the user asked for as count when it differs)"}. Respect the user's topic and these constraints: ${JSON.stringify(s.request)}. Assess unused saved candidates first; search further if needed. A further search uses workflow:'review'. To expand a provider list, increase its retrieval limit rather than repeating the same bounded request.`;
   const review = `literature_review with sessionId '${record.handle}', revision ${s.revision}, NEW candidateSetId/candidateIndex selections and evidence-based relevance reasons. Do not repeat displayed papers or dump the raw pool. If fewer qualify, explain shortfallReason; use outcome 'no_more' when no further relevant matches were found, or 'search_failed' for a retrieval failure. Empty selections with an explanation are allowed.`;
-  return `Assess ${select} Call ${review} ${s.revision ? "Never import during discovery or finish with prose instead of the card." : "Never import during discovery. If the user asked for papers themselves, finish with the card, not prose; otherwise answer without it."}`;
+  return `Assess ${select} Call ${review} ${s.revision ? "Never import during discovery or finish with prose instead of the card." : "Never import during discovery. If the user asked for papers themselves and not for a list in chat, finish with the card, not prose; otherwise answer without it."}`;
 }
 
 export async function prepareLiteratureDiscoveryReview(

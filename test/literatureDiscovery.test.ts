@@ -263,6 +263,12 @@ describe("ranked literature discovery workflow", function () {
         first.correction,
         "If the user asked for papers themselves",
       );
+      // A list the user asked for in chat is answered in chat (user
+      // instructions come first, 2026-10-31).
+      assert.include(
+        first.correction,
+        "and not for a list in chat, show them on the card:",
+      );
       assert.include(
         first.correction,
         "Use the active discovery sessionId and revision",
@@ -853,7 +859,7 @@ describe("ranked literature discovery workflow", function () {
     assert.include(nextStep, content.sessionId);
     assert.include(
       nextStep,
-      "Never import during discovery. If the user asked for papers themselves, finish with the card, not prose; otherwise answer without it.",
+      "Never import during discovery. If the user asked for papers themselves and not for a list in chat, finish with the card, not prose; otherwise answer without it.",
     );
     assert.notInclude(nextStep, "finish with prose instead of the card");
     // A discovery ends with the card, not an answer: no stop note.

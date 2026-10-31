@@ -130,11 +130,18 @@ describe("instruction harness inventory", function () {
     // literature-review skill v18 coverage rule ("Full" only when the reader
     // read every character) brings the bodies to 6,844 tokens.
     const literatureReviewV18Tokens = 63;
+    // Raised on 2026-10-31 by 142 tokens: user instructions come first, so
+    // literature-review v18, compare-papers v13 and reorganize-library v3
+    // read only what the user asked to read, use only the papers the user
+    // named, answer in chat when asked, and search outside only when the user
+    // did not limit the review to the library (bodies total 6,986).
+    const userInstructionFirstTokens = 142;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),
       previousBodyTokens / 2 +
         zoteroScriptSkillTokens +
-        literatureReviewV18Tokens,
+        literatureReviewV18Tokens +
+        userInstructionFirstTokens,
     );
   });
 

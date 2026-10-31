@@ -156,7 +156,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   request_user_input:
     "Ask up to three questions when required input cannot be found.",
   submit_document:
-    "Persist validated Markdown and evidence as a versioned material reference. A literature review is always delivered with this tool; other answers stay in chat unless the user asks for a document or a file. A citation source is a Zotero item (libraryID, itemKey) or the paperId of an outside paper literature_search or literature_read returned in this run; web pages are never cited. If it is unclear whether the answer is a literature review, answer in chat.",
+    "Persist validated Markdown and evidence as a versioned material reference. A literature review is delivered with this tool unless the user asks for a chat answer; other answers stay in chat unless the user asks for a document or a file. A citation source is a Zotero item (libraryID, itemKey) or the paperId of an outside paper literature_search or literature_read returned in this run; web pages are never cited. If it is unclear whether the answer is a literature review, answer in chat.",
 };
 
 function modelToolSpec(spec: ToolSpec): ToolSpec {

@@ -239,6 +239,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // native `name:` line.
     "ngexre",
     "1m607zi",
+    // v12, whose reading v13 makes follow what the user asked to read (only
+    // the abstracts, named sections, or full reads), as shipped and as the
+    // canonical copy carrying its native `name:` line.
+    "xytjpv",
+    "urjtw7",
   ],
   "analyze-figures.md": [
     "msvqtf",
@@ -351,6 +356,11 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // `name:` line.
     "1nlucw4",
     "1jwuu81",
+    // v2, whose never-a-full-text rule v3 leaves to the user (a full text,
+    // or every paper, when the user asks), as shipped and as the canonical
+    // copy carrying its native `name:` line.
+    "9pqjhh",
+    "1hpk276",
   ],
   "import-cited-reference.md": [
     "19bomz1",
@@ -391,6 +401,9 @@ const BUILTIN_BOOTSTRAP_BODY_HASHES: Partial<
     // v11, the body whose task_update digest step v12 moves into
     // task_update's guidance (#541).
     "e98t03",
+    // v12, the body whose reading v13 makes follow what the user asked to
+    // read.
+    "ihlct7",
   ],
   "evidence-based-qa.md": [
     "41yh3d",

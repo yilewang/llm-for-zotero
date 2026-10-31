@@ -130,7 +130,7 @@ describe("literature-review skill", function () {
     assert.notInclude(text, "instead of this step");
     assert.include(
       LITERATURE_REVIEW_PARTS_GUIDANCE.instruction,
-      "when task_update is available, these rules take priority over the skill's Read step",
+      "when task_update is available, these parts hand the papers to the host in place of the skill's first read",
     );
   });
 
@@ -165,7 +165,7 @@ describe("literature-review skill", function () {
     // outside-abstracts rule of 2026-10-20).
     assert.include(
       skill.instruction,
-      "When the review needs papers outside the library (nothing relevant is attached or in the library, or the library misses important work), find them with `literature_search`; the selection card asks the user to import and cite them or to cite them without importing, also for a review that mixes library and outside papers.",
+      "When the review needs papers outside the library (nothing relevant is attached or in the library, or the library misses important work) and the user did not limit it to the library, find them with `literature_search`; the selection card asks the user to import and cite them or to cite them without importing, also for a review that mixes library and outside papers.",
     );
     assert.notInclude(skill.instruction, "outside abstracts");
     // A paper with no text is named as not read: no retry, read or search.
@@ -240,7 +240,7 @@ describe("literature-review skill", function () {
       /2\. \*\*Read\.\*\*[\s\S]*3\. \*\*Select\.\*\*[\s\S]*4\. \*\*Write\.\*\*[\s\S]*5\. \*\*Save\.\*\*/,
     );
     for (const rule of [
-      "Include every paper whose content bears on the question, whatever its field.",
+      "Include every paper whose content bears on the question, whatever its field; when the user named the papers to use, use only those.",
       "a relevance of none is a signal, not the decision",
       "List each paper you leave out under `excluded` in `submit_document`, with a one-sentence reason",
       "Never leave a paper out because its text could not be read; name it as not read.",
@@ -419,7 +419,7 @@ describe("the plugin's Agent keeps the moved part and digest rules (#541)", func
 const DIGEST_RULE =
   "A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.";
 const DOCUMENT_RULE =
-  "A literature review is always delivered with this tool; other answers stay in chat unless the user asks for a document or a file.";
+  "A literature review is delivered with this tool unless the user asks for a chat answer; other answers stay in chat unless the user asks for a document or a file.";
 /** What a document may cite, for the plugin Agent and MCP clients alike. */
 const CITATION_SOURCE_RULE =
   "A citation source is a Zotero item (libraryID, itemKey) or the paperId of an outside paper literature_search or literature_read returned in this run; web pages are never cited. If it is unclear whether the answer is a literature review, answer in chat.";
@@ -463,7 +463,7 @@ describe("every literature review declares a digest part and ends in a document,
     ).instruction;
     assert.include(
       body,
-      "4. **Write.** Write one cited document as described under Document.",
+      "4. **Write.** Write one cited document as described under Document, unless the user asked for a chat answer; then answer in chat.",
     );
     assert.notInclude(body, "finish with `submit_document`");
   });

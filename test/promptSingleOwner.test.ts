@@ -214,9 +214,76 @@ describe("prompt rules have a single owner", function () {
     {
       // The plugin Agent reads the registry text, MCP clients the same text
       // in tools/list; both belong to the one tool.
-      rule: "a literature review is always delivered as a document",
-      marker: "A literature review is always delivered with this tool",
+      rule: "a literature review is delivered as a document unless the user asks for a chat answer",
+      marker:
+        "A literature review is delivered with this tool unless the user asks for a chat answer",
       owner: "tool:submit_document",
+    },
+    {
+      // User instructions come first (2026-10-31): each default below holds
+      // only when the user left the choice open, and states that in one
+      // clause in its one owner.
+      rule: "a digest reads the whole text unless the user limits what to read",
+      marker:
+        "A digest reads each paper's whole text unless its read names a source",
+      owner: "tool:task_update",
+    },
+    {
+      rule: "paper_digest reads only what the user limited the reading to",
+      marker: "If the user limits what to read, set `read`",
+      owner: "tool:paper_digest",
+    },
+    {
+      rule: "paper_read reads only what the user named",
+      marker:
+        "Otherwise read only what the user named, if they limited the reading",
+      owner: "tool:paper_read",
+    },
+    {
+      rule: "library_retrieve needs body evidence unless the user limited the reading",
+      marker: "Unless the user limited the reading to titles or abstracts",
+      owner: "tool:library_retrieve",
+    },
+    {
+      rule: "outside search without asking yields to a library-only request",
+      marker: "unless the user limited the answer to the library",
+      owner: "persona",
+    },
+    {
+      rule: "a chat answer keeps its limitations in its sentences unless the user asks",
+      marker: "In a chat answer, put any limitation in the sentence",
+      owner: "persona",
+    },
+    {
+      rule: "with nothing attached, a candidate is opened when the user says how to read it",
+      marker: "unless the user named a paper and how to read it",
+      owner: "turnContext:wholeLibrary",
+    },
+    {
+      rule: "a review uses only the papers the user named",
+      marker: "when the user named the papers to use, use only those",
+      owner: "skill:literature-review.md",
+    },
+    {
+      rule: "a review searches outside unless the user limited it to the library",
+      marker: "and the user did not limit it to the library",
+      owner: "skill:literature-review.md",
+    },
+    {
+      rule: "a review is written as a document unless the user asked for a chat answer",
+      marker:
+        "Write one cited document as described under Document, unless the user asked for a chat answer",
+      owner: "skill:literature-review.md",
+    },
+    {
+      rule: "a comparison reads what the user asked to read",
+      marker: "and when they asked for full reads, read each paper in full",
+      owner: "skill:compare-papers.md",
+    },
+    {
+      rule: "sorting reads a full text or every paper only on request",
+      marker: "read a full text, or every paper, only when the user asks",
+      owner: "skill:reorganize-library.md",
     },
     {
       // The card is offered for a review that needs outside papers, a mixed
