@@ -322,6 +322,62 @@ describe("change_item_type through library_update", function () {
     }
   });
 
+  it("redirects metadata.itemType to the top-level itemType route, and writes nothing", async function () {
+    const item = article();
+    const before = JSON.parse(JSON.stringify(item.record));
+    const gateway = gatewayFor(item);
+    for (const args of [
+      {
+        kind: "metadata",
+        itemId: 7,
+        metadata: { itemType: "book", volume: "3" },
+      },
+      {
+        kind: "metadata",
+        operations: [{ itemId: 7, metadata: { itemType: "book" } }],
+      },
+      {
+        kind: "metadata",
+        itemId: 7,
+        metadata: { fields: { itemType: "book", volume: "3" } },
+      },
+      {
+        kind: "metadata",
+        operations: [{ itemId: 7, fields: { itemType: "book" } }],
+      },
+      {
+        kind: "metadata",
+        operations: [{ itemId: 7, metadata: { fields: { itemType: "book" } } }],
+      },
+    ]) {
+      const { prepared } = await run(gateway, args);
+      assert.equal(prepared.kind, "result", JSON.stringify(args));
+      if (prepared.kind !== "result") continue;
+      assert.isFalse(prepared.execution.result.ok);
+      assert.include(
+        JSON.stringify(prepared.execution.result.content),
+        "To change the item type, call library_update({ kind:'metadata', itemId, itemType:'<type>' }) without metadata, then set the new type's fields in a second call.",
+      );
+    }
+    assert.deepEqual(item.record, before);
+  });
+
+  it("tells the model how to change an item's type", function () {
+    const registry = createBuiltInToolRegistry({
+      zoteroGateway: gatewayFor(article()) as never,
+      pdfService: {} as never,
+      pdfPageService: {} as never,
+      retrievalService: {} as never,
+    });
+    const update = registry
+      .listTools()
+      .find((tool) => tool.name === "library_update");
+    assert.match(
+      update?.description || "",
+      /kind:'metadata' with itemId and itemType \(not inside metadata\) changes the item type/,
+    );
+  });
+
   it("judges the postcondition on type and creators, and the undo on the exact record", function () {
     const handler = libraryMutationHandlers.change_item_type;
     const state = (record: ItemTypeRecord) =>

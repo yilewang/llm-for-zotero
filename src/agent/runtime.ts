@@ -128,6 +128,7 @@ import {
   openDeclaredOutcomes,
   reconcileJournaledReceipts,
   resumesOnContinue,
+  settleDeclinedOutcomes,
   settleOutcomes,
   type OutcomeEvidence,
 } from "./loop/outcomes";
@@ -1008,16 +1009,24 @@ export class AgentRuntime {
       await runEvents?.flush();
       if (recordsOutcomes()) {
         try {
-          const end = decideRunEnd(request.executionCheckpoint, {
-            status,
-            stopRule,
-          });
+          // A run that answered settles the user's declines as skipped
+          // first, and its end state is decided from that checkpoint.
+          const now = this.now();
+          const settleDeclines = (checkpoint: ExecutionCheckpoint) =>
+            status === "completed"
+              ? settleDeclinedOutcomes(checkpoint, now)
+              : checkpoint;
+          const end = decideRunEnd(
+            request.executionCheckpoint &&
+              settleDeclines(request.executionCheckpoint),
+            { status, stopRule },
+          );
           if (
             request.executionCheckpoint?.tasks.length ||
             END_STATES_RECORDED_WITHOUT_OUTCOMES.has(end)
           ) {
             await updateExecutionCheckpoint((checkpoint) =>
-              settleOutcomes(checkpoint, end, this.now()),
+              settleOutcomes(settleDeclines(checkpoint), end, now),
             );
           }
         } catch (error) {

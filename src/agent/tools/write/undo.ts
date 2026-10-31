@@ -61,7 +61,7 @@ type UndoBranch<TInput> = Required<
 >;
 
 /**
- * Rows written before actions were described in words read "Apply apply_tags"
+ * Rows written before actions were described in words read "Apply <operation>"
  * or "library_update: 3 planned changes". Rebuild those from the steps the
  * row holds, so the card never shows an internal token.
  */

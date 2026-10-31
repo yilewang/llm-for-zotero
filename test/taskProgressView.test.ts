@@ -3125,7 +3125,9 @@ describe("task progress view of an outcome ledger", function () {
       KEY,
       "run-a",
       outcomeCheckpoint(
-        [{ ...save, status: "blocked", reason: OUTCOME_REASONS.declined }],
+        // A settled run is blocked by a write it could not verify; a decline
+        // settles as skipped (see the case below).
+        [{ ...save, status: "blocked", reason: OUTCOME_REASONS.unverified }],
         "blocked",
       ),
     );
@@ -3146,6 +3148,29 @@ describe("task progress view of an outcome ledger", function () {
     assert.equal(row.className, "llm-plan-task llm-plan-task-blocked");
     assert.equal(row.findByClass("llm-plan-task-badge")!.textContent, "!");
     assert.equal(row.findByClass("llm-plan-task-pill")!.textContent, "Blocked");
+    assert.equal(detailOf(row), OUTCOME_REASONS.unverified);
+  });
+
+  it("settled decline: the step is skipped with the user's reason and the run is partly done", function () {
+    seedScope();
+    const harness = track(mount());
+    beginTaskRun(KEY, { runId: "run-a" });
+    setTaskOutcomes(
+      KEY,
+      "run-a",
+      outcomeCheckpoint(
+        [{ ...save, status: "skipped", reason: OUTCOME_REASONS.declined }],
+        "completed_with_exceptions",
+      ),
+    );
+    completeTaskRun(KEY, { runId: "run-a" });
+    harness.view.flush();
+    assert.equal(harness.row.dataset.state, "completed_with_exceptions");
+    assert.equal(pill(harness).textContent, "Partly done");
+    const steps = openSteps(harness);
+    assert.equal(headerStatus(steps), "Completed with exceptions");
+    const [row] = rows(steps);
+    assert.equal(row.findByClass("llm-plan-task-pill")!.textContent, "Skipped");
     assert.equal(detailOf(row), "You declined this change.");
   });
 
@@ -3910,7 +3935,7 @@ describe("task progress view of an outcome ledger", function () {
         "run-a",
         outcomeCheckpoint(
           [
-            { ...save, status: "blocked", reason: OUTCOME_REASONS.declined },
+            { ...save, status: "blocked", reason: OUTCOME_REASONS.unverified },
             outcomeTask("ask", {
               description: "Ask which collection to use",
               status: "blocked",
@@ -3928,8 +3953,8 @@ describe("task progress view of an outcome ledger", function () {
         ),
       );
       harness.view.flush();
-      const [declinedRow, askRow, pickRow] = rows(openSteps(harness));
-      assert.equal(detailOf(declinedRow), t(OUTCOME_REASONS.declined));
+      const [unverifiedRow, askRow, pickRow] = rows(openSteps(harness));
+      assert.equal(detailOf(unverifiedRow), t(OUTCOME_REASONS.unverified));
       assert.equal(detailOf(askRow), "Needs the user's choice of collection");
       assert.equal(labelOf(askRow), "Ask which collection to use");
       assert.notEqual(t("Needs input"), "Needs input");

@@ -126,10 +126,13 @@ describe("direct Agent model tool surface", function () {
     // annotate_pdf's annotationType +75): 30,853 and 42,377.
     // Raised on 2026-10-31 by 34 characters: W5-D (library_update's
     // resumeBatchId), merged onto W5-C: 30,887 and 42,411.
-    assert.isAtMost(serializedToolCharacters, 30_887);
+    // Raised on 2026-10-31 by 116 characters: library_update's item-type
+    // route (kind:'metadata' with itemId and itemType, not inside
+    // metadata): 31,003 and 42,527.
+    assert.isAtMost(serializedToolCharacters, 31_003);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      42_411,
+      42_527,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

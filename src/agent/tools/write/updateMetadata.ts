@@ -53,6 +53,27 @@ function itemTypeChangeOf(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const ITEM_TYPE_ROUTE =
+  "To change the item type, call library_update({ kind:'metadata', itemId, itemType:'<type>' }) without metadata, then set the new type's fields in a second call.";
+
+/** Whether a patch, or the .fields it flattens, carries itemType. */
+function patchHasItemType(patch: unknown): boolean {
+  if (!validateObject<Record<string, unknown>>(patch)) return false;
+  return (
+    patch.itemType !== undefined ||
+    (validateObject<Record<string, unknown>>(patch.fields) &&
+      patch.fields.itemType !== undefined)
+  );
+}
+
+/**
+ * Whether a metadata patch carries itemType: in metadata or patch, or in
+ * the .fields object `normalizeMetadataPatch` flattens into either.
+ */
+function hasNestedItemType(value: Record<string, unknown>): boolean {
+  return [value.metadata, value.patch].some(patchHasItemType);
+}
+
 function normalizeOperationEntry(
   value: unknown,
   index: number,
@@ -221,6 +242,21 @@ export function createUpdateMetadataTool(
         return ok({
           operations: [{ type: "change_item_type", itemId, itemType }],
         });
+      }
+
+      // The type is not a metadata field: one route changes it, and the
+      // model is told that route instead of having a second spelling of it.
+      if (
+        hasNestedItemType(args) ||
+        (Array.isArray(args.operations) &&
+          args.operations.some(
+            (entry) =>
+              validateObject<Record<string, unknown>>(entry) &&
+              // An entry is itself a patch when it names no metadata.
+              (patchHasItemType(entry) || hasNestedItemType(entry)),
+          ))
+      ) {
+        return fail(ITEM_TYPE_ROUTE);
       }
 
       // Batch mode: { operations: [...] }

@@ -13,6 +13,7 @@ import {
   outcomeProgressSignature,
   papersAlreadyWritten,
   resumesOnContinue,
+  settleDeclinedOutcomes,
   settleOutcomes,
   type OutcomeDeclaration,
   type OutcomeEvidence,
@@ -1600,7 +1601,8 @@ describe("outcome ledger: host evidence binding", function () {
     assert.isTrue(first.changed);
     assert.deepEqual(first.checkpoint.tasks[0], {
       taskId: taskId("host-declined-1"),
-      description: "Added tags",
+      // Nothing was added: the label names the work, not a result.
+      description: "Add tags",
       dependencies: [],
       status: "blocked",
       journalActionIds: [],
@@ -1629,11 +1631,55 @@ describe("outcome ledger: host evidence binding", function () {
     assert.deepEqual(
       second.checkpoint.tasks.map((task) => [task.taskId, task.description]),
       [
-        [taskId("host-declined-1"), "Added tags"],
-        [taskId("host-declined-2"), "Saved note"],
+        [taskId("host-declined-1"), "Add tags"],
+        [taskId("host-declined-2"), "Save note"],
       ],
     );
     assert.notProperty(second.checkpoint.tasks[1], "targets");
+  });
+
+  it("declined: a later verified receipt for the declined write turns the label to the past tense", function () {
+    const declinedOnce = apply(
+      emptyLedger(),
+      declined("call-script", {
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        requestedTargets: [],
+      }),
+    ).checkpoint;
+    assert.equal(declinedOnce.tasks[0].description, "Run Zotero script");
+    const ran = apply(declinedOnce, {
+      kind: "receipt",
+      receipt: receipt({
+        id: "script-receipt",
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        proofDomain: "execution",
+        verification: "verified",
+        status: "applied",
+        requestedTargets: [],
+        appliedTargets: [],
+      }),
+    }).checkpoint;
+    assert.lengthOf(ran.tasks, 1);
+    assert.equal(ran.tasks[0].status, "completed");
+    assert.equal(ran.tasks[0].description, "Ran Zotero script");
+  });
+
+  it("receipt: a write that did not apply names the intended work until a verified receipt", function () {
+    const failed = apply(emptyLedger(), {
+      kind: "receipt",
+      receipt: failedWrite("note-failed", ["Zotero refused the note."]),
+    }).checkpoint;
+    assert.equal(failed.tasks[0].description, "Create note");
+    assert.notEqual(failed.tasks[0].status, "completed");
+    const saved = apply(failed, {
+      kind: "receipt",
+      receipt: receipt({ id: "note-saved" }),
+    }).checkpoint;
+    assert.lengthOf(saved.tasks, 1);
+    assert.equal(saved.tasks[0].status, "completed");
+    assert.equal(saved.tasks[0].description, "Created note");
   });
 
   it("declined: the same call declined again changes nothing", function () {
@@ -1784,10 +1830,17 @@ describe("outcome ledger: run end state", function () {
   });
 
   it("any blocked outcome ends the run blocked", function () {
-    const blocked = apply(
-      ledgerWith(saveNote),
-      declineNote("call-note"),
-    ).checkpoint;
+    // A write that ran and could not be verified: the user must check it.
+    const blocked = apply(ledgerWith(saveNote), {
+      kind: "receipt",
+      receipt: receipt({
+        id: "note-unverified",
+        verification: "unverified",
+        status: "unverified",
+      }),
+    }).checkpoint;
+    assert.equal(find(blocked, "save").status, "blocked");
+    assert.equal(find(blocked, "save").reason, OUTCOME_REASONS.unverified);
     assert.equal(
       decideRunEnd(blocked, { status: "completed", stopRule: "final_answer" }),
       "blocked",
@@ -1799,6 +1852,37 @@ describe("outcome ledger: run end state", function () {
       }),
       "blocked",
     );
+  });
+
+  it("a completed run settles a declined write as skipped and ends completed with exceptions", function () {
+    const blocked = apply(
+      ledgerWith(saveNote),
+      declineNote("call-note"),
+    ).checkpoint;
+    assert.equal(find(blocked, "save").status, "blocked");
+    const settled = settleDeclinedOutcomes(blocked, 50);
+    const save = find(settled, "save");
+    assert.equal(save.status, "skipped");
+    assert.equal(save.reason, DECLINED);
+    assert.equal(save.updatedAt, 50);
+    assert.equal(
+      decideRunEnd(settled, { status: "completed", stopRule: "final_answer" }),
+      "completed_with_exceptions",
+    );
+    assert.equal(
+      settleOutcomes(settled, "completed_with_exceptions", 60).tasks[0].status,
+      "skipped",
+    );
+    // A blocked part for another reason keeps holding the run.
+    const unverified = apply(ledgerWith(saveNote), {
+      kind: "receipt",
+      receipt: receipt({
+        id: "note-unverified",
+        verification: "unverified",
+        status: "unverified",
+      }),
+    }).checkpoint;
+    assert.strictEqual(settleDeclinedOutcomes(unverified, 50), unverified);
   });
 
   it("a failed run that made progress under an interrupting rule ends interrupted and keeps its open outcomes pending", function () {

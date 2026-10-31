@@ -1009,7 +1009,7 @@ describe("outcome ledger in runtime turns", function () {
     assert.deepEqual(ledger.tasks[0].verifiedReceiptIds, []);
   });
 
-  it("a write the user declines ends the run blocked", async function () {
+  it("a write the user declines settles as skipped when the run completes", async function () {
     const turn = await runTurn({
       conversationKey,
       userText: "Summarize this paper and save it as a note",
@@ -1024,9 +1024,11 @@ describe("outcome ledger in runtime turns", function () {
     assert.equal(turn.requests, 3);
     assert.equal(environment.library.nativeSaves(), 0);
     const ledger = settled(turn);
-    assert.deepEqual(ledger.end, { state: "blocked" });
+    // The decline is the user's own word: the part is skipped with that
+    // reason and does not hold the run in "Needs input".
+    assert.deepEqual(ledger.end, { state: "completed_with_exceptions" });
     const save = outcome(ledger, "save");
-    assert.equal(save.status, "blocked");
+    assert.equal(save.status, "skipped");
     assert.equal(save.reason, OUTCOME_REASONS.declined);
     assert.include(save.receiptIds, "declined:note-1");
   });

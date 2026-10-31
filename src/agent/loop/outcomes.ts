@@ -3,7 +3,10 @@ import type {
   AgentActionProposal,
   AgentActionReceipt,
 } from "../contracts/types";
-import { receiptOperationLabel } from "../contracts/operationCatalog";
+import {
+  receiptIntentLabel,
+  receiptOperationLabel,
+} from "../contracts/operationCatalog";
 import type { MaterialRef } from "../documents/materialRef";
 import {
   materialRefKey,
@@ -749,6 +752,13 @@ function bindReceipt(
   const { exceptions: _previous, ...rest } = task;
   const bound: Task = {
     ...rest,
+    // The host named its own part by the work it set out to do; a receipt
+    // that proves the work names what was done.
+    ...(proves &&
+    task.origin === "host" &&
+    task.description === receiptIntentLabel(receipt)
+      ? { description: receiptOperationLabel(receipt) }
+      : {}),
     verifiedReceiptIds:
       proves && receipt.verification === "verified"
         ? union(task.verifiedReceiptIds, [receipt.id])
@@ -1027,7 +1037,9 @@ function applyReceipt(
   const host: Task = {
     ...newTask(
       hostReceiptTaskId(checkpoint, receipt.id),
-      receiptOperationLabel(receipt),
+      // A receipt that did not apply names the work it set out to do;
+      // `bindReceipt` turns it to the past tense once a receipt proves it.
+      receiptIntentLabel(receipt),
       now,
     ),
     effect: "mutation",
@@ -1390,7 +1402,7 @@ function applyDeclined(
     {
       ...newTask(
         freeTaskId(checkpoint, (attempt) => `host-declined-${attempt}`),
-        receiptOperationLabel(first),
+        receiptIntentLabel(first),
         now,
       ),
       status: "blocked",
@@ -2299,6 +2311,31 @@ export function closeOpenOutcomes(
       open.has(task.taskId)
         ? { ...task, status: "skipped", reason, updatedAt: now }
         : task,
+    ),
+    updatedAt: now,
+  };
+}
+
+/**
+ * A completed run's declined writes, settled as skipped.
+ *
+ * A decline is the user's own word. While the run goes on the part stays
+ * blocked, so a re-proposal the user approves can still complete it; once
+ * the run has answered, the part is skipped with the decline as its reason
+ * and does not hold the run in "blocked". The caller decides the end state
+ * from the checkpoint this returns, and only for a run that completed.
+ */
+export function settleDeclinedOutcomes(
+  checkpoint: ExecutionCheckpoint,
+  now: number,
+): ExecutionCheckpoint {
+  const declined = (task: Task) =>
+    task.status === "blocked" && task.reason === OUTCOME_REASONS.declined;
+  if (!checkpoint.tasks.some(declined)) return checkpoint;
+  return {
+    ...checkpoint,
+    tasks: checkpoint.tasks.map((task) =>
+      declined(task) ? { ...task, status: "skipped", updatedAt: now } : task,
     ),
     updatedAt: now,
   };

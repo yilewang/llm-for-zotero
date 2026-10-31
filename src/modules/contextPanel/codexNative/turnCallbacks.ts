@@ -25,9 +25,12 @@ import { paperLedgerUpdateFromMcpActivity } from "../../../agent/context/taskPap
 import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
+  buildZoteroMcpToolApprovalPendingAction,
   isCodexNativeBuiltInApprovalRequest,
+  readZoteroMcpToolApproval,
   resolveCodexNativeApprovalRequest,
   runCodexAppServerNativeTurn,
+  zoteroMcpToolApprovalResponse,
   type CodexNativeApprovalRequest,
   type CodexNativeDiagnostics,
 } from "../../../codexAppServer/nativeClient";
@@ -315,6 +318,49 @@ export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
       resolution = { approved: false };
     params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
     return nativeQuestionAnswers(questions, resolution);
+  }
+  // A Zotero write under a chip that asks: the user answers on a card, and
+  // Codex gets its own accept or decline.
+  const zoteroApproval = readZoteroMcpToolApproval(params.request);
+  if (zoteroApproval) {
+    const requestId =
+      params.nextRequestId?.() ||
+      `codex-zotero-approval-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+    const action = buildZoteroMcpToolApprovalPendingAction(zoteroApproval);
+    try {
+      params.setStatusSafely("Codex is waiting for your approval", "sending");
+      params.trace?.noteMcpConfirmationRequired?.(requestId, action);
+      const resolution = await (
+        params.showActionCard || showNativeMcpActionCard
+      )(
+        params.body,
+        requestId,
+        action,
+        params.request.signal,
+        Boolean(params.trace?.noteMcpConfirmationRequired),
+      );
+      if (
+        params.request.signal?.aborted ||
+        (params.isCurrent && !params.isCurrent())
+      ) {
+        return zoteroMcpToolApprovalResponse({ approved: false });
+      }
+      params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
+      return zoteroMcpToolApprovalResponse(resolution);
+    } catch (error) {
+      params.trace?.noteMcpConfirmationResolved?.(requestId, {
+        approved: false,
+      });
+      appLogger.warn(
+        "Codex app-server native: Zotero write approval UI unavailable; declining",
+        { reason: error instanceof Error ? error.message : String(error) },
+      );
+      params.setStatusSafely(
+        "Codex declined a Zotero change because the approval UI was unavailable",
+        "error",
+      );
+      return zoteroMcpToolApprovalResponse({ approved: false });
+    }
   }
   if (defaultDecision.reason === "unsupported_mcp_elicitation") {
     params.setStatusSafely(

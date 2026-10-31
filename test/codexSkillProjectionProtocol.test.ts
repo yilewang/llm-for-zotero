@@ -27,7 +27,7 @@ import {
   resetCodexSkillProjectionStateForTests,
   withCodexSkillDisableRules,
 } from "../src/codexAppServer/skillProjection";
-import { forkCodexAppServerThread } from "../src/codexAppServer/nativeClient";
+import { forkCodexAppServerThreadWithRecord } from "../src/codexAppServer/nativeClient";
 import {
   CodexAppServerProcess,
   destroyCachedCodexAppServerProcess,
@@ -411,7 +411,7 @@ describe("Codex native turns read the Codex-only copy of a marked skill", functi
     });
     CodexAppServerProcess.spawn = async () => proc;
     try {
-      const threadId = await forkCodexAppServerThread({
+      const { threadId } = await forkCodexAppServerThreadWithRecord({
         threadId: "thread-source",
         targetConversationKey: 6_000_000_904,
         processKey: "projection-fork",

@@ -320,7 +320,17 @@ const MCP_SCOPE_ARG_NAMES = new Set([
   "activeContextItemID",
 ]);
 const CODEX_MCP_READ_APPROVAL_MODE = "approve";
-const CODEX_MCP_EFFECT_APPROVAL_MODE = "auto";
+// Plan tools only record the turn's own parts: Codex never asks for them.
+const CODEX_MCP_PLAN_APPROVAL_MODE = "auto";
+/**
+ * Codex's approval for Zotero MCP writes: "writes" asks before a tool that
+ * is not read-only, "auto" runs it. A Codex thread passes the mode its
+ * permission chip implies (`codexZoteroMcpWriteApprovalMode`); "auto" is the
+ * default for a config that names no chip.
+ */
+export type CodexZoteroMcpWriteApprovalMode = "writes" | "auto";
+const CODEX_MCP_DEFAULT_WRITE_APPROVAL_MODE: CodexZoteroMcpWriteApprovalMode =
+  "auto";
 const MCP_READ_DEDUPE_TTL_MS = 2 * 60 * 1000;
 const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
   "library_search",
@@ -641,17 +651,18 @@ export function getZoteroMcpDirectPdfToolNames(): string[] {
 }
 
 function getZoteroMcpToolApprovalOverrides(
-  toolNames = getZoteroMcpAllowedToolNames(),
-): Record<string, { approval_mode: "approve" | "auto" }> {
+  toolNames: string[],
+  writeApprovalMode: CodexZoteroMcpWriteApprovalMode,
+): Record<string, { approval_mode: "approve" | "auto" | "writes" }> {
   return Object.fromEntries(
     toolNames.map((name) => [
       name,
       {
         approval_mode: CURATED_PLAN_TOOL_NAMES.has(name)
-          ? CODEX_MCP_EFFECT_APPROVAL_MODE
+          ? CODEX_MCP_PLAN_APPROVAL_MODE
           : CURATED_READ_TOOL_NAMES.has(name)
             ? CODEX_MCP_READ_APPROVAL_MODE
-            : CODEX_MCP_EFFECT_APPROVAL_MODE,
+            : writeApprovalMode,
       },
     ]),
   );
@@ -685,9 +696,12 @@ export function buildZoteroMcpConfigValue(
     required?: boolean;
     rawPdfMode?: boolean;
     enabled?: boolean;
+    writeApprovalMode?: CodexZoteroMcpWriteApprovalMode;
   } = {},
 ): Record<string, unknown> {
   const token = getOrCreateZoteroMcpBearerToken();
+  const writeApprovalMode =
+    params.writeApprovalMode || CODEX_MCP_DEFAULT_WRITE_APPROVAL_MODE;
   const scopeToken = normalizeText(params.scopeToken, 256);
   const enabled = params.enabled !== false;
   const enabledToolNames = params.rawPdfMode
@@ -697,10 +711,13 @@ export function buildZoteroMcpConfigValue(
     url: getZoteroMcpServerUrl(),
     ...(!enabled ? { enabled: false } : {}),
     ...(enabled && params.required ? { required: true } : {}),
-    default_tools_approval_mode: CODEX_MCP_EFFECT_APPROVAL_MODE,
+    default_tools_approval_mode: writeApprovalMode,
     // Codex's per-server tool-call timeout (its default is 60 s).
     tool_timeout_sec: ZOTERO_MCP_TOOL_TIMEOUT_SEC,
-    tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
+    tools: getZoteroMcpToolApprovalOverrides(
+      enabledToolNames,
+      writeApprovalMode,
+    ),
     http_headers: {
       [ZOTERO_MCP_AUTH_HEADER]: `Bearer ${token}`,
       ...(scopeToken ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken } : {}),

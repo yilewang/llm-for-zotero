@@ -592,7 +592,12 @@ describe("conversationRepository", function () {
     const forkCalls: string[] = [];
     codexAppServerForkService.forkThread = async (params) => {
       forkCalls.push(params.threadId);
-      return "thread-forked";
+      return {
+        threadId: "thread-forked",
+        providerPermissionRecord: JSON.stringify({
+          mcpWriteApproval: "writes",
+        }),
+      };
     };
     try {
       globalScope.Zotero = {
@@ -704,12 +709,18 @@ describe("conversationRepository", function () {
       retiredAt: null,
     };
     let persistedProviderSessionId = "";
+    let persistedPermissionRecord = "";
     let targetTitle = "";
 
     codexAppServerForkService.forkThread = async (params) => {
       forkCalls.push(params.threadId);
       forkTargetConversationKeys.push(params.targetConversationKey);
-      return "thread-forked";
+      return {
+        threadId: "thread-forked",
+        providerPermissionRecord: JSON.stringify({
+          mcpWriteApproval: "auto",
+        }),
+      };
     };
     codexAppServerForkService.archiveThread = async (params) => {
       archiveCalls.push(params.threadId);
@@ -891,6 +902,13 @@ describe("conversationRepository", function () {
               persistedProviderSessionId = String(
                 (params || []).find((value) => value === "thread-forked") || "",
               );
+              persistedPermissionRecord = String(
+                (params || []).find(
+                  (value) =>
+                    typeof value === "string" &&
+                    value.includes("mcpWriteApproval"),
+                ) || "",
+              );
               return [];
             }
             if (
@@ -958,6 +976,11 @@ describe("conversationRepository", function () {
       assert.deepEqual(forkTargetConversationKeys, [targetConversationKey]);
       assert.deepEqual(archiveCalls, []);
       assert.equal(persistedProviderSessionId, "thread-forked");
+      // The fork stores the write approval mode it was created with.
+      assert.equal(
+        persistedPermissionRecord,
+        JSON.stringify({ mcpWriteApproval: "auto" }),
+      );
       assert.lengthOf(insertedMessages, 2);
       assert.include(
         insertedMessages[0],
@@ -1045,7 +1068,12 @@ describe("conversationRepository", function () {
 
     codexAppServerForkService.forkThread = async (params) => {
       forkCalls.push(params.threadId);
-      return "thread-forked";
+      return {
+        threadId: "thread-forked",
+        providerPermissionRecord: JSON.stringify({
+          mcpWriteApproval: "writes",
+        }),
+      };
     };
     codexAppServerForkService.archiveThread = async (params) => {
       archiveCalls.push(params.threadId);

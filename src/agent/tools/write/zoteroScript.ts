@@ -40,6 +40,7 @@ import {
   type JournalStepPostState,
 } from "../../services/changeReverter";
 import { fingerprintText } from "../../contracts/actionOperationEvidence";
+import { reachesAuthorizationState } from "./authorizationTampering";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -1101,11 +1102,7 @@ function scriptRiskSignals(script: string): ActionRiskSignal[] {
   if (/\bZotero\s*\.\s*DB\b|\braw\s+sql\b/i.test(script)) {
     signals.push("raw_database");
   }
-  if (
-    /originalAgentPermissionMode|agentLibraryWriteMode|authorization|grantStore/i.test(
-      script,
-    )
-  ) {
+  if (reachesAuthorizationState(script)) {
     signals.push("authorization_tampering");
   }
   return signals;

@@ -130,11 +130,14 @@ import {
  * Raised on 2026-10-31 by 34 characters: W5-D (library_update's
  * resumeBatchId), merged onto W5-C. The budgets are now 44,907, 43,580
  * and 45,005.
+ * Raised on 2026-10-31 by 116 tool characters: library_update's item-type
+ * route (kind:'metadata' with itemId and itemType, not inside metadata).
+ * The budgets are now 45,023, 43,696 and 45,121.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 44_907,
-  paper: 43_580,
-  collection: 45_005,
+  global: 45_023,
+  paper: 43_696,
+  collection: 45_121,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {
