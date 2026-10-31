@@ -139,6 +139,27 @@ describe("the Full label", function () {
       }
     });
 
+    it("shows a pages read's range in the plugin's language", function () {
+      const read = digestRead({
+        backend: "pdf",
+        complete: true,
+        scope: { source: "pages", pages: [{ from: 3, to: 5 }] },
+        covered: ["pages 3–5", "pages 7"],
+      });
+      assert.equal(formatTaskPaperDigestDepth(read), "pages 3–5, pages 7");
+      const globals = globalThis as unknown as { Zotero?: unknown };
+      const previous = globals.Zotero;
+      globals.Zotero = { Prefs: { get: () => "zh-CN" }, locale: "zh-CN" };
+      initI18n();
+      try {
+        assert.equal(formatTaskPaperDigestDepth(read), "第 3–5 页, 第 7 页");
+      } finally {
+        if (previous === undefined) delete globals.Zotero;
+        else globals.Zotero = previous;
+        initI18n();
+      }
+    });
+
     it("shows Part for a skimmed or cut read of the full text", function () {
       const read = digestRead({ backend: "pdf", complete: false });
       assert.equal(formatTaskPaperDigestDepth(read), "Part");

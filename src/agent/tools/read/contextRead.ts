@@ -359,9 +359,13 @@ async function readToolResult(
     ? withoutDigestQuoteCitations(record.content)
     : record.content;
   if (!input.path) {
+    const summary = summarizeRoot(content);
+    // The read's own warnings first, then the stored result's, each once.
+    const stored = Array.isArray(summary.warnings) ? summary.warnings : [];
     return {
       ...base,
-      ...summarizeRoot(content),
+      ...summary,
+      warnings: [...new Set([...warnings, ...stored])],
     };
   }
   const root = contentRecord(content);

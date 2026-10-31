@@ -2417,19 +2417,18 @@ export function selectStructuredCandidates(params: {
   queryTerms: string[];
   sections: ReadonlyArray<RetrievalSectionSummary>;
   sectionIds?: string[];
+  /** Chunks in scope besides those sections (text with no section ids). */
+  chunkIndexes?: number[];
   hasSignal: boolean;
 }): PaperContextCandidate[] {
   const topK = Math.max(1, Math.floor(params.topK));
   const requestedSectionIds = (params.sectionIds || []).filter(Boolean);
   let pool = params.ranked;
-  if (requestedSectionIds.length) {
-    const wanted = new Set(requestedSectionIds);
+  if (requestedSectionIds.length || params.chunkIndexes?.length) {
     // Same rule as the ranking stage: a requested scope that matches nothing
     // returns nothing rather than widening to the whole document.
-    pool = params.ranked.filter(
-      (candidate) =>
-        candidate.sectionIndex !== undefined &&
-        wanted.has(sectionIdForIndex(candidate.sectionIndex)),
+    pool = params.ranked.filter((candidate) =>
+      inRequestedScope(candidate, requestedSectionIds, params.chunkIndexes),
     );
   }
   if (!pool.length) return [];
@@ -2603,6 +2602,19 @@ function selectSectionDiverseFallback(
   return selected;
 }
 
+/** Whether a candidate is in a requested scope of sections or chunks. */
+function inRequestedScope(
+  candidate: Pick<PaperContextCandidate, "chunkIndex" | "sectionIndex">,
+  sectionIds: readonly string[] = [],
+  chunkIndexes: readonly number[] = [],
+): boolean {
+  return (
+    chunkIndexes.includes(candidate.chunkIndex) ||
+    (candidate.sectionIndex !== undefined &&
+      sectionIds.includes(sectionIdForIndex(candidate.sectionIndex)))
+  );
+}
+
 /** Sections of a document, derived from the chunk metadata. */
 function buildSectionSummaries(
   chunkMeta: PdfChunkMeta[],
@@ -2690,6 +2702,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
   compatibilityOptions?: {
     topK?: number;
@@ -2704,6 +2718,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
@@ -2714,7 +2730,8 @@ export async function buildPaperRetrievalCandidates(
     "precomputedQueryEmbedding" in (apiOverridesOrOptions || {}) ||
     "queryPlan" in (apiOverridesOrOptions || {}) ||
     "preferredChunkIndexes" in (apiOverridesOrOptions || {}) ||
-    "sectionIds" in (apiOverridesOrOptions || {})
+    "sectionIds" in (apiOverridesOrOptions || {}) ||
+    "chunkIndexes" in (apiOverridesOrOptions || {})
       ? apiOverridesOrOptions
       : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
@@ -2913,18 +2930,17 @@ export async function buildPaperRetrievalCandidates(
     (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
     (fusedRank.get(a) || 0) - (fusedRank.get(b) || 0);
   const allRanked = [...candidates].sort(byAdjustedRank);
-  const requestedSections = new Set(options?.sectionIds || []);
-  const restricted = requestedSections.size
-    ? allRanked.filter(
-        (candidate) =>
-          candidate.sectionIndex !== undefined &&
-          requestedSections.has(sectionIdForIndex(candidate.sectionIndex)),
-      )
-    : [];
+  const scoped = Boolean(
+    options?.sectionIds?.length || options?.chunkIndexes?.length,
+  );
   // Every later reservation and fallback must obey the same valid scope.
   // A requested scope that matches nothing returns nothing: falling back to
   // the whole document would deliver out-of-scope passages without a warning.
-  const ranked = requestedSections.size ? restricted : allRanked;
+  const ranked = scoped
+    ? allRanked.filter((candidate) =>
+        inRequestedScope(candidate, options?.sectionIds, options?.chunkIndexes),
+      )
+    : allRanked;
 
   // Stage 2 — structure.
   const selected = selectStructuredCandidates({
@@ -2933,6 +2949,7 @@ export async function buildPaperRetrievalCandidates(
     queryTerms: terms,
     sections: buildSectionSummaries(chunkMeta),
     sectionIds: options?.sectionIds,
+    chunkIndexes: options?.chunkIndexes,
     hasSignal: bm25Scores.some((score) => score > 0) || embedRank !== null,
   });
   const selectionOrder = new Map(

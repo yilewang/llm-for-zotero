@@ -31,6 +31,7 @@ import {
 } from "../src/agent/context/taskPaperLedger";
 import { buildTaskPaperCoverage } from "../src/agent/context/taskPaperCoverage";
 import { clearAgentToolResultHandleStore } from "../src/agent/store/toolResultHandles";
+import { createContextReadTool } from "../src/agent/tools/read/contextRead";
 
 /**
  * The digest worker reads each paper for its read scope (`readScope.ts`):
@@ -782,6 +783,88 @@ describe("a digest record saved before read scopes", function () {
     assert.deepEqual(
       digestReadCapabilities(loaded!.source, DIGEST_BODY_DEPTH_CHARS),
       ["body"],
+    );
+  });
+
+  it("stores a sections digest that missed a name with the not-found rule, once", async function () {
+    const run = job({
+      scope: scope({ source: "sections", sections: ["abstract", "results"] }),
+      readText: async (itemId) => ({
+        itemId,
+        contextItemId: 101,
+        title: "Drift in place cells",
+        backend: "mineru",
+        text: PAPER,
+        totalCharacters: PAPER.length,
+        covered: ["Abstract"],
+        unmatched: ["results"],
+        bounds: "exact",
+        textSource: "MinerU sections",
+      }),
+    });
+    const [digest] = (await runPaperDigestJob(run.params)).digests;
+    const cache = createHandleStorePaperDigestCache({ conversationKey });
+    await cache.set(digest);
+    const rows = db
+      .prepare(
+        `SELECT content_json FROM llm_for_zotero_agent_tool_result_handles WHERE conversation_key = ?`,
+      )
+      .all(conversationKey) as Array<{ content_json: string }>;
+    assert.lengthOf(rows, 1);
+    // The record carries the rule once: in the rendered digest.
+    assert.equal(
+      rows[0].content_json.split(SECTIONS_NOT_FOUND_RULE).length - 1,
+      1,
+    );
+    const { handle } = db
+      .prepare(
+        `SELECT handle FROM llm_for_zotero_agent_tool_result_handles WHERE conversation_key = ?`,
+      )
+      .get(conversationKey) as { handle: string };
+    // What context_read serves the model after compaction: the rendered
+    // digest carries the live result's note.
+    const contextRead = createContextReadTool();
+    const readStored = async (path?: string) => {
+      const validated = contextRead.validate({
+        source: "tool_result",
+        handle,
+        ...(path ? { path } : {}),
+      });
+      if (!validated.ok) throw new Error(validated.error);
+      const output = await contextRead.execute(validated.value, {
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "",
+          metadata: { agentToolResultReadAvailable: true },
+        },
+        item: null,
+        currentAnswerText: "",
+        modelName: "test-model",
+      } as never);
+      return JSON.stringify(
+        contextRead.modelContent?.(output, validated.value as never) ?? output,
+      );
+    };
+    const rendered = await readStored("rendered");
+    assert.equal(rendered.split(SECTIONS_NOT_FOUND_RULE).length - 1, 1);
+    assert.include(rendered, "not in this paper: results");
+  });
+
+  it("stores a digest that found every named section without the rule", async function () {
+    const run = job({
+      scope: scope({ source: "sections", sections: ["results"] }),
+    });
+    const [digest] = (await runPaperDigestJob(run.params)).digests;
+    await createHandleStorePaperDigestCache({ conversationKey }).set(digest);
+    const [row] = db
+      .prepare(
+        `SELECT content_json FROM llm_for_zotero_agent_tool_result_handles WHERE conversation_key = ?`,
+      )
+      .all(conversationKey) as Array<{ content_json: string }>;
+    assert.notInclude(
+      (JSON.parse(row.content_json) as { rendered: string }).rendered,
+      SECTIONS_NOT_FOUND_RULE,
     );
   });
 });

@@ -413,10 +413,16 @@ export function createHandleStorePaperDigestCache(params: {
       return digests;
     }));
   const store = async (digest: HostPaperDigest) => {
+    // Read back alone (context_read after compaction), the rendered digest
+    // carries the live result's note for a named section the paper lacks.
+    const notFound = digestMissesNamedSections(digest.source);
     const content: DigestCacheContent = {
       cacheKey: digest.cacheKey,
       digest,
-      rendered: renderHostPaperDigests([digest], []),
+      rendered: [
+        renderHostPaperDigests([digest], []),
+        ...(notFound ? [SECTIONS_NOT_FOUND_RULE] : []),
+      ].join("\n\n"),
     };
     const record = createAgentToolResultHandleRecord({
       conversationKey: params.conversationKey,

@@ -108,7 +108,12 @@ import {
   selectLeadAbstract,
   selectMineruScopeSections,
   selectPageScope,
+  chooseMineruScopeSections,
+  chunkIndexesForMineruSections,
+  chunkIndexesForText,
+  pdfChunkIndexesForSection,
   selectPdfChunkScopeSections,
+  type MineruScopeChoice,
   type ScopePageText,
 } from "../../digests/readScopeText";
 
@@ -528,44 +533,84 @@ async function readAbstractPart(params: {
     };
   }
   const markdown = await params.markdown();
+  const found = await choosePaperTextAbstract(markdown, params.pdfContext);
+  if (!found) return null;
+  if (found.via === "mineru")
+    return {
+      text: found.text,
+      block: found.block,
+      source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
+      bounds: "exact",
+      label: "Abstract",
+      backend: "mineru",
+    };
+  if (found.via === "chunks")
+    return {
+      text: found.text,
+      block: found.block,
+      source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
+      bounds: "approximate",
+      label: "Abstract",
+      backend: "pdf",
+    };
+  return {
+    text: found.text,
+    block: `## ${LEAD_ABSTRACT_LABEL}\n${found.text}`,
+    source: READ_SCOPE_TEXT_SOURCES.pdfAbstractLead,
+    bounds: "approximate",
+    label: LEAD_ABSTRACT_LABEL,
+    backend: "mineru",
+  };
+}
+
+/** Where a paper's own text holds its abstract, and its text there. */
+type PaperTextAbstract =
+  | {
+      via: "mineru";
+      text: string;
+      block: string;
+      choice: MineruScopeChoice;
+    }
+  | { via: "chunks"; text: string; block: string; chunkIndexes: number[] }
+  | { via: "lead"; text: string };
+
+/**
+ * The abstract in a paper's own text, in the order every sections read
+ * tries (after the Zotero abstract field, which only the whole-sections
+ * read can return): the MinerU abstract section (a heading, or Cell's
+ * Summary), else the chunks the PDF reader classed as abstract (for MinerU
+ * text only those no heading classed), else MinerU's unheaded lead
+ * paragraph. Null when the text has none.
+ */
+async function choosePaperTextAbstract(
+  markdown: string | null,
+  pdfContext: () => Promise<PdfContext | undefined>,
+): Promise<PaperTextAbstract | null> {
   if (markdown) {
-    const selected = selectMineruScopeSections(markdown, ["abstract"]);
-    const text = withoutLeadingHeading(selected.text);
-    if (text)
-      return {
-        text,
-        block: selected.text,
-        source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
-        bounds: "exact",
-        label: "Abstract",
-        backend: "mineru",
-      };
+    const choice = chooseMineruScopeSections(markdown, ["abstract"]);
+    const block = selectMineruScopeSections(markdown, ["abstract"]).text;
+    const text = withoutLeadingHeading(block);
+    if (text) return { via: "mineru", text, block, choice };
   }
-  const context = await params.pdfContext();
+  const context = await pdfContext();
   if (context?.chunks?.length) {
-    const selected = selectPdfChunkScopeSections(context, ["abstract"]);
+    const options = { headingsJudged: Boolean(markdown) };
+    const selected = selectPdfChunkScopeSections(
+      context,
+      ["abstract"],
+      options,
+    );
     const text = withoutLeadingHeading(withoutChunkMarkers(selected.text));
     if (text)
       return {
+        via: "chunks",
         text,
         block: selected.text,
-        source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
-        bounds: "approximate",
-        label: "Abstract",
-        backend: "pdf",
+        chunkIndexes: pdfChunkIndexesForSection(context, "abstract", options),
       };
   }
   const lead = markdown ? selectLeadAbstract(markdown) : "";
-  if (lead)
-    return {
-      text: lead,
-      block: `## ${LEAD_ABSTRACT_LABEL}\n${lead}`,
-      source: READ_SCOPE_TEXT_SOURCES.pdfAbstractLead,
-      bounds: "approximate",
-      label: LEAD_ABSTRACT_LABEL,
-      backend: "mineru",
-    };
-  return null;
+  return lead ? { via: "lead", text: lead } : null;
 }
 
 /** `text` cut to `ceiling` characters, with what the cut kept. */
@@ -1484,72 +1529,150 @@ function sectionsHoldText(
 }
 
 type ResolvedSectionFilter = {
-  /** Section ids that exist in at least one target's outline. */
+  /** Section ids in the paper's outline. */
   sectionIds: string[];
-  /** Section names no outline title matched; searched as query text instead. */
-  unmatchedNames: string[];
-  warnings: string[];
+  /** Chunks the named sections hold. */
+  chunkIndexes: number[];
+  /** Names and ids the paper has none of; never searched in their place. */
+  notFound: string[];
+  /** An abstract the paper has only in its Zotero record, not in its text. */
+  abstractInRecord: boolean;
+  /**
+   * Names found in the MinerU text that no chunk holds, so a query cannot
+   * search them; a read with no query reads them.
+   */
+  unsearchable: string[];
 };
 
 /**
- * Turn the two ways a call can name sections into section ids: explicit
- * `sectionIds` from an outline read, and free-text `sections` names matched
- * against outline titles by shared non-stopword tokens. Ids nothing knows and
- * names nothing matches are reported rather than silently dropped, and a read
- * that ends up with no id at all still reads the whole document.
+ * One paper's scope from the two ways a call names sections. Explicit
+ * `sectionIds` come from an outline read. Names are found by the rules a
+ * whole-sections read uses, mapped to the chunks that hold them: the
+ * abstract by `choosePaperTextAbstract`; with MinerU text, any other name
+ * by `chooseMineruScopeSections` (a standard name by its heading's kind,
+ * Cell's Summary as the abstract, the results of a paper with no Results
+ * heading by their place; any other name by a heading that holds every
+ * word of it; with subsections); without it, a standard name by the
+ * chunks' kind and any other name by the outline titles that hold every
+ * word of it. A name or id the paper has none of is reported, never
+ * replaced by the whole document.
  */
-function resolveSectionFilter(params: {
+async function resolveSectionFilter(params: {
   sectionIds?: string[];
   sections?: string[];
-  outlines: DocumentOutline[];
-}): ResolvedSectionFilter {
-  const warnings: string[] = [];
-  const titleTokensById = new Map<string, string[]>();
-  for (const outline of params.outlines) {
-    for (const section of outline.sections) {
-      titleTokensById.set(section.sectionId, [
-        ...(titleTokensById.get(section.sectionId) || []),
-        ...tokenizeRetrievalText(section.title || ""),
-      ]);
-    }
-  }
-  const sectionIds: string[] = [];
-  const addSectionId = (sectionId: string): void => {
-    if (!sectionIds.includes(sectionId)) sectionIds.push(sectionId);
-  };
-  const unknownIds: string[] = [];
+  outline: DocumentOutline;
+  content: PdfContext | undefined;
+  markdown: string | null;
+  abstractNote: () => string;
+}): Promise<ResolvedSectionFilter> {
+  const outlineSections = params.outline.sections;
+  const content = params.content || { chunks: [], chunkMeta: [] };
+  const known = new Set(outlineSections.map((section) => section.sectionId));
+  const sectionIds = new Set<string>();
+  const chunkIndexes = new Set<number>();
+  const missing = new Set<string>();
+  const unsearchable = new Set<string>();
+  let abstractInRecord = false;
   for (const sectionId of params.sectionIds || []) {
-    if (titleTokensById.has(sectionId)) addSectionId(sectionId);
-    else if (!unknownIds.includes(sectionId)) unknownIds.push(sectionId);
+    if (known.has(sectionId)) sectionIds.add(sectionId);
+    else missing.add(sectionId);
   }
-  if (unknownIds.length) {
-    warnings.push(`Unknown sectionIds ignored: ${unknownIds.join(", ")}`);
-  }
-  const unmatchedNames: string[] = [];
-  for (const name of params.sections || []) {
-    const nameTokens = new Set(tokenizeRetrievalText(name));
-    const matched = nameTokens.size
-      ? [...titleTokensById.entries()]
-          .filter(([, tokens]) => tokens.some((token) => nameTokens.has(token)))
-          .map(([sectionId]) => sectionId)
-      : [];
-    if (!matched.length) {
-      unmatchedNames.push(name);
+  const names = params.sections || [];
+  const add = (name: string, indexes: readonly number[]) => {
+    for (const index of indexes) chunkIndexes.add(index);
+    if (!indexes.length) missing.add(name);
+  };
+  // Chosen MinerU sections, as chunks: by the section the chunks name, else
+  // (flat chunks name none) by the sections' text.
+  const mineruChunks = (
+    sections: MineruScopeChoice["sections"],
+    indexes: readonly number[],
+  ): number[] => {
+    const named = chunkIndexesForMineruSections(content, sections, indexes);
+    if (named.length || !params.markdown) return named;
+    const byText = new Set<number>();
+    for (const index of indexes) {
+      const section = sections[index];
+      if (!section) continue;
+      const raw = params.markdown.slice(section.charStart, section.charEnd);
+      const body = raw.replace(/^\s*#{1,6}\s+[^\n]*\n*/, "");
+      // A short body may repeat elsewhere; its heading line pins it.
+      const probe = body.replace(/\s+/g, " ").trim().length < 80 ? raw : body;
+      for (const chunk of chunkIndexesForText(content, probe))
+        byText.add(chunk);
+    }
+    return [...byText].sort((a, b) => a - b);
+  };
+  for (const name of names.filter(isAbstractSectionName)) {
+    const found = await choosePaperTextAbstract(
+      params.markdown,
+      async () => params.content,
+    );
+    const indexes = !found
+      ? []
+      : found.via === "mineru"
+        ? mineruChunks(
+            found.choice.sections,
+            found.choice.parts.flatMap((part) => part.indexes),
+          )
+        : found.via === "chunks"
+          ? found.chunkIndexes
+          : chunkIndexesForText(content, found.text);
+    if (!indexes.length && params.abstractNote().trim()) {
+      abstractInRecord = true;
       continue;
     }
-    for (const sectionId of matched) addSectionId(sectionId);
+    if (!indexes.length && found && found.via !== "chunks") {
+      unsearchable.add(name);
+      continue;
+    }
+    add(name, indexes);
   }
-  if (unmatchedNames.length) {
-    warnings.push(
-      `No outline section matched: ${unmatchedNames.join(", ")}. Searched the whole document for those words instead.`,
-    );
+  const others = names.filter((name) => !isAbstractSectionName(name));
+  if (others.length && params.markdown) {
+    const choice = chooseMineruScopeSections(params.markdown, others);
+    for (const part of choice.parts) {
+      const indexes = mineruChunks(choice.sections, part.indexes);
+      if (indexes.length) add(part.name, indexes);
+      else unsearchable.add(part.name);
+    }
+    for (const name of choice.unmatched) missing.add(name);
+  } else {
+    const words = (text: string) =>
+      tokenizeRetrievalText(text, { filterStopwords: true });
+    for (const name of others) {
+      if (readScopeSectionKind(name)) {
+        add(name, pdfChunkIndexesForSection(content, name));
+        continue;
+      }
+      const nameWords = words(name);
+      let found = false;
+      outlineSections.forEach((section, index) => {
+        if (!nameWords.length) return;
+        const title = new Set(words(section.title || ""));
+        if (!nameWords.every((word) => title.has(word))) return;
+        found = true;
+        sectionIds.add(section.sectionId);
+        // Its subsections: the deeper sections that follow it.
+        for (const next of outlineSections.slice(index + 1)) {
+          if (next.level <= section.level) break;
+          sectionIds.add(next.sectionId);
+        }
+      });
+      if (!found) missing.add(name);
+    }
   }
-  if ((params.sectionIds?.length || 0) > 0 && !sectionIds.length) {
-    warnings.push(
-      "No requested section id exists in this paper's outline, so the whole document was searched.",
-    );
-  }
-  return { sectionIds, unmatchedNames, warnings };
+  // In the call's order: ids, then names.
+  const notFound = [...(params.sectionIds || []), ...names].filter(
+    (entry, index, list) => missing.has(entry) && list.indexOf(entry) === index,
+  );
+  return {
+    sectionIds: [...sectionIds],
+    chunkIndexes: [...chunkIndexes],
+    notFound,
+    abstractInRecord,
+    unsearchable: names.filter((name) => unsearchable.has(name)),
+  };
 }
 
 function buildQuoteCitationFromResult(
@@ -2749,18 +2872,82 @@ export function createPaperReadTool(
         );
       }
       const sectionIdsByPaper = new Map<number, string[]>();
+      const chunkIndexesByPaper = new Map<number, number[]>();
       // Retrieval never widens a requested scope, so a scope with no text is
       // reported here, before the read, from the paper's own chunks.
       const emptyScopeWarnings: string[] = [];
-      const filters = targets.map((paper) => {
-        const filter = resolveSectionFilter({
+      // Named sections bound the search: a paper with none of them is not
+      // searched, and a missing name is reported, not searched as words.
+      const notFoundWarnings: string[] = [];
+      const nothingRead: string[] = [];
+      const unsearched = new Set<string>();
+      const notFoundPapers = new Set<string>();
+      const scoped = Boolean(
+        input.sections?.length || input.sectionIds?.length,
+      );
+      // Named sections are found in the MinerU text when the paper has one.
+      const readers = input.sections?.length
+        ? new Map(
+            (
+              await hydrateFigureTargetsWithMineruMetadata(
+                targets,
+                zoteroGateway,
+              )
+            ).map((paper) => [paperContextKey(paper), paper]),
+          )
+        : undefined;
+      const recordOnly: string[] = [];
+      const unsearchableNotes: string[] = [];
+      for (const paper of targets) {
+        const hydrated = readers?.get(paperContextKey(paper));
+        const filter = await resolveSectionFilter({
           sectionIds: input.sectionIds,
           sections: input.sections,
-          outlines: [outlineByPaper.get(paperContextKey(paper))!],
+          outline: outlineByPaper.get(paperContextKey(paper))!,
+          content: contentByPaper.get(paperContextKey(paper)),
+          markdown: hydrated ? await readMineruMarkdown(hydrated) : null,
+          abstractNote: () => {
+            const field = (
+              zoteroGateway.getItem?.(paper.itemId) as
+                | { getField?: (field: string) => unknown }
+                | null
+                | undefined
+            )?.getField?.("abstractNote");
+            return typeof field === "string" ? field : "";
+          },
         });
         sectionIdsByPaper.set(paper.contextItemId, filter.sectionIds);
+        if (filter.chunkIndexes.length)
+          chunkIndexesByPaper.set(paper.contextItemId, filter.chunkIndexes);
+        if (filter.notFound.length)
+          notFoundWarnings.push(
+            `Not found in ${formatPaperCitationLabel(paper)}: ${filter.notFound.join(", ")}.`,
+          );
+        if (filter.abstractInRecord)
+          recordOnly.push(formatPaperCitationLabel(paper));
+        if (filter.unsearchable.length)
+          unsearchableNotes.push(
+            `${formatPaperCitationLabel(paper)}: ${filter.unsearchable.join(", ")} cannot be searched with a query; read ${
+              filter.unsearchable.length === 1 ? "it" : "them"
+            } with sections:[${filter.unsearchable.map((name) => `'${name}'`).join(",")}] and no query.`,
+          );
+        if (
+          scoped &&
+          !filter.sectionIds.length &&
+          !filter.chunkIndexes.length
+        ) {
+          unsearched.add(paperContextKey(paper));
+          // Nothing read: a missing name says so, beside any pointer.
+          if (filter.notFound.length) {
+            notFoundPapers.add(paperContextKey(paper));
+            nothingRead.push(
+              `${formatPaperCitationLabel(paper)} (item:${paper.itemId}): none of the named sections were found`,
+            );
+          }
+        }
         if (
           filter.sectionIds.length &&
+          !filter.chunkIndexes.length &&
           !sectionsHoldText(
             contentByPaper.get(paperContextKey(paper)),
             filter.sectionIds,
@@ -2773,41 +2960,43 @@ export function createPaperReadTool(
             `Requested sections contain no passages: ${filter.sectionIds.join(", ")}${paperSuffix}`,
           );
         }
-        return filter;
-      });
-      const sectionFilter = {
-        unmatchedNames: [
-          ...new Set(filters.flatMap((filter) => filter.unmatchedNames)),
-        ],
-        warnings: [
-          ...new Set([
-            ...filters.flatMap((filter) => filter.warnings),
-            ...emptyScopeWarnings,
-          ]),
-        ],
-      };
-      const question = [
-        input.query || context.request.userText,
-        sectionFilter.unmatchedNames.length
-          ? `Relevant sections: ${sectionFilter.unmatchedNames.join(", ")}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-      const results = await retrievalService.retrieveEvidence({
-        papers: targets,
-        question,
-        queryVariants: input.queryVariants,
-        model: context.request.model,
-        apiBase: context.request.apiBase,
-        apiKey: context.request.apiKey,
-        authMode: context.request.authMode,
-        providerProtocol: context.request.providerProtocol,
-        profileOverride: context.request.advanced?.profileOverride,
-        topK: input.topK,
-        perPaperTopK: input.topK,
-        sectionIdsByPaper,
-      });
+      }
+      const warnings = [
+        ...new Set([
+          ...emptyScopeWarnings,
+          ...notFoundWarnings,
+          // The rule once per result, not once per paper.
+          ...(notFoundWarnings.length ? [SECTIONS_NOT_FOUND_RULE] : []),
+          // Its text has no abstract to search; its record has one.
+          ...(recordOnly.length
+            ? [
+                `The abstract of ${recordOnly.join(", ")} is only in the Zotero record: read it with sections:['abstract'] and no query.`,
+              ]
+            : []),
+          ...unsearchableNotes,
+        ]),
+      ];
+      const question = input.query || context.request.userText || "";
+      const searched = targets.filter(
+        (paper) => !unsearched.has(paperContextKey(paper)),
+      );
+      const results = !searched.length
+        ? []
+        : await retrievalService.retrieveEvidence({
+            papers: searched,
+            question,
+            queryVariants: input.queryVariants,
+            model: context.request.model,
+            apiBase: context.request.apiBase,
+            apiKey: context.request.apiKey,
+            authMode: context.request.authMode,
+            providerProtocol: context.request.providerProtocol,
+            profileOverride: context.request.advanced?.profileOverride,
+            topK: input.topK,
+            perPaperTopK: input.topK,
+            sectionIdsByPaper,
+            chunkIndexesByPaper,
+          });
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();
       for (const [key, outline] of outlineByPaper) {
@@ -2821,10 +3010,15 @@ export function createPaperReadTool(
           results as Array<Record<string, unknown>>,
           quoteCitations,
           embeddedOutlines,
+        ).map((group, index) =>
+          notFoundPapers.has(paperContextKey(targets[index]))
+            ? { ...group, status: "no_matching_sections" }
+            : group,
         ),
         quoteCitations: mergeQuoteCitations(quoteCitations),
-        ...(sectionFilter.warnings.length
-          ? { warnings: sectionFilter.warnings }
+        ...(warnings.length ? { warnings } : {}),
+        ...(nothingRead.length
+          ? { note: `Nothing read for ${nothingRead.join("; ")}.` }
           : {}),
       };
     },

@@ -182,8 +182,8 @@ describe("literature-review skill", function () {
     assert.include(text, "same `taskId` and no description");
   });
 
-  it("ships as version 19", function () {
-    assert.equal(skill.version, 19);
+  it("ships as version 20", function () {
+    assert.equal(skill.version, 20);
   });
 
   it("reads and cites a chosen outside paper by paperId, an imported one by item key", function () {
@@ -297,7 +297,13 @@ describe("compare-papers skill", function () {
     );
     const text = COMPARE_PAPERS_DIGEST_GUIDANCE.instruction;
     assert.include(text, "expectedEffect:'digest'");
-    assert.include(text, "Declare the digest part first");
+    // "Before reading", not "first": with nothing attached the whole-library
+    // rule puts library_retrieve before the digest part (2026-10-31).
+    assert.include(
+      text,
+      "Before reading, declare the digest part whose description names the comparison dimensions",
+    );
+    assert.notInclude(text, "first");
     // The digest description names the dimensions; the facets come back
     // with those labels and become the comparison's rows.
     assert.include(text, "whose description names the comparison dimensions");
@@ -460,7 +466,7 @@ describe("every literature review declares a digest part and ends in a document,
     ).instruction;
     assert.include(
       body,
-      "4. **Write.** Write one cited document as described under Document, unless the user asked for a chat answer; then answer in chat.",
+      "4. **Write.** Deliver the review in the form the user asked for; when they named none, write one cited document as described under Document.",
     );
     assert.notInclude(body, "finish with `submit_document`");
   });

@@ -1,6 +1,5 @@
 import { assert } from "chai";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../src/agent/model/agentPersona";
-import { LITERATURE_SEARCH_GUIDANCE } from "../src/agent/tools/read/literatureSearch";
 import { buildInstructionInventory } from "../src/agent/model/instructionInventory";
 import {
   AGENT_ACTION_CONTRACT,
@@ -43,19 +42,8 @@ describe("instruction harness inventory", function () {
       assert.include(prompt, "labeling a guess does not supply evidence");
     }
   });
-  it("keeps discovery selection distinct from explicit imports in literature_search guidance", function () {
+  it("keeps literature_review and import routing out of the persona", function () {
     const persona = AGENT_PERSONA_INSTRUCTIONS.join("\n");
-    const guidance = LITERATURE_SEARCH_GUIDANCE.instruction;
-    assert.include(guidance, "then call literature_review");
-    assert.include(guidance, "discovery never imports silently");
-    assert.include(
-      guidance,
-      "Do not substitute a discovery card for an explicit import",
-    );
-    assert.include(
-      guidance,
-      "call library_import for exactly the requested number",
-    );
     assert.notInclude(persona, "literature_review");
     assert.notInclude(persona, "only for imports, note saving");
     assert.include(persona, SEARCH_ROUTING_CONTRACT);

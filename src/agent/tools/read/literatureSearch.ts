@@ -4,7 +4,6 @@ import type {
   AgentToolContext,
   AgentToolDefinition,
   AgentTraceDetail,
-  AgentToolGuidance,
 } from "../../types";
 import {
   isOpenAlexRateLimit,
@@ -20,7 +19,6 @@ import { canShowLiteratureReview } from "./reviewLiterature";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { outsidePaperId } from "../../context/outsidePaperRecords";
-import { neverSelected } from "../guidance";
 import {
   buildOutsideSearchReasonDetail,
   HOST_ACTION_SEARCH_NEED,
@@ -61,9 +59,6 @@ type LiteratureSearchMode =
   | "metadata";
 
 type LiteratureSearchWorkflow = "answer" | "review";
-
-export const LITERATURE_WORKFLOW_GUIDANCE =
-  "Use literature_search to retrieve scholarly candidates, not to present a raw result pool. When the user only asks to find/recommend relevant papers, read the current paper, search and assess titles/abstracts, then call literature_review with the requested number (five when unspecified) of ranked candidate references and short evidence-based relevance reasons. Search further if results are weak; never pad a shortlist. Respect explicit references/citations/source constraints. A Find more continuation requests another batch of the original size: assess unused saved candidates first, then search further as needed, and submit only new candidates with the provided sessionId and revision. The paper-only import-selection card is required in Safe, Auto and YOLO, and discovery never imports silently. Explicit import requests instead use workflow:'answer' to gather and rank candidates, skip existing duplicates, then call library_import for exactly the requested number and destination. Central mutation authorization handles Safe confirmation and direct Auto/YOLO execution. Do not substitute a discovery card for an explicit import. Use workflow:'answer' for every search that informs an answer or review document, including whether other studies found or tested something; use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers). workflow:'review' with mode:'metadata' proposes changes to an existing item that the user must approve, so use it only when the user asks to check or fix that item's metadata, never to read a paper's abstract or details.";
 
 type LiteratureSearchInput = {
   workflow: LiteratureSearchWorkflow;
@@ -143,11 +138,6 @@ function literatureQueryLabel(input: LiteratureSearchInput): string {
  */
 export const LITERATURE_SOURCE_SENTENCE =
   "Search mode can use source:'arxiv' (preprints) or source:'europepmc' (biomedical); recommendations, references and citations always use OpenAlex. Put author names in author, not in query.";
-
-export const LITERATURE_SEARCH_GUIDANCE: AgentToolGuidance = {
-  matches: neverSelected,
-  instruction: LITERATURE_WORKFLOW_GUIDANCE,
-};
 
 function readTraceString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -261,7 +251,7 @@ export function createLiteratureSearchTool(
     spec: {
       name: "literature_search",
       description:
-        "Search scholarly sources outside the library. Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something, and explicit imports (then library_import). Use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently. A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true. To read a paper's abstract or full text, use literature_read. workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata. " +
+        "Search scholarly sources outside the library. Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something, and explicit imports (then library_import). Use workflow:'review' when the user asks for papers themselves (find, recommend or suggest papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently. A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true. To read a paper's abstract or full text, use literature_read. workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata. " +
         OUTSIDE_SEARCH_NEED_SENTENCE +
         `; ${REVIEW_SEARCH_NEED_CLAUSE}; mode:'metadata' needs none. ` +
         LITERATURE_SOURCE_SENTENCE,
@@ -323,7 +313,6 @@ export function createLiteratureSearchTool(
       executionClass: "read",
       workCategory: "retrieval",
     },
-    guidance: LITERATURE_SEARCH_GUIDANCE,
     presentation: {
       label: "Search Literature",
       traceIcon: "library",

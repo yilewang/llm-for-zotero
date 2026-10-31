@@ -51,7 +51,7 @@ const DISCOVERY_CARD_STEPS =
  * The correction for prose after a first batch's paper-finding search: the
  * model, which read the user's request, chooses the card or its answer.
  */
-const DISCOVERY_CHOICE = `Your answer was not shown: this turn ran a paper-finding search (workflow:'review'), which leads to the selection card. If the user asked for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it) and not for a list in chat, show them on the card: ${DISCOVERY_CARD_STEPS} Otherwise, do not call literature_review: give your answer again as the final answer; the paper-finding search then closes without a card.`;
+const DISCOVERY_CHOICE = `Your answer was not shown: this turn ran a paper-finding search (workflow:'review'), which leads to the selection card. If the user asked for papers themselves (find, recommend or suggest papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it) and not for a list in chat, show them on the card: ${DISCOVERY_CARD_STEPS} Otherwise, do not call literature_review: give your answer again as the final answer; the paper-finding search then closes without a card.`;
 
 /**
  * How an open artifact part is delivered, for the outcome correction: a

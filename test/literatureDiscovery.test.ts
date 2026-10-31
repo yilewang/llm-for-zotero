@@ -261,8 +261,11 @@ describe("ranked literature discovery workflow", function () {
       // Path (a): the user asked for papers themselves; the card, as before.
       assert.include(
         first.correction,
-        "If the user asked for papers themselves",
+        "If the user asked for papers themselves (find, recommend or suggest papers;",
       );
+      // Listing papers lists the library's, as literature_search's
+      // description says (2026-10-31).
+      assert.notInclude(first.correction, "list papers");
       // A list the user asked for in chat is answered in chat (user
       // instructions come first, 2026-10-31).
       assert.include(
@@ -841,8 +844,11 @@ describe("ranked literature discovery workflow", function () {
     // leads to the card; answer results carry no card branch.
     assert.include(
       description,
-      "Use workflow:'review' when the user asks for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently.",
+      "Use workflow:'review' when the user asks for papers themselves (find, recommend or suggest papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently.",
     );
+    // A request to list papers lists the library's (2026-10-31): it is not
+    // a reason to search outside and open the card.
+    assert.notInclude(description, "list papers");
     assert.notInclude(description, "For a find or recommend request");
     assert.notInclude(description, "to choose from");
   });

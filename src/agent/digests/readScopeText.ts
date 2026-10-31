@@ -394,12 +394,43 @@ export function selectMineruScopeSections(
   markdown: string,
   names: readonly string[],
 ): MineruScopeSelection {
+  return mineruScopeSelection(
+    markdown,
+    chooseMineruScopeSections(markdown, names),
+  );
+}
+
+/** One name's sections in a MinerU choice. */
+export type MineruScopePart = {
+  name: string;
+  /** What the read covered for the name ("Results (unlabelled sections)"). */
+  label: string;
+  /** Indexes into the choice's `sections`, in document order. */
+  indexes: number[];
+  /** Found by place, not by a heading (an unlabelled results span). */
+  byPosition: boolean;
+};
+
+/** The sections a scope's names choose in MinerU markdown, by index. */
+export type MineruScopeChoice = {
+  /** The markdown's sections (`buildSyntheticManifestSections`). */
+  sections: ManifestSection[];
+  parts: MineruScopePart[];
+  unmatched: string[];
+};
+
+/**
+ * The section choice `selectMineruScopeSections` reads, as indexes: the one
+ * rule a whole-sections read and a targeted read over named sections share.
+ */
+export function chooseMineruScopeSections(
+  markdown: string,
+  names: readonly string[],
+): MineruScopeChoice {
   const sections = buildSyntheticManifestSections(markdown);
   const enclosing = enclosingStandardSections(sections);
   const { title, kinds } = sectionKinds(sections);
-  const chosen = new Set<number>();
-  const spanChosen = new Set<number>();
-  const covered: string[] = [];
+  const parts: MineruScopePart[] = [];
   const unmatched: string[] = [];
   const summary = summaryAbstractIndex(sections, kinds);
   const isDescendant = (index: number, roots: ReadonlySet<number>) => {
@@ -441,8 +472,12 @@ export function selectMineruScopeSections(
         .join("")
         .trim();
       if (spanText) {
-        covered.push(RESULTS_SPAN_LABEL);
-        for (const index of span) spanChosen.add(index);
+        parts.push({
+          name,
+          label: RESULTS_SPAN_LABEL,
+          indexes: span,
+          byPosition: true,
+        });
         continue;
       }
     }
@@ -450,7 +485,7 @@ export function selectMineruScopeSections(
       unmatched.push(name);
       continue;
     }
-    covered.push(coveredLabel(name));
+    const indexes: number[] = [];
     sections.forEach((section, index) => {
       // A section whose enclosing section is its own heading was classed by
       // its run-on words alone ("Abstract representations ..."): it is not
@@ -464,9 +499,24 @@ export function selectMineruScopeSections(
           inherited !== section.heading &&
           classifyHeadingKind(inherited)?.kind === kind)
       )
-        chosen.add(index);
+        indexes.push(index);
     });
+    parts.push({ name, label: coveredLabel(name), indexes, byPosition: false });
   }
+  return { sections, parts, unmatched };
+}
+
+/** A MinerU choice's text, as `selectMineruScopeSections` returns it. */
+function mineruScopeSelection(
+  markdown: string,
+  choice: MineruScopeChoice,
+): MineruScopeSelection {
+  const { sections } = choice;
+  const chosen = new Set<number>();
+  const spanChosen = new Set<number>();
+  for (const part of choice.parts)
+    for (const index of part.indexes)
+      (part.byPosition ? spanChosen : chosen).add(index);
   const text = [...new Set([...chosen, ...spanChosen])]
     .sort((a, b) => a - b)
     .map((index) =>
@@ -479,11 +529,74 @@ export function selectMineruScopeSections(
   if (spanChosen.size) sources.push(READ_SCOPE_TEXT_SOURCES.mineruResultsSpan);
   return {
     text,
-    covered,
-    unmatched,
+    covered: choice.parts.map((part) => part.label),
+    unmatched: choice.unmatched,
     approximate: spanChosen.size > 0,
     sources,
   };
+}
+
+/**
+ * The chunks of a MinerU paper that hold the chosen sections. The chunks
+ * name their section by its heading and its index in the manifest; the
+ * choice indexes the markdown's own sections, so a section is matched by
+ * its heading and which occurrence of that heading it is.
+ */
+export function chunkIndexesForMineruSections(
+  context: Pick<PdfContext, "chunkMeta">,
+  sections: readonly ManifestSection[],
+  indexes: readonly number[],
+): number[] {
+  const chunkSections = new Map<number, string>();
+  for (const meta of context.chunkMeta || [])
+    if (
+      meta?.sectionIndex !== undefined &&
+      !chunkSections.has(meta.sectionIndex)
+    )
+      chunkSections.set(meta.sectionIndex, meta.sectionLabel || "");
+  const ordered = [...chunkSections.entries()].sort(([a], [b]) => a - b);
+  const occurrence = (list: readonly string[], index: number) =>
+    list.slice(0, index).filter((heading) => heading === list[index]).length;
+  const headings = sections.map((section) => section.heading);
+  const wanted = new Set<number>();
+  for (const index of indexes) {
+    const heading = headings[index];
+    if (heading === undefined) continue;
+    const nth = occurrence(headings, index);
+    const match = ordered.filter(([, label]) => label === heading)[nth];
+    if (match) wanted.add(match[0]);
+  }
+  return (context.chunkMeta || [])
+    .filter(
+      (meta) =>
+        meta?.sectionIndex !== undefined && wanted.has(meta.sectionIndex),
+    )
+    .map((meta) => meta.chunkIndex);
+}
+
+/** The chunks that hold an unheaded lead abstract's text. */
+export function chunkIndexesForText(
+  context: Pick<PdfContext, "chunks">,
+  text: string,
+): number[] {
+  const flat = (value: string) => value.replace(/\s+/g, " ").trim();
+  const whole = flat(text);
+  if (!whole) return [];
+  const PROBE = 80;
+  const head = whole.slice(0, PROBE);
+  const tail = whole.slice(-PROBE);
+  const indexes: number[] = [];
+  (context.chunks || []).forEach((chunk, index) => {
+    const body = flat(chunk || "");
+    if (!body) return;
+    if (
+      body.includes(head) ||
+      body.includes(tail) ||
+      whole.includes(body.slice(0, PROBE))
+    )
+      indexes.push(index);
+  });
+  return indexes;
 }
 
 /** A chunk as the digest reads PDF text: under its `[chunk N]` marker. */
@@ -501,27 +614,19 @@ function chunkBlock(index: number, text: string): string {
 export function selectPdfChunkScopeSections(
   context: Pick<PdfContext, "chunks" | "chunkMeta">,
   names: readonly string[],
+  options: ChunkKindOptions = {},
 ): SectionSelection {
   const chosen = new Set<number>();
   const covered: string[] = [];
   const unmatched: string[] = [];
-  const meta = context.chunkMeta || [];
   for (const name of names) {
-    const kind = readScopeSectionKind(name);
-    const matched = kind
-      ? meta.filter(
-          (entry) =>
-            entry.chunkKind === kind ||
-            (entry.enclosingSection !== undefined &&
-              classifyHeadingKind(entry.enclosingSection)?.kind === kind),
-        )
-      : [];
+    const matched = pdfChunkIndexesForSection(context, name, options);
     if (!matched.length) {
       unmatched.push(name);
       continue;
     }
     covered.push(coveredLabel(name));
-    for (const entry of matched) chosen.add(entry.chunkIndex);
+    for (const index of matched) chosen.add(index);
   }
   const text = [...chosen]
     .sort((a, b) => a - b)
@@ -529,6 +634,40 @@ export function selectPdfChunkScopeSections(
     .map((index) => chunkBlock(index, context.chunks[index]))
     .join("\n\n");
   return { text, covered, unmatched };
+}
+
+type ChunkKindOptions = {
+  /**
+   * The MinerU selector already judged every heading (nested ones by the
+   * line rule): only chunks no heading classed (the preamble) count, so
+   * "### Abstract representations of space" under Methods is never the
+   * abstract.
+   */
+  headingsJudged?: boolean;
+};
+
+/**
+ * The chunks of plain PDF text a standard section name names, by the kind
+ * the PDF reader gave each chunk; none for any other name.
+ */
+export function pdfChunkIndexesForSection(
+  context: Pick<PdfContext, "chunkMeta">,
+  name: string,
+  options: ChunkKindOptions = {},
+): number[] {
+  const kind = readScopeSectionKind(name);
+  if (!kind) return [];
+  return (context.chunkMeta || [])
+    .filter((entry) =>
+      options.headingsJudged
+        ? entry.kindSource !== "manifest" &&
+          entry.sectionIndex === undefined &&
+          entry.chunkKind === kind
+        : entry.chunkKind === kind ||
+          (entry.enclosingSection !== undefined &&
+            classifyHeadingKind(entry.enclosingSection)?.kind === kind),
+    )
+    .map((entry) => entry.chunkIndex);
 }
 
 /** One PDF page's text, as the page-text cache holds it (0-based index). */

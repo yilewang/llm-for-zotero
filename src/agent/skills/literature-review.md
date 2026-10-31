@@ -1,12 +1,12 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 19
+version: 20
 contexts: paper-set,library-corpus
 activation: auto
 ---
 
-## Literature Review — read the papers, then write one cited document
+## Literature Review — read the papers, then write the cited review
 
 A review is an argument about a body of work, not a catalog of it: a faithful account of each paper, true relationships between specific papers, a structure that emerges from those relationships, and honest calibration about what was read.
 `paper_read` owns reading capacity; do not invent a paper cap, a group size, or a tool-call budget.
@@ -31,8 +31,8 @@ A review is an argument about a body of work, not a catalog of it: a faithful ac
    List each paper you leave out under `excluded` in `submit_document`, with a one-sentence reason, and name it by title with that reason in Scope and method, without a citation: a citation means the review uses the paper.
    Never leave a paper out because its text could not be read; name it as not read.
    When the user asked to summarize every paper, every paper keeps its summary in Paper summaries; flag one that does not fit the question instead of dropping it.
-4. **Write.** Write one cited document as described under Document, unless the user asked for a chat answer; then answer in chat.
-   When the user asked for summaries, the document opens with a 'Paper summaries' section: one paragraph per paper, in scope order, before the review sections below.
+4. **Write.** Deliver the review in the form the user asked for; when they named none, write one cited document as described under Document.
+   When the user asked for summaries, the review opens with a 'Paper summaries' section: one paragraph per paper, in scope order, before the review sections below.
 5. **Save.** Save it with `note_write` and the returned `documentId` only when the user asked; do not offer afterward, because the document card owns Copy Markdown, Save Note, Export, and Expand.
 
 ### Scope and method

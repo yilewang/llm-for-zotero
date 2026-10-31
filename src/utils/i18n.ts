@@ -1626,6 +1626,7 @@ const zhCN: Record<string, string> = {
   Part: "部分",
   Sections: "章节",
   Pages: "页面",
+  "pages {range}": "第 {range} 页",
   Record: "条目",
   // The same reasons as rows saved before schema 2 name them.
   "The model did not return a usable summary": "模型未返回可用的总结",

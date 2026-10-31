@@ -694,6 +694,39 @@ describe("paper_read whole sections", function () {
     assert.notEqual(output.read, "whole_sections");
   });
 
+  it("searches a query only inside a plain PDF's named sections", async function () {
+    const retrieveCalls: Array<{
+      chunkIndexesByPaper?: Map<number, number[]>;
+      sectionIdsByPaper?: Map<number, string[]>;
+    }> = [];
+    const tool = makeTool({ retrieveCalls: retrieveCalls as unknown[] });
+    const { output } = await read(tool, {
+      mode: "targeted",
+      query: "decoding accuracy",
+      sections: ["results"],
+      targets: [{ itemId: 20 }],
+    });
+    assert.lengthOf(retrieveCalls, 1);
+    // The plain PDF text has no section ids; its Results chunk bounds it.
+    assert.deepEqual(retrieveCalls[0].chunkIndexesByPaper?.get(120), [2]);
+    assert.notInclude(JSON.stringify(output.warnings || []), "results");
+  });
+
+  it("does not search a paper that has none of the named sections", async function () {
+    const retrieveCalls: unknown[] = [];
+    const tool = makeTool({ retrieveCalls });
+    const { output } = await read(tool, {
+      mode: "targeted",
+      query: "decoding accuracy",
+      sections: ["telescope calibration"],
+      targets: [{ itemId: 20 }],
+    });
+    assert.isEmpty(retrieveCalls, "nothing is searched in their place");
+    assert.equal(rowOf(output, 20).status, "no_matching_sections");
+    assert.include(output.warnings, SECTIONS_NOT_FOUND_RULE);
+    assert.include(output.note || "", "none of the named sections were found");
+  });
+
   it("shows the model each passage's id but not the citation records", async function () {
     const tool = makeTool({});
     const { output, input } = await read(tool, {

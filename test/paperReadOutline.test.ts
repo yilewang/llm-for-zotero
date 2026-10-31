@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { RetrievalService } from "../src/agent/services/retrievalService";
 import { isPaperEvidenceFrontierEligible } from "../src/agent/context/paperEvidenceFrontier";
@@ -262,14 +263,22 @@ describe("paper_read outline mode and section ids", function () {
     }
   });
 
-  it("drops unknown sectionIds with a warning and still reads the paper", async function () {
+  it("names unknown sectionIds as not found and searches nothing in their place", async function () {
     const output = (await run({
       mode: "targeted",
       query: "How is the velocity of the free boundary computed?",
       sectionIds: ["s99"],
     })) as TargetedResult;
-    assert.include(output.warnings || [], "Unknown sectionIds ignored: s99");
-    assert.isNotEmpty(output.papers[0].passages);
+    assert.isTrue(
+      (output.warnings || []).some(
+        (warning) =>
+          warning.startsWith("Not found in") && warning.includes("s99"),
+      ),
+      `warnings were ${JSON.stringify(output.warnings)}`,
+    );
+    assert.include(output.warnings || [], SECTIONS_NOT_FOUND_RULE);
+    assert.isEmpty(output.papers[0].passages);
+    assert.equal(output.papers[0].status, "no_matching_sections");
   });
 
   it("warns when the requested section holds no text", async function () {
@@ -369,7 +378,7 @@ describe("paper_read outline mode and section ids", function () {
     }
   });
 
-  it("warns when a section name matches no outline section", async function () {
+  it("names a section the paper lacks and searches nothing in its place", async function () {
     const output = (await run({
       mode: "targeted",
       query: "How is the velocity of the free boundary computed?",
@@ -381,7 +390,8 @@ describe("paper_read outline mode and section ids", function () {
       ),
       `warnings were ${JSON.stringify(output.warnings)}`,
     );
-    assert.isNotEmpty(output.papers[0].passages);
+    assert.include(output.warnings || [], SECTIONS_NOT_FOUND_RULE);
+    assert.isEmpty(output.papers[0].passages);
   });
 
   it("returns one quote anchor per targeted passage", async function () {

@@ -21,7 +21,6 @@ import { initUserSkills } from "../src/agent/skills/userSkills";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { toolGuidanceItems } from "../src/agent/tools/guidance";
 import { createLoadSkillTool } from "../src/agent/tools/read/loadSkill";
-import { LITERATURE_SEARCH_GUIDANCE } from "../src/agent/tools/read/literatureSearch";
 import { createZoteroScriptTool } from "../src/agent/tools/write/zoteroScript";
 
 const BODY_HASH_PREF_KEY = "extensions.zotero.llmForZotero.skillBodyHashes";
@@ -424,11 +423,10 @@ describe("zotero-script skill", function () {
       modelDescription("literature_search"),
       "Search mode can use source:'arxiv' (preprints) or source:'europepmc' (biomedical); recommendations, references and citations always use OpenAlex. Put author names in author, not in query.",
     );
-    assert.notInclude(
-      LITERATURE_SEARCH_GUIDANCE.instruction,
-      "Source selection",
+    // No guidance text that no turn selects (2026-10-31).
+    assert.isEmpty(
+      toolGuidanceItems(registry().getTool("literature_search")!.guidance),
     );
-    assert.notInclude(LITERATURE_SEARCH_GUIDANCE.instruction, "Author search");
   });
 
   describe("installation", function () {

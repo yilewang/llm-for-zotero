@@ -77,13 +77,19 @@ describe("user instructions come first", function () {
       );
     });
 
-    it("writes the review's document unless the user asked for a chat answer", function () {
+    it("delivers the review in the form the user asked for, a document when none is named", function () {
       const body = parseSkill(
         BUILTIN_SKILL_FILES["literature-review.md"],
       ).instruction;
       assert.include(
         body,
-        "4. **Write.** Write one cited document as described under Document, unless the user asked for a chat answer; then answer in chat.",
+        "4. **Write.** Deliver the review in the form the user asked for; when they named none, write one cited document as described under Document.",
+      );
+      // No heading tells the model to write a document whatever was asked.
+      assert.notInclude(body, "then write one cited document");
+      assert.include(
+        body,
+        "## Literature Review — read the papers, then write the cited review",
       );
     });
 

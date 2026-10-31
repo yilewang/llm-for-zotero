@@ -684,12 +684,17 @@ const SCOPE_TOKEN_LABELS: Record<string, string> = {
   metadata: "Record",
 };
 
+/** A pages read's covered name: "pages 3–5" (`selectPageScope`). */
+const PAGES_TOKEN = /^pages (\S+)$/i;
+
 function translateScopeLabel(scopeLabel: string): string {
   return scopeLabel
     .split(", ")
     .map((token) => {
       const label = SCOPE_TOKEN_LABELS[token.trim().toLowerCase()];
-      return label ? t(label) : token;
+      if (label) return t(label);
+      const pages = PAGES_TOKEN.exec(token.trim());
+      return pages ? t("pages {range}").replace("{range}", pages[1]) : token;
     })
     .join(", ");
 }

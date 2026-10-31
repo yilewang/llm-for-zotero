@@ -759,6 +759,33 @@ describe("structure stage on the math fixture", function () {
     assert.notEqual(out[0].chunkKind, "conclusion");
   });
 
+  it("keeps a chunk-index scope: only those chunks, never the whole document", async function () {
+    const ctx = await buildFixturePdfContext("mathDoubleHash", 9203);
+    const paperRef: PaperContextRef = {
+      itemId: 103,
+      contextItemId: 9203,
+      title: "Mock",
+      firstCreator: "Tester",
+      year: "2026",
+    };
+    const plan = buildRetrievalQueryPlan({
+      query: "kinematic relation between film height and normal speed",
+    });
+    const read = (chunkIndexes: number[]) =>
+      buildPaperRetrievalCandidates(
+        paperRef,
+        ctx,
+        plan.originalQuery,
+        { queryPlan: plan },
+        { topK: 8, mode: "evidence", queryPlan: plan, chunkIndexes },
+      );
+    const scoped = await read([1, 3]);
+    assert.isNotEmpty(scoped);
+    for (const candidate of scoped)
+      assert.include([1, 3], candidate.chunkIndex);
+    assert.isEmpty(await read([99_999]), "an empty scope never widens");
+  });
+
   it("returns nothing for a requested section that holds no passages", async function () {
     const ctx = await buildFixturePdfContext("mathDoubleHash", 9202);
     const paperRef: PaperContextRef = {

@@ -543,6 +543,12 @@ export const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // v18 at af06d08e, not yet released, shipped and canonical.
     "esclmu",
     "s7ryx7",
+    // v19 at 656ae86d, not yet released, shipped and canonical.
+    "xmse2w",
+    "12lovbh",
+    // v20 at 72929c73, not yet released, shipped and canonical.
+    "iqopc2",
+    "1sf2d47",
   ],
   "reorganize-library.md": [
     // v1, whose task_update part v2 moves into task_update's guidance
@@ -884,6 +890,10 @@ export const BUILTIN_BOOTSTRAP_BODY_HASHES: Partial<
     "1fd45i8",
     // v18 at 4d553b8b, not yet released.
     "1yshcoo",
+    // v19 at 656ae86d, not yet released.
+    "ipb329",
+    // v20 at 72929c73, not yet released.
+    "7u5lz7",
   ],
   "reorganize-library.md": [
     // Every shipped body but the current one, from

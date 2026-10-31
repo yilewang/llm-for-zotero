@@ -5,6 +5,8 @@ import {
   snapshotTestGlobals,
   restoreTestGlobals,
   mockPdfAttachment,
+  buildMarkdownPdfContext,
+  headingSequenceMarkdown,
 } from "./helpers/retrievalCorpus";
 import {
   writeMineruCacheFiles,
@@ -23,6 +25,7 @@ import {
   withDigestQuoteCitations,
 } from "../src/agent/digests/paperDigestWorker";
 import type { QuoteCitation } from "../src/shared/types";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
 
 describe("QA acquisition contracts", function () {
   let previous: ReturnType<typeof snapshotTestGlobals>;
@@ -300,22 +303,103 @@ describe("QA acquisition contracts", function () {
     await service.retrieveEvidence(query);
     assert.equal(calls, 2);
   });
-  it("retains a disclosed fallback for an unknown section instead of claiming that section was read", async function () {
+  it("searches a query only inside the named sections and names a section the paper lacks", async function () {
     const result = await read({
       query: "blood pressure",
       sections: ["Human Participants"],
       topK: 3,
     });
+    // No section of that name: nothing of the paper is searched instead.
+    assert.isEmpty(result.results);
+    assert.isEmpty(result.papers[0].passages);
+    assert.equal(result.papers[0].status, "no_matching_sections");
+    assert.include(JSON.stringify(result.warnings), "Not found in ");
+    assert.include(JSON.stringify(result.warnings), "Human Participants");
+    assert.include(result.warnings, SECTIONS_NOT_FOUND_RULE);
+    assert.include(result.note, "none of the named sections were found");
+  });
+  it("keeps a query inside the named sections the paper has when another name is missing", async function () {
+    const result = await read({
+      query: "sample recording method",
+      sections: ["Methods", "Human Participants"],
+      topK: 8,
+    });
     assert.isNotEmpty(result.papers[0].passages);
-    assert.notInclude(
-      result.papers[0].passages.map((p: any) => p.sectionLabel),
-      "Human Participants",
+    for (const p of result.papers[0].passages)
+      assert.equal(p.sectionLabel, "Methods");
+    assert.include(JSON.stringify(result.warnings), "Human Participants");
+    assert.equal(
+      result.warnings.filter((w: string) => w === SECTIONS_NOT_FOUND_RULE)
+        .length,
+      1,
     );
-    assert.include(JSON.stringify(result), "Human Participants");
-    assert.include(
-      JSON.stringify(result.warnings),
-      "No outline section matched: Human Participants",
+  });
+  it("binds a standard name by heading kind and a free name by all its words", async function () {
+    const markdown = headingSequenceMarkdown(
+      [
+        "Place cells under drift",
+        "Abstract",
+        "1 Introduction",
+        "2 Methods",
+        "3 Results",
+        "4 Comparison with other methods",
+        "5 Model fit",
+        "6 Discussion",
+      ],
+      {
+        "2 Methods": "The recording method used silicon probes.",
+        "4 Comparison with other methods":
+          "Each recording method was compared with calcium imaging.",
+        "5 Model fit": "The model fit the recording well.",
+      },
     );
+    const ctx = await buildMarkdownPdfContext(markdown, 9801);
+    const paper = { ...refs[0], itemId: 9800, contextItemId: 9801 };
+    const service = { ensurePaperContext: async () => ctx } as any;
+    const tool = createPaperReadTool(
+      service,
+      new RetrievalService(service),
+      {} as any,
+      {
+        listPaperContexts: () => [paper],
+        resolvePaperContextTarget: () => paper,
+      } as any,
+    );
+    const run = async (sections: string[]) => {
+      const input = tool.validate({
+        mode: "targeted",
+        targets: [{ itemId: paper.itemId, contextItemId: paper.contextItemId }],
+        query: "recording method",
+        sections,
+        topK: 8,
+      });
+      if (!input.ok) throw Error(input.error);
+      return (await tool.execute(input.value, {
+        request: {
+          conversationKey: 11,
+          mode: "agent",
+          conversationKind: "paper",
+          userText: "Read the methods",
+          libraryID: 1,
+          activeItemId: paper.itemId,
+        },
+        item: null,
+        currentAnswerText: "",
+        modelName: "test",
+      } as any)) as any;
+    };
+    const methods = await run(["methods"]);
+    assert.isNotEmpty(methods.papers[0].passages);
+    for (const p of methods.papers[0].passages)
+      assert.equal(p.sectionLabel, "2 Methods");
+    // One shared word ("model") does not bind "5 Model fit".
+    const calibration = await run(["model calibration"]);
+    assert.isEmpty(calibration.papers[0].passages);
+    assert.include(JSON.stringify(calibration.warnings), "model calibration");
+    const fit = await run(["model fit"]);
+    assert.isNotEmpty(fit.papers[0].passages);
+    for (const p of fit.papers[0].passages)
+      assert.match(p.sectionLabel, /5 Model fit$/);
   });
   it("does not carry a legacy page onto a changed source range", async function () {
     const id = refs[0].contextItemId;

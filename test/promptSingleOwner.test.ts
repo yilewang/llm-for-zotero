@@ -270,9 +270,9 @@ describe("prompt rules have a single owner", function () {
       owner: "skill:literature-review.md",
     },
     {
-      rule: "a review is written as a document unless the user asked for a chat answer",
+      rule: "a review is delivered in the form the user asked for, a document when none is named",
       marker:
-        "Write one cited document as described under Document, unless the user asked for a chat answer",
+        "Deliver the review in the form the user asked for; when they named none, write one cited document",
       owner: "skill:literature-review.md",
     },
     {

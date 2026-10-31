@@ -457,13 +457,8 @@ describe("tool guidance contracts", function () {
     );
     assert.isFalse(guidanceFor("library_import").matches(chat({}), ctx));
     // Discovery-versus-import rules ride the literature_search description;
-    // its long-form guidance has no chat signal.
-    assert.isFalse(
-      guidanceFor("literature_search").matches(
-        chat({ mentionsImport: true }),
-        ctx,
-      ),
-    );
+    // it carries no long-form guidance (2026-10-31).
+    assert.isUndefined(registry.getTool("literature_search")!.guidance);
     // library_update carries the attachment guidance; the attachment signal
     // is the only chat signal that reaches it.
     assert.isTrue(
