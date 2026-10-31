@@ -300,6 +300,147 @@ describe("workflow: notes and item type (W5-B)", function () {
     });
   });
 
+  describe("note_write_batch retried after a restart", function () {
+    it("writes only the papers with no note, reports the saved one, and settles the earlier batch", async function () {
+      const papers: any[] = [];
+      for (const label of ["one", "two", "three"]) {
+        const paper = new Zotero.Item("journalArticle");
+        paper.libraryID = libraryID();
+        paper.setField("title", `Retry paper ${label} ${SUFFIX}`);
+        await paper.saveTx();
+        created.items.push(paper.id);
+        papers.push(paper);
+      }
+      const conversationKey = papers[0].id;
+      /** The paper's child notes that are out of the trash, from the database. */
+      const liveNotes = async (paperId: number) =>
+        (await Zotero.DB.columnQueryAsync(
+          `SELECT itemID FROM itemNotes WHERE parentItemID = ?
+           AND itemID NOT IN (SELECT itemID FROM deletedItems)
+           ORDER BY itemID`,
+          [paperId],
+        )) as number[];
+      const rowsOf = async (batchId: string) =>
+        (await Zotero.DB.queryAsync(
+          `SELECT item_key AS itemKey, status, note_id AS noteId
+           FROM ${BATCH_ITEMS_TABLE} WHERE batch_id = ? ORDER BY position`,
+          [batchId],
+        )) as Array<{ itemKey: string; status: string; noteId: number }>;
+
+      // Run one stops once the first note is in the library, as a quit or
+      // crash after one note would leave it.
+      const signal = {
+        get aborted() {
+          return Zotero.Items.get(papers[0].id).getNotes().length > 0;
+        },
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      };
+      const first = await withRegistry(
+        "yolo",
+        ["note_write_batch"],
+        (registry) =>
+          runTool(
+            registry,
+            "note_write_batch",
+            {
+              notes: papers.map((paper, index) => ({
+                targetItemId: paper.id,
+                content: `First summary ${index + 1} ${SUFFIX}`,
+              })),
+            },
+            contextFor(conversationKey, "Summarize each paper in a note", {
+              signal: signal as never,
+              runId: `w5b-before-restart:${SUFFIX}`,
+            }),
+          ),
+      );
+      assert.isTrue(first.ok, JSON.stringify(first.content));
+      const earlierBatchId = (
+        first.content as { stopped?: string }
+      ).stopped?.match(/batch (\S+);/)?.[1];
+      assert.exists(earlierBatchId, JSON.stringify(first.content));
+      const [savedNoteId] = await liveNotes(papers[0].id);
+      assert.exists(savedNoteId);
+      assert.isEmpty(await liveNotes(papers[1].id));
+      assert.isEmpty(await liveNotes(papers[2].id));
+      assert.deepEqual(
+        (await rowsOf(earlierBatchId!)).map((row) => row.status),
+        ["saved", "pending", "pending"],
+      );
+
+      // After the restart: a new run, and the model authors every body again.
+      const retry = await withRegistry(
+        "yolo",
+        ["note_write_batch"],
+        (registry) =>
+          runTool(
+            registry,
+            "note_write_batch",
+            {
+              notes: papers.map((paper, index) => ({
+                targetItemId: paper.id,
+                content: `Retried summary ${index + 1} ${SUFFIX}`,
+              })),
+            },
+            contextFor(conversationKey, "Summarize each paper in a note", {
+              runId: `w5b-after-restart:${SUFFIX}`,
+            }),
+          ),
+      );
+      assert.isTrue(retry.ok, JSON.stringify(retry.content));
+
+      // Native state: every paper holds exactly one note, and paper one's is
+      // still the note run one wrote.
+      assert.deepEqual(await liveNotes(papers[0].id), [savedNoteId]);
+      assert.include(
+        await storedNote(savedNoteId),
+        `First summary 1 ${SUFFIX}`,
+      );
+      const retriedNoteIds: number[] = [];
+      for (const [index, paper] of papers.slice(1).entries()) {
+        const ids = await liveNotes(paper.id);
+        assert.lengthOf(ids, 1, `paper ${index + 2} holds one note`);
+        assert.include(
+          await storedNote(ids[0]),
+          `Retried summary ${index + 2} ${SUFFIX}`,
+        );
+        retriedNoteIds.push(ids[0]);
+      }
+
+      const payload = (
+        retry.content as { result: { result: Record<string, unknown> } }
+      ).result.result;
+      assert.equal(payload.createdCount, 2, JSON.stringify(payload));
+      assert.equal(payload.alreadySavedCount, 1);
+      assert.match(
+        String((retry.content as Record<string, unknown>).alreadySavedNotice),
+        /A later request writes new notes/,
+      );
+      assert.deepInclude(
+        (payload.notes as Array<Record<string, unknown>>).find(
+          (row) => row.itemKey === `item:${papers[0].id}`,
+        ),
+        {
+          status: "already_saved",
+          noteId: savedNoteId,
+          batchId: earlierBatchId,
+        },
+      );
+
+      // The earlier batch names the retry's notes, so it offers nothing.
+      const earlierRows = await rowsOf(earlierBatchId!);
+      assert.deepEqual(
+        earlierRows.map((row) => row.status),
+        ["saved", "saved", "saved"],
+      );
+      assert.deepEqual(
+        earlierRows.map((row) => Number(row.noteId)),
+        [savedNoteId, ...retriedNoteIds],
+      );
+    });
+  });
+
   describe("note_write_batch mode:'append'", function () {
     it("appends to three notes once across a Stop after one and a resume, survives a lost checkpoint, and undoes all three", async function () {
       const notes = [

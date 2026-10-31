@@ -220,6 +220,21 @@ export async function getBatchJob(
   return row ? toRecord(row) : null;
 }
 
+/** Every job of one action in this conversation, newest first. */
+export async function listConversationBatchJobs(
+  conversationKey: number,
+  action: string,
+): Promise<BatchJobRecord[]> {
+  if (!hasDb()) return [];
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT * FROM ${BATCH_JOBS_TABLE}
+     WHERE conversation_key = ? AND action = ?
+     ORDER BY created_at DESC, job_id DESC`,
+    [conversationKey, action],
+  )) as unknown as JobRow[] | null;
+  return Array.isArray(rows) ? rows.map(toRecord) : [];
+}
+
 /**
  * Jobs left running by a crash or a quit. The batch tool offers to resume
  * these rather than silently restarting from zero and repaying for pages the
