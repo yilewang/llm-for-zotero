@@ -87,11 +87,34 @@ export const READ_SCOPE_MAX_SECTIONS = 12;
 export const READ_SCOPE_MAX_PAGE_RANGES = 20;
 const MAX_SECTION_NAME_CHARS = 80;
 
+/** What a read covered when an unheaded lead paragraph is the abstract. */
+export const LEAD_ABSTRACT_LABEL = "Abstract (unlabelled lead)";
+/** What a read covered when unheaded topic sections are the results. */
+export const RESULTS_SPAN_LABEL = "Results (unlabelled sections)";
+/** The covered labels a read finds by place, not by a heading. */
+export const POSITIONAL_COVERED_LABELS: ReadonlySet<string> = new Set([
+  LEAD_ABSTRACT_LABEL,
+  RESULTS_SPAN_LABEL,
+]);
+const ABSTRACT_COVERED_LABELS: ReadonlySet<string> = new Set([
+  "Abstract",
+  LEAD_ABSTRACT_LABEL,
+]);
+
+/** Whether a covered label names the abstract (headed or the lead). */
+export function isAbstractCoveredLabel(label: string): boolean {
+  return ABSTRACT_COVERED_LABELS.has(label.trim());
+}
+
 /** Where a scoped read's text came from, as its result names it. */
 export const READ_SCOPE_TEXT_SOURCES = Object.freeze({
   zoteroAbstract: "Zotero abstract field",
   pdfAbstract: "PDF abstract",
+  /** An unheaded lead paragraph read as the abstract (approximate). */
+  pdfAbstractLead: "PDF lead paragraph",
   mineruSections: "MinerU sections",
+  /** Unheaded results sections found by their place (approximate). */
+  mineruResultsSpan: "MinerU sections by position",
   pdfSections: "PDF text sections",
   pdfPages: "PDF page text",
   zoteroNotes: "Zotero notes",
@@ -126,6 +149,11 @@ export type ScopedPaperText = {
   unmatched: string[];
   /** Exact bounds (MinerU headings, page text, Zotero fields) or not. */
   bounds: "exact" | "approximate";
+  /**
+   * Approximate only because a section was found by its place
+   * (`POSITIONAL_COVERED_LABELS`); every other section's bounds are exact.
+   */
+  approximateByPosition?: boolean;
   /** Every character the scope selected is in `text`. */
   complete: boolean;
   /** Where the text came from (`READ_SCOPE_TEXT_SOURCES`), joined by "; ". */
@@ -316,8 +344,7 @@ export function digestReadCapabilities(
       // Named sections or pages are the paper's text; a scope that only
       // found the abstract read no more than that.
       const covered = source.covered || [];
-      return covered.length &&
-        covered.every((label) => /^\s*abstract\s*$/i.test(label))
+      return covered.length && covered.every(isAbstractCoveredLabel)
         ? ["abstract"]
         : ["body"];
     }

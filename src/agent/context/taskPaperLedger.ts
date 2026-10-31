@@ -13,7 +13,7 @@
  * that names only an attachment is skipped rather than guessed.
  */
 import type { QuoteCitation } from "../../shared/types";
-import { isFullTextRead } from "../digests/readScope";
+import { isAbstractCoveredLabel, isFullTextRead } from "../digests/readScope";
 
 /** Monotone reading state of one paper, weakest first. */
 export type TaskPaperState =
@@ -1140,7 +1140,7 @@ function wholeSectionSeeds(result: unknown): Seed[] {
           read: readSeed({
             granularity: !whole
               ? "passage"
-              : /^\s*abstract\s*$/i.test(label)
+              : isAbstractCoveredLabel(label)
                 ? "abstract"
                 : "section",
             method: "sections",

@@ -55,6 +55,13 @@ import { createContextReadTool } from "../src/agent/tools/read/contextRead";
 import { initPlanDocumentStore } from "../src/agent/documents/store";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { createTestActionContractService } from "./helpers/actionContractService";
+import {
+  DISCUSSION,
+  LEAD_ABSTRACT,
+  NATURE_SHAPE_MD,
+  RESULTS_A,
+  RESULTS_B,
+} from "./helpers/unlabelledSectionsMarkdown";
 
 /**
  * A declared digest part, run by the host inside `task_update`.
@@ -1963,6 +1970,96 @@ describe("a digest part reads what its read scope names", function () {
     const only = second.toolResult.content as Record<string, any>;
     assert.equal(countOf(only.digestNote || ""), 1);
     assert.equal(countOf(only.digests), 0);
+  });
+
+  it("digests a paper that labels neither its abstract nor its results from the lead and the results span, and says so", async function () {
+    const globalScope = globalThis as unknown as Record<string, unknown>;
+    const hadIOUtils = "IOUtils" in globalScope;
+    const previousIOUtils = globalScope.IOUtils;
+    globalScope.IOUtils = {
+      read: async (filePath: string) => {
+        if (!filePath.includes("/cache/105"))
+          throw new Error(`no file ${filePath}`);
+        return new TextEncoder().encode(NATURE_SHAPE_MD);
+      },
+    };
+    try {
+      const sources = createZoteroPaperDigestSources({
+        zoteroGateway: {
+          resolvePaperContextTarget: ({ itemId }: { itemId?: number }) =>
+            itemId === 5 ? { ...PAPERS[5] } : null,
+          getAllChildAttachmentInfos: async () => [
+            { contextItemId: 105, mineruCacheDir: "/cache/105" },
+          ],
+          getItem: () => ({ getField: () => "" }),
+        } as never,
+        pdfService: {
+          getOverviewExcerpt: async () => {
+            throw new Error("a scoped read never reads the overview");
+          },
+          ensurePaperContext: async () => undefined,
+        } as never,
+      });
+      const prompts: string[] = [];
+      const harness = createHarness(
+        {
+          ...sources,
+          llmCall: (async (chat: ChatParams) => {
+            prompts.push(JSON.stringify(chat));
+            return {
+              text: JSON.stringify({
+                answer: "Replays come before the change in responses.",
+                evidence: [
+                  {
+                    section: "Results (unlabelled sections)",
+                    quote: RESULTS_B,
+                  },
+                ],
+                facets: [],
+              }),
+              completion: { status: "complete" as const },
+            };
+          }) as never,
+        },
+        [5],
+      );
+      const outcome = await runCall(harness, "call-unlabelled", {
+        tasks: [
+          {
+            taskId: "findings",
+            description: "Read the abstract and results of every paper",
+            expectedEffect: "digest",
+            targetIds: ["5"],
+            read: { source: "sections", sections: ["abstract", "results"] },
+          },
+        ],
+      });
+      assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+      const answer = outcome.toolResult.content as Record<string, any>;
+      assert.isUndefined(answer.digestFailures);
+      assert.include(
+        answer.digests,
+        "read Abstract (unlabelled lead), Results (unlabelled sections) (PDF lead paragraph; MinerU sections by position)",
+      );
+      assert.include(
+        answer.digests,
+        "Abstract (unlabelled lead) and Results (unlabelled sections) were found by position",
+      );
+      assert.notInclude(answer.digests, "section bounds approximate");
+      assert.notInclude(answer.digests, "not in this paper");
+      assert.notInclude(
+        `${answer.digests}\n${answer.digestNote || ""}`,
+        SECTIONS_NOT_FOUND_RULE,
+      );
+      // The reader got the lead and the results span, not the discussion.
+      assert.lengthOf(prompts, 1);
+      assert.include(prompts[0], LEAD_ABSTRACT.slice(0, 80));
+      assert.include(prompts[0], RESULTS_A);
+      assert.notInclude(prompts[0], DISCUSSION);
+    } finally {
+      if (hadIOUtils) globalScope.IOUtils = previousIOUtils;
+      else delete globalScope.IOUtils;
+    }
   });
 
   it("reads a paper an override names for its own scope", async function () {

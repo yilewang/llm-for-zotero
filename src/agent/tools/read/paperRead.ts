@@ -103,7 +103,9 @@ import {
 import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
 import {
   isAbstractSectionName,
+  LEAD_ABSTRACT_LABEL,
   readScopeSectionKind,
+  selectLeadAbstract,
   selectMineruScopeSections,
   selectPageScope,
   selectPdfChunkScopeSections,
@@ -490,12 +492,17 @@ type AbstractPart = {
   block: string;
   source: string;
   bounds: "exact" | "approximate";
+  /** What the read covered: "Abstract", or the lead read in its place. */
+  label: string;
+  backend: ScopedPaperText["backend"];
 };
 
 /**
  * The paper's abstract by the abstract rule: the Zotero abstract field, else
  * the PDF's abstract (the MinerU Abstract section, else the PDF chunks the
- * reader classed as abstract), or null when it has neither.
+ * reader classed as abstract, else the MinerU text's unheaded lead
+ * paragraph, approximate), or null when it has none of them. Plain PDF
+ * text has no paragraph bounds, so it has no lead paragraph.
  */
 async function readAbstractPart(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
@@ -516,6 +523,8 @@ async function readAbstractPart(params: {
       block: `## Abstract\n${note}`,
       source: READ_SCOPE_TEXT_SOURCES.zoteroAbstract,
       bounds: "exact",
+      label: "Abstract",
+      backend: "text",
     };
   }
   const markdown = await params.markdown();
@@ -528,6 +537,8 @@ async function readAbstractPart(params: {
         block: selected.text,
         source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
         bounds: "exact",
+        label: "Abstract",
+        backend: "mineru",
       };
   }
   const context = await params.pdfContext();
@@ -540,8 +551,20 @@ async function readAbstractPart(params: {
         block: selected.text,
         source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
         bounds: "approximate",
+        label: "Abstract",
+        backend: "pdf",
       };
   }
+  const lead = markdown ? selectLeadAbstract(markdown) : "";
+  if (lead)
+    return {
+      text: lead,
+      block: `## ${LEAD_ABSTRACT_LABEL}\n${lead}`,
+      source: READ_SCOPE_TEXT_SOURCES.pdfAbstractLead,
+      bounds: "approximate",
+      label: LEAD_ABSTRACT_LABEL,
+      backend: "mineru",
+    };
   return null;
 }
 
@@ -585,12 +608,13 @@ function emptyScopedText(
  *   whole MinerU or PDF text up to `maxChars`, over it the introduction and
  *   tail, so it is partial.
  * - abstract: the Zotero abstract field; when it is empty the PDF's abstract
- *   (MinerU section, else the chunks classed as abstract). `source` names
- *   which.
+ *   (MinerU section, else the chunks classed as abstract, else the MinerU
+ *   text's unheaded lead paragraph, approximate). `source` names which.
  * - sections: each name; "abstract" by the abstract rule, the rest by the
- *   MinerU heading bounds with descendants, else by the PDF chunk kinds
- *   (approximate bounds). Names nothing matches are `unmatched`; when none
- *   matches, the text is empty: nothing is read in its place.
+ *   MinerU heading bounds with descendants (an unheaded results span by its
+ *   place, approximate), else by the PDF chunk kinds (approximate bounds).
+ *   Names nothing matches are `unmatched`; when none matches, the text is
+ *   empty: nothing is read in its place.
  * - pages: the PDF's page text for the named pages.
  * - notes and metadata: what library_read returns for them.
  *
@@ -651,15 +675,13 @@ export async function readPaperScopeText(
           READ_SCOPE_TEXT_SOURCES.zoteroAbstract,
         );
       return finish(part.text, {
-        backend:
-          part.source === READ_SCOPE_TEXT_SOURCES.zoteroAbstract
-            ? "text"
-            : part.bounds === "exact"
-              ? "mineru"
-              : "pdf",
-        covered: ["Abstract"],
+        backend: part.backend,
+        covered: [part.label],
         unmatched: [],
         bounds: part.bounds,
+        ...(part.label === LEAD_ABSTRACT_LABEL
+          ? { approximateByPosition: true }
+          : {}),
         source: part.source,
       });
     }
@@ -672,6 +694,8 @@ export async function readPaperScopeText(
       const unmatched: string[] = [];
       const sources: string[] = [];
       let approximate = false;
+      // Approximate for another reason than a section found by its place.
+      let approximateOtherwise = false;
       let backend: ScopedPaperText["backend"] = "text";
       let anyText = false;
       if (wantsAbstract) {
@@ -683,9 +707,12 @@ export async function readPaperScopeText(
         });
         if (part) {
           blocks.push(part.block);
-          covered.push("Abstract");
+          covered.push(part.label);
           sources.push(part.source);
-          if (part.bounds === "approximate") approximate = true;
+          if (part.bounds === "approximate") {
+            approximate = true;
+            if (part.label !== LEAD_ABSTRACT_LABEL) approximateOtherwise = true;
+          }
           anyText = true;
         } else {
           unmatched.push(names.find(isAbstractSectionName)!);
@@ -699,8 +726,10 @@ export async function readPaperScopeText(
           const selected = selectMineruScopeSections(md, others);
           if (selected.text) {
             blocks.push(selected.text);
-            sources.push(READ_SCOPE_TEXT_SOURCES.mineruSections);
+            sources.push(...selected.sources);
           }
+          // A results span found by its place has approximate bounds.
+          if (selected.approximate) approximate = true;
           covered.push(...selected.covered);
           unmatched.push(...selected.unmatched);
         } else {
@@ -713,6 +742,7 @@ export async function readPaperScopeText(
               blocks.push(selected.text);
               sources.push(READ_SCOPE_TEXT_SOURCES.pdfSections);
               approximate = true;
+              approximateOtherwise = true;
             }
             covered.push(...selected.covered);
             unmatched.push(...selected.unmatched);
@@ -742,6 +772,9 @@ export async function readPaperScopeText(
         covered,
         unmatched: ordered(unmatched),
         bounds: approximate ? "approximate" : "exact",
+        ...(approximate && !approximateOtherwise
+          ? { approximateByPosition: true }
+          : {}),
         source: sources.join("; ") || READ_SCOPE_TEXT_SOURCES.pdfSections,
       });
     }

@@ -5,7 +5,11 @@ import type {
   TrustedReadObservation,
 } from "./readObservationTypes";
 import { isCatalogToolName } from "./toolNames";
-import { digestReadCapabilities, type ReadScope } from "../digests/readScope";
+import {
+  digestReadCapabilities,
+  isAbstractCoveredLabel,
+  type ReadScope,
+} from "../digests/readScope";
 
 type Candidate = {
   itemId?: number;
@@ -240,9 +244,7 @@ function observationSeeds(
           .map((entry) => text(record(entry)?.section) || "")
           .filter(Boolean);
         if (!sections.length) return [];
-        return sections.every((label) => /^\s*abstract\s*$/i.test(label))
-          ? ["abstract"]
-          : ["body"];
+        return sections.every(isAbstractCoveredLabel) ? ["abstract"] : ["body"];
       });
     }
     const aggregateHasAbstract = hasText(output, ["abstract", "abstractNote"]);

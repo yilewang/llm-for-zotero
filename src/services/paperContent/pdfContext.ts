@@ -1214,9 +1214,14 @@ const INHERITED_SECTION_KINDS = new Set<PdfChunkKind>([
   "conclusion",
 ]);
 
-/** Back matter ends the standard section before it: nothing after inherits. */
+/**
+ * Back matter ends the standard section before it: nothing after inherits.
+ * "Online content" (the whole heading, never "Online content moderation")
+ * is Nature's heading over the methods pointer that runs into the
+ * reference list.
+ */
 const BACK_MATTER_HEADING_PATTERN =
-  /^(?:references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
+  /^(?:online content(?=[:.\s-]*$)|references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
 
 function stripHeadingEnumerator(heading: string): string {
   return normalizeEvidenceText(heading)
@@ -1225,7 +1230,8 @@ function stripHeadingEnumerator(heading: string): string {
     .trim();
 }
 
-function isBackMatterHeading(heading: string): boolean {
+/** Whether a heading opens back matter (references, funding, ...). */
+export function isBackMatterHeading(heading: string): boolean {
   return BACK_MATTER_HEADING_PATTERN.test(stripHeadingEnumerator(heading));
 }
 

@@ -9,6 +9,13 @@ import type { PdfContext } from "../src/services/paperContent/types";
 import type { QuoteCitation } from "../src/shared/types";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
 import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import {
+  DISCUSSION,
+  LEAD_ABSTRACT,
+  NATURE_SHAPE_MD,
+  RESULTS_A,
+  RESULTS_B,
+} from "./helpers/unlabelledSectionsMarkdown";
 
 /**
  * paper_read with `sections` and no query reads the whole named sections
@@ -98,7 +105,23 @@ const scannedPaper = {
   firstCreator: "Ito",
   year: "2022",
 };
-const papers = [mineruPaper, pdfPaper, unheadedPaper, scannedPaper];
+// A Nature-shape MinerU file: no Abstract or Results heading.
+const unlabelledPaper = {
+  libraryID: 1,
+  itemId: 50,
+  contextItemId: 150,
+  title: "Cortical replays predict later sensory responses",
+  firstCreator: "Nguyen",
+  year: "2023",
+  mineruCacheDir: "/tmp/mineru/150",
+};
+const papers = [
+  mineruPaper,
+  pdfPaper,
+  unheadedPaper,
+  scannedPaper,
+  unlabelledPaper,
+];
 
 type Passage = {
   text: string;
@@ -237,6 +260,8 @@ describe("paper_read whole sections", function () {
     };
     globalScope.IOUtils = {
       read: async (filePath: string) => {
+        if (filePath.includes("/tmp/mineru/150"))
+          return new TextEncoder().encode(NATURE_SHAPE_MD);
         if (!filePath.includes("/tmp/mineru/110"))
           throw new Error(`no file ${filePath}`);
         return new TextEncoder().encode(MD);
@@ -291,6 +316,66 @@ describe("paper_read whole sections", function () {
     assert.equal(abstractCitation?.sourceChunkKind, "abstract");
     // Every named section was found: no not-found sentence.
     assert.notInclude(JSON.stringify(output), SECTIONS_NOT_FOUND_RULE);
+  });
+
+  it("reads an unlabelled lead abstract and results span, flagged approximate, under their own labels", async function () {
+    const tool = makeTool({});
+    const { output, input } = await read(tool, {
+      mode: "targeted",
+      sections: ["abstract", "results"],
+      targets: [{ itemId: 50 }],
+    });
+    const row = rowOf(output, 50) as PaperRow & { textSource?: string };
+    assert.equal(row.status, "complete");
+    assert.equal(row.bounds, "approximate");
+    assert.equal(
+      row.textSource,
+      "PDF lead paragraph; MinerU sections by position",
+    );
+    assert.deepEqual(row.covered, [
+      "Abstract (unlabelled lead)",
+      "Results (unlabelled sections)",
+    ]);
+    assert.deepEqual(row.unmatched, []);
+    const text = row.passages.map((passage) => passage.text).join("\n");
+    assert.include(text, LEAD_ABSTRACT.slice(0, 80));
+    assert.include(text, RESULTS_A);
+    assert.include(text, RESULTS_B);
+    assert.notInclude(text, DISCUSSION);
+    assert.deepEqual(
+      [...new Set(row.passages.map((passage) => passage.chunkKind))],
+      ["abstract", "results"],
+    );
+    assertIdsRegistered(output);
+    assert.notInclude(JSON.stringify(output), SECTIONS_NOT_FOUND_RULE);
+    // The lead is recorded as the abstract, the span as a section.
+    const delta = deriveTaskPaperLedgerDelta({
+      toolName: "paper_read",
+      callId: "call-unlabelled",
+      input,
+      content: output,
+      libraryID: 1,
+    });
+    assert.deepEqual(
+      (delta?.reads || []).map((entry) => [entry.label, entry.granularity]),
+      [
+        ["Abstract (unlabelled lead)", "abstract"],
+        ["Results (unlabelled sections)", "section"],
+      ],
+    );
+    // A read of the lead alone attests the abstract, not body text.
+    const alone = await read(tool, {
+      mode: "targeted",
+      sections: ["abstract"],
+      targets: [{ itemId: 50 }],
+    });
+    const observations = await createTrustedReadObservations({
+      toolName: "paper_read",
+      callId: "call-lead",
+      input: alone.input,
+      result: alone.output,
+    });
+    assert.deepEqual(observations[0]?.capabilities, ["abstract"]);
   });
 
   it("reads plain PDF sections by chunk kind, flagged approximate, and reports a name it cannot find", async function () {

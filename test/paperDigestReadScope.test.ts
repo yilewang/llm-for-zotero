@@ -182,6 +182,49 @@ describe("digest worker read scope", function () {
     );
   });
 
+  it("names the sections found by position, and the other approximate bounds beside them", async function () {
+    const coverage = async (
+      covered: string[],
+      approximateByPosition: boolean,
+    ) => {
+      const run = job({
+        scope: scope({ source: "sections", sections: ["abstract", "results"] }),
+        readText: async (itemId) => ({
+          itemId,
+          contextItemId: 101,
+          title: "Drift in place cells",
+          backend: "mineru",
+          text: PAPER,
+          totalCharacters: PAPER.length,
+          covered,
+          bounds: "approximate",
+          ...(approximateByPosition ? { approximateByPosition } : {}),
+          textSource: "PDF abstract; MinerU sections by position",
+        }),
+      });
+      const result = await runPaperDigestJob(run.params);
+      return renderHostPaperDigests(result.digests, []);
+    };
+    // Only the lead and the span are approximate: one note.
+    const byPosition = await coverage(
+      ["Abstract (unlabelled lead)", "Results (unlabelled sections)"],
+      true,
+    );
+    assert.include(
+      byPosition,
+      "Abstract (unlabelled lead) and Results (unlabelled sections) were found by position",
+    );
+    assert.notInclude(byPosition, "section bounds approximate");
+    // The abstract came from PDF chunks (approximate) and the results by
+    // position: both notes.
+    const both = await coverage(
+      ["Abstract", "Results (unlabelled sections)"],
+      false,
+    );
+    assert.include(both, "Results (unlabelled sections) was found by position");
+    assert.include(both, "section bounds approximate");
+  });
+
   it("names a section a partial match did not find, in a short line without the rule", async function () {
     const run = job({
       scope: scope({ source: "sections", sections: ["abstract", "results"] }),
@@ -332,6 +375,19 @@ describe("digest worker read scope", function () {
     // A host-verified read of the abstract, not of the body.
     assert.deepEqual(
       digestReadCapabilities(digest.source, DIGEST_BODY_DEPTH_CHARS),
+      ["abstract"],
+    );
+    // A sections read that found only an unlabelled lead is the abstract too.
+    assert.deepEqual(
+      digestReadCapabilities(
+        {
+          scope: { source: "sections", sections: ["abstract"] },
+          complete: true,
+          readCharacters: 700,
+          covered: ["Abstract (unlabelled lead)"],
+        },
+        DIGEST_BODY_DEPTH_CHARS,
+      ),
       ["abstract"],
     );
   });

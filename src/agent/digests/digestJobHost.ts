@@ -129,6 +129,7 @@ export type DigestPaperText = Pick<
   | "covered"
   | "unmatched"
   | "bounds"
+  | "approximateByPosition"
   | "textSource"
 >;
 

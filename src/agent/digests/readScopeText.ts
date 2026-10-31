@@ -7,18 +7,34 @@
  * - pages from the PDF's own page text.
  * A name nothing matches is reported, never replaced by more text: a read
  * that matches nothing reads nothing and says so.
+ *
+ * A paper that labels neither its abstract nor its results (a Nature
+ * article: an unheaded lead paragraph, then topic headings) has them found
+ * by their place instead, flagged approximate and named as such in what the
+ * read covered (`LEAD_ABSTRACT_LABEL`, `RESULTS_SPAN_LABEL`). When the place
+ * gives nothing either, the name stays unmatched.
  */
+import type { ManifestSection } from "../../services/mineru/mineruCache";
 import {
   buildSyntheticManifestSections,
   classifyHeadingKind,
   enclosingStandardSections,
+  isBackMatterHeading,
 } from "../../services/paperContent/pdfContext";
 import type {
   PdfChunkKind,
   PdfContext,
 } from "../../services/paperContent/types";
 import { tokenizeRetrievalText } from "../../services/retrieval/retrievalTokenizer";
-import { pageRangeText, type ReadScopePageRange } from "./readScope";
+import {
+  LEAD_ABSTRACT_LABEL,
+  pageRangeText,
+  READ_SCOPE_TEXT_SOURCES,
+  RESULTS_SPAN_LABEL,
+  type ReadScopePageRange,
+} from "./readScope";
+
+export { LEAD_ABSTRACT_LABEL, RESULTS_SPAN_LABEL };
 
 /** The standard section kinds a section name can name. */
 const STANDARD_KINDS: ReadonlySet<PdfChunkKind> = new Set<PdfChunkKind>([
@@ -59,6 +75,308 @@ type SectionSelection = {
   unmatched: string[];
 };
 
+/** The shortest lead paragraph read as an abstract. */
+const LEAD_ABSTRACT_MIN_CHARS = 600;
+/** A prose paragraph has at least this many sentence ends. */
+const LEAD_ABSTRACT_MIN_SENTENCES = 3;
+/** A Summary heading names the abstract only within this many sections. */
+const SUMMARY_ABSTRACT_MAX_INDEX = 3;
+/** The title block is at most this many leading sections. */
+const TITLE_BLOCK_MAX_SECTIONS = 3;
+
+/** "Summary", "SUMMARY." (Cell's abstract heading); never "Summary statistics". */
+const SUMMARY_HEADING_PATTERN = /^summary[:.\s-]*$/i;
+/**
+ * Introduction headings `classifyHeadingKind` does not name: Nature's
+ * "Main" and "Background". Top-level headings only.
+ */
+const INTRODUCTION_HEADING_PATTERN = /^(?:main|background)[:.\s-]*$/i;
+/** Methods headings `classifyHeadingKind` does not name. */
+const METHODS_HEADING_PATTERN =
+  /^(?:online methods|star methods|experimental procedures?|methods and materials)\b/i;
+/**
+ * Cell's "STAR Methods" heading line. MinerU drops it as a noise heading,
+ * so it is not a section; the markdown still holds the line.
+ */
+const STAR_METHODS_LINE_PATTERN = /^#{1,6}\s+star\s+methods\s*$/im;
+/** Lines that are not prose: an image, a table, math, a caption. */
+const NON_PROSE_BLOCK_PATTERN =
+  /^(?:!\[|\||<|\$\$|(?:fig(?:ure)?\.?|table|extended data)\s*\d)/i;
+/**
+ * Front-matter blocks by their phrases, never a single word an abstract
+ * can use ("two licensed vaccines"): a licence, a copyright line, the
+ * publication dates.
+ */
+const FRONT_MATTER_BLOCK_PATTERN =
+  /\blicensed under\b|\bcreative commons\b|©|\bcopyright\s+\d{4}\b|\ball rights reserved\b|^(?:received|accepted|published)\b/i;
+/**
+ * An institution as an affiliation names it ("Department of", "1University
+ * of"); a block with several lists affiliations. An abstract's "hospital"
+ * or "laboratory" is not one.
+ */
+const AFFILIATION_PHRASE_PATTERN =
+  /(?<![a-z])(?:department|university|institute|school|faculty|college)\s+(?:of|for)\b/gi;
+/** An affiliation block names at least this many institutions. */
+const AFFILIATION_MIN_PHRASES = 3;
+/** A sentence end followed by the next sentence ("rest. We"). */
+const SENTENCE_END_PATTERN = /[a-z0-9)\]%][.!?]\s+(?=[A-Z(])/g;
+
+/**
+ * Kinds that end an unlabelled results span. Methods does not: a Methods
+ * section before the results is a front section the span starts after.
+ */
+const RESULTS_SPAN_END_KINDS: ReadonlySet<PdfChunkKind> = new Set<PdfChunkKind>(
+  ["discussion", "conclusion", "references", "appendix"],
+);
+
+/** A heading's section number ("2", "2.1"), without a trailing dot. */
+function sectionNumber(heading: string): string | undefined {
+  return /^(\d+(?:\.\d+)*)\.?\s/.exec(heading.trim())?.[1];
+}
+
+function headingText(heading: string): string {
+  return heading
+    .replace(/^(?:\d+(?:\.\d+)*\.?|[ivxlcdm]+\.)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Each section's standard kind as its heading names it, and the paper's
+ * title heading (index 0 when the markdown nests its headings, else -1).
+ * A run-on heading ("Results and discussion") names its section only at
+ * the top level: "### Abstract representations emerge in CA1" under
+ * Results is a results subsection, not the abstract.
+ */
+function sectionKinds(sections: readonly ManifestSection[]): {
+  title: number;
+  kinds: Array<PdfChunkKind | undefined>;
+} {
+  const title =
+    sections[0]?.level === 1 && sections.some((section) => section.level > 1)
+      ? 0
+      : -1;
+  const kinds = sections.map((section, index) => {
+    if (index === title) return undefined;
+    const topLevel =
+      section.parentIndex === undefined ||
+      section.parentIndex === null ||
+      section.parentIndex === title;
+    return (
+      classifyHeadingKind(section.heading, "line") ||
+      (topLevel ? classifyHeadingKind(section.heading) : undefined)
+    )?.kind;
+  });
+  return { title, kinds };
+}
+
+/** Whether a paragraph reads as prose, not a front-matter line or block. */
+function isLeadProse(block: string): boolean {
+  if (block.length < LEAD_ABSTRACT_MIN_CHARS) return false;
+  if (/^#{1,6}\s/.test(block) || NON_PROSE_BLOCK_PATTERN.test(block))
+    return false;
+  if (FRONT_MATTER_BLOCK_PATTERN.test(block)) return false;
+  // Correspondence and affiliation blocks carry an email address, or name
+  // several institutions.
+  if (/\S@\S+\.\S/.test(block)) return false;
+  if (
+    (block.match(AFFILIATION_PHRASE_PATTERN) || []).length >=
+    AFFILIATION_MIN_PHRASES
+  )
+    return false;
+  return (
+    (block.match(SENTENCE_END_PATTERN) || []).length + 1 >=
+    LEAD_ABSTRACT_MIN_SENTENCES
+  );
+}
+
+/** The first prose paragraph of a stretch of markdown, or "". */
+function firstLeadProse(text: string): string {
+  for (const raw of text.split(/\n\s*\n/)) {
+    const block = raw.trim();
+    if (isLeadProse(block)) return block;
+  }
+  return "";
+}
+
+/**
+ * The index after the title block: the leading headings with no text of
+ * their own, then the first section that has some, at most the first three
+ * sections. MinerU writes the title as one or two headings, sometimes after
+ * a running "Article" heading; the section that holds the front matter
+ * (authors, dates, the lead) ends the block. A section after it is the
+ * body, even when it opens with a long paragraph. The block stops before a
+ * standard or back-matter heading, or an introduction by another name
+ * ("Background", "Main"), at the top level (0 when the paper opens with
+ * one).
+ */
+function titleBlockEnd(
+  markdown: string,
+  sections: readonly ManifestSection[],
+  kinds: ReadonlyArray<PdfChunkKind | undefined>,
+): number {
+  const last = Math.min(sections.length, TITLE_BLOCK_MAX_SECTIONS);
+  for (let index = 0; index < last; index += 1) {
+    const section = sections[index];
+    if (kinds[index] || isBackMatterHeading(section.heading)) return index;
+    if (
+      INTRODUCTION_HEADING_PATTERN.test(headingText(section.heading)) &&
+      isTopLevel(sections, index, 1)
+    )
+      return index;
+    const body = markdown
+      .slice(section.charStart, section.charEnd)
+      .replace(/^[^\n]*\n?/, "");
+    if (body.trim()) return index + 1;
+  }
+  return last;
+}
+
+/**
+ * The abstract of MinerU markdown that labels none (a Nature article's
+ * bold lead): the first prose paragraph of 600 characters or more in the
+ * title block, before the first heading after it. Front-matter blocks
+ * before it (authors, dates, DOI, affiliations, a licence) are short or
+ * not prose, so they are skipped. Empty when there is no such paragraph,
+ * or no heading after it to bound it. The caller uses it only when the
+ * abstract field, an abstract heading and the PDF abstract chunks have all
+ * missed.
+ */
+export function selectLeadAbstract(markdown: string): string {
+  const sections = buildSyntheticManifestSections(markdown);
+  if (!sections.length) return "";
+  const { kinds } = sectionKinds(sections);
+  const end = titleBlockEnd(markdown, sections, kinds);
+  if (end >= sections.length) return "";
+  return firstLeadProse(markdown.slice(0, sections[end].charStart));
+}
+
+/** Whether a section is at the top level (its parent is the title, if any). */
+function isTopLevel(
+  sections: readonly ManifestSection[],
+  index: number,
+  titleEnd: number,
+): boolean {
+  const parent = sections[index]?.parentIndex;
+  return parent === undefined || parent === null || parent < titleEnd;
+}
+
+/**
+ * The index of a Cell-style "Summary" heading that stands for the abstract:
+ * one of the first sections, before any standard section heading or an
+ * introduction by another name ("Background"). Else -1.
+ */
+function summaryAbstractIndex(
+  sections: readonly ManifestSection[],
+  kinds: ReadonlyArray<PdfChunkKind | undefined>,
+): number {
+  const last = Math.min(sections.length - 1, SUMMARY_ABSTRACT_MAX_INDEX);
+  for (let index = 0; index <= last; index += 1) {
+    const kind = kinds[index];
+    if (kind && STANDARD_KINDS.has(kind)) return -1;
+    const heading = headingText(sections[index].heading);
+    if (
+      INTRODUCTION_HEADING_PATTERN.test(heading) &&
+      isTopLevel(sections, index, 1)
+    )
+      return -1;
+    if (SUMMARY_HEADING_PATTERN.test(heading)) return index;
+  }
+  return -1;
+}
+
+/**
+ * The results of a paper that labels none, by place: the sections after the
+ * title block and after the last front section (an abstract or the summary
+ * that stands for one, an introduction, a methods section, each with its
+ * subsections), up to the first discussion, conclusion or back-matter
+ * heading. Only for a paper with both a Discussion and a Methods heading,
+ * which say the sections between are an empirical paper's results; a
+ * review without them gets nothing.
+ */
+function unlabelledResultsSpan(
+  markdown: string,
+  sections: readonly ManifestSection[],
+  kinds: ReadonlyArray<PdfChunkKind | undefined>,
+  summary: number,
+): number[] {
+  const from = titleBlockEnd(markdown, sections, kinds);
+  const isMethods = (index: number) =>
+    kinds[index] === "methods" ||
+    METHODS_HEADING_PATTERN.test(headingText(sections[index].heading));
+  if (!kinds.some((kind, index) => index >= from && kind === "discussion"))
+    return [];
+  if (
+    !sections.some((_, index) => isMethods(index)) &&
+    !STAR_METHODS_LINE_PATTERN.test(markdown)
+  )
+    return [];
+  let end = sections.length;
+  for (let index = from; index < sections.length; index += 1) {
+    const kind = kinds[index];
+    if (
+      (kind && RESULTS_SPAN_END_KINDS.has(kind)) ||
+      isBackMatterHeading(sections[index].heading)
+    ) {
+      end = index;
+      break;
+    }
+  }
+  let start = from;
+  for (let index = from; index < end; index += 1) {
+    const kind = kinds[index];
+    if (
+      kind === "introduction" ||
+      kind === "abstract" ||
+      index === summary ||
+      isMethods(index) ||
+      (INTRODUCTION_HEADING_PATTERN.test(
+        headingText(sections[index].heading),
+      ) &&
+        isTopLevel(sections, index, from))
+    )
+      start = index + 1;
+  }
+  const front = start - 1;
+  const insideFront = (index: number) => {
+    let parent = sections[index]?.parentIndex;
+    while (parent !== undefined && parent !== null) {
+      if (parent === front) return true;
+      parent = sections[parent]?.parentIndex;
+    }
+    return false;
+  };
+  // Flat MinerU text has no depth: a front section numbered "2" keeps the
+  // sections numbered "2.1", "2.2" that follow it.
+  const frontNumber =
+    front >= from ? sectionNumber(sections[front].heading) : undefined;
+  const numberedInsideFront = (index: number) => {
+    const number = sectionNumber(sections[index].heading);
+    return (
+      frontNumber !== undefined &&
+      number !== undefined &&
+      number.startsWith(`${frontNumber}.`)
+    );
+  };
+  while (
+    start < end &&
+    front >= from &&
+    (insideFront(start) || numberedInsideFront(start))
+  )
+    start += 1;
+  const span: number[] = [];
+  for (let index = start; index < end; index += 1) span.push(index);
+  return span;
+}
+
+/** A selection of MinerU sections, with how each was found. */
+export type MineruScopeSelection = SectionSelection & {
+  /** True when a name was found by place, not by its heading. */
+  approximate: boolean;
+  /** Where the text came from (`READ_SCOPE_TEXT_SOURCES`). */
+  sources: string[];
+};
+
 /**
  * The named sections of MinerU markdown, by its own heading bounds: each
  * section a name matches (a standard section name by its heading's kind
@@ -66,20 +384,24 @@ type SectionSelection = {
  * descendant sections (by heading depth, and for methods, results,
  * discussion and conclusion the subsections that follow them), in document
  * order. The paper's title heading never matches.
+ *
+ * Two names are also found where the paper does not label them: the
+ * abstract by a "Summary" heading at the start (Cell), with exact bounds;
+ * the results, when no heading names them, by the sections before the
+ * Discussion (`unlabelledResultsSpan`), flagged approximate.
  */
 export function selectMineruScopeSections(
   markdown: string,
   names: readonly string[],
-): SectionSelection {
+): MineruScopeSelection {
   const sections = buildSyntheticManifestSections(markdown);
   const enclosing = enclosingStandardSections(sections);
-  const title =
-    sections[0]?.level === 1 && sections.some((section) => section.level > 1)
-      ? 0
-      : -1;
+  const { title, kinds } = sectionKinds(sections);
   const chosen = new Set<number>();
+  const spanChosen = new Set<number>();
   const covered: string[] = [];
   const unmatched: string[] = [];
+  const summary = summaryAbstractIndex(sections, kinds);
   const isDescendant = (index: number, roots: ReadonlySet<number>) => {
     let parent = sections[index]?.parentIndex;
     while (parent !== undefined && parent !== null) {
@@ -94,17 +416,7 @@ export function selectMineruScopeSections(
     const direct = new Set<number>();
     sections.forEach((section, index) => {
       if (index === title) return;
-      // A run-on heading ("Results and discussion") names its section only
-      // at the top level: "### Abstract representations emerge in CA1"
-      // under Results is a results subsection, not the abstract.
-      const topLevel =
-        section.parentIndex === undefined ||
-        section.parentIndex === null ||
-        section.parentIndex === title;
-      const headingKind = (
-        classifyHeadingKind(section.heading, "line") ||
-        (topLevel ? classifyHeadingKind(section.heading) : undefined)
-      )?.kind;
+      const headingKind = kinds[index];
       if (kind) {
         // A standard section name matches by heading kind only: word
         // matching would take "Abstract representations ..." for the
@@ -116,6 +428,24 @@ export function selectMineruScopeSections(
       const heading = new Set(nameTokens(section.heading));
       if (tokens.every((token) => heading.has(token))) direct.add(index);
     });
+    if (!direct.size && kind === "abstract" && summary >= 0)
+      direct.add(summary);
+    if (!direct.size && kind === "results") {
+      const span = unlabelledResultsSpan(markdown, sections, kinds, summary);
+      const spanText = span
+        .map((index) =>
+          markdown
+            .slice(sections[index].charStart, sections[index].charEnd)
+            .replace(/^#{1,6}\s[^\n]*$/gm, ""),
+        )
+        .join("")
+        .trim();
+      if (spanText) {
+        covered.push(RESULTS_SPAN_LABEL);
+        for (const index of span) spanChosen.add(index);
+        continue;
+      }
+    }
     if (!direct.size) {
       unmatched.push(name);
       continue;
@@ -137,14 +467,23 @@ export function selectMineruScopeSections(
         chosen.add(index);
     });
   }
-  const text = [...chosen]
+  const text = [...new Set([...chosen, ...spanChosen])]
     .sort((a, b) => a - b)
     .map((index) =>
       markdown.slice(sections[index].charStart, sections[index].charEnd),
     )
     .join("")
     .trim();
-  return { text, covered, unmatched };
+  const sources: string[] = [];
+  if (chosen.size) sources.push(READ_SCOPE_TEXT_SOURCES.mineruSections);
+  if (spanChosen.size) sources.push(READ_SCOPE_TEXT_SOURCES.mineruResultsSpan);
+  return {
+    text,
+    covered,
+    unmatched,
+    approximate: spanChosen.size > 0,
+    sources,
+  };
 }
 
 /** A chunk as the digest reads PDF text: under its `[chunk N]` marker. */

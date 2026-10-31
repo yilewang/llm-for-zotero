@@ -53,6 +53,7 @@ import {
 import type { PaperContextRef, QuoteCitation } from "../../shared/types";
 import {
   describeReadScope,
+  POSITIONAL_COVERED_LABELS,
   isFullReadScope,
   isFullTextRead,
   readScopeKey,
@@ -152,6 +153,8 @@ export type HostPaperDigest = {
     unmatched?: string[];
     /** A scoped read only: whether the text's bounds are exact. */
     bounds?: "exact" | "approximate";
+    /** A scoped read only: approximate only by sections found by place. */
+    approximateByPosition?: boolean;
     /** A scoped read only: where its text came from ("Zotero abstract field"). */
     textSource?: string;
   };
@@ -185,6 +188,8 @@ export type PaperDigestSource = {
   covered?: string[];
   unmatched?: string[];
   bounds?: "exact" | "approximate";
+  /** As `ScopedPaperText.approximateByPosition`. */
+  approximateByPosition?: boolean;
   /** Where the text came from, as `ScopedPaperText.source` names it. */
   textSource?: string;
 };
@@ -943,7 +948,21 @@ function textCoverage(source: HostPaperDigest["source"]): string {
       );
     if (source.unmatched?.length)
       parts.push(`not in this paper: ${source.unmatched.join(", ")}`);
-    if (source.bounds === "approximate")
+    // A section found by its place, not a heading, is named as such.
+    const positional = (source.covered || []).filter((label) =>
+      POSITIONAL_COVERED_LABELS.has(label),
+    );
+    if (positional.length)
+      parts.push(
+        `${positional.join(" and ")} ${
+          positional.length > 1 ? "were" : "was"
+        } found by position`,
+      );
+    // Other approximate bounds (PDF chunk kinds) are named too.
+    if (
+      source.bounds === "approximate" &&
+      !(positional.length && source.approximateByPosition)
+    )
       parts.push("section bounds approximate");
     if (!source.complete)
       parts.push(
@@ -1392,6 +1411,7 @@ function scopedSourceFields(
     covered: [...(source.covered || [])],
     ...(source.unmatched?.length ? { unmatched: [...source.unmatched] } : {}),
     ...(source.bounds ? { bounds: source.bounds } : {}),
+    ...(source.approximateByPosition ? { approximateByPosition: true } : {}),
     ...(source.textSource ? { textSource: source.textSource } : {}),
   };
 }
