@@ -644,13 +644,13 @@ describe("paperDigestWorker", function () {
     const text = renderHostPaperDigests(digests, []);
     assert.include(
       text,
-      `text: excerpt, ${PAPER.length.toLocaleString("en-US")} of about 180,000 characters`,
+      `text: Part (an excerpt), ${PAPER.length.toLocaleString("en-US")} of about 180,000 characters`,
     );
     assert.include(
       text,
-      `text: excerpt, ${PAPER.length.toLocaleString("en-US")} of 50,000 characters`,
+      `text: Part (an excerpt), ${PAPER.length.toLocaleString("en-US")} of 50,000 characters`,
     );
-    assert.notInclude(text, "text: complete");
+    assert.notInclude(text, "text: Full (every character)");
   });
 
   it("repairs one parse failure, then fails the paper; failures are not cached", async function () {
@@ -1267,7 +1267,7 @@ describe("paperDigestWorker", function () {
     );
     const order = [
       "### Drift paper (item:1)",
-      "text: complete",
+      "text: Full (every character)",
       "Relevance: partial — It studies drift, not decoding.",
       "Stance: mixed — Stable in one area only.",
       "Answer: A fine answer.",
@@ -1314,9 +1314,12 @@ describe("paperDigestWorker", function () {
       [],
     );
     const [first, second] = text.split("\n\n");
-    assert.include(first, "text: excerpt, 30,000 of about 180,000 characters");
-    assert.notInclude(first, "text: complete");
-    assert.include(second, "text: complete");
+    assert.include(
+      first,
+      "text: Part (an excerpt), 30,000 of about 180,000 characters",
+    );
+    assert.notInclude(first, "text: Full (every character)");
+    assert.include(second, "text: Full (every character)");
   });
 
   it("starts with one relevance count line only when some digest has a relevance", function () {
@@ -1401,7 +1404,10 @@ describe("paperDigestWorker", function () {
       assert.include(text, `Relevance reason ${i}.`);
       assert.include(text, `Stance: supports — Stance reason ${i}.`);
     }
-    assert.include(text, "text: excerpt, 30,000 of about 180,000 characters");
+    assert.include(
+      text,
+      "text: Part (an excerpt), 30,000 of about 180,000 characters",
+    );
     assert.include(text, `Answer: ${long.slice(0, 400)}…`);
     assert.notInclude(text, "END-OF-ANSWER");
     assert.notInclude(text, "only the full digest carries");

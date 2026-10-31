@@ -29,6 +29,7 @@ import { isPdfContextAttachment } from "../../../services/paperContent/contextAt
 import type { QuoteCitation } from "../../../shared/types";
 import { t } from "../../../utils/i18n";
 import { sanitizeText } from "../../../utils/textSanitization";
+import { fnv1a32Raw } from "../../../utils/fnv1a";
 import {
   getCachedPageTextForAttachment,
   hasCompleteSearchablePageTextForAttachment,
@@ -308,6 +309,71 @@ export function addCitedAttachmentPageEvidence(
         itemId: citation.itemId,
       });
     }
+  }
+  return added.length
+    ? {
+        sourceTexts: [...evidence.sourceTexts, ...added],
+        complete: evidence.complete,
+      }
+    : evidence;
+}
+
+/** The most items whose Zotero abstract one review adds as evidence. */
+const MAX_CITED_ABSTRACT_EVIDENCE = 50;
+
+function zoteroAbstractFingerprint(itemId: number, abstract: string): string {
+  return `zotero-abstract:${itemId}:${abstract.length}:${fnv1a32Raw(abstract).toString(36)}`;
+}
+
+/**
+ * Add the Zotero abstract field of each item that an abstract-kind citation
+ * names, as evidence for that item. The field is read natively from the
+ * item here, never from the citation record, whose own text is never
+ * evidence. A quote taken from the abstract field (an abstract read alone,
+ * or a sections read that includes it) can then be checked even when the
+ * item has no PDF or its PDF differs from the record. Completeness is
+ * unchanged: the field never turns a missing match into an absence verdict
+ * for the PDF text.
+ */
+export function addCitedAbstractEvidence(
+  evidence: QuoteSourceEvidence,
+  quoteCitations: readonly QuoteCitation[] | undefined,
+): QuoteSourceEvidence {
+  const added: QuoteSourceText[] = [];
+  const considered = new Set<string>();
+  for (const citation of quoteCitations || []) {
+    if (citation.sourceChunkKind !== "abstract") continue;
+    const itemId = positiveContextItemId(citation.itemId);
+    if (!itemId) continue;
+    const key = `${itemId}\u241f${citation.citationLabel}`;
+    if (considered.has(key)) continue;
+    if (considered.size >= MAX_CITED_ABSTRACT_EVIDENCE) break;
+    considered.add(key);
+    let abstract = "";
+    try {
+      const item = Zotero.Items.get(itemId) as any;
+      if (item?.isRegularItem?.() === false) continue;
+      const field = item?.getField?.("abstractNote");
+      abstract = typeof field === "string" ? sanitizeText(field).trim() : "";
+    } catch (error) {
+      appLogger.debug("LLM: unable to read the Zotero abstract field", {
+        itemId,
+        error,
+      });
+    }
+    if (!abstract) continue;
+    const contextItemId = positiveContextItemId(citation.contextItemId);
+    added.push({
+      sourceText: abstract,
+      sourceLabel: citation.citationLabel,
+      sectionLabel: "Abstract",
+      chunkKind: "abstract",
+      sourceMatchSource: "context-text",
+      sourceFingerprint: zoteroAbstractFingerprint(itemId, abstract),
+      zoteroAbstractField: true,
+      ...(contextItemId ? { contextItemId } : {}),
+      itemId,
+    });
   }
   return added.length
     ? {

@@ -1776,6 +1776,12 @@ export type QuoteSourceText = {
   requiresPageHint?: unknown;
   pageHintIndex?: unknown;
   pageHintLabel?: unknown;
+  /**
+   * The text is the item's own Zotero abstract field, read natively. It is
+   * evidence for a quote an abstract-kind citation names, even where a
+   * body-evidence review otherwise sets abstracts aside.
+   */
+  zoteroAbstractField?: unknown;
 };
 
 export type QuoteSourceIndexEntry = {
@@ -1792,6 +1798,8 @@ export type QuoteSourceIndexEntry = {
   requiresPageHint?: boolean;
   pageHintIndex?: number;
   pageHintLabel?: string;
+  /** See `QuoteSourceText.zoteroAbstractField`. */
+  zoteroAbstractField?: boolean;
 };
 
 export type QuoteSourceIndex = {
@@ -2062,7 +2070,12 @@ function filterSourceIndexForBodyEvidenceQuotes(
       return shouldKeepEvidence(citation, isBodyQuoteCitation(citation));
     }),
     sources: sourceIndex.sources.filter((source) => {
-      return shouldKeepEvidence(source, isBodyQuoteSource(source));
+      // The Zotero abstract field is kept for the abstract-kind citation
+      // that names its item; it never makes the item's scope a body scope.
+      return shouldKeepEvidence(
+        source,
+        isBodyQuoteSource(source) || Boolean(source.zoteroAbstractField),
+      );
     }),
   };
 }
@@ -2165,6 +2178,7 @@ export function buildQuoteSourceIndex(params: {
         normalizeQuoteMatchSource(source.sourceMatchSource) === "pdf-page-text",
       pageHintIndex: normalizePageHintIndex(source.pageHintIndex),
       pageHintLabel: normalizePageHintLabel(source.pageHintLabel),
+      ...(source.zoteroAbstractField ? { zoteroAbstractField: true } : {}),
     });
   }
   return { quoteCitations, sources, metadataTexts: [...metadataTextSet] };

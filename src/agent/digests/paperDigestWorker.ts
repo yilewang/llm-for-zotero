@@ -51,6 +51,13 @@ import {
   resolvePaperContextDisplayMetadata,
 } from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef, QuoteCitation } from "../../shared/types";
+import {
+  describeReadScope,
+  isFullReadScope,
+  isFullTextRead,
+  readScopeKey,
+  type ReadScope,
+} from "./readScope";
 
 export type HostPaperDigestEvidence = {
   section?: string;
@@ -132,8 +139,23 @@ export type HostPaperDigest = {
     complete: boolean;
     /** The batches a paper longer than one call was read in. */
     batches?: number;
+    /**
+     * What of the paper the digest read (`readScope.ts`); absent on a full
+     * read and on every record saved before scopes, which read the full
+     * text. `complete` is then whether it read all the scope selected: a
+     * whole-paper read is `complete` with no scope (or a full one) only.
+     */
+    scope?: ReadScope;
+    /** A scoped read only: the sections, pages or fields it covered. */
+    covered?: string[];
+    /** A scoped read only: what it named that the paper has none of. */
+    unmatched?: string[];
+    /** A scoped read only: whether the text's bounds are exact. */
+    bounds?: "exact" | "approximate";
+    /** A scoped read only: where its text came from ("Zotero abstract field"). */
+    textSource?: string;
   };
-  /** The model that read the paper. */
+  /** The model that read the paper; empty when none did (an abstract). */
   model: string;
   /** The runtime route that model was called through. */
   readerRoute?: ReaderRoute;
@@ -159,6 +181,12 @@ export type PaperDigestSource = {
   backend: "mineru" | "pdf" | "text";
   text: string;
   totalCharacters: number;
+  /** A scoped read: what of the paper the text is (`readScope.ts`). */
+  covered?: string[];
+  unmatched?: string[];
+  bounds?: "exact" | "approximate";
+  /** Where the text came from, as `ScopedPaperText.source` names it. */
+  textSource?: string;
 };
 
 export type PaperDigestFailure = {
@@ -205,11 +233,19 @@ export type PaperDigestJobParams = {
   instruction: string;
   /** The user's request the part serves, read as context. */
   question?: string;
-  /** The paper's text, up to `maxChars` (a ceiling, not a sample). */
+  /**
+   * The paper's text for `scope`, up to `maxChars` (a ceiling, not a
+   * sample); the full text when the scope is full.
+   */
   readText: (
     itemId: number,
     maxChars: number,
+    scope: ReadScope | undefined,
   ) => Promise<PaperDigestSource | null>;
+  /** What every paper is read for; the full text when absent. */
+  scope?: ReadScope;
+  /** One paper's own scope (a part's per-paper override), else `scope`. */
+  scopeOf?: (itemId: number) => ReadScope | undefined;
   /** The reader; when absent, the turn model `llm` names reads. */
   reader?: PaperDigestReader;
   /** The turn model, read through `callUtilityLLM` when no `reader` is given. */
@@ -290,11 +326,31 @@ export const DIGEST_FAILURE_REASONS = Object.freeze({
   notAPaper: "Not a paper",
   readFailed: "The paper text could not be read",
   internal: "The analysis could not be prepared",
+  /** A scoped read: the paper has nothing the scope names. */
+  noAbstract: "No abstract in the Zotero record or the PDF",
+  noMatchingSections: "None of the named sections were found",
+  noMatchingPages: "None of the named pages have text",
+  noNotes: "No notes",
 });
+
+/**
+ * Why a scoped read found nothing to read: nothing was read in its place,
+ * and retrying cannot add what the paper does not have.
+ */
+export const DIGEST_SCOPE_EMPTY_REASONS: ReadonlySet<string> = new Set([
+  DIGEST_FAILURE_REASONS.noAbstract,
+  DIGEST_FAILURE_REASONS.noMatchingSections,
+  DIGEST_FAILURE_REASONS.noMatchingPages,
+  DIGEST_FAILURE_REASONS.noNotes,
+]);
 
 const DEFAULT_CONCURRENCY = 4;
 const DIGEST_MIN_INPUT_CHARS = 8_000;
-/** Less text than this is an abstract or a stub: nothing to analyze. */
+/**
+ * Less text than this is an abstract or a stub: nothing to analyze. A full
+ * read only: a scoped read reads what the user named, however short (a
+ * 600-character abstract is the abstract).
+ */
 export const DIGEST_MIN_SOURCE_CHARS = 1_500;
 /** The pause before the one retry of a timed-out or failed call. */
 export const DIGEST_RETRY_WAIT_MS = 2_000;
@@ -707,6 +763,12 @@ export function digestCacheKey(params: {
   instruction: string;
   question?: string;
   model: string;
+  /**
+   * A scoped read's scope: one more part, so a scoped request never shares
+   * a key with a full read (or with a record saved before scopes) even over
+   * the same text. A full read's key is unchanged.
+   */
+  scope?: ReadScope;
 }): string {
   return [
     "digest:v2",
@@ -715,6 +777,9 @@ export function digestCacheKey(params: {
     fnv1a(normalizeWhitespace(params.instruction)),
     fnv1a(normalizeWhitespace(params.question || "")),
     params.model,
+    ...(isFullReadScope(params.scope)
+      ? []
+      : [`scope-${fnv1a(readScopeKey(params.scope))}`]),
   ].join(":");
 }
 
@@ -770,6 +835,12 @@ export function withDigestQuoteCitations(
       sourceMatchSource: "context-text",
       citationLabel,
       sourceSectionLabel: entry.section,
+      // A quote of the abstract may come from the Zotero record, with no
+      // page: a click that finds no page for it opens the paper instead,
+      // and the answer-time check reads the record's abstract for it.
+      ...(isAbstractQuote(digest, entry)
+        ? { sourceChunkKind: "abstract" }
+        : {}),
       contextItemId: digest.contextItemId,
       itemId: digest.itemId,
       metadataTexts: digest.title ? [digest.title] : [],
@@ -855,8 +926,29 @@ function groupedNumber(value: number): string {
 
 /** How much of the paper's text the worker read. */
 function textCoverage(source: HostPaperDigest["source"]): string {
-  if (source.complete) return "text: complete";
-  return `text: excerpt, ${groupedNumber(source.readCharacters)} of ${
+  if (!isFullReadScope(source.scope)) {
+    const parts = [`text: ${describeReadScope(source.scope)} only`];
+    if (source.covered?.length)
+      parts.push(
+        `read ${source.covered.join(", ")}${
+          source.textSource ? ` (${source.textSource})` : ""
+        }`,
+      );
+    if (source.unmatched?.length)
+      parts.push(`not in this paper: ${source.unmatched.join(", ")}`);
+    if (source.bounds === "approximate")
+      parts.push("section bounds approximate");
+    if (!source.complete)
+      parts.push(
+        `cut to ${groupedNumber(source.readCharacters)} of ${groupedNumber(
+          source.totalCharacters,
+        )} characters`,
+      );
+    return parts.join("; ");
+  }
+  // "Full" only when the reader read every character of the text.
+  if (isFullTextRead(source)) return "text: Full (every character)";
+  return `text: Part (an excerpt), ${groupedNumber(source.readCharacters)} of ${
     source.totalEstimated ? "about " : ""
   }${groupedNumber(source.totalCharacters)} characters`;
 }
@@ -953,6 +1045,17 @@ export function renderHostPaperDigests(
           })}`
         : ""
     }`;
+    // An abstract is its own answer and its one quote: shown once, whole,
+    // with the id that cites it, however many digests the result holds.
+    if (isAbstractDigest(digest)) {
+      const id = digest.evidence[0]?.quoteCitationId;
+      return [
+        heading,
+        textCoverage(digest.source),
+        `Abstract${id ? ` (quoteCitationId: ${id})` : ""}: ${digest.answer}`,
+        ...(handle ? [handleLine(handle)] : []),
+      ].join("\n");
+    }
     if (compact) {
       const answer =
         digest.answer.length > DIGEST_COMPACT_ANSWER_CHARS
@@ -1256,6 +1359,147 @@ function jobReader(params: PaperDigestJobParams): PaperDigestReader {
   };
 }
 
+/** Why a scoped read of a paper found nothing to read. */
+function emptyScopeReason(scope: ReadScope): string {
+  switch (scope.source) {
+    case "abstract":
+      return DIGEST_FAILURE_REASONS.noAbstract;
+    case "sections":
+      return DIGEST_FAILURE_REASONS.noMatchingSections;
+    case "pages":
+      return DIGEST_FAILURE_REASONS.noMatchingPages;
+    case "notes":
+      return DIGEST_FAILURE_REASONS.noNotes;
+    default:
+      return DIGEST_FAILURE_REASONS.noText;
+  }
+}
+
+/** The scope fields a scoped digest's `source` records. */
+function scopedSourceFields(
+  scope: ReadScope,
+  source: PaperDigestSource,
+): Partial<HostPaperDigest["source"]> {
+  return {
+    scope,
+    covered: [...(source.covered || [])],
+    ...(source.unmatched?.length ? { unmatched: [...source.unmatched] } : {}),
+    ...(source.bounds ? { bounds: source.bounds } : {}),
+    ...(source.textSource ? { textSource: source.textSource } : {}),
+  };
+}
+
+/**
+ * The digest of a paper read for its abstract only, made without a model
+ * call: the abstract is the answer and its one Evidence quote, which gets
+ * its citation id as any digest quote does. Never cached (it costs no model
+ * call); its key names the scope, so it never answers another request.
+ */
+/**
+ * The most characters of an abstract a digest holds, as its answer and its
+ * one quote. A longer abstract is cut here, at a sentence or a word, and the
+ * answer says so; the quote stays a verbatim start of the abstract.
+ */
+export const ABSTRACT_DIGEST_MAX_CHARS = 2_000;
+
+function cutAbstract(abstract: string): string {
+  if (abstract.length <= ABSTRACT_DIGEST_MAX_CHARS) return abstract;
+  const head = abstract.slice(0, ABSTRACT_DIGEST_MAX_CHARS);
+  const sentence = Math.max(
+    head.lastIndexOf(". "),
+    head.lastIndexOf("? "),
+    head.lastIndexOf("! "),
+  );
+  const space = head.lastIndexOf(" ");
+  const at =
+    sentence >= ABSTRACT_DIGEST_MAX_CHARS * 0.7
+      ? sentence + 1
+      : space > ABSTRACT_DIGEST_MAX_CHARS * 0.7
+        ? space
+        : head.length;
+  return head.slice(0, at).trim();
+}
+
+function abstractDigest(params: {
+  itemId: number;
+  source: PaperDigestSource;
+  scopeFields: Partial<HostPaperDigest["source"]>;
+  producedAt: number;
+}): HostPaperDigest {
+  const { source } = params;
+  const whole = normalizeWhitespace(source.text);
+  const abstract = cutAbstract(whole);
+  const truncated = abstract.length < whole.length;
+  const scope = params.scopeFields.scope;
+  const totalCharacters = Math.max(
+    source.text.length,
+    Number(source.totalCharacters) || 0,
+  );
+  const unminted: HostPaperDigest = {
+    schema: 2,
+    itemId: params.itemId,
+    contextItemId: source.contextItemId,
+    ...(source.title ? { title: source.title } : {}),
+    answer: truncated
+      ? `${abstract} [abstract truncated: the first ${abstract.length} of ${whole.length} characters]`
+      : abstract,
+    evidence: [{ section: "Abstract", quote: abstract }],
+    facets: [],
+    gaps: [],
+    source: {
+      backend: "text",
+      readCharacters: source.text.length,
+      totalCharacters,
+      complete: !truncated && source.text.length >= totalCharacters,
+      ...params.scopeFields,
+    },
+    model: "",
+    producedAt: params.producedAt,
+    cacheKey: digestCacheKey({
+      contextItemId: source.contextItemId,
+      text: source.text,
+      instruction: "",
+      model: "",
+      ...(scope ? { scope } : {}),
+    }),
+  };
+  return withDigestQuoteCitations(unminted, source.sourceLabel);
+}
+
+/**
+ * Whether an Evidence quote is the paper's abstract: any quote of an
+ * abstract-only digest, and a quote a sections read took under its Abstract
+ * section (the host names the section from the text's own heading).
+ */
+function isAbstractQuote(
+  digest: HostPaperDigest,
+  entry: HostPaperDigestEvidence,
+): boolean {
+  if (isAbstractDigest(digest)) return true;
+  const source = digest.source;
+  return (
+    source?.scope?.source === "sections" &&
+    (source.covered || []).some((label) => /^\s*abstract\b/i.test(label)) &&
+    /^\s*abstract\b/i.test(entry.section || "")
+  );
+}
+
+/** A digest of the abstract alone, returned as written (no model read it). */
+export function isAbstractDigest(digest: HostPaperDigest): boolean {
+  return digest.source?.scope?.source === "abstract";
+}
+
+/**
+ * Whether a digest read the paper's whole text: complete, and of the full
+ * text (no scope, as every record saved before scopes). A scoped read that
+ * read all it was asked for is complete, never whole (`isFullTextRead`).
+ */
+export function digestReadWholeText(digest: {
+  source?: Pick<HostPaperDigest["source"], "complete" | "scope">;
+}): boolean {
+  return Boolean(digest.source && isFullTextRead(digest.source));
+}
+
 export async function runPaperDigestJob(
   params: PaperDigestJobParams,
 ): Promise<PaperDigestJobResult> {
@@ -1517,11 +1761,16 @@ export async function runPaperDigestJob(
     if (itemId === null) {
       return failure(target, 0, DIGEST_FAILURE_REASONS.notAPaper);
     }
-    const fatal = fatalFailure();
+    const requested = params.scopeOf?.(itemId) ?? params.scope;
+    const scope = isFullReadScope(requested) ? undefined : requested;
+    // An abstract is returned as written: no model reads it, so a reader
+    // that cannot serve the job does not stop it.
+    const direct = scope?.source === "abstract";
+    const fatal = direct ? null : fatalFailure();
     if (fatal) return failure(target, itemId, fatal.reason, fatal.detail);
     let source: PaperDigestSource | null;
     try {
-      source = await params.readText(itemId, DIGEST_TEXT_MAX_CHARS);
+      source = await params.readText(itemId, DIGEST_TEXT_MAX_CHARS, scope);
     } catch (error) {
       return failure(
         target,
@@ -1530,11 +1779,35 @@ export async function runPaperDigestJob(
         describeError(error),
       );
     }
-    if (!source || !source.text.trim()) {
+    if (!source) {
       return failure(target, itemId, DIGEST_FAILURE_REASONS.noText);
     }
-    if (source.text.trim().length < DIGEST_MIN_SOURCE_CHARS) {
+    if (!source.text.trim()) {
+      // A scope the paper has nothing of reads nothing in its place.
+      if (!scope) return failure(target, itemId, DIGEST_FAILURE_REASONS.noText);
+      return failure(
+        target,
+        itemId,
+        emptyScopeReason(scope),
+        source.unmatched?.length
+          ? `Not found: ${source.unmatched.join(", ")}`
+          : undefined,
+      );
+    }
+    if (!scope && source.text.trim().length < DIGEST_MIN_SOURCE_CHARS) {
       return failure(target, itemId, DIGEST_FAILURE_REASONS.thinText);
+    }
+    const scopeFields = scope ? scopedSourceFields(scope, source) : {};
+    if (direct) {
+      return {
+        kind: "digest",
+        digest: abstractDigest({
+          itemId,
+          source,
+          scopeFields,
+          producedAt: now(),
+        }),
+      };
     }
     const cacheModel = currentModel();
     const cacheKeyFor = (model: string) =>
@@ -1544,6 +1817,7 @@ export async function runPaperDigestJob(
         instruction: params.instruction,
         question: params.question,
         model,
+        ...(scope ? { scope } : {}),
       });
     const cacheKey = cacheKeyFor(cacheModel);
     let hit: HostPaperDigest | null;
@@ -1681,6 +1955,7 @@ export async function runPaperDigestJob(
           : {}),
         complete,
         ...(batches !== undefined ? { batches } : {}),
+        ...scopeFields,
       },
       model: digestModel,
       ...(reader.route ? { readerRoute: reader.route } : {}),

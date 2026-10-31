@@ -25,12 +25,19 @@ import {
 } from "../../digests/digestJobHost";
 import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
 import {
+  READ_SCOPE_JSON_SCHEMA,
+  READ_SCOPE_OVERRIDES_JSON_SCHEMA,
+  parseReadScope,
+  type ReadScope,
+} from "../../digests/readScope";
+import {
   capabilityChanges,
   declarationChanges,
   declareOutcomes,
   excludeOutcomeTargets,
   isOutcomeTargetId,
   markOutcomes,
+  readScopeChanges,
   redeclarable,
   replaceable,
   type OutcomeDeclaration,
@@ -59,6 +66,10 @@ type TaskDeclaration = {
   replaces?: string;
   /** Why it replaces that part; required with `replaces`. */
   reason?: string;
+  /** A digest part only: what of each paper it reads. */
+  read?: ReadScope;
+  /** A digest part only: papers read for a scope of their own. */
+  overrides?: Array<{ target: string; read: ReadScope }>;
 };
 
 /** A declared part that cannot be done, and why. */
@@ -101,6 +112,12 @@ const DECLARATION_SCHEMA = {
     scope: { type: "boolean" },
     replaces: { type: "string" },
     reason: { type: "string" },
+    read: {
+      ...READ_SCOPE_JSON_SCHEMA,
+      description:
+        "Digest only: what of each paper to read, as the user asked; default full, 'abstract' needs no model, pages [{from,to}].",
+    },
+    overrides: READ_SCOPE_OVERRIDES_JSON_SCHEMA,
   },
 } as const;
 
@@ -228,6 +245,27 @@ function skipRefusedNote(ids: readonly string[]): string {
   const list = ids.join(", ");
   return `Skip refused for ${list}: nothing was delivered for ${ids.length === 1 ? "it" : "them"} in this run (no document, note, or read evidence is bound to it). Produce it with the tools, or, if it truly cannot be done, list it under blocked with the concrete obstacle.`;
 }
+const READ_NEEDS_DIGEST =
+  "read and overrides say what a digest part reads of each paper: use them only with expectedEffect:'digest'.";
+/** The note for overrides naming papers outside the part. */
+function overridesOutsideNote(targets: readonly string[]): string {
+  return `overrides names papers the part does not: ${targets.join(", ")}. Name only the part's own papers, or add them to its targetIds.`;
+}
+/** Overrides for papers the part names only. */
+function checkOverrides(
+  overrides: readonly { target: string }[] | undefined,
+  targets: readonly string[] | undefined,
+): void {
+  if (!overrides?.length) return;
+  const held = new Set(
+    (targets || []).map((id) => (/^[1-9]\d*$/.test(id) ? `item:${id}` : id)),
+  );
+  const outside = overrides
+    .map((entry) => entry.target)
+    .filter((target) => !held.has(target));
+  if (outside.length)
+    throw new ToolInputRejection(overridesOutsideNote(outside));
+}
 const NO_SCOPE_PAPERS =
   "This turn states no paper scope to cover; name the part's papers in targetIds.";
 /**
@@ -332,6 +370,35 @@ function parseDeclaration(
       `${label} needs a reason with replaces: why it replaces that part`,
     );
   }
+  let read: ReadScope | undefined;
+  if (raw.read !== undefined) {
+    const parsed = parseReadScope(raw.read, `${label}.read`);
+    if (!parsed.ok) return fail(parsed.error);
+    read = parsed.scope;
+  }
+  let overrides: Array<{ target: string; read: ReadScope }> | undefined;
+  if (raw.overrides !== undefined) {
+    if (!Array.isArray(raw.overrides) || !raw.overrides.length)
+      return fail(`${label}.overrides must be a non-empty array`);
+    overrides = [];
+    for (const [index, entry] of raw.overrides.entries()) {
+      const where = `${label}.overrides[${index}]`;
+      const record = validateObject<Record<string, unknown>>(entry)
+        ? entry
+        : null;
+      const match = /^(?:item:)?([1-9]\d*)$/.exec(
+        String(record?.itemId ?? "").trim(),
+      );
+      if (!record || !match)
+        return fail(`${where} needs an itemId (12 or item:12) and a read`);
+      const parsed = parseReadScope(record.read, `${where}.read`);
+      if (!parsed.ok) return fail(parsed.error);
+      const target = `item:${match[1]}`;
+      if (overrides.some((known) => known.target === target))
+        return fail(`${where} names ${target} twice`);
+      overrides.push({ target, read: parsed.scope });
+    }
+  }
   return ok({
     taskId,
     description: optionalText(raw.description),
@@ -343,6 +410,8 @@ function parseDeclaration(
     ...(raw.scope === true ? { scope: true } : {}),
     // A reason without replaces explains nothing the host keeps.
     ...(replaces ? { replaces, reason } : {}),
+    ...(read ? { read } : {}),
+    ...(overrides ? { overrides } : {}),
   });
 }
 
@@ -699,6 +768,17 @@ export function applyOrdinaryTaskUpdates(
           );
         replacing.set(old, taskId);
       }
+      const asksScope =
+        request.read !== undefined || request.overrides !== undefined;
+      if (
+        asksScope &&
+        (effectiveEffect || prior?.effect || "answer") !== "digest"
+      )
+        throw new ToolInputRejection(READ_NEEDS_DIGEST);
+      const scopeFields = {
+        ...(request.read ? { readScope: request.read } : {}),
+        ...(request.overrides ? { readOverrides: request.overrides } : {}),
+      };
       if (!prior) {
         const effect = requestedEffect;
         if (!effect) throw new ToolInputRejection(EXPECTED_EFFECT_REQUIRED);
@@ -708,6 +788,7 @@ export function applyOrdinaryTaskUpdates(
           takenEffect(effect, capability),
         );
         checkDigestPapers(effect, effectiveEffect, targets);
+        checkOverrides(request.overrides, targets);
         if (effect === "digest") digestRuns.push({ taskId });
         declarations.push({
           taskId,
@@ -717,6 +798,7 @@ export function applyOrdinaryTaskUpdates(
           targets,
           ...(scope ? { scope } : {}),
           ...(question ? { question } : {}),
+          ...scopeFields,
           ...(request.replaces !== undefined
             ? { replaces: request.replaces, reason: request.reason }
             : {}),
@@ -729,7 +811,14 @@ export function applyOrdinaryTaskUpdates(
         request.description !== prior.description;
       const newCapability =
         capability !== undefined && capabilityChanges(prior, capability);
-      const reframes = newEffect || newDescription || newCapability;
+      const reframes =
+        newEffect ||
+        newDescription ||
+        newCapability ||
+        readScopeChanges(prior, {
+          readScope: request.read,
+          readOverrides: request.overrides,
+        });
       if (priorEffect === "digest" && !reframes) {
         digestRuns.push({ taskId, targetIds: request.targetIds });
         continue;
@@ -758,6 +847,7 @@ export function applyOrdinaryTaskUpdates(
         targets,
         ...(scope ? { scope } : {}),
         ...(question ? { question } : {}),
+        ...scopeFields,
       };
       if (!declarationChanges(prior, declaration)) {
         if (!marked.has(taskId)) ignored = true;
@@ -770,6 +860,7 @@ export function applyOrdinaryTaskUpdates(
         newEffect ? effectiveEffect : priorEffect,
         targets,
       );
+      checkOverrides(request.overrides ?? prior.readOverrides, targets);
       if (effect === "digest") digestRuns.push({ taskId });
       changed.add(taskId);
       declarations.push(declaration);

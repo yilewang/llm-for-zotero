@@ -619,6 +619,7 @@ export function formatTaskProgressCount(
 
 const GRANULARITY_LABELS: Record<TaskPaperReadEvent["granularity"], string> = {
   metadata: "Title/abstract match",
+  notes: "Notes",
   abstract: "Abstract",
   outline: "Outline",
   section: "Passage",
@@ -652,12 +653,61 @@ export function formatTaskPaperPassageLabel(
   const repeatsTitle =
     Boolean(title && loose) &&
     (loose === title || title.startsWith(loose) || loose.startsWith(title));
+  // A full paper_read that stopped short records the chunks it reached.
+  if (read.granularity === "digest" && read.toolName === "paper_read") {
+    return label ? `${t("Part")} · ${label}` : t("Part");
+  }
   if (read.granularity === "digest") {
     return read.snippet ? kind : t("Summary failed");
   }
   if (!label || repeatsTitle || read.granularity === "full") return kind;
   if (read.granularity === "outline") return `${kind}: ${label}`;
   return label;
+}
+
+/** A scoped digest's depth, for one saved before its scope was named. */
+const SCOPED_DIGEST_DEPTH_LABELS: Partial<
+  Record<TaskPaperReadEvent["granularity"], string>
+> = {
+  abstract: "Abstract",
+  section: "Sections",
+  page: "Pages",
+  notes: "Notes",
+  metadata: "Record",
+  full: "Full",
+};
+
+/** The covered names that are depths, shown in the plugin's language. */
+const SCOPE_TOKEN_LABELS: Record<string, string> = {
+  abstract: "Abstract",
+  notes: "Notes",
+  metadata: "Record",
+};
+
+function translateScopeLabel(scopeLabel: string): string {
+  return scopeLabel
+    .split(", ")
+    .map((token) => {
+      const label = SCOPE_TOKEN_LABELS[token.trim().toLowerCase()];
+      return label ? t(label) : token;
+    })
+    .join(", ");
+}
+
+/**
+ * How much of the paper a digest read, beside its heading: "Full" when the
+ * reader read every character of its text, "Part" when it read less of
+ * it, and what it read for a read of named parts ("Abstract, Results"),
+ * never "Full". Empty for a failed digest and a read saved before it was
+ * recorded.
+ */
+export function formatTaskPaperDigestDepth(read: TaskPaperReadEvent): string {
+  if (read.granularity !== "digest" || !read.snippet) return "";
+  if (read.scopeLabel) return translateScopeLabel(read.scopeLabel);
+  if (read.depth) return t(SCOPED_DIGEST_DEPTH_LABELS[read.depth] || "Part");
+  if (read.complete === true) return t("Full");
+  if (read.complete === false) return t("Part");
+  return "";
 }
 
 /**
@@ -688,6 +738,15 @@ export function cleanTaskPaperSnippet(snippet: string): string {
 }
 
 /**
+ * A host digest of the paper: a `digest` read of the digest worker, not a
+ * full paper_read that stopped short (which records its reach the same
+ * way).
+ */
+function isHostDigestRead(read: TaskPaperReadEvent): boolean {
+  return read.granularity === "digest" && read.toolName !== "paper_read";
+}
+
+/**
  * The reads worth listing: what was actually read, once each, and not a
  * bare heading. A host digest shows in its part's own block
  * (`paperDigests`), not as a read.
@@ -695,8 +754,7 @@ export function cleanTaskPaperSnippet(snippet: string): string {
 function visibleReads(reads: readonly TaskPaperReadEvent[]) {
   const seen = new Set<string>();
   return reads.filter((read) => {
-    if (read.granularity === "metadata" || read.granularity === "digest")
-      return false;
+    if (read.granularity === "metadata" || isHostDigestRead(read)) return false;
     if (isTaskPaperHeadingOnlyRead(read)) return false;
     const key = `${read.granularity}\u0000${read.label || ""}\u0000${read.snippet || ""}`;
     if (seen.has(key)) return false;
@@ -734,7 +792,7 @@ function paperDigest(
   let failed: TaskPaperReadEvent | null = null;
   let done: TaskPaperReadEvent | null = null;
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     if (read.snippet) done = read;
     else failed = read;
   }
@@ -752,7 +810,7 @@ function paperDigests(
 ): TaskPaperReadEvent[] {
   const parts = new Map<string, TaskPaperReadEvent[]>();
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     const part = parts.get(read.partId || "");
     if (part) part.push(read);
     else parts.set(read.partId || "", [read]);
@@ -2392,11 +2450,14 @@ export function mountTaskProgressView(params: {
         : "";
       // A row saved before parts were recorded keeps its "Summary" heading,
       // and its failure says why under it, as it did.
-      const heading = !label
+      const title = !label
         ? t("Summary")
         : digest.snippet
           ? label
           : digestFailedText(digest);
+      // "Full" only when the reader read every character of the text.
+      const depth = formatTaskPaperDigestDepth(digest);
+      const heading = depth ? `${title} · ${depth}` : title;
       block.append(el(doc, "div", "llm-task-paper-turn", heading));
       for (const line of [
         digestJudgmentText(

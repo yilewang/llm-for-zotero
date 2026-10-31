@@ -3241,8 +3241,8 @@ describe("task progress view of an outcome ledger", function () {
       const block = details.findByClass("llm-task-paper-digest")!;
       assert.equal(
         block.findByClass("llm-task-paper-turn")!.textContent,
-        "Summary",
-        "the summary sits in a block like Cited in document",
+        "Summary · Full",
+        "the summary sits in a block like Cited in document; its reader read every character",
       );
       assert.equal(
         block.findByClass("llm-task-paper-snippet")!.textContent,
@@ -3475,13 +3475,13 @@ describe("task progress view of an outcome ledger", function () {
         const details = expand(row);
         assert.deepEqual(blocksOf(details), [
           {
-            heading: BRIEF,
+            heading: `${BRIEF} · Full`,
             lines: [],
             answer: "Second brief.",
             note: undefined,
           },
           {
-            heading: PATH,
+            heading: `${PATH} · Full`,
             lines: [
               "Directly relevant — It measures belief during navigation.",
               "Supports — Eye movements follow the latent position.",
@@ -3515,7 +3515,7 @@ describe("task progress view of an outcome ledger", function () {
             note: "The model call timed out",
           },
           {
-            heading: BRIEF,
+            heading: `${BRIEF} · Full`,
             lines: [],
             answer: "In brief.",
             note: undefined,
@@ -3564,8 +3564,8 @@ describe("task progress view of an outcome ledger", function () {
         assert.deepEqual(
           blocks.map((block) => [block.heading, block.answer]),
           [
-            ["Summary", "Saved summary."],
-            [PATH, "Gaze tracks the belief."],
+            ["Summary · Full", "Saved summary."],
+            [`${PATH} · Full`, "Gaze tracks the belief."],
           ],
         );
         assert.equal(tailOf(row), "");
@@ -3619,7 +3619,7 @@ describe("task progress view of an outcome ledger", function () {
           blocksOf(expand(earlier.findAllByClass("llm-task-paper")[0])),
           [
             {
-              heading: BRIEF,
+              heading: `${BRIEF} · Full`,
               lines: [],
               answer: "Gaze tracks the belief.",
               note: undefined,
@@ -3654,10 +3654,10 @@ describe("task progress view of an outcome ledger", function () {
         );
         harness.row.dispatchFakeEvent("click");
         const first = paperRow(harness, "1:1");
-        assert.equal(blocksOf(expand(first))[0].heading, label);
+        assert.equal(blocksOf(expand(first))[0].heading, `${label} · Full`);
         assert.equal(tailOf(first), "");
         const second = blocksOf(expand(paperRow(harness, "1:2")))[0];
-        assert.lengthOf(second.heading!, 60);
+        assert.lengthOf(second.heading!.replace(/ · Full$/, ""), 60);
       });
 
       it("renders the same blocks after the run is replayed from its saved events", function () {
@@ -3705,9 +3705,9 @@ describe("task progress view of an outcome ledger", function () {
             block.answer,
           ]),
           [
-            [BRIEF, [], "In brief."],
+            [`${BRIEF} · Full`, [], "In brief."],
             [
-              PATH,
+              `${PATH} · Full`,
               [
                 "Directly relevant — It measures belief during navigation.",
                 "Supports — Eye movements follow the latent position.",
@@ -3862,7 +3862,7 @@ describe("task progress view of an outcome ledger", function () {
       const block = open("1:1");
       assert.equal(
         block.findByClass("llm-task-paper-turn")!.textContent,
-        label,
+        `${label} · ${t("Full")}`,
       );
       assert.deepEqual(
         block

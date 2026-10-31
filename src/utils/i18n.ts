@@ -1615,6 +1615,18 @@ const zhCN: Record<string, string> = {
     "分析论文的模型没有可安全使用的推理设置",
   "Too little text to analyze": "文本太少，无法分析",
   "The analysis could not be prepared": "无法准备分析",
+  "No notes": "没有笔记",
+  // A scoped read that found nothing the scope names (readScope.ts).
+  "No abstract in the Zotero record or the PDF":
+    "Zotero 条目和 PDF 中都没有摘要",
+  "None of the named sections were found": "未找到指定的章节",
+  "None of the named pages have text": "指定的页面没有文本",
+  // How much of a paper a digest read (Task progress, beside its heading).
+  Full: "全文",
+  Part: "部分",
+  Sections: "章节",
+  Pages: "页面",
+  Record: "条目",
   // The same reasons as rows saved before schema 2 name them.
   "The model did not return a usable summary": "模型未返回可用的总结",
   "The model returned an empty summary": "模型返回的总结为空",

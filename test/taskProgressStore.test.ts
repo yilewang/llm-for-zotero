@@ -32,6 +32,7 @@ import {
   taskQuestionChecklist,
   taskQuestionState,
   taskReadInDepth,
+  isInDepthRead,
 } from "../src/modules/contextPanel/taskProgress/store";
 import {
   digestLedgerDelta,
@@ -99,6 +100,24 @@ describe("task progress store", function () {
     );
     assert.isTrue(taskReadInDepth(getTaskProgress(7)));
     assert.isFalse(taskReadInDepth(null));
+  });
+
+  it("counts a scoped digest as in depth only when it covered body text", function () {
+    const digest = (depth?: "abstract" | "notes" | "section" | "full") => ({
+      key: "1:1",
+      callId: "digest",
+      toolName: "task_update",
+      granularity: "digest" as const,
+      snippet: "The digest's answer.",
+      ...(depth ? { depth } : {}),
+    });
+    // A digest of the whole text (no scope recorded) reads in depth.
+    assert.isTrue(isInDepthRead(digest()));
+    assert.isTrue(isInDepthRead(digest("full")));
+    assert.isTrue(isInDepthRead(digest("section")));
+    // A summary of the abstract or the notes does not.
+    assert.isFalse(isInDepthRead(digest("abstract")));
+    assert.isFalse(isInDepthRead(digest("notes")));
   });
 
   it("applies ledger deltas once, however often they replay", function () {

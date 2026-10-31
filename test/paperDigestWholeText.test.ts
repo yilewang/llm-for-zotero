@@ -375,9 +375,9 @@ describe("a digest of an item longer than the digest text limit", function () {
     const rendered = renderHostPaperDigests(digests, []);
     assert.include(
       rendered,
-      `text: excerpt, 250,000 of ${whole.length.toLocaleString("en-US")} characters`,
+      `text: Part (an excerpt), 250,000 of ${whole.length.toLocaleString("en-US")} characters`,
     );
-    assert.notInclude(rendered, "text: complete");
+    assert.notInclude(rendered, "text: Full (every character)");
   });
 });
 

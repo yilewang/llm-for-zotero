@@ -713,7 +713,7 @@ describe("review_coverage", function () {
       ]),
       [
         [21, "skimmed", "digest"],
-        [22, "read", "digest"],
+        [22, "read", "full"],
       ],
     );
     const skimmed = await coverage(source, { states: ["skimmed"] });

@@ -58,6 +58,7 @@ import {
   readDocumentsExhaustively,
   resolveFullReadBatchTokenBudget,
   type ExhaustiveBatchAnalyzer,
+  type ExhaustiveSourceChunk,
   type FullReadCoverageReceipt,
   type FullReadPaperResult,
 } from "../../../shared/exhaustiveDocumentReader";
@@ -92,6 +93,21 @@ import type {
 import { resolveOutputReserve } from "../../../utils/outputTokenPolicy";
 import { resolveModelInputTokenLimit } from "../../../utils/modelInputCap";
 import { resolveAdaptiveReadingBudget } from "../../context/readingBudget";
+import {
+  READ_SCOPE_TEXT_SOURCES,
+  isFullReadScope,
+  type ReadScope,
+  type ScopedPaperText,
+} from "../../digests/readScope";
+import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
+import {
+  isAbstractSectionName,
+  readScopeSectionKind,
+  selectMineruScopeSections,
+  selectPageScope,
+  selectPdfChunkScopeSections,
+  type ScopePageText,
+} from "../../digests/readScopeText";
 
 type PaperReadMode =
   | "overview"
@@ -138,7 +154,13 @@ export type PaperReadFigureExtractionResult = {
 export type PaperReadFullResult = {
   mode: "full";
   status: "complete" | "partial" | "unreadable";
-  papers: (FullReadPaperResult & { displayLabel: string })[];
+  papers: (Omit<FullReadPaperResult, "exactEvidence"> & {
+    /** Each chunk with the citation id the host minted from its text. */
+    exactEvidence: (ExhaustiveSourceChunk & { quoteCitationId?: string })[];
+    displayLabel: string;
+  })[];
+  /** The records of those ids; the model sees the ids only. */
+  quoteCitations: QuoteCitation[];
   coverageReceipt: FullReadCoverageReceipt;
   synthesisContext: string;
   warnings: string[];
@@ -403,6 +425,724 @@ export async function readPaperTextForDigest(params: {
   } catch {
     return null;
   }
+}
+
+/** What `readPaperScopeText` reads besides the paper's text. */
+export type PaperScopeTextReaders = {
+  pdfService: Pick<PdfService, "getOverviewExcerpt" | "ensurePaperContext">;
+  /** The item's Zotero `abstractNote`, empty when it has none. */
+  readAbstractNote?: (
+    paper: NonNullable<PdfTarget["paperContext"]>,
+  ) => string | Promise<string>;
+  /** The item's child notes as plain text, as library_read reads them. */
+  readNotes?: (
+    paper: NonNullable<PdfTarget["paperContext"]>,
+  ) =>
+    | ReadonlyArray<{ title?: string; noteText: string }>
+    | Promise<ReadonlyArray<{ title?: string; noteText: string }>>;
+  /** The item's Zotero record as text (title, creators, date, venue, ...). */
+  readMetadata?: (
+    paper: NonNullable<PdfTarget["paperContext"]>,
+  ) => string | Promise<string>;
+  /** The PDF's own page text, by 0-based page index. */
+  readPageTexts?: (
+    paper: NonNullable<PdfTarget["paperContext"]>,
+  ) => Promise<ReadonlyArray<ScopePageText>>;
+};
+
+/** MinerU `full.md` without its image embeds, or null when unreadable. */
+async function readMineruMarkdown(
+  paperContext: NonNullable<PdfTarget["paperContext"]>,
+): Promise<string | null> {
+  const cacheDir = normalizeString(paperContext.mineruCacheDir);
+  if (!cacheDir) return null;
+  try {
+    const clean = stripMineruSourceImageEmbedsFromMarkdown(
+      await readTextFile(joinLocalPath(cacheDir, "full.md")),
+    ).trim();
+    return clean || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The text without a leading heading line ("## Abstract", "Abstract."). */
+function withoutLeadingHeading(text: string): string {
+  return text
+    .replace(/^\s*#{1,6}\s+[^\n]*\n+/, "")
+    .replace(/^\s*abstract\s*[:.—–-]?\s*\n?/i, "")
+    .trim();
+}
+
+/** The text without `[chunk N]` markers, as one passage. */
+function withoutChunkMarkers(text: string): string {
+  return text
+    .replace(/^\s*\[chunk \d+\]\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+type AbstractPart = {
+  /** The abstract alone, without heading or markers. */
+  text: string;
+  /** The abstract as a section of a sections read, with its heading. */
+  block: string;
+  source: string;
+  bounds: "exact" | "approximate";
+};
+
+/**
+ * The paper's abstract by the abstract rule: the Zotero abstract field, else
+ * the PDF's abstract (the MinerU Abstract section, else the PDF chunks the
+ * reader classed as abstract), or null when it has neither.
+ */
+async function readAbstractPart(params: {
+  paperContext: NonNullable<PdfTarget["paperContext"]>;
+  readers: PaperScopeTextReaders;
+  markdown: () => Promise<string | null>;
+  pdfContext: () => Promise<PdfContext | undefined>;
+}): Promise<AbstractPart | null> {
+  let note = "";
+  try {
+    note =
+      `${(await params.readers.readAbstractNote?.(params.paperContext)) || ""}`.trim();
+  } catch {
+    note = "";
+  }
+  if (note) {
+    return {
+      text: note,
+      block: `## Abstract\n${note}`,
+      source: READ_SCOPE_TEXT_SOURCES.zoteroAbstract,
+      bounds: "exact",
+    };
+  }
+  const markdown = await params.markdown();
+  if (markdown) {
+    const selected = selectMineruScopeSections(markdown, ["abstract"]);
+    const text = withoutLeadingHeading(selected.text);
+    if (text)
+      return {
+        text,
+        block: selected.text,
+        source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
+        bounds: "exact",
+      };
+  }
+  const context = await params.pdfContext();
+  if (context?.chunks?.length) {
+    const selected = selectPdfChunkScopeSections(context, ["abstract"]);
+    const text = withoutLeadingHeading(withoutChunkMarkers(selected.text));
+    if (text)
+      return {
+        text,
+        block: selected.text,
+        source: READ_SCOPE_TEXT_SOURCES.pdfAbstract,
+        bounds: "approximate",
+      };
+  }
+  return null;
+}
+
+/** `text` cut to `ceiling` characters, with what the cut kept. */
+function cutToCeiling(
+  text: string,
+  ceiling: number,
+): { text: string; totalCharacters: number; complete: boolean } {
+  if (text.length <= ceiling)
+    return { text, totalCharacters: text.length, complete: true };
+  return {
+    text: text.slice(0, ceiling).trimEnd(),
+    totalCharacters: text.length,
+    complete: false,
+  };
+}
+
+/** A scoped read that found nothing the scope names. */
+function emptyScopedText(
+  unmatched: string[],
+  source: string,
+  backend: ScopedPaperText["backend"] = "text",
+): ScopedPaperText {
+  return {
+    backend,
+    text: "",
+    totalCharacters: 0,
+    covered: [],
+    unmatched,
+    bounds: "exact",
+    complete: false,
+    source,
+  };
+}
+
+/**
+ * One paper's text cut to a read scope, the one extractor every reader of a
+ * scope uses (the digest worker for a digest part and for `paper_digest`).
+ *
+ * - full (or no scope): today's digest read (`readPaperTextForDigest`): the
+ *   whole MinerU or PDF text up to `maxChars`, over it the introduction and
+ *   tail, so it is partial.
+ * - abstract: the Zotero abstract field; when it is empty the PDF's abstract
+ *   (MinerU section, else the chunks classed as abstract). `source` names
+ *   which.
+ * - sections: each name; "abstract" by the abstract rule, the rest by the
+ *   MinerU heading bounds with descendants, else by the PDF chunk kinds
+ *   (approximate bounds). Names nothing matches are `unmatched`; when none
+ *   matches, the text is empty: nothing is read in its place.
+ * - pages: the PDF's page text for the named pages.
+ * - notes and metadata: what library_read returns for them.
+ *
+ * Every scoped text is cut to `maxChars` (`complete` false when cut). Null
+ * when the paper has no readable text for the scope at all.
+ */
+export async function readPaperScopeText(
+  params: {
+    paperContext: NonNullable<PdfTarget["paperContext"]>;
+    scope?: ReadScope;
+    maxChars: number;
+  } & PaperScopeTextReaders,
+): Promise<ScopedPaperText | null> {
+  const { paperContext, scope } = params;
+  const ceiling = Math.max(1, Math.floor(params.maxChars));
+  if (isFullReadScope(scope)) {
+    const read = await readPaperTextForDigest({
+      paperContext,
+      pdfService: params.pdfService,
+      maxChars: ceiling,
+    });
+    if (!read) return null;
+    return {
+      ...read,
+      covered: ["full text"],
+      unmatched: [],
+      bounds: "exact",
+      complete: read.text.length >= read.totalCharacters,
+      source:
+        read.backend === "mineru"
+          ? READ_SCOPE_TEXT_SOURCES.mineruText
+          : READ_SCOPE_TEXT_SOURCES.pdfText,
+    };
+  }
+  let markdownRead: Promise<string | null> | undefined;
+  const markdown = () => (markdownRead ||= readMineruMarkdown(paperContext));
+  let contextRead: Promise<PdfContext | undefined> | undefined;
+  const pdfContext = () =>
+    (contextRead ||= params.pdfService
+      .ensurePaperContext(paperContext)
+      .catch(() => undefined));
+  const finish = (
+    text: string,
+    fields: Omit<ScopedPaperText, "text" | "totalCharacters" | "complete">,
+  ): ScopedPaperText => ({ ...fields, ...cutToCeiling(text, ceiling) });
+
+  switch (scope!.source) {
+    case "abstract": {
+      const part = await readAbstractPart({
+        paperContext,
+        readers: params,
+        markdown,
+        pdfContext,
+      });
+      if (!part)
+        return emptyScopedText(
+          ["abstract"],
+          READ_SCOPE_TEXT_SOURCES.zoteroAbstract,
+        );
+      return finish(part.text, {
+        backend:
+          part.source === READ_SCOPE_TEXT_SOURCES.zoteroAbstract
+            ? "text"
+            : part.bounds === "exact"
+              ? "mineru"
+              : "pdf",
+        covered: ["Abstract"],
+        unmatched: [],
+        bounds: part.bounds,
+        source: part.source,
+      });
+    }
+    case "sections": {
+      const names = scope!.sections || [];
+      const wantsAbstract = names.some(isAbstractSectionName);
+      const others = names.filter((name) => !isAbstractSectionName(name));
+      const blocks: string[] = [];
+      const covered: string[] = [];
+      const unmatched: string[] = [];
+      const sources: string[] = [];
+      let approximate = false;
+      let backend: ScopedPaperText["backend"] = "text";
+      let anyText = false;
+      if (wantsAbstract) {
+        const part = await readAbstractPart({
+          paperContext,
+          readers: params,
+          markdown,
+          pdfContext,
+        });
+        if (part) {
+          blocks.push(part.block);
+          covered.push("Abstract");
+          sources.push(part.source);
+          if (part.bounds === "approximate") approximate = true;
+          anyText = true;
+        } else {
+          unmatched.push(names.find(isAbstractSectionName)!);
+        }
+      }
+      if (others.length) {
+        const md = await markdown();
+        if (md) {
+          anyText = true;
+          backend = "mineru";
+          const selected = selectMineruScopeSections(md, others);
+          if (selected.text) {
+            blocks.push(selected.text);
+            sources.push(READ_SCOPE_TEXT_SOURCES.mineruSections);
+          }
+          covered.push(...selected.covered);
+          unmatched.push(...selected.unmatched);
+        } else {
+          const context = await pdfContext();
+          if (context?.chunks?.length) {
+            anyText = true;
+            backend = "pdf";
+            const selected = selectPdfChunkScopeSections(context, others);
+            if (selected.text) {
+              blocks.push(selected.text);
+              sources.push(READ_SCOPE_TEXT_SOURCES.pdfSections);
+              approximate = true;
+            }
+            covered.push(...selected.covered);
+            unmatched.push(...selected.unmatched);
+          } else {
+            unmatched.push(...others);
+          }
+        }
+      }
+      // No abstract and nothing else asked: the paper may still have text,
+      // which makes this "no matching sections", not "no readable text".
+      if (!anyText && !others.length)
+        anyText = Boolean(
+          (await markdown()) || (await pdfContext())?.chunks?.length,
+        );
+      if (!anyText) return null;
+      const order = new Map(
+        names.map((name, index) => [name.toLowerCase(), index]),
+      );
+      const ordered = (list: string[]) =>
+        [...list].sort(
+          (a, b) =>
+            (order.get(a.toLowerCase()) ?? 0) -
+            (order.get(b.toLowerCase()) ?? 0),
+        );
+      return finish(blocks.join("\n\n").trim(), {
+        backend,
+        covered,
+        unmatched: ordered(unmatched),
+        bounds: approximate ? "approximate" : "exact",
+        source: sources.join("; ") || READ_SCOPE_TEXT_SOURCES.pdfSections,
+      });
+    }
+    case "pages": {
+      let pages: ReadonlyArray<ScopePageText> = [];
+      try {
+        pages = (await params.readPageTexts?.(paperContext)) || [];
+      } catch {
+        pages = [];
+      }
+      if (!pages.length) return null;
+      const selected = selectPageScope(pages, scope!.pages || []);
+      return finish(selected.text, {
+        backend: "pdf",
+        covered: selected.covered,
+        unmatched: selected.unmatched,
+        bounds: "exact",
+        source: READ_SCOPE_TEXT_SOURCES.pdfPages,
+      });
+    }
+    case "notes": {
+      let notes: ReadonlyArray<{ title?: string; noteText: string }> = [];
+      try {
+        notes = (await params.readNotes?.(paperContext)) || [];
+      } catch {
+        notes = [];
+      }
+      const text = notes
+        .filter((note) => note.noteText?.trim())
+        .map((note) =>
+          note.title?.trim()
+            ? `## ${note.title.trim()}\n${note.noteText.trim()}`
+            : note.noteText.trim(),
+        )
+        .join("\n\n");
+      if (!text)
+        return emptyScopedText(["notes"], READ_SCOPE_TEXT_SOURCES.zoteroNotes);
+      return finish(text, {
+        backend: "text",
+        covered: ["notes"],
+        unmatched: [],
+        bounds: "exact",
+        source: READ_SCOPE_TEXT_SOURCES.zoteroNotes,
+      });
+    }
+    case "metadata": {
+      let text = "";
+      try {
+        text = `${(await params.readMetadata?.(paperContext)) || ""}`.trim();
+      } catch {
+        text = "";
+      }
+      if (!text)
+        return emptyScopedText(
+          ["metadata"],
+          READ_SCOPE_TEXT_SOURCES.zoteroRecord,
+        );
+      return finish(text, {
+        backend: "text",
+        covered: ["metadata"],
+        unmatched: [],
+        bounds: "exact",
+        source: READ_SCOPE_TEXT_SOURCES.zoteroRecord,
+      });
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * The characters a whole-sections read returns per paper when the turn has
+ * no live context budget (an MCP client, a test): a long results section
+ * fits, and a longer one is cut and marked partial.
+ */
+const WHOLE_SECTIONS_DEFAULT_MAX_CHARS = 24_000;
+/** Read each section whole first; the read budget then cuts what returns. */
+const WHOLE_SECTION_READ_CEILING = 2_000_000;
+
+/** A heading line of MinerU markdown ("## 2 Results"). */
+const MARKDOWN_HEADING_LINE = /^\s*#{1,6}\s+\S/;
+/** The chunk marker a PDF text section carries per chunk. */
+const CHUNK_MARKER_LINE = /^\s*\[chunk (\d+)\]\s*$/;
+
+type SectionPassage = { text: string; chunkIndex?: number };
+
+/**
+ * A section's text as passages: one per PDF chunk (under its `[chunk N]`
+ * marker), else one per paragraph, a heading kept with the paragraph under
+ * it.
+ */
+function splitSectionPassages(text: string): SectionPassage[] {
+  const lines = text.split("\n");
+  if (lines.some((line) => CHUNK_MARKER_LINE.test(line))) {
+    const passages: SectionPassage[] = [];
+    let current: { chunkIndex?: number; lines: string[] } = { lines: [] };
+    const flush = () => {
+      const body = current.lines.join("\n").trim();
+      if (body)
+        passages.push({
+          text: body,
+          ...(current.chunkIndex !== undefined
+            ? { chunkIndex: current.chunkIndex }
+            : {}),
+        });
+    };
+    for (const line of lines) {
+      const marker = CHUNK_MARKER_LINE.exec(line);
+      if (marker) {
+        flush();
+        current = { chunkIndex: Number(marker[1]), lines: [] };
+      } else {
+        current.lines.push(line);
+      }
+    }
+    flush();
+    return passages;
+  }
+  const passages: SectionPassage[] = [];
+  let headings: string[] = [];
+  for (const block of text.split(/\n{2,}/)) {
+    const clean = block.trim();
+    if (!clean) continue;
+    if (clean.split("\n").every((line) => MARKDOWN_HEADING_LINE.test(line))) {
+      headings.push(clean);
+      continue;
+    }
+    passages.push({ text: [...headings, clean].join("\n") });
+    headings = [];
+  }
+  if (headings.length) passages.push({ text: headings.join("\n") });
+  return passages;
+}
+
+/** The text a passage's quote is cut from: no leading heading lines. */
+function passageQuoteText(text: string): string {
+  return text.replace(/^(?:\s*#{1,6}\s+[^\n]*\n+)+/, "").trim();
+}
+
+/**
+ * `text` cut to `budget` characters, at the last paragraph break past half
+ * of it when there is one, else at a word.
+ */
+function cutSectionText(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  if (budget <= 0) return "";
+  const head = text.slice(0, budget);
+  const paragraph = head.lastIndexOf("\n\n");
+  if (paragraph >= budget / 2) return head.slice(0, paragraph).trimEnd();
+  const space = head.lastIndexOf(" ");
+  return (space >= budget / 2 ? head.slice(0, space) : head).trimEnd();
+}
+
+/**
+ * The per-paper read size: an explicit `maxChars` never exceeds the
+ * adaptive budget when the runtime has one.
+ */
+function capAtAdaptiveBudget(
+  requested: number | undefined,
+  budget: number | undefined,
+  fallback: number,
+): number {
+  if (requested && budget) return Math.min(requested, budget);
+  return requested || budget || fallback;
+}
+
+/** A whole-sections read of one paper, as the result lists it. */
+type WholeSectionsPaper = {
+  paperContext: NonNullable<PdfTarget["paperContext"]>;
+  /**
+   * complete: every matched section whole; partial: the read budget cut
+   * one, or a named section had no readable text; no_matching_sections: none of the names is in the paper (nothing
+   * of it was read); unreadable: the paper has no readable text.
+   */
+  status: "complete" | "partial" | "no_matching_sections" | "unreadable";
+  sourceKind: "paper_text";
+  backend?: ScopedPaperText["backend"];
+  citationLabel: string;
+  sourceLabel: string;
+  displayLabel?: string;
+  covered: string[];
+  unmatched: string[];
+  bounds?: ScopedPaperText["bounds"];
+  textSource?: string;
+  /** Each section read, whole or cut by the read budget. */
+  sections: Array<{
+    section: string;
+    complete: boolean;
+    characters: number;
+    totalCharacters: number;
+  }>;
+  passages: Array<Record<string, unknown>>;
+};
+
+/**
+ * paper_read with `sections` and no query: each named section whole, by the
+ * one scope extractor (`readPaperScopeText`, sections scope: MinerU heading
+ * bounds, else the PDF chunk kinds, approximate; "abstract" by the abstract
+ * rule). Each passage carries a host-minted citation id. Above
+ * `maxCharsPerPaper` the sections that do not fit are cut, and the result
+ * says what was cut. A paper with none of the named sections reads nothing
+ * and is named; nothing else of it is read in their place.
+ */
+async function readWholeSections(params: {
+  names: readonly string[];
+  targets: NonNullable<PdfTarget["paperContext"]>[];
+  maxCharsPerPaper: number;
+  pdfService: PdfService;
+  zoteroGateway: ZoteroGateway;
+  displayLabelFor: (paper: NonNullable<PdfTarget["paperContext"]>) => string;
+}): Promise<Record<string, unknown>> {
+  const quoteCitations: QuoteCitation[] = [];
+  const warnings: string[] = [];
+  const nothingRead: string[] = [];
+  const papers: WholeSectionsPaper[] = [];
+  const targets = await hydrateFigureTargetsWithMineruMetadata(
+    params.targets,
+    params.zoteroGateway,
+  );
+  for (const paperContext of targets) {
+    const citationLabel = formatPaperCitationLabel(paperContext);
+    const sourceLabel = formatPaperSourceLabel(paperContext);
+    const row: WholeSectionsPaper = {
+      paperContext,
+      status: "complete",
+      sourceKind: "paper_text",
+      citationLabel,
+      sourceLabel,
+      displayLabel: params.displayLabelFor(paperContext),
+      covered: [],
+      unmatched: [],
+      sections: [],
+      passages: [],
+    };
+    let remaining = Math.max(1, Math.floor(params.maxCharsPerPaper));
+    let readable = false;
+    let approximate = false;
+    const sources: string[] = [];
+    const seen = new Set<string>();
+    const cut: string[] = [];
+    const unreadableNames: string[] = [];
+    for (const name of params.names) {
+      const read = await readPaperScopeText({
+        paperContext,
+        scope: { source: "sections", sections: [name] },
+        maxChars: WHOLE_SECTION_READ_CEILING,
+        pdfService: params.pdfService,
+        readAbstractNote: (paper) => {
+          const field = (
+            params.zoteroGateway.getItem(paper.itemId) as
+              | { getField?: (field: string) => unknown }
+              | null
+              | undefined
+          )?.getField?.("abstractNote");
+          return typeof field === "string" ? field : "";
+        },
+      });
+      if (!read) {
+        // A name with no readable text is reported, never dropped quietly.
+        row.unmatched.push(name);
+        unreadableNames.push(name);
+        continue;
+      }
+      readable = true;
+      row.unmatched.push(...read.unmatched);
+      const whole = read.text.trim();
+      if (!whole || seen.has(whole)) continue;
+      seen.add(whole);
+      const label = read.covered[0] || name;
+      const kept = cutSectionText(whole, remaining);
+      remaining = Math.max(0, remaining - kept.length);
+      const complete = kept.length >= whole.length;
+      // A section the budget left no room for is listed as cut, not read.
+      if (kept) row.covered.push(label);
+      if (read.bounds === "approximate") approximate = true;
+      for (const source of read.source.split("; "))
+        if (source && !sources.includes(source)) sources.push(source);
+      // The paper's text backend; a Zotero abstract field is not one.
+      if (!row.backend || row.backend === "text") row.backend = read.backend;
+      row.sections.push({
+        section: label,
+        complete,
+        characters: kept.length,
+        totalCharacters: whole.length,
+      });
+      if (!complete) cut.push(`${label}: ${kept.length} of ${whole.length}`);
+      const chunkKind = isAbstractSectionName(label)
+        ? "abstract"
+        : readScopeSectionKind(label) || "body";
+      for (const passage of splitSectionPassages(kept)) {
+        const result: Record<string, unknown> = {
+          paperContext,
+          text: passage.text,
+          sectionLabel: label,
+          chunkKind,
+          citationLabel,
+          sourceLabel,
+          ...(passage.chunkIndex !== undefined
+            ? { chunkIndex: passage.chunkIndex }
+            : {}),
+        };
+        const quote = passageQuoteText(passage.text);
+        const candidates = splitOverviewQuoteCandidates(quote);
+        // One id per passage, as a targeted passage has.
+        const [citation] = buildRegisteredQuoteCitations(
+          result,
+          candidates.length ? candidates : [quote],
+        );
+        if (citation) quoteCitations.push(citation);
+        row.passages.push({
+          text: passage.text,
+          sectionLabel: label,
+          chunkKind,
+          ...(passage.chunkIndex !== undefined
+            ? { chunkIndex: passage.chunkIndex }
+            : {}),
+          ...(citation ? { quoteCitationId: citation.id } : {}),
+        });
+      }
+    }
+    if (row.sections.length) {
+      row.bounds = approximate ? "approximate" : "exact";
+      row.textSource = sources.join("; ");
+    }
+    if (!readable) {
+      row.status = "unreadable";
+      nothingRead.push(
+        `${citationLabel} (item:${paperContext.itemId}): no readable text`,
+      );
+    } else if (!row.sections.length) {
+      row.status = "no_matching_sections";
+      nothingRead.push(
+        `${citationLabel} (item:${paperContext.itemId}): none of the named sections were found`,
+      );
+    } else if (cut.length || unreadableNames.length) {
+      row.status = "partial";
+    }
+    if (row.sections.length && cut.length)
+      warnings.push(
+        `Cut by the read budget, ${citationLabel}: ${cut
+          .map((entry) => `${entry} characters`)
+          .join("; ")}. Read that section alone.`,
+      );
+    if (row.sections.length && unreadableNames.length)
+      warnings.push(
+        `No readable text for ${citationLabel}: ${unreadableNames.join(", ")}.`,
+      );
+    if (row.unmatched.length && row.sections.length)
+      warnings.push(
+        `Not found in ${citationLabel}: ${row.unmatched.join(", ")}.`,
+      );
+    papers.push(row);
+  }
+  return {
+    mode: "targeted",
+    read: "whole_sections",
+    sections: [...params.names],
+    papers,
+    quoteCitations: mergeQuoteCitations(quoteCitations),
+    ...(warnings.length ? { warnings } : {}),
+    ...(nothingRead.length
+      ? { note: `Nothing read for ${nothingRead.join("; ")}.` }
+      : {}),
+  };
+}
+
+/**
+ * A full read's exact evidence chunks, each with one citation id minted
+ * from its own text, as a targeted passage has; the records go to
+ * `collector`.
+ */
+function withFullReadQuoteCitations(
+  paper: FullReadPaperResult,
+  collector: QuoteCitation[],
+): (ExhaustiveSourceChunk & { quoteCitationId?: string })[] {
+  return paper.exactEvidence.map((chunk) => {
+    const [citation] = buildQuoteCitationsFromResult(
+      {
+        paperContext: paper.paperContext,
+        text: chunk.text,
+        chunkIndex: chunk.chunkIndex,
+        sectionLabel: chunk.sectionLabel,
+        citationLabel: formatPaperCitationLabel(paper.paperContext),
+        sourceLabel: formatPaperSourceLabel(paper.paperContext),
+      },
+      MAX_TARGETED_QUOTES_PER_PASSAGE,
+    );
+    if (!citation) return chunk;
+    collector.push(citation);
+    return { ...chunk, quoteCitationId: citation.id };
+  });
+}
+
+/**
+ * Whether the model reads a paper_read result's citation ids without their
+ * records: a whole-sections read and a full read.
+ */
+function hidesQuoteCitationRecords(result: unknown): boolean {
+  return (
+    validateObject<Record<string, unknown>>(result) &&
+    (result.read === "whole_sections" || result.mode === "full")
+  );
 }
 
 function targetForPageTool(input: PaperReadInput): Record<string, unknown> {
@@ -1136,7 +1876,7 @@ export function matchesPaperReadGuidance(
 export const PAPER_READ_GUIDANCE: PaperReadGuidance = {
   matches: matchesPaperReadGuidance,
   instruction: [
-    "Use supplied paper text directly when it supports the answer. Otherwise choose the paper_read mode from the evidence the answer needs: mode:'overview' for a bounded overview; mode:'targeted' with sections for a known section name, or with query for a specific passage (for a single factual lookup start with topK:3 and widen only for several requested facts or comparison dimensions); mode:'outline' for section addresses; mode:'full' for comprehensive reading when useful; mode:'figures' for extracted figure crops; mode:'visual' or mode:'capture' only for explicit page, layout, or current-reader inspection. An overview or targeted read never satisfies an explicit full-read request.",
+    "Use supplied paper text directly when it supports the answer. Otherwise choose the paper_read mode from the evidence the answer needs: mode:'overview' for a bounded overview; mode:'targeted' with sections and no query for whole named sections, or with query for a specific passage (for a single factual lookup start with topK:3 and widen only for several requested facts or comparison dimensions); mode:'outline' for section addresses; mode:'full' for comprehensive reading when useful; mode:'figures' for extracted figure crops; mode:'visual' or mode:'capture' only for explicit page, layout, or current-reader inspection. An overview or targeted read never satisfies an explicit full-read request.",
     "In collection, tag, or library scope the active-reader paper is never an implicit target: pass explicit targets, batching several papers in one call.",
     "For eligible textual paper_read results, use paperEvidenceProgress as factual retrieval state. Its recommendations are advisory: decide whether held evidence supports the requested explanation, and freely retrieve missing methods, results, qualifications, or other relevant passages. Avoid repeating unchanged reads; disclose unavailable sources.",
     "If overview falls back to Zotero metadata or an abstract, answer from that evidence when sufficient and state the limitation. If there is no PDF attachment and the user needs more than local metadata or abstract evidence, say what is missing and label any outside evidence separately.",
@@ -1157,7 +1897,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' for comprehensive full-text reading when useful, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections and no query for whole named sections, or with query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' for comprehensive full-text reading when useful, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -1237,6 +1977,13 @@ export function createPaperReadTool(
       exposure: "model",
     },
     guidance: PAPER_READ_GUIDANCE,
+    // A whole-sections or full read shows the model each passage's citation
+    // id, not the citation records: they would repeat every passage's
+    // quote. The run's collector and the panel read the whole result.
+    modelContent: (result) =>
+      hidesQuoteCitationRecords(result)
+        ? withoutDigestQuoteCitations(result)
+        : result,
     presentation: {
       label: "Read Paper",
       traceIcon: "library",
@@ -1745,13 +2492,19 @@ export function createPaperReadTool(
           }
         })();
         const fallbackNote = resolvedReader?.fallbackNote();
+        const fullQuoteCitations: QuoteCitation[] = [];
         const output: PaperReadFullResult = {
           mode: "full",
           status: result.status,
           papers: result.papers.map((paper) => ({
             ...paper,
+            exactEvidence: withFullReadQuoteCitations(
+              paper,
+              fullQuoteCitations,
+            ),
             displayLabel: displayLabelFor(paper.paperContext),
           })),
+          quoteCitations: mergeQuoteCitations(fullQuoteCitations),
           coverageReceipt: result.receipt,
           synthesisContext: result.contextText,
           warnings: result.warnings,
@@ -1768,9 +2521,10 @@ export function createPaperReadTool(
         };
         return output;
       }
-      if (mode === "overview") {
+      // The share of the live context a read of each paper may take.
+      const adaptiveReadingBudget = () => {
         const runtimeBudget = context.request.runtimeContextBudget;
-        const adaptiveBudget = runtimeBudget
+        return runtimeBudget
           ? resolveAdaptiveReadingBudget({
               ...runtimeBudget,
               outputReserveTokens: resolveOutputReserve(
@@ -1786,6 +2540,9 @@ export function createPaperReadTool(
               paperCount: targets.length,
             })
           : undefined;
+      };
+      if (mode === "overview") {
+        const adaptiveBudget = adaptiveReadingBudget();
         const maxChars =
           input.maxChars || adaptiveBudget?.maxCharactersPerPaper || 6000;
         const results = [];
@@ -1915,6 +2672,27 @@ export function createPaperReadTool(
           targets,
           context,
           pdfPageService,
+        });
+      }
+
+      // Named sections and no query: the whole sections, not ranked passages.
+      if (
+        mode === "targeted" &&
+        input.sections?.length &&
+        !input.query &&
+        !input.sectionIds?.length
+      ) {
+        return readWholeSections({
+          names: input.sections,
+          targets,
+          maxCharsPerPaper: capAtAdaptiveBudget(
+            input.maxChars,
+            adaptiveReadingBudget()?.maxCharactersPerPaper,
+            WHOLE_SECTIONS_DEFAULT_MAX_CHARS,
+          ),
+          pdfService,
+          zoteroGateway,
+          displayLabelFor,
         });
       }
 

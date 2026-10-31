@@ -11,6 +11,12 @@
  * returned as `pending`, and the next call continues them; finished papers
  * come from the conversation's digest cache and are never read twice.
  *
+ * `read` says what of each paper to read, as the user asked (`readScope.ts`;
+ * the full text when absent), and `overrides` a paper's own scope. An
+ * abstract is returned as written, without a model call, so a call reads up
+ * to `PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL` abstracts, of which at most
+ * `PAPER_DIGEST_MAX_PAPERS_PER_CALL` papers a model reads.
+ *
  * It is a read: the MCP server attests its rows (`createTrustedReadObservations`)
  * and records them in Task progress (`attestAndRecordRead`), one row per
  * paper, so a document may cite a digested paper the agent never opened.
@@ -52,6 +58,7 @@ import {
 } from "../../reader/readerFallback";
 import {
   DIGEST_FAILURE_REASONS,
+  DIGEST_SCOPE_EMPTY_REASONS,
   DIGEST_TEXT_MAX_CHARS,
   digestSourceLabel,
   runPaperDigestJob,
@@ -60,6 +67,14 @@ import {
   type PaperDigestCache,
   type PaperDigestFailure,
 } from "../../digests/paperDigestWorker";
+import {
+  READ_SCOPE_JSON_SCHEMA,
+  READ_SCOPE_OVERRIDES_JSON_SCHEMA,
+  isFullReadScope,
+  parseReadScope,
+  readScopeKey,
+  type ReadScope,
+} from "../../digests/readScope";
 import {
   DIGEST_MAX_FAILURE_RETRIES,
   createHandleStorePaperDigestCache,
@@ -75,6 +90,13 @@ export const PAPER_DIGEST_TOOL_NAME = "paper_digest";
  * four at a time, is two rounds of reader calls.
  */
 export const PAPER_DIGEST_MAX_PAPERS_PER_CALL = 8;
+
+/**
+ * The most papers one call reads when it returns abstracts as written (no
+ * model call): 50 (decided 2026-10-31). The papers a model reads in the
+ * same call still count toward `PAPER_DIGEST_MAX_PAPERS_PER_CALL`.
+ */
+export const PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL = 50;
 
 /** The most papers one call may name, as a digest part. */
 export const PAPER_DIGEST_MAX_TARGETS = 200;
@@ -103,7 +125,29 @@ export type PaperDigestInput = {
   targets: string[];
   instruction: string;
   question?: string;
+  /** What of each paper to read; the full text when absent. */
+  read?: ReadScope;
+  /** Papers read for a scope of their own, as `item:<id>` targets. */
+  overrides?: Array<{ target: string; read: ReadScope }>;
 };
+
+/** The scope one target is read for. */
+function scopeOfTarget(
+  input: Pick<PaperDigestInput, "read" | "overrides">,
+  target: string,
+): ReadScope | undefined {
+  const own = input.overrides?.find((entry) => entry.target === target)?.read;
+  const scope = own ?? input.read;
+  return isFullReadScope(scope) ? undefined : scope;
+}
+
+/** A paper whose scope is its abstract: read without a model call. */
+function readsAbstractOnly(
+  input: Pick<PaperDigestInput, "read" | "overrides">,
+  target: string,
+): boolean {
+  return scopeOfTarget(input, target)?.source === "abstract";
+}
 
 type DigestedFields = Omit<
   HostPaperDigest,
@@ -239,10 +283,42 @@ function validatePaperDigestInput(args: unknown) {
     typeof args.question === "string" && args.question.trim()
       ? args.question.trim()
       : undefined;
+  let read: ReadScope | undefined;
+  if (args.read !== undefined) {
+    const parsed = parseReadScope(args.read, "read");
+    if (!parsed.ok) return fail<PaperDigestInput>(parsed.error);
+    read = parsed.scope;
+  }
+  let overrides: PaperDigestInput["overrides"];
+  if (args.overrides !== undefined) {
+    if (!Array.isArray(args.overrides) || !args.overrides.length)
+      return fail<PaperDigestInput>("overrides must be a non-empty array");
+    overrides = [];
+    for (const [index, entry] of args.overrides.entries()) {
+      const record =
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>)
+          : null;
+      const target = normalizeTarget(record?.itemId ?? record?.target);
+      if (!record || !target || !targets.includes(target))
+        return fail<PaperDigestInput>(
+          `overrides[${index}] needs the itemId of one of the targets and a read`,
+        );
+      const parsed = parseReadScope(record.read, `overrides[${index}].read`);
+      if (!parsed.ok) return fail<PaperDigestInput>(parsed.error);
+      if (overrides.some((known) => known.target === target))
+        return fail<PaperDigestInput>(
+          `overrides[${index}] names ${target} twice`,
+        );
+      overrides.push({ target, read: parsed.scope });
+    }
+  }
   return ok<PaperDigestInput>({
     targets,
     instruction,
     ...(question ? { question } : {}),
+    ...(read ? { read } : {}),
+    ...(overrides ? { overrides } : {}),
   });
 }
 
@@ -311,19 +387,35 @@ export async function executePaperDigest(
         }),
     factories: deps.readerFactories,
   });
-  if (!resolution.ok) throw new Error(resolution.detail);
+  // Abstracts are returned as written: a call that reads nothing else
+  // needs no reader model.
+  const needsModel = input.targets.some(
+    (target) => !readsAbstractOnly(input, target),
+  );
+  if (!resolution.ok && needsModel) throw new Error(resolution.detail);
   const limiter = deps.limiter || hostReaderCallLimiter;
   // The reader keeps its model live: a fallback to the main model shows on
   // the digests it reads.
-  const reader = mapReaderCompletion(resolution.reader, (complete) =>
-    limitReaderCompletion(complete, limiter),
-  );
+  const reader = resolution.ok
+    ? mapReaderCompletion(resolution.reader, (complete) =>
+        limitReaderCompletion(complete, limiter),
+      )
+    : {
+        route: "turn_model" as const,
+        model: "",
+        windowTokens: 0,
+        complete: async () => {
+          throw new Error(resolution.detail);
+        },
+      };
   const runId = context.runId || "run";
   const bounds = boundsFor(request.conversationKey || 0, runId, context.signal);
   const scope = `${fnv1a32Raw(input.instruction).toString(16)}:${fnv1a32Raw(
     input.question || "",
   ).toString(16)}`;
-  const keyOf = (target: string) => `${scope}\u0000${target}`;
+  // A paper read for another scope is another result.
+  const keyOf = (target: string) =>
+    `${scope}:${readScopeKey(scopeOfTarget(input, target))}\u0000${target}`;
 
   const resolved = new Map<number, PaperContextRef | null>();
   const resolvePaper = async (itemId: number) => {
@@ -392,8 +484,13 @@ export async function executePaperDigest(
   // takes no place among the papers one call reads.
   const readable: string[] = [];
   const deferred: string[] = [];
+  let modelReads = 0;
   for (const target of runnable) {
-    if (readable.length >= PAPER_DIGEST_MAX_PAPERS_PER_CALL) {
+    const direct = readsAbstractOnly(input, target);
+    if (
+      readable.length >= PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL ||
+      (!direct && modelReads >= PAPER_DIGEST_MAX_PAPERS_PER_CALL)
+    ) {
       deferred.push(target);
       continue;
     }
@@ -410,6 +507,7 @@ export async function executePaperDigest(
     const failed = bounds.failures.get(keyOf(target));
     if (failed) failed.retries += 1;
     readable.push(target);
+    if (!direct) modelReads += 1;
   }
 
   const cache =
@@ -424,10 +522,11 @@ export async function executePaperDigest(
         targets: readable,
         instruction: input.instruction,
         ...(input.question ? { question: input.question } : {}),
-        readText: async (itemId, maxChars) => {
+        scopeOf: (itemId) => scopeOfTarget(input, `item:${itemId}`),
+        readText: async (itemId, maxChars, readScope) => {
           const paper = await resolvePaper(itemId);
           if (!paper) return null;
-          const text = await deps.readText(paper, maxChars);
+          const text = await deps.readText(paper, maxChars, readScope);
           if (!text) return null;
           return {
             itemId,
@@ -491,9 +590,9 @@ export async function executePaperDigest(
   const notes: string[] = [];
   if (deferred.length) {
     notes.push(
-      `This call read ${readable.length} papers, the most one call reads; ${deferred.length} ${
+      `This call read ${readable.length} papers, the most one call reads (${PAPER_DIGEST_MAX_PAPERS_PER_CALL} read by the model, ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} with abstracts only); ${deferred.length} ${
         deferred.length === 1 ? "paper is" : "papers are"
-      } pending. Call paper_digest again with the same instruction and question to read the next ${PAPER_DIGEST_MAX_PAPERS_PER_CALL}; papers already digested are not read again.`,
+      } pending. Call paper_digest again with the same instruction, question and read to read the next ones; papers already digested are not read again.`,
     );
   }
   if (job.pending.length) {
@@ -524,11 +623,27 @@ export async function executePaperDigest(
       } as not read; do not digest ${unreadable.length === 1 ? "it" : "them"} again.`,
     );
   }
+  const outOfScope = papers.filter(
+    (row) =>
+      row.status === "failed" && DIGEST_SCOPE_EMPTY_REASONS.has(row.reason),
+  );
+  if (outOfScope.length) {
+    notes.push(
+      `Nothing read for ${outOfScope
+        .map((row) => titled(row.title, `item:${row.itemId}`))
+        .join(
+          ", ",
+        )}: the paper has none of what read names, and no other text was read in its place. Name ${
+        outOfScope.length === 1 ? "it" : "them"
+      } as not read for that scope.`,
+    );
+  }
   const finalFailures = papers.filter(
     (row) =>
       row.status === "failed" &&
       row.final &&
-      row.reason !== DIGEST_FAILURE_REASONS.noText,
+      row.reason !== DIGEST_FAILURE_REASONS.noText &&
+      !DIGEST_SCOPE_EMPTY_REASONS.has(row.reason),
   );
   if (finalFailures.length) {
     notes.push(
@@ -556,6 +671,31 @@ const DIGEST_TEXT_MAX_CHARS_LABEL = String(DIGEST_TEXT_MAX_CHARS).replace(
   ",",
 );
 
+/**
+ * The result as the model reads it: an abstract's row carries the abstract
+ * once, as its answer; its Evidence entry keeps the id that cites it, not
+ * the same text again.
+ */
+function withoutRepeatedAbstracts(
+  result: PaperDigestResult,
+): PaperDigestResult {
+  return {
+    ...result,
+    papers: result.papers.map((row) => {
+      if (row.status !== "digested" || row.source?.scope?.source !== "abstract")
+        return row;
+      return {
+        ...row,
+        evidence: row.evidence.map((entry) =>
+          entry.quote === row.answer
+            ? { ...entry, quote: "(the answer: the abstract as written)" }
+            : entry,
+        ),
+      };
+    }),
+  };
+}
+
 export function createPaperDigestTool(
   deps: PaperDigestToolDeps,
 ): AgentToolDefinition<PaperDigestInput, PaperDigestResult> {
@@ -566,6 +706,7 @@ export function createPaperDigestTool(
         `Digest papers with the host's reader: it reads up to ${DIGEST_TEXT_MAX_CHARS_LABEL} characters of each paper with this chat's own model (in batches when long) and returns per paper the answer to \`instruction\`, relevance and stance when a question or claim is named, facets, verified quotes, gaps, and source.complete.`,
         "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
         `One call reads at most ${PAPER_DIGEST_MAX_PAPERS_PER_CALL} papers; the rest come back in \`pending\`: call again with the same instruction and question until nothing is pending (digested papers are not read again).`,
+        `\`read\` reads only what the user named, e.g. {source:'abstract'} (as written, no model call, up to ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} a call) or {source:'sections', sections:['abstract','results']}.`,
         "A failed paper runs again on at most two later calls.",
         "Cite a verified quote in chat by its quoteCitationId; the evidence refs are for submit_document.",
         "Apart from a whole text the user asks for, read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",
@@ -593,6 +734,12 @@ export function createPaperDigestTool(
             description:
               "The user's request the digests serve, read as context. Pass the same value on every call of one review.",
           },
+          read: {
+            ...READ_SCOPE_JSON_SCHEMA,
+            description:
+              "What of each paper to read; default full; pages [{from,to}].",
+          },
+          overrides: READ_SCOPE_OVERRIDES_JSON_SCHEMA,
         },
       },
       executionClass: "read",
@@ -611,7 +758,8 @@ export function createPaperDigestTool(
     validate: validatePaperDigestInput,
     // The model cites a row's quote by the id beside it; the citation
     // records ride on the call's activity to the panel.
-    modelContent: (result) => withoutDigestQuoteCitations(result),
+    modelContent: (result) =>
+      withoutDigestQuoteCitations(withoutRepeatedAbstracts(result)),
     planInvocation: () =>
       readOnlyInvocationPlan({
         domains: [],
@@ -628,8 +776,17 @@ export function createPaperDigestTool(
             args && typeof args === "object"
               ? (args as { targets?: unknown }).targets
               : undefined;
+          const read =
+            args && typeof args === "object"
+              ? (args as { read?: { source?: unknown } }).read
+              : undefined;
           const count = Array.isArray(targets)
-            ? Math.min(targets.length, PAPER_DIGEST_MAX_PAPERS_PER_CALL)
+            ? Math.min(
+                targets.length,
+                read?.source === "abstract"
+                  ? PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL
+                  : PAPER_DIGEST_MAX_PAPERS_PER_CALL,
+              )
             : 0;
           return count === 1
             ? "Reading 1 paper"

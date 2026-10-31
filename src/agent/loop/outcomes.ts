@@ -18,6 +18,7 @@ import type {
   RunEndState,
 } from "../execution/types";
 import type { PaperDigestFailure } from "../digests/paperDigestWorker";
+import { readScopeKey, type ReadScope } from "../digests/readScope";
 import type { RunStopRule } from "./stopRules";
 
 /**
@@ -46,7 +47,9 @@ import type { RunStopRule } from "./stopRules";
  * the part settled. Once every paper is one or the other the part completes
  * when any is done, and is skipped with the first reason when none is. The
  * answer does not complete a digest part, and the long-job pager never pages
- * one.
+ * one. A digest part reads each paper for the scope it declared (`readScope`,
+ * per paper `readOverrides`; the full text when absent), so a part declared
+ * for abstracts completes on abstracts.
  *
  * Selection. An artifact or a reasoning part delivers a synthesis from the
  * papers it names, and the model may leave some out with its reason
@@ -82,6 +85,13 @@ export type OutcomeDeclaration = {
   scope?: boolean;
   /** A digest part's user request, as `task_update` captured it. */
   question?: string;
+  /**
+   * A digest part's read scope; absent on a repeat keeps the part's own, and
+   * a new part without one reads the full text.
+   */
+  readScope?: ReadScope;
+  /** A digest part's per-paper scopes, as `item:N` targets. */
+  readOverrides?: readonly { target: string; read: ReadScope }[];
   /** The local or qualified taskId of the pending part this one replaces. */
   replaces?: string;
   /** Why it replaces that part; required with `replaces`. */
@@ -1597,7 +1607,36 @@ export function declarationChanges(
     description !== prior.description ||
     declaredEffect(declaration) !== (prior.effect || "answer") ||
     capabilityChanges(prior, declaration.capability) ||
-    !samePapers
+    !samePapers ||
+    readScopeChanges(prior, declaration)
+  );
+}
+
+/** The per-paper scopes as one comparable value, in target order. */
+function overridesKey(
+  overrides: readonly { target: string; read: ReadScope }[] | undefined,
+): string {
+  return (overrides || [])
+    .map((entry) => `${entry.target}=${readScopeKey(entry.read)}`)
+    .sort()
+    .join(";");
+}
+
+/**
+ * Whether a declaration reads the part's papers otherwise: another scope,
+ * or other per-paper scopes. A declaration that names neither keeps the
+ * part's own.
+ */
+export function readScopeChanges(
+  prior: Pick<Task, "readScope" | "readOverrides">,
+  declaration: Pick<OutcomeDeclaration, "readScope" | "readOverrides">,
+): boolean {
+  return (
+    (declaration.readScope !== undefined &&
+      readScopeKey(declaration.readScope) !== readScopeKey(prior.readScope)) ||
+    (declaration.readOverrides !== undefined &&
+      overridesKey(declaration.readOverrides) !==
+        overridesKey(prior.readOverrides))
   );
 }
 
@@ -1685,6 +1724,16 @@ export function declareOutcomes(
       effect === "digest"
         ? declaration.question?.trim() || prior?.question
         : undefined;
+    // A digest part keeps its read scope unless the declaration names one;
+    // a full scope is stored as none, as parts declared before scopes.
+    const readScope =
+      effect === "digest"
+        ? (declaration.readScope ?? prior?.readScope)
+        : undefined;
+    const readOverrides =
+      effect === "digest"
+        ? (declaration.readOverrides ?? prior?.readOverrides)
+        : undefined;
     // The papers it excluded, of those it still names.
     const excludedTargets =
       prior && SELECTING_EFFECTS.has(effect)
@@ -1704,6 +1753,10 @@ export function declareOutcomes(
       ...(targets.length ? { targets } : {}),
       ...(declaration.scope && targets.length ? { scope: true as const } : {}),
       ...(question ? { question } : {}),
+      ...(readScope && readScopeKey(readScope) !== "full" ? { readScope } : {}),
+      ...(readOverrides?.length
+        ? { readOverrides: readOverrides.map((entry) => ({ ...entry })) }
+        : {}),
       ...(excludedTargets.length ? { excludedTargets } : {}),
     };
     if (declaration.replaces !== undefined) {

@@ -1258,7 +1258,7 @@ function matchBackMatterHeading(
  * structure; when the markdown does nest its headings, a heading no deeper
  * than the standard one is a sibling, not a subsection, and ends it too.
  */
-function enclosingStandardSections(
+export function enclosingStandardSections(
   sections: ManifestSection[],
 ): Array<string | undefined> {
   const nested = new Set(sections.map((section) => section.level)).size > 1;

@@ -104,10 +104,13 @@ describe("direct Agent model tool surface", function () {
     // 40,010 (2026-10-31).
     // "Zotero asks no approval for ..." in run_command's and file_io's rules
     // raised both caps by 13, to 28,821 and 40,023 (2026-10-31).
-    assert.isAtMost(serializedToolCharacters, 28_821);
+    // Merged with W2's read scope: task_update's read and overrides fields
+    // (+343) and the named override and page-range properties for Gemini
+    // (+482) raise both caps by 825, to 29,646 and 40,848 (2026-10-31).
+    assert.isAtMost(serializedToolCharacters, 29_646);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      40_023,
+      40_848,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

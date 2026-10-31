@@ -96,6 +96,14 @@ describe("literature-review skill", function () {
     assert.include(skill.instruction, "never imply an exhaustive review");
   });
 
+  it("counts a paper as read in full only when its reader read every character, as Task progress shows Full", function () {
+    assert.include(
+      skill.instruction,
+      "A paper was read in full only when its reader read every character of its text: a digest whose text line says Full, or a `paper_read` read in mode `full` that came back complete; any other read of its text, a digest of named parts such as the abstract included, counts as in part.",
+    );
+    assert.notInclude(skill.instruction, "as `paper_read` reported them");
+  });
+
   it("saves the review as a note only when the user asked", function () {
     assert.match(
       skill.instruction,
@@ -174,8 +182,8 @@ describe("literature-review skill", function () {
     assert.include(text, "same `taskId` and no description");
   });
 
-  it("ships as version 17", function () {
-    assert.equal(skill.version, 17);
+  it("ships as version 18", function () {
+    assert.equal(skill.version, 18);
   });
 
   it("reads and cites a chosen outside paper by paperId, an imported one by item key", function () {

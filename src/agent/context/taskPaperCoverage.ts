@@ -232,10 +232,12 @@ function strongestGranularityOf(
   let best: TaskPaperReadGranularity | undefined;
   for (const turn of Object.values(entry.turns)) {
     for (const read of turn.reads) {
-      const rank = TASK_PAPER_READ_GRANULARITY_RANK[read.granularity];
+      // A scoped digest counts at the depth it covered, not its form.
+      const depth = read.depth ?? read.granularity;
+      const rank = TASK_PAPER_READ_GRANULARITY_RANK[depth];
       if (rank === undefined) continue;
       if (!best || rank > TASK_PAPER_READ_GRANULARITY_RANK[best]) {
-        best = read.granularity;
+        best = depth;
       }
     }
   }

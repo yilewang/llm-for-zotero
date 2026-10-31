@@ -1,5 +1,6 @@
 import type { AgentActionCapability } from "../contracts/types";
 import type { MaterialRef } from "../documents/materialRef";
+import type { ReadScope } from "../digests/readScope";
 
 /** Where one tracked task stands, in ordinary work and in an approved Plan. */
 export type ExecutionTaskStatus =
@@ -96,6 +97,14 @@ export type ExecutionCheckpointTask = Readonly<{
    * most 2,000 characters). The per-paper worker reads it as context.
    */
   question?: string;
+  /**
+   * Digest parts only: what of each paper the part reads (`read`), as
+   * declared; absent means the full text, as on every part declared
+   * before read scopes.
+   */
+  readScope?: ReadScope;
+  /** Digest parts only: papers read for a scope of their own. */
+  readOverrides?: readonly Readonly<{ target: string; read: ReadScope }>[];
 }>;
 
 /** Entries a list gained: it had `from` entries and now ends with `add`. */

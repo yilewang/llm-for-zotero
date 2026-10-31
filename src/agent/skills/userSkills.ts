@@ -338,6 +338,12 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     // as shipped and as the canonical copy carrying its native `name:` line.
     "16809kz",
     "1488enc",
+    // v17, whose coverage line v18 counts a paper as read in full only when
+    // its reader read every character (a digest's Full, a complete full
+    // paper_read), as shipped and as the canonical copy carrying its native
+    // `name:` line.
+    "127dobw",
+    "1al1wxd",
   ],
   "reorganize-library.md": [
     // v1, whose task_update part v2 moves into task_update's guidance

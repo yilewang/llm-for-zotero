@@ -126,9 +126,15 @@ describe("instruction harness inventory", function () {
     // Raised on 2026-10-31 by 27 tokens (to 1,604): a rerun first trashes the
     // partial copy, so the target gets no duplicate (bodies total 6,781).
     const zoteroScriptSkillTokens = 1604;
+    // Raised on 2026-10-31 by 63 tokens when W2's read scope merged in: the
+    // literature-review skill v18 coverage rule ("Full" only when the reader
+    // read every character) brings the bodies to 6,844 tokens.
+    const literatureReviewV18Tokens = 63;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),
-      previousBodyTokens / 2 + zoteroScriptSkillTokens,
+      previousBodyTokens / 2 +
+        zoteroScriptSkillTokens +
+        literatureReviewV18Tokens,
     );
   });
 

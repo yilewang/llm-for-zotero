@@ -217,7 +217,7 @@ describe("taskPaperLedger", function () {
         reads101.map((read) => [read.granularity, read.method, read.label]),
         [
           ["metadata", "bm25", undefined],
-          ["section", "bm25", "Methods §2.3"],
+          ["passage", "bm25", "Methods §2.3"],
         ],
         "a paperMatch for a known candidate adds no second metadata read",
       );
@@ -406,6 +406,37 @@ describe("taskPaperLedger", function () {
       assert.equal(readsFor(library, "1:10")[0].snippet, GRID_ABSTRACT);
     });
 
+    it("records a paper's notes as notes, never as its full text", function () {
+      const notes = derive(
+        "library_read",
+        {},
+        {
+          results: [
+            {
+              itemId: 10,
+              title: "Grid",
+              notes: [{ noteId: 1, title: "Mine", noteText: "Grid cells." }],
+            },
+          ],
+        },
+      );
+      assert.equal(readsFor(notes, "1:10")[0].granularity, "notes");
+      // Notes are not the paper's text: the paper is skimmed, and counts
+      // as a shallow read.
+      assert.equal(notes.papers[0].state, "skimmed");
+      assert.deepEqual(taskPaperReadDepths(notes), {
+        text: [],
+        shallow: [10],
+        noText: [],
+      });
+      const content = derive(
+        "library_read",
+        {},
+        { results: [{ itemId: 10, title: "Grid", content: GRID_TEXT }] },
+      );
+      assert.equal(readsFor(content, "1:10")[0].granularity, "full");
+    });
+
     it("takes a Chinese abstract with a few Latin words and numbers over the title", function () {
       const abstract =
         "摘要：本研究使用 fMRI 和 EEG 技术记录了 32 名受试者在空间导航任务中的海马体活动，并利用深度学习模型解码其位置信息。结果表明模型解码准确率显著高于基线。";
@@ -479,7 +510,7 @@ describe("taskPaperLedger", function () {
       assert.deepEqual(
         readsFor(delta, "1:10").map((read) => [read.granularity, read.label]),
         [
-          ["section", "Methods"],
+          ["passage", "Methods"],
           ["passage", undefined],
           ["page", "Page 5"],
         ],
@@ -577,7 +608,7 @@ describe("taskPaperLedger", function () {
         TASK_PAPER_READ_GRANULARITY_RANK[
           readsFor(fullRows, "1:10")[0].granularity
         ],
-        8,
+        TASK_PAPER_READ_GRANULARITY_RANK.full,
       );
       assert.equal(paperState(fullRows, "1:10"), "read");
       assert.equal(readsFor(fullRows, "1:11")[0].granularity, "digest");
@@ -585,7 +616,7 @@ describe("taskPaperLedger", function () {
         TASK_PAPER_READ_GRANULARITY_RANK[
           readsFor(fullRows, "1:11")[0].granularity
         ],
-        3,
+        TASK_PAPER_READ_GRANULARITY_RANK.digest,
       );
       assert.equal(paperState(fullRows, "1:11"), "skimmed");
       assert.equal(readsFor(fullRows, "1:11")[0].label, "31/32 chunks");

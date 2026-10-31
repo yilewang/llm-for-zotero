@@ -5,6 +5,7 @@ import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
   PAPER_DIGEST_LIBRARY_UNKNOWN,
+  PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL,
   PAPER_DIGEST_MAX_PAPERS_PER_CALL,
   PAPER_DIGEST_OTHER_LIBRARY,
   PAPER_DIGEST_READER_CALL_LIMIT,
@@ -788,6 +789,56 @@ describe("paper_digest over the MCP server", function () {
     assert.deepEqual(idsOf(completed[1]), idsOf(completed[0]));
   });
 
+  it("attests an abstract read as the abstract and records it skimmed, with no model call", async function () {
+    const reader = fakeReader();
+    register(reader);
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        conversationKey: 793,
+        libraryID: 7,
+        kind: "global",
+        runId: "codex-abstract-run",
+        model: "gpt-5.4",
+        exhaustiveReadBackend: "codex_responses",
+      },
+      { token: "digest-scope-abstract" },
+    );
+    const completed: Array<Record<string, any>> = [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      if (event.phase === "completed") completed.push(event);
+    });
+    let reply: Record<string, any>;
+    try {
+      reply = await invoke(
+        digestCall({
+          targets: ["item:1"],
+          instruction: "Give the abstract",
+          read: { source: "abstract" },
+        }),
+        { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+      );
+    } finally {
+      unregister();
+      scoped.clear();
+    }
+    assert.notProperty(reply.result, "isError");
+    assert.lengthOf(reader.calls, 0);
+    const payload = JSON.parse(reply.result.content[0].text);
+    assert.deepEqual(payload.documentEvidenceRefs[0].capabilities, [
+      "abstract",
+    ]);
+    const [event] = completed;
+    assert.lengthOf(event.quoteCitations || [], 1);
+    assert.deepEqual(
+      event.paperLedgerDelta.papers.map((paper: any) => paper.state),
+      ["skimmed"],
+    );
+    assert.notInclude(
+      event.paperLedgerDelta.reads.map((read: any) => read.granularity),
+      "full",
+    );
+  });
+
   it("attests each digested paper and records one ledger row per paper", async function () {
     const reader = fakeReader();
     register(reader);
@@ -976,6 +1027,138 @@ describe("MCP surfaces carry paper_digest and a long tool timeout", function () 
     } finally {
       globalThis.fetch = originalFetch;
       clearCodexZoteroMcpPreflightCache();
+    }
+  });
+});
+
+describe("paper_digest read scope", function () {
+  afterEach(function () {
+    clearPaperDigestRunBounds();
+  });
+
+  const abstractOf = (itemId: number) =>
+    `Paper ${itemId} shows that representational drift leaves decoding of position intact.`;
+
+  /** Each paper read for its scope: an abstract, or the whole text. */
+  function scopedDeps(
+    reader: FakeReader,
+    reads: Array<{ itemId: number; scope?: string }>,
+  ): PaperDigestToolDeps {
+    return deps(reader, memoryCache(), {
+      readText: async (paper, _maxChars, scope) => {
+        reads.push({ itemId: paper.itemId, scope: scope?.source });
+        if (scope?.source === "abstract")
+          return {
+            backend: "text",
+            text: abstractOf(paper.itemId),
+            totalCharacters: abstractOf(paper.itemId).length,
+            covered: ["Abstract"],
+            bounds: "exact",
+            textSource: "Zotero abstract field",
+          };
+        return {
+          backend: "mineru",
+          text: TEXT,
+          totalCharacters: TEXT.length,
+        };
+      },
+    });
+  }
+
+  it("returns abstracts as written, with ids, no model call, and up to 50 a call", async function () {
+    const reader = fakeReader();
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const tool = createPaperDigestTool(scopedDeps(reader, reads));
+    const result = await call(
+      tool,
+      {
+        targets: targets(60),
+        instruction: "Give each abstract",
+        read: { source: "abstract" },
+      },
+      context("abstracts"),
+    );
+    assert.lengthOf(reader.calls, 0, "no model reads an abstract");
+    assert.equal(PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL, 50);
+    assert.lengthOf(result.papers, 50);
+    assert.deepEqual(result.pending, targets(10, 51));
+    assert.include(result.note, "10 papers are pending");
+    assert.include(result.note, "Call paper_digest again");
+    const first = result.papers[0] as HostPaperDigest & { status: string };
+    assert.equal(first.status, "digested");
+    assert.equal(first.answer, abstractOf(1));
+    assert.deepEqual(first.source.scope, { source: "abstract" });
+    assert.match(first.evidence[0].quoteCitationId || "", /^Q_/);
+    assert.lengthOf(first.quoteCitations || [], 1);
+    // The model reads the abstract once, as the answer, with its id.
+    const view = tool.modelContent!(result) as PaperDigestResult;
+    const shown = view.papers[0] as HostPaperDigest;
+    assert.equal(shown.answer, abstractOf(1));
+    assert.notEqual(shown.evidence[0].quote, abstractOf(1));
+    assert.equal(
+      shown.evidence[0].quoteCitationId,
+      first.evidence[0].quoteCitationId,
+    );
+    assert.notProperty(shown, "quoteCitations");
+  });
+
+  it("keeps the model-read cap at eight beside abstracts read for free", async function () {
+    const reader = fakeReader();
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const tool = createPaperDigestTool(scopedDeps(reader, reads));
+    const result = await call(
+      tool,
+      {
+        targets: targets(12),
+        instruction: "Summarize each paper",
+        overrides: targets(4, 9).map((target) => ({
+          itemId: target,
+          read: { source: "abstract" },
+        })),
+      },
+      context("mixed"),
+    );
+    assert.lengthOf(reader.calls, PAPER_DIGEST_MAX_PAPERS_PER_CALL);
+    assert.lengthOf(result.papers, 12);
+    assert.isUndefined(result.pending);
+    assert.sameDeepMembers(
+      reads.filter((read) => read.scope === "abstract"),
+      [9, 10, 11, 12].map((itemId) => ({ itemId, scope: "abstract" })),
+    );
+  });
+
+  it("reads a paper again for another scope, never from the run's earlier digest", async function () {
+    const reader = fakeReader();
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const tool = createPaperDigestTool(scopedDeps(reader, reads));
+    const input = { targets: ["item:1"], instruction: "Summarize" };
+    await call(tool, { ...input, read: { source: "abstract" } }, context("r"));
+    const full = await call(tool, input, context("r"));
+    assert.isUndefined(
+      (full.papers[0] as { alreadyReturned?: true }).alreadyReturned,
+    );
+    assert.deepEqual(reads, [
+      { itemId: 1, scope: "abstract" },
+      { itemId: 1, scope: undefined },
+    ]);
+  });
+
+  it("refuses a malformed read and an override for a paper it does not name", function () {
+    const tool = createPaperDigestTool(deps(fakeReader(), memoryCache()));
+    for (const input of [
+      { targets: ["item:1"], instruction: "x", read: { source: "chapter" } },
+      {
+        targets: ["item:1"],
+        instruction: "x",
+        read: { source: "sections", sections: [] },
+      },
+      {
+        targets: ["item:1"],
+        instruction: "x",
+        overrides: [{ itemId: 2, read: { source: "abstract" } }],
+      },
+    ]) {
+      assert.isFalse(tool.validate!(input).ok, JSON.stringify(input));
     }
   });
 });

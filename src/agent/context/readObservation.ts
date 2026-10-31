@@ -5,6 +5,7 @@ import type {
   TrustedReadObservation,
 } from "./readObservationTypes";
 import { isCatalogToolName } from "./toolNames";
+import { digestReadCapabilities, type ReadScope } from "../digests/readScope";
 
 type Candidate = {
   itemId?: number;
@@ -203,10 +204,20 @@ function observationSeeds(
       )
         return [];
       const source = record(value.source) || {};
-      return source.complete === true ||
-        Number(source.readCharacters) >= PAPER_DIGEST_BODY_DEPTH_CHARS
-        ? ["body"]
-        : ["abstract"];
+      // A scoped row attests what its scope covered (`readScope.ts`).
+      return digestReadCapabilities(
+        {
+          scope: (record(source.scope) || undefined) as ReadScope | undefined,
+          complete: source.complete === true,
+          readCharacters: Number(source.readCharacters) || 0,
+          covered: Array.isArray(source.covered)
+            ? source.covered.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
+            : undefined,
+        },
+        PAPER_DIGEST_BODY_DEPTH_CHARS,
+      );
     });
   }
   const direct = directRows(result);
@@ -218,6 +229,21 @@ function observationSeeds(
       return seedRows(output.figures, (row) =>
         hasText(row, ["cropPath"]) ? ["figure"] : [],
       );
+    }
+    // Whole named sections attest the body, or the abstract when that is
+    // all they read (`readWholeSections`, paperRead.ts).
+    if (output.read === "whole_sections") {
+      return seedRows(rowsAt(result, "papers"), (row) => {
+        // A section the read budget left out (no characters) was not read.
+        const sections = rowsAt(row, "sections")
+          .filter((entry) => Number(record(entry)?.characters) > 0)
+          .map((entry) => text(record(entry)?.section) || "")
+          .filter(Boolean);
+        if (!sections.length) return [];
+        return sections.every((label) => /^\s*abstract\s*$/i.test(label))
+          ? ["abstract"]
+          : ["body"];
+      });
     }
     const aggregateHasAbstract = hasText(output, ["abstract", "abstractNote"]);
     const aggregateHasBody =

@@ -1,7 +1,7 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 17
+version: 18
 contexts: paper-set,library-corpus
 activation: auto
 ---
@@ -72,5 +72,6 @@ Prefer these sections unless the user asks for another structure:
 - Cite only papers you read for this review; a direct quotation uses a `[[quote:Q1]]` token whose mapping carries the verbatim text and the evidence IDs the read returned.
 - Never hand-format author-year citations or a References section; Zotero's CSL service formats both.
 - In Scope and method, name each paper you left out by title, with the reason and without a citation.
-- In Scope and limitations, state the coverage: how many papers were read in full, in part, and from metadata only, as `paper_read` reported them, and name any paper that stayed unread.
+- In Scope and limitations, state the coverage: how many papers were read in full, in part, and from metadata only, and name any paper that stayed unread.
+  A paper was read in full only when its reader read every character of its text: a digest whose text line says Full, or a `paper_read` read in mode `full` that came back complete; any other read of its text, a digest of named parts such as the abstract included, counts as in part.
 - State the actual coverage frontier and its limitations, and never imply an exhaustive review from sampled text.

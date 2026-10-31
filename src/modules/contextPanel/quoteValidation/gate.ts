@@ -33,6 +33,7 @@ import {
   QUOTE_VALIDATION_POLICY_VERSION,
 } from "./caches";
 import {
+  addCitedAbstractEvidence,
   addCitedAttachmentPageEvidence,
   hasOpenEndedQuoteSourceScope,
   registeredQuoteCitationsForReview,
@@ -118,9 +119,10 @@ export async function applyAssistantMessageQuoteGate(
     quoteCitations,
   );
   // A citation's own attachment is evidence even when no paper context of
-  // the message names it; the prepared index then no longer matches.
-  const evidence = addCitedAttachmentPageEvidence(
-    contextEvidence,
+  // the message names it; the prepared index then no longer matches. So is
+  // the Zotero abstract field of an item an abstract-kind citation names.
+  const evidence = addCitedAbstractEvidence(
+    addCitedAttachmentPageEvidence(contextEvidence, reviewCitations),
     reviewCitations,
   );
   const preparedSourceIndex =

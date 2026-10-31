@@ -89,6 +89,7 @@ import {
   getSinglePdfAttachment,
   navigateReaderToPage,
   navigateToQuote,
+  openPaperForAbstractQuote,
   openReaderForItem,
   jumpedPage,
 } from "./quoteNavigator";
@@ -2519,6 +2520,23 @@ async function resolveAndNavigateAssistantCitation(params: {
       extractedCitation,
     });
     if (nonPdfCandidate) {
+      // A paper with no PDF: its abstract quote is from its Zotero record.
+      const opened =
+        quoteCitation?.sourceChunkKind === "abstract"
+          ? await openPaperForAbstractQuote(quoteCitation)
+          : "failed";
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
       if (status)
         setStatus(
           status,
@@ -2615,6 +2633,28 @@ async function resolveAndNavigateAssistantCitation(params: {
         markCitationNavigationTiming(timing, stage, details),
     });
     timingOutcome = outcome.kind === "jumped" ? outcome.tier : outcome.kind;
+    // An abstract quote may come from the Zotero record, which has no page:
+    // when no PDF page holds it, the click opens the paper instead.
+    if (
+      quoteCitation?.sourceChunkKind === "abstract" &&
+      (outcome.kind === "not-found" ||
+        outcome.kind === "unverifiable" ||
+        outcome.kind === "no-candidates")
+    ) {
+      const opened = await openPaperForAbstractQuote(quoteCitation);
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
+    }
     if (outcome.kind === "jumped") {
       updateCitationButtonPage(
         params.button,

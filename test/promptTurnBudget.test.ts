@@ -104,11 +104,14 @@ import {
  * to 43,345, 42,078 and 43,443.
  * Raised on 2026-10-31 by 13 tool characters in run_command's and file_io's
  * approval wording, to 43,358, 42,091 and 43,456.
+ * Merged with W2's read scope: paper_read's guidance naming the
+ * whole-sections read (+13 guidance characters each), to 43,371, 42,104 and
+ * 43,469 (2026-10-31).
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_358,
-  paper: 42_091,
-  collection: 43_456,
+  global: 43_371,
+  paper: 42_104,
+  collection: 43_469,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

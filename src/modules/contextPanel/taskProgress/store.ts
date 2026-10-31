@@ -941,14 +941,26 @@ function foldDocumentCitations(
 
 /**
  * A read that took in the paper's text: a digest with an answer, or a
- * paper_read of the whole text or of its overview or full-text body (not
- * its metadata, abstract or outline, and not a targeted passage).
+ * paper_read of the whole text, of a whole named section, or of its
+ * overview or full-text body (not its metadata, abstract or outline, and
+ * not a targeted passage). A scoped digest counts only when what it covered
+ * was body text: a summary of the abstract or the notes is no deeper than
+ * they are.
  */
 export function isInDepthRead(read: TaskPaperReadEvent): boolean {
-  if (read.granularity === "digest") return Boolean(read.snippet?.trim());
+  if (read.granularity === "digest") {
+    if (!read.snippet?.trim()) return false;
+    return (
+      !read.depth ||
+      read.depth === "section" ||
+      read.depth === "page" ||
+      read.depth === "full"
+    );
+  }
   if (read.toolName !== "paper_read") return false;
   return (
     read.granularity === "full" ||
+    (read.granularity === "section" && read.method === "sections") ||
     ((read.granularity === "passage" || read.granularity === "section") &&
       (read.method === "overview" || read.method === "full"))
   );

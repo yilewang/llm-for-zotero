@@ -1691,3 +1691,253 @@ describe("a digested paper as document evidence", function () {
     );
   });
 });
+
+describe("a digest part reads what its read scope names", function () {
+  let restoreDb: () => void;
+
+  beforeEach(function () {
+    restoreDb = installMockDb();
+    clearAgentToolResultHandleStore();
+  });
+
+  afterEach(function () {
+    clearAgentToolResultHandleStore();
+    restoreDb();
+  });
+
+  const ABSTRACTS: Record<number, string> = {
+    5: "Place cells drift slowly, yet decoding of position stays above chance across days.",
+    6: "We show that drift follows a random walk in the population vector space.",
+  };
+
+  /** Scripted papers: each read for the scope the part gives it. */
+  function scopedDigests(
+    reads: Array<{ itemId: number; scope?: string }>,
+    llmCall: (chat: ChatParams) => Promise<ReturnType<typeof reply>>,
+  ): NonNullable<TaskUpdateToolDeps["digests"]> {
+    return {
+      resolvePaper: async (_request, itemId) => PAPERS[itemId] || null,
+      readText: async (paper, _maxChars, scope) => {
+        reads.push({ itemId: paper.itemId, scope: scope?.source });
+        if (scope?.source === "abstract") {
+          const abstract = ABSTRACTS[paper.itemId];
+          return abstract
+            ? {
+                backend: "text",
+                text: abstract,
+                totalCharacters: abstract.length,
+                covered: ["Abstract"],
+                bounds: "exact",
+                textSource: "Zotero abstract field",
+              }
+            : {
+                backend: "text",
+                text: "",
+                totalCharacters: 0,
+                covered: [],
+                unmatched: ["abstract"],
+              };
+        }
+        return { backend: "mineru", text: TEXT, totalCharacters: TEXT.length };
+      },
+      llmCall: llmCall as never,
+    };
+  }
+
+  it("completes an abstract part on the abstracts, with ids and no model call", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    let calls = 0;
+    const harness = createHarness(
+      scopedDigests(reads, async () => {
+        calls += 1;
+        return reply("unused");
+      }),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-abstracts", {
+      tasks: [
+        {
+          taskId: "abstracts",
+          description: "Using only the abstracts, give an overview",
+          expectedEffect: "digest",
+          scope: true,
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+    assert.equal(calls, 0, "no model reads an abstract");
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 6, scope: "abstract" },
+    ]);
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.deepEqual(answer.parts, [
+      {
+        taskId: "abstracts",
+        status: "completed",
+        done: 2,
+        total: 2,
+        scope: true,
+      },
+    ]);
+    const task = harness.request.executionCheckpoint!.tasks[0];
+    assert.deepEqual(task.readScope, { source: "abstract" });
+    assert.lengthOf(answer.quoteCitations, 2);
+    for (const citation of answer.quoteCitations as QuoteCitation[]) {
+      assert.match(citation.id, /^Q_/);
+      assert.include(answer.digests, `(quoteCitationId: ${citation.id})`);
+    }
+    assert.include(answer.digests, ABSTRACTS[5]);
+    assert.include(
+      answer.digests,
+      "text: the abstract only; read Abstract (Zotero abstract field)",
+    );
+    // The model view keeps the ids, not the citation records.
+    const modelView = createTaskUpdateTool().modelContent!(
+      answer as never,
+    ) as Record<string, unknown>;
+    assert.notProperty(modelView, "quoteCitations");
+    // The paper rows record abstracts, never a full read.
+    const rows = ledgerDeltas(harness);
+    assert.isNotEmpty(rows);
+    for (const delta of rows) {
+      assert.equal(delta.papers[0].state, "skimmed");
+      assert.notInclude(
+        delta.reads.map((read) => read.granularity),
+        "full",
+      );
+    }
+  });
+
+  it("names a paper with no abstract and reads nothing else for it", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      scopedDigests(reads, async () => reply("unused")),
+      [5, 7],
+    );
+    const outcome = await runCall(harness, "call-abstracts", {
+      tasks: [
+        {
+          taskId: "abstracts",
+          description: "Using only the abstracts, give an overview",
+          expectedEffect: "digest",
+          targetIds: ["5", "7"],
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.deepEqual(answer.digestFailures, [
+      {
+        itemId: 7,
+        title: "Drift C",
+        reason: "No abstract in the Zotero record or the PDF",
+      },
+    ]);
+    assert.include(answer.digestNote, "Nothing read for Drift C (item:7");
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 7, scope: "abstract" },
+    ]);
+  });
+
+  it("reads a paper an override names for its own scope", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    let calls = 0;
+    const harness = createHarness(
+      scopedDigests(reads, async () => {
+        calls += 1;
+        return reply("Cells drift slowly.");
+      }),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-mixed", {
+      tasks: [
+        {
+          taskId: "papers",
+          description: "Summarize each paper",
+          expectedEffect: "digest",
+          targetIds: ["5", "6"],
+          read: { source: "abstract" },
+          overrides: [{ itemId: "item:6", read: { source: "full" } }],
+        },
+      ],
+    });
+    assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 6, scope: undefined },
+    ]);
+    assert.equal(calls, 1, "only the full read calls the model");
+    const task = harness.request.executionCheckpoint!.tasks[0];
+    assert.deepEqual(task.readOverrides, [
+      { target: "item:6", read: { source: "full" } },
+    ]);
+  });
+
+  it("refuses a read scope on a part that is not a digest, and overrides for papers it does not name", async function () {
+    const harness = createHarness(
+      scopedDigests([], async () => reply("unused")),
+      [5, 6],
+    );
+    const notDigest = await runCall(harness, "call-read", {
+      tasks: [
+        {
+          taskId: "read",
+          description: "Read the papers",
+          expectedEffect: "read",
+          targetIds: ["5"],
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    assert.isFalse(notDigest.toolResult.ok);
+    assert.include(
+      JSON.stringify(notDigest.toolResult.content),
+      "expectedEffect:'digest'",
+    );
+    const outside = await runCall(harness, "call-outside", {
+      tasks: [
+        {
+          taskId: "papers",
+          description: "Summarize each paper",
+          expectedEffect: "digest",
+          targetIds: ["5"],
+          overrides: [{ itemId: 6, read: { source: "abstract" } }],
+        },
+      ],
+    });
+    assert.isFalse(outside.toolResult.ok);
+    assert.include(JSON.stringify(outside.toolResult.content), "item:6");
+  });
+
+  it("keeps a part's scope on a repeat, and a new scope on a part with progress needs a new part", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      scopedDigests(reads, async () => reply("unused")),
+      [5, 6],
+    );
+    const declaration = {
+      taskId: "abstracts",
+      description: "Using only the abstracts, give an overview",
+      expectedEffect: "digest",
+      targetIds: ["5", "6"],
+      read: { source: "abstract" },
+    };
+    await runCall(harness, "call-1", { tasks: [declaration] });
+    const { read: _read, ...withoutRead } = declaration;
+    await runCall(harness, "call-2", { tasks: [withoutRead] });
+    assert.deepEqual(harness.request.executionCheckpoint!.tasks[0].readScope, {
+      source: "abstract",
+    });
+    const widened = await runCall(harness, "call-3", {
+      tasks: [{ ...declaration, read: { source: "full" } }],
+    });
+    assert.isFalse(widened.toolResult.ok);
+    assert.include(
+      JSON.stringify(widened.toolResult.content),
+      "Task abstracts is completed",
+    );
+  });
+});

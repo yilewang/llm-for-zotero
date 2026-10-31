@@ -13,6 +13,7 @@
  * that names only an attachment is skipped rather than guessed.
  */
 import type { QuoteCitation } from "../../shared/types";
+import { isFullTextRead } from "../digests/readScope";
 
 /** Monotone reading state of one paper, weakest first. */
 export type TaskPaperState =
@@ -50,6 +51,11 @@ const TEXT_SOURCE_RANK: Record<TaskPaperTextSource, number> = {
 
 export type TaskPaperReadGranularity =
   | "metadata"
+  /**
+   * The item's Zotero notes: the user's or an agent's text about the paper,
+   * not the paper's own text, so never `full`.
+   */
+  | "notes"
   | "abstract"
   | "outline"
   | "section"
@@ -75,14 +81,15 @@ export const TASK_PAPER_READ_GRANULARITY_RANK: Readonly<
   Record<TaskPaperReadGranularity, number>
 > = {
   metadata: 0,
-  abstract: 1,
-  outline: 2,
-  digest: 3,
-  figure: 4,
-  passage: 5,
-  page: 6,
-  section: 7,
-  full: 8,
+  notes: 1,
+  abstract: 2,
+  outline: 3,
+  digest: 4,
+  figure: 5,
+  passage: 6,
+  page: 7,
+  section: 8,
+  full: 9,
 };
 
 /** How a paper bears on the request, as a host digest judged it. */
@@ -148,6 +155,20 @@ export type TaskPaperReadEvent = {
    * it was recorded.
    */
   complete?: boolean;
+  /**
+   * A scoped `digest` read only: the depth of text the digest covered (the
+   * strongest of its scope's reads: `abstract`, `section`, `page`, `notes`,
+   * `metadata`). A digest's answer is `digest` in form, but a summary of an
+   * abstract is no deeper than the abstract, so a paper's strongest read
+   * counts this, not the answer's form.
+   */
+  depth?: TaskPaperReadGranularity;
+  /**
+   * A scoped `digest` read only: what of the paper it read, as Task
+   * progress names it ("Abstract, Results", "pages 3–5"). Absent on a read
+   * of the full text and on rows saved before it was recorded.
+   */
+  scopeLabel?: string;
 };
 
 export type TaskPaperCitation = {
@@ -732,7 +753,7 @@ function passageReadSeed(row: Row, method: string): ReadSeed {
     });
   }
   return readSeed({
-    granularity: sectionLabel ? "section" : "passage",
+    granularity: "passage",
     method,
     label: sectionLabel || pageLabelFor(row),
     snippet: row.snippet ?? row.text ?? row.surroundingText,
@@ -879,18 +900,23 @@ function libraryReadSeeds(result: unknown): Seed[] {
     const abstract =
       firstText(metadata, ["abstract", "abstractNote"]) ||
       firstText(value, ["abstract", "abstractNote"]);
+    const ownText = hasText(value, ["content", "text", "body", "fullText"]);
     const body =
-      hasText(value, ["content", "text", "body", "fullText"]) ||
-      hasRows(value, ["passages", "snippets", "chunks", "notes"]);
+      ownText || hasRows(value, ["passages", "snippets", "chunks", "notes"]);
     if (body) {
+      // Notes alone are the notes, never the paper's full text: the paper
+      // is skimmed, as for a notes-scoped digest.
+      const granularity = hasRows(value, ["passages", "snippets", "chunks"])
+        ? "passage"
+        : ownText
+          ? "full"
+          : "notes";
       return [
         {
           ref,
-          state: "read",
+          state: granularity === "notes" ? "skimmed" : "read",
           read: readSeed({
-            granularity: hasRows(value, ["passages", "snippets", "chunks"])
-              ? "passage"
-              : "full",
+            granularity,
             method: "library_read",
             snippet: firstBodyParagraph(
               firstText(value, ["content", "text", "body", "fullText"]),
@@ -1041,6 +1067,7 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
   if (["figures", "visual", "capture"].includes(mode)) {
     return renderedPageSeeds(input, result);
   }
+  if (output.read === "whole_sections") return wholeSectionSeeds(result);
   // targeted, full, and explicit page reads. Grouped papers carry the same
   // passages as the flat results, so they win when present.
   const groups = rowsAt(result, "papers").filter((row) => paperRef(row));
@@ -1078,6 +1105,53 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
 }
 
 const BODY_KEYS = ["content", "text", "body", "fullText", "snippet"] as const;
+
+/**
+ * A paper_read of whole named sections: one read per section, at `section`
+ * depth only when the read returned it whole (the abstract at `abstract`);
+ * a section the read budget cut is a `passage` read. A paper none of whose
+ * sections matched was not read.
+ */
+function wholeSectionSeeds(result: unknown): Seed[] {
+  return rowsAt(result, "papers").flatMap((row): Seed[] => {
+    const value = record(row);
+    const ref = paperRef(row);
+    if (!value || !ref) return [];
+    const passages = rowsAt(value, "passages")
+      .map(record)
+      .filter((entry): entry is Row => Boolean(entry));
+    const backend = text(value.backend);
+    return rowsAt(value, "sections").flatMap((entry): Seed[] => {
+      const section = record(entry);
+      const label = text(section?.section);
+      // A section the read budget left out entirely was not read.
+      if (!section || !label || !(Number(section.characters) > 0)) return [];
+      const whole = section.complete === true;
+      const first = passages.find((passage) => passage.sectionLabel === label);
+      return [
+        {
+          ref,
+          state: "read",
+          ...(backend === "mineru"
+            ? { text: "mineru" as const }
+            : backend === "pdf"
+              ? { text: "pdf_text" as const }
+              : {}),
+          read: readSeed({
+            granularity: !whole
+              ? "passage"
+              : /^\s*abstract\s*$/i.test(label)
+                ? "abstract"
+                : "section",
+            method: "sections",
+            label,
+            snippet: first ? firstBodyParagraph(text(first.text) || "") : "",
+          }),
+        },
+      ];
+    });
+  });
+}
 
 /** The body reads one targeted/full result row carries. */
 function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
@@ -1418,7 +1492,20 @@ export type TaskPaperDigestInput = {
   relevance?: Readonly<TaskPaperDigestRelevance>;
   stance?: Readonly<TaskPaperDigestStance>;
   evidence?: ReadonlyArray<{ section?: string; quote: string; chunk?: number }>;
-  source?: { backend: "mineru" | "pdf" | "text"; complete?: boolean };
+  source?: {
+    backend: "mineru" | "pdf" | "text";
+    complete?: boolean;
+    /**
+     * What of the paper it read (`digests/readScope.ts`); absent on a full
+     * read and on records saved before scopes.
+     */
+    scope?: Readonly<{
+      source: string;
+      pages?: ReadonlyArray<Readonly<{ from: number; to: number }>>;
+    }>;
+    /** A scoped read: the sections, pages or fields it covered. */
+    covered?: readonly string[];
+  };
 };
 
 /** The fields of a `PaperDigestFailure` the ledger records. */
@@ -1584,11 +1671,35 @@ function digestReadSeeds(
   const stance = digestJudgment(digest.stance);
   if (stance) answer.stance = stance;
   const complete = digest.source?.complete;
-  if (typeof complete === "boolean") answer.complete = complete;
-  const passages: ReadSeed[] = [];
+  const scoped = isScopedDigest(digest);
+  // Whether it read every character of the paper's text: a scoped read
+  // never did ("Full" in Task progress).
+  if (typeof complete === "boolean") {
+    answer.complete = isFullTextRead({
+      complete,
+      scope: digest.source?.scope,
+    });
+    // A full-text digest counts at "full" depth, above any section read.
+    if (answer.complete) answer.depth = "full";
+  }
+  const passages: ReadSeed[] = scoped ? digestScopeSeeds(digest) : [];
+  if (scoped) {
+    answer.depth = scopedDigestDepth(digest, passages);
+    const scopeLabel = clipTaskPaperText(
+      (digest.source?.covered || []).join(", "),
+      TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
+    );
+    if (scopeLabel) answer.scopeLabel = scopeLabel;
+  }
+  const abstractOnly = digest.source?.scope?.source === "abstract";
   for (const evidence of digest.evidence || []) {
+    // An abstract read alone is its own quote: its read above holds it.
+    if (abstractOnly) break;
     const seed = readSeed({
-      granularity: "passage",
+      // A quote from the abstract is the abstract, not a passage of the
+      // paper's text.
+      granularity:
+        scoped && isAbstractLabel(evidence.section) ? "abstract" : "passage",
       method: "digest",
       label: evidence.section,
       snippet: evidence.quote,
@@ -1601,14 +1712,119 @@ function digestReadSeeds(
   return { answer, passages };
 }
 
+const SCOPE_SOURCE_DEPTH: Readonly<Record<string, TaskPaperReadGranularity>> = {
+  metadata: "metadata",
+  abstract: "abstract",
+  sections: "section",
+  pages: "page",
+  notes: "notes",
+};
+
+/**
+ * The depth a scoped digest covered: the strongest of what its scope read
+ * (`covered`), or the scope's own depth when nothing was covered. Never the
+ * `digest` of its answer.
+ */
+function scopedDigestDepth(
+  digest: TaskPaperDigestInput,
+  scopeReads: readonly ReadSeed[],
+): TaskPaperReadGranularity {
+  let best: TaskPaperReadGranularity | undefined;
+  for (const read of scopeReads) {
+    if (
+      read.granularity !== "abstract" &&
+      read.granularity !== "section" &&
+      read.granularity !== "page" &&
+      read.granularity !== "notes" &&
+      read.granularity !== "metadata"
+    )
+      continue;
+    if (
+      !best ||
+      TASK_PAPER_READ_GRANULARITY_RANK[read.granularity] >
+        TASK_PAPER_READ_GRANULARITY_RANK[best]
+    )
+      best = read.granularity;
+  }
+  return (
+    best || SCOPE_SOURCE_DEPTH[`${digest.source?.scope?.source}`] || "metadata"
+  );
+}
+
+/** A digest of part of the paper (`readScope.ts`): not of its full text. */
+function isScopedDigest(digest: TaskPaperDigestInput): boolean {
+  const source = digest.source?.scope?.source;
+  return typeof source === "string" && source !== "full";
+}
+
+function isAbstractLabel(label: string | undefined): boolean {
+  return /^\s*abstract\b/i.test(label || "");
+}
+
+/**
+ * A scoped digest's reads of what it covered, at that depth: the abstract,
+ * each named section, the pages, the notes or the record; never `full`.
+ */
+function digestScopeSeeds(digest: TaskPaperDigestInput): ReadSeed[] {
+  const scope = digest.source?.scope;
+  const seeds: ReadSeed[] = [];
+  for (const covered of digest.source?.covered || []) {
+    if (isAbstractLabel(covered)) {
+      seeds.push(
+        readSeed({
+          granularity: "abstract",
+          method: "digest",
+          label: "Abstract",
+          ...(scope?.source === "abstract" ? { snippet: digest.answer } : {}),
+        }),
+      );
+    } else if (scope?.source === "notes") {
+      seeds.push(readSeed({ granularity: "notes", method: "digest" }));
+    } else if (scope?.source === "metadata") {
+      seeds.push(readSeed({ granularity: "metadata", method: "digest" }));
+    } else if (scope?.source === "pages") {
+      const from = /(\d+)/.exec(covered)?.[1];
+      seeds.push(
+        readSeed({
+          granularity: "page",
+          method: "digest",
+          label: covered,
+          ...(from ? { pageIndex: Number(from) - 1 } : {}),
+        }),
+      );
+    } else {
+      seeds.push(
+        readSeed({ granularity: "section", method: "digest", label: covered }),
+      );
+    }
+  }
+  return seeds;
+}
+
 /**
  * A digested paper is read when the digest read its whole text, and skimmed
  * when it read only part (`source.complete` false), as for an item longer
- * than the digest text limit or a batch that never came back. A digest
- * saved without the flag stays read.
+ * than the digest text limit or a batch that never came back, or only what
+ * a read scope named (its abstract, named sections, pages, notes). A
+ * digest saved without the flag stays read.
  */
 function digestPaperState(digest: TaskPaperDigestInput): TaskPaperState {
+  if (isScopedDigest(digest)) return "skimmed";
   return digest.source?.complete === false ? "skimmed" : "read";
+}
+
+/**
+ * The text source a digest names for its paper: none for a scoped read of
+ * Zotero fields (an abstract field, notes, the record), which says nothing
+ * about the paper's text.
+ */
+function digestTextSource(
+  digest: TaskPaperDigestInput,
+): TaskPaperTextSource | undefined {
+  const backend = digest.source?.backend;
+  if (!backend) return undefined;
+  if (backend === "text" && isScopedDigest(digest)) return undefined;
+  return DIGEST_TEXT_SOURCE[backend];
 }
 
 /**
@@ -1637,8 +1853,7 @@ function paperDigestSeeds(result: unknown): Seed[] {
     if (!ref) continue;
     if (value.status === "digested" && typeof value.answer === "string") {
       const digest = value as unknown as TaskPaperDigestInput;
-      const backend = digest.source?.backend;
-      const source = backend ? DIGEST_TEXT_SOURCE[backend] : undefined;
+      const source = digestTextSource(digest);
       const { answer, passages } = digestReadSeeds(digest, label);
       for (const read of [
         answer,
@@ -1693,8 +1908,7 @@ export function buildDigestLedgerDelta(
     digestPaperState(digest),
     digest.contextItemId,
   );
-  const backend = digest.source?.backend;
-  const source = backend ? DIGEST_TEXT_SOURCE[backend] : undefined;
+  const source = digestTextSource(digest);
   if (source) paper.text = source;
   const delta = digestDeltaShell(
     params,
