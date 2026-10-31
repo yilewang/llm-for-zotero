@@ -104,7 +104,15 @@ export class AttachmentCapability {
     const filename = normalizeText(
       (item as any).attachmentFilename || item.getField?.("title") || "",
     );
-    const hasFile = !!(item as any).hasFile;
+    // A native Zotero item has no `hasFile` property, so reading it alone
+    // reported "no file" for every real attachment. A stored file is a file
+    // attachment with a resolved path; whether the bytes can be read is
+    // decided by the read itself.
+    const reportedHasFile = (item as any).hasFile;
+    const hasFile =
+      typeof reportedHasFile === "boolean"
+        ? reportedHasFile
+        : !!(item.isFileAttachment?.() && item.getFilePath?.());
     const rawLinkMode = (item as any).attachmentLinkMode;
     const linkModeMap: Record<number, string> = {
       0: "imported_file",

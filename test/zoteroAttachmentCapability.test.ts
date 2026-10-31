@@ -248,6 +248,35 @@ describe("attachment capability", function () {
       });
     });
 
+    it("finds the stored file of a native item, which has no hasFile property", function () {
+      makeAttachment({
+        id: 2,
+        parentID: 1,
+        filename: "notes.txt",
+        contentType: "text/plain",
+        linkMode: 0,
+        extra: {
+          isFileAttachment: () => true,
+          getFilePath: () => "/library/storage/AB12/notes.txt",
+        },
+      });
+      makeAttachment({
+        id: 3,
+        parentID: 1,
+        contentType: "text/html",
+        linkMode: 3,
+        extra: { isFileAttachment: () => false, getFilePath: () => false },
+      });
+      installZotero();
+
+      assert.isTrue(
+        capability().getAttachmentInfo({ attachmentId: 2 })?.hasFile,
+      );
+      assert.isFalse(
+        capability().getAttachmentInfo({ attachmentId: 3 })?.hasFile,
+      );
+    });
+
     it("says the link mode is unknown rather than inventing one", function () {
       makeAttachment({ id: 2, title: "Paper" });
       installZotero();
