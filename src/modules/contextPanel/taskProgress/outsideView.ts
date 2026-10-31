@@ -27,7 +27,12 @@ import {
   isTaskAnswerCitationOf,
   type TaskAnswerCitation,
 } from "./answerCitations";
-import { canOpenTaskPaperPassage } from "./passageSource";
+import {
+  bestTaskPaperReach,
+  canOpenTaskPaperPassage,
+  taskPaperReadReach,
+  type TaskPaperReach,
+} from "./passageSource";
 import {
   answerSectionAt,
   quoteAroundOffset,
@@ -213,8 +218,22 @@ export function findTaskSource(
 
 function readable(reads: readonly TaskPaperReadEvent[]) {
   return reads.filter(
-    (read) => read.granularity !== "metadata" && read.granularity !== "digest",
+    (read) =>
+      read.granularity !== "metadata" &&
+      // A host digest is not the paper's text. A paper_read that stopped
+      // short is a read of it, recorded with the same granularity.
+      (read.granularity !== "digest" || Boolean(taskPaperReadReach(read))),
   );
+}
+
+/**
+ * How far a paper_read went, as a reader sees it: "Full · 122/122 chunks"
+ * when it reached the whole text, "Part · 30/32 chunks" when it stopped
+ * short. "Full" alone when the read kept no tally.
+ */
+export function formatTaskPaperReach(reach: TaskPaperReach): string {
+  const kind = t(reach.part ? "Part" : "Full");
+  return reach.counts ? `${kind} · ${reach.counts}` : kind;
 }
 
 /**
@@ -781,6 +800,12 @@ export type TaskCitedModel = {
   cited: TaskAnswerCitation[];
   named: TaskOutsideQuote[];
   uncited: TaskPaperReadEvent[];
+  /**
+   * The paper_read that went furthest into the paper this question: shown
+   * as one heading line, not among the uncited reads. Absent when the
+   * question read the paper by other means.
+   */
+  reach?: { read: TaskPaperReadEvent; reach: TaskPaperReach };
   /** Reads past the ledger's cap, said under the uncited ones. */
   droppedReads: number;
 };
@@ -941,10 +966,16 @@ export function buildTaskCitedModel(input: {
       ...(section ? { section } : {}),
     });
   }
+  const reach = bestTaskPaperReach(input.reads);
   return {
     cited,
     named,
-    uncited: input.reads.filter((read) => !isTaskReadCited(read, cited, paper)),
+    // A read of the paper as a whole is the heading's, however many there were.
+    uncited: input.reads.filter(
+      (read) =>
+        !taskPaperReadReach(read) && !isTaskReadCited(read, cited, paper),
+    ),
+    ...(reach ? { reach } : {}),
     droppedReads: input.droppedReads || 0,
   };
 }
@@ -955,6 +986,7 @@ export function hasTaskCitedContent(model: TaskCitedModel): boolean {
     model.cited.length ||
     model.named.length ||
     model.uncited.length ||
+    model.reach ||
     model.droppedReads,
   );
 }
@@ -1242,6 +1274,24 @@ function createTaskCitedBlock(
 }
 
 /**
+ * How far a paper_read went, as one line over a paper's Cited list: its
+ * words at the left and "Source" at the right, as a block's head has them.
+ * It is a heading, not a cited passage, so it has no text box beneath it.
+ */
+function createTaskReachHeading(
+  doc: Document,
+  label: string,
+  source?: HTMLButtonElement,
+): HTMLElement {
+  const item = el(doc, "div", "llm-task-paper-read llm-task-reach");
+  const head = el(doc, "div", "llm-task-paper-read-head");
+  head.append(el(doc, "div", "llm-task-paper-how", label));
+  if (source) head.append(source);
+  item.append(head);
+  return item;
+}
+
+/**
  * "Read, not cited (n)": the fold line the unused rows have, folding the
  * reads no cited passage matches, and the line for reads past the cap.
  */
@@ -1324,6 +1374,19 @@ export function createTaskCitedBlocks(
   options: { heading?: boolean } = {},
 ): HTMLElement[] {
   const children: HTMLElement[] = [];
+  // How far the agent read the paper, above what the answer cites of it.
+  if (model.reach) {
+    const read = model.reach.read;
+    children.push(
+      createTaskReachHeading(
+        doc,
+        handlers.readLabel(read),
+        canOpenTaskPaperPassage(read)
+          ? sourceButton(doc, (from) => handlers.onOpenRead(read, from))
+          : undefined,
+      ),
+    );
+  }
   if (options.heading !== false && (model.cited.length || model.named.length))
     children.push(el(doc, "div", "llm-task-paper-turn", t("Cited")));
   for (const passage of model.cited) {
@@ -1405,10 +1468,14 @@ function libraryRowDetails(
       createTaskReadEarlierBlock(doc, from, () => context.onGoToQuestion(from)),
     );
   }
+  const reach = bestTaskPaperReach(row.libraryReads || []);
   const model: TaskCitedModel = row.answer || {
     cited: [],
     named: row.quotes,
-    uncited: row.libraryReads || [],
+    uncited: (row.libraryReads || []).filter(
+      (read) => !taskPaperReadReach(read),
+    ),
+    ...(reach ? { reach } : {}),
     droppedReads: 0,
   };
   const labels = new Map(

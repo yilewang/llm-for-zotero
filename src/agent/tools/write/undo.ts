@@ -13,7 +13,13 @@ import {
   revertActions,
 } from "../../services/changeReverter";
 import {
+  describeJournalSteps,
+  gatewayMutationLabels,
+  isLegacyActionDescription,
+} from "../../services/libraryMutation/describe";
+import {
   listJournalActions,
+  listJournalSteps,
   selectRevertJournalActions,
   selectUndoJournalAction,
   type JournalAction,
@@ -54,7 +60,55 @@ type UndoBranch<TInput> = Required<
   >
 >;
 
+/**
+ * Rows written before actions were described in words read "Apply apply_tags"
+ * or "library_update: 3 planned changes". Rebuild those from the steps the
+ * row holds, so the card never shows an internal token.
+ */
+async function withReadableDescription<T extends JournalAction>(
+  action: T,
+  zoteroGateway: ZoteroGateway,
+): Promise<T> {
+  if (!isLegacyActionDescription(action.description)) return action;
+  try {
+    const steps =
+      (action as Partial<JournalActionWithSteps>).steps ||
+      (await listJournalSteps(action.actionId));
+    const description = describeJournalSteps(
+      steps,
+      gatewayMutationLabels(zoteroGateway),
+    );
+    return description ? { ...action, description } : action;
+  } catch {
+    return action;
+  }
+}
+
+async function withReadableDescriptions<T extends JournalAction>(
+  actions: T[],
+  zoteroGateway: ZoteroGateway,
+): Promise<T[]> {
+  return Promise.all(
+    actions.map((action) => withReadableDescription(action, zoteroGateway)),
+  );
+}
+
 async function selectActions(
+  input: RevertManyInput,
+  context: AgentToolContext,
+  zoteroGateway: ZoteroGateway,
+) {
+  const selection = await selectRawActions(input, context);
+  return {
+    actions: await withReadableDescriptions(selection.actions, zoteroGateway),
+    skippedIrreversible: await withReadableDescriptions(
+      selection.skippedIrreversible,
+      zoteroGateway,
+    ),
+  };
+}
+
+async function selectRawActions(
   input: RevertManyInput,
   context: AgentToolContext,
 ) {
@@ -146,8 +200,11 @@ function undoOne(zoteroGateway: ZoteroGateway): UndoBranch<UndoOneInput> {
         : await selectUndoJournalAction({
             conversationKey: context.request.conversationKey,
           });
-      const { newerIrreversible } = selection;
-      const action = _input.actionId
+      const newerIrreversible = await withReadableDescriptions(
+        selection.newerIrreversible,
+        zoteroGateway,
+      );
+      const found = _input.actionId
         ? (
             await listJournalActions({
               actionId: _input.actionId,
@@ -157,6 +214,9 @@ function undoOne(zoteroGateway: ZoteroGateway): UndoBranch<UndoOneInput> {
             })
           )[0]
         : selection.action;
+      const action = found
+        ? await withReadableDescription(found, zoteroGateway)
+        : found;
       _input.actionId = action?.actionId;
       return {
         toolName: UNDO_TOOL_NAME,
@@ -231,7 +291,7 @@ function undoOne(zoteroGateway: ZoteroGateway): UndoBranch<UndoOneInput> {
         : await selectUndoJournalAction({
             conversationKey: context.request.conversationKey,
           });
-      const action = _input.actionId
+      const found = _input.actionId
         ? (
             await listJournalActions({
               actionId: _input.actionId,
@@ -241,6 +301,9 @@ function undoOne(zoteroGateway: ZoteroGateway): UndoBranch<UndoOneInput> {
             })
           )[0]
         : selection.action;
+      const action = found
+        ? await withReadableDescription(found, zoteroGateway)
+        : found;
       if (!action) {
         if (_input.actionId) {
           throw new Error(
@@ -253,7 +316,12 @@ function undoOne(zoteroGateway: ZoteroGateway): UndoBranch<UndoOneInput> {
             message: selection.newerIrreversible.length
               ? "The remaining recorded actions have no durable inverse and cannot be undone automatically."
               : "There are no reversible actions left to undo.",
-            skipped: selection.newerIrreversible.map((entry) => ({
+            skipped: (
+              await withReadableDescriptions(
+                selection.newerIrreversible,
+                zoteroGateway,
+              )
+            ).map((entry) => ({
               actionId: entry.actionId,
               description: entry.description,
               reason: entry.recovery || "No inverse was recorded",
@@ -346,7 +414,7 @@ function revertMany(zoteroGateway: ZoteroGateway): UndoBranch<RevertManyInput> {
             },
           ],
     async planInvocation(input, context) {
-      const selection = await selectActions(input, context);
+      const selection = await selectActions(input, context, zoteroGateway);
       if (input.dryRun) {
         return readOnlyInvocationPlan({
           reason: "A dry run reads journal state without applying inverses.",
@@ -369,7 +437,7 @@ function revertMany(zoteroGateway: ZoteroGateway): UndoBranch<RevertManyInput> {
     async createPendingAction(input, context) {
       // Irreversible actions never consume the count budget; they are
       // disclosed as changes that will remain, matching the single undo.
-      const selection = await selectActions(input, context);
+      const selection = await selectActions(input, context, zoteroGateway);
       const pending = selection.actions;
       const summary = [
         describeEntries(pending),
@@ -399,7 +467,7 @@ function revertMany(zoteroGateway: ZoteroGateway): UndoBranch<RevertManyInput> {
     },
 
     async execute(input, context) {
-      const selection = await selectActions(input, context);
+      const selection = await selectActions(input, context, zoteroGateway);
       const pending = selection.actions;
       const skippedIrreversible = selection.skippedIrreversible.map(
         (action) => ({

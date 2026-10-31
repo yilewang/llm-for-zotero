@@ -435,8 +435,9 @@ describe("workflow: task progress passage source", function () {
       );
       assert.equal(activeReader()?.itemID, fixtures[1].pdfAttachmentId);
 
-      // 4. A whole-paper read: the row says "Full text", and Source opens the
-      // paper at its first page without searching for the snippet.
+      // 4. A whole-paper read: a heading line says "Full" over the paper's
+      // reads, not among "Read, not cited", and Source opens the paper at its
+      // first page without searching for the snippet.
       await handle.emit({
         type: "paper_ledger_update",
         callId: "overview-1",
@@ -468,24 +469,47 @@ describe("workflow: task progress passage source", function () {
           ],
         },
       } as never);
-      const fullRead = (): HTMLElement | undefined => {
-        const reads = (paper(fixtures[0].parentItemId)?.querySelectorAll(
-          ".llm-task-paper-read",
-        ) || []) as unknown as ArrayLike<HTMLElement>;
-        return Array.from(reads).find(
-          (node) =>
-            node.querySelector(".llm-task-paper-how")?.textContent ===
-            "Full text",
-        );
-      };
+      const fullRead = (): HTMLElement | null =>
+        paper(fixtures[0].parentItemId)?.querySelector(
+          ".llm-task-reach",
+        ) as HTMLElement | null;
       await until(() => {
         api.flushTaskProgress();
         return Boolean(fullRead());
-      }, "the full-text read lists under its paper");
+      }, "the whole-paper read heads its paper");
+      assert.equal(
+        fullRead()!.querySelector(".llm-task-paper-how")?.textContent,
+        "Full",
+        "no chunk tally was recorded: Full alone",
+      );
+      assert.notInclude(
+        paper(fixtures[0].parentItemId)!.textContent || "",
+        "Full text",
+      );
+      assert.isNull(
+        fullRead()!.closest(".llm-task-cited-fold"),
+        "not under Read, not cited",
+      );
+      const foldOfPaper = paper(fixtures[0].parentItemId)!.querySelector(
+        ".llm-task-cited-fold",
+      );
+      if (foldOfPaper)
+        assert.isTrue(
+          Boolean(
+            fullRead()!.compareDocumentPosition(foldOfPaper) &
+            win.Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+          "the heading comes before the folded reads",
+        );
+      assert.equal(
+        fullRead()!.parentElement!.firstElementChild,
+        fullRead(),
+        "the first line of the paper's details",
+      );
       const fullSource = fullRead()!.querySelector(
         ".llm-task-paper-open",
       ) as HTMLButtonElement;
-      assert.isOk(fullSource, "a full-text read offers Source");
+      assert.isOk(fullSource, "the heading offers Source");
       fullSource.click();
       await until(
         () => status() === "Opened the paper",

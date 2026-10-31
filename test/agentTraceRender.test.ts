@@ -2603,17 +2603,105 @@ describe("agentTrace render", function () {
           (text) =>
             text.includes("simple-paper-QA") || text.includes("final answer"),
         ),
-      [
-        "<p>I’m using the simple-paper-QA skill.</p>",
-        "<p>This is the final answer.</p>",
-      ],
-      "collapsing the container must not dismiss its trace",
+      ["<p>I’m using the simple-paper-QA skill.</p>"],
+      "the answer shows once, below the steps; earlier messages stay",
     );
     assert.isFalse(suppressFinalAnswer);
     assert.isNotNull(
       completedTrace.findByClass("llm-agent-output-divider"),
       "the canonical final answer is rendered below the completed trace",
     );
+  });
+
+  it("leaves a Codex message out of the steps once the run reports it as the final answer", function () {
+    const answer = "The methods use a two-stage design. It was preregistered.";
+    const record = (
+      seq: number,
+      payload: AgentRunEventRecord["payload"],
+    ): AgentRunEventRecord => ({
+      runId: "run-codex-repeat",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq * 1_000,
+    });
+    const progress = (seq: number, itemId: string, text: string) =>
+      record(seq, {
+        type: "codex_progress",
+        itemId,
+        text,
+        status: "running",
+        kind: "assistant_message",
+      });
+    const message = {
+      role: "assistant" as const,
+      text: answer,
+      timestamp: 290_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: false,
+    };
+    const messagesIn = (
+      events: AgentRunEventRecord[],
+      shown: Message = message,
+    ) =>
+      flattenTraceItems(buildAgentTraceDisplayItems(events, null, shown).items)
+        .filter((item) => item.type === "message" && item.agentMessage)
+        .map((item) => (item.type === "message" ? item.text : ""));
+    const base = [
+      progress(1, "assistant-1", "Let me check the methods section."),
+      progress(2, "assistant-2", answer),
+    ];
+
+    assert.deepEqual(
+      messagesIn(base, { ...message, streaming: true, text: "" }),
+      ["Let me check the methods section.", answer],
+      "no final text yet: the streaming look keeps every message",
+    );
+    const finished = [
+      ...base,
+      record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+    ];
+    assert.deepEqual(messagesIn(finished), [
+      "Let me check the methods section.",
+    ]);
+    assert.lengthOf(
+      base,
+      2,
+      "the stored events are not changed by the projection",
+    );
+
+    // The answer's closing part counts as the same text.
+    assert.deepEqual(
+      messagesIn([
+        progress(1, "assistant-1", "Let me check the methods section."),
+        progress(2, "assistant-2", "It was preregistered."),
+        record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+      ]),
+      ["Let me check the methods section."],
+    );
+
+    // A message that is not the answer stays.
+    assert.deepEqual(
+      messagesIn([
+        progress(1, "assistant-1", "Let me check the methods section."),
+        progress(2, "assistant-2", "A different closing note."),
+        record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+      ]),
+      ["Let me check the methods section.", "A different closing note."],
+    );
+
+    // Only the last matching message goes; the answer is drawn once.
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: finished,
+    }) as unknown as FakeElement;
+    const drawn = trace
+      .findAllByClass("llm-agent-process-message")
+      .map((node) => `${node.textContent}${node.innerHTML}`);
+    assert.isTrue(drawn.some((text) => text.includes("methods section")));
+    assert.isFalse(drawn.some((text) => text.includes("two-stage design")));
   });
 
   it("keeps trace text that stands in for the answer in one node below the steps while it grows", function () {

@@ -47,6 +47,7 @@ import {
 } from "./libraryMutation/handlerOperations";
 import type { LibraryMutationState } from "./libraryMutation/contracts";
 import { canonicalJson } from "./libraryMutation/canonicalJson";
+import { withMoreChanges } from "./libraryMutation/describe";
 import {
   checkpointedParts,
   mergeMutationStates,
@@ -731,7 +732,7 @@ async function executeCheckpointedAction(params: {
         runId: runIdFor(context),
         conversationKey: context.request.conversationKey,
         toolName: params.journalToolName,
-        description: `${params.journalToolName}: ${parts.length} item changes`,
+        description: withMoreChanges(first.description, parts.length),
         effect: "write",
         reversibility: first.reversibility,
         recovery: first.reason,
@@ -1041,10 +1042,7 @@ export async function executeLibraryMutationAction(params: {
               runId: runIdFor(context),
               conversationKey: context.request.conversationKey,
               toolName: journalToolName,
-              description:
-                operations.length === 1
-                  ? plan.description
-                  : `${journalToolName}: ${operations.length} planned changes`,
+              description: withMoreChanges(plan.description, operations.length),
               reversibility: plan.reversibility,
               recovery: plan.reason,
             })

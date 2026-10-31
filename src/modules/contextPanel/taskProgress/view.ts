@@ -55,6 +55,7 @@ import { t } from "../../../utils/i18n";
 import {
   canOpenTaskPaperPassage,
   taskPaperPassagePageLabel,
+  taskPaperReadReach,
   type TaskPaperPassageTarget,
 } from "./passageSource";
 import { renderChecklistSteps, resolveTaskPaperLabel } from "./planSteps";
@@ -80,6 +81,7 @@ import {
   findNamedInAnswer,
   formatTaskCitedLabel,
   formatTaskGroupCounts,
+  formatTaskPaperReach,
   hasTaskCitedContent,
   isTaskPaperHeadingOnlyRead,
   patchTaskCard,
@@ -646,6 +648,9 @@ export function formatTaskPaperPassageLabel(
   read: TaskPaperReadEvent,
   paperTitle = "",
 ): string {
+  // A paper_read of the paper as a whole says how far it went, not "Full text".
+  const reach = taskPaperReadReach(read);
+  if (reach) return formatTaskPaperReach(reach);
   const kind = t(GRANULARITY_LABELS[read.granularity] || "Passage");
   const label = (read.label || "").trim();
   const title = looseText(paperTitle);
@@ -653,10 +658,6 @@ export function formatTaskPaperPassageLabel(
   const repeatsTitle =
     Boolean(title && loose) &&
     (loose === title || title.startsWith(loose) || loose.startsWith(title));
-  // A full paper_read that stopped short records the chunks it reached.
-  if (read.granularity === "digest" && read.toolName === "paper_read") {
-    return label ? `${t("Part")} · ${label}` : t("Part");
-  }
   if (read.granularity === "digest") {
     return read.snippet ? kind : t("Summary failed");
   }
@@ -2263,7 +2264,8 @@ export function mountTaskProgressView(params: {
     cleanedSnippet: read.snippet ? cleanTaskPaperSnippet(read.snippet) : "",
     label: read.label || "",
     ...(read.pageIndex !== undefined ? { pageIndex: read.pageIndex } : {}),
-    granularity: read.granularity,
+    // A read of the paper as a whole, even a partial one, opens the paper.
+    granularity: taskPaperReadReach(read) ? "full" : read.granularity,
   });
 
   /**

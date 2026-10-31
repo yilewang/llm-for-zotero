@@ -92,6 +92,21 @@ describe("workflow: streaming answer look", function () {
     );
   }
 
+  /**
+   * Every paragraph that starts with the marker, including text inside a
+   * closed disclosure: a copy the reader would see after opening the steps.
+   */
+  function paragraphsIncludingClosed(
+    root: HTMLElement,
+    marker: string,
+  ): HTMLElement[] {
+    return (
+      Array.from(
+        root.querySelectorAll<HTMLElement>("#llm-chat-box p"),
+      ) as HTMLElement[]
+    ).filter((node) => node.textContent?.trim().startsWith(marker));
+  }
+
   /** The first visible paragraph that starts with the marker. */
   function paragraph(root: HTMLElement, marker: string): HTMLElement | null {
     return paragraphs(root, marker)[0] || null;
@@ -412,8 +427,18 @@ describe("workflow: streaming answer look", function () {
         const node = paragraph(root, "Second message opening");
         return node && look(node).place === "bubble" ? node : null;
       }, "the final bubble draws");
-      // The collapsed trace hides its copy: the answer shows once.
+      // The steps do not keep a copy of the answer, open or closed.
       assert.lengthOf(paragraphs(root, "Second message opening"), 1);
+      assert.lengthOf(
+        paragraphsIncludingClosed(root, "Second message opening"),
+        1,
+        "the answer appears once, counting text inside closed steps",
+      );
+      assert.lengthOf(
+        paragraphsIncludingClosed(root, "First message opening"),
+        1,
+        "the earlier message stays in the steps",
+      );
       const final = look(finalNode);
       await compare("codex messages", streaming, final);
       near(before.left, final.left, "first message left edge");

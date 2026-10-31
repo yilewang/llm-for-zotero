@@ -18,6 +18,15 @@ import {
   formatTaskPaperDigestDepth,
   formatTaskPaperPassageLabel,
 } from "../src/modules/contextPanel/taskProgress/view";
+import {
+  buildTaskCitedModel,
+  createTaskCitedBlocks,
+  earlierTaskPaperReads,
+  hasTaskCitedContent,
+  type TaskCitedHandlers,
+} from "../src/modules/contextPanel/taskProgress/outsideView";
+import { canOpenTaskPaperPassage } from "../src/modules/contextPanel/taskProgress/passageSource";
+import { collectFakeText, fakeDocument, FakeElement } from "./helpers/fakeDom";
 
 /**
  * "Full" means the reader read every character of the paper's text: a
@@ -296,15 +305,228 @@ describe("the Full label", function () {
         libraryID: 1,
       })!.reads[0];
 
-    it("labels a read of every chunk Full text and one that stopped short Part", function () {
+    it("says how far the read went: Full with its tally, Part with its tally", function () {
       assert.equal(
         formatTaskPaperPassageLabel(read("complete", 32)),
-        "Full text",
+        "Full · 32/32 chunks",
       );
       assert.equal(
         formatTaskPaperPassageLabel(read("partial", 30)),
         "Part · 30/32 chunks",
       );
+    });
+
+    const stored = (
+      patch: Partial<TaskPaperReadEvent>,
+    ): TaskPaperReadEvent => ({
+      key: "1:7",
+      callId: "c",
+      toolName: "paper_read",
+      granularity: "full",
+      ...patch,
+    });
+
+    it("says Full alone when the read kept no tally, and Part for a full record with a partial tally", function () {
+      assert.equal(formatTaskPaperPassageLabel(stored({})), "Full");
+      assert.equal(
+        formatTaskPaperPassageLabel(stored({ label: "12/40 chunks" })),
+        "Part · 12/40 chunks",
+        "an old record: granularity full, partial count",
+      );
+      assert.equal(
+        formatTaskPaperPassageLabel(stored({ label: "40/40 chunks" })),
+        "Full · 40/40 chunks",
+      );
+      assert.equal(
+        formatTaskPaperPassageLabel(
+          stored({ granularity: "digest", label: undefined }),
+        ),
+        "Part",
+      );
+    });
+
+    it("keeps Full text for every other tool", function () {
+      assert.equal(
+        formatTaskPaperPassageLabel(
+          stored({ toolName: "read_attachment", label: "12/40 chunks" }),
+        ),
+        "Full text",
+      );
+      assert.equal(
+        formatTaskPaperPassageLabel(stored({ toolName: "library_retrieve" })),
+        "Full text",
+      );
+    });
+
+    it("offers Source for a partial paper_read and not for a host digest", function () {
+      assert.isTrue(
+        canOpenTaskPaperPassage(
+          stored({ granularity: "digest", label: "30/32 chunks" }),
+        ),
+      );
+      assert.isFalse(
+        canOpenTaskPaperPassage(
+          stored({ granularity: "digest", toolName: "task_update" }),
+        ),
+      );
+    });
+
+    describe("the heading in a paper's Cited list", function () {
+      const paper = {
+        itemId: 7,
+        creator: "Quill",
+        year: "2021",
+        title: "Drift in place cells",
+      };
+      const model = (reads: TaskPaperReadEvent[], answer = "") =>
+        buildTaskCitedModel({ reads, answer, paper });
+      const handlers = (
+        opened: TaskPaperReadEvent[] = [],
+      ): TaskCitedHandlers => ({
+        readLabel: (item) => formatTaskPaperPassageLabel(item, paper.title),
+        readText: (item) => item.snippet || "",
+        onOpenPassage: () => undefined,
+        onOpenRead: (item) => {
+          opened.push(item);
+        },
+        onShowPassage: () => undefined,
+        onShowNamed: () => undefined,
+        foldOpen: false,
+        onToggleFold: () => undefined,
+      });
+      const draw = (
+        built: ReturnType<typeof model>,
+        opened: TaskPaperReadEvent[] = [],
+      ) =>
+        createTaskCitedBlocks(
+          fakeDocument as unknown as Document,
+          built,
+          handlers(opened),
+        ) as unknown as FakeElement[];
+
+      it("takes a complete paper_read out of Read, not cited and heads the list with it", function () {
+        const full = stored({
+          label: "122/122 chunks",
+          snippet: "Opening paragraph.",
+        });
+        const other = stored({
+          toolName: "library_retrieve",
+          granularity: "passage",
+          snippet: "Methods recorded 400 neurons in CA1 over many sessions.",
+        });
+        const built = model([full, other]);
+        assert.deepEqual(built.uncited, [other]);
+        assert.strictEqual(built.reach?.read, full);
+        const blocks = draw(built);
+        assert.equal(
+          blocks[0].findByClass("llm-task-paper-how")!.textContent,
+          "Full · 122/122 chunks",
+        );
+        assert.include(blocks[0].className, "llm-task-reach");
+        assert.notInclude(
+          blocks[0].className,
+          "llm-task-cited-item",
+          "a heading, not a cited passage",
+        );
+        assert.isOk(blocks[0].findByClass("llm-task-paper-open"), "Source");
+        assert.notInclude(
+          collectFakeText(blocks.at(-1)!),
+          "Full · 122/122 chunks",
+          "the fold does not repeat it",
+        );
+        assert.include(collectFakeText(blocks.at(-1)!), "Methods recorded");
+      });
+
+      it("heads a question whose only use of the paper was the full read", function () {
+        const built = model([stored({ label: "9/9 chunks" })]);
+        assert.isTrue(hasTaskCitedContent(built));
+        const blocks = draw(built);
+        assert.lengthOf(blocks, 1, "no Cited line, no fold");
+        assert.equal(
+          blocks[0].findByClass("llm-task-paper-how")!.textContent,
+          "Full · 9/9 chunks",
+        );
+        assert.isFalse(
+          hasTaskCitedContent({
+            cited: [],
+            named: [],
+            uncited: [],
+            droppedReads: 0,
+          }),
+        );
+      });
+
+      it("shows one heading for several reads of one paper: the whole read over a partial one", function () {
+        const partial = stored({
+          granularity: "digest",
+          label: "30/32 chunks",
+        });
+        const oldPartial = stored({ label: "12/40 chunks" });
+        const whole = stored({ label: "32/32 chunks" });
+        const built = model([partial, oldPartial, whole]);
+        assert.strictEqual(built.reach?.read, whole);
+        assert.isEmpty(built.uncited, "every one left the fold");
+        assert.lengthOf(draw(built), 1);
+        // With no complete read, the one that got furthest.
+        const furthest = model([oldPartial, partial]);
+        assert.strictEqual(furthest.reach?.read, partial);
+        assert.equal(
+          draw(furthest)[0].findByClass("llm-task-paper-how")!.textContent,
+          "Part · 30/32 chunks",
+        );
+      });
+
+      it("keeps Source on a partial read, and opens the read it names", function () {
+        const partial = stored({
+          granularity: "digest",
+          label: "30/32 chunks",
+        });
+        const opened: TaskPaperReadEvent[] = [];
+        const [heading] = draw(model([partial]), opened);
+        const source = heading.findByClass("llm-task-paper-open")!;
+        source.dispatchFakeEvent("click");
+        assert.deepEqual(opened, [partial]);
+      });
+
+      it("counts a partial paper_read of an earlier question as that question's read", function () {
+        const partial = stored({
+          granularity: "digest",
+          label: "30/32 chunks",
+        });
+        const hostDigest = stored({
+          granularity: "digest",
+          toolName: "task_update",
+        });
+        const turn = (reads: TaskPaperReadEvent[]) => ({
+          reads,
+          citations: [],
+        });
+        const earlier = earlierTaskPaperReads(
+          { turns: { 1: turn([partial]), 2: turn([]) } } as never,
+          2,
+        );
+        assert.equal(earlier?.from, 1);
+        assert.deepEqual(earlier?.reads, [partial]);
+        assert.isNull(
+          earlierTaskPaperReads(
+            { turns: { 1: turn([hostDigest]), 2: turn([]) } } as never,
+            2,
+          ),
+          "a host digest is not a read of the paper's text",
+        );
+      });
+
+      it("leaves read_attachment and untooled reads where they were", function () {
+        const attachment = stored({
+          toolName: "read_attachment",
+          snippet: "Attached body.",
+        });
+        const built = model([attachment]);
+        assert.isUndefined(built.reach);
+        assert.deepEqual(built.uncited, [attachment]);
+        const [fold] = draw(built);
+        assert.include(collectFakeText(fold), "Read, not cited (1)");
+      });
     });
   });
 });

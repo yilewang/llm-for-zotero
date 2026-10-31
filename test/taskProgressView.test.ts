@@ -606,6 +606,26 @@ describe("task progress view", function () {
         title,
       ),
       "Full text",
+      "another tool's whole-paper read keeps its wording",
+    );
+    assert.equal(
+      formatTaskPaperPassageLabel(
+        read({
+          toolName: "paper_read",
+          granularity: "full",
+          label: "12/40 chunks",
+        }),
+        title,
+      ),
+      "Part · 12/40 chunks",
+      "an old full record with a partial count",
+    );
+    assert.equal(
+      formatTaskPaperPassageLabel(
+        read({ toolName: "paper_read", granularity: "full" }),
+        title,
+      ),
+      "Full",
     );
     assert.equal(
       cleanTaskPaperSnippet(
@@ -3355,6 +3375,140 @@ describe("task progress view of an outcome ledger", function () {
       ]);
       harness.row.dispatchFakeEvent("click");
       assert.equal(tailOf(paperRow(harness, "1:1")), "");
+    });
+
+    describe("how far a paper_read went", function () {
+      const fullRead = (
+        callId: string,
+        label: string | undefined,
+        extra: Partial<TaskPaperReadEvent> = {},
+      ) => ({
+        version: 1 as const,
+        callId,
+        runId: "run-d",
+        toolName: "paper_read",
+        papers: [
+          { key: "1:1", libraryID: 1, itemId: 1, state: "read" as const },
+        ],
+        reads: [
+          {
+            key: "1:1",
+            callId,
+            toolName: "paper_read",
+            granularity: "full" as const,
+            method: "full",
+            ...(label ? { label } : {}),
+            snippet: "Opening paragraph of the paper.",
+            ...extra,
+          },
+        ],
+      });
+      const headings = (details: FakeElement) =>
+        details.findAllByClass("llm-task-reach");
+
+      it("heads the expanded row with Full and its chunk count, above the Cited list, not under Read, not cited", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(KEY, fullRead("full", "122/122 chunks"), "run-d");
+        applyTaskPaperUpdate(
+          KEY,
+          digestLedgerDelta("call-s", 1, {
+            runId: "run-d",
+            evidence: [{ section: "Methods", quote: "We recorded cells." }],
+          }),
+          "run-d",
+        );
+        applyTaskDocumentCitations(KEY, "run-d", [
+          { citationId: "d1", libraryID: 1, itemKey: "P1", itemId: 1 },
+        ]);
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        const [heading] = headings(details);
+        assert.isOk(heading, "one heading line");
+        assert.lengthOf(headings(details), 1);
+        assert.equal(
+          heading.findByClass("llm-task-paper-how")!.textContent,
+          "Full · 122/122 chunks",
+        );
+        assert.isOk(heading.findByClass("llm-task-paper-open"), "Source");
+        assert.isFalse(
+          details
+            .findAllByClass("llm-task-cited-fold-body")
+            .some((fold) => collectFakeText(fold).includes("Full")),
+          "not among the reads the answer did not cite",
+        );
+        assert.notInclude(collectFakeText(details), "Full text");
+      });
+
+      it("shows Part for a read that stopped short, and one heading for the furthest of several", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(
+          KEY,
+          fullRead("a", "12/40 chunks", { granularity: "digest" }),
+          "run-d",
+        );
+        applyTaskPaperUpdate(
+          KEY,
+          fullRead("b", "30/32 chunks", { granularity: "digest" }),
+          "run-d",
+        );
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        assert.lengthOf(headings(details), 1);
+        assert.equal(
+          headings(details)[0].findByClass("llm-task-paper-how")!.textContent,
+          "Part · 30/32 chunks",
+        );
+        assert.isOk(
+          headings(details)[0].findByClass("llm-task-paper-open"),
+          "Source stays on a Part heading",
+        );
+        assert.lengthOf(details.findAllByClass("llm-task-cited-fold"), 0);
+      });
+
+      it("reads as a different thing from a host digest of the same paper", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(
+          KEY,
+          digestLedgerDelta("call-s", 1, {
+            runId: "run-d",
+            summary: "Cells drift slowly over days.",
+          }),
+          "run-d",
+        );
+        applyTaskPaperUpdate(KEY, fullRead("full", "32/32 chunks"), "run-d");
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        const digest = details.findByClass("llm-task-paper-digest")!;
+        assert.equal(
+          digest.findByClass("llm-task-paper-turn")!.textContent,
+          "Summary · Full",
+        );
+        assert.include(collectFakeText(digest), "Cells drift slowly");
+        const [reach] = headings(details);
+        assert.equal(
+          reach.findByClass("llm-task-paper-how")!.textContent,
+          "Full · 32/32 chunks",
+        );
+        assert.notInclude(
+          collectFakeText(reach),
+          "Cells drift slowly",
+          "the heading carries no summary text",
+        );
+        assert.isFalse(
+          collectFakeText(digest).includes("32/32 chunks"),
+          "the summary block does not carry the read's tally",
+        );
+        assert.notStrictEqual(
+          digest.findByClass("llm-task-paper-turn")!.textContent,
+          reach.findByClass("llm-task-paper-how")!.textContent,
+        );
+      });
     });
 
     it("a failed digest shows its reason on the row", function () {

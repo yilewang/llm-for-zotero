@@ -4469,6 +4469,32 @@ function shouldSuppressInlineFinalAnswer(
   return itemKey.length >= 40 && finalKey.includes(itemKey);
 }
 
+/**
+ * Codex sends its answer as an agent message too, and the run then reports the
+ * same text as its final answer. Once the final answer is known the bubble
+ * shows it, so the last agent message that is that text, or its closing part,
+ * leaves the steps. Other agent messages stay. The stored events are not
+ * changed, and no final text exists while the answer still streams.
+ */
+function dropAgentMessageRepeatingFinalAnswer(
+  items: AgentTraceDisplayItem[],
+  finalText: string,
+): AgentTraceDisplayItem[] {
+  const finalKey = normalizeInlineTextForDedupe(finalText);
+  if (!finalKey) return items;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type !== "message" || !item.agentMessage) continue;
+    const itemKey = normalizeInlineTextForDedupe(
+      stripWebSourceMarkersForDisplay(item.text),
+    );
+    if (!itemKey) continue;
+    if (finalKey === itemKey || finalKey.endsWith(` ${itemKey}`))
+      return [...items.slice(0, index), ...items.slice(index + 1)];
+  }
+  return items;
+}
+
 type AgentTraceAdapterContext = {
   items: AgentTraceDisplayItem[];
   isCodexTrace: boolean;
@@ -5947,7 +5973,7 @@ function projectAgentTrace(
     isInterleaved &&
     !finalText &&
     (!hasTerminalInlineText || !hasCanonicalAssistantText);
-  const displayItems = isInterleaved
+  const shownItems = isInterleaved
     ? finalText
       ? items.filter(
           (item) =>
@@ -5974,6 +6000,9 @@ function projectAgentTrace(
           )
         : items
     : replaceInlineTextWithDraftingAction(items);
+  const displayItems = finalText
+    ? dropAgentMessageRepeatingFinalAnswer(shownItems, finalText)
+    : shownItems;
   // Text that stands in for the answer takes the answer's look and place, so
   // nothing changes when the bubble takes it over. Only the last item can be
   // the answer; notes between tool calls keep the step look. Codex agent
