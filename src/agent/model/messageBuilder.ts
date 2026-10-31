@@ -62,6 +62,7 @@ import {
   getSelectedPassagePaper,
 } from "../context/turnPaperScope";
 import { renderLongJobResume } from "../loop/longJob";
+import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
 import {
   hasAgentContentInputs,
@@ -695,6 +696,11 @@ export async function renderAgentPromptEnvelope(
           "## Direct agent workflow",
           "Understand the current request yourself and choose the lightest useful sequence of reads, searches, questions, document finalization, and concrete actions.",
           "Use actual tools for requested effects. Inspect results and continue until the requested outcome is complete, reviewed, or has a concrete error.",
+          // The runtime's per-step limit (runtime.ts runs the first calls).
+          `One step runs at most ${
+            resolveAgentLimits(request.metadata?.hostRecordedBatchJob === true)
+              .maxToolCallsPerRound
+          } tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`,
           "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.",
           "When the work needs one result for each of several papers (a summary, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part whose description states that per-paper result; the host runs it on each paper and returns the results.",
           "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.",

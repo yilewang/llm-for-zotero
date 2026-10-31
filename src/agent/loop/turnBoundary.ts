@@ -7,7 +7,8 @@
  *
  * 1. Navigation without evidence. Navigation calls (library_search,
  *    library_retrieve, a read-only zotero_script, a paper_read that found
- *    nothing new) are never progress. After `NAVIGATION_ROUNDS_TRIGGER`
+ *    nothing new) are never progress, except a read-only script whose
+ *    result the turn has not seen. After `NAVIGATION_ROUNDS_TRIGGER`
  *    navigation rounds and `NAVIGATION_CALLS_TRIGGER` navigation calls since
  *    the last progress, the turn reaches a search checkpoint. Every other
  *    tool keeps the fingerprint rule: a new successful result is progress,
@@ -137,13 +138,49 @@ function text(value: unknown): string {
 export function isNavigationCall(call: BoundaryToolRecord): boolean {
   if (call.name === "library_search" || call.name === "library_retrieve")
     return true;
-  if (call.name === "zotero_script") {
-    // Only the constrained read facade is a proven read; a privileged
-    // script is never treated as one (zoteroScript.ts).
-    const input = record(call.input);
-    return input?.access === "library" && input?.effect === "read";
-  }
+  if (call.name === "zotero_script") return isReadOnlyScript(call);
   return call.name === "paper_read" && call.frontier === "unchanged";
+}
+
+/**
+ * A zotero_script on the constrained read facade. Only it is a proven read;
+ * a privileged script is never treated as one (zoteroScript.ts).
+ */
+function isReadOnlyScript(call: BoundaryToolRecord): boolean {
+  const input = record(call.input);
+  return (
+    call.name === "zotero_script" &&
+    input?.access === "library" &&
+    input?.effect === "read"
+  );
+}
+
+/**
+ * A zotero_script declared as a read, on either facade. A privileged read
+ * is not a proven read, so it never navigates, but a result it returns that
+ * the turn has not seen is progress, as for a read on the library facade.
+ */
+function isReadScript(call: BoundaryToolRecord): boolean {
+  const input = record(call.input);
+  return call.name === "zotero_script" && input?.effect === "read";
+}
+
+/**
+ * A read script's result, without the script: new script text that
+ * returns what an earlier one did is no new result. The return value is the
+ * result; its log lines (timings, progress) count only when it returns
+ * nothing. A script that failed has no result.
+ */
+function scriptResultFingerprint(call: BoundaryToolRecord): string | undefined {
+  const content = record(call.content);
+  if (!content || content.error) return undefined;
+  return buildToolProgressFingerprint({
+    name: call.name,
+    content:
+      content.returnValue === undefined
+        ? { output: content.output }
+        : { returnValue: content.returnValue },
+  });
 }
 
 /**
@@ -161,11 +198,15 @@ function withoutReadCount(content: unknown): unknown {
 /**
  * The fingerprint a call adds to the turn's progress, or undefined when it
  * cannot count: a failure, a navigation call, a write that changed nothing.
+ * A read script (library or privileged) is progress only when it returns a
+ * result the turn has not seen (`scriptResultFingerprint`).
  */
 export function progressFingerprint(
   call: BoundaryToolRecord,
 ): string | undefined {
-  if (!call.ok || isNavigationCall(call)) return undefined;
+  if (!call.ok) return undefined;
+  if (isReadScript(call)) return scriptResultFingerprint(call);
+  if (isNavigationCall(call)) return undefined;
   if (
     call.mutability === "write" &&
     call.effect !== "applied" &&
@@ -786,7 +827,6 @@ export class TurnBoundary {
   // Failure counters (moved from the runtime).
   private consecutiveToolErrorRounds = 0;
   private consecutiveInputRejectionRounds = 0;
-  private toolCallOverflowCorrectionUsed = false;
   private readonly paperFailures = new Map<string, number>();
   private failedInARow = 0;
   private failedInARowLimit = 0;
@@ -1037,17 +1077,6 @@ export class TurnBoundary {
     if (this.consecutiveToolErrorRounds >= REPEATED_TOOL_ERROR_ROUNDS)
       return "repeated_tool_errors";
     return undefined;
-  }
-
-  /**
-   * A step with too many tool calls: retried once from a checkpoint, unless
-   * the segment has no round left.
-   */
-  toolCallOverflow(segmentRound: number): "retry" | "stop" {
-    if (this.toolCallOverflowCorrectionUsed || segmentRound >= this.maxRounds)
-      return "stop";
-    this.toolCallOverflowCorrectionUsed = true;
-    return "retry";
   }
 
   /** Whether incomplete model steps used up the segment's rounds. */

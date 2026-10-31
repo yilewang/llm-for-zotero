@@ -315,6 +315,121 @@ describe("turn boundary: navigation without evidence (Rules 1 and 2)", function 
     }
   });
 
+  describe("a read-only zotero_script", function () {
+    // The constrained read facade; the result shape is zoteroScript.ts's
+    // scriptResultContent. Script text and description differ every call.
+    const script = (
+      index: number,
+      result: { returnValue?: unknown; output?: string; error?: string },
+      ok = true,
+    ): BoundaryToolRecord => ({
+      name: "zotero_script",
+      ok,
+      // zotero_script is an external_effect tool; its read reports "none".
+      mutability: "write",
+      effect: "none" as never,
+      input: {
+        access: "library",
+        effect: "read",
+        description: `Analysis ${index}`,
+        script: `return query${index}();`,
+      },
+      content: {
+        access: "library",
+        effect: "read",
+        description: `Analysis ${index}`,
+        output: result.output ?? "",
+        returnValue: result.returnValue,
+        itemsAffected: 0,
+        error: result.error,
+      },
+    });
+    const scriptRounds = (calls: (round: number) => BoundaryToolRecord) => {
+      const turn = boundary();
+      return Array.from({ length: 20 }, (_, index) =>
+        turn.afterToolRound({
+          round: index + 1,
+          calls: [calls(index + 1)],
+          settledTargets: 0,
+          now: 0,
+        }),
+      );
+    };
+
+    it("counts as progress when its result is new: twenty distinct analyses never trip the gate", function () {
+      const rounds = scriptRounds((round) =>
+        script(round, {
+          returnValue: { year: 2000 + round, papers: round },
+          output: `took ${round * 7} ms`,
+        }),
+      );
+      assert.deepEqual(
+        rounds.map((r) => r.decision.kind),
+        Array(20).fill("continue"),
+      );
+      assert.isTrue(rounds.every((r) => r.report.kind === "progress"));
+    });
+
+    it("stays navigation when its result repeats, whatever the script text or its log lines", function () {
+      const rounds = scriptRounds((round) =>
+        script(round, {
+          returnValue: { year: 2020, papers: 3 },
+          output: `took ${round * 7} ms`,
+        }),
+      );
+      assert.equal(rounds[0].report.kind, "progress", "the first is new");
+      assert.isTrue(
+        rounds.slice(1).every((r) => r.report.kind === "navigation"),
+      );
+      // Rounds 2 to 19 are 18 navigation rounds and 18 calls.
+      assert.equal(
+        rounds.findIndex((r) => r.decision.kind === "checkpoint"),
+        18,
+      );
+    });
+
+    it("reads its log lines only when it returns nothing", function () {
+      const logged = (round: number) =>
+        progressFingerprint(script(round, { output: `rows: ${round}` }));
+      assert.notEqual(logged(1), logged(2));
+      assert.equal(
+        progressFingerprint(script(1, { returnValue: 5, output: "a" })),
+        progressFingerprint(script(2, { returnValue: 5, output: "b" })),
+      );
+    });
+
+    it("is never progress when it failed", function () {
+      assert.isUndefined(
+        progressFingerprint(script(1, { error: "TypeError: x is undefined" })),
+      );
+      assert.isUndefined(
+        progressFingerprint(script(1, { returnValue: 1 }, false)),
+      );
+      assert.equal(
+        classifyToolRound([script(1, { error: "TypeError" })], new Set(), false)
+          .kind,
+        "navigation",
+      );
+    });
+
+    it("counts a privileged read script's new result as progress, never as navigation", function () {
+      const privileged = (returnValue: unknown): BoundaryToolRecord => ({
+        ...script(1, { returnValue }),
+        input: { access: "privileged", effect: "read" },
+      });
+      assert.isFalse(isNavigationCall(privileged(1)));
+      assert.isString(progressFingerprint(privileged(1)));
+      assert.equal(
+        progressFingerprint(privileged(1)),
+        progressFingerprint(privileged(1)),
+      );
+      assert.notEqual(
+        progressFingerprint(privileged(1)),
+        progressFingerprint(privileged(2)),
+      );
+    });
+  });
+
   it("stops a segment of tool rounds without a new result", function () {
     const turn = boundary();
     const same = { name: "web_search", ok: true, input: {}, content: 1 };
@@ -436,13 +551,6 @@ describe("turn boundary: failure counters (unchanged constants)", function () {
       rejects.recordToolRoundOutcome(reject),
       "repeated_input_rejections",
     );
-  });
-
-  it("retries a tool-call overflow once, not at the segment's end", function () {
-    const turn = boundary();
-    assert.equal(turn.toolCallOverflow(1), "retry");
-    assert.equal(turn.toolCallOverflow(2), "stop");
-    assert.equal(boundary().toolCallOverflow(24), "stop");
   });
 
   it("gives a paper up after the same failure twice, and stops a page's worth in a row", function () {

@@ -583,13 +583,16 @@ describe("agent prompt envelope direct workflow", function () {
     "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.";
 
   /** The Original Agent's "## Direct agent workflow" system block. */
-  async function directWorkflowBlock(): Promise<string> {
+  async function directWorkflowBlock(
+    metadata?: Record<string, unknown>,
+  ): Promise<string> {
     const rendered = await renderAgentPromptEnvelope(
       resolvedAgentRequest({
         conversationKey: 912_101,
         mode: "agent",
         model: "test-model",
         userText: "Summarize this paper and save it as a note",
+        ...(metadata ? { metadata } : {}),
       }),
       [],
       [],
@@ -620,6 +623,16 @@ describe("agent prompt envelope direct workflow", function () {
     assert.isAbove(
       block.indexOf(DIGEST_PART),
       block.indexOf("declare each part with task_update"),
+    );
+  });
+
+  it("states the step's tool-call limit: 8, or 10 in a batch job", async function () {
+    const limit = (n: number) =>
+      `One step runs at most ${n} tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`;
+    assert.include(await directWorkflowBlock(), limit(8));
+    assert.include(
+      await directWorkflowBlock({ hostRecordedBatchJob: true }),
+      limit(10),
     );
   });
 

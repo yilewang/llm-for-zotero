@@ -113,10 +113,13 @@ describe("direct Agent model tool surface", function () {
     // answer" (+32) raise the tool cap by 218, to 29,864; the fixed prompt's
     // chat-answer and library-only clauses (+99) raise the total by 317, to
     // 41,165 (2026-10-31).
+    // Merged with W4's loop gates: the direct workflow's tool-call limit
+    // sentence (+96) and its job-page clause (+31) raise the total by 127, to
+    // 41,292 (2026-10-31).
     assert.isAtMost(serializedToolCharacters, 29_864);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      41_165,
+      41_292,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

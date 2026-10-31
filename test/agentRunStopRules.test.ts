@@ -64,6 +64,8 @@ type Ending = {
   liveStops: StopRecord[];
   /** Stop records persisted in the run's trace, in order. */
   persistedStops: StopRecord[];
+  /** Every event the live observer received, in order. */
+  events: AgentEvent[];
 };
 
 function stopRecords(events: readonly AgentEvent[]): StopRecord[] {
@@ -188,6 +190,7 @@ async function runToEnding(
     run: runs[0],
     liveStops: stopRecords(liveEvents),
     persistedStops: stopRecords(persistedEvents),
+    events: liveEvents,
   };
 }
 
@@ -404,29 +407,71 @@ describe("Original Agent run endings", function () {
     assertStoppedBy(ending, "repeated_input_rejections", "failed");
   });
 
-  it("tool_call_overflow: stops when a retried step still asks for too many tool calls", async function () {
+  it("tool calls past the step limit are not run, and the loop goes on", async function () {
     const registry = new AgentToolRegistry();
-    registerReadTool(registry, async () => ({ notes: [] }));
+    const ran: string[] = [];
+    registry.register({
+      spec: {
+        name: "read_notes",
+        description: "Read notes",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args as never }),
+      execute: async (input: { id: string }) => {
+        ran.push(input.id);
+        return { notes: [input.id] };
+      },
+    } as never);
     const callCount = MAX_AGENT_TOOL_CALLS_PER_ROUND + 1;
-    const adapter = scriptedAdapter((step) =>
-      toolStep(
-        Array.from({ length: callCount }, (_, index) =>
-          readCall(`c${step}-${index}`),
-        ),
-      ),
-    );
+    const ids = Array.from({ length: callCount }, (_, index) => `c${index}`);
+    const toolResults = new Map<string, string>();
+    const adapter = scriptedAdapter((step, params) => {
+      for (const message of params.messages)
+        if (message.role === "tool")
+          toolResults.set(message.tool_call_id, String(message.content));
+      if (step === 1) return toolStep(ids.map((id) => readCall(id, { id })));
+      if (step === 2) return toolStep([readCall("c8-again", { id: "c8" })]);
+      return finalStep("Every note is read.");
+    });
     const ending = await runToEnding(installed, {
       registry,
       adapter,
       request: baseRequest(97_306, "Read everything at once"),
     });
 
-    const text = `The model returned ${callCount} tool calls in one step, exceeding the safe limit of ${MAX_AGENT_TOOL_CALLS_PER_ROUND}. None of those calls were executed. Please narrow the request and try again.`;
-    assert.equal(adapter.steps(), 2);
-    assert.deepInclude(ending.outcome, { kind: "completed", text });
-    assert.equal(ending.run.status, "failed");
-    assert.equal(ending.run.finalText, text);
-    assertStoppedBy(ending, "tool_call_overflow", "failed");
+    assert.equal(adapter.steps(), 3);
+    assert.deepEqual(ran, [
+      ...ids.slice(0, MAX_AGENT_TOOL_CALLS_PER_ROUND),
+      "c8",
+    ]);
+    // Every tool_call_id of the step has its result; the one past the
+    // limit says it did not run.
+    for (const id of ids.slice(0, MAX_AGENT_TOOL_CALLS_PER_ROUND))
+      assert.include(toolResults.get(id), id);
+    assert.equal(
+      toolResults.get("c8"),
+      JSON.stringify({
+        error: `Not run: this step allows ${MAX_AGENT_TOOL_CALLS_PER_ROUND} tool calls; call it again in the next step.`,
+      }),
+    );
+    assert.include(toolResults.get("c8-again"), "c8");
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      text: "Every note is read.",
+    });
+    assertStoppedBy(ending, "final_answer", "completed");
+    const overflow = ending.events.find(
+      (event) =>
+        event.type === "provider_event" &&
+        event.providerType === "agent_tool_call_overflow",
+    ) as { payload: Record<string, unknown> } | undefined;
+    assert.deepEqual(overflow?.payload, {
+      action: "run_first",
+      returnedToolCalls: callCount,
+      maxToolCallsPerRound: MAX_AGENT_TOOL_CALLS_PER_ROUND,
+    });
   });
 
   it("segment_without_progress: stops when a full segment only repeats prior work", async function () {
@@ -453,6 +498,87 @@ describe("Original Agent run endings", function () {
     assert.equal(ending.run.status, "failed");
     assert.equal(ending.run.finalText, text);
     assertStoppedBy(ending, "segment_without_progress", "failed");
+  });
+
+  describe("read-only zotero_script and the navigation gate", function () {
+    // A stand-in for the constrained read facade: it returns what
+    // `results(script)` says, in zoteroScript.ts's result shape.
+    function registerReadScript(
+      registry: AgentToolRegistry,
+      results: (script: string) => unknown,
+    ): void {
+      registry.register({
+        spec: {
+          name: "zotero_script",
+          description: "Run a read-only library script",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async (input: { script: string }) => ({
+          access: "library",
+          effect: "read",
+          output: `took ${input.script.length} ms`,
+          returnValue: results(input.script),
+          itemsAffected: 0,
+        }),
+      } as never);
+    }
+    const scriptCall = (step: number): AgentToolCall => ({
+      id: `script-${step}`,
+      name: "zotero_script",
+      arguments: {
+        access: "library",
+        effect: "read",
+        description: `Analysis ${step}`,
+        script: `return countPapers(${step});`,
+      },
+    });
+    const boundaries = (ending: Ending) =>
+      ending.events.filter(
+        (event) =>
+          event.type === "provider_event" &&
+          event.providerType === "agent_search_boundary",
+      );
+
+    it("twenty scripts with new results run to the answer without a search checkpoint", async function () {
+      const registry = new AgentToolRegistry();
+      registerReadScript(registry, (script) => ({ rows: script }));
+      const adapter = scriptedAdapter((step) =>
+        step <= 20
+          ? toolStep([scriptCall(step)])
+          : finalStep("Papers per year and journal."),
+      );
+      const ending = await runToEnding(installed, {
+        registry,
+        adapter,
+        request: baseRequest(97_320, "Table my papers per year and journal"),
+      });
+      assert.equal(adapter.steps(), 21);
+      assert.lengthOf(boundaries(ending), 0);
+      assertStoppedBy(ending, "final_answer", "completed");
+    });
+
+    it("twenty scripts that return the same result still reach the checkpoint", async function () {
+      const registry = new AgentToolRegistry();
+      registerReadScript(registry, () => ({ rows: 3 }));
+      const adapter = scriptedAdapter((step) =>
+        step <= 20
+          ? toolStep([scriptCall(step)])
+          : finalStep("Papers per year and journal."),
+      );
+      const ending = await runToEnding(installed, {
+        registry,
+        adapter,
+        request: baseRequest(97_321, "Table my papers per year and journal"),
+      });
+      const [checkpoint] = boundaries(ending);
+      assert.deepInclude(
+        (checkpoint as { payload: Record<string, unknown> }).payload,
+        { action: "checkpoint", round: 19 },
+      );
+    });
   });
 
   it("answer_continuation_limit: delivers a repeatedly truncated answer with a note", async function () {

@@ -33,8 +33,6 @@ export type RunStopRule =
   | "final_gate_rejected"
   // The model's final answer passed the final-answer gate.
   | "final_answer"
-  // A step asked for too many tool calls after its one retry, or at the limit.
-  | "tool_call_overflow"
   // A tool the model called ended the run with its terminal result.
   | "terminal_tool"
   // A tool the model called could not run or verify its action.

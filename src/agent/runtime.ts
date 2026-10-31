@@ -3699,32 +3699,22 @@ export class AgentRuntime {
                 maxToolCallsPerRound,
               )
             : maxToolCallsPerRound;
-          if (step.calls.length > stepToolCallLimit) {
-            const overflowMessage = `The model returned ${step.calls.length} tool calls in one step, exceeding the safe limit of ${stepToolCallLimit}. None of those calls were executed.`;
-            if (turnBoundary.toolCallOverflow(segmentRound) === "stop") {
-              return await completeRun(
-                `${overflowMessage} Please narrow the request and try again.`,
-                "failed",
-                "tool_call_overflow",
-              );
-            }
-            await restartFromSemanticCheckpoint({
-              sourceMessages: messages,
-              retryInstruction: `${overflowMessage} Retry with a complete new step containing at most ${stepToolCallLimit} tool calls. Do not assume that any result exists for the rejected calls.`,
-            });
+          // A step with more calls than its limit runs the first ones, in
+          // order, as any step does; every call past the limit gets a result
+          // saying it did not run, and the next step can make it.
+          const calls = step.calls.slice(0, stepToolCallLimit);
+          const callsNotRun = step.calls.slice(stepToolCallLimit);
+          if (callsNotRun.length) {
             await emit({
               type: "provider_event",
               providerType: "agent_tool_call_overflow",
               payload: {
-                action: "checkpoint_and_retry",
+                action: "run_first",
                 returnedToolCalls: step.calls.length,
                 maxToolCallsPerRound: stepToolCallLimit,
               },
             });
-            continue;
           }
-
-          const calls = step.calls;
           const assistantToolMessage: AgentAssistantMessage =
             step.assistantMessage;
           if (!calls.length) {
@@ -3848,6 +3838,15 @@ export class AgentRuntime {
               );
             }
           }
+          for (const call of callsNotRun)
+            roundToolMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.name,
+              content: JSON.stringify({
+                error: `Not run: this step allows ${stepToolCallLimit} tool calls; call it again in the next step.`,
+              }),
+            });
           appendRoundContinuation();
           // Sibling calls are one attempt: deliver every result before judging
           // repeated failure, so the next model round can repair their inputs.

@@ -113,11 +113,14 @@ import {
  * library_retrieve's read-what-the-user-named clauses (+159 guidance
  * characters in library turns, +99 in a paper turn), to 43,661, 42,334 and
  * 43,759.
+ * Merged with W4's loop gates: the direct workflow's tool-call limit sentence
+ * (+96 fixed characters) and its job-page clause (+31), to 43,788, 42,461 and
+ * 43,886 (2026-10-31).
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_661,
-  paper: 42_334,
-  collection: 43_759,
+  global: 43_788,
+  paper: 42_461,
+  collection: 43_886,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {
