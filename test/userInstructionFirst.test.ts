@@ -94,7 +94,7 @@ describe("user instructions come first", function () {
       );
       assert.include(
         PAPER_CITATION_CONTRACT,
-        "and no closing caveat sentence, unless the user asks for one.",
+        "and no closing caveat sentence, unless the user asks for a limitations section.",
       );
     });
   });
@@ -122,7 +122,7 @@ describe("user instructions come first", function () {
       assert.notInclude(text, "take priority");
       assert.include(
         text,
-        "Compare papers: when task_update is available, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
+        "Compare papers: when task_update is available and there are three or more papers, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
       );
       assert.include(
         text,

@@ -975,8 +975,8 @@ export const LITERATURE_REVIEW_DIGEST_GUIDANCE = skillGuidance(
 export const COMPARE_PAPERS_DIGEST_GUIDANCE = skillGuidance(
   "compare-papers",
   [
-    "Compare papers: when task_update is available, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
-    "For three or more papers, declare a digest part first (`task_update` with `expectedEffect:'digest'` over the papers) whose description names the comparison dimensions, for example \"For each paper, report: question, species or system, method, main finding\".",
+    "Compare papers: when task_update is available and there are three or more papers, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
+    "Declare the digest part first (`task_update` with `expectedEffect:'digest'` over the papers) whose description names the comparison dimensions, for example \"For each paper, report: question, species or system, method, main finding\".",
     "When the user limited what to read, give the part that `read`, e.g. `read:{ source:'abstract' }`.",
     "Each result returns facets with those labels; they become the comparison's rows.",
     "Read further only for a dimension the results leave open.",

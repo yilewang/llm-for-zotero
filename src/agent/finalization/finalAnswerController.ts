@@ -226,6 +226,6 @@ export class AgentFinalAnswerController {
     const parts = open
       .map((task) => `“${task.description}”${deliveryOf(task)}`)
       .join("; ");
-    return `Before answering, finish the parts of this request you declared that are still open: ${parts}. Do them now with the tools. If one cannot be done, or the user's own instruction rules it out (such as a chat answer or reading only the abstracts), list it under task_update's skipped or blocked with that reason, then answer.`;
+    return `Before answering, finish the parts of this request you declared that are still open: ${parts}. Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.`;
   }
 }

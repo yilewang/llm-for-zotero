@@ -701,7 +701,7 @@ export async function renderAgentPromptEnvelope(
             resolveAgentLimits(request.metadata?.hostRecordedBatchJob === true)
               .maxToolCallsPerRound
           } tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`,
-          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.",
+          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update before reading, together with that step's first tool calls; with nothing attached, declare them after library_retrieve has chosen the papers. The host marks each part done from the tools' results; never mark one done yourself.",
           "When the work needs one result for each of several papers (a summary, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part whose description states that per-paper result; the host runs it on each paper and returns the results.",
           "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.",
           "Natural-language restrictions in the current request and clarifications remain binding. Tool calls do not grant their own permission; the host validates each concrete proposal, applies permission policy, journals effects, and verifies native state.",

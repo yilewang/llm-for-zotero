@@ -610,7 +610,7 @@ describe("agent prompt envelope direct workflow", function () {
 
   it("asks a turn to declare the parts of a compound request", async function () {
     const DECLARE_PARTS =
-      "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.";
+      "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update before reading, together with that step's first tool calls; with nothing attached, declare them after library_retrieve has chosen the papers. The host marks each part done from the tools' results; never mark one done yourself.";
     assert.include(await directWorkflowBlock(), DECLARE_PARTS);
   });
 

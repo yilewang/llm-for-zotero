@@ -249,7 +249,7 @@ describe("AgentFinalAnswerController declared outcomes", function () {
     if (decision.kind !== "correct") return;
     assert.equal(
       decision.correction,
-      `Before answering, finish the parts of this request you declared that are still open: “${SAVE}”; “Tag it”. Do them now with the tools. If one cannot be done, or the user's own instruction rules it out (such as a chat answer or reading only the abstracts), list it under task_update's skipped or blocked with that reason, then answer.`,
+      `Before answering, finish the parts of this request you declared that are still open: “${SAVE}”; “Tag it”. Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.`,
     );
   });
 
@@ -318,7 +318,7 @@ describe("AgentFinalAnswerController declared outcomes", function () {
     if (decision.kind !== "correct") return;
     assert.equal(
       decision.correction,
-      "Before answering, finish the parts of this request you declared that are still open: “Write the literature review” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it). Do them now with the tools. If one cannot be done, or the user's own instruction rules it out (such as a chat answer or reading only the abstracts), list it under task_update's skipped or blocked with that reason, then answer.",
+      "Before answering, finish the parts of this request you declared that are still open: “Write the literature review” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it). Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.",
     );
   });
 

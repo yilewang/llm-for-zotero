@@ -297,10 +297,7 @@ describe("compare-papers skill", function () {
     );
     const text = COMPARE_PAPERS_DIGEST_GUIDANCE.instruction;
     assert.include(text, "expectedEffect:'digest'");
-    assert.include(
-      text,
-      "For three or more papers, declare a digest part first",
-    );
+    assert.include(text, "Declare the digest part first");
     // The digest description names the dimensions; the facets come back
     // with those labels and become the comparison's rows.
     assert.include(text, "whose description names the comparison dimensions");

@@ -116,11 +116,13 @@ import {
  * Merged with W4's loop gates: the direct workflow's tool-call limit sentence
  * (+96 fixed characters) and its job-page clause (+31), to 43,788, 42,461 and
  * 43,886 (2026-10-31).
+ * Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
+ * The budgets are now 43,884, 42,557 and 43,982.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 43_788,
-  paper: 42_461,
-  collection: 43_886,
+  global: 43_884,
+  paper: 42_557,
+  collection: 43_982,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

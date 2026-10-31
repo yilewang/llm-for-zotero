@@ -116,10 +116,11 @@ describe("direct Agent model tool surface", function () {
     // Merged with W4's loop gates: the direct workflow's tool-call limit
     // sentence (+96) and its job-page clause (+31) raise the total by 127, to
     // 41,292 (2026-10-31).
+    // Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
     assert.isAtMost(serializedToolCharacters, 29_864);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      41_292,
+      41_388,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),
