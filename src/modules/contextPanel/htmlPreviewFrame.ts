@@ -55,80 +55,136 @@ export function buildHtmlPreviewSrcdoc(
         needsPreviewThemeSheet(source),
       )
     : "";
-  const fitPart = fit
-    ? `${buildHtmlPreviewFitSheet(previewSurfaceFor(source), fit.font)}${HTML_PREVIEW_HEIGHT_SCRIPT}`
+  const fitSheet = fit
+    ? buildHtmlPreviewFitSheet(previewSurfaceFor(source))
     : "";
-  return `${preamble}${HTML_PREVIEW_CSP_META}${sheet}${fitPart}${source.slice(preamble.length)}`;
+  return `${preamble}${HTML_PREVIEW_CSP_META}${sheet}${fitSheet}${source.slice(preamble.length)}`;
 }
 
 /** A chat preview that takes its page's height and the chat's font. */
 export type HtmlPreviewFit = {
-  /** The chat's font as a CSS `font` value, for a page that sets none. */
-  font?: string;
+  /** The chat's font as a CSS `font` value, read when the page loads. */
+  readFont?: () => string | undefined;
+  /**
+   * The chat's background color, read when the page loads. A themed page
+   * that paints `var(--llm-bg)` then paints the chat's own color, not a box.
+   */
+  readBackground?: () => string | undefined;
   /** Called with the page's height each time it changes. */
   onHeight?: (height: number) => void;
 };
 
-/** The one key the page may send: its own height in pixels. */
-export const HTML_PREVIEW_HEIGHT_KEY = "llmHtmlPreviewHeight";
-
-/** A page taller than this is cut there, whatever it reports. */
+/** A page taller than this is cut there. */
 export const HTML_PREVIEW_MAX_FIT_HEIGHT = 4000;
 
-/**
- * Runs inside the page, ahead of the model's markup: it reports the page's
- * height to the chat whenever the layout changes. It sends a number and
- * nothing else; the chat reads only that number (fitFrameToPage).
- */
-export const HTML_PREVIEW_HEIGHT_SCRIPT = `<script>(()=>{let last=-1;const send=()=>{const d=document.documentElement,b=document.body;let h=d.getBoundingClientRect().height;if(b){const m=parseFloat(getComputedStyle(b).marginBottom)||0;h=Math.max(h,b.getBoundingClientRect().bottom+m);}h=Math.ceil(h);if(h===last)return;last=h;parent.postMessage({${HTML_PREVIEW_HEIGHT_KEY}:h},"*");};const ro=new ResizeObserver(send);ro.observe(document.documentElement);document.addEventListener("DOMContentLoaded",()=>{if(document.body)ro.observe(document.body);send();});addEventListener("load",send);})();</script>`;
+/** Late layout (fonts, images, the page's own scripts) is measured again. */
+const FIT_RECHECK_DELAYS_MS = [100, 400, 1200, 3000];
 
 /**
  * The page sits right on the chat: no outer margin on a themed page (its text
- * lines up with the answer), a little room on a white card, and the chat's
- * font until the page picks its own.
+ * lines up with the answer), a little room on a white card.
  */
 function buildHtmlPreviewFitSheet(
   surface: ReturnType<typeof previewSurfaceFor>,
-  font?: string,
 ): string {
-  const safeFont = (font || "").replace(/[<>{};]/g, "").trim();
-  const fontRule = safeFont ? `html{font:${safeFont}}` : "";
   const margin = surface === "themed" ? "0" : "12px 14px";
-  return `<style>${fontRule}body{margin:${margin}}</style>`;
+  return `<style>body{margin:${margin}}</style>`;
+}
+
+/** The page's height as laid out, including the body's bottom margin. */
+function measurePageHeight(page: Document): number {
+  const root = page.documentElement;
+  if (!root) return 0;
+  let height = root.getBoundingClientRect().height;
+  const body = page.body;
+  if (body) {
+    const style = page.defaultView?.getComputedStyle(body);
+    const margin = parseFloat(style?.marginBottom || "") || 0;
+    height = Math.max(height, body.getBoundingClientRect().bottom + margin);
+  }
+  return height;
+}
+
+/** Keeps a value read from the chat from adding rules of its own. */
+function cssValue(value: string | undefined): string {
+  return (value || "").replace(/[<>{};]/g, "").trim();
 }
 
 /**
- * The page reports its height (HTML_PREVIEW_HEIGHT_SCRIPT). Only a finite
- * number from this frame's own window is read; it sets the frame's height and
- * nothing else, so the page still has no way into the plugin.
+ * The chat's font, under the page's own rules, and the chat's background as
+ * `--llm-bg`. `html:root` outranks the theme sheet's `:root`; a themed page
+ * declares no `--llm-` colors of its own (previewTheme.ts).
+ */
+function buildChatMatchRules(fit: HtmlPreviewFit): string {
+  const font = cssValue(fit.readFont?.());
+  const background = cssValue(fit.readBackground?.());
+  return `${font ? `html{font:${font}}` : ""}${background ? `html:root{--llm-bg:${background}}` : ""}`;
+}
+
+/**
+ * In Zotero's chrome windows a frame's load event reaches only capture
+ * listeners on the frame, so every load listener here uses capture.
+ */
+const FRAME_LOAD_OPTIONS = { capture: true } as const;
+
+/** The frame shows its own srcdoc (a first load, or a reload after a move). */
+function showsOwnSrcdoc(frame: HTMLIFrameElement): boolean {
+  return frame.contentDocument?.URL === "about:srcdoc";
+}
+
+/**
+ * The plugin runs with chrome rights, so it can read the page's layout
+ * itself: the page sends nothing and has no channel into the plugin. Each
+ * time the page loads (moving a frame reloads it), the chat's font goes in
+ * ahead of the page's own styles (the page's rules still win), then the frame
+ * takes the page's height and follows it as the page's layout changes.
  */
 function fitFrameToPage(
   doc: Document,
   frame: HTMLIFrameElement,
   fit: HtmlPreviewFit,
 ): void {
-  const win = doc.defaultView;
-  if (!win) return;
-  let seen = false;
-  const onMessage = (event: MessageEvent) => {
-    if (seen && !frame.isConnected) {
-      win.removeEventListener("message", onMessage);
-      return;
-    }
-    if (!frame.contentWindow || event.source !== frame.contentWindow) return;
-    const data = event.data as Record<string, unknown> | null;
-    const reported =
-      data && typeof data === "object" ? data[HTML_PREVIEW_HEIGHT_KEY] : null;
-    if (typeof reported !== "number" || !Number.isFinite(reported)) return;
-    seen = true;
+  let last = -1;
+  const measure = () => {
+    const page = frame.contentDocument;
+    if (!page || !showsOwnSrcdoc(frame)) return;
     const height = Math.max(
       1,
-      Math.min(HTML_PREVIEW_MAX_FIT_HEIGHT, Math.ceil(reported)),
+      Math.min(HTML_PREVIEW_MAX_FIT_HEIGHT, Math.ceil(measurePageHeight(page))),
     );
+    if (height === last) return;
+    last = height;
     frame.style.height = `${height}px`;
     fit.onHeight?.(height);
   };
-  win.addEventListener("message", onMessage);
+  const onLoad = () => {
+    const page = frame.contentDocument;
+    const pageWindow = frame.contentWindow;
+    if (!page || !pageWindow || !showsOwnSrcdoc(frame)) return;
+    const rules = buildChatMatchRules(fit);
+    if (rules) {
+      const style = page.createElement("style");
+      style.textContent = rules;
+      const head = page.head || page.documentElement;
+      head?.insertBefore(style, head.firstChild);
+    }
+    last = -1;
+    measure();
+    try {
+      const PageResizeObserver = (
+        pageWindow as unknown as { ResizeObserver: typeof ResizeObserver }
+      ).ResizeObserver;
+      const observer = new PageResizeObserver(() => measure());
+      if (page.documentElement) observer.observe(page.documentElement);
+      if (page.body) observer.observe(page.body);
+    } catch (_error) {
+      // The timed checks below still fit the page.
+    }
+    for (const delay of FIT_RECHECK_DELAYS_MS) {
+      doc.defaultView?.setTimeout(measure, delay);
+    }
+  };
+  frame.addEventListener("load", onLoad, FRAME_LOAD_OPTIONS);
 }
 
 export const HTML_PREVIEW_STOPPED_TEXT =
@@ -136,19 +192,18 @@ export const HTML_PREVIEW_STOPPED_TEXT =
 
 /**
  * The CSP does not stop the page from navigating its own frame (for example
- * `location = "https://..."`). The first load is the srcdoc; any later load
- * means the frame left it, so the frame is removed and replaced by a note.
+ * `location = "https://..."`). A load that shows anything but the frame's own
+ * srcdoc means the frame left it, so the frame is removed and replaced by a
+ * note. A move in the chat reloads the srcdoc, which is fine.
  * Returns the load handler so tests can drive it.
  */
 export function guardHtmlPreviewNavigation(
   doc: Document,
   frame: HTMLIFrameElement,
 ): () => void {
-  let loads = 0;
   const onLoad = () => {
-    loads += 1;
-    if (loads === 1) return;
-    frame.removeEventListener("load", onLoad);
+    if (showsOwnSrcdoc(frame)) return;
+    frame.removeEventListener("load", onLoad, FRAME_LOAD_OPTIONS);
     frame.removeAttribute("srcdoc");
     const note = doc.createElementNS(XHTML_NS, "div") as HTMLElement;
     note.setAttribute("class", "llm-html-preview-stopped");
@@ -158,14 +213,13 @@ export function guardHtmlPreviewNavigation(
       parent.replaceChild(note, frame);
     }
   };
-  frame.addEventListener("load", onLoad);
+  frame.addEventListener("load", onLoad, FRAME_LOAD_OPTIONS);
   return onLoad;
 }
 
 /**
- * The page is untrusted and must have no channel back into the plugin. The
- * one exception is its height (fitFrameToPage): a number, read only from this
- * frame, used only to size the frame. Never read anything else it sends.
+ * Never add a message listener for the frame's postMessage: the page is
+ * untrusted and must have no channel back into the plugin.
  */
 export function createSandboxedHtmlFrame(
   doc: Document,
@@ -190,8 +244,8 @@ export function createSandboxedHtmlFrame(
       previewThemeFor(source, appTheme),
     );
   }
-  guardHtmlPreviewNavigation(doc, frame);
   if (fit) fitFrameToPage(doc, frame, fit);
+  guardHtmlPreviewNavigation(doc, frame);
   frame.setAttribute("srcdoc", buildHtmlPreviewSrcdoc(source, appTheme, fit));
   return frame;
 }

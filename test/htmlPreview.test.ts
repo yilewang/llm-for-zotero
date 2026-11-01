@@ -4,8 +4,6 @@ import {
   HTML_PREVIEW_CSP,
   HTML_PREVIEW_SANDBOX,
   buildHtmlPreviewSrcdoc,
-  HTML_PREVIEW_HEIGHT_KEY,
-  HTML_PREVIEW_HEIGHT_SCRIPT,
   HTML_PREVIEW_MAX_FIT_HEIGHT,
   HTML_PREVIEW_STOPPED_TEXT,
   createSandboxedHtmlFrame,
@@ -119,6 +117,7 @@ describe("sandboxed HTML preview frame", function () {
 
   it("replaces the frame with a note when the page navigates away", function () {
     let handler: (() => void) | null = null;
+    let capture: unknown = null;
     let removedSrcdoc = false;
     let replaced: [unknown, unknown] | null = null;
     const parent = {
@@ -128,14 +127,22 @@ describe("sandboxed HTML preview frame", function () {
     };
     const frame = {
       parentNode: parent,
-      addEventListener(type: string, fn: () => void) {
-        if (type === "load") handler = fn;
+      contentDocument: { URL: "about:srcdoc" },
+      addEventListener(
+        type: string,
+        fn: () => void,
+        options?: { capture?: boolean },
+      ) {
+        if (type === "load") {
+          handler = fn;
+          capture = options?.capture;
+        }
       },
       removeEventListener() {},
       removeAttribute(name: string) {
         if (name === "srcdoc") removedSrcdoc = true;
       },
-    } as unknown as HTMLIFrameElement;
+    } as unknown as HTMLIFrameElement & { contentDocument: { URL: string } };
     const note = { setAttribute() {}, textContent: "" };
     const fakeDoc = {
       createElementNS: () => note,
@@ -143,8 +150,13 @@ describe("sandboxed HTML preview frame", function () {
 
     const onLoad = guardHtmlPreviewNavigation(fakeDoc, frame);
     assert.strictEqual(onLoad, handler);
+    // Zotero's chrome windows deliver a frame's load only to capture listeners.
+    assert.isTrue(capture);
     onLoad();
     assert.isNull(replaced, "the first load is the srcdoc itself");
+    onLoad();
+    assert.isNull(replaced, "a move in the chat reloads the srcdoc");
+    frame.contentDocument.URL = "https://example.com/";
     onLoad();
     assert.isTrue(removedSrcdoc);
     assert.deepEqual(replaced, [note, frame]);
@@ -153,25 +165,13 @@ describe("sandboxed HTML preview frame", function () {
 });
 
 describe("chat HTML preview sized to its page", function () {
-  it("adds the chat font and the height report after the CSP, before the page", function () {
-    const srcdoc = buildHtmlPreviewSrcdoc("<p>x</p>", undefined, {
-      font: '16px/24px -apple-system, "Segoe UI"',
-    });
-    assert.isTrue(srcdoc.startsWith(EXACT_CSP_META));
-    assert.include(
+  it("adds only a margin sheet after the CSP, before the page", function () {
+    const srcdoc = buildHtmlPreviewSrcdoc("<p>x</p>", undefined, {});
+    assert.strictEqual(
       srcdoc,
-      '<style>html{font:16px/24px -apple-system, "Segoe UI"}body{margin:12px 14px}</style>',
+      `${EXACT_CSP_META}<style>body{margin:12px 14px}</style><p>x</p>`,
     );
-    assert.include(srcdoc, HTML_PREVIEW_HEIGHT_SCRIPT);
-    assert.isTrue(srcdoc.endsWith(`${HTML_PREVIEW_HEIGHT_SCRIPT}<p>x</p>`));
-  });
-
-  it("keeps a font value from closing the sheet", function () {
-    const srcdoc = buildHtmlPreviewSrcdoc("<p>x</p>", undefined, {
-      font: "16px serif}</style><script>alert(1)</script>",
-    });
-    assert.notInclude(srcdoc, "alert(1)</script>");
-    assert.notInclude(srcdoc, "serif}");
+    assert.notInclude(srcdoc, "<script");
   });
 
   it("adds nothing without fit", function () {
@@ -181,45 +181,115 @@ describe("chat HTML preview sized to its page", function () {
     );
   });
 
-  it("reads only a height number from its own frame", function () {
-    let onMessage: ((event: unknown) => void) | null = null;
-    const ownWindow = {};
+  type Listener = () => void;
+
+  function fakeFrameSetup(font?: string, background?: string) {
+    const loadListeners: Listener[] = [];
+    const timers: Listener[] = [];
+    let pageHeight = 180.2;
+    let observed: Listener | null = null;
+    const inserted: Array<{ textContent: string }> = [];
+    const head = {
+      firstChild: null,
+      insertBefore(node: { textContent: string }) {
+        inserted.push(node);
+      },
+    };
+    const page = {
+      URL: "about:srcdoc",
+      head,
+      body: null,
+      documentElement: {
+        getBoundingClientRect: () => ({ height: pageHeight }),
+      },
+      createElement: () => ({ textContent: "" }),
+    };
+    const pageWindow = {
+      ResizeObserver: class {
+        constructor(callback: Listener) {
+          observed = callback;
+        }
+        observe() {}
+      },
+    };
     const style: Record<string, string> = {};
     const frame = {
-      contentWindow: ownWindow,
-      isConnected: true,
+      contentDocument: page,
+      contentWindow: pageWindow,
       style,
       setAttribute() {},
-      addEventListener() {},
+      addEventListener(
+        type: string,
+        fn: Listener,
+        options?: { capture?: boolean },
+      ) {
+        if (type === "load" && options?.capture) loadListeners.push(fn);
+      },
+      removeEventListener() {},
     };
     const fakeDoc = {
       createElementNS: () => frame,
       defaultView: {
-        addEventListener(type: string, fn: (event: unknown) => void) {
-          if (type === "message") onMessage = fn;
+        setTimeout(fn: Listener) {
+          timers.push(fn);
         },
-        removeEventListener() {},
       },
     } as unknown as Document;
     const heights: number[] = [];
     createSandboxedHtmlFrame(fakeDoc, "<p>x</p>", undefined, undefined, {
+      readFont: () => font,
+      readBackground: () => background,
       onHeight: (h) => heights.push(h),
     });
-    assert.isNotNull(onMessage);
-    const send = (source: unknown, data: unknown) =>
-      onMessage!({ source, data });
+    return {
+      load: () => loadListeners[0](),
+      resize: (height: number) => {
+        pageHeight = height;
+        observed?.();
+      },
+      runTimers: () => timers.forEach((fn) => fn()),
+      style,
+      heights,
+      inserted,
+      hasObserver: () => observed !== null,
+    };
+  }
 
-    send({}, { [HTML_PREVIEW_HEIGHT_KEY]: 200 });
-    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: "200" });
-    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: Number.NaN });
-    send(ownWindow, "200");
-    assert.deepEqual(heights, []);
-    assert.isUndefined(style.height);
+  it("measures the page itself when it loads and follows its layout", function () {
+    const setup = fakeFrameSetup();
+    assert.isUndefined(setup.style.height);
+    setup.load();
+    assert.strictEqual(setup.style.height, "181px");
+    assert.isTrue(setup.hasObserver());
+    setup.resize(260);
+    assert.strictEqual(setup.style.height, "260px");
+    setup.resize(1e9);
+    assert.strictEqual(setup.style.height, `${HTML_PREVIEW_MAX_FIT_HEIGHT}px`);
+    setup.runTimers();
+    assert.deepEqual(setup.heights, [181, 260, HTML_PREVIEW_MAX_FIT_HEIGHT]);
+  });
 
-    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: 180.2 });
-    assert.strictEqual(style.height, "181px");
-    send(ownWindow, { [HTML_PREVIEW_HEIGHT_KEY]: 1e9 });
-    assert.strictEqual(style.height, `${HTML_PREVIEW_MAX_FIT_HEIGHT}px`);
-    assert.deepEqual(heights, [181, HTML_PREVIEW_MAX_FIT_HEIGHT]);
+  it("puts the chat font ahead of the page's own styles", function () {
+    const setup = fakeFrameSetup('16px/24px -apple-system, "Segoe UI"');
+    setup.load();
+    assert.deepEqual(
+      setup.inserted.map((node) => node.textContent),
+      ['html{font:16px/24px -apple-system, "Segoe UI"}'],
+    );
+  });
+
+  it("gives a themed page the chat's background as --llm-bg", function () {
+    const setup = fakeFrameSetup(undefined, "rgb(48, 48, 48)");
+    setup.load();
+    assert.deepEqual(
+      setup.inserted.map((node) => node.textContent),
+      ["html:root{--llm-bg:rgb(48, 48, 48)}"],
+    );
+  });
+
+  it("keeps a font value from adding rules", function () {
+    const setup = fakeFrameSetup("16px serif}body{display:none");
+    setup.load();
+    assert.notInclude(setup.inserted[0].textContent, "}body{");
   });
 });

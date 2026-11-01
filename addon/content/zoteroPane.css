@@ -11574,13 +11574,31 @@ label.llm-search-results-item:hover {
   color-scheme: light;
 }
 
-/* Until the page reports its height. */
+/* Until the page is measured (fitFrameToPage), the old 300px view. The
+ * frame takes its page's color scheme: Firefox paints a frame whose scheme
+ * differs from its page with an opaque canvas, a dark box in dark mode. */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
   > .llm-html-preview
   iframe {
-  height: 120px;
+  height: 300px;
+}
+
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview
+  iframe[data-llm-preview-theme="dark"] {
+  color-scheme: dark;
+}
+
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview
+  iframe[data-llm-preview-theme="light"] {
+  color-scheme: light;
 }
 
 .llm-content-flat
