@@ -71,7 +71,10 @@ import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppSe
 import { createClaudeBridgeExhaustiveReaderSession } from "../../../claudeCode/exhaustiveReader";
 import { createClaudeBridgeCompletion } from "../../../claudeCode/structuredCompletion";
 import { createCodexResponsesCompletion } from "../../../codexAppServer/readerCompletion";
-import { limitReaderCompletion } from "../../../shared/readerCompletion";
+import {
+  ReaderCompletionError,
+  limitReaderCompletion,
+} from "../../../shared/readerCompletion";
 import { hostReaderCallLimiter } from "../../reader/readerLimiter";
 import {
   mapReaderCompletion,
@@ -100,11 +103,30 @@ import { resolveAdaptiveReadingBudget } from "../../context/readingBudget";
 import {
   READ_SCOPE_TEXT_SOURCES,
   SECTIONS_NOT_FOUND_RULE,
+  SectionPickError,
+  describeNotFound,
   isFullReadScope,
+  renderCoveredParts,
+  shownPartName,
+  userPartNames,
+  type CoveredPart,
   type ReadScope,
+  type ScopedNotFound,
   type ScopedPaperText,
 } from "../../digests/readScope";
-import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
+import {
+  buildChunkOutline,
+  createSectionPicker,
+  isPlainAbstractName,
+  pickedBlockCovered,
+  readPickedSections,
+  type PickedSections,
+  type SectionPicker,
+} from "../../digests/sectionPicker";
+import {
+  readShare,
+  withoutDigestQuoteCitations,
+} from "../../digests/paperDigestWorker";
 import {
   isAbstractSectionName,
   LEAD_ABSTRACT_LABEL,
@@ -191,6 +213,158 @@ export type PaperReadReaderOptions = {
   readerFactories?: ReaderAdapterFactories;
   llmCall?: UtilityLLMParams["llmCall"];
 };
+
+/**
+ * The reader that picks a paper_read call's named sections
+ * (`sectionPicker.ts`): the one full mode reads with (the picked reader,
+ * else the runtime's own tool-free route), under the host's one reader
+ * limit, for the user's request. With no reader the picker fails, and the
+ * call returns each paper's outline instead. `fallbackNote` names the main
+ * model picking for a chosen reader that failed, as full mode names it.
+ */
+function paperReadSectionPicker(
+  context: AgentToolContext,
+  readerOptions: PaperReadReaderOptions,
+  query?: string,
+): {
+  picker: SectionPicker;
+  fallbackNote: () => ReaderFallbackNote | undefined;
+} {
+  const request = context.request;
+  const { resolution, fallbackNote } = resolveReaderWithFallback({
+    request,
+    choice: readerOptions.readerChoice
+      ? readerOptions.readerChoice(context)
+      : readerChoiceFromSelection({
+          selection: request.readerSelection,
+          request,
+          lookupEntry: readerOptions.lookupReaderEntry,
+        }),
+    llmCall: readerOptions.llmCall,
+    factories: readerOptions.readerFactories,
+  });
+  if (!resolution.ok) {
+    const detail = resolution.detail;
+    return {
+      picker: async () => {
+        throw new SectionPickError(
+          `No reader model can choose the named sections: ${detail}`,
+          new ReaderCompletionError({ reason: "not_configured", detail }),
+        );
+      },
+      fallbackNote,
+    };
+  }
+  const question = `${request.userText || ""}`.trim() || query?.trim();
+  return {
+    picker: createSectionPicker({
+      reader: mapReaderCompletion(resolution.reader, (complete) =>
+        limitReaderCompletion(complete, hostReaderCallLimiter),
+      ),
+      ...(question ? { question } : {}),
+      ...(context.signal ? { signal: context.signal } : {}),
+    }),
+    fallbackNote,
+  };
+}
+
+/**
+ * `paperReadSectionPicker`, resolved at the first pick: a call whose names
+ * need no pick (the abstract, from the Zotero field) resolves no reader and
+ * reports no fallback.
+ */
+function lazySectionPicker(
+  context: AgentToolContext,
+  readerOptions: PaperReadReaderOptions,
+  query?: string,
+): ReturnType<typeof paperReadSectionPicker> {
+  let made: ReturnType<typeof paperReadSectionPicker> | undefined;
+  const get = () =>
+    (made ||= paperReadSectionPicker(context, readerOptions, query));
+  return {
+    picker: (request) => get().picker(request),
+    fallbackNote: () => made?.fallbackNote(),
+  };
+}
+
+/**
+ * What a failed pick attaches: the section outline, else (a plain PDF has no
+ * headings) the chunk outline with its pages, else with none.
+ */
+type PickFallback = "sections" | "pages" | "chunks";
+
+/** Why a paper's named sections were not chosen, for the model. */
+function sectionPickFailureWarning(
+  citationLabel: string,
+  error: SectionPickError,
+  fallback: PickFallback = "sections",
+): string {
+  const failed = `The reader could not choose the named sections in ${citationLabel} (${error.message}); nothing of it was read in their place.`;
+  if (fallback === "sections")
+    return `${failed} Its outline is attached: call paper_read mode:'targeted' with sectionIds from it.`;
+  if (fallback === "pages")
+    return `${failed} It has no headings; its chunk outline is attached: call paper_read mode:'targeted' with the pages of the chunks you need (pages:'3-4').`;
+  return `${failed} It has no headings or page numbers: read it with a query, or with mode:'full'.`;
+}
+
+/** One entry of a chunk outline: a run of chunks, its pages, its first line. */
+type ChunkOutlineEntry = { chunks: string; pages?: string; firstLine: string };
+
+/** "3" or "3-5". */
+function rangeText(from: number, to: number): string {
+  return from === to ? `${from}` : `${from}-${to}`;
+}
+
+/**
+ * A plain PDF's chunk outline, which a failed pick returns in place of its
+ * missing section outline: one entry per chunk, or per run of chunks when
+ * there are more than the embedded outline's bound.
+ */
+function buildFallbackChunkOutline(
+  content: PdfContext | undefined,
+): ChunkOutlineEntry[] {
+  const outline = content
+    ? buildChunkOutline(content, { group: false })
+    : undefined;
+  if (outline?.kind !== "chunks" || !outline.chunks.length) return [];
+  const size = Math.ceil(outline.chunks.length / MAX_EMBEDDED_OUTLINE_SECTIONS);
+  const entries: ChunkOutlineEntry[] = [];
+  for (let start = 0; start < outline.chunks.length; start += size) {
+    const run = outline.chunks.slice(start, start + size);
+    const starts = run.flatMap((chunk) =>
+      chunk.pageStart !== undefined ? [chunk.pageStart] : [],
+    );
+    const ends = run.flatMap((chunk) =>
+      chunk.pageEnd !== undefined ? [chunk.pageEnd] : [],
+    );
+    entries.push({
+      chunks: rangeText(run[0].index, run[run.length - 1].index),
+      ...(starts.length && ends.length
+        ? { pages: rangeText(Math.min(...starts), Math.max(...ends)) }
+        : {}),
+      firstLine: run.find((chunk) => chunk.firstLine)?.firstLine || "",
+    });
+  }
+  return entries;
+}
+
+/**
+ * What a failed pick returns for one paper: its section outline, else its
+ * chunk outline, and which of them the warning points to.
+ */
+function pickFallbackOf(content: PdfContext | undefined): {
+  fallback: PickFallback;
+  outline?: DocumentOutline;
+  chunkOutline?: ChunkOutlineEntry[];
+} {
+  const outline = buildEmbeddedOutline(buildDocumentOutline(content));
+  if (outline.sections.length) return { fallback: "sections", outline };
+  const chunkOutline = buildFallbackChunkOutline(content);
+  return {
+    fallback: chunkOutline.some((entry) => entry.pages) ? "pages" : "chunks",
+    ...(chunkOutline.length ? { chunkOutline } : {}),
+  };
+}
 
 export type PaperReadFigureExtractionService = {
   extractFigures: (params: {
@@ -662,6 +836,13 @@ function emptyScopedText(
  * - sections: each name; "abstract" by the abstract rule, the rest by the
  *   MinerU heading bounds with descendants (an unheaded results span by its
  *   place, approximate), else by the PDF chunk kinds (approximate bounds).
+ *   With `pickSections`, the reader picks the rest instead, over the MinerU
+ *   headings or the PDF chunks (`sectionPicker.ts`), in any language; what
+ *   it read is named by the paper's own headings (`coveredParts`), and why
+ *   a paper has none of a name by its judgment (`notFound`). A name it
+ *   judges to mean the abstract ("摘要") is served the Zotero abstract
+ *   field first, as "abstract" is. A failed pick throws
+ *   `SectionPickError`: nothing is read in its place.
  *   Names nothing matches are `unmatched`; when none matches, the text is
  *   empty: nothing is read in its place.
  * - pages: the PDF's page text for the named pages.
@@ -675,6 +856,11 @@ export async function readPaperScopeText(
     paperContext: NonNullable<PdfTarget["paperContext"]>;
     scope?: ReadScope;
     maxChars: number;
+    /**
+     * The reader's choice of named sections; without it the names resolve
+     * by their headings' kinds, as before.
+     */
+    pickSections?: SectionPicker;
   } & PaperScopeTextReaders,
 ): Promise<ScopedPaperText | null> {
   const { paperContext, scope } = params;
@@ -736,10 +922,37 @@ export async function readPaperScopeText(
     }
     case "sections": {
       const names = scope!.sections || [];
-      const wantsAbstract = names.some(isAbstractSectionName);
-      const others = names.filter((name) => !isAbstractSectionName(name));
+      // With a picker only the plain name "abstract" takes the abstract
+      // rule, and only when the paper has an abstract to read (the Zotero
+      // field, a classified section or chunks, else the lead paragraph);
+      // else it is picked with the other names.
+      const abstractNames = names.filter(
+        params.pickSections ? isPlainAbstractName : isAbstractSectionName,
+      );
+      let abstractPart: AbstractPart | null = null;
+      if (abstractNames.length) {
+        abstractPart = await readAbstractPart({
+          paperContext,
+          readers: params,
+          markdown,
+          pdfContext,
+        });
+      }
+      const toPick = new Set(
+        params.pickSections && !abstractPart ? abstractNames : [],
+      );
+      const wantsAbstract = abstractNames.length > 0 && !toPick.size;
+      const others = names.filter(
+        (name) => !abstractNames.includes(name) || toPick.has(name),
+      );
       const blocks: string[] = [];
       const covered: string[] = [];
+      // What a picked read covered, by heading and name; `covered` is
+      // rendered from it when the reader picked.
+      const coveredParts: CoveredPart[] = [];
+      const picked = Boolean(params.pickSections) && others.length > 0;
+      let notFound: ScopedNotFound | undefined;
+      let paperCharacters: number | undefined;
       const unmatched: string[] = [];
       const sources: string[] = [];
       let approximate = false;
@@ -748,15 +961,15 @@ export async function readPaperScopeText(
       let backend: ScopedPaperText["backend"] = "text";
       let anyText = false;
       if (wantsAbstract) {
-        const part = await readAbstractPart({
-          paperContext,
-          readers: params,
-          markdown,
-          pdfContext,
-        });
+        const part = abstractPart;
         if (part) {
           blocks.push(part.block);
           covered.push(part.label);
+          coveredParts.push({
+            label: part.label,
+            for: abstractNames[0],
+            kind: "abstract",
+          });
           sources.push(part.source);
           if (part.bounds === "approximate") {
             approximate = true;
@@ -764,10 +977,42 @@ export async function readPaperScopeText(
           }
           anyText = true;
         } else {
-          unmatched.push(names.find(isAbstractSectionName)!);
+          unmatched.push(abstractNames[0]);
         }
       }
-      if (others.length) {
+      if (picked) {
+        const read = await readPickedSections({
+          names: others,
+          ...(paperContext.title ? { title: paperContext.title } : {}),
+          markdown,
+          pdfContext,
+          picker: params.pickSections!,
+          ...(params.readAbstractNote
+            ? { abstractField: () => params.readAbstractNote!(paperContext) }
+            : {}),
+        });
+        if (read) {
+          anyText = true;
+          backend = read.backend;
+          for (const block of read.blocks) {
+            if (!block.text) continue;
+            const source = block.source || read.source;
+            if (!sources.includes(source)) sources.push(source);
+            // The Zotero abstract field is exact; the paper's chunks are not.
+            if (!block.source && read.approximate) {
+              approximate = true;
+              approximateOtherwise = true;
+            }
+          }
+          if (read.text) blocks.push(read.text);
+          coveredParts.push(...read.covered);
+          unmatched.push(...read.unmatched);
+          notFound = read.notFound;
+          paperCharacters = read.paperCharacters;
+        } else {
+          unmatched.push(...others);
+        }
+      } else if (others.length) {
         const md = await markdown();
         if (md) {
           anyText = true;
@@ -818,7 +1063,10 @@ export async function readPaperScopeText(
         );
       return finish(blocks.join("\n\n").trim(), {
         backend,
-        covered,
+        covered: picked ? renderCoveredParts(coveredParts) : covered,
+        ...(picked ? { coveredParts } : {}),
+        ...(notFound && unmatched.length ? { notFound } : {}),
+        ...(paperCharacters ? { paperCharacters } : {}),
         unmatched: ordered(unmatched),
         bounds: approximate ? "approximate" : "exact",
         ...(approximate && !approximateOtherwise
@@ -998,7 +1246,13 @@ type WholeSectionsPaper = {
    * one, or a named section had no readable text; no_matching_sections: none of the names is in the paper (nothing
    * of it was read); unreadable: the paper has no readable text.
    */
-  status: "complete" | "partial" | "no_matching_sections" | "unreadable";
+  status:
+    | "complete"
+    | "partial"
+    | "no_matching_sections"
+    | "unreadable"
+    /** The reader could not choose the named sections: see `outline`. */
+    | "sections_not_chosen";
   sourceKind: "paper_text";
   backend?: ScopedPaperText["backend"];
   citationLabel: string;
@@ -1006,11 +1260,24 @@ type WholeSectionsPaper = {
   displayLabel?: string;
   covered: string[];
   unmatched: string[];
+  /** Why the paper has none of `unmatched`, as its reader judged. */
+  notFound?: ScopedPaperText["notFound"];
+  /** A failed pick: the sections the model may name by `sectionIds`. */
+  outline?: DocumentOutline;
+  /** A failed pick in a paper without headings: its chunks and pages. */
+  chunkOutline?: ChunkOutlineEntry[];
   bounds?: ScopedPaperText["bounds"];
   textSource?: string;
+  /** The paper's whole text length, when the reader picked its sections. */
+  paperCharacters?: number;
+  /** How much of the paper's text the sections read are ("12% of ..."). */
+  readShare?: string;
   /** Each section read, whole or cut by the read budget. */
   sections: Array<{
+    /** The paper's own heading. */
     section: string;
+    /** The requested names a picked section was read for. */
+    for?: string[];
     complete: boolean;
     characters: number;
     totalCharacters: number;
@@ -1028,9 +1295,18 @@ type WholeSectionsPaper = {
  * and is named; nothing else of it is read in their place. A call that
  * names only the abstract comes here with a query too, and is told the query
  * was not used. An abstract found only as the unheaded lead is named as such.
+ *
+ * With `pickSections` the reader picks every name but the abstract, in one
+ * call per paper (`readPickedSections`): each picked section is read whole
+ * under its own heading, a paper with none of a name says why
+ * (`notFound`), and a paper whose pick failed returns its outline instead.
+ * A name the reader judges to mean the abstract is read as "Abstract", the
+ * Zotero abstract field first.
  */
 async function readWholeSections(params: {
   names: readonly string[];
+  /** The reader's choice of the named sections, but the abstract. */
+  pickSections?: SectionPicker;
   /** An abstract-only call's query, which the whole read does not use. */
   queryIgnored?: boolean;
   targets: NonNullable<PdfTarget["paperContext"]>[];
@@ -1050,6 +1326,77 @@ async function readWholeSections(params: {
     params.zoteroGateway,
   );
   let anyNotFound = false;
+  const readAbstractNote = (
+    paper: NonNullable<PdfTarget["paperContext"]>,
+  ): string => {
+    const field = (
+      params.zoteroGateway.getItem(paper.itemId) as
+        | { getField?: (field: string) => unknown }
+        | null
+        | undefined
+    )?.getField?.("abstractNote");
+    return typeof field === "string" ? field : "";
+  };
+  // Every paper's pick starts before the first is read: the host reader
+  // limiter holds the calls to its own cap, so papers are picked in
+  // parallel instead of one after another.
+  type SettledPick = { value: PickedSections | null } | { error: unknown };
+  const plans = new Map<
+    NonNullable<PdfTarget["paperContext"]>,
+    {
+      // The names the abstract rule serves, with what it read.
+      fast: Array<{ name: string; read: ScopedPaperText | null }>;
+      // The names the reader picks, with the pick started for them.
+      picked: string[];
+      pick?: Promise<SettledPick>;
+    }
+  >();
+  for (const paperContext of targets) {
+    // The reader picks every name but the plain "abstract", which keeps its
+    // rule (the Zotero abstract field first, else a classified abstract
+    // section); an "abstract" neither holds is picked with the others.
+    const fast: Array<{ name: string; read: ScopedPaperText | null }> = [];
+    const picked: string[] = [];
+    for (const name of params.names) {
+      if (params.pickSections && !isPlainAbstractName(name)) {
+        picked.push(name);
+        continue;
+      }
+      const read = await readPaperScopeText({
+        paperContext,
+        scope: params.pickSections
+          ? { source: "abstract" }
+          : { source: "sections", sections: [name] },
+        maxChars: WHOLE_SECTION_READ_CEILING,
+        pdfService: params.pdfService,
+        readAbstractNote,
+      });
+      if (params.pickSections && (!read || !read.text)) picked.push(name);
+      else fast.push({ name, read });
+    }
+    plans.set(paperContext, {
+      fast,
+      picked,
+      ...(picked.length
+        ? {
+            pick: readPickedSections({
+              names: picked,
+              ...(paperContext.title ? { title: paperContext.title } : {}),
+              markdown: () => readMineruMarkdown(paperContext),
+              pdfContext: () =>
+                params.pdfService
+                  .ensurePaperContext(paperContext)
+                  .catch(() => undefined),
+              picker: params.pickSections!,
+              abstractField: () => readAbstractNote(paperContext),
+            }).then(
+              (value): SettledPick => ({ value }),
+              (error): SettledPick => ({ error }),
+            ),
+          }
+        : {}),
+    });
+  }
   for (const paperContext of targets) {
     const citationLabel = formatPaperCitationLabel(paperContext);
     const sourceLabel = formatPaperSourceLabel(paperContext);
@@ -1072,46 +1419,40 @@ async function readWholeSections(params: {
     const seen = new Set<string>();
     const cut: string[] = [];
     const unreadableNames: string[] = [];
-    for (const name of params.names) {
-      const read = await readPaperScopeText({
-        paperContext,
-        scope: { source: "sections", sections: [name] },
-        maxChars: WHOLE_SECTION_READ_CEILING,
-        pdfService: params.pdfService,
-        readAbstractNote: (paper) => {
-          const field = (
-            params.zoteroGateway.getItem(paper.itemId) as
-              | { getField?: (field: string) => unknown }
-              | null
-              | undefined
-          )?.getField?.("abstractNote");
-          return typeof field === "string" ? field : "";
-        },
-      });
-      if (!read) {
-        // A name with no readable text is reported, never dropped quietly.
-        row.unmatched.push(name);
-        unreadableNames.push(name);
-        continue;
-      }
-      readable = true;
-      row.unmatched.push(...read.unmatched);
-      const whole = read.text.trim();
-      if (!whole || seen.has(whole)) continue;
+    /** One section read whole, cut to what the read budget leaves. */
+    const addSection = (section: {
+      label: string;
+      /**
+       * What a passage of it is called to the user, when its `label` is
+       * where it was found ("pages 3–4") or an internal name ("Results
+       * (unlabelled sections)") and not a heading of the paper.
+       */
+      passageLabel?: string;
+      text: string;
+      covered: string;
+      for?: string[];
+      approximate: boolean;
+      source: string;
+      backend: ScopedPaperText["backend"];
+    }) => {
+      const whole = section.text.trim();
+      if (!whole || seen.has(whole)) return;
       seen.add(whole);
-      const label = read.covered[0] || name;
+      const label = section.label;
+      const passageLabel = section.passageLabel || label;
       const kept = cutSectionText(whole, remaining);
       remaining = Math.max(0, remaining - kept.length);
       const complete = kept.length >= whole.length;
       // A section the budget left no room for is listed as cut, not read.
-      if (kept) row.covered.push(label);
-      if (read.bounds === "approximate") approximate = true;
-      for (const source of read.source.split("; "))
+      if (kept) row.covered.push(section.covered);
+      if (section.approximate) approximate = true;
+      for (const source of section.source.split("; "))
         if (source && !sources.includes(source)) sources.push(source);
       // The paper's text backend; a Zotero abstract field is not one.
-      if (!row.backend || row.backend === "text") row.backend = read.backend;
+      if (!row.backend || row.backend === "text") row.backend = section.backend;
       row.sections.push({
         section: label,
+        ...(section.for ? { for: [...section.for] } : {}),
         complete,
         characters: kept.length,
         totalCharacters: whole.length,
@@ -1124,7 +1465,7 @@ async function readWholeSections(params: {
         const result: Record<string, unknown> = {
           paperContext,
           text: passage.text,
-          sectionLabel: label,
+          sectionLabel: passageLabel,
           chunkKind,
           citationLabel,
           sourceLabel,
@@ -1137,7 +1478,7 @@ async function readWholeSections(params: {
         if (citation) quoteCitations.push(citation);
         row.passages.push({
           text: passage.text,
-          sectionLabel: label,
+          sectionLabel: passageLabel,
           chunkKind,
           ...(passage.chunkIndex !== undefined
             ? { chunkIndex: passage.chunkIndex }
@@ -1145,22 +1486,106 @@ async function readWholeSections(params: {
           ...(citation ? { quoteCitationId: citation.id } : {}),
         });
       }
+    };
+    const plan = plans.get(paperContext)!;
+    const { picked } = plan;
+    for (const { name, read } of plan.fast) {
+      if (!read) {
+        // A name with no readable text is reported, never dropped quietly.
+        row.unmatched.push(name);
+        unreadableNames.push(name);
+        continue;
+      }
+      readable = true;
+      row.unmatched.push(...read.unmatched);
+      const label = read.covered[0] || name;
+      addSection({
+        label,
+        // The user reads "Abstract" and "Results" for a part found by place.
+        passageLabel: shownPartName(label),
+        text: read.text,
+        covered: label,
+        approximate: read.bounds === "approximate",
+        source: read.source,
+        backend: read.backend,
+      });
+    }
+    let pickFailure: SectionPickError | undefined;
+    if (picked.length) {
+      let read: PickedSections | null = null;
+      const settled = await plan.pick!;
+      if ("error" in settled) {
+        if (!(settled.error instanceof SectionPickError)) throw settled.error;
+        pickFailure = settled.error;
+      } else read = settled.value;
+      if (pickFailure) {
+        readable = true;
+        const content = await params.pdfService
+          .ensurePaperContext(paperContext)
+          .catch(() => undefined);
+        const { fallback, outline, chunkOutline } = pickFallbackOf(content);
+        if (outline) row.outline = outline;
+        if (chunkOutline) row.chunkOutline = chunkOutline;
+        warnings.push(
+          sectionPickFailureWarning(citationLabel, pickFailure, fallback),
+        );
+      } else if (!read) {
+        row.unmatched.push(...picked);
+        unreadableNames.push(...picked);
+      } else {
+        readable = true;
+        row.unmatched.push(...read.unmatched);
+        row.paperCharacters = read.paperCharacters;
+        if (read.notFound && read.unmatched.length)
+          row.notFound = read.notFound;
+        for (const block of read.blocks)
+          addSection({
+            label: block.label,
+            // A run of plain PDF text has no heading of its own: its
+            // passages are the parts the user asked for, as the reader judged.
+            ...(block.chunkIndexes && !block.kind
+              ? {
+                  passageLabel:
+                    userPartNames(block.for).join(", ") || undefined,
+                }
+              : {}),
+            text: block.text,
+            covered: renderCoveredParts(pickedBlockCovered(block))[0],
+            for: block.for,
+            // The Zotero abstract field has its own source, exact bounds and
+            // no paper text backend.
+            approximate: !block.source && read.approximate,
+            source: block.source || read.source,
+            backend: block.source ? "text" : read.backend,
+          });
+      }
     }
     if (row.sections.length) {
       row.bounds = approximate ? "approximate" : "exact";
       row.textSource = sources.join("; ");
+      // As a digest reports it: how much of the paper this read is.
+      if (row.paperCharacters)
+        row.readShare = `${readShare(
+          row.sections.reduce((sum, entry) => sum + entry.characters, 0),
+          row.paperCharacters,
+        )} of the paper's text`;
     }
     if (!readable) {
       row.status = "unreadable";
       nothingRead.push(
         `${citationLabel} (item:${paperContext.itemId}): no readable text`,
       );
+    } else if (pickFailure && !row.sections.length) {
+      row.status = "sections_not_chosen";
+      nothingRead.push(
+        `${citationLabel} (item:${paperContext.itemId}): the named sections could not be chosen`,
+      );
     } else if (!row.sections.length) {
       row.status = "no_matching_sections";
       nothingRead.push(
         `${citationLabel} (item:${paperContext.itemId}): none of the named sections were found`,
       );
-    } else if (cut.length || unreadableNames.length) {
+    } else if (cut.length || unreadableNames.length || pickFailure) {
       row.status = "partial";
     }
     if (row.sections.length && cut.length)
@@ -1185,7 +1610,11 @@ async function readWholeSections(params: {
       (name) => !unreadableNames.includes(name),
     );
     if (notFound.length) {
-      warnings.push(`Not found in ${citationLabel}: ${notFound.join(", ")}.`);
+      warnings.push(
+        `Not found in ${citationLabel}: ${notFound.join(", ")}${describeNotFound(
+          row.notFound,
+        )}.`,
+      );
       anyNotFound = true;
     }
     papers.push(row);
@@ -1553,6 +1982,8 @@ type ResolvedSectionFilter = {
    * search them; a read with no query reads them.
    */
   unsearchable: string[];
+  /** Why the paper has none of a picked name, as its reader judged. */
+  notFoundReason?: ScopedNotFound;
 };
 
 /**
@@ -1567,10 +1998,18 @@ type ResolvedSectionFilter = {
  * chunks' kind and any other name by the outline titles that hold every
  * word of it. A name or id the paper has none of is reported, never
  * replaced by the whole document.
+ *
+ * With `picker`, the reader picks every name but the abstract instead
+ * (`readPickedSections`), and its sections map to their chunks the same
+ * way; the text before the first heading by its text, a plain PDF's chunk
+ * ranges as they are. A failed pick throws `SectionPickError`.
  */
 async function resolveSectionFilter(params: {
   sectionIds?: string[];
   sections?: string[];
+  /** The reader's choice of the named sections, but the abstract. */
+  picker?: SectionPicker;
+  title?: string;
   outline: DocumentOutline;
   content: PdfContext | undefined;
   markdown: string | null;
@@ -1614,11 +2053,22 @@ async function resolveSectionFilter(params: {
     }
     return [...byText].sort((a, b) => a - b);
   };
-  for (const name of names.filter(isAbstractSectionName)) {
+  // With a picker only the plain name "abstract" takes the abstract rule,
+  // and only when the Zotero field or a classified abstract section holds
+  // it; else the reader picks it with the other names.
+  const abstractNames = names.filter(
+    params.picker ? isPlainAbstractName : isAbstractSectionName,
+  );
+  const abstractToPick = new Set<string>();
+  for (const name of abstractNames) {
     const found = await choosePaperTextAbstract(
       params.markdown,
       async () => params.content,
     );
+    if (params.picker && !params.abstractNote().trim() && !found) {
+      abstractToPick.add(name);
+      continue;
+    }
     const indexes = !found
       ? []
       : found.via === "mineru"
@@ -1639,8 +2089,57 @@ async function resolveSectionFilter(params: {
     }
     add(name, indexes);
   }
-  const others = names.filter((name) => !isAbstractSectionName(name));
-  if (others.length && params.markdown) {
+  const others = names.filter(
+    (name) => !abstractNames.includes(name) || abstractToPick.has(name),
+  );
+  let notFoundReason: ScopedNotFound | undefined;
+  if (others.length && params.picker) {
+    const picked = await readPickedSections({
+      names: others,
+      ...(params.title ? { title: params.title } : {}),
+      markdown: async () => params.markdown,
+      pdfContext: async () => params.content,
+      picker: params.picker,
+    });
+    if (!picked) {
+      for (const name of others) missing.add(name);
+    } else {
+      const byName = new Map<string, Set<number>>();
+      for (const block of picked.blocks) {
+        const indexes = block.chunkIndexes
+          ? block.chunkIndexes
+          : block.preamble
+            ? chunkIndexesForText(content, block.text)
+            : mineruChunks(picked.sections || [], block.sectionIndexes || []);
+        for (const name of block.for) {
+          const set = byName.get(name) || new Set<number>();
+          for (const index of indexes) set.add(index);
+          byName.set(name, set);
+        }
+      }
+      // A name the reader judged the abstract that no chunk holds is
+      // served by the Zotero abstract field, as the abstract rule has it.
+      const inRecord = (name: string) =>
+        picked.abstractNames.includes(name) &&
+        Boolean(params.abstractNote().trim());
+      for (const [name, indexes] of byName) {
+        if (indexes.size)
+          add(
+            name,
+            [...indexes].sort((a, b) => a - b),
+          );
+        else if (inRecord(name)) abstractInRecord = true;
+        else unsearchable.add(name);
+      }
+      const unmatched = picked.unmatched.filter((name) => {
+        if (!inRecord(name)) return true;
+        abstractInRecord = true;
+        return false;
+      });
+      for (const name of unmatched) missing.add(name);
+      if (picked.notFound && unmatched.length) notFoundReason = picked.notFound;
+    }
+  } else if (others.length && params.markdown) {
     const choice = chooseMineruScopeSections(params.markdown, others);
     for (const part of choice.parts) {
       const indexes = mineruChunks(choice.sections, part.indexes);
@@ -1683,6 +2182,7 @@ async function resolveSectionFilter(params: {
     notFound,
     abstractInRecord,
     unsearchable: names.filter((name) => unsearchable.has(name)),
+    ...(notFoundReason ? { notFoundReason } : {}),
   };
 }
 
@@ -2100,7 +2600,7 @@ export function matchesPaperReadGuidance(
 export const PAPER_READ_GUIDANCE: PaperReadGuidance = {
   matches: matchesPaperReadGuidance,
   instruction: [
-    "Use supplied paper text directly when it supports the answer. Otherwise read only what the user named, if they limited the reading (only the abstract, named sections), or choose the paper_read mode from the evidence the answer needs: mode:'overview' for a bounded overview; mode:'targeted' with sections and no query for whole named sections, or with query for a specific passage (for a single factual lookup start with topK:3 and widen only for several requested facts or comparison dimensions); mode:'outline' for section addresses; mode:'full' for comprehensive reading when useful; mode:'figures' for extracted figure crops; mode:'visual' or mode:'capture' only for explicit page, layout, or current-reader inspection. An overview or targeted read never satisfies an explicit full-read request.",
+    "Use supplied paper text directly when it supports the answer. Otherwise read only what the user named, if they limited the reading (only the abstract, named sections), or choose the paper_read mode from the evidence the answer needs: mode:'overview' for a bounded overview; mode:'targeted' with sections (as the user named them, any language) and no query to read those parts whole, or with query for a specific passage (for a single factual lookup start with topK:3 and widen only for several requested facts or comparison dimensions); mode:'outline' for section addresses; mode:'full' for comprehensive reading when useful; mode:'figures' for extracted figure crops; mode:'visual' or mode:'capture' only for explicit page, layout, or current-reader inspection. An overview or targeted read never satisfies an explicit full-read request.",
     "In collection, tag, or library scope the active-reader paper is never an implicit target: pass explicit targets, batching several papers in one call.",
     "For eligible textual paper_read results, use paperEvidenceProgress as factual retrieval state. Its recommendations are advisory: decide whether held evidence supports the requested explanation, and freely retrieve missing methods, results, qualifications, or other relevant passages. Avoid repeating unchanged reads; disclose unavailable sources.",
     "If overview falls back to Zotero metadata or an abstract, answer from that evidence when sufficient and state the limitation. If there is no PDF attachment and the user needs more than local metadata or abstract evidence, say what is missing and label any outside evidence separately.",
@@ -2121,7 +2621,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections and no query for whole named sections, or with query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' for comprehensive full-text reading when useful, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections (as the user named them, any language) and no query to read those parts whole, or with query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' for comprehensive full-text reading when useful, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -2177,7 +2677,12 @@ export function createPaperReadTool(
             description:
               "Optional search probes such as translations, acronyms, notation variants, or technical equivalents.",
           },
-          sections: { type: "array", items: { type: "string" } },
+          sections: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Parts of the paper as the user named them, in any language; the reader picks the paper's matching sections and reads them whole.",
+          },
           sectionIds: {
             type: "array",
             items: { type: "string" },
@@ -2904,7 +3409,7 @@ export function createPaperReadTool(
       // query: the abstract is short, so a search over it could only return
       // the chunk around it, and the lead found by position in its place.
       const abstractOnly = Boolean(
-        input.sections?.length && input.sections.every(isAbstractSectionName),
+        input.sections?.length && input.sections.every(isPlainAbstractName),
       );
       if (
         mode === "targeted" &&
@@ -2912,8 +3417,10 @@ export function createPaperReadTool(
         (!input.query || abstractOnly) &&
         !input.sectionIds?.length
       ) {
-        return readWholeSections({
+        const picking = lazySectionPicker(context, readerOptions, input.query);
+        const whole = await readWholeSections({
           names: input.sections,
+          ...(picking ? { pickSections: picking.picker } : {}),
           queryIgnored: Boolean(input.query),
           targets,
           maxCharsPerPaper: capAtAdaptiveBudget(
@@ -2925,6 +3432,11 @@ export function createPaperReadTool(
           zoteroGateway,
           displayLabelFor,
         });
+        // The trace names the main model picking for a failed chosen reader.
+        const pickFallbackNote = picking?.fallbackNote();
+        return pickFallbackNote
+          ? { ...whole, readerFallback: pickFallbackNote }
+          : whole;
       }
 
       const contentByPaper = new Map<string, PdfContext | undefined>();
@@ -2964,30 +3476,87 @@ export function createPaperReadTool(
         : undefined;
       const recordOnly: string[] = [];
       const unsearchableNotes: string[] = [];
+      // Named sections are the reader's to pick, but the plain "abstract"
+      // that the Zotero field or a classified section holds.
+      const picking = input.sections?.length
+        ? lazySectionPicker(context, readerOptions, input.query)
+        : undefined;
+      const picker = picking?.picker;
+      const pickFailures: string[] = [];
+      const notChosenPapers = new Set<string>();
+      // A paper without headings that was not chosen: its chunk outline.
+      const chunkOutlines = new Map<string, ChunkOutlineEntry[]>();
+      // Every paper's filter, and so its pick, starts before the first is
+      // read: the host reader limiter holds the calls to its own cap.
+      const filterRuns = new Map<
+        string,
+        Promise<{ filter: ResolvedSectionFilter } | { error: unknown }>
+      >();
       for (const paper of targets) {
         const hydrated = readers?.get(paperContextKey(paper));
-        const filter = await resolveSectionFilter({
-          sectionIds: input.sectionIds,
-          sections: input.sections,
-          outline: outlineByPaper.get(paperContextKey(paper))!,
-          content: contentByPaper.get(paperContextKey(paper)),
-          markdown: hydrated ? await readMineruMarkdown(hydrated) : null,
-          abstractNote: () => {
-            const field = (
-              zoteroGateway.getItem?.(paper.itemId) as
-                | { getField?: (field: string) => unknown }
-                | null
-                | undefined
-            )?.getField?.("abstractNote");
-            return typeof field === "string" ? field : "";
-          },
-        });
+        filterRuns.set(
+          paperContextKey(paper),
+          (async () =>
+            resolveSectionFilter({
+              sectionIds: input.sectionIds,
+              sections: input.sections,
+              ...(picker ? { picker } : {}),
+              ...(paper.title ? { title: paper.title } : {}),
+              outline: outlineByPaper.get(paperContextKey(paper))!,
+              content: contentByPaper.get(paperContextKey(paper)),
+              markdown: hydrated ? await readMineruMarkdown(hydrated) : null,
+              abstractNote: () => {
+                const field = (
+                  zoteroGateway.getItem?.(paper.itemId) as
+                    | { getField?: (field: string) => unknown }
+                    | null
+                    | undefined
+                )?.getField?.("abstractNote");
+                return typeof field === "string" ? field : "";
+              },
+            }))().then(
+            (filter) => ({ filter }),
+            (error: unknown) => ({ error }),
+          ),
+        );
+      }
+      for (const paper of targets) {
+        const settled = (await filterRuns.get(paperContextKey(paper))!) as
+          | { filter: ResolvedSectionFilter }
+          | { error: unknown };
+        let filter: ResolvedSectionFilter;
+        if ("filter" in settled) filter = settled.filter;
+        else {
+          const error = settled.error;
+          if (!(error instanceof SectionPickError)) throw error;
+          // Not searched: the paper's outline (in its group) is the way on.
+          unsearched.add(paperContextKey(paper));
+          notChosenPapers.add(paperContextKey(paper));
+          const { fallback, chunkOutline } = pickFallbackOf(
+            contentByPaper.get(paperContextKey(paper)),
+          );
+          if (chunkOutline)
+            chunkOutlines.set(paperContextKey(paper), chunkOutline);
+          pickFailures.push(
+            sectionPickFailureWarning(
+              formatPaperCitationLabel(paper),
+              error,
+              fallback,
+            ),
+          );
+          nothingRead.push(
+            `${formatPaperCitationLabel(paper)} (item:${paper.itemId}): the named sections could not be chosen`,
+          );
+          continue;
+        }
         sectionIdsByPaper.set(paper.contextItemId, filter.sectionIds);
         if (filter.chunkIndexes.length)
           chunkIndexesByPaper.set(paper.contextItemId, filter.chunkIndexes);
         if (filter.notFound.length)
           notFoundWarnings.push(
-            `Not found in ${formatPaperCitationLabel(paper)}: ${filter.notFound.join(", ")}.`,
+            `Not found in ${formatPaperCitationLabel(paper)}: ${filter.notFound.join(", ")}${describeNotFound(
+              filter.notFoundReason,
+            )}.`,
           );
         if (filter.abstractInRecord)
           recordOnly.push(formatPaperCitationLabel(paper));
@@ -3040,6 +3609,7 @@ export function createPaperReadTool(
               ]
             : []),
           ...unsearchableNotes,
+          ...pickFailures,
         ]),
       ];
       const question = input.query || context.request.userText || "";
@@ -3063,6 +3633,7 @@ export function createPaperReadTool(
             sectionIdsByPaper,
             chunkIndexesByPaper,
           });
+      const pickFallbackNote = picking?.fallbackNote();
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();
       for (const [key, outline] of outlineByPaper) {
@@ -3077,15 +3648,28 @@ export function createPaperReadTool(
           quoteCitations,
           embeddedOutlines,
         ).map((group, index) =>
-          notFoundPapers.has(paperContextKey(targets[index]))
-            ? { ...group, status: "no_matching_sections" }
-            : group,
+          notChosenPapers.has(paperContextKey(targets[index]))
+            ? {
+                ...group,
+                status: "sections_not_chosen",
+                ...(chunkOutlines.has(paperContextKey(targets[index]))
+                  ? {
+                      chunkOutline: chunkOutlines.get(
+                        paperContextKey(targets[index]),
+                      ),
+                    }
+                  : {}),
+              }
+            : notFoundPapers.has(paperContextKey(targets[index]))
+              ? { ...group, status: "no_matching_sections" }
+              : group,
         ),
         quoteCitations: mergeQuoteCitations(quoteCitations),
         ...(warnings.length ? { warnings } : {}),
         ...(nothingRead.length
           ? { note: `Nothing read for ${nothingRead.join("; ")}.` }
           : {}),
+        ...(pickFallbackNote ? { readerFallback: pickFallbackNote } : {}),
       };
     },
     async buildFollowupMessage(result: AgentToolResult) {

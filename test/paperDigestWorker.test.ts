@@ -155,6 +155,88 @@ describe("paperDigestWorker", function () {
     ]);
   });
 
+  describe("a plain-PDF read after the Zotero abstract field", function () {
+    const SOURCE = [
+      "## Abstract",
+      "Place cells drift while a stable readout survives the change.",
+      "",
+      "[chunk 4]",
+      "Decoding stayed above chance on every day of the recording.",
+      "",
+      "[chunk 5]",
+      "Replays also followed the drifting map across the sessions.",
+    ].join("\n");
+
+    it("keeps the model's section for a quote in a chunk after the abstract block", function () {
+      assert.deepEqual(
+        verifyDigestEvidence(
+          [
+            {
+              section: "Results",
+              quote: "Decoding stayed above chance on every day",
+            },
+            {
+              section: "Results",
+              quote: "Replays also followed the drifting map",
+            },
+          ],
+          SOURCE,
+        ),
+        [
+          {
+            section: "Results",
+            quote: "Decoding stayed above chance on every day",
+            chunk: 4,
+          },
+          {
+            section: "Results",
+            quote: "Replays also followed the drifting map",
+            chunk: 5,
+          },
+        ],
+      );
+    });
+
+    it("still labels a quote inside the abstract block as the abstract", function () {
+      assert.deepEqual(
+        verifyDigestEvidence(
+          [
+            {
+              section: "Results",
+              quote: "Place cells drift while a stable readout survives",
+            },
+          ],
+          SOURCE,
+        ),
+        [
+          {
+            section: "Abstract",
+            quote: "Place cells drift while a stable readout survives",
+          },
+        ],
+      );
+    });
+
+    it("labels a quote under a heading inside a later chunk by that heading", function () {
+      const source = `${SOURCE}\n\n[chunk 6]\n## Discussion\nDrift left the readout intact in every animal.`;
+      const [entry] = verifyDigestEvidence(
+        [{ quote: "Drift left the readout intact in every animal." }],
+        source,
+      );
+      assert.equal(entry.section, "Discussion");
+    });
+
+    it("shows a part found by place as the plain part", function () {
+      const source =
+        "## Abstract (unlabelled lead)\nTheories of offline learning predict replay.";
+      const [entry] = verifyDigestEvidence(
+        [{ quote: "Theories of offline learning predict replay." }],
+        source,
+      );
+      assert.equal(entry.section, "Abstract");
+    });
+  });
+
   it("keeps at most six verified quotes and tolerates non-array evidence", function () {
     const many = Array.from({ length: 9 }, () => ({
       quote: "Drift is slow. Learning is fast.",
@@ -201,6 +283,27 @@ describe("paperDigestWorker", function () {
         },
       ],
     );
+  });
+
+  it("shows the part the user asked for when the model's own section is an internal label", function () {
+    const source =
+      "[chunk 1]\nDecoding stayed above chance on every recorded day.";
+    const evidence = (section?: string) =>
+      verifyDigestEvidence(
+        [
+          {
+            ...(section === undefined ? {} : { section }),
+            quote: "Decoding stayed above chance on every recorded day.",
+          },
+        ],
+        source,
+      );
+    assert.equal(
+      evidence("Results (unlabelled sections)")[0].section,
+      "Results",
+    );
+    assert.equal(evidence("")[0].section, undefined);
+    assert.notProperty(evidence("")[0], "section");
   });
 
   it("parses fenced JSON and reports a parse error for prose", function () {

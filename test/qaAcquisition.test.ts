@@ -26,6 +26,16 @@ import {
 } from "../src/agent/digests/paperDigestWorker";
 import type { QuoteCitation } from "../src/shared/types";
 import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import { clearSectionPickCache } from "../src/agent/digests/sectionPicker";
+import {
+  fakeReader,
+  headingMatchReader,
+  idOf,
+  namesOf,
+} from "./helpers/sectionPickerFixtures";
+
+/** Stands in for the reader that picks named sections (sectionPicker.ts). */
+const STAND_IN_READER = headingMatchReader();
 
 describe("QA acquisition contracts", function () {
   let previous: ReturnType<typeof snapshotTestGlobals>;
@@ -76,6 +86,9 @@ describe("QA acquisition contracts", function () {
         resolvePaperContextTarget: (target: any) =>
           refs.find((p) => p.itemId === target.itemId),
       } as any,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     );
     const input = tool.validate({
       mode: "targeted",
@@ -334,7 +347,23 @@ describe("QA acquisition contracts", function () {
       1,
     );
   });
-  it("binds a standard name by heading kind and a free name by all its words", async function () {
+  // Since the reader picks named sections, which heading binds a name is
+  // the reader's call: the search stays inside what it picked, and a name it
+  // finds no part for is reported and not searched.
+  it("searches only the sections the reader picks for each name", async function () {
+    clearSectionPickCache();
+    const picks: Record<string, string | undefined> = {
+      methods: "2 Methods",
+      "model calibration": undefined,
+      "model fit": "5 Model fit",
+    };
+    const reader = fakeReader((prompt) => ({
+      parts: namesOf(prompt).map((name) =>
+        picks[name]
+          ? { name, sections: [idOf(prompt, `| # ${picks[name]} |`)] }
+          : { name, none: true },
+      ),
+    }));
     const markdown = headingSequenceMarkdown(
       [
         "Place cells under drift",
@@ -354,7 +383,14 @@ describe("QA acquisition contracts", function () {
       },
     );
     const ctx = await buildMarkdownPdfContext(markdown, 9801);
-    const paper = { ...refs[0], itemId: 9800, contextItemId: 9801 };
+    // The paper's MinerU directory, as the attachment lookup supplies it:
+    // the reader picks from its headings.
+    const paper = {
+      ...refs[0],
+      itemId: 9800,
+      contextItemId: 9801,
+      mineruCacheDir: getMineruItemDir(9801),
+    };
     const service = { ensurePaperContext: async () => ctx } as any;
     const tool = createPaperReadTool(
       service,
@@ -364,6 +400,9 @@ describe("QA acquisition contracts", function () {
         listPaperContexts: () => [paper],
         resolvePaperContextTarget: () => paper,
       } as any,
+      undefined,
+      undefined,
+      { readerFactories: reader.factories },
     );
     const run = async (sections: string[]) => {
       const input = tool.validate({
@@ -392,7 +431,7 @@ describe("QA acquisition contracts", function () {
     assert.isNotEmpty(methods.papers[0].passages);
     for (const p of methods.papers[0].passages)
       assert.equal(p.sectionLabel, "2 Methods");
-    // One shared word ("model") does not bind "5 Model fit".
+    // A name the reader finds no part for is not searched.
     const calibration = await run(["model calibration"]);
     assert.isEmpty(calibration.papers[0].passages);
     assert.include(JSON.stringify(calibration.warnings), "model calibration");

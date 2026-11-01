@@ -4,6 +4,9 @@ import {
   READ_SCOPE_OVERRIDES_JSON_SCHEMA,
   parseReadScope,
   readScopeKey,
+  requestedPartNames,
+  shownPartName,
+  userPartNames,
   type ReadScope,
 } from "../src/agent/digests/readScope";
 import {
@@ -1088,5 +1091,31 @@ describe("read scope: the unlabelled fallbacks stay inside their bounds", functi
         heading,
       );
     assert.deepEqual(resultsHeadings(cell([])).selected.unmatched, ["results"]);
+  });
+});
+
+describe("the part names a user reads", function () {
+  it("upper-cases a Latin first letter, writes the abstract as Abstract, and keeps each name once", function () {
+    assert.deepEqual(
+      userPartNames(["results", "Results", "abstract", "结果", "éléments"]),
+      ["Results", "Abstract", "结果", "Éléments"],
+    );
+  });
+
+  it("keeps a name that contains a comma as one name", function () {
+    assert.deepEqual(userPartNames(["methods, results", "discussion"]), [
+      "Methods, results",
+      "Discussion",
+    ]);
+  });
+
+  it("shows the two parts found by place as Abstract and Results", function () {
+    assert.equal(shownPartName(LEAD_ABSTRACT_LABEL), "Abstract");
+    assert.equal(shownPartName(RESULTS_SPAN_LABEL), "Results");
+    assert.equal(shownPartName("2 Methods"), "2 Methods");
+    assert.deepEqual(
+      requestedPartNames([LEAD_ABSTRACT_LABEL, RESULTS_SPAN_LABEL, "Abstract"]),
+      ["Abstract", "Results"],
+    );
   });
 });

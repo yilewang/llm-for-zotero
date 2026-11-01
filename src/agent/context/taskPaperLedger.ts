@@ -13,7 +13,13 @@
  * that names only an attachment is skipped rather than guessed.
  */
 import type { QuoteCitation } from "../../shared/types";
-import { isAbstractCoveredLabel, isFullTextRead } from "../digests/readScope";
+import {
+  isAbstractCoveredLabel,
+  isFullTextRead,
+  requestedPartNames,
+  shownPartName,
+  userPartNames,
+} from "../digests/readScope";
 
 /** Monotone reading state of one paper, weakest first. */
 export type TaskPaperState =
@@ -1107,10 +1113,13 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
 const BODY_KEYS = ["content", "text", "body", "fullText", "snippet"] as const;
 
 /**
- * A paper_read of whole named sections: one read per section, at `section`
- * depth only when the read returned it whole (the abstract at `abstract`);
- * a section the read budget cut is a `passage` read. A paper none of whose
- * sections matched was not read.
+ * A paper_read of whole named sections: one read per part name the user
+ * asked for, once however many places were found for it (as a digest's
+ * scope is). A name is read at `section` depth only when every place found
+ * for it came back whole (the abstract at `abstract`); a place the read
+ * budget cut makes it a `passage` read. A paper none of whose sections
+ * matched was not read. The text backend belongs to the paper, so every
+ * read of it shares that.
  */
 function wholeSectionSeeds(result: unknown): Seed[] {
   return rowsAt(result, "papers").flatMap((row): Seed[] => {
@@ -1121,34 +1130,68 @@ function wholeSectionSeeds(result: unknown): Seed[] {
       .map(record)
       .filter((entry): entry is Row => Boolean(entry));
     const backend = text(value.backend);
-    return rowsAt(value, "sections").flatMap((entry): Seed[] => {
+    // Part names in document order, each with the sections that read it.
+    const parts = new Map<
+      string,
+      { name: string; sections: { section: Row; names: string[] }[] }
+    >();
+    for (const entry of rowsAt(value, "sections")) {
       const section = record(entry);
       const label = text(section?.section);
       // A section the read budget left out entirely was not read.
-      if (!section || !label || !(Number(section.characters) > 0)) return [];
-      const whole = section.complete === true;
-      const first = passages.find((passage) => passage.sectionLabel === label);
-      return [
-        {
-          ref,
-          state: "read",
-          ...(backend === "mineru"
-            ? { text: "mineru" as const }
-            : backend === "pdf"
-              ? { text: "pdf_text" as const }
-              : {}),
-          read: readSeed({
-            granularity: !whole
-              ? "passage"
-              : isAbstractCoveredLabel(label)
-                ? "abstract"
-                : "section",
-            method: "sections",
-            label,
-            snippet: first ? firstBodyParagraph(text(first.text) || "") : "",
-          }),
-        },
-      ];
+      if (!section || !label || !(Number(section.characters) > 0)) continue;
+      // The parts the user asked for, not the pages, headings or places
+      // found for them; the label the model reads stays in the output.
+      const asked = Array.isArray(section.for)
+        ? userPartNames(section.for.filter((name) => typeof name === "string"))
+        : [];
+      const names = isAbstractCoveredLabel(label)
+        ? ["Abstract"]
+        : asked.length
+          ? asked
+          : [shownPartName(label)];
+      for (const name of names) {
+        const key = name.toLowerCase();
+        const part = parts.get(key) || { name, sections: [] };
+        part.sections.push({ section, names });
+        parts.set(key, part);
+      }
+    }
+    // A passage speaks for one part: two names never share a snippet.
+    const used = new Set<Row>();
+    return [...parts.values()].map(({ name, sections }): Seed => {
+      const { section, names } = sections[0];
+      const label = text(section.section);
+      // A passage carries the section's own label, or the parts asked for
+      // that a plain PDF run is shown under.
+      const first = passages.find(
+        (passage) =>
+          !used.has(passage) &&
+          (passage.sectionLabel === label ||
+            passage.sectionLabel === names.join(", ") ||
+            passage.sectionLabel === name),
+      );
+      if (first) used.add(first);
+      const whole = sections.every((entry) => entry.section.complete === true);
+      return {
+        ref,
+        state: "read",
+        ...(backend === "mineru"
+          ? { text: "mineru" as const }
+          : backend === "pdf"
+            ? { text: "pdf_text" as const }
+            : {}),
+        read: readSeed({
+          granularity: !whole
+            ? "passage"
+            : isAbstractCoveredLabel(name)
+              ? "abstract"
+              : "section",
+          method: "sections",
+          label: name,
+          snippet: first ? firstBodyParagraph(text(first.text) || "") : "",
+        }),
+      };
     });
   });
 }
@@ -1685,8 +1728,10 @@ function digestReadSeeds(
   const passages: ReadSeed[] = scoped ? digestScopeSeeds(digest) : [];
   if (scoped) {
     answer.depth = scopedDigestDepth(digest, passages);
+    // The parts the user asked for, not where they were found: built here,
+    // where a "(for: …)" suffix is whole, before the clip can cut it.
     const scopeLabel = clipTaskPaperText(
-      (digest.source?.covered || []).join(", "),
+      requestedPartNames(digest.source?.covered || []).join(", "),
       TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
     );
     if (scopeLabel) answer.scopeLabel = scopeLabel;
@@ -1768,16 +1813,22 @@ function isAbstractLabel(label: string | undefined): boolean {
 function digestScopeSeeds(digest: TaskPaperDigestInput): ReadSeed[] {
   const scope = digest.source?.scope;
   const seeds: ReadSeed[] = [];
+  const addAbstract = (snippet?: string) => {
+    if (seeds.some((seed) => seed.granularity === "abstract")) return;
+    seeds.push(
+      readSeed({
+        granularity: "abstract",
+        method: "digest",
+        label: "Abstract",
+        ...(snippet ? { snippet } : {}),
+      }),
+    );
+  };
   for (const covered of digest.source?.covered || []) {
-    if (isAbstractLabel(covered)) {
-      seeds.push(
-        readSeed({
-          granularity: "abstract",
-          method: "digest",
-          label: "Abstract",
-          ...(scope?.source === "abstract" ? { snippet: digest.answer } : {}),
-        }),
-      );
+    // The abstract by its covered label alone: a section a reader picked
+    // under a heading that starts with "Abstract" is not the abstract.
+    if (isAbstractCoveredLabel(covered)) {
+      addAbstract(scope?.source === "abstract" ? digest.answer : undefined);
     } else if (scope?.source === "notes") {
       seeds.push(readSeed({ granularity: "notes", method: "digest" }));
     } else if (scope?.source === "metadata") {
@@ -1793,9 +1844,21 @@ function digestScopeSeeds(digest: TaskPaperDigestInput): ReadSeed[] {
         }),
       );
     } else {
-      seeds.push(
-        readSeed({ granularity: "section", method: "digest", label: covered }),
-      );
+      // One read per part the user asked for, once however many places
+      // were found for it; a part the reader judged the abstract is the
+      // abstract.
+      const names = requestedPartNames([covered]);
+      for (const name of names.length ? names : [covered]) {
+        if (isAbstractCoveredLabel(name)) addAbstract();
+        else if (
+          !seeds.some(
+            (seed) => seed.granularity === "section" && seed.label === name,
+          )
+        )
+          seeds.push(
+            readSeed({ granularity: "section", method: "digest", label: name }),
+          );
+      }
     }
   }
   return seeds;

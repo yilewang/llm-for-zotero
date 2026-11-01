@@ -10,6 +10,7 @@ import {
   applyTaskPaperLedgerDelta,
   buildDigestLedgerDelta,
   createTaskPaperLedger,
+  TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
   deriveTaskPaperLedgerDelta,
   type TaskPaperDigestInput,
   type TaskPaperReadEvent,
@@ -167,6 +168,255 @@ describe("the Full label", function () {
         else globals.Zotero = previous;
         initI18n();
       }
+    });
+
+    describe("a read of named parts", function () {
+      const inZhCn = (check: () => void) => {
+        const globals = globalThis as unknown as { Zotero?: unknown };
+        const previous = globals.Zotero;
+        globals.Zotero = { Prefs: { get: () => "zh-CN" }, locale: "zh-CN" };
+        initI18n();
+        try {
+          check();
+        } finally {
+          if (previous === undefined) delete globals.Zotero;
+          else globals.Zotero = previous;
+          initI18n();
+        }
+      };
+      const picked = (covered: string[], backend: "pdf" | "mineru" = "pdf") =>
+        digestRead({
+          backend,
+          complete: true,
+          scope: { source: "sections" },
+          covered,
+        });
+      /** A saved read, as the view gets its label (an old record is raw). */
+      const saved = (scopeLabel: string): TaskPaperReadEvent => ({
+        key: "1:1",
+        callId: "c",
+        toolName: "task_update",
+        granularity: "digest",
+        snippet: "In brief.",
+        scopeLabel,
+      });
+
+      it("shows the names the user asked for, not where they were found", function () {
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["Abstract", "PDF text (for: results)"]),
+          ),
+          "Abstract, Results",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["Abstract", "结果与讨论 (for: 结果)"], "mineru"),
+          ),
+          "Abstract, 结果",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["page 1 (for: a, b)", "pages 3–4 (for: methods)"]),
+          ),
+          "A, B, Methods",
+        );
+      });
+
+      it("shows a name once however many places were found for it", function () {
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked([
+              "Abstract",
+              "PDF text (for: results)",
+              "page 4 (for: results)",
+            ]),
+          ),
+          "Abstract, Results",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["Intro (for: Results)", "PDF text (for: results)"]),
+          ),
+          "Results",
+        );
+      });
+
+      it("shows a name the reader judged to be the abstract as the abstract", function () {
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["Abstract", "Summary (for: abstract, results)"]),
+          ),
+          "Abstract, Results",
+        );
+      });
+
+      it("shows no chunk, PDF text or page for a picked read", function () {
+        const label = formatTaskPaperDigestDepth(
+          picked([
+            "Abstract",
+            "PDF text (for: results, methods)",
+            "pages 3–4 (for: discussion)",
+            "page 1 (for: 结论)",
+          ]),
+        );
+        assert.equal(label, "Abstract, Results, Methods, Discussion, 结论");
+        assert.notMatch(label, /chunk|PDF text|page/i);
+      });
+
+      it("keeps a name's own script and upper-cases only a Latin first letter", function () {
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            picked(["PDF text (for: 结果, éléments, results)"]),
+          ),
+          "结果, Éléments, Results",
+        );
+      });
+
+      it("leaves no half-cut suffix when many names are long", function () {
+        const label = formatTaskPaperDigestDepth(
+          picked([
+            "Abstract",
+            "PDF text (for: results, methods, discussion, limitations, future work, ethics)",
+          ]),
+        );
+        assert.match(label, /^Abstract, Results, Methods, Discussion, /);
+        assert.match(label, /…$/);
+        assert.notMatch(label, /\(for|PDF text/);
+        assert.isAtMost(label.length, TASK_PAPER_DIGEST_LABEL_MAX_CHARS);
+      });
+
+      it("reduces a record saved with its covered names, even one cut short", function () {
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            saved("Abstract, PDF text (for: results), page 4 (for: results)"),
+          ),
+          "Abstract, Results",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(saved("Abstract, 结果与讨论 (for: 结果)")),
+          "Abstract, 结果",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(
+            saved("Abstract, PDF text (for: results, meth…"),
+          ),
+          "Abstract, Results, Meth…",
+        );
+      });
+
+      it("keeps the notes, the record and a pages read's range as they are", function () {
+        assert.equal(formatTaskPaperDigestDepth(saved("Abstract")), "Abstract");
+        assert.equal(
+          formatTaskPaperDigestDepth(saved("Notes, Record")),
+          "Notes, Record",
+        );
+        assert.equal(
+          formatTaskPaperDigestDepth(saved("pages 3–5, pages 7")),
+          "pages 3–5, pages 7",
+        );
+      });
+
+      it("shows the translated abstract in the plugin's language", function () {
+        inZhCn(() => {
+          assert.equal(
+            formatTaskPaperDigestDepth(
+              picked(["Abstract", "PDF text (for: results)"]),
+            ),
+            "摘要, Results",
+          );
+          assert.equal(
+            formatTaskPaperDigestDepth(saved("pages 3–5")),
+            "第 3–5 页",
+          );
+        });
+      });
+
+      it("names a picked part's read in the paper's rows for the part asked for", function () {
+        const delta = buildDigestLedgerDelta({
+          callId: "call",
+          toolName: "task_update",
+          label: "Summarize each paper",
+          digest: {
+            contextItemId: 101,
+            answer: "The paper in brief.",
+            evidence: [],
+            source: {
+              backend: "pdf",
+              complete: true,
+              scope: { source: "sections" },
+              covered: [
+                "Abstract",
+                "PDF text (for: results)",
+                "page 4 (for: results)",
+              ],
+            },
+          },
+          paper: { libraryID: 1, itemId: 1, title: "Paper 1" },
+        });
+        const sections = delta.reads
+          .filter((read) => read.granularity === "section")
+          .map((read) => formatTaskPaperPassageLabel(read, "Paper 1"));
+        assert.deepEqual(sections, ["Results"]);
+      });
+    });
+
+    it("records the abstract at abstract depth when a page read was for it, and each other name once", function () {
+      const covered = [
+        "page 1 (for: abstract, results)",
+        "pages 3–4 (for: results)",
+      ];
+      const read = digestRead({
+        backend: "pdf",
+        complete: true,
+        scope: { source: "sections" },
+        covered,
+      });
+      assert.equal(formatTaskPaperDigestDepth(read), "Abstract, Results");
+      const delta = buildDigestLedgerDelta({
+        callId: "call",
+        toolName: "task_update",
+        label: "Summarize each paper",
+        digest: {
+          contextItemId: 101,
+          answer: "The paper in brief.",
+          evidence: [],
+          source: {
+            backend: "pdf",
+            complete: true,
+            scope: { source: "sections" },
+            covered,
+          },
+        },
+        paper: { libraryID: 1, itemId: 1, title: "Paper 1" },
+      });
+      assert.deepEqual(
+        delta.reads
+          .filter((entry) => entry.granularity !== "digest")
+          .map((entry) => [entry.granularity, entry.label]),
+        [
+          ["abstract", "Abstract"],
+          ["section", "Results"],
+        ],
+      );
+    });
+
+    it("shows the two parts found by place as Abstract and Results", function () {
+      const read = digestRead({
+        backend: "mineru",
+        complete: true,
+        scope: { source: "sections" },
+        covered: [
+          "Abstract (unlabelled lead)",
+          "Results (unlabelled sections)",
+        ],
+      });
+      assert.equal(formatTaskPaperDigestDepth(read), "Abstract, Results");
+      assert.equal(read.scopeLabel, "Abstract, Results");
+      const saved = {
+        ...read,
+        scopeLabel: "Abstract (unlabelled lead), Results (unlabelled sections)",
+      };
+      assert.equal(formatTaskPaperDigestDepth(saved), "Abstract, Results");
     });
 
     it("shows Part for a skimmed or cut read of the full text", function () {

@@ -2,30 +2,38 @@
  * paper_digest reads each paper for the read scope the user named, against
  * real Zotero items, real PDFs and their real extracted text:
  * - "abstract and results": the abstract from the Zotero abstract field
- *   when it has one, else the PDF's abstract; the results where the PDF
- *   text names them; a PDF with no headings is named and nothing of it is
- *   read.
+ *   when it has one, else the PDF's abstract; the results as the reader
+ *   model picks them from the PDF's chunk outline; a PDF the reader finds
+ *   neither part in is named, with the reader's reason, and nothing of it
+ *   is read.
  * - abstracts only: no model call; each abstract comes back with its
  *   citation id, also for an item with no attachment, and the answer-time
  *   quote check (the real gate) keeps that id, because it reads the item's
  *   Zotero abstract field, and refuses a quote the field does not hold.
  *
  * - paper_read with sections and no query: the whole named sections of
- *   each paper with a citation id per passage; a paper with none of them
- *   is named and nothing of it is read.
+ *   each paper (the results as the reader model picks them) with a citation
+ *   id per passage; a paper with none of them is named, with the reader's
+ *   reason, and nothing of it is read.
  * - paper_read mode:'full': its exact evidence carries citation ids, and
  *   the answer-time quote check keeps them and refuses a made-up quote.
  *
- * The reader model is a scripted stub (no live provider); the item records,
- * the PDF text extraction, the digest worker and paper_read are the
- * plugin's own. The abstract fields are read back from Zotero.
+ * The reader model is a scripted stub (no live provider) that answers the
+ * section picker's prompt apart from the digest prompt; the item records,
+ * the PDF text extraction, the section picker, the digest worker and
+ * paper_read are the plugin's own. The abstract fields are read back from Zotero.
  */
 import { assert } from "chai";
 import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
+import { namesOf } from "../test/helpers/sectionPickerFixtures";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { PdfService } from "../src/agent/services/pdfService";
 import { createZoteroPaperDigestSources } from "../src/agent/digests/digestJobHost";
 import { DIGEST_FAILURE_REASONS } from "../src/agent/digests/paperDigestWorker";
+import {
+  SECTION_PICK_TASK_LINE,
+  clearSectionPickCache,
+} from "../src/agent/digests/sectionPicker";
 import { applyAssistantMessageQuoteGate } from "../src/modules/contextPanel/quoteValidation/gate";
 import { buildCachedQuoteSourceEvidenceForPaperContexts } from "../src/modules/contextPanel/quoteValidation/sourceEvidence";
 import { getMessageQuoteDisplay } from "../src/modules/contextPanel/quoteRenderPlan";
@@ -39,6 +47,7 @@ import {
   createPaperDigestTool,
   type PaperDigestResult,
 } from "../src/agent/tools/read/paperDigest";
+import type { ReaderAdapterFactories } from "../src/agent/reader/resolveReader";
 import type { ReaderCompletion } from "../src/shared/readerCompletion";
 import type { AgentToolContext } from "../src/agent/types";
 import type {
@@ -66,6 +75,14 @@ const filler = (topic: string) =>
     (_, index) =>
       `Sentence ${index + 1} describes the ${topic} in plain and neutral detail for this fixture.`,
   ).join(" ");
+
+const USER_TEXT = "Read the abstract and results of every paper here";
+const PAPER_READ_USER_TEXT = "Read the abstract and results of these papers";
+/** What the scripted reader says paper three lacks (`scriptedPick`). */
+const THREE_NOT_FOUND = {
+  kind: "a running description of recordings",
+  reason: "It has no abstract and no results section.",
+};
 
 type DigestRow = PaperDigestResult["papers"][number] & Record<string, any>;
 
@@ -119,6 +136,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
 
   after(async function () {
     clearPaperDigestRunBounds();
+    clearSectionPickCache();
     for (const fixture of fixtures) await api.cleanupFixture(fixture);
     for (const id of recordOnly) {
       const item = Zotero.Items.get(id);
@@ -126,10 +144,24 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     }
   });
 
-  /** A reader that records each call and quotes the fixture's sentences. */
-  function stubReader() {
+  /**
+   * A reader that records each call. A section pick (the prompt that opens
+   * with `SECTION_PICK_TASK_LINE`) is answered by `pick` and recorded in
+   * `pickPrompts`; any other prompt is a digest call, recorded in `prompts`,
+   * and quotes the fixture's sentences.
+   */
+  function stubReader(
+    pick: (prompt: string) => unknown = () => {
+      throw new Error("this call must not pick sections");
+    },
+  ) {
     const prompts: string[] = [];
+    const pickPrompts: string[] = [];
     const complete: ReaderCompletion = async (prompt) => {
+      if (prompt.includes(SECTION_PICK_TASK_LINE)) {
+        pickPrompts.push(prompt);
+        return { text: JSON.stringify(pick(prompt)) };
+      }
       prompts.push(prompt);
       return {
         text: JSON.stringify({
@@ -140,7 +172,51 @@ describe("workflow: paper_digest reads what the read scope names", function () {
         }),
       };
     };
-    return { prompts, complete };
+    const factories: ReaderAdapterFactories = {
+      turnModel: () => complete,
+      codexResponses: () => complete,
+      claudeBridge: () => complete,
+    };
+    return { prompts, pickPrompts, complete, factories };
+  }
+
+  /**
+   * The picker's reply per paper, from the prompt's chunk outline (lines
+   * `c0 | page 1 | 123 chars | <first line>`):
+   * - a prompt that asks for the results alone: the chunk run whose first
+   *   line starts "Results." (the abstract was served by the abstract rule);
+   * - a prompt that also asks for the abstract: the paper has neither
+   *   (the abstract rule found no abstract), so both are none, with why.
+   */
+  function scriptedPick(prompt: string): unknown {
+    const names = namesOf(prompt);
+    if (names.includes("abstract"))
+      return {
+        parts: [
+          { name: "abstract", kind: "abstract", none: true },
+          { name: "results", none: true },
+        ],
+        paper: THREE_NOT_FOUND,
+      };
+    const line = prompt
+      .split("\n")
+      .find(
+        (entry) =>
+          /^c\d+(?:-\d+)? \|/.test(entry) &&
+          (entry.split(" | ").pop() || "").startsWith("Results."),
+      );
+    const range = /^c(\d+)(?:-(\d+))?/.exec(line || "");
+    if (!range) throw new Error("no chunk of the outline starts 'Results.'");
+    return {
+      parts: [
+        {
+          name: "results",
+          chunks: [
+            { from: Number(range[1]), to: Number(range[2] ?? range[1]) },
+          ],
+        },
+      ],
+    };
   }
 
   function tool(reader: ReturnType<typeof stubReader>) {
@@ -149,7 +225,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
         zoteroGateway: new ZoteroGateway(),
         pdfService: new PdfService(),
       }),
-      readerFactories: { codexResponses: () => reader.complete },
+      readerFactories: reader.factories,
       wait: async () => undefined,
     });
   }
@@ -159,7 +235,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     const request = resolvedAgentRequest({
       conversationKey: 0,
       mode: "agent",
-      userText: "Read the abstract and results of every paper here",
+      userText: USER_TEXT,
       libraryID,
       model: "gpt-workflow",
     });
@@ -205,7 +281,8 @@ describe("workflow: paper_digest reads what the read scope names", function () {
       "",
     );
 
-    const reader = stubReader();
+    clearSectionPickCache();
+    const reader = stubReader(scriptedPick);
     const result = await call(
       tool(reader),
       {
@@ -222,7 +299,13 @@ describe("workflow: paper_digest reads what the read scope names", function () {
 
     const one = rowOf(result, withField.parentItemId);
     assert.equal(one.status, "digested", JSON.stringify(one));
-    assert.deepEqual(one.source.covered, ["Abstract", "Results"]);
+    // The abstract is the Zotero field; the results are the chunk the
+    // reader picked, named "PDF text" (this extraction gives no page
+    // numbers), for "results".
+    assert.deepEqual(one.source.covered, [
+      "Abstract",
+      "PDF text (for: results)",
+    ]);
     assert.include(one.source.textSource, "Zotero abstract field");
     const oneIds = one.evidence.map((entry: any) => entry.quoteCitationId);
     assert.isNotEmpty(oneIds.filter(Boolean), JSON.stringify(one.evidence));
@@ -234,20 +317,40 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     const two = rowOf(result, pdfAbstract.parentItemId);
     assert.equal(two.status, "digested", JSON.stringify(two));
     assert.include(two.source.textSource, "PDF abstract");
-    assert.deepEqual(two.source.covered, ["Abstract", "Results"]);
+    assert.deepEqual(two.source.covered, [
+      "Abstract",
+      "PDF text (for: results)",
+    ]);
     assert.equal(two.source.bounds, "approximate");
     const twoQuotes = two.evidence.map((entry: any) => entry.quote);
     assert.include(twoQuotes, P2_ABSTRACT);
     assert.include(twoQuotes, P2_RESULTS);
     assert.notInclude(twoQuotes, FIELD_ABSTRACT);
 
+    // The reader found neither part in paper three: the row is not
+    // digested, carries the reader's reason, and nothing of the paper is read.
     const three = rowOf(result, noHeadings.parentItemId);
-    assert.equal(three.status, "failed");
+    assert.equal(three.status, "failed", JSON.stringify(three));
     assert.equal(three.reason, DIGEST_FAILURE_REASONS.noMatchingSections);
+    assert.deepEqual(three.notFound, THREE_NOT_FOUND);
     assert.include(result.note, "Nothing read for");
     assert.include(result.note, `item:${noHeadings.parentItemId}`);
+    assert.include(result.note, THREE_NOT_FOUND.reason);
 
-    // The model read the two papers it was given, never the third's text.
+    // One pick per paper whose names the abstract rule did not serve whole:
+    // papers one and two (the abstract rule serves "abstract"; "results" is
+    // picked) and paper three (the rule finds no abstract, so "abstract" is
+    // picked with "results"). The pick is made once per paper.
+    assert.lengthOf(reader.pickPrompts, 3);
+    assert.sameMembers(
+      reader.pickPrompts.map((prompt) => namesOf(prompt).join("+")),
+      ["results", "results", "abstract+results"],
+    );
+    // The call names no `question`, so each pick carries the user's request.
+    for (const prompt of reader.pickPrompts) assert.include(prompt, USER_TEXT);
+    // The model digested the two papers it was given, never the third's
+    // text. The pick prompts show each chunk's first line by design, so the
+    // check is on digest prompts only.
     assert.lengthOf(reader.prompts, 2);
     for (const prompt of reader.prompts)
       assert.notInclude(prompt, P3_TEXT.slice(0, 40));
@@ -274,6 +377,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
       `scope-abstracts-${Date.now()}`,
     );
     assert.lengthOf(reader.prompts, 0, "no model call for abstracts");
+    assert.lengthOf(reader.pickPrompts, 0, "no pick call for abstracts");
 
     const one = rowOf(result, withField.parentItemId);
     assert.equal(one.status, "digested");
@@ -388,6 +492,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
   /** paper_read over the plugin's own services, reading as the turn would. */
   function paperReadTool(
     fullReadAnalyzer?: Parameters<typeof createPaperReadTool>[5],
+    readerOptions?: Parameters<typeof createPaperReadTool>[6],
   ) {
     return createPaperReadTool(
       new PdfService(),
@@ -396,6 +501,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
       new ZoteroGateway(),
       undefined,
       fullReadAnalyzer,
+      readerOptions,
     );
   }
 
@@ -409,9 +515,15 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     const request = resolvedAgentRequest({
       conversationKey: 0,
       mode: "agent",
-      userText: "Read the abstract and results of these papers",
+      userText: PAPER_READ_USER_TEXT,
       libraryID,
       model: "gpt-workflow",
+    });
+    Object.assign(request, {
+      authMode: "codex_app_server",
+      providerProtocol: "codex_responses",
+      exhaustiveReadBackend: "codex_responses",
+      executionContext: { permissionOwner: "external_runtime" },
     });
     return readTool.execute(validated.value, {
       request,
@@ -448,15 +560,20 @@ describe("workflow: paper_digest reads what the read scope names", function () {
   }
 
   it("paper_read with sections and no query returns both papers' whole abstract and results with citation ids, and names the paper with neither", async function () {
-    const result = await readPapers(paperReadTool(), {
-      mode: "targeted",
-      sections: ["abstract", "results"],
-      targets: [
-        { itemId: withField.parentItemId },
-        { itemId: pdfAbstract.parentItemId },
-        { itemId: noHeadings.parentItemId },
-      ],
-    });
+    clearSectionPickCache();
+    const reader = stubReader(scriptedPick);
+    const result = await readPapers(
+      paperReadTool(undefined, { readerFactories: reader.factories }),
+      {
+        mode: "targeted",
+        sections: ["abstract", "results"],
+        targets: [
+          { itemId: withField.parentItemId },
+          { itemId: pdfAbstract.parentItemId },
+          { itemId: noHeadings.parentItemId },
+        ],
+      },
+    );
     assert.equal(result.read, "whole_sections", JSON.stringify(result));
     const row = (itemId: number) =>
       result.papers.find((paper: any) => paper.paperContext.itemId === itemId);
@@ -468,7 +585,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
 
     const one = row(withField.parentItemId);
     assert.equal(one.status, "complete", JSON.stringify(one));
-    assert.deepEqual(one.covered, ["Abstract", "Results"]);
+    assert.deepEqual(one.covered, ["Abstract", "PDF text (for: results)"]);
     assert.include(one.textSource, "Zotero abstract field");
     assert.include(textOf(one), FIELD_ABSTRACT);
     assert.include(textOf(one), P1_RESULTS);
@@ -476,7 +593,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
 
     const two = row(pdfAbstract.parentItemId);
     assert.equal(two.status, "complete", JSON.stringify(two));
-    assert.deepEqual(two.covered, ["Abstract", "Results"]);
+    assert.deepEqual(two.covered, ["Abstract", "PDF text (for: results)"]);
     assert.equal(two.bounds, "approximate");
     assert.include(textOf(two), P2_ABSTRACT);
     assert.include(textOf(two), P2_RESULTS);
@@ -484,6 +601,7 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     for (const paper of [one, two]) {
       assert.isTrue(paper.sections.every((entry: any) => entry.complete));
       for (const passage of paper.passages) {
+        assert.notMatch(passage.sectionLabel, /chunk|PDF text|page/i);
         assert.match(passage.quoteCitationId, /^Q_/, passage.text);
         assert.isTrue(registered.has(passage.quoteCitationId));
       }
@@ -492,15 +610,40 @@ describe("workflow: paper_digest reads what the read scope names", function () {
     const three = row(noHeadings.parentItemId);
     assert.equal(three.status, "no_matching_sections");
     assert.deepEqual(three.passages, []);
+    assert.deepEqual(three.unmatched, ["abstract", "results"]);
+    assert.deepEqual(three.notFound, THREE_NOT_FOUND);
     assert.include(result.note, "Nothing read for");
     assert.include(result.note, `item:${noHeadings.parentItemId}`);
+    assert.isTrue(
+      result.warnings.some((warning: string) =>
+        warning.includes(THREE_NOT_FOUND.reason),
+      ),
+      JSON.stringify(result.warnings),
+    );
     assert.notInclude(JSON.stringify(result), P3_TEXT.slice(0, 40));
+
+    // One pick per paper, as in the digest: results for papers one and two,
+    // abstract and results for paper three. paper_read has no digest calls.
+    assert.lengthOf(reader.pickPrompts, 3);
+    assert.sameMembers(
+      reader.pickPrompts.map((prompt) => namesOf(prompt).join("+")),
+      ["results", "results", "abstract+results"],
+    );
+    for (const prompt of reader.pickPrompts)
+      assert.include(prompt, PAPER_READ_USER_TEXT);
+    assert.lengthOf(reader.prompts, 0, "a whole-sections read digests nothing");
 
     // The real quote check keeps paper one's abstract (from the Zotero
     // field) and results ids, and refuses a made-up quote.
+    // The picked results are labelled with the name the user asked for, not
+    // with where they were found ("PDF text", a page).
+    const passageLabel: Record<string, string> = {
+      Abstract: "Abstract",
+      Results: "Results",
+    };
     const citationOf = (sectionLabel: string) => {
       const passage = one.passages.find(
-        (entry: any) => entry.sectionLabel === sectionLabel,
+        (entry: any) => entry.sectionLabel === passageLabel[sectionLabel],
       );
       assert.exists(passage, `${sectionLabel} passage of paper one`);
       const record = (result.quoteCitations as QuoteCitation[]).find(

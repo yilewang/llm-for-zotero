@@ -11,6 +11,10 @@ import {
   snapshotTestGlobals,
   type TestGlobalSnapshot,
 } from "./helpers/retrievalCorpus";
+import { headingMatchReader } from "./helpers/sectionPickerFixtures";
+
+/** Stands in for the reader that picks named sections (sectionPicker.ts). */
+const STAND_IN_READER = headingMatchReader();
 
 type OutlineSection = {
   sectionId: string;
@@ -117,6 +121,9 @@ describe("paper_read outline mode and section ids", function () {
         resolvePaperContextTarget: (target: { itemId?: number }) =>
           target.itemId === paper.itemId ? paper : null,
       } as never,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     ) as unknown as AgentToolDefinition<never, unknown>;
   }
 
@@ -168,6 +175,9 @@ describe("paper_read outline mode and section ids", function () {
         resolvePaperContextTarget: (target: { itemId?: number }) =>
           papers.find((entry) => entry.itemId === target.itemId) || null,
       } as never,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     ) as unknown as AgentToolDefinition<never, unknown>;
   }
 
@@ -343,6 +353,9 @@ describe("paper_read outline mode and section ids", function () {
         resolvePaperContextTarget: (target: { itemId?: number }) =>
           target.itemId === paper.itemId ? paper : null,
       } as never,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     ) as unknown as AgentToolDefinition<never, unknown>;
     const output = (await run(
       {
@@ -483,6 +496,9 @@ describe("paper_read outline mode and section ids", function () {
         listPaperContexts: () => [paper],
         resolvePaperContextTarget: () => paper,
       } as never,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     ) as unknown as AgentToolDefinition<never, unknown>;
     const output = (await run({ mode: "overview" }, tool)) as {
       results?: Array<{ quoteAnchors?: string[] }>;

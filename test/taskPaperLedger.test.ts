@@ -171,6 +171,182 @@ function libraryRetrieveFixture() {
 
 describe("taskPaperLedger", function () {
   describe("deriveTaskPaperLedgerDelta", function () {
+    it("gives one read per part the user asked for, however many runs found it", function () {
+      const paper = { itemId: 7, contextItemId: 107, title: "Plain" };
+      const run = (section: string, complete = true) => ({
+        section,
+        for: ["results"],
+        complete,
+        characters: 100,
+      });
+      const derivePicked = (
+        sections: Record<string, unknown>[],
+        passages: Record<string, unknown>[],
+      ) =>
+        derive(
+          "paper_read",
+          { mode: "targeted", sections: ["results"] },
+          {
+            read: "whole_sections",
+            papers: [
+              { paperContext: paper, backend: "pdf", sections, passages },
+            ],
+          },
+        ).reads.map((read) => [read.label, read.granularity, read.snippet]);
+      // Two runs with several chunks each: the read shows the first run's
+      // first paragraph, never a later run's.
+      assert.deepEqual(
+        derivePicked(
+          [run("pages 3–4"), run("page 7")],
+          [
+            { sectionLabel: "Results", text: "Run A chunk 4." },
+            { sectionLabel: "Results", text: "Run A chunk 5." },
+            { sectionLabel: "Results", text: "Run B chunk 9." },
+          ],
+        ),
+        [["Results", "section", "Run A chunk 4."]],
+      );
+      // One whole run and one cut run are one passage read.
+      assert.deepEqual(
+        derivePicked(
+          [run("pages 3–4"), run("page 7", false)],
+          [
+            { sectionLabel: "Results", text: "Run A chunk 4." },
+            { sectionLabel: "Results", text: "Run B chunk 9." },
+          ],
+        ),
+        [["Results", "passage", "Run A chunk 4."]],
+      );
+    });
+
+    it("gives one read per part when one run was picked for two parts", function () {
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["abstract", "results"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: { itemId: 9, contextItemId: 109, title: "Plain" },
+              backend: "pdf",
+              sections: [
+                {
+                  section: "pages 1–3",
+                  for: ["abstract", "results"],
+                  complete: true,
+                  characters: 200,
+                },
+              ],
+              passages: [
+                {
+                  sectionLabel: "Abstract, Results",
+                  text: "Lead paragraph.",
+                },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity]),
+        [
+          ["Abstract", "abstract"],
+          ["Results", "section"],
+        ],
+      );
+      // The one passage speaks for the first part only.
+      assert.deepEqual(
+        delta.reads.map((read) => read.snippet),
+        ["Lead paragraph.", undefined],
+      );
+    });
+
+    it("reads a MinerU pick of 结果 and the abstract as two parts with their paragraphs", function () {
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["结果", "abstract"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: { itemId: 10, contextItemId: 110, title: "Zh" },
+              backend: "mineru",
+              sections: [
+                {
+                  section: "Abstract",
+                  complete: true,
+                  characters: 50,
+                },
+                {
+                  section: "三、实验结果",
+                  for: ["结果"],
+                  complete: true,
+                  characters: 80,
+                },
+              ],
+              passages: [
+                { sectionLabel: "Abstract", text: "The abstract text." },
+                { sectionLabel: "三、实验结果", text: "实验结果如下。" },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity, read.snippet]),
+        [
+          ["Abstract", "abstract", "The abstract text."],
+          ["结果", "section", "实验结果如下。"],
+        ],
+      );
+    });
+
+    it("shows a read's internal places as the plain parts the user reads", function () {
+      const paper = { itemId: 8, contextItemId: 108, title: "Nature shape" };
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["abstract", "results"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: paper,
+              backend: "mineru",
+              sections: [
+                {
+                  section: "Abstract (unlabelled lead)",
+                  complete: true,
+                  characters: 50,
+                },
+                {
+                  section: "Results (unlabelled sections)",
+                  complete: true,
+                  characters: 50,
+                },
+              ],
+              passages: [
+                {
+                  sectionLabel: "Abstract",
+                  text: "The lead paragraph.",
+                },
+                {
+                  sectionLabel: "Results",
+                  text: "The first result.",
+                },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity, read.snippet]),
+        [
+          ["Abstract", "abstract", "The lead paragraph."],
+          ["Results", "section", "The first result."],
+        ],
+      );
+    });
+
     it("maps library_retrieve rows to matched, skimmed and read", function () {
       const delta = derive(
         "library_retrieve",

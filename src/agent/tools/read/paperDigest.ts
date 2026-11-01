@@ -76,6 +76,7 @@ import {
   parseReadScope,
   readScopeKey,
   type ReadScope,
+  type ScopedNotFound,
 } from "../../digests/readScope";
 import {
   DIGEST_MAX_FAILURE_RETRIES,
@@ -83,6 +84,7 @@ import {
   type DigestJobHostDeps,
 } from "../../digests/digestJobHost";
 import { taskPaperDigestPartLabel } from "../../context/taskPaperLedger";
+import { createSectionPicker } from "../../digests/sectionPicker";
 
 export const PAPER_DIGEST_TOOL_NAME = "paper_digest";
 
@@ -344,6 +346,8 @@ type DigestRow =
       itemId: number;
       title?: string;
       reason: string;
+      /** A scoped read the paper has none of: why, as its reader judged. */
+      notFound?: ScopedNotFound;
       /** Not run again: its retries in this run are spent. */
       final?: true;
       /** An earlier call of this run reported this failure; no new record. */
@@ -443,7 +447,7 @@ export async function executePaperDigest(
     target: string,
     itemId: number,
     reason: string,
-    extra: { final?: true } = {},
+    extra: { final?: true; notFound?: ScopedNotFound } = {},
   ): DigestRow => {
     const key = keyOf(target);
     const alreadyReported = bounds.reported.get(key) === reason;
@@ -519,6 +523,14 @@ export async function executePaperDigest(
           conversationKey: request.conversationKey,
         })
       : memoryCache());
+  // A sections scope's named parts are picked by the call's own reader, for
+  // the call's question, else the user's request (as paper_read picks).
+  const pickQuestion = input.question || `${request.userText || ""}`.trim();
+  const pickSections = createSectionPicker({
+    reader,
+    ...(pickQuestion ? { question: pickQuestion } : {}),
+    ...(context.signal ? { signal: context.signal } : {}),
+  });
   const job = readable.length
     ? await runPaperDigestJob({
         targets: readable,
@@ -528,7 +540,9 @@ export async function executePaperDigest(
         readText: async (itemId, maxChars, readScope) => {
           const paper = await resolvePaper(itemId);
           if (!paper) return null;
-          const text = await deps.readText(paper, maxChars, readScope);
+          const text = await deps.readText(paper, maxChars, readScope, {
+            pickSections,
+          });
           if (!text) return null;
           return {
             itemId,
@@ -578,10 +592,22 @@ export async function executePaperDigest(
     });
     rows.set(
       failure.target,
-      failedRow(failure.target, failure.itemId, failure.reason),
+      failedRow(
+        failure.target,
+        failure.itemId,
+        failure.reason,
+        failure.notFound ? { notFound: failure.notFound } : {},
+      ),
     );
   }
 
+  // What the worker said of each failure: a missing part's name and reason.
+  const failureDetail = new Map(
+    (job.failures as PaperDigestFailure[]).map((failure) => [
+      failure.target,
+      failure.detail,
+    ]),
+  );
   const pendingSet = new Set([...deferred, ...job.pending]);
   const pending = input.targets.filter((target) => pendingSet.has(target));
   const papers = input.targets.flatMap((target) => {
@@ -632,7 +658,11 @@ export async function executePaperDigest(
   if (outOfScope.length) {
     notes.push(
       `Nothing read for ${outOfScope
-        .map((row) => titled(row.title, `item:${row.itemId}`))
+        .map((row) => {
+          const target = `item:${row.itemId}`;
+          const detail = failureDetail.get(target);
+          return titled(row.title, detail ? `${target}; ${detail}` : target);
+        })
         .join(
           ", ",
         )}: the paper has none of what read names, and no other text was read in its place. Name ${
@@ -718,7 +748,7 @@ export function createPaperDigestTool(
         `Digest papers with the host's reader: it reads up to ${DIGEST_TEXT_MAX_CHARS_LABEL} characters of each paper with this chat's own model (in batches when long) and returns per paper the answer to \`instruction\`, relevance and stance when a question or claim is named, facets, verified quotes, gaps, and source.complete.`,
         "A longer item, such as a book or a thesis, is read only up to that limit and comes back with source.complete false; paper_read mode:'full' reads a whole text when the user asks for it.",
         `One call reads at most ${PAPER_DIGEST_MAX_PAPERS_PER_CALL} papers; the rest come back in \`pending\`: call again with the same instruction and question until nothing is pending (digested papers are not read again).`,
-        `If the user limits what to read, set \`read\`, e.g. {source:'abstract'} (as written, no model call, up to ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} a call) or {source:'sections', sections:['abstract','results']}.`,
+        `If the user limits what to read, set \`read\`, e.g. {source:'abstract'} (as written, no model call, up to ${PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL} a call) or {source:'sections', sections:['abstract','结果']}.`,
         "A failed paper runs again on at most two later calls.",
         "Cite a verified quote in chat by its quoteCitationId; the evidence refs are for submit_document.",
         "Apart from a whole text the user asks for, read a digested paper again only with paper_read mode:'targeted', to check a decisive claim, test a contradiction, find a precise location, or close a gap its digest names.",
@@ -749,7 +779,7 @@ export function createPaperDigestTool(
           read: {
             ...READ_SCOPE_JSON_SCHEMA,
             description:
-              "What of each paper to read; default full; pages [{from,to}].",
+              "What of each paper to read; default full; sections as the user named them, any language; pages [{from,to}].",
           },
           overrides: READ_SCOPE_OVERRIDES_JSON_SCHEMA,
         },

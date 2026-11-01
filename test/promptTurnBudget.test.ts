@@ -133,11 +133,14 @@ import {
  * Raised on 2026-10-31 by 116 tool characters: library_update's item-type
  * route (kind:'metadata' with itemId and itemType, not inside metadata).
  * The budgets are now 45,023, 43,696 and 45,121.
+ * Raised on 2026-11-01 by 40 guidance characters: paper_read's guidance says
+ * sections are parts as the user named them, in any language, read whole.
+ * The budgets are now 45,063, 43,736 and 45,161.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 45_023,
-  paper: 43_696,
-  collection: 45_121,
+  global: 45_063,
+  paper: 43_736,
+  collection: 45_161,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

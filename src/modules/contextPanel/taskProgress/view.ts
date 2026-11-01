@@ -49,6 +49,7 @@ import {
   type TaskPaperState,
   type TaskPaperTextSource,
 } from "../../../agent/context/taskPaperLedger";
+import { requestedPartNames } from "../../../agent/digests/readScope";
 import type { TaskPaperScopeEntry } from "../../../agent/context/taskPaperScopeListing";
 import type { RunEndState } from "../../../agent/execution/types";
 import { t } from "../../../utils/i18n";
@@ -686,16 +687,45 @@ const SCOPE_TOKEN_LABELS: Record<string, string> = {
 };
 
 /** A pages read's covered name: "pages 3–5" (`selectPageScope`). */
-const PAGES_TOKEN = /^pages (\S+)$/i;
+const PAGES_TOKEN = /^(pages?) (\S+)$/i;
 
+/** The labels of a scope, split at ", " outside parentheses. */
+function splitScopeLabel(scopeLabel: string): string[] {
+  const tokens: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let at = 0; at < scopeLabel.length; at += 1) {
+    const char = scopeLabel[at];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth = Math.max(0, depth - 1);
+    else if (char === "," && depth === 0 && scopeLabel[at + 1] === " ") {
+      tokens.push(scopeLabel.slice(start, at));
+      start = at + 2;
+    }
+  }
+  tokens.push(scopeLabel.slice(start));
+  return tokens;
+}
+
+/**
+ * A scope as the user reads it: the parts they asked for ("Abstract,
+ * Results"), not the headings, pages or places found for them. A scope saved
+ * with "(for: name)" suffixes is reduced to those names here; a pages read's
+ * range stays, in the plugin's language.
+ */
 function translateScopeLabel(scopeLabel: string): string {
-  return scopeLabel
-    .split(", ")
+  return requestedPartNames(splitScopeLabel(scopeLabel))
     .map((token) => {
       const label = SCOPE_TOKEN_LABELS[token.trim().toLowerCase()];
       if (label) return t(label);
       const pages = PAGES_TOKEN.exec(token.trim());
-      return pages ? t("pages {range}").replace("{range}", pages[1]) : token;
+      return pages
+        ? t(
+            pages[1].toLowerCase() === "page"
+              ? "page {range}"
+              : "pages {range}",
+          ).replace("{range}", pages[2])
+        : token;
     })
     .join(", ");
 }

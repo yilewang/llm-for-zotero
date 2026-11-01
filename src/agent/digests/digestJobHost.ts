@@ -84,6 +84,7 @@ import {
   isFullReadScope,
   type ReadScope,
 } from "./readScope";
+import { createSectionPicker, type SectionPicker } from "./sectionPicker";
 import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import {
   DIGEST_FAILURE_REASONS,
@@ -128,10 +129,21 @@ export type DigestPaperText = Pick<
   | "totalCharacters"
   | "covered"
   | "unmatched"
+  | "notFound"
+  | "paperCharacters"
   | "bounds"
   | "approximateByPosition"
   | "textSource"
 >;
+
+/** How a digest reads a paper's text, besides its scope. */
+export type DigestReadOptions = {
+  /**
+   * The reader's choice of a sections scope's named parts, on the digest's
+   * own reader (`sectionPicker.ts`).
+   */
+  pickSections?: SectionPicker;
+};
 
 /** A digest cache that also names the handle context_read reads it by. */
 export type HostPaperDigestCache = PaperDigestCache & {
@@ -147,12 +159,14 @@ export type DigestJobHostDeps = {
   ) => Promise<PaperContextRef | null>;
   /**
    * The paper's text for `scope` (the full text when absent) cut to
-   * `maxChars`, or null when it has none.
+   * `maxChars`, or null when it has none. A sections scope's names are
+   * picked by `options.pickSections` when given.
    */
   readText: (
     paper: PaperContextRef,
     maxChars: number,
     scope?: ReadScope,
+    options?: DigestReadOptions,
   ) => Promise<DigestPaperText | null>;
   /** Test seam forwarded to `callUtilityLLM`. */
   llmCall?: UtilityLLMParams["llmCall"];
@@ -532,7 +546,7 @@ function metadataText(
  * exactly as the overview read picks it (MinerU `full.md`, else the PDF).
  * A scoped read cuts it by `readPaperScopeText`, reading the Zotero abstract
  * field, the paper's notes, its record or the PDF's page text as the scope
- * asks.
+ * asks, and the named sections the digest's reader picks.
  */
 export function createZoteroPaperDigestSources(deps: {
   zoteroGateway: Pick<
@@ -582,11 +596,14 @@ export function createZoteroPaperDigestSources(deps: {
       }
       return paper;
     },
-    readText: async (paper, maxChars, scope) => {
+    readText: async (paper, maxChars, scope, options) => {
       const read = await readPaperScopeText({
         paperContext: paper,
         scope,
         maxChars,
+        ...(options?.pickSections
+          ? { pickSections: options.pickSections }
+          : {}),
         pdfService: {
           getOverviewExcerpt: (params) =>
             deps.pdfService.getOverviewExcerpt(params),
@@ -608,7 +625,12 @@ export function createZoteroPaperDigestSources(deps: {
           [],
       });
       if (!read) return null;
-      const { source, complete: _complete, ...text } = read;
+      const {
+        source,
+        complete: _complete,
+        coveredParts: _coveredParts,
+        ...text
+      } = read;
       return isFullReadScope(scope)
         ? {
             backend: text.backend,
@@ -845,6 +867,13 @@ export async function runDigestParts(params: {
     // conversation that both declare a part 'papers' stay two parts, and its
     // label.
     const partRow = { partId: part.taskId, ...(label ? { label } : {}) };
+    // A sections scope's named parts are picked by the part's own reader,
+    // for the request the part serves.
+    const pickSections = createSectionPicker({
+      reader,
+      ...(task?.question ? { question: task.question } : {}),
+      ...(signal ? { signal } : {}),
+    });
     const result = await runPaperDigestJob({
       targets: part.targets,
       instruction,
@@ -856,7 +885,9 @@ export async function runDigestParts(params: {
       readText: async (itemId, maxChars, scope) => {
         const paper = await resolvePaper(itemId);
         if (!paper) return null;
-        const text = await deps.readText(paper, maxChars, scope);
+        const text = await deps.readText(paper, maxChars, scope, {
+          pickSections,
+        });
         if (!text) return null;
         return {
           itemId,

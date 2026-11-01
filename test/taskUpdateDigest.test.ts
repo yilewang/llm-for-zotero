@@ -25,6 +25,11 @@ import {
   type HostPaperDigest,
 } from "../src/agent/digests/paperDigestWorker";
 import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import {
+  SECTION_PICK_TASK_LINE,
+  buildMineruSectionOutline,
+  clearSectionPickCache,
+} from "../src/agent/digests/sectionPicker";
 import { PassageCitationCollector } from "../src/agent/context/passageCitationCollector";
 import { selectUsedQuoteCitations } from "../src/services/quotes/quoteCitations";
 import type { QuoteCitation } from "../src/shared/types";
@@ -1972,7 +1977,16 @@ describe("a digest part reads what its read scope names", function () {
     assert.equal(countOf(only.digests), 0);
   });
 
-  it("digests a paper that labels neither its abstract nor its results from the lead and the results span, and says so", async function () {
+  // Since the reader picks named sections (sectionPicker.ts), the results
+  // of a paper that labels none are the sections the reader picks, named by
+  // their own headings; only the abstract is still found by its place.
+  it("digests a paper that labels neither its abstract nor its results from the lead and the sections the reader picks, and says so", async function () {
+    clearSectionPickCache();
+    const outline = buildMineruSectionOutline(NATURE_SHAPE_MD);
+    const idOf = (heading: string) =>
+      outline.kind === "sections"
+        ? outline.sections.find((section) => section.heading === heading)?.id
+        : undefined;
     const globalScope = globalThis as unknown as Record<string, unknown>;
     const hadIOUtils = "IOUtils" in globalScope;
     const previousIOUtils = globalScope.IOUtils;
@@ -2005,13 +2019,28 @@ describe("a digest part reads what its read scope names", function () {
         {
           ...sources,
           llmCall: (async (chat: ChatParams) => {
+            if (JSON.stringify(chat).includes(SECTION_PICK_TASK_LINE))
+              return {
+                text: JSON.stringify({
+                  parts: [
+                    {
+                      name: "results",
+                      sections: [
+                        idOf("Replays spread across the visual cortex"),
+                        idOf("Local silencing removes replays"),
+                      ],
+                    },
+                  ],
+                }),
+                completion: { status: "complete" as const },
+              };
             prompts.push(JSON.stringify(chat));
             return {
               text: JSON.stringify({
                 answer: "Replays come before the change in responses.",
                 evidence: [
                   {
-                    section: "Results (unlabelled sections)",
+                    section: "Local silencing removes replays",
                     quote: RESULTS_B,
                   },
                 ],
@@ -2039,11 +2068,11 @@ describe("a digest part reads what its read scope names", function () {
       assert.isUndefined(answer.digestFailures);
       assert.include(
         answer.digests,
-        "read Abstract (unlabelled lead), Results (unlabelled sections) (PDF lead paragraph; MinerU sections by position)",
+        "read Abstract (unlabelled lead), Replays spread across the visual cortex (for: results), Local silencing removes replays (for: results) (PDF lead paragraph; MinerU sections)",
       );
       assert.include(
         answer.digests,
-        "Abstract (unlabelled lead) and Results (unlabelled sections) were found by position",
+        "Abstract (unlabelled lead) was found by position",
       );
       assert.notInclude(answer.digests, "section bounds approximate");
       assert.notInclude(answer.digests, "not in this paper");
@@ -2051,7 +2080,7 @@ describe("a digest part reads what its read scope names", function () {
         `${answer.digests}\n${answer.digestNote || ""}`,
         SECTIONS_NOT_FOUND_RULE,
       );
-      // The reader got the lead and the results span, not the discussion.
+      // The reader got the lead and the picked results, not the discussion.
       assert.lengthOf(prompts, 1);
       assert.include(prompts[0], LEAD_ABSTRACT.slice(0, 80));
       assert.include(prompts[0], RESULTS_A);

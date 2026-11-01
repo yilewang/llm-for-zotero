@@ -52,12 +52,16 @@ import {
 } from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef, QuoteCitation } from "../../shared/types";
 import {
+  describeNotFound,
   describeReadScope,
   POSITIONAL_COVERED_LABELS,
+  shownPartName,
+  SectionPickError,
   isFullReadScope,
   isFullTextRead,
   readScopeKey,
   type ReadScope,
+  type ScopedNotFound,
 } from "./readScope";
 
 export type HostPaperDigestEvidence = {
@@ -151,6 +155,10 @@ export type HostPaperDigest = {
     covered?: string[];
     /** A scoped read only: what it named that the paper has none of. */
     unmatched?: string[];
+    /** A picked read only: why the paper has none of `unmatched`. */
+    notFound?: ScopedNotFound;
+    /** A picked read only: the paper's whole text length. */
+    paperCharacters?: number;
     /** A scoped read only: whether the text's bounds are exact. */
     bounds?: "exact" | "approximate";
     /** A scoped read only: approximate only by sections found by place. */
@@ -187,6 +195,10 @@ export type PaperDigestSource = {
   /** A scoped read: what of the paper the text is (`readScope.ts`). */
   covered?: string[];
   unmatched?: string[];
+  /** As `ScopedPaperText.notFound`. */
+  notFound?: ScopedNotFound;
+  /** As `ScopedPaperText.paperCharacters`. */
+  paperCharacters?: number;
   bounds?: "exact" | "approximate";
   /** As `ScopedPaperText.approximateByPosition`. */
   approximateByPosition?: boolean;
@@ -200,6 +212,8 @@ export type PaperDigestFailure = {
   reason: string;
   /** The provider's own error text, when the utility call reported one. */
   detail?: string;
+  /** A scoped read the paper has none of: why, as its reader judged. */
+  notFound?: ScopedNotFound;
 };
 
 export type PaperDigestCache = {
@@ -336,6 +350,11 @@ export const DIGEST_FAILURE_REASONS = Object.freeze({
   noMatchingSections: "None of the named sections were found",
   noMatchingPages: "None of the named pages have text",
   noNotes: "No notes",
+  /**
+   * The reader could not choose the named sections (`sectionPicker.ts`):
+   * nothing was read in their place, and a retry may choose them.
+   */
+  sectionPickFailed: "The reader could not choose the named sections",
 });
 
 /**
@@ -441,11 +460,26 @@ function normalizeWithIndex(text: string): { text: string; index: number[] } {
 
 function nearestHeading(text: string, position: number): string | undefined {
   const pattern = /^#{1,6}\s+(.+)$/gm;
+  // A plain-PDF read puts "[chunk N]" blocks after the heading of the field
+  // block ahead of them ("## Abstract"); a quote in a later chunk is not
+  // under that heading.
+  const chunkAt = lastChunkMarkerAt(text, position);
   let found: string | undefined;
   for (const match of text.matchAll(pattern)) {
     if ((match.index ?? 0) > position) break;
+    if ((match.index ?? 0) < chunkAt) continue;
     const label = match[1].replace(/#+\s*$/, "").trim();
     if (label) found = label;
+  }
+  return found;
+}
+
+/** Where the last "[chunk N]" marker at or before `position` starts, or -1. */
+function lastChunkMarkerAt(text: string, position: number): number {
+  let found = -1;
+  for (const match of text.matchAll(/\[chunk \d+\]/g)) {
+    if ((match.index ?? 0) > position) break;
+    found = match.index ?? 0;
   }
   return found;
 }
@@ -489,7 +523,9 @@ export function verifyDigestEvidence(
       typeof record.section === "string"
         ? normalizeWhitespace(record.section)
         : "";
-    const section = nearestHeading(source, position) || ownSection;
+    // The user reads "Abstract" and "Results" for a part found by place.
+    const heading = nearestHeading(source, position);
+    const section = shownPartName(heading || ownSection);
     const chunk = nearestChunk(source, position);
     verified.push({
       ...(section ? { section } : {}),
@@ -936,6 +972,12 @@ export function digestMissesNamedSections(
   return source.scope?.source === "sections" && !!source.unmatched?.length;
 }
 
+/** `part` of `whole` as a share: "38%", "under 1%". */
+export function readShare(part: number, whole: number): string {
+  const share = Math.round((Math.max(0, part) / Math.max(1, whole)) * 100);
+  return part > 0 && share < 1 ? "under 1%" : `${Math.min(100, share)}%`;
+}
+
 /** How much of the paper's text the worker read. */
 function textCoverage(source: HostPaperDigest["source"]): string {
   if (!isFullReadScope(source.scope)) {
@@ -946,8 +988,16 @@ function textCoverage(source: HostPaperDigest["source"]): string {
           source.textSource ? ` (${source.textSource})` : ""
         }`,
       );
+    if (source.paperCharacters)
+      parts.push(
+        `${readShare(source.totalCharacters, source.paperCharacters)} of the paper's text`,
+      );
     if (source.unmatched?.length)
-      parts.push(`not in this paper: ${source.unmatched.join(", ")}`);
+      parts.push(
+        `not in this paper: ${source.unmatched.join(", ")}${describeNotFound(
+          source.notFound,
+        )}`,
+      );
     // A section found by its place, not a heading, is named as such.
     const positional = (source.covered || []).filter((label) =>
       POSITIONAL_COVERED_LABELS.has(label),
@@ -1410,6 +1460,12 @@ function scopedSourceFields(
     scope,
     covered: [...(source.covered || [])],
     ...(source.unmatched?.length ? { unmatched: [...source.unmatched] } : {}),
+    ...(source.notFound && source.unmatched?.length
+      ? { notFound: { ...source.notFound } }
+      : {}),
+    ...(source.paperCharacters
+      ? { paperCharacters: source.paperCharacters }
+      : {}),
     ...(source.bounds ? { bounds: source.bounds } : {}),
     ...(source.approximateByPosition ? { approximateByPosition: true } : {}),
     ...(source.textSource ? { textSource: source.textSource } : {}),
@@ -1560,9 +1616,16 @@ export async function runPaperDigestJob(
     itemId: number,
     reason: string,
     detail?: string,
+    notFound?: ScopedNotFound,
   ): TargetOutcome => ({
     kind: "failure",
-    failure: { target, itemId, reason, ...(detail ? { detail } : {}) },
+    failure: {
+      target,
+      itemId,
+      reason,
+      ...(detail ? { detail } : {}),
+      ...(notFound ? { notFound } : {}),
+    },
   });
 
   const wait = params.wait || waitWithTimer;
@@ -1799,6 +1862,22 @@ export async function runPaperDigestJob(
     try {
       source = await params.readText(itemId, DIGEST_TEXT_MAX_CHARS, scope);
     } catch (error) {
+      if (error instanceof SectionPickError) {
+        if (isAborted()) return { kind: "pending" };
+        // A reader that can never serve the job stops it, as a digest call
+        // would; any other failed pick may pass on a retry.
+        const reply =
+          error.readerError !== undefined
+            ? failedReply(error.readerError)
+            : null;
+        if (reply?.fatal) return failedCall(target, itemId, reply);
+        return failure(
+          target,
+          itemId,
+          DIGEST_FAILURE_REASONS.sectionPickFailed,
+          describeError(error),
+        );
+      }
       return failure(
         target,
         itemId,
@@ -1817,8 +1896,11 @@ export async function runPaperDigestJob(
         itemId,
         emptyScopeReason(scope),
         source.unmatched?.length
-          ? `Not found: ${source.unmatched.join(", ")}`
+          ? `Not found: ${source.unmatched.join(", ")}${describeNotFound(
+              source.notFound,
+            )}`
           : undefined,
+        source.unmatched?.length ? source.notFound : undefined,
       );
     }
     if (!scope && source.text.trim().length < DIGEST_MIN_SOURCE_CHARS) {

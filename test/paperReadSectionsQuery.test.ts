@@ -22,6 +22,32 @@ import {
   CELL_SHAPE_MD,
   NATURE_SHAPE_MD,
 } from "./helpers/unlabelledSectionsMarkdown";
+import { clearSectionPickCache } from "../src/agent/digests/sectionPicker";
+import {
+  fakeReader,
+  headingMatchReader,
+  idOf,
+  type FakeReader,
+} from "./helpers/sectionPickerFixtures";
+
+/** Stands in for the reader that picks named sections (sectionPicker.ts). */
+const STAND_IN_READER = headingMatchReader();
+
+/**
+ * The reader's pick of a Nature-shape paper's results: its topic sections,
+ * which no heading names results.
+ */
+const NATURE_RESULTS_READER = fakeReader((prompt) => ({
+  parts: [
+    {
+      name: "results",
+      sections: [
+        idOf(prompt, "Replays spread across the visual cortex"),
+        idOf(prompt, "Local silencing removes replays"),
+      ],
+    },
+  ],
+}));
 
 /**
  * paper_read with `sections` and a query searches the sections a
@@ -147,6 +173,7 @@ type Output = {
     status: string;
     citationLabel?: string;
     covered?: string[];
+    sections?: Array<{ section: string }>;
     passages: Array<{ text: string; sectionLabel?: string }>;
   }>;
 };
@@ -172,6 +199,7 @@ describe("paper_read sections with a query", function () {
 
   beforeEach(async function () {
     previous = snapshotTestGlobals();
+    clearSectionPickCache();
     setupMemoryIO();
     setupZoteroGlobals();
     pdfTextCache.clear();
@@ -206,6 +234,8 @@ describe("paper_read sections with a query", function () {
   async function read(
     args: Record<string, unknown>,
     paper: (typeof papers)[number] | Array<(typeof papers)[number]>,
+    /** The reader that picks named sections; the stand-in by default. */
+    reader: FakeReader = STAND_IN_READER,
   ): Promise<Output> {
     const targets = Array.isArray(paper) ? paper : [paper];
     const service = {
@@ -227,6 +257,9 @@ describe("paper_read sections with a query", function () {
         resolvePaperContextTarget: (target: { itemId?: number }) =>
           papers.find((entry) => entry.itemId === target.itemId),
       } as never,
+      undefined,
+      undefined,
+      { readerFactories: reader.factories },
     );
     const input = tool.validate({
       mode: "targeted",
@@ -255,14 +288,22 @@ describe("paper_read sections with a query", function () {
   const noRule = (output: Output) =>
     assert.notInclude(output.warnings || [], SECTIONS_NOT_FOUND_RULE);
 
-  it("searches the results a Nature-shape paper has under topic headings", async function () {
-    const whole = await read({ sections: ["results"] }, papers[0]);
+  // Since the reader picks named sections, the results are the topic
+  // sections it picks, named by their own headings.
+  it("searches the results the reader picks under a Nature-shape paper's topic headings", async function () {
+    const whole = await read(
+      { sections: ["results"] },
+      papers[0],
+      NATURE_RESULTS_READER,
+    );
     assert.deepEqual(whole.papers[0].covered, [
-      "Results (unlabelled sections)",
+      "Replays spread across the visual cortex (for: results)",
+      "Local silencing removes replays (for: results)",
     ]);
     const output = await read(
       { sections: ["results"], query: "silencing removed replays" },
       papers[0],
+      NATURE_RESULTS_READER,
     );
     noRule(output);
     assert.isNotEmpty(output.papers[0].passages);
@@ -290,6 +331,16 @@ describe("paper_read sections with a query", function () {
     assert.equal(output.read, "whole_sections");
     assert.notProperty(output, "results", "no search ran");
     assert.deepEqual(output.papers[0].covered, [LEAD_ABSTRACT_LABEL]);
+    // The model keeps the internal label; a passage, and the quote popover
+    // built from it, show the user "Abstract".
+    assert.deepEqual(
+      output.papers[0].sections!.map((entry) => entry.section),
+      [LEAD_ABSTRACT_LABEL],
+    );
+    assert.deepEqual(
+      [...new Set(output.papers[0].passages.map((p) => p.sectionLabel))],
+      ["Abstract"],
+    );
     assert.include(passageText(output), "Theories of offline learning");
     assert.include(output.warnings || [], QUERY_IGNORED);
     assert.deepEqual(leadWarnings(output), [
@@ -313,9 +364,12 @@ describe("paper_read sections with a query", function () {
   });
 
   it("never takes a nested heading's words for the abstract", async function () {
+    // The paper has no abstract for the fast path, so the reader is asked;
+    // it judges that a results subsection is not one.
     const output = await read(
       { sections: ["abstract"], query: "abstract maps of novelty" },
       papers[2],
+      fakeReader(() => ({ parts: [{ name: "abstract", none: true }] })),
     );
     assert.equal(output.read, "whole_sections");
     assert.isEmpty(output.papers[0].passages);
@@ -428,6 +482,7 @@ describe("paper_read sections with a query", function () {
         topK: 8,
       },
       papers[0],
+      NATURE_RESULTS_READER,
     );
     noRule(output);
     assert.notEqual(output.read, "whole_sections");

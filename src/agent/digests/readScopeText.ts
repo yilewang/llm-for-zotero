@@ -506,8 +506,11 @@ export function chooseMineruScopeSections(
   return { sections, parts, unmatched };
 }
 
-/** A MinerU choice's text, as `selectMineruScopeSections` returns it. */
-function mineruScopeSelection(
+/**
+ * A MinerU choice's text, as `selectMineruScopeSections` returns it; a
+ * reader's pick (`sectionPicker.ts`) reads its choice through it too.
+ */
+export function mineruScopeSelection(
   markdown: string,
   choice: MineruScopeChoice,
 ): MineruScopeSelection {

@@ -115,7 +115,7 @@ const DECLARATION_SCHEMA = {
     read: {
       ...READ_SCOPE_JSON_SCHEMA,
       description:
-        "Digest only: what of each paper to read, as the user asked; default full, 'abstract' needs no model, pages [{from,to}].",
+        "Digest only: what of each paper to read, as the user asked; default full, 'abstract' needs no model, sections as the user named them in any language, pages [{from,to}].",
     },
     overrides: READ_SCOPE_OVERRIDES_JSON_SCHEMA,
   },

@@ -16,6 +16,16 @@ import {
   RESULTS_A,
   RESULTS_B,
 } from "./helpers/unlabelledSectionsMarkdown";
+import { clearSectionPickCache } from "../src/agent/digests/sectionPicker";
+import {
+  fakeReader,
+  headingMatchReader,
+  idOf,
+  type FakeReader,
+} from "./helpers/sectionPickerFixtures";
+
+/** Stands in for the reader that picks named sections (sectionPicker.ts). */
+const STAND_IN_READER = headingMatchReader();
 
 /**
  * paper_read with `sections` and no query reads the whole named sections
@@ -178,6 +188,8 @@ function toolContext(
 function makeTool(options: {
   abstractNotes?: Record<number, string>;
   retrieveCalls?: unknown[];
+  /** The reader that picks named sections; the stand-in by default. */
+  reader?: FakeReader;
 }) {
   const chunksByContext: Record<number, string[]> = {
     120: HEADED_CHUNKS,
@@ -213,6 +225,9 @@ function makeTool(options: {
     } as never,
     {} as never,
     gateway,
+    undefined,
+    undefined,
+    { readerFactories: (options.reader || STAND_IN_READER).factories },
   ) as unknown as AgentToolDefinition<never, unknown>;
 }
 
@@ -293,12 +308,13 @@ describe("paper_read whole sections", function () {
     const row = rowOf(output, 10);
     assert.equal(row.status, "complete");
     assert.equal(row.bounds, "exact");
-    assert.deepEqual(row.covered, ["Abstract", "Results"]);
+    // The reader picked the results: named by the paper's own heading.
+    assert.deepEqual(row.covered, ["Abstract", "2 Results (for: results)"]);
     assert.deepEqual(
       row.sections.map((section) => [section.section, section.complete]),
       [
         ["Abstract", true],
-        ["Results", true],
+        ["2 Results", true],
       ],
     );
     const text = row.passages.map((passage) => passage.text).join("\n");
@@ -318,8 +334,24 @@ describe("paper_read whole sections", function () {
     assert.notInclude(JSON.stringify(output), SECTIONS_NOT_FOUND_RULE);
   });
 
-  it("reads an unlabelled lead abstract and results span, flagged approximate, under their own labels", async function () {
-    const tool = makeTool({});
+  // Since the reader picks named sections, a paper's unheaded results are
+  // the topic sections the reader picks, under their own headings; only the
+  // lead abstract is still found by its place.
+  it("reads an unlabelled lead abstract and the results the reader picks, flagged approximate, under their own labels", async function () {
+    clearSectionPickCache();
+    const tool = makeTool({
+      reader: fakeReader((prompt) => ({
+        parts: [
+          {
+            name: "results",
+            sections: [
+              idOf(prompt, "Replays spread across the visual cortex"),
+              idOf(prompt, "Local silencing removes replays"),
+            ],
+          },
+        ],
+      })),
+    });
     const { output, input } = await read(tool, {
       mode: "targeted",
       sections: ["abstract", "results"],
@@ -328,13 +360,11 @@ describe("paper_read whole sections", function () {
     const row = rowOf(output, 50) as PaperRow & { textSource?: string };
     assert.equal(row.status, "complete");
     assert.equal(row.bounds, "approximate");
-    assert.equal(
-      row.textSource,
-      "PDF lead paragraph; MinerU sections by position",
-    );
+    assert.equal(row.textSource, "PDF lead paragraph; MinerU sections");
     assert.deepEqual(row.covered, [
       "Abstract (unlabelled lead)",
-      "Results (unlabelled sections)",
+      "Replays spread across the visual cortex (for: results)",
+      "Local silencing removes replays (for: results)",
     ]);
     assert.deepEqual(row.unmatched, []);
     const leadWarnings = (output.warnings || []).filter((warning) =>
@@ -346,13 +376,15 @@ describe("paper_read whole sections", function () {
     assert.include(text, RESULTS_A);
     assert.include(text, RESULTS_B);
     assert.notInclude(text, DISCUSSION);
+    // Topic headings carry no standard kind: body text.
     assert.deepEqual(
       [...new Set(row.passages.map((passage) => passage.chunkKind))],
-      ["abstract", "results"],
+      ["abstract", "body"],
     );
     assertIdsRegistered(output);
     assert.notInclude(JSON.stringify(output), SECTIONS_NOT_FOUND_RULE);
-    // The lead is recorded as the abstract, the span as a section.
+    // The lead is recorded as the abstract, the picked sections as one read
+    // of the part asked for.
     const delta = deriveTaskPaperLedgerDelta({
       toolName: "paper_read",
       callId: "call-unlabelled",
@@ -363,8 +395,8 @@ describe("paper_read whole sections", function () {
     assert.deepEqual(
       (delta?.reads || []).map((entry) => [entry.label, entry.granularity]),
       [
-        ["Abstract (unlabelled lead)", "abstract"],
-        ["Results (unlabelled sections)", "section"],
+        ["Abstract", "abstract"],
+        ["Results", "section"],
       ],
     );
     // A read of the lead alone attests the abstract, not body text.
@@ -382,7 +414,7 @@ describe("paper_read whole sections", function () {
     assert.deepEqual(observations[0]?.capabilities, ["abstract"]);
   });
 
-  it("reads plain PDF sections by chunk kind, flagged approximate, and reports a name it cannot find", async function () {
+  it("reads the plain PDF chunks the reader picks, flagged approximate, and reports a name it cannot find", async function () {
     const tool = makeTool({});
     const { output } = await read(tool, {
       mode: "targeted",
@@ -391,10 +423,16 @@ describe("paper_read whole sections", function () {
     });
     const row = rowOf(output, 20);
     assert.equal(row.bounds, "approximate");
-    assert.deepEqual(row.covered, ["Results"]);
+    // A paper without headings or page numbers: a plain label names the read,
+    // never a chunk number.
+    assert.deepEqual(row.covered, ["PDF text (for: results)"]);
     assert.deepEqual(row.unmatched, ["acknowledgements"]);
     assert.lengthOf(row.passages, 1);
     assert.equal(row.passages[0].chunkIndex, 2);
+    // The model's section keeps where it was found; the passage, and the
+    // quote popover built from it, show the part the user asked for.
+    assert.equal(row.sections[0].section, "PDF text");
+    assert.equal(row.passages[0].sectionLabel, "Results");
     assert.include(row.passages[0].text, "Decoding stayed above chance");
     assert.notInclude(row.passages[0].text, "[chunk");
     assertIdsRegistered(output);
@@ -576,7 +614,7 @@ describe("paper_read whole sections", function () {
     assert.isBelow(results.characters, results.totalCharacters);
     assert.include(
       (output.warnings || []).join("\n"),
-      `Results: ${results.characters} of ${results.totalCharacters} characters`,
+      `2 Results: ${results.characters} of ${results.totalCharacters} characters`,
     );
     const delta = deriveTaskPaperLedgerDelta({
       toolName: "paper_read",
@@ -651,7 +689,7 @@ describe("paper_read whole sections", function () {
       targets: [{ itemId: 10 }],
     });
     const results = rowOf(output, 10).sections[1];
-    assert.equal(results.section, "Results");
+    assert.equal(results.section, "2 Results");
     results.characters = 0;
     results.complete = false;
     const observations = await createTrustedReadObservations({

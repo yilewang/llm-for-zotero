@@ -124,14 +124,179 @@ export const READ_SCOPE_TEXT_SOURCES = Object.freeze({
 });
 
 /**
- * What a sections read tells the model of a named section the paper does
- * not have: the read stays limited to the names, and the answer names what
- * was not found (the user's rule, 2026-10-31). A tool result carries it
- * once, however many papers lack a name; each paper carries only its own
- * missing names.
+ * What a sections read tells the model of a named part the paper does not
+ * have: the answer says so per paper, with why (what kind of paper it is);
+ * no other part is presented as it, and what the paper offers instead is
+ * used only when labelled so (the user's rules, 2026-10-31 and
+ * 2026-11-01). A tool result carries it once, however many papers lack a
+ * name; each paper carries only its own missing names and reason
+ * (`ScopedPaperText.notFound`).
  */
 export const SECTIONS_NOT_FOUND_RULE =
-  "The read was limited to the named sections: do not read the paper another way to find them; say in the answer which part was not found.";
+  "The read was limited to the named parts. For each paper that lacks one, say in the answer that it has no such part and why (what kind of paper it is); do not present any other part as that part. Use what the paper offers instead only when you label it as not the requested part.";
+
+/**
+ * Why a paper has none of a named part, as its reader judged it: what the
+ * paper is ("a review article"), why it has no such part, and what it
+ * offers instead, which is never the requested part.
+ */
+export type ScopedNotFound = Readonly<{
+  kind?: string;
+  reason?: string;
+  offers?: string;
+}>;
+
+/**
+ * The reader's judgment of a missing part, as a result names it after the
+ * missing names: " (a review article: it reports no results of its own;
+ * offers instead, not as the requested part: ...)", or "" without one.
+ */
+export function describeNotFound(notFound?: ScopedNotFound): string {
+  if (!notFound) return "";
+  const what = [notFound.kind, notFound.reason]
+    .map((text) => (text || "").trim())
+    .filter(Boolean)
+    .join(": ");
+  const offers = (notFound.offers || "").trim();
+  const parts = [
+    what,
+    ...(offers ? [`offers instead, not as the requested part: ${offers}`] : []),
+  ].filter(Boolean);
+  return parts.length ? ` (${parts.join("; ")})` : "";
+}
+
+/**
+ * One section a read covered, by the paper's own heading (`label`, in the
+ * paper's language) and the requested name it was read for (`for`, as the
+ * user wrote it). `kind` is set for the abstract, so its depth is known
+ * whatever the heading says.
+ */
+export type CoveredPart = Readonly<{
+  label: string;
+  for?: string;
+  kind?: "abstract";
+}>;
+
+/**
+ * What a read covered, as its result names it: each heading once, with the
+ * names it was read for when they differ from it ("结果与讨论 (for:
+ * results)"). The abstract keeps its own label ("Abstract").
+ */
+export function renderCoveredParts(parts: readonly CoveredPart[]): string[] {
+  const order: string[] = [];
+  const names = new Map<string, string[]>();
+  for (const part of parts) {
+    const label = part.label.trim();
+    if (!label) continue;
+    if (!names.has(label)) {
+      order.push(label);
+      names.set(label, []);
+    }
+    const name = (part.for || "").trim();
+    const list = names.get(label)!;
+    if (
+      part.kind !== "abstract" &&
+      name &&
+      name.toLowerCase() !== label.toLowerCase() &&
+      !list.includes(name)
+    )
+      list.push(name);
+  }
+  return order.map((label) => {
+    const list = names.get(label)!;
+    return list.length ? `${label} (for: ${list.join(", ")})` : label;
+  });
+}
+
+/** A covered name with the " (for: name, name)" suffix, which a clip may cut short. */
+const COVERED_FOR = /^(.*?) \(for: (.*?)\)?$/s;
+
+/**
+ * The plain name a user reads for a covered label the model keeps for its
+ * own use: the two positional labels ("Abstract (unlabelled lead)",
+ * "Results (unlabelled sections)") are "Abstract" and "Results", and any
+ * spelling of the abstract is "Abstract". Any other label stays as it is.
+ * Display only: the model keeps the covered labels.
+ */
+export function shownPartName(label: string): string {
+  const clean = label.trim();
+  if (clean === LEAD_ABSTRACT_LABEL) return "Abstract";
+  if (clean === RESULTS_SPAN_LABEL) return "Results";
+  return clean.toLowerCase() === "abstract" ? "Abstract" : clean;
+}
+
+/** A name with its first letter upper-cased when that letter is Latin. */
+function capitalizeLatin(name: string): string {
+  return /^\p{Script=Latin}/u.test(name)
+    ? name.charAt(0).toUpperCase() + name.slice(1)
+    : name;
+}
+
+/** Names as the user reads them, each once, in the order first seen. */
+function dedupeShown(
+  entries: readonly { name: string; capitalize: boolean }[],
+): string[] {
+  const shown: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const name = shownPartName(
+      entry.capitalize ? capitalizeLatin(entry.name.trim()) : entry.name,
+    );
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    shown.push(name);
+  }
+  return shown;
+}
+
+/**
+ * Requested part names ("results", "结果") as the user reads them: the first
+ * Latin letter upper-cased, the abstract as "Abstract", each name once. A
+ * name that contains ", " stays one name.
+ */
+export function userPartNames(names: readonly string[]): string[] {
+  return dedupeShown(names.map((name) => ({ name, capitalize: true })));
+}
+
+/**
+ * What a read of named parts shows the user: the names they asked for, not
+ * the headings or places that were found for them. A covered name "X (for:
+ * a, b)" becomes "a" and "b" (as the user wrote them, the first Latin
+ * letter upper-cased), the abstract stays "Abstract", and a name without
+ * the suffix ("Notes", "pages 3–5") stays. Each name appears once, in the
+ * order it is first seen. Display only: the model keeps the covered names.
+ */
+export function requestedPartNames(covered: readonly string[]): string[] {
+  const entries: { name: string; capitalize: boolean }[] = [];
+  for (const token of covered) {
+    const match = COVERED_FOR.exec(token.trim());
+    if (!match) {
+      entries.push({ name: token, capitalize: false });
+      continue;
+    }
+    for (const name of match[2].split(", "))
+      entries.push({ name, capitalize: true });
+  }
+  return dedupeShown(entries);
+}
+
+/**
+ * A paper's named parts could not be chosen (the reader's call failed or
+ * named nothing in the paper's outline). Nothing is read in their place:
+ * the paper's read fails, and a digest may run it again.
+ */
+export class SectionPickError extends Error {
+  /** The reader call's own error, when the call failed. */
+  readonly readerError?: unknown;
+
+  constructor(message: string, readerError?: unknown) {
+    super(message);
+    this.name = "SectionPickError";
+    if (readerError !== undefined) this.readerError = readerError;
+  }
+}
 
 /** A paper's text cut to a scope, with what the cut covered. */
 export type ScopedPaperText = {
@@ -147,6 +312,15 @@ export type ScopedPaperText = {
   covered: string[];
   /** Requested sections or pages the paper has none of. */
   unmatched: string[];
+  /**
+   * The covered sections by heading and requested name, when a reader
+   * picked them (`covered` is rendered from them).
+   */
+  coveredParts?: CoveredPart[];
+  /** Why the paper has none of the `unmatched` parts, as its reader judged. */
+  notFound?: ScopedNotFound;
+  /** The paper's whole text length, when a reader picked the sections. */
+  paperCharacters?: number;
   /** Exact bounds (MinerU headings, page text, Zotero fields) or not. */
   bounds: "exact" | "approximate";
   /**
