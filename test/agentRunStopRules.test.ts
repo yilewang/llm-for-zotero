@@ -12,6 +12,7 @@ import {
 } from "../src/agent/store/transcriptStore";
 import { clearAgentToolResultHandleStore } from "../src/agent/store/toolResultHandles";
 import { INTERRUPTED_AGENT_RUN_MARKER } from "../src/agent/store/traceStore";
+import { loadAgentTurnMemory } from "../src/agent/store/conversationMemory";
 import { createWebSearchTool } from "../src/agent/tools/read/webSearch";
 import { TAVILY_API_KEY_PREF } from "../src/webAccess/prefs";
 import type { WebAccessProvider } from "../src/webAccess/types";
@@ -677,6 +678,153 @@ describe("Original Agent run endings", function () {
     assert.include((ending.outcome as { text?: string }).text, "continue");
     assert.equal(ending.run.status, "failed");
     assertStoppedBy(ending, "connection_lost", "failed");
+  });
+
+  it("final_answer: an empty answer is asked again once, and the next answer is accepted", async function () {
+    const registry = new AgentToolRegistry();
+    registerReadTool(registry, async () => ({ notes: ["a note"] }));
+    const continuations: AgentStepParams["continuationMessages"][] = [];
+    const adapter = scriptedAdapter((step, params) => {
+      continuations.push(params.continuationMessages);
+      if (step === 1) return toolStep([readCall("c1")]);
+      return step === 2 ? finalStep("") : finalStep("The answer.");
+    });
+    const ending = await runToEnding(installed, {
+      registry,
+      adapter,
+      request: baseRequest(97_330, "Answer from the notes"),
+    });
+
+    assert.equal(adapter.steps(), 3, "the empty answer was asked once more");
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      text: "The answer.",
+    });
+    assert.equal(ending.run.finalText, "The answer.");
+    assertStoppedBy(ending, "final_answer", "completed");
+    const reAsk = continuations[2] || [];
+    assert.lengthOf(reAsk, 1, "the re-ask sends one host message");
+    assert.equal(reAsk[0].role, "user");
+    assert.include(String(reAsk[0].content), "no answer text");
+  });
+
+  it("empty_answer: an answer still empty after one re-ask fails the run with the reason", async function () {
+    const adapter = scriptedAdapter(() => finalStep(""));
+    const ending = await runToEnding(installed, {
+      adapter,
+      request: baseRequest(97_331, "Explain this topic"),
+    });
+
+    const reason = "The model returned an empty answer twice.";
+    assert.equal(adapter.steps(), 2);
+    const text = String((ending.outcome as { text?: string }).text);
+    assert.deepInclude(ending.outcome, {
+      kind: "completed",
+      runStatus: "failed",
+    });
+    assert.include(text, reason);
+    assert.include(text, "say “continue” to go on");
+    assert.notInclude(text, "No response.");
+    assert.equal(ending.run.status, "failed");
+    assert.equal(ending.run.finalText, text);
+    assertStoppedBy(ending, "empty_answer", "failed");
+    const finals = ending.events.filter((event) => event.type === "final");
+    assert.deepEqual(
+      finals.map((event) => (event as { text?: string }).text),
+      [text],
+    );
+    assert.notInclude(JSON.stringify(ending.events), "No response.");
+    const stored = await loadAgentTranscriptSegment({
+      conversationKey: 97_331,
+      compatibilityKey: PORTABLE_TRANSCRIPT_KEY,
+    });
+    const answers = stored.messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => String(message.content));
+    assert.deepEqual(answers, [text]);
+    assert.lengthOf(
+      await loadAgentTurnMemory(97_331),
+      0,
+      "a failed turn is not summarized as an answer",
+    );
+  });
+
+  it("empty_answer: the re-ask happens once per turn, across tool rounds", async function () {
+    const registry = new AgentToolRegistry();
+    registerReadTool(registry, async () => ({ notes: ["a note"] }));
+    const adapter = scriptedAdapter((step) => {
+      // empty, (re-ask) tool call, empty again: the run ends at once.
+      if (step === 2) return toolStep([readCall("c1")]);
+      return finalStep("");
+    });
+    const ending = await runToEnding(installed, {
+      registry,
+      adapter,
+      request: baseRequest(97_333, "Answer from the notes"),
+    });
+
+    assert.equal(adapter.steps(), 3, "no second re-ask after the tool round");
+    assert.include(
+      String((ending.outcome as { text?: string }).text),
+      "The model returned an empty answer twice.",
+    );
+    assertStoppedBy(ending, "empty_answer", "failed");
+  });
+
+  it("search_exhausted: a final-only empty answer keeps its own re-ask and fallback", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "zotero_script",
+        description: "Run a read-only library script",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args as never }),
+      execute: async () => ({
+        access: "library",
+        effect: "read",
+        output: "took 1 ms",
+        returnValue: { rows: 3 },
+        itemsAffected: 0,
+      }),
+    } as never);
+    let finalOnlySteps = 0;
+    let finalOnlyText = "";
+    const adapter = scriptedAdapter((step, params) => {
+      if (params.toolChoice === "none") {
+        finalOnlySteps += 1;
+        const last = params.continuationMessages?.at(-1);
+        if (finalOnlySteps === 2) finalOnlyText = String(last?.content || "");
+        return finalStep("");
+      }
+      return toolStep([
+        {
+          id: `script-${step}`,
+          name: "zotero_script",
+          arguments: {
+            access: "library",
+            effect: "read",
+            description: `Analysis ${step}`,
+            script: `return countPapers(${step});`,
+          },
+        },
+      ]);
+    });
+    const ending = await runToEnding(installed, {
+      registry,
+      adapter,
+      request: baseRequest(97_332, "Table my papers per year and journal"),
+    });
+
+    assert.equal(finalOnlySteps, 2, "the final-only step was asked once more");
+    assert.include(finalOnlyText, "Your last reply had no answer text.");
+    assertStoppedBy(ending, "search_exhausted", "completed");
+    assert.notInclude(
+      String((ending.outcome as { text?: string }).text),
+      "empty answer",
+    );
   });
 
   it("incomplete_step_limit: stops when incomplete steps reach the round limit", async function () {

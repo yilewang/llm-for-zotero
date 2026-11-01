@@ -1931,6 +1931,7 @@ describe("outcome ledger: run end state", function () {
       "budget_reached",
       "connection_lost",
       "prompt_budget_exceeded",
+      "empty_answer",
     ] as RunStopRule[]) {
       assert.equal(
         decideRunEnd(undefined, { status: "failed", stopRule }),

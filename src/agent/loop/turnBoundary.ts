@@ -668,12 +668,14 @@ export const RESUMABLE_STOP_RULES: ReadonlySet<RunStopRule> =
     "budget_reached",
     "connection_lost",
     "prompt_budget_exceeded",
+    "empty_answer",
   ]);
 
 const RESUME_REASONS: Partial<Record<RunStopRule, string>> = {
   search_exhausted: "its search ended without confirming the paper",
   budget_reached: "it reached its per-turn safety limit",
   connection_lost: "the connection to the model was lost",
+  empty_answer: "the model returned an empty answer twice",
   prompt_budget_exceeded:
     "its prompt stayed too long for the model after compaction; go on only with a narrower step, and if the request needs the whole earlier context, tell the user to narrow the request or start a new chat",
 };
@@ -731,7 +733,10 @@ export function searchScopeLabel(scope: {
 export function renderStoppedTurnText(params: {
   rule: Extract<
     RunStopRule,
-    "budget_reached" | "connection_lost" | "prompt_budget_exceeded"
+    | "budget_reached"
+    | "connection_lost"
+    | "prompt_budget_exceeded"
+    | "empty_answer"
   >;
   calls: readonly BoundaryToolRecord[];
   parts: { done: number; total: number };
@@ -747,7 +752,9 @@ export function renderStoppedTurnText(params: {
         }.`
       : params.rule === "connection_lost"
         ? `This turn stopped before it finished: the model could not be reached after ${MODEL_STEP_RETRIES} automatic retries (a network, rate-limit or provider error${params.detail ? `: ${params.detail}` : ""}).`
-        : "This turn stopped before it finished: the conversation stayed too long for the model after it was compacted.";
+        : params.rule === "empty_answer"
+          ? "The model returned an empty answer twice."
+          : "This turn stopped before it finished: the conversation stayed too long for the model after it was compacted.";
   const succeeded = params.calls.filter((call) => call.ok).length;
   const read = buildSearchRecord(params.calls).read.length;
   const done = [

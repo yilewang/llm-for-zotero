@@ -27,6 +27,9 @@ export type RunStopRule =
   // The model could not be reached after the automatic retries; the work
   // is kept and "continue" goes on.
   | "connection_lost"
+  // The model's answer was empty, and empty again when asked once more;
+  // the work is kept and "continue" goes on.
+  | "empty_answer"
   // Incomplete model steps reached the segment's round limit.
   | "incomplete_step_limit"
   // The final-answer gate rejected the answer and allows no more corrections.

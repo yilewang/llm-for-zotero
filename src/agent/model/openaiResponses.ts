@@ -29,6 +29,8 @@ import {
   type ResponsesPayload,
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
+  replayableResponsesOutputItems,
+  withoutTrailingReasoningItems,
 } from "./responsesShared";
 import { buildResponsesFunctionTools } from "./shared";
 import { resolveRequestContentInputs } from "./messageBuilder";
@@ -180,15 +182,19 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
       normalized.completion,
     );
     if (recoveryReason) {
+      // A reasoning item must not end the replayed items: the recovery
+      // message would follow it, and the provider rejects that request.
       this.conversationItems = [
         ...inputItems,
-        ...normalized.outputItems.filter((item) => {
-          if (!item || typeof item !== "object") return true;
-          const type = String(
-            (item as { type?: unknown }).type ?? "",
-          ).toLowerCase();
-          return type !== "function_call" && type !== "tool_call";
-        }),
+        ...withoutTrailingReasoningItems(
+          normalized.outputItems.filter((item) => {
+            if (!item || typeof item !== "object") return true;
+            const type = String(
+              (item as { type?: unknown }).type ?? "",
+            ).toLowerCase();
+            return type !== "function_call" && type !== "tool_call";
+          }),
+        ),
       ];
       return {
         kind: "incomplete",
@@ -205,7 +211,10 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
         },
       };
     }
-    this.conversationItems = [...inputItems, ...normalized.outputItems];
+    this.conversationItems = [
+      ...inputItems,
+      ...replayableResponsesOutputItems(normalized),
+    ];
     if (normalized.toolCalls.length) {
       return {
         kind: "tool_calls",

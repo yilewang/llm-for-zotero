@@ -16,6 +16,8 @@ import {
 } from "../src/codexAuth/modelCatalog";
 import { CODEX_DIRECT_RESPONSES_URL } from "../src/codexAuth/auth";
 import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
+import { ModelStreamInterruptedError } from "../src/agent/model/completion";
+import { classifyModelFailure } from "../src/agent/loop/turnBoundary";
 
 describe("CodexResponsesAgentAdapter", function () {
   const originalToolkit = (
@@ -955,4 +957,537 @@ describe("CodexResponsesAgentAdapter", function () {
       "Figure 1 compares retrieval accuracy across conditions.",
     );
   });
+});
+
+/** A Responses event stream that sends `events` as SSE lines, then closes. */
+function sseStream(events: readonly unknown[]): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const event of events)
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n`));
+      controller.close();
+    },
+  });
+}
+
+async function parseError(
+  events: readonly unknown[],
+): Promise<unknown | undefined> {
+  try {
+    await parseResponsesStepStream(sseStream(events));
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+describe("Responses stream endings", function () {
+  it("throws a retryable stream error for response.failed before any output", async function () {
+    const error = await parseError([
+      { type: "response.created", response: { id: "resp_failed" } },
+      {
+        type: "response.failed",
+        response: {
+          id: "resp_failed",
+          status: "failed",
+          error: { code: "server_error", message: "The server had an error." },
+        },
+      },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    assert.include((error as Error).message, "server_error");
+    assert.deepInclude(classifyModelFailure(error), {
+      kind: "transient",
+      cause: "stream",
+    });
+  });
+
+  it("throws for response.failed even after partial text", async function () {
+    const error = await parseError([
+      { type: "response.output_text.delta", delta: "Partial " },
+      {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { code: "rate_limit_exceeded", message: "Slow down." },
+        },
+      },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+  });
+
+  it("reports a non-retryable response.failed with its code and message", async function () {
+    const error = await parseError([
+      {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: {
+            code: "insufficient_quota",
+            message: "You exceeded your current quota.",
+          },
+        },
+      },
+    ]);
+    assert.instanceOf(error, Error);
+    assert.notInstanceOf(error, ModelStreamInterruptedError);
+    assert.equal(
+      (error as Error).message,
+      "insufficient_quota: You exceeded your current quota.",
+    );
+    assert.equal(classifyModelFailure(error).kind, "fatal");
+  });
+
+  it("keeps a context-length error event a prompt that is too long", async function () {
+    const error = await parseError([
+      {
+        type: "error",
+        code: "context_length_exceeded",
+        message: "Your input exceeds the context window of this model.",
+      },
+    ]);
+    assert.notInstanceOf(error, ModelStreamInterruptedError);
+    assert.equal(
+      (error as Error).message,
+      "context_length_exceeded: Your input exceeds the context window of this model.",
+    );
+    assert.equal(classifyModelFailure(error).kind, "prompt_too_long");
+  });
+
+  it("retries an error event that names no code", async function () {
+    const error = await parseError([
+      { type: "response.output_text.delta", delta: "Partial" },
+      { type: "error", message: "An error occurred while processing." },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    assert.equal(classifyModelFailure(error).kind, "transient");
+  });
+
+  it("reports a nested non-retryable error event when the top-level code is null", async function () {
+    const error = await parseError([
+      {
+        type: "error",
+        code: null,
+        error: {
+          code: "insufficient_quota",
+          message: "You exceeded your current quota.",
+        },
+      },
+    ]);
+    assert.notInstanceOf(error, ModelStreamInterruptedError);
+    assert.equal(
+      (error as Error).message,
+      "insufficient_quota: You exceeded your current quota.",
+    );
+    assert.equal(classifyModelFailure(error).kind, "fatal");
+  });
+
+  it("treats an invalid_request_error that has no code as fatal", async function () {
+    const error = await parseError([
+      {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Unknown parameter: made_up_field.",
+        },
+      },
+    ]);
+    assert.notInstanceOf(error, ModelStreamInterruptedError);
+    assert.equal(
+      (error as Error).message,
+      "invalid_request_error: Unknown parameter: made_up_field.",
+    );
+    assert.equal(classifyModelFailure(error).kind, "fatal");
+  });
+
+  it("retries a relay's code-less rate_limit_error event as a 429", async function () {
+    const error = await parseError([
+      {
+        type: "error",
+        error: { type: "rate_limit_error", message: "Slow down." },
+      },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    assert.equal((error as ModelStreamInterruptedError).status, 429);
+    assert.equal(classifyModelFailure(error).kind, "transient");
+  });
+
+  it("retries a nested error that has neither a code nor a type", async function () {
+    const error = await parseError([
+      { type: "error", code: null, error: { message: "Something broke." } },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    assert.equal(classifyModelFailure(error).kind, "transient");
+  });
+
+  it("cancels the stream after response.failed", async function () {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({
+              type: "response.failed",
+              response: {
+                status: "failed",
+                error: { code: "server_error", message: "Broke." },
+              },
+            })}\n`,
+          ),
+        );
+        // The stream stays open: only a cancel ends it.
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    let error: unknown;
+    try {
+      await parseResponsesStepStream(stream);
+    } catch (caught) {
+      error = caught;
+    }
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.isTrue(cancelled, "the unfinished stream is cancelled");
+  });
+
+  it("reads a last event that has no trailing newline", async function () {
+    const event = JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "resp_last",
+        status: "completed",
+        output_text: "The last line.",
+      },
+    });
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "response.created" })}\n`,
+          ),
+        );
+        controller.enqueue(encoder.encode(`data: ${event.slice(0, 40)}`));
+        controller.enqueue(encoder.encode(event.slice(40)));
+        controller.close();
+      },
+    });
+    const step = await parseResponsesStepStream(stream);
+    assert.equal(step.text, "The last line.");
+  });
+
+  it("throws when the stream ends with no response, no text and no tool call", async function () {
+    const error = await parseError([
+      { type: "response.created", response: { id: "resp_cut" } },
+      { type: "response.in_progress", response: { id: "resp_cut" } },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+    assert.equal(
+      (error as Error).message,
+      "The model stream ended before the response finished.",
+    );
+  });
+
+  it("throws when a reasoning-only stream ends with no response", async function () {
+    const error = await parseError([
+      {
+        type: "response.output_item.added",
+        item: { id: "rs_1", type: "reasoning", encrypted_content: "enc" },
+      },
+      { type: "response.reasoning_summary_text.delta", delta: "Thinking" },
+    ]);
+    assert.instanceOf(error, ModelStreamInterruptedError);
+  });
+
+  it("still returns text or a tool call from a stream that sends no completed response", async function () {
+    const textStep = await parseResponsesStepStream(
+      sseStream([{ type: "response.output_text.delta", delta: "Answer." }]),
+    );
+    assert.equal(textStep.text, "Answer.");
+    const callStep = await parseResponsesStepStream(
+      sseStream([
+        {
+          type: "response.output_item.done",
+          item: {
+            id: "fc_1",
+            type: "function_call",
+            call_id: "call_1",
+            name: "library_search",
+            arguments: "{}",
+          },
+        },
+      ]),
+    );
+    assert.deepEqual(
+      callStep.toolCalls.map((call) => call.id),
+      ["call_1"],
+    );
+  });
+});
+
+describe("Codex adapter: incomplete and empty replies", function () {
+  const originalToolkit = (
+    globalThis as typeof globalThis & { ztoolkit?: unknown }
+  ).ztoolkit;
+
+  afterEach(function () {
+    (
+      globalThis as typeof globalThis & { ztoolkit?: typeof originalToolkit }
+    ).ztoolkit = originalToolkit;
+  });
+
+  const request: AgentRuntimeRequest = {
+    conversationKey: 1,
+    mode: "agent",
+    userText: "Search",
+    model: "gpt-5.4",
+    apiBase: "https://example.com/v1",
+    apiKey: "test-token",
+    authMode: "api_key",
+    providerProtocol: "codex_responses",
+  };
+  const tools: ToolSpec[] = [
+    {
+      name: "library_search",
+      description: "search",
+      inputSchema: { type: "object" },
+      executionClass: "read",
+      requiresConfirmation: false,
+    },
+  ];
+
+  /** Serves one SSE stream per request; records each request body. */
+  function serveStreams(
+    streams: readonly (readonly unknown[])[],
+  ): Record<string, unknown>[] {
+    const bodies: Record<string, unknown>[] = [];
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          bodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: sseStream(streams[bodies.length - 1] || []),
+            json: async () => ({}),
+            text: async () => "",
+          };
+        };
+      },
+    };
+    return bodies;
+  }
+
+  const incomplete = (reason: string, output: unknown[] = []) => ({
+    type: "response.incomplete",
+    response: {
+      id: "resp_incomplete",
+      status: "incomplete",
+      incomplete_details: { reason },
+      output,
+    },
+  });
+
+  it("returns an incomplete step for max_output_tokens", async function () {
+    serveStreams([
+      [
+        incomplete("max_output_tokens", [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "Partial answer" }],
+          },
+          {
+            type: "function_call",
+            call_id: "cut-call",
+            name: "library_search",
+            arguments: '{"query":"unfin',
+          },
+        ]),
+      ],
+    ]);
+    const step = await new CodexResponsesAgentAdapter().runStep({
+      request,
+      messages: [{ role: "user", content: "Search" }],
+      tools,
+    });
+    assert.equal(step.kind, "incomplete");
+    if (step.kind !== "incomplete") return;
+    assert.equal(step.reason, "output_limit");
+    assert.equal(step.text, "Partial answer");
+    assert.include(step.recoveryInstruction, "output limit");
+  });
+
+  it("throws when the provider filtered the reply", async function () {
+    serveStreams([[incomplete("content_filter")]]);
+    let error: unknown;
+    try {
+      await new CodexResponsesAgentAdapter().runStep({
+        request,
+        messages: [{ role: "user", content: "Search" }],
+        tools,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.instanceOf(error, Error);
+    assert.include((error as Error).message, "safety");
+  });
+
+  it("asks again for a reply the provider marked interrupted", async function () {
+    serveStreams([
+      [
+        incomplete("interrupted", [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "Half a sent" }],
+          },
+        ]),
+      ],
+    ]);
+    const step = await new CodexResponsesAgentAdapter().runStep({
+      request,
+      messages: [{ role: "user", content: "Search" }],
+      tools,
+    });
+    assert.equal(step.kind, "incomplete");
+    if (step.kind !== "incomplete") return;
+    assert.equal(step.reason, "stream_interrupted");
+  });
+
+  for (const [label, makeAdapter] of [
+    ["Codex", () => new CodexResponsesAgentAdapter()],
+    ["OpenAI", () => new OpenAIResponsesAgentAdapter()],
+  ] as const) {
+    it(`${label}: the request after an empty reasoning-only reply ends with no reasoning item`, async function () {
+      const bodies = serveStreams([
+        [
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_empty",
+              status: "completed",
+              output: [
+                { id: "rs_empty", type: "reasoning", encrypted_content: "enc" },
+              ],
+            },
+          },
+        ],
+        [{ type: "response.output_text.delta", delta: "The answer." }],
+      ]);
+      const adapter = makeAdapter();
+      const openaiRequest: AgentRuntimeRequest =
+        label === "OpenAI"
+          ? {
+              ...request,
+              apiBase: "https://api.openai.com/v1",
+              providerProtocol: "responses_api",
+            }
+          : request;
+      const messages: AgentModelMessage[] = [{ role: "user", content: "Ask" }];
+      const first = await adapter.runStep({
+        request: openaiRequest,
+        messages,
+        tools,
+      });
+      assert.equal(first.kind, "final");
+      assert.equal(first.kind === "final" ? first.text : "x", "");
+      const reAsk: AgentModelMessage = {
+        role: "user",
+        content: "Your last reply had no answer text.",
+      };
+      messages.push(reAsk);
+      const second = await adapter.runStep({
+        request: openaiRequest,
+        messages,
+        continuationMessages: [reAsk],
+        tools,
+      });
+      assert.equal(second.kind, "final");
+      const input = bodies[1]?.input as Array<Record<string, unknown>>;
+      assert.notInclude(
+        input.map((item) => item.type),
+        "reasoning",
+      );
+      assert.deepEqual(input[input.length - 1], {
+        type: "message",
+        role: "user",
+        content: "Your last reply had no answer text.",
+      });
+    });
+
+    for (const [shape, output] of [
+      [
+        "reasoning and a cut function call",
+        [
+          { id: "rs_cut", type: "reasoning", encrypted_content: "enc" },
+          {
+            type: "function_call",
+            call_id: "cut-call",
+            name: "library_search",
+            arguments: '{"query":"unfin',
+          },
+        ],
+      ],
+      [
+        "reasoning only",
+        [{ id: "rs_only", type: "reasoning", encrypted_content: "enc" }],
+      ],
+    ] as const) {
+      it(`${label}: the request after an incomplete reply of ${shape} has neither the reasoning item nor the function call`, async function () {
+        const bodies = serveStreams([
+          [incomplete("max_output_tokens", [...output])],
+          [{ type: "response.output_text.delta", delta: "Done." }],
+        ]);
+        const adapter = makeAdapter();
+        const stepRequest: AgentRuntimeRequest =
+          label === "OpenAI"
+            ? {
+                ...request,
+                apiBase: "https://api.openai.com/v1",
+                providerProtocol: "responses_api",
+              }
+            : request;
+        const messages: AgentModelMessage[] = [
+          { role: "user", content: "Search" },
+        ];
+        const first = await adapter.runStep({
+          request: stepRequest,
+          messages,
+          tools,
+        });
+        assert.equal(first.kind, "incomplete");
+        const recovery: AgentModelMessage = {
+          role: "user",
+          content: "Continue with a complete tool call.",
+        };
+        messages.push(recovery);
+        await adapter.runStep({
+          request: stepRequest,
+          messages,
+          continuationMessages: [recovery],
+          tools,
+        });
+        const input = bodies[1]?.input as Array<Record<string, unknown>>;
+        const types = input.map((item) => item.type);
+        assert.notInclude(types, "reasoning");
+        assert.notInclude(types, "function_call");
+        assert.deepEqual(input[input.length - 1], {
+          type: "message",
+          role: "user",
+          content: "Continue with a complete tool call.",
+        });
+      });
+    }
+  }
 });

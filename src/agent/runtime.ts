@@ -2418,6 +2418,9 @@ export class AgentRuntime {
       // A final-only step that wrote no visible text is asked once more; a
       // fatal failure of that request ends the turn with the host's answer.
       let finalOnlyEmptyAnswerReasked = false;
+      // An ordinary step's empty answer is asked once more per turn; a
+      // second empty answer fails the run with its reason.
+      let emptyAnswerReasked = false;
       const attemptModelStep = async (
         round: number,
         statusText: string,
@@ -3260,7 +3263,11 @@ export class AgentRuntime {
        * had streamed, then why it stopped and what it did.
        */
       const stoppedTurnText = (
-        rule: "budget_reached" | "connection_lost" | "prompt_budget_exceeded",
+        rule:
+          | "budget_reached"
+          | "connection_lost"
+          | "prompt_budget_exceeded"
+          | "empty_answer",
         detail?: string,
       ): string => {
         const streamed = uncommittedAnswerText().trim();
@@ -3570,6 +3577,36 @@ export class AgentRuntime {
               role: "user",
               transient: true,
               content: `Your last reply had no answer text. ${renderFinalOnlyInstruction(search, searchScope)}`,
+            });
+            await persistTranscriptCheckpoint();
+            continue;
+          }
+          // An ordinary step that returned no answer text and no tool call
+          // is asked once more; a second time, the run fails with the
+          // reason. A placeholder is never saved as the answer.
+          if (
+            step.kind === "final" &&
+            !(step.text || "").trim() &&
+            !stepStreamedText.trim() &&
+            !keptAnswerModelText.trim() &&
+            !committedAnswerText.trim()
+          ) {
+            if (emptyAnswerReasked) {
+              // A resumable stop: a long job's open page keeps its results.
+              await keepUnfinishedPage();
+              return await completeRun(
+                stoppedTurnText("empty_answer"),
+                "failed",
+                "empty_answer",
+              );
+            }
+            emptyAnswerReasked = true;
+            // As above: no empty assistant message is kept.
+            continuationSession.appendHostMessage({
+              role: "user",
+              transient: true,
+              content:
+                "Your last reply had no answer text and no tool call. Continue the user's request: call the next tool you need, or write the answer.",
             });
             await persistTranscriptCheckpoint();
             continue;

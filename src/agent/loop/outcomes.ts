@@ -202,13 +202,15 @@ export const OUTCOME_REASONS = Object.freeze({
 /**
  * Stops that keep the run's work and leave the rest for "continue", with or
  * without outcome evidence (`turnBoundary.ts`, Rules 3 and 4): a safety
- * limit, a lost connection, a prompt that stays too long after compaction.
+ * limit, a lost connection, a prompt that stays too long after compaction,
+ * an answer the model left empty twice.
  */
 const RESUMABLE_INCIDENT_STOP_RULES: ReadonlySet<RunStopRule> =
   new Set<RunStopRule>([
     "budget_reached",
     "connection_lost",
     "prompt_budget_exceeded",
+    "empty_answer",
   ]);
 
 /** The refusal of an exclusion without its reason. */

@@ -20,6 +20,7 @@ import {
   type BoundaryToolRecord,
 } from "../src/agent/loop/turnBoundary";
 import { ModelStreamInterruptedError } from "../src/agent/model/completion";
+import { parseResponsesStepStream } from "../src/agent/model/responsesShared";
 import { parseRetryAfterMs, providerHttpError } from "../src/utils/retryAfter";
 
 /**
@@ -859,6 +860,33 @@ describe("turn boundary: the retry policy (Rule 4)", function () {
     );
   });
 
+  it("retries a Responses stream that ended before the response finished", async function () {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"type":"response.created","response":{"id":"resp_cut"}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    let error: unknown;
+    try {
+      await parseResponsesStepStream(stream);
+    } catch (caught) {
+      error = caught;
+    }
+    const failure = classifyModelFailure(error);
+    assert.deepEqual(failure, { kind: "transient", cause: "stream" });
+    assert.deepEqual(
+      boundary({ retryBackoffMs: [0, 0] }).onModelFailure(failure, {
+        toolCallSeen: false,
+      }),
+      { kind: "retry", retry: 1, delayMs: 0 },
+    );
+  });
+
   it("does not retry a step that already ran a tool", function () {
     const failure = classifyModelFailure(new Error("Error in input stream"));
     assert.deepEqual(
@@ -925,6 +953,10 @@ describe("turn boundary: resume", function () {
     assert.include(
       buildResumeNote("prompt_budget_exceeded"),
       "narrow the request or start a new chat",
+    );
+    assert.include(
+      buildResumeNote("empty_answer"),
+      "the model returned an empty answer twice",
     );
     assert.isUndefined(buildResumeNote("final_answer"));
   });
