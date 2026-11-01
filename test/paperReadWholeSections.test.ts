@@ -337,6 +337,10 @@ describe("paper_read whole sections", function () {
       "Results (unlabelled sections)",
     ]);
     assert.deepEqual(row.unmatched, []);
+    const leadWarnings = (output.warnings || []).filter((warning) =>
+      warning.includes("no abstract section or Zotero abstract"),
+    );
+    assert.lengthOf(leadWarnings, 1, JSON.stringify(output.warnings));
     const text = row.passages.map((passage) => passage.text).join("\n");
     assert.include(text, LEAD_ABSTRACT.slice(0, 80));
     assert.include(text, RESULTS_A);

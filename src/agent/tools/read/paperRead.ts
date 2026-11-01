@@ -1025,10 +1025,14 @@ type WholeSectionsPaper = {
  * rule). Each passage carries a host-minted citation id. Above
  * `maxCharsPerPaper` the sections that do not fit are cut, and the result
  * says what was cut. A paper with none of the named sections reads nothing
- * and is named; nothing else of it is read in their place.
+ * and is named; nothing else of it is read in their place. A call that
+ * names only the abstract comes here with a query too, and is told the query
+ * was not used. An abstract found only as the unheaded lead is named as such.
  */
 async function readWholeSections(params: {
   names: readonly string[];
+  /** An abstract-only call's query, which the whole read does not use. */
+  queryIgnored?: boolean;
   targets: NonNullable<PdfTarget["paperContext"]>[];
   maxCharsPerPaper: number;
   pdfService: PdfService;
@@ -1036,7 +1040,9 @@ async function readWholeSections(params: {
   displayLabelFor: (paper: NonNullable<PdfTarget["paperContext"]>) => string;
 }): Promise<Record<string, unknown>> {
   const quoteCitations: QuoteCitation[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = params.queryIgnored
+    ? ["Read the abstract whole; a query does not search it."]
+    : [];
   const nothingRead: string[] = [];
   const papers: WholeSectionsPaper[] = [];
   const targets = await hydrateFigureTargetsWithMineruMetadata(
@@ -1162,6 +1168,12 @@ async function readWholeSections(params: {
         `Cut by the read budget, ${citationLabel}: ${cut
           .map((entry) => `${entry} characters`)
           .join("; ")}. Read that section alone.`,
+      );
+    // An abstract found only by position: no Zotero field, no labelled
+    // abstract section, no abstract chunks (`readAbstractPart`).
+    if (row.covered.includes(LEAD_ABSTRACT_LABEL))
+      warnings.push(
+        `${citationLabel}: no abstract section or Zotero abstract; this ${LEAD_ABSTRACT_LABEL} was found by position and may be the introduction.`,
       );
     if (row.sections.length && unreadableNames.length)
       warnings.push(
@@ -2888,14 +2900,21 @@ export function createPaperReadTool(
       }
 
       // Named sections and no query: the whole sections, not ranked passages.
+      // A call that names only the abstract reads it whole even with a
+      // query: the abstract is short, so a search over it could only return
+      // the chunk around it, and the lead found by position in its place.
+      const abstractOnly = Boolean(
+        input.sections?.length && input.sections.every(isAbstractSectionName),
+      );
       if (
         mode === "targeted" &&
         input.sections?.length &&
-        !input.query &&
+        (!input.query || abstractOnly) &&
         !input.sectionIds?.length
       ) {
         return readWholeSections({
           names: input.sections,
+          queryIgnored: Boolean(input.query),
           targets,
           maxCharsPerPaper: capAtAdaptiveBudget(
             input.maxChars,

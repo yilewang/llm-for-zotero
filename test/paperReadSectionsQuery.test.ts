@@ -14,7 +14,10 @@ import { ensurePDFTextCached } from "../src/services/paperContent/pdfContext";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { RetrievalService } from "../src/agent/services/retrievalService";
-import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import {
+  LEAD_ABSTRACT_LABEL,
+  SECTIONS_NOT_FOUND_RULE,
+} from "../src/agent/digests/readScope";
 import {
   CELL_SHAPE_MD,
   NATURE_SHAPE_MD,
@@ -26,6 +29,7 @@ import {
  * a results span by its place, an unheaded lead abstract, Cell's Summary.
  * A name the paper's text lacks is reported, except an abstract that only
  * the Zotero record holds, which the whole-sections read returns.
+ * A call that names only the abstract reads it whole, query or not.
  */
 
 /** Nested "Abstract representations" under Methods; no abstract anywhere. */
@@ -102,6 +106,23 @@ const ONE_HEADING_MD = [
   filler("Mice were imaged with two-photon microscopy daily for weeks."),
 ].join("\n");
 
+/** A paper whose abstract stands under its own Abstract heading. */
+const HEADED_ABSTRACT_MD = [
+  "# Place maps under a heading",
+  "",
+  "## Abstract",
+  "",
+  "Headed abstract text: place maps drift slowly across weeks in mice.",
+  "",
+  "## Introduction",
+  "",
+  filler("Introduction text about place maps and their drift."),
+  "",
+  "## Results",
+  "",
+  filler("Results text: drift was slow across weeks."),
+].join("\n");
+
 // A long flat paper whose one-sentence Methods repeats a sentence of its
 // introduction.
 const SHORT_REPEAT_MD = [
@@ -121,8 +142,10 @@ type Output = {
   read?: string;
   warnings?: string[];
   note?: string;
+  results?: unknown;
   papers: Array<{
     status: string;
+    citationLabel?: string;
     covered?: string[];
     passages: Array<{ text: string; sectionLabel?: string }>;
   }>;
@@ -137,6 +160,8 @@ describe("paper_read sections with a query", function () {
     { libraryID: 1, itemId: 800, contextItemId: 801, title: "Repeated" },
     { libraryID: 1, itemId: 900, contextItemId: 901, title: "Few" },
     { libraryID: 1, itemId: 1000, contextItemId: 1001, title: "ShortRepeat" },
+    { libraryID: 1, itemId: 1100, contextItemId: 1101, title: "Headed" },
+    { libraryID: 1, itemId: 1200, contextItemId: 1201, title: "Twin" },
   ].map((paper) => ({
     ...paper,
     mineruCacheDir: "",
@@ -159,6 +184,8 @@ describe("paper_read sections with a query", function () {
       REPEATED_HEADINGS_MD,
       ONE_HEADING_MD,
       SHORT_REPEAT_MD,
+      HEADED_ABSTRACT_MD,
+      NATURE_SHAPE_MD,
     ];
     for (const [index, paper] of papers.entries()) {
       await writeMineruCacheFiles(paper.contextItemId, texts[index], [
@@ -246,28 +273,43 @@ describe("paper_read sections with a query", function () {
       );
   });
 
-  it("searches a Nature-shape paper's unheaded lead abstract", async function () {
+  const QUERY_IGNORED = "Read the abstract whole; a query does not search it.";
+  const leadWarnings = (output: Output) =>
+    (output.warnings || []).filter((warning) =>
+      warning.includes("no abstract section or Zotero abstract"),
+    );
+  const passageText = (output: Output, index = 0) =>
+    output.papers[index].passages.map((passage) => passage.text).join("\n");
+
+  it("reads a Nature-shape paper's unheaded lead abstract whole and says it was found by position", async function () {
     const output = await read(
-      { sections: ["abstract"], query: "replays during quiet rest" },
+      { sections: ["abstract"], query: "replays during quiet rest", topK: 1 },
       papers[0],
     );
     noRule(output);
-    assert.isNotEmpty(output.papers[0].passages);
-    assert.include(
-      output.papers[0].passages.map((passage) => passage.text).join("\n"),
-      "Theories of offline learning",
-    );
+    assert.equal(output.read, "whole_sections");
+    assert.notProperty(output, "results", "no search ran");
+    assert.deepEqual(output.papers[0].covered, [LEAD_ABSTRACT_LABEL]);
+    assert.include(passageText(output), "Theories of offline learning");
+    assert.include(output.warnings || [], QUERY_IGNORED);
+    assert.deepEqual(leadWarnings(output), [
+      `${output.papers[0].citationLabel}: no abstract section or Zotero abstract; this ${LEAD_ABSTRACT_LABEL} was found by position and may be the introduction.`,
+    ]);
   });
 
-  it("searches a Cell-shape paper's Summary as its abstract", async function () {
+  it("reads a Cell-shape paper's Summary whole as its abstract", async function () {
     const output = await read(
       { sections: ["abstract"], query: "replay moves a response" },
       papers[1],
     );
     noRule(output);
+    assert.equal(output.read, "whole_sections");
     assert.isNotEmpty(output.papers[0].passages);
-    for (const passage of output.papers[0].passages)
-      assert.match(passage.sectionLabel || "", /^Summary$/);
+    assert.notInclude(output.papers[0].covered || [], LEAD_ABSTRACT_LABEL);
+    assert.isEmpty(leadWarnings(output));
+    // The whole read of the same name reads the same Summary.
+    const whole = await read({ sections: ["abstract"] }, papers[1]);
+    assert.equal(passageText(output), passageText(whole));
   });
 
   it("never takes a nested heading's words for the abstract", async function () {
@@ -275,29 +317,146 @@ describe("paper_read sections with a query", function () {
       { sections: ["abstract"], query: "abstract maps of novelty" },
       papers[2],
     );
+    assert.equal(output.read, "whole_sections");
     assert.isEmpty(output.papers[0].passages);
+    assert.equal(output.papers[0].status, "no_matching_sections");
     assert.include(output.warnings || [], SECTIONS_NOT_FOUND_RULE);
-    // The whole-sections read follows the same rule.
-    const whole = await read({ sections: ["abstract"] }, papers[2]);
-    assert.equal(whole.papers[0].status, "no_matching_sections");
+    assert.include(output.note || "", "none of the named sections were found");
+    assert.isEmpty(leadWarnings(output));
   });
 
-  it("points to the Zotero record when only the record holds the abstract", async function () {
+  it("returns the Zotero record's abstract when only the record holds it", async function () {
     abstractNotes.set(papers[2].itemId, "An abstract kept in the record.");
     const output = await read(
       { sections: ["abstract"], query: "abstract maps of novelty" },
       papers[2],
     );
     noRule(output);
-    assert.isEmpty(output.papers[0].passages);
-    assert.notEqual(output.papers[0].status, "no_matching_sections");
-    assert.isTrue(
+    assert.equal(output.read, "whole_sections");
+    assert.equal(output.papers[0].status, "complete");
+    assert.include(passageText(output), "An abstract kept in the record.");
+    assert.isFalse(
       (output.warnings || []).some((warning) =>
         warning.includes("only in the Zotero record"),
       ),
       JSON.stringify(output.warnings),
     );
+    assert.isEmpty(leadWarnings(output));
   });
+
+  it("takes the Zotero abstract over a paper's unheaded lead", async function () {
+    abstractNotes.set(papers[0].itemId, "Record abstract of the Nature paper.");
+    const output = await read(
+      { sections: ["abstract"], query: "replays during quiet rest" },
+      papers[0],
+    );
+    assert.equal(output.read, "whole_sections");
+    assert.include(passageText(output), "Record abstract of the Nature paper.");
+    assert.notInclude(passageText(output), "Theories of offline learning");
+    assert.isEmpty(leadWarnings(output));
+  });
+
+  it("reads a MinerU Abstract section whole with no position warning", async function () {
+    const output = await read(
+      { sections: ["abstract"], query: "drift" },
+      papers[6],
+    );
+    noRule(output);
+    assert.equal(output.read, "whole_sections");
+    assert.deepEqual(output.papers[0].covered, ["Abstract"]);
+    assert.include(passageText(output), "Headed abstract text");
+    assert.notInclude(passageText(output), "Introduction text");
+    assert.isEmpty(leadWarnings(output));
+  });
+
+  it("names each lead-only paper once among several targets", async function () {
+    abstractNotes.set(papers[2].itemId, "An abstract kept in the record.");
+    const output = await read({ sections: ["abstract"], query: "replays" }, [
+      papers[0],
+      papers[2],
+      papers[7],
+      papers[6],
+    ]);
+    assert.equal(output.read, "whole_sections");
+    const labels = output.papers.map((paper) => paper.citationLabel || "");
+    const warnings = leadWarnings(output);
+    assert.lengthOf(warnings, 2, JSON.stringify(output.warnings));
+    assert.isTrue(warnings[0].startsWith(`${labels[0]}:`));
+    assert.isTrue(warnings[1].startsWith(`${labels[2]}:`));
+    for (const warning of warnings) {
+      assert.isFalse(warning.startsWith(`${labels[1]}:`));
+      assert.isFalse(warning.startsWith(`${labels[3]}:`));
+    }
+    assert.include(passageText(output, 1), "An abstract kept in the record.");
+    assert.lengthOf(
+      (output.warnings || []).filter((warning) => warning === QUERY_IGNORED),
+      1,
+    );
+  });
+
+  it("says a query was ignored only when one was given", async function () {
+    const withQuery = await read(
+      { sections: ["abstract"], query: "drift" },
+      papers[6],
+    );
+    assert.include(withQuery.warnings || [], QUERY_IGNORED);
+    const withoutQuery = await read({ sections: ["abstract"] }, papers[6]);
+    assert.equal(withoutQuery.read, "whole_sections");
+    assert.notInclude(withoutQuery.warnings || [], QUERY_IGNORED);
+    // The lead warning is honest with or without a query.
+    const lead = await read({ sections: ["abstract"] }, papers[0]);
+    assert.notInclude(lead.warnings || [], QUERY_IGNORED);
+    assert.lengthOf(leadWarnings(lead), 1);
+  });
+
+  it("still searches a mixed abstract and results call with a query", async function () {
+    const output = await read(
+      { sections: ["abstract", "results"], query: "silencing removed replays" },
+      papers[0],
+    );
+    assert.notEqual(output.read, "whole_sections");
+    assert.notInclude(output.warnings || [], QUERY_IGNORED);
+    assert.isEmpty(leadWarnings(output));
+    assert.isNotEmpty(output.papers[0].passages);
+  });
+
+  it("still searches a Nature-shape unlabelled lead abstract in a mixed call", async function () {
+    const output = await read(
+      {
+        sections: ["abstract", "results"],
+        query: "replays during quiet rest",
+        topK: 8,
+      },
+      papers[0],
+    );
+    noRule(output);
+    assert.notEqual(output.read, "whole_sections");
+    assert.isNotEmpty(output.papers[0].passages);
+    assert.include(passageText(output), "Theories of offline learning");
+  });
+
+  it("still searches a Cell-shape Summary in a mixed call", async function () {
+    const output = await read(
+      {
+        sections: ["abstract", "results"],
+        query: "replay moves a response",
+        topK: 8,
+      },
+      papers[1],
+    );
+    noRule(output);
+    assert.notEqual(output.read, "whole_sections");
+    assert.isNotEmpty(output.papers[0].passages);
+    assert.isTrue(
+      output.papers[0].passages.some((passage) =>
+        /^Summary$/.test(passage.sectionLabel || ""),
+      ),
+      JSON.stringify(
+        output.papers[0].passages.map((passage) => passage.sectionLabel),
+      ),
+    );
+  });
+
   it("searches a section of a MinerU paper whose chunks name no section", async function () {
     const output = await read(
       { sections: ["methods"], query: "two-photon" },
