@@ -475,6 +475,140 @@ describe("Original Agent run endings", function () {
     });
   });
 
+  it("a document at the step limit does not end the run while a call past the limit waits", async function () {
+    const registry = new AgentToolRegistry();
+    const ran: string[] = [];
+    registry.register({
+      spec: {
+        name: "read_notes",
+        description: "Read notes",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args as never }),
+      execute: async (input: { id: string }) => {
+        ran.push(input.id);
+        return { notes: [input.id] };
+      },
+    } as never);
+    registry.register({
+      spec: {
+        name: "submit_document",
+        description: "Submit the document",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        workCategory: "generation",
+      },
+      validate: (args: unknown) => ({ ok: true, value: args as never }),
+      execute: async () => {
+        ran.push("submit");
+        return { content: { documentId: "doc-1" } };
+      },
+      resolveTerminalResult: async () => ({
+        finalText: "The document is ready.",
+        documentId: "doc-1",
+        providerTranscript: "tool_only",
+      }),
+    } as never);
+    // The document is the last call the limit keeps; one call follows it.
+    const readIds = Array.from(
+      { length: MAX_AGENT_TOOL_CALLS_PER_ROUND - 1 },
+      (_, index) => `c${index}`,
+    );
+    const toolResults = new Map<string, string>();
+    const adapter = scriptedAdapter((step, params) => {
+      for (const message of params.messages)
+        if (message.role === "tool")
+          toolResults.set(message.tool_call_id, String(message.content));
+      if (step === 1)
+        return toolStep([
+          ...readIds.map((id) => readCall(id, { id })),
+          { id: "submit", name: "submit_document", arguments: {} },
+          readCall("after", { id: "after" }),
+        ]);
+      if (step === 2)
+        return toolStep([readCall("after-again", { id: "after" })]);
+      return finalStep("The document is ready.");
+    });
+    const ending = await runToEnding(installed, {
+      registry,
+      adapter,
+      request: baseRequest(97_321, "Write the document, then read one more"),
+    });
+
+    assert.equal(adapter.steps(), 3, "the call past the limit gets its step");
+    assert.deepEqual(ran, [...readIds, "submit", "after"]);
+    assert.include(toolResults.get("submit"), '"finalizedDocumentId":"doc-1"');
+    assert.equal(
+      toolResults.get("after"),
+      JSON.stringify({
+        error: `Not run: this step allows ${MAX_AGENT_TOOL_CALLS_PER_ROUND} tool calls; call it again in the next step.`,
+      }),
+    );
+    assert.equal(ending.outcome?.kind, "completed");
+    assert.notDeepInclude(ending.liveStops, {
+      rule: "terminal_tool",
+      status: "completed",
+    });
+  });
+
+  it("a call that ends the run leaves every call of its step answered in the saved transcript", async function () {
+    // The lifecycle stop (writeAllowed() false before a call) is not tested
+    // here: it also turns persistAllowed() off, so that run saves no
+    // transcript in which a call could stay unanswered.
+    const registry = new AgentToolRegistry();
+    registerTerminalTool(registry);
+    const ran: string[] = [];
+    registerReadTool(registry, async () => {
+      ran.push("read");
+      return { notes: [] };
+    });
+    // Two reads, the call that ends the run, then calls before and past
+    // the step limit.
+    const calls: AgentToolCall[] = Array.from(
+      { length: MAX_AGENT_TOOL_CALLS_PER_ROUND + 1 },
+      (_, index) =>
+        index === 2
+          ? { id: "finish", name: "finish_with_result", arguments: {} }
+          : readCall(`c${index}`),
+    );
+    const adapter = scriptedAdapter(() => toolStep(calls));
+    const ending = await runToEnding(installed, {
+      registry,
+      adapter,
+      request: baseRequest(97_322, "Read, finish, and read on"),
+    });
+
+    assert.equal(adapter.steps(), 1);
+    assert.deepEqual(ran, ["read", "read"]);
+    assertStoppedBy(ending, "terminal_tool", "completed");
+    const stored = await loadAgentTranscriptSegment({
+      conversationKey: 97_322,
+      compatibilityKey: PORTABLE_TRANSCRIPT_KEY,
+    });
+    // The saved transcript keeps each tool result as a retained record; a
+    // call with no result would leave no record of the call at all.
+    const results = new Map(
+      stored.messages.flatMap((message) =>
+        message.role === "user" && message.retainedTool
+          ? [[message.retainedTool.callId, String(message.content)] as const]
+          : [],
+      ),
+    );
+    assert.deepEqual(
+      [...results.keys()],
+      calls.map((call) => call.id),
+    );
+    assert.include(results.get("finish"), '"done":true');
+    for (const call of calls.slice(3))
+      assert.include(
+        results.get(call.id),
+        JSON.stringify({ error: "Not run: the run ended before this call." }),
+        call.id,
+      );
+  });
+
   it("segment_without_progress: stops when a full segment only repeats prior work", async function () {
     const registry = new AgentToolRegistry();
     registerReadTool(registry, async () => ({ notes: ["unchanged"] }));

@@ -945,6 +945,89 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     ]);
   });
 
+  it("resolves the same permission mode and callback with and without a local PDF", async () => {
+    const pdfPath = await createPdfFile();
+    const seen: Array<{
+      permissionMode: unknown;
+      hasCanUseTool: boolean;
+      allowedTools: unknown;
+      additionalDirectories: unknown;
+    }> = [];
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        seen.push({
+          permissionMode: args.options.permissionMode,
+          hasCanUseTool: typeof args.options.canUseTool === "function",
+          allowedTools: args.options.allowedTools,
+          additionalDirectories: args.options.additionalDirectories,
+        });
+        return makeStream([
+          {
+            type: "result",
+            session_id: "session-pdf-mode",
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const allowedTools = ["mcp__zotero__paper_read"];
+
+    for (const permissionMode of ["default", "auto", "bypassPermissions"]) {
+      for (const withPdf of [false, true]) {
+        const stream = await runtime.startTurn({
+          conversationKey: `conv-pdf-mode-${permissionMode}-${withPdf}`,
+          userMessage: "edit the note",
+          allowedTools,
+          metadata: { permissionMode },
+          runtimeRequest: withPdf
+            ? {
+                localDocuments: [
+                  {
+                    kind: "local_pdf",
+                    sourceKey: "zotero-pdf:10:20",
+                    itemId: 10,
+                    contextItemId: 20,
+                    title: "Paper A",
+                    name: "paper.pdf",
+                    mimeType: "application/pdf",
+                    absolutePath: pdfPath,
+                  },
+                ],
+              }
+            : {},
+        });
+        for await (const _event of stream.events) {
+          void _event;
+        }
+      }
+    }
+
+    // The PDF turn reads from the PDF's folder; the plain turn has none.
+    const pdfDirectories = [dirname(pdfPath)];
+    expect(seen).toEqual(
+      [
+        ["default", true],
+        ["auto", true],
+        ["bypassPermissions", false],
+      ].flatMap(([permissionMode, hasCanUseTool]) => [
+        {
+          permissionMode,
+          hasCanUseTool,
+          allowedTools,
+          additionalDirectories: undefined,
+        },
+        {
+          permissionMode,
+          hasCanUseTool,
+          allowedTools,
+          additionalDirectories: pdfDirectories,
+        },
+      ]),
+    );
+    expect(globalPermissionStore.pendingCount()).toBe(0);
+  });
+
   it("reports administrative availability from effective Claude settings", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "cc-l4z-permissions-"));
     temporaryDirectories.add(cwd);

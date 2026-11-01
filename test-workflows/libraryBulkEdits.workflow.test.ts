@@ -709,8 +709,9 @@ describe("workflow: checkpointed bulk edits", function () {
    * Resume across a real Zotero restart, in two processes: the
    * `interrupt` phase stops a batch and records it in the data folder; the
    * `resume` phase starts a new Zotero on a copy of that data folder and
-   * continues it. scripts/run-bulk-edit-restart-test.mjs runs both; in an
-   * ordinary run W5D_RESTART_PHASE is unset and these do nothing.
+   * continues it. `npm run test:bulk-edit-restart` runs both, stopped and
+   * killed (scripts/run-bulk-edit-restart-test.mjs); in an ordinary run
+   * W5D_RESTART_PHASE is unset and these do nothing.
    */
   describe("across a Zotero restart", function () {
     const recordPath = () =>

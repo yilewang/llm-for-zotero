@@ -39,6 +39,7 @@
     "test:unit:speed": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs --grep @speed 'test/**/*.test.ts'",
     "test:claude-bridge": "npm --prefix packages/claude-bridge test",
     "test:mineru-restart": "node scripts/run-mineru-restart-tests.mjs",
+    "test:bulk-edit-restart": "node scripts/run-bulk-edit-restart-test.mjs && node scripts/run-bulk-edit-restart-test.mjs --crash",
     "test:workflow": "node scripts/run-workflow-tests.mjs",
     "test:workflow:parallel": "node scripts/run-workflow-tests.mjs --parallel 3",
     "test:behavior": "node scripts/run-behavior-tests.mjs",

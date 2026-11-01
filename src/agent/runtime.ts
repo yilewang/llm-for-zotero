@@ -254,6 +254,7 @@ import type {
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
+  AgentToolCall,
   AgentToolContext,
   AgentToolMessage,
   AgentUserMessage,
@@ -3787,6 +3788,15 @@ export class AgentRuntime {
           newTranscriptMessages.push(assistantToolMessage);
           const roundToolMessages: AgentToolMessage[] = [];
           const roundFollowupMessages: AgentModelMessage[] = [];
+          // The result of a call of this step that did not run: every call
+          // the model made gets one, so none is left without a result.
+          const pushNotRunMessage = (call: AgentToolCall, reason: string) =>
+            roundToolMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.name,
+              content: JSON.stringify({ error: `Not run: ${reason}` }),
+            });
           const appendRoundContinuation = () => {
             const delta = continuationSession.completeToolStep({
               toolMessages: roundToolMessages,
@@ -3815,7 +3825,8 @@ export class AgentRuntime {
               round,
               {
                 modelCallId: call.id,
-                followingCallCount: calls.length - index - 1,
+                // Calls past the limit count: they are still to run.
+                followingCallCount: step.calls.length - index - 1,
               },
             );
             if (outcome.toolResult.ok) roundHadSuccessfulToolResult = true;
@@ -3855,6 +3866,8 @@ export class AgentRuntime {
               }
             }
             if (outcome.stopRun) {
+              for (const notRun of [...calls.slice(index + 1), ...callsNotRun])
+                pushNotRunMessage(notRun, "the run ended before this call.");
               appendRoundContinuation();
               const stopFinalText =
                 outcome.finalText || uncommittedAnswerText();
@@ -3885,14 +3898,10 @@ export class AgentRuntime {
             }
           }
           for (const call of callsNotRun)
-            roundToolMessages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              name: call.name,
-              content: JSON.stringify({
-                error: `Not run: this step allows ${stepToolCallLimit} tool calls; call it again in the next step.`,
-              }),
-            });
+            pushNotRunMessage(
+              call,
+              `this step allows ${stepToolCallLimit} tool calls; call it again in the next step.`,
+            );
           appendRoundContinuation();
           // Sibling calls are one attempt: deliver every result before judging
           // repeated failure, so the next model round can repair their inputs.

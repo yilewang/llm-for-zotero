@@ -11,6 +11,7 @@ import {
 } from "../src/codexAppServer/mcpSetup";
 import {
   getZoteroMcpAllowedToolNames,
+  getZoteroMcpDirectPdfToolNames,
   registerMcpServer,
   registerScopedZoteroMcpScope,
   unregisterMcpServer,
@@ -622,7 +623,7 @@ describe("Codex app-server MCP setup", function () {
     const prefix = "mcp__llm_for_zotero_profile_claude_raw__";
 
     assert.include(config.allowedTools, `${prefix}library_search`);
-    assert.include(config.allowedTools, `${prefix}note_write`);
+    assert.notInclude(config.allowedTools, `${prefix}note_write`);
     assert.include(config.allowedTools, `${prefix}paper_read`);
     assert.include(config.allowedTools, `${prefix}library_read`);
     assert.include(config.allowedTools, `${prefix}library_retrieve`);
@@ -631,6 +632,37 @@ describe("Codex app-server MCP setup", function () {
     assert.notInclude(config.allowedTools, `${prefix}run_command`);
     assert.notInclude(config.allowedTools, `${prefix}file_io`);
     assert.notInclude(config.allowedTools, `${prefix}zotero_script`);
+  });
+
+  it("pre-approves only reads in Claude raw-PDF turns, as in turns without a PDF", function () {
+    const qualify = (prefix: string, names: readonly string[]) =>
+      names.map((name) => `${prefix}${name}`);
+    const raw = buildClaudeZoteroMcpServerConfig({
+      profileSignature: "profile-claude-raw",
+      rawPdfMode: true,
+    });
+    const rawPrefix = "mcp__llm_for_zotero_profile_claude_raw__";
+    for (const name of qualify(rawPrefix, ZOTERO_MCP_WRITE_TOOL_NAMES))
+      assert.notInclude(raw.allowedTools, name);
+    for (const name of qualify(rawPrefix, ZOTERO_MCP_PLAN_TOOL_NAMES))
+      assert.notInclude(raw.allowedTools, name);
+    // Every read the raw-PDF surface exposes stays pre-approved.
+    const exposedReads = ZOTERO_MCP_SAFE_READ_TOOL_NAMES.filter((name) =>
+      getZoteroMcpDirectPdfToolNames().includes(name),
+    );
+    assert.include(exposedReads, "paper_read");
+    assert.sameMembers(raw.allowedTools, qualify(rawPrefix, exposedReads));
+
+    const plain = buildClaudeZoteroMcpServerConfig({
+      profileSignature: "profile-claude-plain",
+    });
+    assert.deepEqual(
+      plain.allowedTools,
+      qualify(
+        "mcp__llm_for_zotero_profile_claude_plain__",
+        ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+      ),
+    );
   });
 
   it("enables the native shell only when a local PDF turn requests it", function () {

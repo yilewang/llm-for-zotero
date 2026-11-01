@@ -729,14 +729,20 @@ export function buildClaudeZoteroMcpServerConfig(params: {
   };
 }
 
+/**
+ * The Zotero tools Claude Code runs without asking: the safe reads, in
+ * raw-PDF turns only those the raw-PDF surface exposes. Write tools stay on
+ * the server and go through the chip's permission mode, as in every turn.
+ */
 export function buildClaudeZoteroMcpAllowedToolNames(
   serverName: string,
   rawPdfMode = false,
 ): string[] {
-  return (
-    rawPdfMode
-      ? getZoteroMcpDirectPdfToolNames()
-      : [...ZOTERO_MCP_SAFE_READ_TOOL_NAMES]
+  const directPdfToolNames = rawPdfMode
+    ? new Set(getZoteroMcpDirectPdfToolNames())
+    : null;
+  return ZOTERO_MCP_SAFE_READ_TOOL_NAMES.filter(
+    (toolName) => !directPdfToolNames || directPdfToolNames.has(toolName),
   ).map((toolName) => qualifyZoteroMcpToolName(serverName, toolName));
 }
 
