@@ -130,7 +130,7 @@ export function buildCitationChipHtml(
 ): string {
   const citationItems = items.map((item) => ({
     uris: [item.uri],
-    ...(item.locator ? { locator: item.locator } : {}),
+    ...(item.locator ? { locator: item.locator, label: "page" } : {}),
   }));
   const citation = { citationItems, properties: {} };
   const withData = {
