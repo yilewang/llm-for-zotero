@@ -861,7 +861,7 @@ describe("noteWrite create tracking", function () {
       const saved = savedItems.get(result.noteId)!.getNote();
       assert.deepEqual(chipCitations(saved), [
         {
-          citationItems: [{ uris: [paperUri], locator: "42" }],
+          citationItems: [{ uris: [paperUri], locator: "42", label: "page" }],
           properties: {},
         },
       ]);
