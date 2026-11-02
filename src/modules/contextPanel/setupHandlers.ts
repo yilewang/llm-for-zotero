@@ -182,6 +182,8 @@ import {
 import {
   getAvailableModelEntries,
   getStringPref,
+  getBoolPref,
+  setBoolPref,
   getAgentModeEnabled,
   getClaudeCodeModeEnabled,
   applyPanelFontScale,
@@ -5898,6 +5900,10 @@ export function setupHandlers(
     onRetry: (event: Event) => void;
   }): boolean => {
     if (params.status === "loading") {
+      // A refresh of a list the menu already shows stays quiet: the menu
+      // updates in place when the new list lands. A status row here made the
+      // menu open with one size and jump to another a moment later.
+      if (params.modelCount > 0) return false;
       appendModelMenuEmptyState(params.menu, params.loadingMessage);
       return true;
     }
@@ -5994,7 +6000,9 @@ export function setupHandlers(
       .join("\n");
   };
 
-  /** The reader half of the model menu (Main | Reader switch). */
+  /** Hides the model menu's "New" label once the subagent page was opened. */
+  const SUBAGENT_PICKER_SEEN_PREF = "subagentPickerSeen";
+  /** The subagent page of the model menu (the "Subagent" row at the bottom). */
   const readerMenu = createReaderMenuController({
     doc: body.ownerDocument as Document,
     getRuntime: () => readerRuntimeKeyForSystem(getConversationSystem()),
@@ -6019,13 +6027,20 @@ export function setupHandlers(
         ? getModelOptionTitle(entry)
         : `${entry.providerLabel} · ${entry.model}`,
     isPrimaryPointerEvent,
-    onTabChange: () => {
+    getMainModelLabel: () => {
+      const { currentModelDisplay, currentModel } = getSelectedModelInfo();
+      return `${currentModelDisplay || currentModel || ""}`;
+    },
+    getSubagentSeen: () => getBoolPref(SUBAGENT_PICKER_SEEN_PREF, false),
+    markSubagentSeen: () => setBoolPref(SUBAGENT_PICKER_SEEN_PREF, true),
+    onPageChange: () => {
       rebuildModelMenu();
-      if (modelMenu && modelBtn)
+      if (modelMenu && modelBtn) {
         positionComposerMenu(body, modelMenu, modelBtn);
+        modelMenu.scrollTop = 0;
+      }
     },
     onPick: () => {
-      closeModelMenu();
       updateModelButton();
     },
   });
@@ -6037,8 +6052,7 @@ export function setupHandlers(
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
-    readerMenu.appendSwitch(modelMenu);
-    if (readerMenu.getTab() === "reader") {
+    if (readerMenu.getPage() === "subagent") {
       readerMenu.appendReaderList(modelMenu);
       return;
     }
@@ -6052,6 +6066,7 @@ export function setupHandlers(
     });
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
+      readerMenu.appendSubagentRow(modelMenu);
       return;
     }
 
@@ -6270,6 +6285,7 @@ export function setupHandlers(
         modelMenu.appendChild(option);
       }
     }
+    readerMenu.appendSubagentRow(modelMenu);
   };
 
   const rebuildRetryModelMenu = () => {
@@ -9033,8 +9049,8 @@ export function setupHandlers(
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
-    // The menu always opens on Main.
-    readerMenu.resetTab();
+    // The menu always opens on the chat model page.
+    readerMenu.resetPage();
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();

@@ -17,6 +17,7 @@ pref("lastUsedModelEntryId", "");
 pref("readerChoiceAgent", "");
 pref("readerChoiceCodex", "");
 pref("readerChoiceClaude", "");
+pref("subagentPickerSeen", false);
 pref("systemPrompt", "");
 pref("showPopupAddText", true);
 pref("semanticScholarApiKey", "");

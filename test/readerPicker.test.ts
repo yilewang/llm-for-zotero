@@ -544,7 +544,7 @@ describe("reader tooltip line", function () {
           runtimeEntries: [],
         }),
       ),
-      "Reader: Acme · Acme Reader",
+      "Subagent: Acme · Acme Reader",
     );
   });
 
@@ -558,8 +558,8 @@ describe("reader tooltip line", function () {
           runtimeEntries: entries,
         }),
       );
-    assert.equal(line("gpt-6.1-sol", own), "Reader: Codex · GPT-6.1-Sol");
-    assert.equal(line("gpt-7", []), "Reader: Codex · gpt-7");
+    assert.equal(line("gpt-6.1-sol", own), "Subagent: Codex · GPT-6.1-Sol");
+    assert.equal(line("gpt-7", []), "Subagent: Codex · gpt-7");
   });
 
   it("adds no line for Same as main or a deleted entry", function () {
