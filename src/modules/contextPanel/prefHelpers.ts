@@ -116,6 +116,7 @@ const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
 const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
+const SIDE_READER_TEXT_SIZE_PREF_KEY = "sideReaderTextSize";
 const STANDALONE_SIDEBAR_WIDTH_PREF_KEY = "standaloneSidebarWidth";
 const STANDALONE_PINNED_PAPERS_PREF_KEY = "standalonePinnedPapers";
 const STANDALONE_SIDEBAR_GROUP_ORDER_PREF_KEY = "standaloneSidebarGroupOrder";
@@ -593,6 +594,41 @@ export function setFontScalePref(value: number): void {
     clamped,
     true,
   );
+}
+
+/** A document read in the side panel: its text size, in percent. */
+export const SIDE_READER_TEXT_SIZE_DEFAULT_PERCENT = 100;
+export const SIDE_READER_TEXT_SIZE_MIN_PERCENT = 70;
+export const SIDE_READER_TEXT_SIZE_MAX_PERCENT = 200;
+export const SIDE_READER_TEXT_SIZE_STEP_PERCENT = 10;
+
+function clampSideReaderTextSize(value: number): number {
+  return Math.max(
+    SIDE_READER_TEXT_SIZE_MIN_PERCENT,
+    Math.min(Math.round(value), SIDE_READER_TEXT_SIZE_MAX_PERCENT),
+  );
+}
+
+export function getSideReaderTextSizePref(): number {
+  const raw = Number(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${SIDE_READER_TEXT_SIZE_PREF_KEY}`,
+      true,
+    ),
+  );
+  if (!Number.isFinite(raw) || raw <= 0)
+    return SIDE_READER_TEXT_SIZE_DEFAULT_PERCENT;
+  return clampSideReaderTextSize(raw);
+}
+
+export function setSideReaderTextSizePref(value: number): number {
+  const clamped = clampSideReaderTextSize(value);
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${SIDE_READER_TEXT_SIZE_PREF_KEY}`,
+    clamped,
+    true,
+  );
+  return clamped;
 }
 
 export function getStandaloneSidebarWidthPref(): number {

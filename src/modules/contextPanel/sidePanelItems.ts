@@ -41,6 +41,8 @@ export type SidePanelItemRequest = {
   renderBody?: (doc: Document, root: HTMLElement) => void;
   /** Saves a plan as a Zotero note; resolves to a status line. */
   saveAsNote?: () => Promise<string>;
+  /** Opens a plan document in its own window; false when it could not. */
+  openOwnWindow?: () => boolean;
 };
 
 export type SidePanelItemHost = {
@@ -195,7 +197,7 @@ export function resolveItemTabTitle(
     case "code":
       return own || String(request.lang || "").trim() || translate("Code");
     case "plan":
-      return own || translate("Plan");
+      return own || translate("Document");
     case "figure":
       return own || translate("Figure");
     case "file":

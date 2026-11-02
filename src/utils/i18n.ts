@@ -1720,6 +1720,7 @@ const zhCN: Record<string, string> = {
   "HTML page": "HTML 页面",
   Code: "代码",
   Plan: "计划",
+  Document: "文档",
   "Paper figure": "论文图片",
   Diagram: "图表",
   HTML: "HTML",
@@ -1775,6 +1776,10 @@ const zhCN: Record<string, string> = {
     "删除所选文件夹及其中的所有文件？此操作无法撤销。",
   "Could not delete:": "无法删除：",
   "Show in chat": "在对话中显示",
+  "Smaller text": "缩小文字",
+  "Larger text": "放大文字",
+  "Open in its own window": "在单独窗口中打开",
+  "The document window could not be opened": "无法打开文档窗口",
   "The source message is not in the main chat now.":
     "来源消息当前不在主对话中。",
   "Saved as note": "已保存为笔记",

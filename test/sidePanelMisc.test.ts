@@ -473,7 +473,7 @@ describe("side panel Miscellaneous and host registration", function () {
       "Mermaid diagram",
       "HTML page",
       "Code",
-      "Plan",
+      "Document",
       "Diagram",
       "Runs in a safe box: no internet, no access to Zotero",
       "Copied",

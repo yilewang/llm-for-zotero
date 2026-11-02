@@ -6838,6 +6838,12 @@ function renderPlanDocumentCard(params: {
           const saved = await savePlanDocumentAsNote(document.documentId);
           return saved.created ? "Saved as note" : "Note already saved";
         },
+        openOwnWindow: () =>
+          openStandalonePlanDocumentWindow(
+            params.doc,
+            document,
+            params.citationContext,
+          ),
       }),
     });
     content.classList.add(CONTENT_FLAT_SCOPE_CLASS);

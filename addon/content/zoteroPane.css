@@ -20278,6 +20278,38 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 12H5'/%3E%3Cpath d='M12 19l-7-7 7-7'/%3E%3C/svg%3E");
 }
 
+/* A document tab's title actions: text size − and +, and its own window,
+ * drawn like the diagram and page viewers' − + ⛶ controls. */
+.llm-standalone-side-panel-icon-text-smaller::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+}
+
+.llm-standalone-side-panel-icon-text-larger::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M12 5v14'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M12 5v14'/%3E%3C/svg%3E");
+}
+
+.llm-standalone-side-panel-icon-own-window::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'/%3E%3C/svg%3E");
+}
+
+/* A document read in the side panel: one step above the chat's answer text,
+ * scaled by the tab's − and + (--llm-side-reader-text-scale). Headings are in
+ * em, so they follow. The tab scrolls; the text is never capped. */
+.llm-standalone-side-panel-item-body[data-side-reader="true"] {
+  padding: 10px 16px 24px;
+}
+
+.llm-standalone-side-panel-item-body[data-side-reader="true"]
+  > .llm-standalone-side-panel-item-rendered {
+  max-height: none;
+  overflow: visible;
+  font-size: calc(var(--llm-fs-14) * var(--llm-side-reader-text-scale, 1));
+  line-height: 1.6;
+}
+
 .llm-standalone-side-panel-icon-back::before {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E");
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E");
@@ -20749,8 +20781,11 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   background: transparent;
 }
 
+/* The tab's title sits on the main chat's title row ("Library chat"): the
+ * same size and weight, so the row reads as one line of titles. */
 .llm-task-progress-docked > .llm-task-progress .llm-task-progress-label {
-  font-size: var(--llm-fs-14);
+  font-size: var(--llm-standalone-ui-font-size, var(--llm-fs-12));
+  font-weight: 500;
 }
 
 .llm-task-progress-docked > .llm-task-progress > .llm-task-progress-ring,
