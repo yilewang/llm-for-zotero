@@ -17742,40 +17742,104 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   color: var(--fill-tertiary);
 }
 
-/* The composer's model menu keeps one width, whatever it lists. With
- * max-content it opened as wide as a passing status line and then shrank, and
- * the subagent page had another width again. Long names end in an ellipsis
- * (the full name is in the tooltip); status lines wrap. The positioning code
- * caps it with the space available, so a narrow panel still fits. */
+/* The composer's model menu is as wide as its longest name, and no wider.
+ * Status lines and the explanation do not count toward that width (they
+ * wrap): a passing "Loading ... models" line used to make the menu open wide
+ * and then shrink. Very long names end in an ellipsis (the full name is in
+ * the tooltip). The positioning code caps it with the space available.
+ *
+ * The menu element is only a frame. Inside it, a column of cards: a small
+ * card for the subagent on top and, 6px below, the chat model list. The
+ * subagent page is a single card. Each card has its own border, corners and
+ * shadow, so the two settings read as two objects. */
 #llm-model-menu {
-  width: calc(170px * var(--llm-font-scale, 1));
-  grid-template-columns: minmax(0, 1fr);
+  width: max-content;
+  min-width: calc(120px * var(--llm-font-scale, 1));
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  /* The positioning code sets overflow inline; the cards scroll instead, and
+     their shadows must not be cut off. */
+  overflow: visible !important;
 }
 
-#llm-model-menu .llm-model-menu-empty {
+.llm-model-menu-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  max-width: calc(240px * var(--llm-font-scale, 1));
+  /* The menu's inline max-height (the space above the button). */
+  max-height: inherit;
+}
+
+.llm-model-menu-card {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+  border-radius: 12px;
+  background: var(--material-background, #fff);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+/* The chat model list (and the subagent page's list) scroll on their own. */
+.llm-model-menu-list,
+.llm-model-menu-card-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  /* Rows keep their full height when the card is shorter than its list (it
+     scrolls instead). Auto rows were squeezed, cutting off text. */
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* A card's title ("Main Agent"), in the same small grey type as the
+ * "Subagent" label, so the two cards read as a pair. It stays at the top
+ * while the list scrolls. */
+.llm-model-menu-card-title {
+  position: sticky;
+  top: -6px;
+  z-index: 1;
+  margin: -6px -6px 0;
+  padding: 13px 16px 4px;
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fill-secondary);
+  background: var(--material-background, #fff);
+  border-radius: 12px 12px 0 0;
+  user-select: none;
+}
+
+#llm-model-menu .llm-model-menu-empty,
+#llm-model-menu .llm-model-menu-explain {
+  /* Wrap to the width the names set; never widen the menu. */
+  contain: inline-size;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
-/* "Subagent" row, pinned to the bottom of the chat model page. */
-.llm-model-menu-subagent-footer {
-  position: sticky;
-  bottom: -6px;
-  z-index: 1;
-  margin-top: 3px;
-  padding-top: 5px;
-  border-top: 1px solid
-    color-mix(
-      in srgb,
-      var(--stroke-secondary, rgba(120, 120, 120, 0.35)) 70%,
-      transparent
-    );
-  background: var(--material-background, #fff);
-  /* Hides list rows that scroll under the row. */
-  box-shadow: 0 6px 0 0 var(--material-background, #fff);
+/* Card 2: the subagent. A small grey label over the current choice, with an
+ * arrow on the right. */
+.llm-model-menu-subagent-card {
+  flex: none;
+  padding: 6px;
 }
 
-.llm-model-menu-subagent-row {
+/* The id outranks `.llm-actions button` (width: auto; line-height: 1). */
+#llm-model-menu .llm-model-menu-subagent-cell {
   appearance: none;
   -moz-appearance: none;
   display: flex;
@@ -17784,25 +17848,48 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
+  /* Two lines; never squeezed to one row's height. */
+  min-height: calc(38px * var(--llm-font-scale, 1));
   margin: 0;
-  padding-block: 6px;
-  padding-inline: 9px;
-  border: 1px solid transparent;
+  padding: 7px 10px 8px;
+  border: none;
   border-radius: 8px;
   background: none;
   color: var(--fill-primary);
   font: inherit;
-  font-size: var(--llm-fs-11);
-  line-height: 1.2;
   text-align: left;
   cursor: pointer;
 }
 
-.llm-model-menu-subagent-row:hover {
-  border-color: var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+#llm-model-menu .llm-model-menu-subagent-cell:hover {
+  background: var(--fill-quinary);
 }
 
-.llm-model-menu-subagent-icon,
+.llm-model-menu-subagent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.llm-model-menu-subagent-label {
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fill-secondary);
+}
+
+.llm-model-menu-subagent-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--llm-fs-11);
+  line-height: 1.2;
+  color: var(--fill-primary);
+}
+
 .llm-model-menu-subagent-chevron,
 .llm-model-menu-back::before {
   flex: none;
@@ -17815,69 +17902,52 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   -webkit-mask-size: contain;
 }
 
-.llm-model-menu-subagent-icon {
-  width: calc(13px * var(--llm-font-scale, 1));
-  height: calc(13px * var(--llm-font-scale, 1));
-  color: var(--fill-secondary);
-  mask-image: url("icons/model-menu-subagent.svg");
-  -webkit-mask-image: url("icons/model-menu-subagent.svg");
-}
-
 .llm-model-menu-subagent-chevron {
-  width: calc(11px * var(--llm-font-scale, 1));
-  height: calc(11px * var(--llm-font-scale, 1));
+  width: calc(9px * var(--llm-font-scale, 1));
+  height: calc(9px * var(--llm-font-scale, 1));
   color: var(--fill-tertiary);
   mask-image: url("icons/model-menu-chevron-right.svg");
   -webkit-mask-image: url("icons/model-menu-chevron-right.svg");
 }
 
-.llm-model-menu-subagent-text {
-  display: grid;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: 2px;
-}
-
-.llm-model-menu-subagent-label {
+/* The subagent page: one card, a shaded header strip with the back row, then
+ * the list. */
+.llm-model-menu-page {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.llm-model-menu-subagent-new {
-  flex: none;
-  padding: 1px 4px;
-  border-radius: 4px;
-  font-size: calc(8px * var(--llm-font-scale, 1));
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-accent, #3584e4);
-  background: color-mix(in srgb, var(--color-accent, #3584e4) 18%, transparent);
-}
-
-.llm-model-menu-subagent-value {
-  min-width: 0;
+  flex-direction: column;
+  flex: 0 1 auto;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--llm-fs-10);
-  color: var(--fill-secondary);
 }
 
-/* Subagent page: back row and the explanation. */
-.llm-model-menu-back {
+.llm-model-menu-page-head {
+  flex: none;
+  padding: 6px;
+  border-bottom: 1px solid
+    color-mix(
+      in srgb,
+      var(--stroke-secondary, rgba(120, 120, 120, 0.35)) 80%,
+      transparent
+    );
+  background: color-mix(
+    in srgb,
+    var(--material-background, #fff) 97%,
+    var(--fill-primary, #000) 3%
+  );
+}
+
+#llm-model-menu .llm-model-menu-back {
   appearance: none;
   -moz-appearance: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  box-sizing: border-box;
   width: 100%;
+  min-height: calc(27px * var(--llm-font-scale, 1));
   margin: 0;
-  padding: 5px 6px 2px;
+  padding: 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--fill-primary);
   font: inherit;
@@ -17888,41 +17958,26 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   cursor: pointer;
 }
 
+#llm-model-menu .llm-model-menu-back:hover {
+  background: var(--fill-quinary);
+}
+
 .llm-model-menu-back::before {
   content: "";
-  width: calc(12px * var(--llm-font-scale, 1));
-  height: calc(12px * var(--llm-font-scale, 1));
+  width: calc(10px * var(--llm-font-scale, 1));
+  height: calc(10px * var(--llm-font-scale, 1));
   color: var(--fill-secondary);
   mask-image: url("icons/model-menu-chevron-left.svg");
   -webkit-mask-image: url("icons/model-menu-chevron-left.svg");
 }
 
-.llm-model-menu-back:hover::before {
-  color: var(--fill-primary);
-}
-
 .llm-model-menu-explain {
-  padding: 4px 9px 6px;
-  font-size: var(--llm-fs-10);
-  line-height: 1.4;
+  padding: 4px 10px 8px;
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  line-height: 1.45;
   color: var(--fill-secondary);
   white-space: normal;
   user-select: none;
-}
-
-/* "Same as chat model" with "Default · <model>" under it. */
-.llm-model-option.llm-model-option-with-note {
-  white-space: normal;
-}
-
-.llm-model-option-note {
-  display: block;
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--llm-fs-10);
-  color: var(--fill-secondary);
 }
 
 .llm-model-option:hover:not(:disabled),

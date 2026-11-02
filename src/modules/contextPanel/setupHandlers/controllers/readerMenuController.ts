@@ -1,13 +1,15 @@
 /**
  * The subagent half of the composer's model menu.
  *
- * The menu opens on the chat model list. A "Subagent" row at the bottom names
- * the model that reads papers for the chat model (digests and full reads; the
- * code calls it the reader). Clicking the row turns the menu into a second
- * page: a back row, a short explanation, then "Same as chat model", the
- * runtime's own models (Codex, Claude Code) and the configured API models
- * grouped by provider. One subagent is kept per runtime; picking one goes
- * back to the first page.
+ * The menu opens on two cards: a small card on top naming the subagent, and
+ * below it the chat model list. The subagent is the model that reads papers
+ * for the chat model (digests and full reads; the code calls it the reader).
+ * Clicking that
+ * card turns the menu into one card for the subagent: a back row in its own
+ * header, a short explanation, then "Same as main agent", the runtime's own
+ * models (Codex, Claude Code) and the configured API models grouped by
+ * provider. One subagent is kept per runtime; picking one goes back to the
+ * first page.
  *
  * This module only builds the DOM and reads or writes the selection through
  * its dependencies. The button itself never shows the subagent; only its
@@ -54,7 +56,7 @@ const RUNTIME_PROVIDER_LABEL: Record<ReaderRuntimeKey, string> = {
 };
 
 /**
- * The reader as the tooltip names it, or null for Same as chat model. An
+ * The reader as the tooltip names it, or null for Same as main agent. An
  * entry that is gone (or WebChat) is Same as chat, as it is when a paper is
  * read.
  */
@@ -113,11 +115,6 @@ export type ReaderMenuDeps = {
   appendProviderSection: (menu: HTMLDivElement, label: string) => void;
   optionTitle: (entry: RuntimeModelEntry, own: boolean) => string;
   isPrimaryPointerEvent: (event: Event) => boolean;
-  /** The chat model's name, for "Default · <model>". */
-  getMainModelLabel: () => string;
-  /** Whether the subagent page was ever opened (hides the New label). */
-  getSubagentSeen: () => boolean;
-  markSubagentSeen: () => void;
   /** Called after the page changed; rebuilds and repositions the menu. */
   onPageChange: (page: ReaderMenuPage) => void;
   /** Called after a subagent was picked; refreshes the button tooltip. */
@@ -142,73 +139,75 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
       : stored;
   };
 
-  /** The "Subagent" row pinned to the bottom of the chat model page. */
-  const appendSubagentRow = (menu: HTMLDivElement) => {
+  /** A menu card: the bordered, rounded box the menu's parts sit in. */
+  const createCard = (className: string): HTMLDivElement =>
+    createElement(deps.doc, "div", `llm-model-menu-card ${className}`);
+
+  /** The small grey title of a card ("Main Agent" over the chat models). */
+  const appendCardTitle = (card: HTMLDivElement, text: string) => {
+    const title = createElement(deps.doc, "div", "llm-model-menu-card-title", {
+      textContent: text,
+    });
+    title.setAttribute("aria-hidden", "true");
+    card.appendChild(title);
+  };
+
+  /**
+   * The subagent card above the chat model list: a small grey "Subagent"
+   * label over the current choice, with an arrow that opens the subagent page.
+   */
+  const appendSubagentCard = (stack: HTMLDivElement) => {
     const doc = deps.doc;
-    const footer = createElement(doc, "div", "llm-model-menu-subagent-footer");
-    const row = createElement(doc, "button", "llm-model-menu-subagent-row", {
+    const card = createCard("llm-model-menu-subagent-card");
+    const cell = createElement(doc, "button", "llm-model-menu-subagent-cell", {
       type: "button",
     });
-    row.dataset.modelMenuSubagent = "open";
+    cell.dataset.modelMenuSubagent = "open";
     const description = describeReaderSelection({
       runtime: deps.getRuntime(),
       selection: shownSelection(),
       lookupEntry: deps.lookupEntry,
       runtimeEntries: deps.getRuntimeEntries(),
     });
-    const value = description
-      ? description.modelLabel
-      : t("Same as chat model");
-    const icon = createElement(doc, "span", "llm-model-menu-subagent-icon");
-    icon.setAttribute("aria-hidden", "true");
     const text = createElement(doc, "span", "llm-model-menu-subagent-text");
-    const top = createElement(doc, "span", "llm-model-menu-subagent-label", {
-      textContent: t("Subagent"),
-    });
-    if (!deps.getSubagentSeen()) {
-      top.appendChild(
-        createElement(doc, "span", "llm-model-menu-subagent-new", {
-          textContent: t("New"),
-        }),
-      );
-    }
-    const valueEl = createElement(
-      doc,
-      "span",
-      "llm-model-menu-subagent-value",
-      {
-        textContent: value,
-      },
+    text.append(
+      createElement(doc, "span", "llm-model-menu-subagent-label", {
+        textContent: t("Subagent"),
+      }),
+      createElement(doc, "span", "llm-model-menu-subagent-value", {
+        textContent: description
+          ? description.modelLabel
+          : t("Same as main agent"),
+      }),
     );
-    text.append(top, valueEl);
     const chevron = createElement(
       doc,
       "span",
       "llm-model-menu-subagent-chevron",
     );
     chevron.setAttribute("aria-hidden", "true");
-    row.append(icon, text, chevron);
-    row.title = description
+    cell.append(text, chevron);
+    cell.title = description
       ? `${t("Subagent")}: ${description.providerLabel} · ${description.modelLabel}`
-      : `${t("Subagent")}: ${t("Same as chat model")}`;
-    row.addEventListener("click", (event: Event) => {
+      : `${t("Subagent")}: ${t("Same as main agent")}`;
+    cell.addEventListener("click", (event: Event) => {
       if (!deps.isPrimaryPointerEvent(event)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (!deps.getSubagentSeen()) deps.markSubagentSeen();
       setPage("subagent");
     });
-    footer.appendChild(row);
-    menu.appendChild(footer);
+    card.appendChild(cell);
+    stack.appendChild(card);
   };
 
-  /** The back row and the explanation at the top of the subagent page. */
-  const appendSubagentHeader = (menu: HTMLDivElement) => {
+  /** The subagent page's header: one back row, in its own shaded strip. */
+  const appendSubagentHeader = (card: HTMLDivElement) => {
     const doc = deps.doc;
+    const head = createElement(doc, "div", "llm-model-menu-page-head");
     const back = createElement(doc, "button", "llm-model-menu-back", {
       type: "button",
       textContent: t("Subagent"),
-      title: t("Back to chat models"),
+      title: t("Back to main agent"),
     });
     back.dataset.modelMenuSubagent = "back";
     back.addEventListener("click", (event: Event) => {
@@ -217,13 +216,8 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
       event.stopPropagation();
       setPage("chat");
     });
-    menu.appendChild(back);
-    const explain = createElement(doc, "div", "llm-model-menu-explain", {
-      textContent: t(
-        "A helper your chat model sends off to read whole papers. It reads, then hands notes back, and your chat model writes the answer. A fast, low-cost model works well here.",
-      ),
-    });
-    menu.appendChild(explain);
+    head.appendChild(back);
+    card.appendChild(head);
   };
 
   const appendOption = (
@@ -234,8 +228,6 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
       selected: boolean;
       dataset: Record<string, string>;
       selection: ReaderSelection | null;
-      /** A second, smaller line under the label. */
-      note?: string;
     },
   ) => {
     const option = createElement(
@@ -248,14 +240,6 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
         ...(params.title ? { title: params.title } : {}),
       },
     );
-    if (params.note) {
-      option.classList.add("llm-model-option-with-note");
-      option.appendChild(
-        createElement(deps.doc, "span", "llm-model-option-note", {
-          textContent: params.note,
-        }),
-      );
-    }
     option.classList.toggle(MENU_OPTION_SELECTED_CLASS, params.selected);
     for (const [key, value] of Object.entries(params.dataset)) {
       option.dataset[key] = value;
@@ -271,22 +255,35 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
     menu.appendChild(option);
   };
 
-  /** The subagent page: back row, explanation, Same as chat model, the
-   *  runtime's own models, then the API models by provider. */
-  const appendReaderList = (menu: HTMLDivElement) => {
+  /** The subagent page, one card: back row, explanation, Same as main agent,
+   *  the runtime's own models, then the API models by provider. */
+  const appendReaderList = (stack: HTMLDivElement) => {
     const runtime = deps.getRuntime();
     const apiEntries = deps.getApiEntries();
     const runtimeEntries = deps.getRuntimeEntries();
     // An entry that is gone reads as Same as chat, here and when reading.
     const selection = shownSelection();
-    appendSubagentHeader(menu);
-    const mainLabel = deps.getMainModelLabel();
+    const card = createCard("llm-model-menu-page");
+    appendSubagentHeader(card);
+    const menu = createElement(
+      deps.doc,
+      "div",
+      "llm-model-menu-card-list",
+    ) as HTMLDivElement;
+    card.appendChild(menu);
+    stack.appendChild(card);
+    menu.appendChild(
+      createElement(deps.doc, "div", "llm-model-menu-explain", {
+        textContent: t(
+          "Reads many papers in parallel for the main agent, for library-wide questions and full-paper reads. Pick a fast, low-cost model.",
+        ),
+      }),
+    );
     appendOption(menu, {
-      label: t("Same as chat model"),
+      label: t("Same as main agent"),
       selected: !selection,
       dataset: { readerOption: "same" },
       selection: null,
-      note: mainLabel ? `${t("Default")} · ${mainLabel}` : t("Default"),
     });
     if (runtime !== "agent") {
       deps.appendRuntimeCatalogStatus(menu);
@@ -352,7 +349,9 @@ export function createReaderMenuController(deps: ReaderMenuDeps) {
     resetPage: () => {
       page = "chat";
     },
-    appendSubagentRow,
+    createCard,
+    appendCardTitle,
+    appendSubagentCard,
     appendReaderList,
   };
 }

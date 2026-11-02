@@ -96,10 +96,6 @@ export function getBoolPref(key: string, defaultValue = false): boolean {
   return defaultValue;
 }
 
-export function setBoolPref(key: string, value: boolean): void {
-  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, Boolean(value), true);
-}
-
 export function getAgentModeEnabled(): boolean {
   return getBoolPref("enableAgentMode", false);
 }

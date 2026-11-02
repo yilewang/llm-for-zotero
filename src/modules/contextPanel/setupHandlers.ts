@@ -182,8 +182,6 @@ import {
 import {
   getAvailableModelEntries,
   getStringPref,
-  getBoolPref,
-  setBoolPref,
   getAgentModeEnabled,
   getClaudeCodeModeEnabled,
   applyPanelFontScale,
@@ -6000,9 +5998,7 @@ export function setupHandlers(
       .join("\n");
   };
 
-  /** Hides the model menu's "New" label once the subagent page was opened. */
-  const SUBAGENT_PICKER_SEEN_PREF = "subagentPickerSeen";
-  /** The subagent page of the model menu (the "Subagent" row at the bottom). */
+  /** The subagent card and page of the model menu. */
   const readerMenu = createReaderMenuController({
     doc: body.ownerDocument as Document,
     getRuntime: () => readerRuntimeKeyForSystem(getConversationSystem()),
@@ -6027,17 +6023,18 @@ export function setupHandlers(
         ? getModelOptionTitle(entry)
         : `${entry.providerLabel} · ${entry.model}`,
     isPrimaryPointerEvent,
-    getMainModelLabel: () => {
-      const { currentModelDisplay, currentModel } = getSelectedModelInfo();
-      return `${currentModelDisplay || currentModel || ""}`;
-    },
-    getSubagentSeen: () => getBoolPref(SUBAGENT_PICKER_SEEN_PREF, false),
-    markSubagentSeen: () => setBoolPref(SUBAGENT_PICKER_SEEN_PREF, true),
     onPageChange: () => {
+      if (!modelMenu || !modelBtn) return;
+      // The menu fits its names, and the two pages list different names.
+      // Keep the wider of the two widths while the menu is open, so turning
+      // the page never makes it jump narrower.
+      const widthBefore = modelMenu.getBoundingClientRect().width;
+      modelMenu.style.width = "";
       rebuildModelMenu();
-      if (modelMenu && modelBtn) {
+      positionComposerMenu(body, modelMenu, modelBtn);
+      if (widthBefore > modelMenu.getBoundingClientRect().width) {
+        modelMenu.style.width = `${widthBefore}px`;
         positionComposerMenu(body, modelMenu, modelBtn);
-        modelMenu.scrollTop = 0;
       }
     },
     onPick: () => {
@@ -6051,27 +6048,38 @@ export function setupHandlers(
     // rebuild an open menu. openModelMenu starts the refresh once per open.
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
+    // The menu itself is only a frame; its cards sit in one column inside it.
     modelMenu.innerHTML = "";
+    const stack = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-model-menu-stack",
+    ) as HTMLDivElement;
+    modelMenu.appendChild(stack);
     if (readerMenu.getPage() === "subagent") {
-      readerMenu.appendReaderList(modelMenu);
+      readerMenu.appendReaderList(stack);
       return;
     }
-    appendClaudeModelCatalogStatus(modelMenu);
-    appendCodexModelCatalogStatus(modelMenu);
+    // Card 1: the subagent, small, on top. Card 2: the chat models.
+    readerMenu.appendSubagentCard(stack);
+    const list = readerMenu.createCard("llm-model-menu-list");
+    stack.appendChild(list);
+    readerMenu.appendCardTitle(list, t("Main Agent"));
+    appendClaudeModelCatalogStatus(list);
+    appendCodexModelCatalogStatus(list);
     codexDirectController?.appendCatalogStatus({
-      menu: modelMenu,
+      menu: list,
       renderStatus: appendModelCatalogStatus,
       appendEmptyState: appendModelMenuEmptyState,
       isPrimaryPointerEvent,
     });
     if (!groupedChoices.length) {
-      appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
-      readerMenu.appendSubagentRow(modelMenu);
+      appendModelMenuEmptyState(list, t("No models configured yet."));
       return;
     }
 
     for (const group of groupedChoices) {
-      appendModelProviderSection(modelMenu, group.providerLabel);
+      appendModelProviderSection(list, group.providerLabel);
       for (const entry of group.entries) {
         const isSelected = entry.entryId === selectedEntryId;
         const option = createElement(
@@ -6282,10 +6290,9 @@ export function setupHandlers(
         };
         option.addEventListener("pointerdown", applyModelSelection);
         option.addEventListener("click", applyModelSelection);
-        modelMenu.appendChild(option);
+        list.appendChild(option);
       }
     }
-    readerMenu.appendSubagentRow(modelMenu);
   };
 
   const rebuildRetryModelMenu = () => {
@@ -9049,8 +9056,9 @@ export function setupHandlers(
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
-    // The menu always opens on the chat model page.
+    // The menu always opens on the chat model page, at its own width.
     readerMenu.resetPage();
+    modelMenu.style.width = "";
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();

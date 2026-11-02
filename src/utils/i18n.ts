@@ -945,12 +945,11 @@ const zhCN: Record<string, string> = {
     "无法加载 Codex 模型。仅显示当前模型。",
   "Retry loading Codex models": "重试加载 Codex 模型",
   Subagent: "子代理",
-  New: "新",
-  "Same as chat model": "与聊天模型相同",
-  Default: "默认",
-  "Back to chat models": "返回聊天模型",
-  "A helper your chat model sends off to read whole papers. It reads, then hands notes back, and your chat model writes the answer. A fast, low-cost model works well here.":
-    "聊天模型派去通读整篇论文的助手。它读完后把笔记交回，由聊天模型写出回答。这里适合用快速、低成本的模型。",
+  "Main Agent": "主代理",
+  "Same as main agent": "与主代理相同",
+  "Back to main agent": "返回主代理",
+  "Reads many papers in parallel for the main agent, for library-wide questions and full-paper reads. Pick a fast, low-cost model.":
+    "为主代理并行阅读多篇论文，用于全库问题和整篇精读。建议选择快速、低成本的模型。",
   "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",

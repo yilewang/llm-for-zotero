@@ -26,7 +26,6 @@ declare namespace _ZoteroTypes {
       "readerChoiceAgent": string;
       "readerChoiceCodex": string;
       "readerChoiceClaude": string;
-      "subagentPickerSeen": boolean;
       "systemPrompt": string;
       "showPopupAddText": boolean;
       "semanticScholarApiKey": string;
