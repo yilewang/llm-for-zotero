@@ -973,6 +973,8 @@ const zhCN: Record<string, string> = {
   SiliconFlow: "SiliconFlow（硅基流动）",
   "Preset uses SiliconFlow's OpenAI-compatible API base (v1).":
     "预设使用硅基流动（SiliconFlow）的 OpenAI 兼容 API 地址 (v1)。",
+  "Preset uses Runcrate's OpenAI-compatible API base (v1) for open-weight models.":
+    "预设使用 Runcrate 的 OpenAI 兼容 API 地址 (v1)，提供开放权重模型。",
   "Uses GitHub Copilot via device login. Requires an active Copilot subscription.":
     "通过设备登录使用 GitHub Copilot。需要有效的 Copilot 订阅。",
   'Relay questions to %targets% via the Sync for Zotero browser extension. Download extension: github.com/yilewang/sync-for-zotero → Releases. Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. Keep the corresponding chat tab open while using WebChat mode.':

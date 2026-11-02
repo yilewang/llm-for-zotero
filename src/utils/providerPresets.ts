@@ -12,6 +12,7 @@ export type SupportedProviderPresetId =
   | "kimi"
   | "mimo"
   | "siliconflow"
+  | "runcrate"
   | "opencode"
   | "opencode_go"
   | "copilot"
@@ -261,6 +262,13 @@ const SILICONFLOW_PATHS = [
   "/v1/models",
   "/v1/embeddings",
 ];
+const RUNCRATE_PATHS = [
+  "/",
+  "/v1",
+  "/v1/chat/completions",
+  "/v1/models",
+  "/v1/embeddings",
+];
 // OpenCode runs two products behind one host: Zen (pay-as-you-go balance) and
 // Go (subscription). Each is published under two URL generations: the older
 // /zen/v1 and /zen/go/v1, and the newer /inference/... forms, with an optional
@@ -466,6 +474,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       ["api.siliconflow.cn", "api.siliconflow.com"],
       SILICONFLOW_PATHS,
     ),
+    supportsEmbeddings: false,
+  },
+  {
+    id: "runcrate",
+    label: "Runcrate",
+    defaultApiBase: "https://api.runcrate.ai/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText:
+      "Preset uses Runcrate's OpenAI-compatible API base (v1) for open-weight models.",
+    matches: makeHostAndPathMatcher(["api.runcrate.ai"], RUNCRATE_PATHS),
     supportsEmbeddings: false,
   },
   {

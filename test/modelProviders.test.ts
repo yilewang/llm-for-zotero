@@ -82,6 +82,7 @@ describe("modelProviders", function () {
       deriveProviderLabel("https://api.siliconflow.cn/v1"),
       "SiliconFlow",
     );
+    assert.equal(deriveProviderLabel("https://api.runcrate.ai/v1"), "Runcrate");
     assert.equal(
       deriveProviderLabel("https://api.minimax.io/anthropic"),
       "MiniMax",
