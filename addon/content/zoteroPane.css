@@ -18887,7 +18887,9 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   height: 38px;
   min-height: 38px;
   margin: 0;
-  padding: 0 8px 0 9px;
+  /* The chevron's mark ends as far in from the card's right edge as the
+     status ring starts from its left edge (about 10px). */
+  padding: 0 6px 0 9px;
   border: 0;
   border-radius: 0;
   outline: none;
@@ -19079,7 +19081,7 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
 
 .llm-task-progress-chevron {
   display: inline-flex;
-  flex: 0 0 24px;
+  flex: 0 0 16px;
   align-items: center;
   justify-content: center;
   height: 24px;
@@ -20770,24 +20772,22 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12H8M13 6l-6 6 6 6M3 5v14'/%3E%3C/svg%3E");
 }
 
-/* In the chat, the card spans the chat and composer's width, and its
- * chevron and →| sit in the title row's Export and Clear columns. Those
- * buttons are 24px + the chrome gap wide, half a gap apart, and end 10px
- * in from the title row's edge, 13px past the card's inner edge. */
+/* In the chat, the card spans the chat and composer's width. Its →| keeps
+ * the card's padding rule: the mark ends as far in from the right edge as
+ * the status ring starts from the left (about 10px), and the chevron sits
+ * the same distance before it as the status pill sits before the chevron. */
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked) {
   margin-inline: 0;
 }
 
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked)
   > .llm-task-progress {
-  padding-right: calc(21px + 2 * var(--llm-standalone-chrome-gap));
+  padding-right: 31px;
 }
 
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked)
   > .llm-task-progress-move {
-  right: 1px;
-  width: calc(16px + var(--llm-standalone-chrome-gap));
-  min-width: calc(16px + var(--llm-standalone-chrome-gap));
+  right: 3.5px;
 }
 
 .llm-task-progress-move:hover,
