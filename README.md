@@ -895,6 +895,24 @@ anonymous text flow, and signed-in PDF composer DOM have been observed in
 Chrome. A complete automated Gemini PDF, follow-up, history, and restore run
 remains required before a release is declared verified.
 
+### Save a formatted ChatGPT conversation snapshot
+
+With a paired Sync for Zotero extension that advertises snapshot version 1,
+choose **Export → Save conversation snapshot** in a paper's ChatGPT conversation.
+Keep the matching conversation open in the browser. The plugin saves a single,
+self-contained HTML attachment under that paper, preserving the loaded conversation's
+cards, tables, computed styles, SVG paths, and available images. Existing note and
+Markdown exports are unchanged; each snapshot is a new attachment.
+
+This is a static archive of messages currently loaded in the browser. Scroll through
+long conversations before saving. Charts and inline references become static content.
+Scripts, account/sidebar UI, external fonts, and original uploaded files are excluded.
+The paired extension aborts the save if an image cannot be embedded.
+The initial implementation supports ordinary `https://chatgpt.com/c/...` conversations,
+with a 16 MiB limit and a 60-second request timeout. The matching extension must also
+be updated; older extensions receive a clear update message. A changed conversation
+or panel selection cannot silently attach another chat to the selected paper.
+
 For release validation, keep Chrome signed in with the development extension loaded and run:
 
 ```bash

@@ -1,3 +1,4 @@
+import { getConversationSnapshotBroker } from "./conversationSnapshot";
 /**
  * [webchat] Embedded HTTP relay server for the ChatGPT web sync pipeline.
  *
@@ -214,6 +215,7 @@ export interface RelayState {
 // in the plugin (globalThis may differ between sandbox scopes in Gecko)
 interface ExtensionStatus {
   chatTabAlive: boolean;
+  conversationSnapshotVersion?: number;
   chatUrl: string | null;
   siteId: string | null;
   url: string | null;
@@ -1967,6 +1969,7 @@ const ExtensionStatusEndpoint = createEndpoint(["POST"], (opts) => {
   const body = parseBody(opts.data);
   _store().extensionStatus = {
     chatTabAlive: !!body.chatTabAlive,
+    conversationSnapshotVersion: body.conversationSnapshotVersion === 1 ? 1 : 0,
     chatUrl: (body.chatUrl as string) || null,
     siteId: readNullableString(body.siteId),
     url: readNullableString(body.url) || readNullableString(body.chatUrl),
@@ -2006,6 +2009,13 @@ const ExtensionStatusEndpoint = createEndpoint(["POST"], (opts) => {
 // ---------------------------------------------------------------------------
 
 const ENDPOINTS: Record<string, ReturnType<typeof createEndpoint>> = {
+  [`${PREFIX}/poll_snapshot`]: createEndpoint(["GET"], () =>
+    jsonReply({ request: getConversationSnapshotBroker().poll() }),
+  ),
+  [`${PREFIX}/submit_snapshot`]: createEndpoint(["POST"], (opts) => {
+    getConversationSnapshotBroker().submit(parseBody(opts.data));
+    return jsonReply({ ok: true });
+  }),
   [`${PREFIX}/heartbeat`]: HeartbeatEndpoint,
   [`${PREFIX}/extension_status`]: ExtensionStatusEndpoint,
   [`${PREFIX}/debug`]: DebugEndpoint,
@@ -2525,6 +2535,9 @@ export function registerWebChatRelay(): void {
  * Call during plugin shutdown.
  */
 export function unregisterWebChatRelay(): void {
+  getConversationSnapshotBroker().cancel("Zotero is shutting down.");
+  delete (Zotero.Server.Endpoints as unknown as Record<string, unknown>)
+    .__llmConversationSnapshotBroker;
   for (const path of Object.keys(ENDPOINTS)) {
     delete Zotero.Server.Endpoints[path];
   }
