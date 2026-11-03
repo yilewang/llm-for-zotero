@@ -323,6 +323,51 @@ describe("mineruBatchProcessor", function () {
     assert.deepEqual(list[0].collectionIds, [7]);
   });
 
+  it("lists PDFs from an explicitly selected group library", async function () {
+    const personalPdf = createRawPdf();
+    const groupPdf: MockItem = {
+      ...createRawPdf(),
+      id: 102,
+      key: "GROUPPDF",
+      libraryID: 2,
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [personalPdf.id, personalPdf],
+        [groupPdf.id, groupPdf],
+      ]),
+    );
+
+    const list = await getMineruItemList(2);
+
+    assert.deepEqual(
+      list.map((item) => item.attachmentId),
+      [groupPdf.id],
+    );
+  });
+
+  it("builds the Start All queue from an explicitly selected group library", async function () {
+    const personalPdf = createRawPdf();
+    const groupPdf: MockItem = {
+      ...createRawPdf(),
+      id: 102,
+      key: "GROUPPDF",
+      libraryID: 2,
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [personalPdf.id, personalPdf],
+        [groupPdf.id, groupPdf],
+      ]),
+    );
+
+    await resetBatchQueue(2);
+
+    const state = getMineruBatchState();
+    assert.equal(state.totalCount, 1);
+    assert.equal(state.processedCount, 0);
+  });
+
   it("does not duplicate child PDFs when attachment items also appear in getAll", async function () {
     const parent: MockItem = {
       id: 201,
