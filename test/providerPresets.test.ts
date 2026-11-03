@@ -98,6 +98,14 @@ describe("providerPresets", function () {
       detectProviderPreset("https://api.siliconflow.com/v1"),
       "siliconflow",
     );
+    assert.equal(
+      detectProviderPreset("https://api.runcrate.ai/v1"),
+      "runcrate",
+    );
+    assert.equal(
+      detectProviderPreset("https://api.runcrate.ai/v1/chat/completions"),
+      "runcrate",
+    );
   });
 
   it("falls back to customized for unknown URLs", function () {
@@ -145,6 +153,10 @@ describe("providerPresets", function () {
     assert.equal(
       getProviderPreset("siliconflow").defaultApiBase,
       "https://api.siliconflow.cn/v1",
+    );
+    assert.equal(
+      getProviderPreset("runcrate").defaultApiBase,
+      "https://api.runcrate.ai/v1",
     );
   });
 
@@ -194,6 +206,13 @@ describe("providerPresets", function () {
       "openai_chat_compat",
     );
     assert.deepEqual(getProviderPreset("siliconflow").supportedProtocols, [
+      "openai_chat_compat",
+    ]);
+    assert.equal(
+      getProviderPreset("runcrate").defaultProtocol,
+      "openai_chat_compat",
+    );
+    assert.deepEqual(getProviderPreset("runcrate").supportedProtocols, [
       "openai_chat_compat",
     ]);
   });

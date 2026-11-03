@@ -314,6 +314,7 @@ export function deriveProviderLabel(
     return "Qwen";
   }
   if (lowerHost.includes("siliconflow.")) return "SiliconFlow";
+  if (lowerHost.includes("runcrate.ai")) return "Runcrate";
 
   return host;
 }
