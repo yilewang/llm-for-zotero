@@ -1,3 +1,4 @@
+import { getSelectedTextWithinBubble } from "./textUtils";
 import { clearStandaloneSelection } from "./conversationSelection";
 import { setStandaloneSidePanelSlideDurationForTest } from "./standaloneSidePanel";
 import {
@@ -7393,6 +7394,187 @@ async function exerciseContextChipCardVisibility(input: {
   }
 }
 
+/** Document-order text node and offset for a character offset inside `root`. */
+function textPointAtOffset(
+  doc: Document,
+  root: Node,
+  offset: number,
+): { node: Node; offset: number } {
+  const walker = doc.createTreeWalker(root, 4);
+  let remaining = offset;
+  let last: Node | null = null;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const length = (n.nodeValue || "").length;
+    if (remaining <= length) return { node: n, offset: remaining };
+    remaining -= length;
+    last = n;
+  }
+  if (!last) throw new Error("No text to select");
+  return { node: last, offset: (last.nodeValue || "").length };
+}
+
+async function exerciseAssistantSelectionNoteSave(input: {
+  panelId: string;
+  assistantText: string;
+  selection: "full" | "code";
+  codeStart?: string;
+  codeEnd?: string;
+}): ReturnType<WorkflowTestApi["exerciseAssistantSelectionNoteSave"]> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  const doc = panel.body.ownerDocument;
+  const win = doc.defaultView;
+  if (!win) throw new Error("Workflow panel window is unavailable");
+  const item = activeContextPanels.get(panel.body)?.() || panel.item;
+  const notesBefore = new Set<number>(
+    (item as Zotero.Item).getNotes().map((id) => Number(id)),
+  );
+  await seedPanelStoredTurn(
+    input.panelId,
+    "Show me everything.",
+    input.assistantText,
+  );
+  const findBubble = () =>
+    panel.body.querySelector(
+      "#llm-chat-box .llm-bubble.assistant",
+    ) as HTMLElement | null;
+  const startedAt = Date.now();
+  let bubble = findBubble();
+  while (
+    (!bubble || !bubble.querySelector(".llm-content-bar")) &&
+    Date.now() - startedAt < 10000
+  ) {
+    await Zotero.Promise.delay(100);
+    bubble = findBubble();
+  }
+  if (!bubble) throw new Error("Assistant bubble was not rendered");
+  const bubbleHasContentBar = Boolean(bubble.querySelector(".llm-content-bar"));
+  const selection = win.getSelection();
+  if (!selection) throw new Error("Workflow panel selection is unavailable");
+  selection.removeAllRanges();
+
+  let startNode: Node;
+  let startOffset: number;
+  let endNode: Node;
+  let endOffset: number;
+  if (input.selection === "code") {
+    const codeBody = (
+      Array.from(bubble.querySelectorAll(".llm-codeblock-body")) as Element[]
+    ).find((el) =>
+      (el.textContent || "").includes(input.codeStart || "\u0000"),
+    ) as HTMLElement | undefined;
+    if (!codeBody) throw new Error("Code block for the selection not found");
+    const text = codeBody.textContent || "";
+    const from = text.indexOf(input.codeStart || "");
+    const toStart = text.indexOf(input.codeEnd || "");
+    if (from < 0 || toStart < 0) throw new Error("Code selection not found");
+    const start = textPointAtOffset(doc, codeBody, from);
+    const end = textPointAtOffset(
+      doc,
+      codeBody,
+      toStart + (input.codeEnd || "").length,
+    );
+    [startNode, startOffset, endNode, endOffset] = [
+      start.node,
+      start.offset,
+      end.node,
+      end.offset,
+    ];
+  } else {
+    const heading = bubble.querySelector("h2, h1, h3");
+    const paragraphs = Array.from(bubble.querySelectorAll("p"));
+    const last = paragraphs[paragraphs.length - 1];
+    if (!heading || !last) throw new Error("Heading or last paragraph missing");
+    const start = textPointAtOffset(doc, heading, 0);
+    const end = textPointAtOffset(doc, last, (last.textContent || "").length);
+    [startNode, startOffset, endNode, endOffset] = [
+      start.node,
+      start.offset,
+      end.node,
+      end.offset,
+    ];
+  }
+  selection.setBaseAndExtent(startNode, startOffset, endNode, endOffset);
+  const nativeRangeCount = selection.rangeCount;
+  if (input.selection === "full" && nativeRangeCount < 2) {
+    // A mouse drag selects one range per stretch between the nodes that
+    // cannot be selected (hover bars, code labels). Rebuild that shape.
+    const whole = doc.createRange();
+    whole.setStart(startNode, startOffset);
+    whole.setEnd(endNode, endOffset);
+    const chrome = (
+      Array.from(
+        bubble.querySelectorAll(".llm-content-bar, .llm-codeblock-header"),
+      ) as Element[]
+    ).filter((el) => whole.intersectsNode(el));
+    const ranges: Range[] = [];
+    let cursorNode: Node = startNode;
+    let cursorOffset = startOffset;
+    for (const el of chrome) {
+      const piece = doc.createRange();
+      piece.setStart(cursorNode, cursorOffset);
+      piece.setEndBefore(el);
+      if (!piece.collapsed) ranges.push(piece);
+      cursorNode = el.parentNode as Node;
+      cursorOffset =
+        Array.from(cursorNode.childNodes).indexOf(el as ChildNode) + 1;
+    }
+    const tail = doc.createRange();
+    tail.setStart(cursorNode, cursorOffset);
+    tail.setEnd(endNode, endOffset);
+    if (!tail.collapsed) ranges.push(tail);
+    selection.removeAllRanges();
+    for (const range of ranges) selection.addRange(range);
+  }
+  const rangeCount = selection.rangeCount;
+  const extracted = getSelectedTextWithinBubble(doc, bubble);
+
+  const contextTarget = (bubble.querySelector("h2, h1, h3, p") ||
+    bubble) as HTMLElement;
+  contextTarget.dispatchEvent(
+    new win.MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: 40,
+      clientY: 40,
+    }),
+  );
+  await Zotero.Promise.delay(50);
+  const noteButton = panel.body.querySelector(
+    "#llm-response-menu-note",
+  ) as HTMLButtonElement | null;
+  if (!noteButton) throw new Error("Response menu note button not found");
+  noteButton.dispatchEvent(
+    new win.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+  );
+
+  let noteId = 0;
+  const noteStartedAt = Date.now();
+  while (!noteId && Date.now() - noteStartedAt < 15000) {
+    await Zotero.Promise.delay(150);
+    noteId =
+      (item as Zotero.Item)
+        .getNotes()
+        .map((id) => Number(id))
+        .find((id) => !notesBefore.has(id)) || 0;
+  }
+  let noteHtml = "";
+  if (noteId) {
+    const note = Zotero.Items.get(noteId);
+    noteHtml = note?.getNote() || "";
+    await note?.eraseTx();
+  }
+  selection.removeAllRanges();
+  return {
+    bubbleHasContentBar,
+    nativeRangeCount,
+    rangeCount,
+    extracted,
+    noteHtml,
+  };
+}
+
 async function exerciseAssistantSelectionInlinePrompt(input: {
   panelId: string;
   assistantText: string;
@@ -9957,6 +10139,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseHighlightAwareContextRetrieval,
     exerciseContextChipCardVisibility,
     exerciseAssistantSelectionInlinePrompt,
+    exerciseAssistantSelectionNoteSave,
     exerciseAssistantSelectionPromptDismissal,
     cleanupFixture,
     listPanelHistory,

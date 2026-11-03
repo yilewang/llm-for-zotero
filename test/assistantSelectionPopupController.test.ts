@@ -25,6 +25,7 @@ function makeFakePanel(selectedText: string) {
       value: "",
       scrollHeight: 24,
       children: [] as any[],
+      childNodes: [] as any[],
       parentNode: null as any,
       ownerDocument: doc,
       isConnected: true,
@@ -60,6 +61,7 @@ function makeFakePanel(selectedText: string) {
       appendChild(node: any) {
         if (node && node.fragmentText !== undefined) {
           el.textContent = node.fragmentText;
+          el.childNodes = [{ nodeType: 3, nodeValue: node.fragmentText }];
           return node;
         }
         el.append(node);
@@ -143,6 +145,12 @@ function makeFakePanel(selectedText: string) {
   panelRoot.append(chatBox);
 
   const range = {
+    collapsed: false,
+    cloneRange: () => range,
+    // The one fake range lies inside the bubble (the extractor's bounds check).
+    compareBoundaryPoints: (how: number) =>
+      how === 3 ? -1 : how === 1 ? 1 : 0,
+    commonAncestorContainer: textNode,
     cloneContents: () => ({ fragmentText: selectedText }),
     getBoundingClientRect: () => ({
       left: 10,
@@ -177,6 +185,7 @@ function makeFakePanel(selectedText: string) {
     defaultView: panelWin,
     createElementNS: (_ns: string, tag: string) => makeEl(tag),
     createElement: (tag: string) => makeEl(tag),
+    createRange: () => ({ selectNodeContents() {} }),
     addEventListener() {},
     removeEventListener() {},
   });

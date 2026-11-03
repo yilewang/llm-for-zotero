@@ -29,6 +29,10 @@ import {
 } from "../../services/context/selectedTextAnchorFormatting";
 import { t } from "../../utils/i18n";
 import { sanitizeText } from "../../utils/textSanitization";
+import {
+  selectionFragmentToMarkdown,
+  stripSelectionChrome,
+} from "./selectionMarkdown";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
   "Please explain this selected text.";
@@ -639,10 +643,61 @@ export function getCurrentLocalTimestamp(): string {
   }).format(new Date());
 }
 
+// Range.compareBoundaryPoints modes (the Range global is not always in scope).
+const RANGE_START_TO_START = 0;
+const RANGE_START_TO_END = 1;
+const RANGE_END_TO_END = 2;
+const RANGE_END_TO_START = 3;
+
 /**
- * Extract the selected text within a bubble, replacing KaTeX-rendered math
- * with its original LaTeX source wrapped in `$...$` (inline) or `$$...$$`
- * (display).
+ * Clones one selected range into a detached box, with UI chrome removed.
+ * A range that sits inside one code block gets a code wrapper, because the
+ * clone holds only text.
+ */
+function cloneRangeForMarkdown(
+  doc: Document,
+  container: HTMLElement,
+  range: Range,
+): HTMLElement {
+  const box = doc.createElement("div");
+  const host = range.commonAncestorContainer;
+  const hostEl = (
+    host.nodeType === 1 ? host : host.parentNode
+  ) as Element | null;
+  const codeBody = hostEl?.closest?.(".llm-codeblock-body, pre");
+  const fragment = range.cloneContents();
+  if (codeBody && container.contains(codeBody)) {
+    const source = codeBody
+      .closest(".llm-copyable")
+      ?.getAttribute("data-llm-copy-source");
+    const pre = doc.createElement("pre");
+    pre.appendChild(fragment);
+    const lang = codeBody
+      .closest("[data-code-lang]")
+      ?.getAttribute("data-code-lang");
+    if (lang) pre.setAttribute("data-code-lang", lang);
+    if (source) {
+      const wrap = doc.createElement("div");
+      wrap.className = "llm-copyable llm-copyable-code";
+      wrap.setAttribute("data-llm-copy-source", source);
+      wrap.appendChild(pre);
+      box.appendChild(wrap);
+    } else {
+      box.appendChild(pre);
+    }
+  } else {
+    box.appendChild(fragment);
+  }
+  stripSelectionChrome(box);
+  return box;
+}
+
+/**
+ * Extract the selected part of a bubble as Markdown. Gecko splits one visible
+ * selection into several ranges around nodes that cannot be selected (such as
+ * a code block's hover bar), so every range is read. Neighbouring ranges with
+ * only chrome between them become one segment; other gaps become a blank line.
+ * KaTeX-rendered math returns as its LaTeX source.
  */
 export function getSelectedTextWithinBubble(
   doc: Document,
@@ -666,33 +721,59 @@ export function getSelectedTextWithinBubble(
   }
 
   try {
-    const range = selection.getRangeAt(0);
-    const fragment = range.cloneContents();
-    const temp = doc.createElement("div");
-    temp.appendChild(fragment);
-
-    const katexEls = Array.from(temp.querySelectorAll(".katex")) as Element[];
-    for (const el of katexEls) {
-      const ann = el.querySelector('annotation[encoding="application/x-tex"]');
-      if (ann) {
-        const latex = (ann.textContent || "").trim();
-        const mathEl = ann.closest("math");
-        const isDisplay = mathEl?.getAttribute("display") === "block";
-        el.replaceWith(
-          doc.createTextNode(isDisplay ? `$$${latex}$$` : `$${latex}$`),
-        );
+    const bounds = doc.createRange();
+    bounds.selectNodeContents(container);
+    const ranges: Range[] = [];
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i).cloneRange();
+      if (range.collapsed) continue;
+      // Skip ranges outside the bubble; clip the others to it.
+      if (
+        range.compareBoundaryPoints(RANGE_END_TO_START, bounds) >= 0 ||
+        range.compareBoundaryPoints(RANGE_START_TO_END, bounds) <= 0
+      ) {
         continue;
       }
-      const mathml = el.querySelector(".katex-mathml");
-      if (mathml) mathml.remove();
+      if (range.compareBoundaryPoints(RANGE_START_TO_START, bounds) < 0) {
+        range.setStart(bounds.startContainer, bounds.startOffset);
+      }
+      if (range.compareBoundaryPoints(RANGE_END_TO_END, bounds) > 0) {
+        range.setEnd(bounds.endContainer, bounds.endOffset);
+      }
+      if (!range.collapsed) ranges.push(range);
+    }
+    ranges.sort((a, b) => a.compareBoundaryPoints(RANGE_START_TO_START, b));
+
+    const segments: Range[] = [];
+    for (const range of ranges) {
+      const prev = segments[segments.length - 1];
+      if (prev) {
+        const gap = doc.createRange();
+        gap.setStart(prev.endContainer, prev.endOffset);
+        if (range.compareBoundaryPoints(RANGE_START_TO_START, prev) >= 0) {
+          gap.setEnd(range.startContainer, range.startOffset);
+        }
+        const probe = doc.createElement("div");
+        probe.appendChild(gap.cloneContents());
+        stripSelectionChrome(probe);
+        if (!(probe.textContent || "").trim()) {
+          if (range.compareBoundaryPoints(RANGE_END_TO_END, prev) > 0) {
+            prev.setEnd(range.endContainer, range.endOffset);
+          }
+          continue;
+        }
+      }
+      segments.push(range);
     }
 
-    const strayMathml = Array.from(
-      temp.querySelectorAll(".katex-mathml"),
-    ) as Element[];
-    for (const el of strayMathml) el.remove();
-
-    return sanitizeText(temp.textContent || "").trim();
+    const parts = segments
+      .map((range) =>
+        selectionFragmentToMarkdown(
+          cloneRangeForMarkdown(doc, container, range),
+        ),
+      )
+      .filter(Boolean);
+    return sanitizeText(parts.join("\n\n").replace(/\n{3,}/g, "\n\n")).trim();
   } catch (err) {
     appLogger.warn("LLM: Selected text extraction failed:", err);
     return "";

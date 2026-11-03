@@ -1834,6 +1834,24 @@ export type WorkflowTestApi = {
     sentBubbleChipQuestions: string[];
     sentBubbleBarCount: number;
   }>;
+  exerciseAssistantSelectionNoteSave: (input: {
+    panelId: string;
+    assistantText: string;
+    /** "full" selects heading to end; "code" selects lines inside one code body. */
+    selection: "full" | "code";
+    /** For "code": the text inside the code body where the selection starts and ends. */
+    codeStart?: string;
+    codeEnd?: string;
+  }) => Promise<{
+    bubbleHasContentBar: boolean;
+    /** Ranges Gecko produced for the selection. */
+    nativeRangeCount: number;
+    /** Ranges the extractor read (rebuilt like a mouse drag when Gecko kept one). */
+    rangeCount: number;
+    extracted: string;
+    /** HTML of the child note that "Save as note" created, read from Zotero. */
+    noteHtml: string;
+  }>;
   exerciseAssistantSelectionPromptDismissal: (input: {
     panelId: string;
     assistantText: string;
