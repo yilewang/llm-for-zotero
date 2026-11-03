@@ -73,6 +73,7 @@ function describeAuthFamily(group: ModelProviderGroup): AuthFamily {
           chatgpt: "preset-openai",
           deepseek: "preset-deepseek",
           gemini: "preset-gemini",
+          yuanbao: "webchat",
         } as const;
         return {
           iconModifier: iconModifier[target.id as keyof typeof iconModifier],
