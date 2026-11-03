@@ -473,6 +473,32 @@ export async function renderShortcuts(
     }
   };
 
+  // The row itself is pointer-events: none so the chat keeps scrolling under
+  // the chips. A right-click on the row's blank space therefore lands on the
+  // element behind it and never reaches `container`; listen on the parent and
+  // hit-test the row's box so blank space can still open the panel menu.
+  const shortcutRowHost = container.parentElement;
+  if (shortcutRowHost) {
+    shortcutRowHost.oncontextmenu = (e: Event) => {
+      const mouseEvent = e as MouseEvent;
+      if (getShortcutButtonFromEventTarget(mouseEvent.target)) return;
+      const rect = container.getBoundingClientRect();
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        mouseEvent.clientX < rect.left ||
+        mouseEvent.clientX > rect.right ||
+        mouseEvent.clientY < rect.top ||
+        mouseEvent.clientY > rect.bottom
+      ) {
+        return;
+      }
+      mouseEvent.preventDefault();
+      mouseEvent.stopPropagation();
+      openMenuForPanel(mouseEvent);
+    };
+  }
+
   container.ondragstart = (e: Event) => {
     const dragEvent = e as DragEvent;
     if (!moveMode) return;
