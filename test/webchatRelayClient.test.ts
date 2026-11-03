@@ -1459,6 +1459,62 @@ describe("webchat relay/client", function () {
       assert.equal(duplicate.ok, true);
 
       now += 2_000;
+      // Still well inside the inactivity window even though the turn has been
+      // running for several minutes.
+      const stillRunning = relayServer.relayPollResponse();
+      assert.equal(stillRunning.status, "running");
+
+      now += 430_000;
+      const expired = relayServer.relayPollResponse();
+      assert.equal(expired.status, "error");
+      assert.equal(expired.responses.at(-1)?.completion_reason, "timeout");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("treats extension heartbeats as progress during long silent reasoning", async function () {
+    const originalNow = Date.now;
+    let now = 2_000_000;
+    Date.now = () => now;
+    try {
+      const submit = relayServer.relaySubmitQuery({
+        prompt: "think for a while",
+        delivery_contract_version:
+          relayServer.ATTACHMENT_DELIVERY_CONTRACT_VERSION,
+      });
+      const claimed = relayServer.relayClaimQuery(submit.seq);
+      const attempt = claimed.query?.attempt || 1;
+      await invokeEndpoint("/llm-for-zotero/webchat/ack_query_phase", "POST", {
+        seq: submit.seq,
+        attempt,
+        phase: "streaming",
+      });
+
+      now += 590_000;
+      assert.equal(relayServer.relayPollResponse().status, "running");
+
+      const heartbeat = await invokeEndpoint(
+        "/llm-for-zotero/webchat/update_partial",
+        "POST",
+        {
+          seq: submit.seq,
+          attempt,
+          heartbeat: true,
+          answer_snapshot: "",
+          run_state: "active",
+        },
+      );
+      assert.equal(heartbeat.ok, true);
+
+      now += 590_000;
+      // No visible text changed for almost ten minutes, but the extension
+      // confirmed the run is alive, so the turn is not a stalled pipeline.
+      const runningAfterHeartbeat = relayServer.relayPollResponse();
+      assert.equal(runningAfterHeartbeat.status, "running");
+      assert.equal(runningAfterHeartbeat.last_activity_at, 2_590_000);
+
+      now += 20_000;
       const expired = relayServer.relayPollResponse();
       assert.equal(expired.status, "error");
       assert.equal(expired.responses.at(-1)?.completion_reason, "timeout");
@@ -1505,7 +1561,7 @@ describe("webchat relay/client", function () {
       {
         reasonCode: "provider_timeout_after_verified_pdf_delivery",
         message:
-          "The web provider made no verified progress for 180 seconds. PDF upload and submission were verified; no final answer was accepted.",
+          "The web provider made no verified progress for 600 seconds. PDF upload and submission were verified; no final answer was accepted.",
       },
     );
     assert.deepEqual(
@@ -1516,7 +1572,7 @@ describe("webchat relay/client", function () {
       {
         reasonCode: "provider_timeout_after_verified_prompt_delivery",
         message:
-          "The web provider made no verified progress for 180 seconds. The prompt-only submission was verified with zero PDFs; no final answer was accepted.",
+          "The web provider made no verified progress for 600 seconds. The prompt-only submission was verified with zero PDFs; no final answer was accepted.",
       },
     );
     assert.equal(
