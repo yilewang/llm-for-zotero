@@ -65,7 +65,8 @@ export const WEBCHAT_TARGETS = [
     hostname: "yuanbao.tencent.com",
     displayName: "yuanbao",
     // Live Yuanbao conversations use /chat/<conversationId>/<turnId>.
-    conversationPathPattern: /^\/chat\/([A-Za-z0-9_-]+)(?:\/[A-Za-z0-9_-]+)?\/?$/,
+    conversationPathPattern:
+      /^\/chat\/([A-Za-z0-9_-]+)(?:\/[A-Za-z0-9_-]+)?\/?$/,
     answerCapture: "network",
   },
 ] as const satisfies readonly WebChatTargetEntry[];
