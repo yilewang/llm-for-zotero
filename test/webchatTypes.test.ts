@@ -36,6 +36,33 @@ describe("webchat target types", function () {
     );
   });
 
+  it("registers Tencent Yuanbao under its canonical host", function () {
+    assert.deepInclude(getWebChatTarget("yuanbao"), {
+      id: "yuanbao",
+      label: "Tencent Yuanbao",
+      modelName: "yuanbao.tencent.com",
+      displayName: "yuanbao",
+      answerCapture: "network",
+    });
+    assert.equal(
+      getWebChatTargetByModelName("yuanbao.tencent.com")?.id,
+      "yuanbao",
+    );
+    assert.equal(
+      getWebChatConversationId(
+        "https://yuanbao.tencent.com/chat/naQivTmsDa",
+        "yuanbao",
+      ),
+      "naQivTmsDa",
+    );
+    assert.isNull(
+      getWebChatConversationId(
+        "https://yuanbao.tencent.com/bot/app/share/chat/abcd1234",
+        "yuanbao",
+      ),
+    );
+  });
+
   it("routes only exact HTTPS provider hosts", function () {
     assert.equal(
       getWebChatTargetByUrl(
