@@ -460,7 +460,7 @@ function getPresetSelectHelperText(presetId: ProviderPresetId): string {
     return t(CUSTOMIZED_API_HELPER_TEXT);
   }
   const helper = t(getProviderPreset(presetId).helperText);
-  if (presetId === "siliconflow") {
+  if (presetId === "siliconflow" || presetId === "llmtr") {
     return helper;
   }
   return `${helper} ${t("Switch to Customized to edit the URL manually.")}`;
@@ -2103,6 +2103,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode !== "copilot_auth" &&
         !isCustomizedPreset &&
         selectedPresetId !== "siliconflow" &&
+        selectedPresetId !== "llmtr" &&
         // Local presets ship a default host and port, but the server may run on
         // another port or another machine on the LAN, so the URL stays editable.
         presetRequiresApiKey;
@@ -2719,9 +2720,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         const resolveDetectedProfile = () =>
           getModelCapabilities({
             // Gateways and local runtimes still need model-family inference.
-            // SiliconFlow needs its identity for catalogs on custom relay URLs.
+            // SiliconFlow and LLMTR need their identity for catalogs on a relay URL.
             provider:
-              selectedPresetId === "siliconflow" ? selectedPresetId : undefined,
+              selectedPresetId === "siliconflow" || selectedPresetId === "llmtr"
+                ? selectedPresetId
+                : undefined,
             model: modelEntry.model,
             apiBase: group.apiBase,
             protocol: resolveModelSelectedProtocol(

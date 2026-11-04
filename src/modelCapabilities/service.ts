@@ -164,7 +164,8 @@ function providerFromIdentity(
     explicit &&
     explicit !== "customized" &&
     explicit !== "unknown" &&
-    explicit !== "siliconflow"
+    explicit !== "siliconflow" &&
+    explicit !== "llmtr"
   ) {
     return explicit as ModelCapabilityProvider;
   }
@@ -187,7 +188,10 @@ function providerFromIdentity(
     (explicit === "siliconflow" ||
     detectProviderPreset(identity.apiBase || "") === "siliconflow"
       ? "siliconflow"
-      : null) ??
+      : explicit === "llmtr" ||
+          detectProviderPreset(identity.apiBase || "") === "llmtr"
+        ? "llmtr"
+        : null) ??
     "unknown"
   );
 }
