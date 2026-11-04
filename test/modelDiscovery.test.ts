@@ -64,14 +64,18 @@ describe("ModelDiscovery architecture & SiliconFlow implementation", function ()
   });
 
   describe("1. Lightweight ModelDiscovery interface & Phase 1 registry", function () {
-    it("registers only siliconflow in Phase 1 and resolves endpoint variants", function () {
-      assert.deepEqual(listModelDiscoveryProviders(), ["siliconflow"]);
+    it("registers siliconflow and llmtr and resolves endpoint variants", function () {
+      assert.deepEqual(listModelDiscoveryProviders(), ["siliconflow", "llmtr"]);
       assert.isTrue(hasModelDiscoveryAdapter({ provider: "siliconflow" }));
       assert.isTrue(
         hasModelDiscoveryAdapter({ apiBase: "https://api.siliconflow.cn/v1" }),
       );
       assert.isTrue(
         hasModelDiscoveryAdapter({ apiBase: "https://api.siliconflow.com/v1" }),
+      );
+      assert.isTrue(hasModelDiscoveryAdapter({ provider: "llmtr" }));
+      assert.isTrue(
+        hasModelDiscoveryAdapter({ apiBase: "https://llmtr.com/v1" }),
       );
       assert.isFalse(
         hasModelDiscoveryAdapter({
@@ -101,6 +105,22 @@ describe("ModelDiscovery architecture & SiliconFlow implementation", function ()
           "https://api.siliconflow.cn/v1/models?type=text",
         ),
         "https://api.siliconflow.cn/v1/models?type=text",
+      );
+
+      const llmtr = getModelDiscoveryAdapter({ provider: "llmtr" });
+      assert.isNotNull(llmtr);
+      assert.equal(llmtr!.buildEndpoint(""), "https://llmtr.com/v1/models");
+      assert.equal(
+        llmtr!.buildEndpoint("https://llmtr.com/v1"),
+        "https://llmtr.com/v1/models",
+      );
+      assert.equal(
+        llmtr!.buildEndpoint("https://llmtr.com/v1/chat/completions"),
+        "https://llmtr.com/v1/models",
+      );
+      assert.equal(
+        llmtr!.buildEndpoint("https://llmtr.com/v1/messages"),
+        "https://llmtr.com/v1/models",
       );
     });
   });

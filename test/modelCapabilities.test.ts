@@ -892,4 +892,79 @@ describe("model capability service", function () {
     });
     assert.equal(deepseekCaps.provider, "deepseek");
   });
+
+  it("fetches LLMTR chat models with Bearer auth, keeps prefixed ids, and drops non-chat rows", async function () {
+    const requests: Array<{ url: string; headers: Record<string, string> }> =
+      [];
+    configureModelCapabilityRuntime({
+      environment: "test",
+      fetch: (async (
+        url: string,
+        init?: { headers?: Record<string, string> },
+      ) => {
+        requests.push({ url, headers: init?.headers || {} });
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id: "qwen/qwen3.8-27b-free",
+                object: "model",
+                supported_operations: ["CHAT_COMPLETIONS"],
+              },
+              {
+                id: "llmtr/qwen3-8-27b",
+                object: "model",
+                supported_operations: ["CHAT_COMPLETIONS", "RESPONSES"],
+              },
+              {
+                id: "openai/gpt-4o-mini",
+                object: "model",
+                supported_operations: ["RESPONSES"],
+              },
+              {
+                id: "openai/text-embedding-3-small",
+                object: "model",
+                supported_operations: ["EMBEDDINGS"],
+              },
+              {
+                id: "black-forest/flux",
+                object: "model",
+                supported_operations: ["IMAGES_GENERATIONS"],
+              },
+            ],
+          }),
+        };
+      }) as unknown as typeof fetch,
+    });
+
+    const models = await refreshModelCatalog({
+      provider: "llmtr",
+      model: "",
+      apiBase: "https://llmtr.com/v1",
+      protocol: "openai_chat_compat",
+      authMode: "api_key",
+      apiKey: "llmtr-test-key",
+      scope: "group-llmtr",
+    });
+
+    assert.lengthOf(requests, 1);
+    assert.equal(requests[0].url, "https://llmtr.com/v1/models");
+    assert.equal(requests[0].headers.Authorization, "Bearer llmtr-test-key");
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["llmtr/qwen3-8-27b", "qwen/qwen3.8-27b-free"],
+    );
+
+    const qwenCaps = getModelCapabilities({
+      provider: "llmtr",
+      model: "llmtr/qwen3-8-27b",
+      apiBase: "https://llmtr.com/v1",
+      protocol: "openai_chat_compat",
+      authMode: "api_key",
+      scope: "group-llmtr",
+    });
+    assert.equal(qwenCaps.provider, "qwen");
+  });
 });

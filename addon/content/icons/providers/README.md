@@ -3,6 +3,7 @@
 These SVGs are vendored from `@lobehub/icons-static-svg` version `1.91.0` (MIT), served by jsDelivr.
 The upstream copyright and license are in [LICENSE](LICENSE).
 Provider names and logos remain trademarks of their respective owners.
+`llmtr.svg` is the exception: LLMTR's compact mark, from https://llmtr.com/brand/llmtr-icon-mono.svg.
 
 Local filenames follow the provider preset identifiers.
 Upstream filenames differ for `anthropic` (`claude-color.svg`), `glm` (`zai.svg`), `mimo` (`xiaomimimo.svg`), `siliconflow` (`siliconcloud-color.svg`), and `copilot` (`githubcopilot.svg`).

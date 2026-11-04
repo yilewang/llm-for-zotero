@@ -314,6 +314,9 @@ export function deriveProviderLabel(
     return "Qwen";
   }
   if (lowerHost.includes("siliconflow.")) return "SiliconFlow";
+  if (lowerHost === "llmtr.com" || lowerHost.endsWith(".llmtr.com")) {
+    return "LLMTR";
+  }
 
   return host;
 }
