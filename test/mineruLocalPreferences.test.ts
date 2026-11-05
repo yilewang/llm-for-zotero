@@ -45,6 +45,7 @@ describe("MinerU local preferences status line", function () {
   };
   const v1 = (tiers: string[]): MineruLocalService => ({
     api: "v1",
+    protocol: "jobs",
     version: "4.0.10",
     tiers,
   });
@@ -118,6 +119,21 @@ describe("MinerU local preferences status line", function () {
       ],
     );
     assert.equal(elements[id("mineru-local-tier")].value, "standard");
+  });
+
+  it("labels a MinerU 4.1 Tasks server and keeps the V1 section visible", function () {
+    const status = bind("auto")({
+      api: "v1",
+      protocol: "tasks",
+      version: "4.1.7",
+      tiers: ["flash", "basic"],
+    });
+    assert.equal(
+      status,
+      "MinerU 4.1.7 (V1 Tasks) · tiers: flash, basic · Auto will use basic (lightweight models)",
+    );
+    assert.equal(elements[id("mineru-v1-options")].style.display, "flex");
+    assert.equal(elements[id("mineru-legacy-options")].style.display, "none");
   });
 
   it("describes a legacy server and hides the V1 section", function () {

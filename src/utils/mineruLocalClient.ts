@@ -7,9 +7,18 @@ import {
 } from "./mineruConfig";
 import { normalizeMineruV1Zip } from "./mineruV1Result";
 
+/**
+ * `jobs` is the MinerU 4.0 upload + parse-jobs protocol; `tasks` is the
+ * MinerU 4.1 Tasks protocol. Both share tiers and the V1 settings.
+ */
 export type MineruLocalService =
   | { api: "legacy"; version: string }
-  | { api: "v1"; version: string; tiers: string[] };
+  | {
+      api: "v1";
+      protocol: "jobs" | "tasks";
+      version: string;
+      tiers: string[];
+    };
 
 type Json = Record<string, any>;
 const REQUEST_TIMEOUT = 60_000;
@@ -65,8 +74,14 @@ export function mineruErrorDetail(value: unknown): string {
   const message =
     data?.error?.message ?? data?.detail ?? data?.msg ?? data?.err_msg;
   if (typeof message !== "string") return "";
+  // MinerU 4.1 error codes are stable; 4.0 codes can be null.
+  const code = data?.error?.code;
+  const text =
+    typeof code === "string" && code.trim()
+      ? `${code.trim()}: ${message}`
+      : message;
   // Server errors can include signed URLs or authorization strings.
-  return message
+  return text
     .replace(/https?:\/\/[^\s"<>]+/gi, "[URL]")
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/\s+/g, " ")
@@ -184,14 +199,19 @@ export async function detectMineruLocalService(
       throw new Error(
         "The local address did not return a valid MinerU V1 health response",
       );
-    if (
-      !Array.isArray(v1.data.features?.sources) ||
-      !v1.data.features.sources.includes("file_id") ||
-      !Array.isArray(v1.data.features?.output_formats) ||
-      !v1.data.features.output_formats.includes("zip")
-    )
+    const offers = (feature: string, value: string) =>
+      Array.isArray(v1.data?.features?.[feature]) &&
+      v1.data.features[feature].includes(value);
+    // A 4.1 server never advertises file_id, so check Tasks first.
+    const protocol =
+      offers("sources", "upload") && offers("task_output_formats", "default")
+        ? "tasks"
+        : offers("sources", "file_id") && offers("output_formats", "zip")
+          ? "jobs"
+          : null;
+    if (!protocol)
       throw new Error(
-        "This MinerU V1 service must support file uploads and ZIP output",
+        `MinerU ${v1.data.version} uses a V1 API that this plugin does not support. Supported: MinerU 4.0 (file uploads with ZIP output) or MinerU 4.1 (Tasks with default output).`,
       );
     const result = await jsonRequest(base, "/v1/tiers", apiKey, signal);
     if (
@@ -202,6 +222,7 @@ export async function detectMineruLocalService(
       throw new Error("MinerU returned no valid parsing tiers");
     return {
       api: "v1",
+      protocol,
       version: v1.data.version,
       tiers: result.data.map((tier: Json) => tier.id),
     };
@@ -287,7 +308,7 @@ async function wait(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export async function parseMineruV1(params: {
+type V1Params = {
   baseUrl: string;
   fileName: string;
   pdfBytes: Uint8Array;
@@ -296,7 +317,322 @@ export async function parseMineruV1(params: {
   forceOcr: boolean;
   report: (message: string) => void;
   signal?: AbortSignal;
-}) {
+};
+type V1Context = { base: string; tier: string; params: V1Params };
+
+/** What one status snapshot means for the shared poll loop. */
+type V1Verdict = { wait: string } | { download: string; sendKey: boolean };
+
+/**
+ * The protocol-specific part of a V1 parse. The shared loop owns polling,
+ * timeouts, HTTP status handling, the result download and cleanup.
+ */
+type V1Run = {
+  /** "job" (MinerU 4.0) or "task" (MinerU 4.1) in user-facing messages. */
+  noun: "job" | "task";
+  statusPath: string;
+  /** The creation receipt, judged before the first poll. */
+  receipt?: Json;
+  /** Progress label before the first poll when there is no receipt to judge. */
+  firstWait?: string;
+  /** Work after creation that needs cleanup when it fails, such as the byte upload. */
+  prepare?: () => Promise<void>;
+  /** Throws for failed, unknown or mismatched snapshots. */
+  interpret: (snapshot: Json) => V1Verdict;
+  isTerminal: (snapshot: Json) => boolean;
+  cancel: { path: string; method: "DELETE" | "POST" };
+};
+
+/** Resolve a server-provided URL against the API base; allow only plain HTTP(S). */
+function checkedUrl(raw: string, base: string, message: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw, `${base}/`);
+  } catch {
+    throw new Error(message);
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password
+  )
+    throw new Error(message);
+  return url;
+}
+
+function checkedUploadHeaders(value: unknown): Record<string, string> {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.values(value).some((item) => typeof item !== "string")
+  )
+    throw new Error("MinerU returned invalid upload headers");
+  return value as Record<string, string>;
+}
+
+/** PUT the PDF once; the API key goes only to the API's own origin. */
+async function uploadBytes(
+  context: V1Context,
+  url: URL,
+  uploadHeaders: Record<string, string>,
+): Promise<void> {
+  const { base, params } = context;
+  await request(
+    url.href,
+    {
+      method: "PUT",
+      headers: {
+        ...(url.origin === new URL(base).origin
+          ? headers(params.options.apiKey)
+          : {}),
+        ...uploadHeaders,
+      },
+      body: params.pdfBytes.slice().buffer as ArrayBuffer,
+    },
+    async (response) => {
+      if (!response.ok)
+        throw new Error(`MinerU byte upload failed: HTTP ${response.status}`);
+      await response.arrayBuffer();
+    },
+    params.signal,
+  );
+}
+
+/** MinerU 4.0: upload, complete the upload, then create a parse job. */
+async function startMineruV1Job(context: V1Context): Promise<V1Run> {
+  const { base, tier, params } = context;
+  const { apiKey } = params.options;
+  const { signal } = params;
+  let upload = await jsonRequest(base, "/v1/uploads", apiKey, signal, {
+    filename: params.fileName,
+    bytes: params.pdfBytes.length,
+    mime_type: "application/pdf",
+    purpose: "parse",
+  });
+  const uploadId = requiredId(upload.id, "upload id");
+  if (upload.status === "pending") {
+    const url = checkedUrl(
+      requiredId(upload.upload_url, "upload URL"),
+      base,
+      "MinerU returned an invalid upload URL",
+    );
+    if (upload.upload_method !== "PUT")
+      throw new Error("MinerU returned an unsupported upload method");
+    await uploadBytes(
+      context,
+      url,
+      checkedUploadHeaders(upload.upload_headers),
+    );
+    upload = await jsonRequest(
+      base,
+      `/v1/uploads/${encodeURIComponent(uploadId)}/complete`,
+      apiKey,
+      signal,
+      {},
+    );
+  }
+  if (upload.status !== "completed")
+    throw new Error(
+      `MinerU upload did not complete (${String(upload.status)})`,
+    );
+  const fileId = requiredId(upload.file?.id, "input file id");
+  const job = await jsonRequest(base, "/v1/parse/jobs", apiKey, signal, {
+    files: [
+      { source: { type: "file_id", file_id: fileId }, page_range: "all" },
+    ],
+    tier,
+    ocr_mode: params.forceOcr ? "ocr" : "auto",
+    output_formats: ["zip"],
+  });
+  const jobId = requiredId(job.job_id, "job id");
+  const jobPath = `/v1/parse/jobs/${encodeURIComponent(jobId)}`;
+  return {
+    noun: "job",
+    statusPath: jobPath,
+    receipt: job,
+    interpret: (snapshot) => {
+      if (snapshot.job_id !== jobId)
+        throw new Error("MinerU returned a different job id");
+      if (snapshot.status === "completed") {
+        if (
+          !Array.isArray(snapshot.files) ||
+          snapshot.files.length !== 1 ||
+          snapshot.files[0].status !== "completed" ||
+          snapshot.files[0].file_id !== fileId
+        )
+          throw new Error("MinerU completed without the requested file result");
+        const outputId = requiredId(
+          snapshot.files[0].output_files?.zip?.file_id,
+          "ZIP output file id",
+        );
+        return {
+          download: `${base}/v1/files/${encodeURIComponent(outputId)}/content`,
+          sendKey: true,
+        };
+      }
+      if (["partial", "failed", "canceled"].includes(snapshot.status)) {
+        const detail = Array.isArray(snapshot.files)
+          ? snapshot.files.map(mineruErrorDetail).filter(Boolean).join("; ")
+          : "";
+        throw new Error(
+          `Local MinerU job ${snapshot.status}${detail ? `: ${detail}` : ""}`,
+        );
+      }
+      if (!["queued", "running"].includes(snapshot.status))
+        throw new Error(
+          `MinerU returned an unknown job status: ${String(snapshot.status)}`,
+        );
+      return {
+        wait:
+          snapshot.status === "queued"
+            ? "Waiting for local MinerU to start"
+            : "Processing on local MinerU",
+      };
+    },
+    isTerminal: (snapshot) => TERMINAL_JOB_STATES.includes(snapshot.status),
+    cancel: { path: jobPath, method: "DELETE" },
+  };
+}
+
+const TASK_WAIT_LABELS = new Map([
+  ["waiting-file", "Waiting for local MinerU to receive the PDF"],
+  ["pending", "Waiting for local MinerU to start"],
+  ["running", "Processing on local MinerU"],
+]);
+const FAILED_TASK_STATES = ["failed", "canceled", "partial"];
+
+/** Best-effort cancel on an independent bounded request; the caller's signal may be aborted. */
+async function bestEffortCancel(
+  base: string,
+  apiKey: string,
+  cancel: V1Run["cancel"],
+  noun: string,
+): Promise<void> {
+  try {
+    await jsonRequest(
+      base,
+      cancel.path,
+      apiKey,
+      undefined,
+      undefined,
+      cancel.method,
+      5000,
+    );
+  } catch {
+    appLogger.warn(
+      `MinerU V1 ${noun} cancellation was not confirmed; check the local server`,
+    );
+  }
+}
+
+/** MinerU 4.1: create a task, PUT the bytes once if asked, then poll the task. */
+async function startMineruV1Task(context: V1Context): Promise<V1Run> {
+  const { base, tier, params } = context;
+  const receipt = await jsonRequest(
+    base,
+    "/v1/tasks",
+    params.options.apiKey,
+    params.signal,
+    {
+      files: [{ file_name: params.fileName, bytes: params.pdfBytes.length }],
+      tier,
+      ocr_mode: params.forceOcr ? "ocr" : "auto",
+      output_formats: ["default"],
+    },
+  );
+  const taskId = requiredId(receipt.task_id, "task id");
+  const taskPath = `/v1/tasks/${encodeURIComponent(taskId)}`;
+  const cancel: V1Run["cancel"] = {
+    path: `${taskPath}/cancel`,
+    method: "POST",
+  };
+  let created: Json;
+  let fileId: string;
+  try {
+    if (!Array.isArray(receipt.files) || receipt.files.length !== 1)
+      throw new Error("MinerU task must contain exactly one file");
+    created = receipt.files[0] as Json;
+    fileId = requiredId(created?.file_id, "input file id");
+  } catch (error) {
+    // The task exists and waits for a file; do not leave it until expiry.
+    await bestEffortCancel(base, params.options.apiKey, cancel, "task");
+    throw error;
+  }
+  const taskFile = (snapshot: Json): Json => {
+    if (snapshot.task_id !== taskId)
+      throw new Error("MinerU returned a different task id");
+    if (
+      !Array.isArray(snapshot.files) ||
+      snapshot.files.length !== 1 ||
+      snapshot.files[0]?.file_id !== fileId
+    )
+      throw new Error("MinerU returned a different task file");
+    return snapshot.files[0];
+  };
+  // A cache hit or a server-side confirmation has no upload action; poll only.
+  // Later snapshots never trigger a second PUT.
+  const link = created.status === "waiting-file" ? created.upload : undefined;
+  return {
+    noun: "task",
+    statusPath: taskPath,
+    // The receipt omits result URLs, so the first verdict comes from a poll.
+    firstWait:
+      TASK_WAIT_LABELS.get(created.status) ?? "Processing on local MinerU",
+    prepare: link
+      ? async () => {
+          const url = checkedUrl(
+            requiredId(link.url, "upload URL"),
+            base,
+            "MinerU returned an invalid upload URL",
+          );
+          await uploadBytes(context, url, checkedUploadHeaders(link.headers));
+        }
+      : undefined,
+    interpret: (snapshot) => {
+      const file = taskFile(snapshot);
+      if (file.status === "completed") {
+        if (typeof file.result_url !== "string" || !file.result_url.trim())
+          throw new Error("MinerU completed without a result URL");
+        const url = checkedUrl(
+          file.result_url,
+          base,
+          "MinerU returned an invalid result URL",
+        );
+        return {
+          download: url.href,
+          sendKey: url.origin === new URL(base).origin,
+        };
+      }
+      if (
+        FAILED_TASK_STATES.includes(snapshot.status) ||
+        FAILED_TASK_STATES.includes(file.status)
+      ) {
+        const state = FAILED_TASK_STATES.includes(snapshot.status)
+          ? snapshot.status
+          : file.status;
+        const detail = [
+          ...new Set([file, snapshot].map(mineruErrorDetail).filter(Boolean)),
+        ].join("; ");
+        throw new Error(
+          `Local MinerU task ${state}${detail ? `: ${detail}` : ""}`,
+        );
+      }
+      const wait = TASK_WAIT_LABELS.get(file.status);
+      if (!wait)
+        throw new Error(
+          `MinerU returned an unknown task status: ${String(file.status)}`,
+        );
+      return { wait };
+    },
+    isTerminal: (snapshot) =>
+      TERMINAL_JOB_STATES.includes(snapshot.status) ||
+      ["completed", "failed", "canceled"].includes(snapshot.files?.[0]?.status),
+    cancel,
+  };
+}
+
+export async function parseMineruV1(params: V1Params) {
   const { options, service, report, signal } = params;
   const base = normalizeMineruLocalApiBase(params.baseUrl);
   // The service is re-detected for every parse, so a server restarted with
@@ -313,115 +649,46 @@ export async function parseMineruV1(params: {
     ? `${resolved.tier}; ${resolved.fallbackFrom} not offered`
     : resolved.tier;
   report(`Uploading PDF to local MinerU V1 (${tierNote})…`);
-  let upload = await jsonRequest(base, "/v1/uploads", options.apiKey, signal, {
-    filename: params.fileName,
-    bytes: params.pdfBytes.length,
-    mime_type: "application/pdf",
-    purpose: "parse",
-  });
-  const uploadId = requiredId(upload.id, "upload id");
-  if (upload.status === "pending") {
-    const url = new URL(
-      requiredId(upload.upload_url, "upload URL"),
-      `${base}/`,
-    );
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      url.username ||
-      url.password
-    )
-      throw new Error("MinerU returned an invalid upload URL");
-    if (upload.upload_method !== "PUT")
-      throw new Error("MinerU returned an unsupported upload method");
-    const uploadHeaders = upload.upload_headers;
-    if (
-      !uploadHeaders ||
-      typeof uploadHeaders !== "object" ||
-      Object.values(uploadHeaders).some((value) => typeof value !== "string")
-    )
-      throw new Error("MinerU returned invalid upload headers");
-    await request(
-      url.href,
-      {
-        method: upload.upload_method,
-        headers: {
-          ...(url.origin === new URL(base).origin
-            ? headers(options.apiKey)
-            : {}),
-          ...uploadHeaders,
-        },
-        body: params.pdfBytes.slice().buffer as ArrayBuffer,
-      },
-      async (response) => {
-        if (!response.ok)
-          throw new Error(`MinerU byte upload failed: HTTP ${response.status}`);
-        await response.arrayBuffer();
-      },
-      signal,
-    );
-    upload = await jsonRequest(
-      base,
-      `/v1/uploads/${encodeURIComponent(uploadId)}/complete`,
-      options.apiKey,
-      signal,
-      {},
-    );
-  }
-  if (upload.status !== "completed")
-    throw new Error(
-      `MinerU upload did not complete (${String(upload.status)})`,
-    );
-  const fileId = requiredId(upload.file?.id, "input file id");
-  let job = await jsonRequest(base, "/v1/parse/jobs", options.apiKey, signal, {
-    files: [
-      { source: { type: "file_id", file_id: fileId }, page_range: "all" },
-    ],
-    tier: resolved.tier,
-    ocr_mode: params.forceOcr ? "ocr" : "auto",
-    output_formats: ["zip"],
-  });
-  const jobId = requiredId(job.job_id, "job id");
-  const jobPath = `/v1/parse/jobs/${encodeURIComponent(jobId)}`;
-  const started = timing.now();
-  let lastResponseAt = started;
-  let unresponsive = false;
-  let jobGone = false;
+  const context: V1Context = { base, tier: resolved.tier, params };
+  const run = await (service.protocol === "tasks"
+    ? startMineruV1Task(context)
+    : startMineruV1Job(context));
+  const { noun } = run;
+  let snapshot = run.receipt;
+  let gone = false;
   let keyRejected = false;
-  let lastHttpStatus: number | null = null;
-  let polls = 0;
   try {
+    await run.prepare?.();
+    const started = timing.now();
+    let lastResponseAt = started;
+    let unresponsive = false;
+    let lastHttpStatus: number | null = null;
+    let polls = 0;
+    let target: Extract<V1Verdict, { download: string }>;
     while (true) {
       if (signal?.aborted) throw new MineruCancelledError();
-      if (job.job_id !== jobId)
-        throw new Error("MinerU returned a different job id");
-      if (job.status === "completed") break;
-      if (["partial", "failed", "canceled"].includes(job.status)) {
-        const detail = Array.isArray(job.files)
-          ? job.files.map(mineruErrorDetail).filter(Boolean).join("; ")
-          : "";
-        throw new Error(
-          `Local MinerU job ${job.status}${detail ? `: ${detail}` : ""}`,
-        );
+      const verdict: V1Verdict = snapshot
+        ? run.interpret(snapshot)
+        : { wait: run.firstWait ?? "Processing on local MinerU" };
+      if ("download" in verdict) {
+        target = verdict;
+        break;
       }
-      if (!["queued", "running"].includes(job.status))
-        throw new Error(
-          `MinerU returned an unknown job status: ${String(job.status)}`,
-        );
       const now = timing.now();
       if (now - started >= JOB_TIMEOUT)
         throw new Error(
-          "Local MinerU job timed out; check the server before retrying",
+          `Local MinerU ${noun} timed out; check the server before retrying`,
         );
       report(
         unresponsive
           ? `Local MinerU is busy and not responding… (${Math.round((now - lastResponseAt) / 1000)}s)`
-          : `${job.status === "queued" ? "Waiting for local MinerU to start" : "Processing on local MinerU"} (${tierNote})… (${Math.round((now - started) / 1000)}s)`,
+          : `${verdict.wait} (${tierNote})… (${Math.round((now - started) / 1000)}s)`,
       );
       await wait(timing.pollDelay(polls++), signal);
       try {
-        job = await jsonRequest(
+        snapshot = await jsonRequest(
           base,
-          jobPath,
+          run.statusPath,
           options.apiKey,
           signal,
           undefined,
@@ -436,13 +703,13 @@ export async function parseMineruV1(params: {
           if (error.status === 401 || error.status === 403) {
             keyRejected = true;
             throw new Error(
-              `Local MinerU rejected the API key while checking the job (HTTP ${error.status}). Check the local MinerU API key.`,
+              `Local MinerU rejected the API key while checking the ${noun} (HTTP ${error.status}). Check the local MinerU API key.`,
             );
           }
           if (error.status === 404) {
-            jobGone = true;
+            gone = true;
             throw new Error(
-              "Local MinerU no longer has this job (HTTP 404); the server may have restarted. Retry the parse.",
+              `Local MinerU no longer has this ${noun} (HTTP 404); the server may have restarted. Retry the parse.`,
             );
           }
         }
@@ -460,25 +727,13 @@ export async function parseMineruV1(params: {
         unresponsive = true;
       }
     }
-    if (
-      !Array.isArray(job.files) ||
-      job.files.length !== 1 ||
-      job.files[0].status !== "completed" ||
-      job.files[0].file_id !== fileId
-    )
-      throw new Error("MinerU completed without the requested file result");
-    const outputId = requiredId(
-      job.files[0].output_files?.zip?.file_id,
-      "ZIP output file id",
-    );
     report("Downloading local MinerU result…");
-    const downloadUrl = `${base}/v1/files/${encodeURIComponent(outputId)}/content`;
     let bytes: Uint8Array;
     for (let attempt = 0; ; attempt++) {
       try {
         bytes = await request(
-          downloadUrl,
-          { headers: headers(options.apiKey) },
+          target.download,
+          { headers: target.sendKey ? headers(options.apiKey) : {} },
           async (response) => {
             if (!response.ok)
               throw new MineruHttpError(
@@ -503,23 +758,8 @@ export async function parseMineruV1(params: {
     return result;
   } catch (error) {
     // Stop work the server would otherwise keep running after we give up.
-    if (!jobGone && !keyRejected && !TERMINAL_JOB_STATES.includes(job.status)) {
-      // Use an independent bounded request: the caller's signal may be aborted.
-      try {
-        await jsonRequest(
-          base,
-          jobPath,
-          options.apiKey,
-          undefined,
-          undefined,
-          "DELETE",
-          5000,
-        );
-      } catch {
-        appLogger.warn(
-          "MinerU V1 job cancellation was not confirmed; check the local server",
-        );
-      }
+    if (!gone && !keyRejected && !(snapshot && run.isTerminal(snapshot))) {
+      await bestEffortCancel(base, options.apiKey, run.cancel, noun);
     }
     throw error;
   }

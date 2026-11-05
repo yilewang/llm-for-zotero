@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   detectMineruLocalService,
+  mineruErrorDetail,
   parseMineruV1,
   resolveMineruV1Tier,
   setMineruV1TimingForTests,
@@ -20,6 +21,7 @@ import {
 } from "./helpers/mineruV1Fixture";
 import type { MineruLocalOptions } from "../src/utils/mineruConfig";
 import { shortenLongWaits } from "./helpers/shortWaits";
+import { zipSync } from "fflate";
 
 const base = "http://127.0.0.1:8000";
 const options: MineruLocalOptions = {
@@ -117,7 +119,12 @@ describe("MinerU local API compatibility", function () {
       baseUrl: base,
       fileName: "test.pdf",
       pdfBytes: new TextEncoder().encode("PDF bytes"),
-      service: { api: "v1", version: "4.0.6", tiers: ["standard"] },
+      service: {
+        api: "v1",
+        protocol: "jobs",
+        version: "4.0.6",
+        tiers: ["standard"],
+      },
       options,
       forceOcr: true,
       report,
@@ -146,6 +153,7 @@ describe("MinerU local API compatibility", function () {
   it("detects V1 and supported tiers", async function () {
     assert.deepEqual(await detectMineruLocalService(base, options.apiKey), {
       api: "v1",
+      protocol: "jobs",
       version: "4.0.6",
       tiers: ["standard"],
     });
@@ -228,7 +236,7 @@ describe("MinerU local API compatibility", function () {
         baseUrl: base,
         fileName: "test.pdf",
         pdfBytes: new TextEncoder().encode("PDF bytes"),
-        service: { api: "v1", version: "4.0.10", tiers },
+        service: { api: "v1", protocol: "jobs", version: "4.0.10", tiers },
         options: { ...options, tier },
         forceOcr: false,
         report,
@@ -581,6 +589,625 @@ describe("MinerU local API compatibility", function () {
     );
     await rejects(parse(), "stopped responding");
     assert.equal(deletes(), 1);
+  });
+  describe("MinerU 4.1 Tasks protocol", function () {
+    // Recorded shapes from the MinerU 4.1.7 Tasks docs and HealthFeatures.
+    const tasksHealth = {
+      status: "ok",
+      version: "4.1.7",
+      features: {
+        webhook: false,
+        task_output_formats: ["default", "docx", "html", "latex"],
+        sources: ["upload", "url"],
+      },
+    };
+    const taskPath = "/v1/tasks/job%2F1";
+    const uploadUrl = `${base}${taskPath}/uploads/file-1`;
+    const resultUrl = `${base}/v1/files/file-1/content`;
+    const upload = (url = uploadUrl, headers: unknown = undefined) => ({
+      url,
+      headers: headers ?? { "Content-Type": "application/octet-stream" },
+      expires_at: 1800003600,
+    });
+    const receipt = (file: Record<string, unknown> = {}) => ({
+      task_id: "job/1",
+      status: "waiting-file",
+      files: [
+        {
+          file_id: "file-1",
+          file_name: "test.pdf",
+          status: "waiting-file",
+          upload: upload(),
+          ...file,
+        },
+      ],
+    });
+    const snapshot = (
+      status: string,
+      file: Record<string, unknown> = {},
+      parent: Record<string, unknown> = {},
+    ) => ({
+      task_id: "job/1",
+      status,
+      created_at: "2026-10-28T00:00:00Z",
+      output_formats: ["default"],
+      progress: {
+        completed: status === "completed" ? 1 : 0,
+        failed: 0,
+        total: 1,
+      },
+      files: [
+        {
+          file_id: "file-1",
+          file_name: "test.pdf",
+          status,
+          bytes: 9,
+          ...(status === "completed"
+            ? {
+                parse: { tier: "standard", parser_version: "4.1.7" },
+                result_url: resultUrl,
+              }
+            : {}),
+          ...file,
+        },
+      ],
+      ...parent,
+    });
+    const png = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/e8AAAAASUVORK5CYII=",
+      ),
+      (char) => char.charCodeAt(0),
+    );
+    /** The 4.1 `default` ZIP: fixed entry order, an empty `images/` entry, 4.1 image names. */
+    const createTasksZip = () => {
+      const encode = (text: string) => new TextEncoder().encode(text);
+      const structured = {
+        pages: [
+          {
+            page_idx: 0,
+            blocks: [
+              { type: "paragraph_title", level: 2, content: "Results" },
+              { type: "text", content: "A reproducible extraction." },
+              {
+                type: "image",
+                content: "",
+                image_source: "images/page_0_image_2.png",
+                captions: [{ content: "Figure 1. Test image." }],
+                footnotes: [],
+              },
+              {
+                type: "table",
+                content: "<table><tr><td>42</td></tr></table>",
+                image_source: "images/page_0_table_3.png",
+                captions: [{ content: "Table 1. Counts." }],
+                footnotes: [],
+              },
+            ],
+          },
+          { page_idx: 1, blocks: [{ type: "text", content: "Second page." }] },
+        ],
+        metadata: { producer: { name: "mineru", version: "4.1.7" } },
+        is_full_document: true,
+      };
+      return zipSync({
+        "markdown.md": encode(
+          "## Results\n\nA reproducible extraction.\n\n![](images/page_0_image_2.png)\n\nFigure 1. Test image.\n\n<table><tr><td>42</td></tr></table>\n\nTable 1. Counts.\n\nSecond page.",
+        ),
+        "middle_json.json": encode("{}"),
+        "structured_content.json": encode(JSON.stringify(structured)),
+        "images/": new Uint8Array(0),
+        "images/page_0_image_2.png": png,
+        "images/page_0_table_3.png": png,
+      });
+    };
+    const service = {
+      api: "v1",
+      protocol: "tasks",
+      version: "4.1.7",
+      tiers: ["standard"],
+    } as const;
+    const parseTasks = (
+      signal?: AbortSignal,
+      report: (m: string) => void = () => {},
+    ) =>
+      parseMineruV1({
+        baseUrl: base,
+        fileName: "test.pdf",
+        pdfBytes: new TextEncoder().encode("PDF bytes"),
+        service: { ...service, tiers: [...service.tiers] },
+        options,
+        forceOcr: true,
+        report,
+        signal,
+      });
+    const cancels = () =>
+      calls.filter((c) => c.url === `${base}${taskPath}/cancel`);
+    const puts = () => calls.filter((c) => c.init.method === "PUT");
+    const polls = () =>
+      calls.filter(
+        (c) => c.url === `${base}${taskPath}` && c.init.method === "GET",
+      );
+    const downloads = () => calls.filter((c) => c.url.includes("/v1/files/"));
+    let created: () => Response;
+    let poll: (count: number) => Promise<Response> | Response;
+    let onCancel: () => Response;
+    let onPut: () => Response;
+    let onDownload: (count: number) => Promise<Response> | Response;
+    beforeEach(function () {
+      created = () => json(receipt(), 202);
+      poll = () => json(snapshot("completed"));
+      onCancel = () =>
+        json({
+          task_id: "job/1",
+          status: "canceled",
+          finished_at: "2026-10-28T00:00:05Z",
+          files: [
+            { file_id: "file-1", file_name: "test.pdf", status: "canceled" },
+          ],
+        });
+      onPut = () =>
+        json({ task_id: "job/1", file_id: "file-1", status: "pending" });
+      onDownload = () => new Response(createTasksZip());
+      let pollCount = 0;
+      let downloadCount = 0;
+      route = (url, init) => {
+        if (url.endsWith("/v1/health")) return json(tasksHealth);
+        if (url.endsWith("/v1/tiers"))
+          return json({ data: [{ id: "standard" }] });
+        if (url === `${base}/v1/tasks` && init.method === "POST")
+          return created();
+        if (init.method === "PUT") return onPut();
+        if (url === `${base}${taskPath}/cancel`) return onCancel();
+        if (url === `${base}${taskPath}`) return poll(++pollCount);
+        if (url.includes("/v1/files/") || url.includes("storage.example"))
+          return onDownload(++downloadCount);
+        throw new Error(`Unexpected request ${init.method} ${url}`);
+      };
+    });
+
+    it("detects MinerU 4.1 as the Tasks protocol", async function () {
+      assert.deepEqual(await detectMineruLocalService(base, options.apiKey), {
+        api: "v1",
+        protocol: "tasks",
+        version: "4.1.7",
+        tiers: ["standard"],
+      });
+    });
+    it("names the MinerU version when the V1 features match neither protocol", async function () {
+      route = (url) =>
+        url.endsWith("/v1/health")
+          ? json({
+              status: "ok",
+              version: "4.2.0",
+              features: { sources: ["url"], task_output_formats: ["html"] },
+            })
+          : json({ data: [{ id: "standard" }] });
+      await rejects(
+        detectMineruLocalService(base),
+        "MinerU 4.2.0 uses a V1 API that this plugin does not support",
+      );
+      assert.lengthOf(calls, 1);
+    });
+    it("reports the health error code after a failed model preload", async function () {
+      route = () =>
+        json(
+          {
+            error: {
+              code: "model_preload_failed",
+              message: "CUDA out of memory",
+            },
+          },
+          503,
+        );
+      await rejects(
+        detectMineruLocalService(base),
+        "HTTP 503: model_preload_failed: CUDA out of memory",
+      );
+    });
+    it("creates a task, uploads once, polls each state and normalizes the 4.1 ZIP", async function () {
+      const states = ["waiting-file", "pending", "running", "completed"];
+      // A later snapshot that still shows an upload action must not repeat the PUT.
+      poll = (count) =>
+        json(
+          snapshot(states[count - 1], count === 1 ? { upload: upload() } : {}),
+        );
+      const progress: string[] = [];
+      const result = await parseTasks(undefined, (m) => progress.push(m));
+
+      const create = calls.find((c) => c.url === `${base}/v1/tasks`)!;
+      assert.equal(create.init.method, "POST");
+      assert.deepEqual(JSON.parse(create.init.body as string), {
+        files: [{ file_name: "test.pdf", bytes: 9 }],
+        tier: "standard",
+        ocr_mode: "ocr",
+        output_formats: ["default"],
+      });
+      assert.lengthOf(puts(), 1);
+      assert.equal(puts()[0].url, uploadUrl);
+      assert.deepEqual(puts()[0].init.headers, {
+        Authorization: "Bearer local-secret",
+        "Content-Type": "application/octet-stream",
+      });
+      assert.deepEqual(
+        new Uint8Array(puts()[0].init.body as ArrayBuffer),
+        new TextEncoder().encode("PDF bytes"),
+      );
+      assert.lengthOf(polls(), 4);
+      assert.isBelow(calls.indexOf(create), calls.indexOf(puts()[0]));
+      assert.isBelow(calls.indexOf(puts()[0]), calls.indexOf(polls()[0]));
+      assert.deepEqual(
+        downloads().map((c) => c.url),
+        [resultUrl],
+      );
+      assert.equal(
+        (downloads()[0].init.headers as Record<string, string>).Authorization,
+        "Bearer local-secret",
+      );
+      assert.isEmpty(cancels());
+      for (const label of [
+        "Waiting for local MinerU to receive the PDF (standard)…",
+        "Waiting for local MinerU to start (standard)…",
+        "Processing on local MinerU (standard)…",
+      ])
+        assert.isTrue(
+          progress.some((m) => m.startsWith(label)),
+          `${label}\n${progress.join("\n")}`,
+        );
+      assert.include(progress.at(-1), "Done");
+      assert.include(result.mdContent, "Second page.");
+      assert.isTrue(
+        result.files.some(
+          (f) => f.relativePath === "images/page_0_image_2.png",
+        ),
+      );
+    });
+    it("runs the public local entry point against a 4.1 server", async function () {
+      const progress: string[] = [];
+      const result = await parsePdfWithMineruLocal(
+        "paper.pdf",
+        base,
+        "pipeline",
+        (stage) => progress.push(stage),
+        undefined,
+        false,
+        options,
+      );
+      assert.include(result!.mdContent, "Second page.");
+      const body = JSON.parse(
+        calls.find((c) => c.url === `${base}/v1/tasks`)!.init.body as string,
+      );
+      assert.equal(body.ocr_mode, "auto");
+      assert.match(body.files[0].file_name, /\.pdf$/);
+      assert.isFalse(calls.some((c) => c.url.includes("/parse/jobs")));
+      assert.include(progress.at(-1), "Done");
+    });
+    for (const [name, file] of [
+      ["a cache hit", { status: "pending", upload: undefined }],
+      ["server-side confirmation", { upload: undefined }],
+    ] as const)
+      it(`skips the PUT and keeps polling on ${name}`, async function () {
+        created = () => json(receipt(file), 202);
+        poll = (count) => json(snapshot(count === 1 ? "running" : "completed"));
+        assert.include((await parseTasks()).mdContent, "Second page.");
+        assert.isEmpty(puts());
+        assert.lengthOf(polls(), 2);
+      });
+    it("sends the upload's Content-Type and ignores the JSON PUT receipt", async function () {
+      onPut = () =>
+        json({ task_id: "job/1", file_id: "file-1", status: "running" });
+      poll = () => json(snapshot("completed"));
+      await parseTasks();
+      assert.equal(
+        (puts()[0].init.headers as Record<string, string>)["Content-Type"],
+        "application/octet-stream",
+      );
+      assert.lengthOf(polls(), 1);
+    });
+    it("does not send local authentication to a different upload or result origin", async function () {
+      created = () =>
+        json(
+          receipt({
+            upload: upload("https://storage.example/upload?sig=1", {
+              "Content-Type": "application/octet-stream",
+            }),
+          }),
+          202,
+        );
+      onPut = () => new Response(null, { status: 200 });
+      poll = () =>
+        json(
+          snapshot("completed", {
+            result_url: "https://storage.example/result.zip?sig=2",
+          }),
+        );
+      await parseTasks();
+      assert.deepEqual(puts()[0].init.headers, {
+        "Content-Type": "application/octet-stream",
+      });
+      const download = calls.find((c) => c.url.includes("result.zip"))!;
+      assert.deepEqual(download.init.headers, {});
+    });
+    it("resolves a relative result URL against the API base", async function () {
+      poll = () =>
+        json(snapshot("completed", { result_url: "/v1/files/file-1/content" }));
+      await parseTasks();
+      assert.deepEqual(
+        downloads().map((c) => c.url),
+        [resultUrl],
+      );
+    });
+    for (const [state, file, parent, expected, cancelled] of [
+      [
+        "failed",
+        {
+          error: { code: "parse_failed", message: "Cannot parse this PDF" },
+        },
+        {},
+        "Local MinerU task failed: parse_failed: Cannot parse this PDF",
+        0,
+      ],
+      [
+        "partial",
+        {
+          status: "failed",
+          error: {
+            code: "result_packaging_failed",
+            message: "Export failed",
+          },
+        },
+        {},
+        "Local MinerU task partial: result_packaging_failed: Export failed",
+        0,
+      ],
+      [
+        "canceled",
+        {},
+        { error: { code: "task_canceled", message: "Canceled by user" } },
+        "Local MinerU task canceled: task_canceled: Canceled by user",
+        0,
+      ],
+      ["unknown", {}, {}, "MinerU returned an unknown task status: unknown", 1],
+    ] as const)
+      it(`rejects task state ${state} with its error code and without publishing`, async function () {
+        poll = () => json(snapshot(state, file, parent));
+        await rejects(parseTasks(), expected);
+        assert.isEmpty(downloads());
+        // A terminal task needs no cleanup; an unrecognised one may still run.
+        assert.lengthOf(cancels(), cancelled);
+      });
+    it("rejects a completed file without a result URL", async function () {
+      poll = () => json(snapshot("completed", { result_url: undefined }));
+      await rejects(parseTasks(), "MinerU completed without a result URL");
+      assert.isEmpty(downloads());
+      assert.isEmpty(cancels());
+    });
+    for (const [name, broken, text] of [
+      ["task id", { task_id: "other" }, "different task id"],
+      [
+        "file id",
+        { files: [{ file_id: "other", status: "running" }] },
+        "different task file",
+      ],
+      ["file count", { files: [] }, "different task file"],
+    ] as const)
+      it(`rejects a snapshot with a mismatched ${name}`, async function () {
+        poll = () => json({ ...snapshot("running"), ...broken });
+        await rejects(parseTasks(), text);
+        assert.isEmpty(downloads());
+      });
+    for (const [name, files, text] of [
+      ["no file", [], "MinerU task must contain exactly one file"],
+      [
+        "two files",
+        [receipt().files[0], receipt().files[0]],
+        "MinerU task must contain exactly one file",
+      ],
+      [
+        "no file id",
+        [{ ...receipt().files[0], file_id: undefined }],
+        "input file id",
+      ],
+    ] as const)
+      it(`cancels the created task when the receipt has ${name}`, async function () {
+        created = () => json({ ...receipt(), files }, 202);
+        await rejects(parseTasks(), text);
+        assert.isEmpty(puts());
+        assert.lengthOf(cancels(), 1);
+        assert.equal(cancels()[0].init.method, "POST");
+        assert.isUndefined(cancels()[0].init.body);
+      });
+    it("sends no cancel when the receipt has no task id", async function () {
+      created = () => json({ ...receipt(), task_id: undefined }, 202);
+      await rejects(parseTasks(), "task id");
+      assert.isEmpty(puts());
+      assert.isEmpty(calls.filter((c) => c.url.includes("/cancel")));
+    });
+    it("downloads a completed file under a waiting-file or canceled parent without cancelling", async function () {
+      for (const parent of ["waiting-file", "canceled"]) {
+        calls.length = 0;
+        poll = () => json(snapshot("completed", {}, { status: parent }));
+        const result = await parseTasks();
+        assert.include(result.mdContent, "Second page.");
+        assert.deepEqual(
+          downloads().map((c) => c.url),
+          [resultUrl],
+        );
+        assert.isEmpty(cancels());
+      }
+    });
+    it("cancels the task with POST and no body when the user pauses while pending", async function () {
+      const controller = new AbortController();
+      poll = () => {
+        setTimeout(() => controller.abort(), 10);
+        return json(snapshot("pending"));
+      };
+      await rejects(parseTasks(controller.signal), "Cancelled");
+      assert.lengthOf(cancels(), 1);
+      assert.equal(cancels()[0].init.method, "POST");
+      assert.isUndefined(cancels()[0].init.body);
+    });
+    it("ignores a 409 task_already_terminal cancel response", async function () {
+      const controller = new AbortController();
+      poll = () => {
+        setTimeout(() => controller.abort(), 10);
+        return json(snapshot("running"));
+      };
+      onCancel = () =>
+        json(
+          {
+            error: {
+              code: "task_already_terminal",
+              message: "Task is canceled",
+            },
+          },
+          409,
+        );
+      try {
+        await parseTasks(controller.signal);
+        assert.fail("Expected cancellation");
+      } catch (error) {
+        assert.instanceOf(error, MineruCancelledError);
+      }
+      assert.lengthOf(cancels(), 1);
+    });
+    for (const [status, text] of [
+      [404, "Local MinerU no longer has this task (HTTP 404)"],
+      [401, "Local MinerU rejected the API key while checking the task"],
+    ] as const)
+      it(`treats status HTTP ${status} as fatal without cancelling`, async function () {
+        poll = () =>
+          json(
+            {
+              error: {
+                code: status === 404 ? "task_not_found" : "invalid_api_key",
+                message: "nope",
+              },
+            },
+            status,
+          );
+        await rejects(parseTasks(), text);
+        assert.lengthOf(polls(), 1);
+        assert.isEmpty(cancels());
+      });
+    it("cancels the task when it exceeds the overall timeout", async function () {
+      let clock = 0;
+      setMineruV1TimingForTests({ pollDelay: () => 1, now: () => clock });
+      poll = () => {
+        clock += 30 * 60_000;
+        return json(snapshot("running"));
+      };
+      await rejects(parseTasks(), "Local MinerU task timed out");
+      assert.lengthOf(cancels(), 1);
+    });
+    it("retries a transient result download failure and then succeeds", async function () {
+      onDownload = (count) =>
+        count === 1 ? json({}, 503) : new Response(createTasksZip());
+      assert.include((await parseTasks()).mdContent, "Second page");
+      assert.lengthOf(downloads(), 2);
+    });
+    it("does not retry a result download rejected with HTTP 404", async function () {
+      onDownload = () => json({}, 404);
+      await rejects(parseTasks(), "download failed: HTTP 404");
+      assert.lengthOf(downloads(), 1);
+      assert.isEmpty(cancels());
+    });
+    for (const [name, link, text] of [
+      [
+        "a non-HTTP upload URL",
+        upload("ftp://127.0.0.1/upload"),
+        "invalid upload URL",
+      ],
+      [
+        "upload URL credentials",
+        upload("http://user:pass@127.0.0.1:8000/upload"),
+        "invalid upload URL",
+      ],
+      ["a missing upload URL", { headers: {} }, "missing upload URL"],
+      [
+        "non-string upload headers",
+        upload(uploadUrl, { "Content-Type": 1 }),
+        "invalid upload headers",
+      ],
+      [
+        "list upload headers",
+        upload(uploadUrl, ["application/octet-stream"]),
+        "invalid upload headers",
+      ],
+    ] as const)
+      it(`rejects ${name} without uploading and cancels the task`, async function () {
+        created = () => json(receipt({ upload: link }), 202);
+        await rejects(parseTasks(), text);
+        assert.isEmpty(puts());
+        assert.lengthOf(cancels(), 1);
+      });
+    for (const resultLink of [
+      "file:///etc/passwd",
+      "http://user:pass@127.0.0.1:8000/v1/files/file-1/content",
+    ])
+      it(`rejects an invalid result URL (${resultLink.split(":")[0]})`, async function () {
+        poll = () => json(snapshot("completed", { result_url: resultLink }));
+        await rejects(parseTasks(), "MinerU returned an invalid result URL");
+        assert.isEmpty(downloads());
+      });
+    it("rejects a byte upload failure and cancels the task", async function () {
+      onPut = () =>
+        json({ error: { code: "upload_expired", message: "x" } }, 410);
+      await rejects(parseTasks(), "MinerU byte upload failed: HTTP 410");
+      assert.isEmpty(polls());
+      assert.lengthOf(cancels(), 1);
+    });
+    it("reports a create HTTP 400 with its error code and does not upload", async function () {
+      created = () =>
+        json(
+          {
+            error: {
+              code: "invalid_request",
+              message: "Extra inputs are not permitted",
+              param: "files.0.file_id",
+            },
+          },
+          400,
+        );
+      await rejects(
+        parseTasks(),
+        "Local MinerU /v1/tasks: HTTP 400: invalid_request: Extra inputs are not permitted",
+      );
+      assert.isEmpty(puts());
+      assert.isEmpty(polls());
+      assert.isEmpty(cancels());
+    });
+  });
+  describe("error detail", function () {
+    it("prefixes a non-empty error code and keeps redaction", function () {
+      assert.equal(
+        mineruErrorDetail({
+          error: {
+            code: "invalid_request",
+            message:
+              "Bad tier at https://signed.example/x?sig=1 with Bearer abc",
+            param: "tier",
+          },
+        }),
+        "invalid_request: Bad tier at [URL] with Bearer [redacted]",
+      );
+    });
+    for (const code of [null, "", 7])
+      it(`omits a ${JSON.stringify(code)} error code`, function () {
+        assert.equal(
+          mineruErrorDetail({ error: { code, message: "Bad tier" } }),
+          "Bad tier",
+        );
+      });
+    it("prints a trimmed error code", function () {
+      assert.equal(
+        mineruErrorDetail({ error: { code: "  bad_tier ", message: "Bad" } }),
+        "bad_tier: Bad",
+      );
+    });
+    it("ignores a top-level cloud code", function () {
+      assert.equal(mineruErrorDetail({ code: -1, msg: "error" }), "error");
+    });
   });
   it("preserves high effort, image analysis and the external VLM URL on legacy servers", async function () {
     let body: FormData;
