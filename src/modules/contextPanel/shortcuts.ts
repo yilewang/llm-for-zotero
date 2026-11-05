@@ -338,11 +338,15 @@ export async function renderShortcuts(
     menu.dataset.menuKind = "shortcut";
     menu.dataset.shortcutId = shortcutId;
     menu.dataset.shortcutKind = shortcutKind;
+    // The row lets the pointer through its empty space (see .llm-shortcuts),
+    // so a button's menu is the only place that offers the row's actions.
     menuEdit.style.display = "flex";
     menuDelete.style.display = "flex";
-    menuAdd.style.display = "none";
-    menuMove.style.display = "none";
-    menuReset.style.display = "none";
+    menuAdd.style.display = "flex";
+    menuMove.style.display = "flex";
+    menuReset.style.display = "flex";
+    menuAdd.disabled = !canAddShortcut;
+    menuMove.disabled = orderedEditableIds.length < 2;
     menu.style.display = "grid";
     positionShortcutMenu(event.clientX + 4, event.clientY + 4);
   };
@@ -657,7 +661,7 @@ export async function renderShortcuts(
     menuAdd.onclick = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (menu.dataset.menuKind !== "panel" || menuAdd.disabled) return;
+      if (!menu.dataset.menuKind || menuAdd.disabled) return;
       menu.style.display = "none";
       menu.dataset.menuKind = "";
       menu.dataset.shortcutId = "";
@@ -668,7 +672,7 @@ export async function renderShortcuts(
     menuMove.onclick = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (menu.dataset.menuKind !== "panel" || menuMove.disabled) return;
+      if (!menu.dataset.menuKind || menuMove.disabled) return;
       menu.style.display = "none";
       menu.dataset.menuKind = "";
       menu.dataset.shortcutId = "";
@@ -680,7 +684,7 @@ export async function renderShortcuts(
     menuReset.onclick = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (menu.dataset.menuKind !== "panel") return;
+      if (!menu.dataset.menuKind) return;
       const shouldReset = await openResetShortcutsDialog(
         body.ownerDocument as Document,
       );
