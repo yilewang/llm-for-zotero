@@ -110,7 +110,33 @@ describe("task progress run fold", function () {
     assert.deepEqual(taskProgressEffect(SAMPLES.codex_progress), {
       kind: "codex_checklist",
       steps: [{ label: "Inspect", status: "completed" }],
+      source: "codex",
     });
+  });
+
+  it("reads Claude Code's step snapshot as the same effect, from Claude", function () {
+    assert.deepEqual(
+      taskProgressEffect(
+        event({
+          type: "codex_progress",
+          itemId: "codex-plan-checklist",
+          text: "• Screen",
+          runtime: "claude",
+          steps: [
+            { content: "Screen", status: "in_progress" },
+            { content: "Skim", status: "pending" },
+          ],
+        }),
+      ),
+      {
+        kind: "codex_checklist",
+        steps: [
+          { label: "Screen", status: "in_progress" },
+          { label: "Skim", status: "pending" },
+        ],
+        source: "claude",
+      },
+    );
   });
 
   it("reads no plan from a Codex item that carries none", function () {

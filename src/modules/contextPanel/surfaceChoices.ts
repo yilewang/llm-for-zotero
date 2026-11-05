@@ -66,6 +66,19 @@ import {
   setCodexDirectReasoningSelection,
 } from "../../codexAuth/reasoningPrefs";
 import {
+  getReaderChoicePref,
+  setReaderChoicePref,
+} from "../../utils/readerChoicePrefs";
+import {
+  decodeReaderSelection,
+  isReaderRuntimeKey,
+  normalizeStoredReaderSelection,
+  READER_RUNTIME_KEYS,
+  type ReaderRuntimeKey,
+  type ReaderSelection,
+  encodeReaderSelection,
+} from "../../shared/readerSelection";
+import {
   getLastUsedModelEntryId,
   getModelEntryById,
   setLastUsedModelEntryId,
@@ -476,8 +489,29 @@ const lastUsedRuntimeMode = surfaceChoice<ChatRuntimeMode | null>({
   normalize: (mode) => (mode === "chat" || mode === "agent" ? mode : null),
 });
 
+/**
+ * The reader model each runtime reads papers with: one stored selection per
+ * runtime (agent, codex, claude), "" for Same as main. Keyed like the Codex
+ * Direct reasoning selection, so a window copies all three when it opens.
+ */
+const readerChoice = keyedSurfaceChoice<string>({
+  name: "readerChoice",
+  normalizeKey: (key) => (isReaderRuntimeKey(key) ? key : null),
+  getPref: (key) => (isReaderRuntimeKey(key) ? getReaderChoicePref(key) : ""),
+  getAllPrefs: () =>
+    Object.fromEntries(
+      READER_RUNTIME_KEYS.map((key) => [key, getReaderChoicePref(key)]),
+    ),
+  unset: "",
+  setPref: (key, value) => {
+    if (isReaderRuntimeKey(key)) setReaderChoicePref(key, value);
+  },
+  normalize: normalizeStoredReaderSelection,
+});
+
 export const surfaceChoices = {
   modelEntryId,
+  readerChoice,
   conversationSystem,
   claudeRuntimeModel,
   claudeReasoningMode,
@@ -502,6 +536,14 @@ export function getSelectedModelEntryForSurface(
     getAvailableModelEntries().find((entry) => entry.authMode !== "webchat") ||
     null
   );
+}
+
+/** The reader the surface picked for a runtime; null for Same as main. */
+export function getReaderSelectionForSurface(
+  runtime: ReaderRuntimeKey,
+  surface?: SelectionSurface,
+): ReaderSelection | null {
+  return decodeReaderSelection(readerChoice.get(runtime, surface));
 }
 
 export function setSelectedModelEntryForSurface(
@@ -619,6 +661,17 @@ export function bindSurfaceChoices(resolveSurface: () => SelectionSurface) {
       codexDirectReasoningSelection.get(model, resolveSurface()),
     setCodexDirectReasoningSelection: (model: string, selection: string) =>
       codexDirectReasoningSelection.set(model, selection, resolveSurface()),
+    getReaderSelection: (runtime: ReaderRuntimeKey): ReaderSelection | null =>
+      getReaderSelectionForSurface(runtime, resolveSurface()),
+    setReaderSelection: (
+      runtime: ReaderRuntimeKey,
+      selection: ReaderSelection | null,
+    ) =>
+      readerChoice.set(
+        runtime,
+        encodeReaderSelection(selection),
+        resolveSurface(),
+      ),
     getLastUsedRuntimeMode: () => lastUsedRuntimeMode.get(resolveSurface()),
     setLastUsedRuntimeMode: (mode: ChatRuntimeMode) =>
       lastUsedRuntimeMode.set(mode, resolveSurface()),

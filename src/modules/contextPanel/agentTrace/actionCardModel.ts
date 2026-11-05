@@ -305,11 +305,18 @@ function objectsOf(
     op === "file_write" ||
     op === "rename_attachment" ||
     op === "relink_attachment" ||
-    op === "import_local_files"
+    op === "import_local_files" ||
+    op === "attach_file"
   ) {
-    const path = p.newPath || p.newName;
+    const path = p.newPath || p.newName || p.filePath;
     return path ? [{ kind: "file", label: path, path }] : [];
   }
+  // The page a web-page attach fetched, and the lookup Find Available PDF
+  // ran: both reach the network.
+  if (op === "attach_url")
+    return p.url ? [{ kind: "field", label: p.url }] : [];
+  if (op === "find_pdf")
+    return [{ kind: "field", label: "Find Available PDF (online)" }];
   if (op === "command_execute" || op === "zotero_script_execute")
     return p.expectedText ? [{ kind: "command", label: p.expectedText }] : [];
   if (op === "update_metadata")

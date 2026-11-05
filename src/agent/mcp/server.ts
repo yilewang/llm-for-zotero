@@ -22,6 +22,11 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import type { ReasoningConfig } from "../../shared/llm";
+import {
+  decodeReaderSelection,
+  encodeReaderSelection,
+  type ReaderSelection,
+} from "../../shared/readerSelection";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../services/quotes/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
@@ -38,6 +43,7 @@ import type {
   AgentRuntimeRequestInput,
   AgentToolArtifact,
   AgentToolContext,
+  AgentToolDefinition,
   ExhaustiveReadBackend,
   PreparedToolExecution,
   ToolSpec,
@@ -71,7 +77,16 @@ import type {
   TrustedReadObservation,
   VerifiedReadSource,
 } from "../context/readObservationTypes";
-import { attestAndRecordRead } from "../context/taskPaperLedgerRecorder";
+import {
+  attestAndRecordRead,
+  recordTaskPaperDecisions,
+} from "../context/taskPaperLedgerRecorder";
+import {
+  outsidePaperRecordsFromToolResult,
+  prefetchOutsidePaperLookups,
+  rememberOutsidePapers,
+  type OutsidePaperRecord,
+} from "../context/outsidePaperRecords";
 import type { TaskPaperLedgerDelta } from "../context/taskPaperLedger";
 import {
   isRawPdfRetrievalTool,
@@ -81,7 +96,9 @@ import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import { resolveAgentToolCallWorkCategory } from "../workCategory";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { OUTSIDE_SEARCH_NEED_SENTENCE } from "../tools/read/outsideSearchNeed";
+import { LITERATURE_SOURCE_SENTENCE } from "../tools/read/literatureSearch";
 import { SCOPELESS_MCP_RUN_PREFIX } from "../tools/read/outsideSearchLedger";
+import { toolGuidanceItems } from "../tools/guidance";
 import {
   PAST_CHAT_ATTACH_TOOL_NAME,
   PAST_CHAT_READ_TOOL_NAME,
@@ -120,6 +137,26 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // auto-approved here, and its MCP annotations say read-only like every
   // non-external_effect tool. Refused without a scoped conversation.
   "past_chat_attach",
+  // Not a pure read either: it records the agent's paper decisions in the
+  // scope's conversation (plugin state only, kept apart from reads), so it
+  // is auto-approved like past_chat_attach. Refused without a conversation.
+  "record_paper_decisions",
+  // Reads the scope's conversation's stored reads and decisions so far.
+  "review_coverage",
+  // The host's per-paper reader: reads papers with the chat's own model
+  // (Codex Responses or the Claude bridge); a read like paper_read.
+  "paper_digest",
+  // Formats citations and exports BibTeX through Zotero's own engines; it
+  // changes nothing.
+  "library_cite",
+  // Reads a non-PDF attachment's text. attachFile:true is refused over MCP
+  // (see MCP_REFUSED_TOOL_ARGUMENTS): its "after user review" has no review
+  // here.
+  "read_attachment",
+  // Opens a PDF in a reader tab at a page or an annotation. It changes what
+  // the user sees, not the library, so it is auto-approved like the other
+  // reads.
+  "reader_open",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
@@ -136,14 +173,29 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "annotate_pdf",
   "file_io",
   "run_command",
+  // list and syncStatus read; set changes a Zotero preference. The client's
+  // own approval covers the set, like every other write here.
+  "library_settings",
+  // Writes every listed note: there is no per-note checklist over MCP, so the
+  // client's approval covers the whole batch (see MCP_TOOL_DESCRIPTION_NOTES).
+  "note_write_batch",
 ] as const;
 
 /**
- * Registered tools deliberately NOT exposed over MCP, and why.
+ * Registered tools deliberately NOT exposed over MCP, and why: the single
+ * owner of every plugin-only reason.
  *
  * This list exists so a missing tool reads as a decision rather than drift —
  * the registry and these curated arrays are maintained by hand and have
- * silently diverged before.
+ * silently diverged before. test/mcpSurfaceDrift.test.ts derives the expected
+ * list from the registry and fails for a tool that is neither exposed, named
+ * here, nor `localAgentOnly`.
+ *
+ * Not listed here, by design: the tools the registry marks `localAgentOnly`.
+ * `registry.listTools()` never lists them to an external client, and the
+ * spec flag is their one owner. They are web_search and web_read (the MCP
+ * client has its own web tools) and workflow_script (it also needs the
+ * in-plugin `context.invokeRegisteredOperation`, which an MCP call lacks).
  */
 export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
   literature_review:
@@ -167,6 +219,14 @@ const PAST_CHAT_TOOL_NAMES = new Set<string>([
   PAST_CHAT_SEARCH_TOOL_NAME,
   PAST_CHAT_ATTACH_TOOL_NAME,
 ]);
+/**
+ * The tools whose library is the scope's: past chats, and the per-paper
+ * reader, which must never read a paper outside the chat's library.
+ */
+const LIBRARY_PINNED_TOOL_NAMES = new Set<string>([
+  ...PAST_CHAT_TOOL_NAMES,
+  "paper_digest",
+]);
 const CURATED_READ_TOOL_NAMES = new Set<string>([
   ...ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ...ZOTERO_MCP_PLAN_TOOL_NAMES,
@@ -185,14 +245,21 @@ const MCP_GUIDANCE_TOOL_NAMES = new Set<string>([
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 /**
  * MCP-only descriptions for tools whose in-plugin description routes through
- * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES).
+ * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES), or
+ * promises a review MCP has no channel for (MCP_REFUSED_TOOL_ARGUMENTS).
  */
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
   [
+    "read_attachment",
+    "Read a non-PDF attachment's text by target.contextItemId (the Zotero attachment item ID). For PDFs use paper_read.",
+  ],
+  [
     "literature_search",
-    "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
+    "Search scholarly sources outside the library (OpenAlex, arXiv, Europe PMC); results come back to the client directly. The literature_review selection card is not available over MCP, so present discovery candidates yourself; discovery never imports silently. Outside papers a literature review cites are cited by paperId without importing, unless the user asks to import them (then library_import). An explicit import request uses library_import directly; metadata review uses workflow:'review', mode:'metadata'; literature_read reads a found paper. " +
       OUTSIDE_SEARCH_NEED_SENTENCE +
-      "; mode:'metadata' needs none. For web pages or current facts, use your client's own web search if it has one.",
+      "; mode:'metadata' needs none. " +
+      LITERATURE_SOURCE_SENTENCE +
+      " For web pages or current facts, use your client's own web search if it has one.",
   ],
 ]);
 /**
@@ -200,8 +267,34 @@ const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
  * (Claude Code, Codex, other MCP clients) never see the in-app note-editing
  * prompt, so they learn note placeholders and new citations here.
  */
-const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
+export const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
   ["note_write", NOTE_EMBED_PLACEHOLDER_GUIDANCE],
+  [
+    "library_import",
+    "To import the outside papers a document cites, use kind:'document_citations' with its documentId, not their DOIs; DOIs imported with kind:'identifiers' leave the document citing them as outside papers.",
+  ],
+  [
+    "note_write_batch",
+    "Over MCP every listed note is written: there is no checklist to uncheck notes, so list only the notes you want. Sending the same notes again continues the same batch and writes nothing twice while Zotero stays open; to continue an interrupted batch, pass resumeBatchId alone.",
+  ],
+]);
+/**
+ * Arguments an MCP client may not use, by tool, with the message it gets.
+ * The tool's in-plugin contract assumes a review that MCP has no channel for.
+ * The argument is also removed from the tool's MCP schema.
+ */
+const MCP_REFUSED_TOOL_ARGUMENTS: ReadonlyMap<
+  string,
+  { argument: string; message: string }
+> = new Map([
+  [
+    "read_attachment",
+    {
+      argument: "attachFile",
+      message:
+        "read_attachment attachFile:true is not available over MCP: it sends the whole file to the model after the user reviews it, and an MCP call has no such review. Read the attachment's text with target.contextItemId instead, or use paper_read for a PDF.",
+    },
+  ],
 ]);
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
@@ -227,7 +320,17 @@ const MCP_SCOPE_ARG_NAMES = new Set([
   "activeContextItemID",
 ]);
 const CODEX_MCP_READ_APPROVAL_MODE = "approve";
-const CODEX_MCP_EFFECT_APPROVAL_MODE = "auto";
+// Plan tools only record the turn's own parts: Codex never asks for them.
+const CODEX_MCP_PLAN_APPROVAL_MODE = "auto";
+/**
+ * Codex's approval for Zotero MCP writes: "writes" asks before a tool that
+ * is not read-only, "auto" runs it. A Codex thread passes the mode its
+ * permission chip implies (`codexZoteroMcpWriteApprovalMode`); "auto" is the
+ * default for a config that names no chip.
+ */
+export type CodexZoteroMcpWriteApprovalMode = "writes" | "auto";
+const CODEX_MCP_DEFAULT_WRITE_APPROVAL_MODE: CodexZoteroMcpWriteApprovalMode =
+  "auto";
 const MCP_READ_DEDUPE_TTL_MS = 2 * 60 * 1000;
 const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
   "library_search",
@@ -240,7 +343,20 @@ const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
   "file_io",
   "zotero_script",
 ]);
-const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set(["literature_search"]);
+// paper_digest reads Zotero's text of each paper, which a raw-PDF turn
+// reads natively instead.
+const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set([
+  "literature_search",
+  "paper_digest",
+]);
+/**
+ * The MCP tool-call timeout our server entry asks the client for, in
+ * seconds. A paper_digest call reads up to eight papers, each one or more
+ * reader calls of up to four minutes, behind a shared limit of four; a
+ * paper_read full call reads every batch of its papers. Both outlast the
+ * clients' 60-second default.
+ */
+export const ZOTERO_MCP_TOOL_TIMEOUT_SEC = 1_800;
 
 type ZoteroMcpScopeMetadata = {
   publishHostEvent?: (event: import("../types").AgentEvent) => Promise<void>;
@@ -277,6 +393,15 @@ type ZoteroMcpScopeMetadata = {
   executionContext?: AgentRuntimeRequest["executionContext"];
   documentReadObservations?: AgentRuntimeRequest["documentReadObservations"];
   documentArtifactObservations?: AgentRuntimeRequest["documentArtifactObservations"];
+  /** Host-recorded outside papers of the run; never from MCP tool arguments. */
+  outsidePaperRecords?: AgentRuntimeRequest["outsidePaperRecords"];
+  /** The outside papers the user chose to cite, once chosen. */
+  outsidePaperSelection?: AgentRuntimeRequest["outsidePaperSelection"];
+  /**
+   * The run's DOI lookups for citing outside papers. Kept by reference, so
+   * every call's request and every scope update share one cache.
+   */
+  outsidePaperLookupCache?: AgentRuntimeRequest["outsidePaperLookupCache"];
   /**
    * The past chats attached anywhere in the calling conversation: the only
    * chats past_chat_read may open. Host-set by the Codex and Claude Code
@@ -286,8 +411,14 @@ type ZoteroMcpScopeMetadata = {
   attachedConversationScope?: AttachedConversationRef[];
   exhaustiveReadBackend?: Extract<
     ExhaustiveReadBackend,
-    "codex_responses" | "unavailable"
+    "codex_responses" | "claude_bridge" | "unavailable"
   >;
+  /**
+   * The reader model the user picked for this runtime (an entry ID or a model
+   * name, never a credential). Host-set by the Codex and Claude Code scope
+   * builders; absent means the main model reads.
+   */
+  readerSelection?: ReaderSelection;
 };
 
 export type ZoteroMcpPaperScopeInput =
@@ -391,6 +522,8 @@ const mcpReadDedupeCache = new Map<
     expiresAt: number;
     result: McpToolCallResult;
     observations: readonly TrustedReadObservation[];
+    outsidePapers: readonly OutsidePaperRecord[];
+    quoteCitations: readonly QuoteCitation[];
   }
 >();
 
@@ -518,17 +651,18 @@ export function getZoteroMcpDirectPdfToolNames(): string[] {
 }
 
 function getZoteroMcpToolApprovalOverrides(
-  toolNames = getZoteroMcpAllowedToolNames(),
-): Record<string, { approval_mode: "approve" | "auto" }> {
+  toolNames: string[],
+  writeApprovalMode: CodexZoteroMcpWriteApprovalMode,
+): Record<string, { approval_mode: "approve" | "auto" | "writes" }> {
   return Object.fromEntries(
     toolNames.map((name) => [
       name,
       {
         approval_mode: CURATED_PLAN_TOOL_NAMES.has(name)
-          ? CODEX_MCP_EFFECT_APPROVAL_MODE
+          ? CODEX_MCP_PLAN_APPROVAL_MODE
           : CURATED_READ_TOOL_NAMES.has(name)
             ? CODEX_MCP_READ_APPROVAL_MODE
-            : CODEX_MCP_EFFECT_APPROVAL_MODE,
+            : writeApprovalMode,
       },
     ]),
   );
@@ -562,9 +696,12 @@ export function buildZoteroMcpConfigValue(
     required?: boolean;
     rawPdfMode?: boolean;
     enabled?: boolean;
+    writeApprovalMode?: CodexZoteroMcpWriteApprovalMode;
   } = {},
 ): Record<string, unknown> {
   const token = getOrCreateZoteroMcpBearerToken();
+  const writeApprovalMode =
+    params.writeApprovalMode || CODEX_MCP_DEFAULT_WRITE_APPROVAL_MODE;
   const scopeToken = normalizeText(params.scopeToken, 256);
   const enabled = params.enabled !== false;
   const enabledToolNames = params.rawPdfMode
@@ -574,8 +711,13 @@ export function buildZoteroMcpConfigValue(
     url: getZoteroMcpServerUrl(),
     ...(!enabled ? { enabled: false } : {}),
     ...(enabled && params.required ? { required: true } : {}),
-    default_tools_approval_mode: CODEX_MCP_EFFECT_APPROVAL_MODE,
-    tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
+    default_tools_approval_mode: writeApprovalMode,
+    // Codex's per-server tool-call timeout (its default is 60 s).
+    tool_timeout_sec: ZOTERO_MCP_TOOL_TIMEOUT_SEC,
+    tools: getZoteroMcpToolApprovalOverrides(
+      enabledToolNames,
+      writeApprovalMode,
+    ),
     http_headers: {
       [ZOTERO_MCP_AUTH_HEADER]: `Bearer ${token}`,
       ...(scopeToken ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken } : {}),
@@ -729,6 +871,15 @@ function normalizeNoteKind(value: unknown): "item" | "standalone" | undefined {
   return value === "item" || value === "standalone" ? value : undefined;
 }
 
+/** A scope names its full-read backend; anything else cannot read in full. */
+function normalizeScopeExhaustiveReadBackend(
+  value: ZoteroMcpActiveScope["exhaustiveReadBackend"],
+): "codex_responses" | "claude_bridge" | "unavailable" {
+  return value === "codex_responses" || value === "claude_bridge"
+    ? value
+    : "unavailable";
+}
+
 function normalizeReasoningConfig(
   value: ReasoningConfig | undefined,
 ): ReasoningConfig | undefined {
@@ -857,14 +1008,27 @@ function normalizeActiveScope(
     documentArtifactObservations: scope.documentArtifactObservations
       ? cloneToolArtifacts(scope.documentArtifactObservations)
       : undefined,
+    outsidePaperRecords: scope.outsidePaperRecords
+      ? [...scope.outsidePaperRecords]
+      : undefined,
+    outsidePaperSelection: scope.outsidePaperSelection
+      ? [...scope.outsidePaperSelection]
+      : undefined,
+    // The same object on every update; a scope that starts with records
+    // gets its cache now, before any call can build a request from it.
+    outsidePaperLookupCache:
+      scope.outsidePaperLookupCache ??
+      (scope.outsidePaperRecords?.length ? {} : undefined),
     // Uncapped: every chat attached in the conversation stays readable.
     attachedConversationScope: attachedConversationScope.length
       ? attachedConversationScope
       : undefined,
-    exhaustiveReadBackend:
-      scope.exhaustiveReadBackend === "codex_responses"
-        ? "codex_responses"
-        : "unavailable",
+    exhaustiveReadBackend: normalizeScopeExhaustiveReadBackend(
+      scope.exhaustiveReadBackend,
+    ),
+    readerSelection:
+      decodeReaderSelection(encodeReaderSelection(scope.readerSelection)) ||
+      undefined,
   };
   if (scope.turnPaperScope) {
     return {
@@ -1177,6 +1341,8 @@ function cloneToolArtifacts(
 function getCachedMcpReadResult(key: string | null): {
   result: McpToolCallResult;
   observations: readonly TrustedReadObservation[];
+  outsidePapers: readonly OutsidePaperRecord[];
+  quoteCitations: QuoteCitation[];
 } | null {
   if (!key) return null;
   pruneExpiredMcpReadDedupeCache();
@@ -1185,6 +1351,8 @@ function getCachedMcpReadResult(key: string | null): {
   return {
     result: cloneMcpResultWithDuplicateMarker(cached.result),
     observations: cloneTrustedReadObservations(cached.observations),
+    outsidePapers: [...cached.outsidePapers],
+    quoteCitations: [...cached.quoteCitations],
   };
 }
 
@@ -1372,10 +1540,17 @@ function getRawPdfNativeFilesystemViolation(params: {
   return null;
 }
 
+/**
+ * The citations are kept beside the result, not read back from it: the text
+ * the model reads may leave them out (`modelContent`), and a repeat's
+ * activity must carry what the first call's did.
+ */
 function rememberMcpReadResult(
   key: string | null,
   result: McpToolCallResult,
   observations: readonly TrustedReadObservation[],
+  outsidePapers: readonly OutsidePaperRecord[],
+  quoteCitations: readonly QuoteCitation[],
 ): void {
   if (!key || result.isError) return;
   pruneExpiredMcpReadDedupeCache();
@@ -1383,6 +1558,8 @@ function rememberMcpReadResult(
     expiresAt: Date.now() + MCP_READ_DEDUPE_TTL_MS,
     result,
     observations: cloneTrustedReadObservations(observations),
+    outsidePapers: [...outsidePapers],
+    quoteCitations: [...quoteCitations],
   });
 }
 
@@ -1454,6 +1631,14 @@ function isMcpToolVisibleInScope(
   // task_update tracks the in-plugin Agent's own parts.
   if (CURATED_PLAN_TOOL_NAMES.has(tool.name))
     return tool.name === "submit_document";
+  // The per-paper reader needs the chat's own runtime to read with; a
+  // client without one (no scope, or no native runtime) never sees it.
+  if (
+    tool.name === "paper_digest" &&
+    scope?.exhaustiveReadBackend !== "codex_responses" &&
+    scope?.exhaustiveReadBackend !== "claude_bridge"
+  )
+    return false;
   if (!hasRawPdfScope(scope)) return true;
   return getZoteroMcpDirectPdfToolNames().includes(tool.name);
 }
@@ -1476,7 +1661,7 @@ function handleToolsList(
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
-      const schema = decorateMcpToolSchema(inputSchema);
+      const schema = decorateMcpToolSchema(inputSchema, name);
       return {
         name,
         title: formatToolTitle(name),
@@ -1485,9 +1670,13 @@ function handleToolsList(
           [
             MCP_TOOL_DESCRIPTION_OVERRIDES.get(name) ?? description,
             MCP_TOOL_DESCRIPTION_NOTES.get(name),
-            MCP_GUIDANCE_TOOL_NAMES.has(name)
-              ? toolRegistry.getTool(name)?.guidance?.instruction
-              : undefined,
+            // Every item, unmatched: no tool in this set carries guidance
+            // tied to a skill (that goes on MCP-hidden tools).
+            ...(MCP_GUIDANCE_TOOL_NAMES.has(name)
+              ? toolGuidanceItems(toolRegistry.getTool(name)?.guidance).map(
+                  (guidance) => guidance.instruction,
+                )
+              : []),
             describeMcpHostAccess(name),
             // Codex code-mode discovery renders deeply nested input types as
             // `unknown`. Keep the complete contract discoverable there too;
@@ -1592,16 +1781,19 @@ function resolveMcpCallScope(params: {
       `Conflicting Zotero library IDs: top-level libraryID=${scopeArgs.libraryID} but library_retrieve scope.libraryID=${retrievalLibraryID}.`,
     );
   }
-  // The past-chat tools are pinned to the scope's library: they ignore the
-  // library selected in Zotero, and a model-supplied libraryID that differs
-  // from the scope's is refused (libraryMismatch) instead of overriding it.
-  const pinnedToScopeLibrary = PAST_CHAT_TOOL_NAMES.has(params.toolName);
+  // The past-chat tools and paper_digest are pinned to the scope's library:
+  // they ignore the library selected in Zotero, and a model-supplied
+  // libraryID that differs from the scope's is refused (libraryMismatch)
+  // instead of overriding it.
+  const pinnedToScopeLibrary = LIBRARY_PINNED_TOOL_NAMES.has(params.toolName);
   const scopeLibraryID = normalizePositiveInt(scope?.libraryID) || 0;
   const libraryMismatch =
     pinnedToScopeLibrary &&
     scopeArgs.libraryID &&
     scopeArgs.libraryID !== scopeLibraryID
-      ? `Only past chats from this library can be read (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
+      ? params.toolName === "paper_digest"
+        ? `paper_digest reads only papers of this conversation's library (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
+        : `Only past chats from this library can be read (libraryID ${scopeArgs.libraryID} is not the conversation's library).`
       : undefined;
   return {
     scopeArgs,
@@ -1630,7 +1822,7 @@ function decorateMcpToolDescription(
   mutability: "read" | "write",
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID to use the exact turn-scoped chat library when a scope header is present, or the library currently selected in Zotero for a standalone MCP client. Omit activeItemId and activeContextItemId to use the current turn-scoped chat item when available. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly sources outside the library: workflow:'answer' returns scholarly results for source-cited answers, and workflow:'review' with mode:'metadata' proposes metadata changes for the user to approve. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID to use the exact turn-scoped chat library when a scope header is present, or the library currently selected in Zotero for a standalone MCP client. Omit activeItemId and activeContextItemId to use the current turn-scoped chat item when available. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly sources outside the library: workflow:'answer' returns scholarly results for source-cited answers, and workflow:'review' with mode:'metadata' proposes metadata changes for the user to approve. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
       ? "The calling agent owns approval for zotero_script. Zotero applies its facade, integrity, and recovery checks. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
@@ -1649,7 +1841,7 @@ function decorateMcpToolDescription(
     .join("\n\n");
 }
 
-function decorateMcpToolSchema(inputSchema: object): object {
+function decorateMcpToolSchema(inputSchema: object, toolName: string): object {
   if (
     !inputSchema ||
     typeof inputSchema !== "object" ||
@@ -1658,7 +1850,9 @@ function decorateMcpToolSchema(inputSchema: object): object {
     return inputSchema;
   }
   const record = inputSchema as Record<string, unknown>;
-  const rawProperties = normalizeRecord(record.properties);
+  const rawProperties = { ...normalizeRecord(record.properties) };
+  const refused = MCP_REFUSED_TOOL_ARGUMENTS.get(toolName);
+  if (refused) delete rawProperties[refused.argument];
   return {
     ...record,
     properties: {
@@ -1813,6 +2007,8 @@ function buildMcpToolActivityEvent(params: {
   workCategory?: import("../types").AgentWorkCategory;
   verifiedReadSources?: VerifiedReadSource[];
   readObservations?: readonly TrustedReadObservation[];
+  outsidePapers?: readonly OutsidePaperRecord[];
+  publishedDocumentId?: string;
   paperLedgerDelta?: TaskPaperLedgerDelta;
   mutability?: "read" | "write";
   scope: ZoteroMcpActiveScope | null;
@@ -1836,6 +2032,12 @@ function buildMcpToolActivityEvent(params: {
     quoteCitations: params.quoteCitations,
     verifiedReadSources: params.verifiedReadSources,
     readObservations: params.readObservations,
+    ...(params.outsidePapers?.length
+      ? { outsidePapers: params.outsidePapers }
+      : {}),
+    ...(params.publishedDocumentId
+      ? { publishedDocumentId: params.publishedDocumentId }
+      : {}),
     ...(params.paperLedgerDelta
       ? { paperLedgerDelta: params.paperLedgerDelta }
       : {}),
@@ -1882,10 +2084,9 @@ function createToolContext(
     pinnedPaperContexts?.length,
   );
   const activeNoteContext = resolveScopeActiveNoteContext(scope);
-  const exhaustiveReadBackend =
-    scope?.exhaustiveReadBackend === "codex_responses"
-      ? ("codex_responses" as const)
-      : ("unavailable" as const);
+  const exhaustiveReadBackend = normalizeScopeExhaustiveReadBackend(
+    scope?.exhaustiveReadBackend,
+  );
   const requestBase = {
     conversationKey: scope?.conversationKey || 0,
     conversationGeneration: scope?.conversationGeneration,
@@ -1909,6 +2110,9 @@ function createToolContext(
     clarificationHistory: scope?.clarificationHistory,
     documentReadObservations: scope?.documentReadObservations,
     documentArtifactObservations: scope?.documentArtifactObservations,
+    outsidePaperRecords: scope?.outsidePaperRecords,
+    outsidePaperSelection: scope?.outsidePaperSelection,
+    outsidePaperLookupCache: scope?.outsidePaperLookupCache,
     // past_chat_read checks every chat against this list and the call's
     // library (an explicit libraryID other than the scope's is refused). A
     // copy: past_chat_attach extends the scope's own list only through
@@ -1917,6 +2121,9 @@ function createToolContext(
       ? [...scope.attachedConversationScope]
       : undefined,
     exhaustiveReadBackend,
+    ...(scope?.readerSelection
+      ? { readerSelection: scope.readerSelection }
+      : {}),
     activeNoteContext,
     metadata: {
       sourceMessageTimestamp: scope?.sourceMessageTimestamp,
@@ -2103,10 +2310,20 @@ function createToolContext(
   };
 }
 
+/**
+ * The call's result as the client's model reads it. A tool that keeps fields
+ * from the model (`modelContent`: a digest's citation records) is sent its
+ * model content; the activity event carries the whole result.
+ */
 function formatToolResult(
   execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"],
+  tool: Pick<AgentToolDefinition<any, any>, "modelContent"> | undefined,
 ): McpToolCallResult {
   const { result } = execution;
+  const content =
+    result.ok && tool?.modelContent
+      ? tool.modelContent(result.content, execution.input)
+      : result.content;
   return {
     content: [
       {
@@ -2114,7 +2331,7 @@ function formatToolResult(
         text: JSON.stringify(
           {
             ok: result.ok,
-            result: result.content,
+            result: content,
             effect: result.effect,
             ...(result.actionReceipts.length
               ? { actionReceipts: result.actionReceipts }
@@ -2151,6 +2368,22 @@ function rememberDocumentReadObservations(
   ]);
 }
 
+/**
+ * Adds a call's outside papers to the scope's record of the run, and starts
+ * the background DOI lookups of papers read past their metadata on the
+ * scope's lookup cache, which every call of the turn shares.
+ */
+function rememberScopeOutsidePapers(
+  headers: Record<string, string> | undefined,
+  records: readonly OutsidePaperRecord[],
+): void {
+  if (!records.length) return;
+  const scope = resolveScopedMcpScope(headers);
+  if (!scope?.runtimeAuthority) return;
+  rememberOutsidePapers(scope, records);
+  prefetchOutsidePaperLookups(scope, records);
+}
+
 function rememberDocumentArtifacts(
   headers: Record<string, string> | undefined,
   artifacts: readonly AgentToolArtifact[],
@@ -2166,6 +2399,45 @@ function rememberDocumentArtifacts(
   );
   for (const artifact of artifacts) merged.set(artifact.storedPath, artifact);
   scope.documentArtifactObservations = cloneToolArtifacts([...merged.values()]);
+}
+
+/**
+ * The observations an earlier paper_digest call of this scope already
+ * recorded for the papers whose digest this call repeats (`alreadyReturned`).
+ * A repeat reads nothing, so it records nothing new; this only lets its
+ * body carry the same evidence refs as the first call.
+ */
+function rememberedDigestObservations(
+  toolName: string,
+  content: unknown,
+  remembered: readonly TrustedReadObservation[] | undefined,
+  current: readonly TrustedReadObservation[],
+): TrustedReadObservation[] {
+  if (toolName !== "paper_digest" || !remembered?.length) return [];
+  const rows = (content as { papers?: unknown } | null)?.papers;
+  if (!Array.isArray(rows)) return [];
+  const items = globalThis.Zotero?.Items;
+  if (!items?.get) return [];
+  const seen = new Set(current.map((entry) => entry.observationId));
+  const out: TrustedReadObservation[] = [];
+  for (const row of rows) {
+    const value = row as { alreadyReturned?: unknown; itemId?: unknown };
+    if (value?.alreadyReturned !== true) continue;
+    const item = items.get(Number(value.itemId));
+    if (!item?.key || !item.libraryID) continue;
+    for (const entry of remembered) {
+      if (
+        entry.toolName === "paper_digest" &&
+        entry.libraryID === item.libraryID &&
+        entry.itemKey === item.key &&
+        !seen.has(entry.observationId)
+      ) {
+        seen.add(entry.observationId);
+        out.push(entry);
+      }
+    }
+  }
+  return out;
 }
 
 function appendDocumentEvidenceRefs(
@@ -2244,6 +2516,20 @@ function extractToolCallErrorText(
   return undefined;
 }
 
+/**
+ * The document version a successful library_import call published: only
+ * kind:'document_citations' returns a documentId.
+ */
+function publishedDocumentIdOf(
+  toolName: string,
+  result: McpToolCallResult,
+  content: unknown,
+): string | undefined {
+  if (toolName !== "library_import" || result.isError) return undefined;
+  const documentId = (content as { documentId?: unknown } | null)?.documentId;
+  return typeof documentId === "string" && documentId ? documentId : undefined;
+}
+
 async function handleToolsCall(
   params: McpToolCallParams,
   deps: McpServerDeps,
@@ -2284,6 +2570,8 @@ async function handleToolsCall(
     actionReceipts?: AgentActionReceipt[];
     verifiedReadSources?: VerifiedReadSource[];
     readObservations?: readonly TrustedReadObservation[];
+    outsidePapers?: readonly OutsidePaperRecord[];
+    publishedDocumentId?: string;
     paperLedgerDelta?: TaskPaperLedgerDelta | null;
   }) => {
     emitZoteroMcpToolActivity(
@@ -2300,6 +2588,8 @@ async function handleToolsCall(
         workCategory,
         verifiedReadSources: result.verifiedReadSources,
         readObservations: result.readObservations,
+        outsidePapers: result.outsidePapers,
+        publishedDocumentId: result.publishedDocumentId,
         paperLedgerDelta: result.paperLedgerDelta || undefined,
         mutability:
           tool?.spec.executionClass === "external_effect" ? "write" : "read",
@@ -2323,6 +2613,20 @@ async function handleToolsCall(
     completeActivity({ ok: false, error: text });
     return {
       content: [{ type: "text", text }],
+      isError: true,
+    };
+  }
+
+  const refusedArgument = MCP_REFUSED_TOOL_ARGUMENTS.get(name);
+  if (refusedArgument && scopeArgs.toolArgs[refusedArgument.argument]) {
+    completeActivity({ ok: false, error: refusedArgument.message });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: false, error: refusedArgument.message }),
+        },
+      ],
       isError: true,
     };
   }
@@ -2401,15 +2705,14 @@ async function handleToolsCall(
     const cachedReadResult = getCachedMcpReadResult(readDedupeKey);
     if (cachedReadResult) {
       rememberDocumentReadObservations(headers, cachedReadResult.observations);
+      rememberScopeOutsidePapers(headers, cachedReadResult.outsidePapers);
       rememberDocumentArtifacts(
         headers,
         extractArtifactsFromMcpToolCallResult(cachedReadResult.result) || [],
       );
       completeActivity({
         ok: true,
-        quoteCitations: extractQuoteCitationsFromToolContent(
-          cachedReadResult.result,
-        ),
+        quoteCitations: cachedReadResult.quoteCitations,
         artifacts: extractArtifactsFromMcpToolCallResult(
           cachedReadResult.result,
         ),
@@ -2429,6 +2732,7 @@ async function handleToolsCall(
           }),
         ),
         readObservations: cachedReadResult.observations,
+        outsidePapers: cachedReadResult.outsidePapers,
       });
       return cachedReadResult.result;
     }
@@ -2485,10 +2789,12 @@ async function handleToolsCall(
     }
     if (scope)
       scope.clarificationHistory = toolContext.request.clarificationHistory;
-    let result = formatToolResult(prepared.execution);
+    let result = formatToolResult(prepared.execution, tool);
     // One attestation site, one recorder: the read's trusted observations and
     // its Task progress delta come from the same call. Without a
-    // conversation there is nothing to record the delta in.
+    // conversation there is nothing to record the delta in. A call that is
+    // not a read may state paper decisions; the same recorder makes their
+    // delta, which rides on the activity as a read's does.
     const { observations: readObservations, paperLedgerDelta } =
       tool.spec.executionClass === "read" && !result.isError
         ? await attestAndRecordRead({
@@ -2500,19 +2806,49 @@ async function handleToolsCall(
             libraryID: callScope.libraryID,
             runId: scope?.runId,
           })
-        : { observations: [], paperLedgerDelta: null };
+        : {
+            observations: [],
+            paperLedgerDelta: result.isError
+              ? null
+              : recordTaskPaperDecisions({
+                  toolName: name,
+                  callId: prepared.execution.result.callId,
+                  decisions: prepared.execution.result.paperDecisions,
+                  conversationKey: scopeConversationKey,
+                  runId: scope?.runId,
+                }),
+          };
     rememberDocumentReadObservations(headers, readObservations);
+    // The outside papers a document of this run may cite: what
+    // literature_search and literature_read returned.
+    const outsidePapers = result.isError
+      ? []
+      : outsidePaperRecordsFromToolResult(
+          name,
+          prepared.execution.result.content,
+        );
+    rememberScopeOutsidePapers(headers, outsidePapers);
     rememberDocumentArtifacts(
       headers,
       prepared.execution.result.artifacts || [],
     );
-    result = appendDocumentEvidenceRefs(result, readObservations);
+    result = appendDocumentEvidenceRefs(result, [
+      ...readObservations,
+      ...rememberedDigestObservations(
+        name,
+        prepared.execution.result.content,
+        scope?.documentReadObservations,
+        readObservations,
+      ),
+    ]);
+    // From the whole result: the text the model reads may leave them out.
+    const quoteCitations = extractQuoteCitationsFromToolContent(
+      prepared.execution.result.content,
+    );
     completeActivity({
       ok: !result.isError,
       error: extractToolCallErrorText(result),
-      quoteCitations: extractQuoteCitationsFromToolContent(
-        prepared.execution.result.content,
-      ),
+      quoteCitations,
       artifacts: prepared.execution.result.artifacts,
       actionReceipts: prepared.execution.result.actionReceipts,
       verifiedReadSources: readObservations.map(
@@ -2531,10 +2867,22 @@ async function handleToolsCall(
         }),
       ),
       readObservations,
+      outsidePapers,
+      publishedDocumentId: publishedDocumentIdOf(
+        name,
+        result,
+        prepared.execution.result.content,
+      ),
       paperLedgerDelta,
     });
     clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
-    rememberMcpReadResult(readDedupeKey, result, readObservations);
+    rememberMcpReadResult(
+      readDedupeKey,
+      result,
+      readObservations,
+      outsidePapers,
+      quoteCitations,
+    );
     return result;
   } catch (error) {
     completeActivity({

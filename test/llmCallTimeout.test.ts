@@ -2,6 +2,17 @@ import { assert } from "chai";
 import { callLLMWithTimeout } from "../src/utils/llmCallTimeout";
 
 describe("bounded utility cancellation", function () {
+  it("sets no timer when the deadline is Infinity", async function () {
+    const text = await callLLMWithTimeout({
+      prompt: "Read",
+      timeoutMs: Infinity,
+      llmCall: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return { text: "late but fine", completion: { status: "complete" } };
+      },
+    }).then((outcome) => outcome.text);
+    assert.equal(text, "late but fine");
+  });
   it("uses Zotero's window controller when the chrome global lacks one", async function () {
     const host = globalThis as any;
     const saved = {

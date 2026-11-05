@@ -67,11 +67,80 @@ import {
  * before its final punctuation, with an example, and give a sentence without
  * a supporting passage no token) (2026-10-26), to 40,914, 39,647 and 41,012
  * (+199 each).
+ * Raised by submit_document's sentence in the model description, that a
+ * literature review is always delivered with that tool and other answers stay
+ * in chat unless the user asks for a document or a file (130 characters,
+ * 2026-10-29), to 41,044, 39,777 and 41,142. Raised by the outside-paper
+ * choice (2026-10-29): literature_search's forLiteratureReview field and its
+ * sentence that a literature review finds outside papers with it and the
+ * card asks whether to import and cite them, and submit_document's sentences
+ * that a citation source is a Zotero item or an outside paper's paperId,
+ * web pages are never cited, and an unclear literature review is answered
+ * in chat (482 tool characters), to 41,519, 40,252 and 41,617. Raised by
+ * library_import's kind:'document_citations' (its sentence, enum value and
+ * documentId field) and the card rule widened to a literature review that
+ * needs outside papers, a mixed one included (2026-10-29), to 41,789, 40,522
+ * and 41,887 (+270 each). Lowered when the card's import-or-cite choice was
+ * stated only in the skill (2026-10-29), to 41,711, 40,444 and 41,809 (-78
+ * each). These turns carry no
+ * original_agent execution context, so task_update, and the digest rule in
+ * its description, is not listed here; test/directAgentToolSurface.test.ts
+ * measures that rule.
+ * Raised by record_paper_decisions, the always-listed tool that records the
+ * agent's include, exclude or defer decision about papers (2026-10-29), to
+ * 42,417, 41,150 and 42,515 (+706 tool characters each). review_coverage
+ * reaches Codex and Claude Code over MCP only and adds nothing here.
+ * Raised by library_delete's groups field and its clause, so one approval
+ * merges several duplicate groups (2026-10-30), to 42,575, 41,308 and 42,673
+ * (+158 tool characters each).
+ * Raised on 2026-10-31 by the zotero-script skill: zotero_script's model
+ * description points to it (90 tool characters) and the skill inventory
+ * lists it (140 fixed characters), to 42,805, 41,538 and 42,903 (+230 each).
+ * Raised on 2026-10-31 by run_command's and file_io's model descriptions,
+ * which now say what each is for and which approval it needs, in one
+ * sentence each (352 tool characters), to 43,157, 41,890 and 43,255.
+ * Raised on 2026-10-31 by literature_search's source and author rules, moved
+ * from never-selected guidance into its description (188 tool characters),
+ * to 43,345, 42,078 and 43,443.
+ * Raised on 2026-10-31 by 13 tool characters in run_command's and file_io's
+ * approval wording, to 43,358, 42,091 and 43,456.
+ * Merged with W2's read scope: paper_read's guidance naming the
+ * whole-sections read (+13 guidance characters each), to 43,371, 42,104 and
+ * 43,469 (2026-10-31).
+ * Raised on 2026-10-31 by user instructions coming first: submit_document's
+ * "unless the user asks for a chat answer" (+32 tool characters), the fixed
+ * prompt's chat-answer and library-only clauses (+99), and paper_read's and
+ * library_retrieve's read-what-the-user-named clauses (+159 guidance
+ * characters in library turns, +99 in a paper turn), to 43,661, 42,334 and
+ * 43,759.
+ * Merged with W4's loop gates: the direct workflow's tool-call limit sentence
+ * (+96 fixed characters) and its job-page clause (+31), to 43,788, 42,461 and
+ * 43,886 (2026-10-31).
+ * Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
+ * Raised on 2026-10-31 by 423 tool characters: W5-A reads (reader_open, library_search's statistics entity, sections field and year, creator and dateModified sort keys, library_read's relatedLinks section).
+ * The budgets are now 44,307, 42,980 and 44,405.
+ * Changed on 2026-10-31 by +201 characters: W5-A review fixes (statistics sections enum +153; reader_open's "when the user asks" and "0-based" +62; library_read's description without relatedLinks -14).
+ * The budgets are now 44,508, 43,181 and 44,606.
+ * Raised on 2026-10-31 by 99 characters: W5-B (library_update's itemType,
+ * note_write_batch's mode and targetNoteId), merged onto W5-A.
+ * The budgets are now 44,607, 43,280 and 44,705.
+ * Raised on 2026-10-31 by 266 tool characters: W5-C (library_update's
+ * attach_file, attach_url, find_pdf and kind:'annotation'; annotate_pdf's
+ * annotationType). The budgets are now 44,873, 43,546 and 44,971.
+ * Raised on 2026-10-31 by 34 characters: W5-D (library_update's
+ * resumeBatchId), merged onto W5-C. The budgets are now 44,907, 43,580
+ * and 45,005.
+ * Raised on 2026-10-31 by 116 tool characters: library_update's item-type
+ * route (kind:'metadata' with itemId and itemType, not inside metadata).
+ * The budgets are now 45,023, 43,696 and 45,121.
+ * Raised on 2026-11-01 by 40 guidance characters: paper_read's guidance says
+ * sections are parts as the user named them, in any language, read whole.
+ * The budgets are now 45,063, 43,736 and 45,161.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 40_914,
-  paper: 39_647,
-  collection: 41_012,
+  global: 45_063,
+  paper: 43_736,
+  collection: 45_161,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {

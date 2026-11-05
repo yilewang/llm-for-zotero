@@ -119,6 +119,53 @@ describe("undo tool", function () {
     assert.equal(manyCard.title, "Undo 2 changes");
   });
 
+  it("describes new actions in words, not by operation name", function () {
+    for (const action of actions) {
+      assert.notMatch(action.description, /^Apply |_/u, action.description);
+      assert.match(action.description, /^Add tags? .+ to /u);
+    }
+  });
+
+  it("rebuilds the card label of an earlier row from its steps", async function () {
+    // Rows written before descriptions were in words read "Apply apply_tags".
+    const rows = (
+      globalThis.Zotero as unknown as {
+        DB: { actions: Map<string, { description: string }> };
+      }
+    ).DB.actions;
+    rows.get(actions[2].actionId)!.description = "Apply apply_tags";
+    rows.get(actions[1].actionId)!.description =
+      "library_update: 2 planned changes";
+
+    const { tool, context } = builtInUndoTool(library);
+    const single = tool.validate({});
+    if (!single.ok) throw new Error("validation failed");
+    const card = await tool.createPendingAction!(single.value, context);
+    assert.notInclude(String(card.description), "apply_tags");
+    assert.match(String(card.description), /^Add tags? .+ to /u);
+    const option = (card.fields[0] as { options?: Array<{ label: string }> })
+      .options![0];
+    assert.equal(option.label, card.description);
+
+    const dryRun = await undoFixture(library, { dryRun: true, count: 2 });
+    for (const change of dryRun.changes as Array<{ description: string }>) {
+      assert.match(change.description, /^Add tags? .+ to /u);
+    }
+    const manyCard = await tool.createPendingAction!(
+      (() => {
+        const many = tool.validate({ count: 2 });
+        if (!many.ok) throw new Error("validation failed");
+        return many.value;
+      })(),
+      context,
+    );
+    assert.notMatch(String(manyCard.description), /apply_tags|library_update/u);
+
+    const result = await undoFixture(library, {});
+    assert.equal(result.status, "undone");
+    assert.match(String(result.description), /^Add tags? .+ to /u);
+  });
+
   it("treats an explicit dryRun:false with nothing else as a single undo", async function () {
     const { tool } = builtInUndoTool(library);
     const validated = tool.validate({ dryRun: false });

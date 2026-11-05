@@ -66,6 +66,7 @@ import type {
   AgentToolContext,
   AgentToolDefinition,
   AgentWriteToolDefinition,
+  AgentToolGuidance,
 } from "../../types";
 import {
   fail,
@@ -87,17 +88,16 @@ type NotePatch = {
 export const SOURCE_NOTE_COPY_GUIDANCE =
   "To copy an existing note without revising its content, use mode:'create' with sourceNoteId and the requested target/collections instead of reconstructing its content. This preserves the native note, including formatting, original provenance and embedded images; do not generate a new header or perform a corrective edit.";
 
-export const NOTE_WRITE_GUIDANCE: NonNullable<AgentToolDefinition["guidance"]> =
-  {
-    matches: (request, context) =>
-      Boolean(
-        context?.matchedSkillIds.includes(WRITE_NOTE_SKILL_ID) ||
-        request.forcedSkillIds?.includes(WRITE_NOTE_SKILL_ID),
-      ),
-    instruction:
-      "Use note_write mode:'edit' against the exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure unless the user requests changing them. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Use mode:'append' to append and mode:'create' for a new note. Keep every {{kind:id}} placeholder of an embedded citation, highlight or image where its item belongs; to delete one the user names, list its id in removeEmbeds and omit its placeholder. To add a clickable Zotero citation, write {{cite item=<regular item's itemId> page=<pageLabel from paper_read>}}, or {{cite item=1 page=4; item=2 page=9}} for several works; omit page to cite a whole work. Resolve a named parent or collection before proposing the write. Pass finalized material by documentId so retries reuse exact content. Safe reviews every note write, including creation; Auto may apply routine same-library note changes directly. After verified success, do not claim that a diff is still awaiting review. " +
-      SOURCE_NOTE_COPY_GUIDANCE,
-  };
+export const NOTE_WRITE_GUIDANCE: AgentToolGuidance = {
+  matches: (request, context) =>
+    Boolean(
+      context?.matchedSkillIds.includes(WRITE_NOTE_SKILL_ID) ||
+      request.forcedSkillIds?.includes(WRITE_NOTE_SKILL_ID),
+    ),
+  instruction:
+    "Use note_write mode:'edit' against the exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure unless the user requests changing them. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Use mode:'append' to append and mode:'create' for a new note. Keep every {{kind:id}} placeholder of an embedded citation, highlight or image where its item belongs; to delete one the user names, list its id in removeEmbeds and omit its placeholder. To add a clickable Zotero citation, write {{cite item=<regular item's itemId> page=<pageLabel from paper_read>}}, or {{cite item=1 page=4; item=2 page=9}} for several works; omit page to cite a whole work. Resolve a named parent or collection before proposing the write. Pass finalized material by documentId so retries reuse exact content. Safe reviews every note write, including creation; Auto may apply routine same-library note changes directly. After verified success, do not claim that a diff is still awaiting review. " +
+    SOURCE_NOTE_COPY_GUIDANCE,
+};
 
 /**
  * Sanitise HTML before writing to a Zotero note.  Strips dangerous
@@ -949,6 +949,7 @@ export function createNoteWriteTool(
     guidance: NOTE_WRITE_GUIDANCE,
     presentation: {
       label: "Write Note",
+      traceIcon: "edit",
       buildResultCards: (content) =>
         buildNoteChangeResultCards(content) ||
         buildSavedNoteResultCards(zoteroGateway, content),
@@ -1038,20 +1039,26 @@ export function createNoteWriteTool(
         typeof args.documentId === "string"
           ? args.documentId.trim()
           : undefined;
+      // A finalized document goes to exactly one named destination: a
+      // parent item, or a standalone note (collections imply standalone).
+      const documentStandalone =
+        args.target === "standalone" ||
+        Boolean(normalizePositiveIntArray(args.collections)?.length);
       if (
         args.documentId !== undefined &&
         (!documentId ||
           hasContent ||
           hasPatches ||
           sourceNoteId ||
-          args.target === "standalone" ||
-          !(mode === "create"
-            ? normalizePositiveInt(args.targetItemId)
-            : normalizePositiveInt(args.targetNoteId)) ||
-          args.collections !== undefined)
+          (mode === "create"
+            ? Boolean(normalizePositiveInt(args.targetItemId)) ===
+              documentStandalone
+            : !normalizePositiveInt(args.targetNoteId) ||
+              args.target === "standalone" ||
+              args.collections !== undefined))
       )
         return fail(
-          "documentId requires the exact parent targetItemId for create, or targetNoteId for edit/append, without substituted content, patches, or collections.",
+          "documentId requires, for create, either the exact parent targetItemId or target:'standalone' (optionally with collections); for edit/append, targetNoteId. No substituted content or patches.",
         );
       if (
         args.sourceNoteId !== undefined &&
@@ -1134,7 +1141,7 @@ export function createNoteWriteTool(
       }
 
       const target =
-        args.target === "standalone"
+        args.target === "standalone" || (documentId && documentStandalone)
           ? ("standalone" as const)
           : ("item" as const);
 
@@ -1381,25 +1388,36 @@ export function createNoteWriteTool(
       prepareNoteWriteInput(zoteroGateway, input, context);
       if (input.documentId && input.mode === "create") {
         const documentId = input.documentId;
+        const standalone = input.target === "standalone";
+        const libraryID = context.request.libraryID!;
         return executeExternalMutation({
           context,
           toolName: "note_write",
           plan: {
             operation: "save_workflow_document",
-            description: "Attach the exact finalized summary to its paper",
+            description: standalone
+              ? "Save the exact finalized document as a standalone note"
+              : "Attach the exact finalized summary to its paper",
             forward: {
               documentId,
               targetItemId: input.targetItemId,
+              ...(standalone ? { collections: input.collections || [] } : {}),
               contentHash: input._documentMaterialRef?.contentHash,
             },
             reversibility: "full",
             deferredInverse: true,
           },
           execute: async () => {
-            const saved = await savePlanDocumentAsNote(documentId, {
-              parentItemId: input.targetItemId!,
-              libraryID: context.request.libraryID!,
-            });
+            const saved = await savePlanDocumentAsNote(
+              documentId,
+              standalone
+                ? {
+                    standalone: true,
+                    libraryID,
+                    collectionIds: input.collections,
+                  }
+                : { parentItemId: input.targetItemId!, libraryID },
+            );
             const note = zoteroGateway.getItem(saved.itemId)!;
             return {
               result: {
@@ -1407,6 +1425,9 @@ export function createNoteWriteTool(
                 documentId,
                 title: note.getNoteTitle(),
                 status: saved.created ? "created" : "already_satisfied",
+                ...(input.collections?.length
+                  ? { collections: input.collections }
+                  : {}),
                 warnings: saved.warnings,
                 noteVerification: saved.noteVerification,
               },
@@ -1425,8 +1446,11 @@ export function createNoteWriteTool(
                 kind: "created_item" as const,
                 itemId: saved.itemId,
                 exists: true,
-                parentItemId: input.targetItemId!,
+                parentItemId: standalone ? null : input.targetItemId!,
                 htmlChecksum: await sha256Text(note.getNote()),
+                ...(standalone
+                  ? { collections: note.getCollections?.() || [] }
+                  : {}),
               },
             };
           },

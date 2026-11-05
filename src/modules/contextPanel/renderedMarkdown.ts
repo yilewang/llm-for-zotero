@@ -25,7 +25,10 @@ import {
   openStandaloneViewerWindow,
 } from "./standaloneMermaidWindow";
 import { sanitizeText } from "../../utils/textSanitization";
-import { createSandboxedHtmlFrame } from "./htmlPreviewFrame";
+import {
+  createSandboxedHtmlFrame,
+  type HtmlPreviewFit,
+} from "./htmlPreviewFrame";
 import { t } from "../../utils/i18n";
 import {
   PREVIEW_SURFACE_ATTRIBUTE,
@@ -1757,6 +1760,55 @@ export function openHtmlPreviewViewer(
   );
 }
 
+/** Past this height a chat page folds, with "Show the whole page" under it. */
+const FLAT_HTML_FOLD_HEIGHT = 420;
+const FLAT_HTML_TALL_ATTRIBUTE = "data-llm-html-tall";
+
+/** The first painted background behind `element`: the chat's color. */
+function readChatBackground(
+  doc: Document,
+  element: HTMLElement,
+): string | undefined {
+  const view = doc.defaultView;
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    const color = view?.getComputedStyle?.(node)?.backgroundColor;
+    if (color && color !== "transparent" && !/^rgba\(.*,\s*0\)$/.test(color)) {
+      return color;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A page in a chat answer is as tall as its content and uses the chat's font.
+ * A side panel tab fills its tab instead, so it does not fit.
+ */
+function htmlPreviewFitFor(
+  doc: Document,
+  preview: HTMLElement,
+): HtmlPreviewFit | undefined {
+  if (!isInFlatContentScope(preview)) return undefined;
+  if (isInStandaloneContentScope(preview)) return undefined;
+  return {
+    // Read at load, when the answer is in the window and has its styles.
+    readFont: () => {
+      const style = doc.defaultView?.getComputedStyle?.(preview);
+      return style?.fontFamily
+        ? `${style.fontSize}/${style.lineHeight} ${style.fontFamily}`
+        : undefined;
+    },
+    readBackground: () =>
+      preview.getAttribute(PREVIEW_SURFACE_ATTRIBUTE) === "themed"
+        ? readChatBackground(doc, preview)
+        : undefined,
+    onHeight: (height) =>
+      preview.setAttribute(
+        FLAT_HTML_TALL_ATTRIBUTE,
+        height > FLAT_HTML_FOLD_HEIGHT ? "true" : "false",
+      ),
+  };
+}
+
 function attachRenderedHtmlPreviews(root: ParentNode, doc: Document): void {
   const previews = Array.from(
     root.querySelectorAll(".llm-html-preview[data-llm-html-source]"),
@@ -1768,7 +1820,13 @@ function attachRenderedHtmlPreviews(root: ParentNode, doc: Document): void {
     preview.dataset.llmHtmlHydrated = "true";
 
     const appTheme = getMermaidThemeKey(doc, preview);
-    const frame = createSandboxedHtmlFrame(doc, source, undefined, appTheme);
+    const frame = createSandboxedHtmlFrame(
+      doc,
+      source,
+      undefined,
+      appTheme,
+      htmlPreviewFitFor(doc, preview),
+    );
     if (usesPreviewTheme(source)) preview.dataset.llmPreviewTheme = appTheme;
     if (isInFlatContentScope(preview)) {
       // Only the page: the hover bar (attachFlatPreviewChrome) has the rest.
@@ -1828,6 +1886,7 @@ function syncPreviewThemes(root: ParentNode, doc: Document): boolean {
       preview.dataset.llmHtmlSource || "",
       oldFrame.getAttribute("class") || undefined,
       theme,
+      htmlPreviewFitFor(doc, preview),
     );
     preview.replaceChild(frame, oldFrame);
     preview.dataset.llmPreviewTheme = theme;
@@ -3566,6 +3625,26 @@ export function renderRenderedMathPreviewInto(
   if (!setRenderedMarkdownHtml(target, renderMathPreviewHtml(safeText), doc)) {
     target.textContent = safeText;
   }
+}
+
+/**
+ * Gives a streaming tail (rendered with deferEnrichment) the same flat chrome
+ * as settled text, so code, tables and math do not show the old boxed look
+ * while they stream. Diagrams and web pages are not drawn: their source is
+ * still growing, so they wait until their block settles.
+ */
+export function attachStreamingTailChrome(
+  target: HTMLElement,
+  doc: Document,
+): void {
+  attachRenderedCodeBlockControls(target, doc);
+  attachRenderedCopyButtons(target, doc);
+  attachRenderedCodeBlockMoveButtons(target, doc);
+  attachFlatCodeBlockChrome(target, doc);
+  attachFlatPreviewChrome(target, doc);
+  attachFlatTableChrome(target, doc);
+  attachFlatMathChrome(target, doc);
+  attachFlatInlineImageChrome(target, doc);
 }
 
 export function renderRenderedMarkdownInto(

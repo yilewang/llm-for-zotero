@@ -7,6 +7,7 @@ import { setAgentToolPresentationResolverForTests } from "../src/modules/context
 import type { AgentConfirmationResolution } from "../src/agent/types";
 import { readFileSync } from "node:fs";
 import type { Message } from "../src/modules/contextPanel/types";
+import { CONTENT_FLAT_SCOPE_CLASS } from "../src/modules/contextPanel/contentChrome";
 import {
   buildAgentTraceChipDetails,
   buildAgentTraceDisplayItems,
@@ -2527,6 +2528,32 @@ describe("agentTrace render", function () {
       ],
       "both agent messages stay inside the open activity container",
     );
+    // Every agent message is drawn in the answer's look, in the steps; the
+    // status line keeps the step look.
+    for (const node of workingDetails!.findAllByClass(
+      "llm-agent-process-message",
+    )) {
+      const agentMessage = node.innerHTML.includes("<p>");
+      assert.equal(
+        node.classList.contains("llm-agent-inline-answer"),
+        agentMessage,
+      );
+      assert.equal(
+        node.classList.contains(CONTENT_FLAT_SCOPE_CLASS),
+        agentMessage,
+      );
+    }
+    assert.isTrue(
+      workingTrace
+        .findByClass("llm-agent-activity-list")!
+        .classList.contains("llm-agent-activity-list-flush"),
+    );
+    assert.isUndefined(
+      workingTrace.children.find((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      ),
+      "no Codex message is drawn below the steps",
+    );
     assert.isNotNull(
       workingDetails?.findByClass("llm-agent-process-action") || null,
       "the interleaved tool trace stays in the same container",
@@ -2576,16 +2603,273 @@ describe("agentTrace render", function () {
           (text) =>
             text.includes("simple-paper-QA") || text.includes("final answer"),
         ),
-      [
-        "<p>I’m using the simple-paper-QA skill.</p>",
-        "<p>This is the final answer.</p>",
-      ],
-      "collapsing the container must not dismiss its trace",
+      ["<p>I’m using the simple-paper-QA skill.</p>"],
+      "the answer shows once, below the steps; earlier messages stay",
     );
     assert.isFalse(suppressFinalAnswer);
     assert.isNotNull(
       completedTrace.findByClass("llm-agent-output-divider"),
       "the canonical final answer is rendered below the completed trace",
+    );
+  });
+
+  it("leaves a Codex message out of the steps once the run reports it as the final answer", function () {
+    const answer = "The methods use a two-stage design. It was preregistered.";
+    const record = (
+      seq: number,
+      payload: AgentRunEventRecord["payload"],
+    ): AgentRunEventRecord => ({
+      runId: "run-codex-repeat",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq * 1_000,
+    });
+    const progress = (seq: number, itemId: string, text: string) =>
+      record(seq, {
+        type: "codex_progress",
+        itemId,
+        text,
+        status: "running",
+        kind: "assistant_message",
+      });
+    const message = {
+      role: "assistant" as const,
+      text: answer,
+      timestamp: 290_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: false,
+    };
+    const messagesIn = (
+      events: AgentRunEventRecord[],
+      shown: Message = message,
+    ) =>
+      flattenTraceItems(buildAgentTraceDisplayItems(events, null, shown).items)
+        .filter((item) => item.type === "message" && item.agentMessage)
+        .map((item) => (item.type === "message" ? item.text : ""));
+    const base = [
+      progress(1, "assistant-1", "Let me check the methods section."),
+      progress(2, "assistant-2", answer),
+    ];
+
+    assert.deepEqual(
+      messagesIn(base, { ...message, streaming: true, text: "" }),
+      ["Let me check the methods section.", answer],
+      "no final text yet: the streaming look keeps every message",
+    );
+    const finished = [
+      ...base,
+      record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+    ];
+    assert.deepEqual(messagesIn(finished), [
+      "Let me check the methods section.",
+    ]);
+    assert.lengthOf(
+      base,
+      2,
+      "the stored events are not changed by the projection",
+    );
+
+    // The answer's closing part counts as the same text.
+    assert.deepEqual(
+      messagesIn([
+        progress(1, "assistant-1", "Let me check the methods section."),
+        progress(2, "assistant-2", "It was preregistered."),
+        record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+      ]),
+      ["Let me check the methods section."],
+    );
+
+    // A message that is not the answer stays.
+    assert.deepEqual(
+      messagesIn([
+        progress(1, "assistant-1", "Let me check the methods section."),
+        progress(2, "assistant-2", "A different closing note."),
+        record(3, { type: "final", text: answer, answerStartedAt: 2_000 }),
+      ]),
+      ["Let me check the methods section.", "A different closing note."],
+    );
+
+    // Only the last matching message goes; the answer is drawn once.
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: finished,
+    }) as unknown as FakeElement;
+    const drawn = trace
+      .findAllByClass("llm-agent-process-message")
+      .map((node) => `${node.textContent}${node.innerHTML}`);
+    assert.isTrue(drawn.some((text) => text.includes("methods section")));
+    assert.isFalse(drawn.some((text) => text.includes("two-stage design")));
+  });
+
+  it("keeps trace text that stands in for the answer in one node below the steps while it grows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 280_000,
+      runMode: "agent" as const,
+      streaming: true,
+    };
+    const record = (
+      seq: number,
+      payload: AgentRunEventRecord["payload"],
+    ): AgentRunEventRecord => ({
+      runId: "run-inline-answer",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    });
+    const events: AgentRunEventRecord[] = [
+      record(1, { type: "message_delta", text: "Let me read the paper." }),
+      record(2, {
+        type: "tool_call",
+        callId: "call-1",
+        name: "paper_read",
+        args: { operation: "overview" },
+      }),
+      record(3, {
+        type: "tool_result",
+        callId: "call-1",
+        name: "paper_read",
+        ok: true,
+        content: { text: "paper text" },
+      }),
+      record(4, { type: "message_delta", text: "The answer begins.\n\n" }),
+    ];
+    const answerHostOf = (trace: FakeElement) =>
+      trace.children.filter((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      );
+
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    const [host] = answerHostOf(first);
+    assert.isOk(host, "the answer text is drawn below the disclosure");
+    const node = host.children[0];
+    assert.isTrue(node.classList.contains("llm-agent-inline-answer"));
+    assert.isTrue(node.classList.contains(CONTENT_FLAT_SCOPE_CLASS));
+    assert.lengthOf(
+      first
+        .findByClass("llm-agent-activity-list")!
+        .findAllByClass("llm-agent-inline-answer"),
+      0,
+    );
+
+    // A text-only refresh grows the same node where it is.
+    events.push(record(5, { type: "message_delta", text: "It continues." }));
+    const next = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      previous: first as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    assert.deepEqual(answerHostOf(next), [host]);
+    assert.deepEqual(host.children, [node]);
+  });
+
+  it("keeps a streaming Codex message in one node and one look when a tool call follows it", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 270_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const commentary: AgentRunEventRecord = {
+      runId: "run-answer-host",
+      seq: 1,
+      eventType: "codex_progress",
+      payload: {
+        type: "codex_progress",
+        itemId: "assistant-1",
+        text: "Let me check the methods section.",
+        status: "running",
+        kind: "assistant_message",
+      },
+      createdAt: 1_000,
+    };
+    const tool: AgentRunEventRecord = {
+      runId: "run-answer-host",
+      seq: 2,
+      eventType: "codex_tool_activity",
+      payload: {
+        type: "codex_tool_activity",
+        itemId: "tool-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read paper",
+        ok: true,
+        text: "Read paper",
+      },
+      createdAt: 2_000,
+    };
+    const listOf = (trace: FakeElement) =>
+      trace.findByClass("llm-agent-activity-list")!;
+    const noteIn = (trace: FakeElement) => {
+      const notes = trace
+        .findAllByClass("llm-agent-process-message")
+        .filter((node) => node.innerHTML.includes("methods section"));
+      assert.lengthOf(notes, 1, "the note is drawn once");
+      return notes[0];
+    };
+
+    const streaming = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [commentary],
+    }) as unknown as FakeElement;
+    const note = noteIn(streaming);
+    assert.strictEqual(note.parentElement, listOf(streaming));
+    assert.isTrue(note.classList.contains("llm-agent-inline-answer"));
+    assert.isTrue(note.classList.contains(CONTENT_FLAT_SCOPE_CLASS));
+    assert.isTrue(
+      listOf(streaming).classList.contains("llm-agent-activity-list-flush"),
+    );
+    const classes = note.className;
+
+    const afterTool = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [commentary, tool],
+      previous: streaming as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    assert.strictEqual(afterTool, streaming);
+    assert.strictEqual(noteIn(afterTool), note, "the same node stays");
+    assert.equal(note.className, classes, "its look does not change");
+    assert.strictEqual(note.parentElement, listOf(afterTool));
+    const rows = listOf(afterTool).children;
+    const toolRow = rows.findIndex((row) =>
+      row.classList.contains("llm-agent-process-stage"),
+    );
+    assert.isAbove(
+      toolRow,
+      rows.indexOf(note),
+      "the note stays before the tool row",
+    );
+    assert.isTrue(
+      listOf(afterTool).classList.contains("llm-agent-activity-list-flush"),
+    );
+    assert.isUndefined(
+      afterTool.children.find((child) =>
+        child.classList.contains("llm-agent-activity-answer"),
+      ),
+    );
+
+    // A trace without agent messages keeps the ordinary indented list.
+    const toolOnly = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...message, timestamp: 271_000 },
+      events: [tool],
+    }) as unknown as FakeElement;
+    assert.isFalse(
+      listOf(toolOnly).classList.contains("llm-agent-activity-list-flush"),
     );
   });
 
@@ -6630,31 +6914,18 @@ describe("agentTrace render", function () {
       events,
     }) as unknown as FakeElement;
 
-    const values = trace
-      .findAllByClass("llm-agent-process-detail-value")
-      .map(collectFakeText);
-    assert.include(values, longQuery);
-    assert.include(values, longUrl);
-    assert.include(values, "connectivity pharmacology");
-    assert.include(values, longPath);
-    assert.isTrue(
-      trace
-        .findAllByClass("llm-agent-trace-code")
-        .some((entry) => entry.innerHTML.includes("python scripts/fetch.py")),
-    );
+    const code = trace
+      .findAllByClass("llm-agent-trace-code")
+      .map((entry) => entry.innerHTML)
+      .join("\n");
+    assert.include(code, longQuery);
+    assert.include(code, longUrl);
+    assert.include(code, "connectivity pharmacology");
+    assert.include(code, longPath);
+    assert.include(code, "python scripts/fetch.py");
     assert.isEmpty(trace.findAllByClass("llm-at-expand"));
-
-    const chipLabels = trace
-      .findAllByClass("llm-agent-process-chip-label")
-      .map(collectFakeText);
-    assert.includeMembers(chipLabels, [
-      "Query",
-      "URL",
-      "Pattern",
-      "Path",
-      "Status",
-    ]);
-    assert.isFalse(chipLabels.some((label) => label.includes("...")));
+    // Each row already says what Codex did, so no argument chips repeat it.
+    assert.isEmpty(trace.findAllByClass("llm-agent-process-chip-label"));
   });
 
   it("makes Claude Read calls with empty arguments distinguishable and expandable", function () {
@@ -7378,7 +7649,7 @@ describe("agentTrace render", function () {
       items.find((item) => item.type === "reasoning"),
       {
         type: "reasoning",
-        label: "Codex reasoning 1",
+        label: "Thinking for step 1",
         summary: "Inspecting Zotero context.",
       },
     );
@@ -7900,6 +8171,104 @@ describe("agentTrace render", function () {
         ?.findAllByTag("option")[1]?.textContent,
       "20",
     );
+  });
+
+  it("shows a footer action as its own counted button beside the primary one", function () {
+    const resolutions: AgentConfirmationResolution[] = [];
+    const action: AgentPendingAction = {
+      toolName: "literature_review",
+      mode: "review",
+      title: "Relevant papers",
+      confirmLabel: "Import and cite selected",
+      selectionAction: { fieldId: "selectedPaperIds", verb: "Import and cite" },
+      cancelLabel: "Cancel",
+      actions: [
+        {
+          id: "cite",
+          label: "Cite {count} without importing",
+          style: "secondary",
+          footer: true,
+        },
+        { id: "import", label: "Import and cite selected", style: "primary" },
+        { id: "cancel", label: "Cancel", style: "secondary" },
+      ],
+      defaultActionId: "import",
+      cancelActionId: "cancel",
+      fields: [
+        {
+          type: "paper_result_list",
+          id: "selectedPaperIds",
+          label: "Papers",
+          rows: [
+            { id: "doi:one", title: "One", checked: true },
+            { id: "doi:two", title: "Two", checked: true },
+          ],
+          loadMoreActionId: "find_more",
+          loadMoreLabel: "Find 2 more",
+          minSelectedByAction: [
+            { actionId: "cite", min: 1 },
+            { actionId: "import", min: 1 },
+          ],
+          visibleForActionIds: ["cite", "import"],
+        },
+      ],
+    };
+    assert.deepEqual(getPendingActionButtonLayout(action), {
+      hasActionChooser: false,
+      showsFooterExecuteButton: true,
+    });
+    const card = renderPendingActionCard(
+      fakeDocument,
+      { requestId: "outside-choice", action },
+      (_requestId, resolution) => {
+        resolutions.push(resolution);
+      },
+    ) as unknown as FakeElement;
+    const buttons = card.findAllByTag("button");
+    const cite = buttons.find((button) => button.dataset.actionId === "cite");
+    const execute = buttons.find((button) => button.dataset.kind === "save");
+    assert.notExists(
+      buttons.find((button) => button.dataset.kind === "alternatives"),
+      "no Alternatives toggle hides the second choice",
+    );
+    assert.exists(buttons.find((button) => button.dataset.kind === "cancel"));
+    assert.equal(cite?.textContent, "Cite 2 without importing");
+    assert.equal(
+      cite?.className,
+      "llm-agent-hitl-btn llm-agent-hitl-btn-secondary",
+    );
+    assert.equal(execute?.textContent, "Import and cite 2 papers");
+    assert.equal(execute?.dataset.actionId, "import");
+    const footer = card.findByClass("llm-agent-hitl-footer-primary");
+    assert.deepEqual(
+      footer?.children.map((child) => (child as FakeElement).dataset.actionId),
+      ["cite", "import"],
+    );
+
+    // Both submit choices count and need the ticked papers.
+    const boxes = card
+      .findAllByTag("input")
+      .filter((input) => input.className === "llm-search-results-checkbox");
+    boxes[0].checked = false;
+    boxes[0].dispatchFakeEvent("change");
+    assert.equal(cite?.textContent, "Cite 1 without importing");
+    assert.equal(execute?.textContent, "Import and cite 1 paper");
+    boxes[1].checked = false;
+    boxes[1].dispatchFakeEvent("change");
+    assert.isTrue(cite?.disabled);
+    assert.isTrue(execute?.disabled);
+    boxes[1].checked = true;
+    boxes[1].dispatchFakeEvent("change");
+    assert.isFalse(cite?.disabled);
+
+    cite?.dispatchFakeEvent("click");
+    assert.deepEqual(resolutions, [
+      {
+        approved: true,
+        actionId: "cite",
+        data: { selectedPaperIds: ["doi:two"] },
+      },
+    ]);
   });
 
   it("wraps pending review actions in a single filled shell", function () {

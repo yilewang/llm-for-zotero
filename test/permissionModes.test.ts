@@ -536,6 +536,44 @@ describe("provider permission modes", function () {
     assert.isFalse(confirmedCustom.requiresProviderThreadReplacement);
   });
 
+  it("makes the read-only profile ask the user, whatever approval came before", function () {
+    for (const current of [
+      CODEX_ASK_PERMISSION_STATE,
+      CODEX_APPROVE_PERMISSION_STATE,
+      CODEX_FULL_PERMISSION_STATE,
+      CODEX_CUSTOM_PERMISSION_STATE,
+    ]) {
+      const chosen = applyCodexPermissionChoice({
+        current,
+        choice: { kind: "profile", profileId: ":read-only" },
+      });
+      assert.deepEqual(chosen, {
+        boundary: { kind: "profile", profileId: ":read-only" },
+        approvalOverride: { policy: "on-request", reviewer: "user" },
+      });
+      // A state saved before this rule still asks on the thread.
+      const saved: CodexPermissionState = {
+        boundary: { kind: "profile", profileId: ":read-only" },
+        approvalOverride: current.approvalOverride
+          ? { ...current.approvalOverride }
+          : null,
+      };
+      const execution = buildCodexPermissionExecution({
+        capabilities: modernCapabilities(),
+        preference: preference(saved),
+      });
+      assert.deepEqual(execution.thread, {
+        permissions: ":read-only",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+      });
+      assert.deepEqual(execution.state?.approvalOverride, {
+        policy: "on-request",
+        reviewer: "user",
+      });
+    }
+  });
+
   it("keeps legacy read-only synthetic and never overwrites a modern choice", function () {
     const legacy: CodexPermissionCapabilities = {
       protocol: "legacy",

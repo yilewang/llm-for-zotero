@@ -149,6 +149,8 @@ export type CodexTaskProgressReplayHandle = {
   planUpdated: (steps: Array<{ content: string; status?: string }>) => void;
   read: (requestId: string, delta: TaskPaperLedgerDelta) => void;
   answer: (text: string) => void;
+  /** Text of one Codex agent message, as the app server streams it. */
+  agentMessage: (itemId: string, delta: string) => void;
   /** Finish, persist the run's trace and messages, and end the request. */
   finish: () => Promise<void>;
 };
@@ -239,6 +241,9 @@ export async function startCodexTaskProgressReplay(
     answer: (text) => {
       void callbacks.onDelta?.(text);
       response.flush("event");
+    },
+    agentMessage: (itemId, delta) => {
+      void callbacks.onAgentMessageDelta?.({ itemId, delta });
     },
     finish: async () => {
       if (finished) return;

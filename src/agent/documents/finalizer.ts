@@ -4,6 +4,7 @@ import type { ZoteroGateway } from "../services/zoteroGateway";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
   formatDocumentCitations,
+  type DocumentCitationCorpusItem,
   type DocumentCitationEvidence,
 } from "./citationService";
 import {
@@ -24,9 +25,15 @@ import {
 import {
   PLAN_DOCUMENT_MARKDOWN_MAX_BYTES,
   type DocumentArtifactV2,
+  type DocumentCitationDraft,
+  type DocumentRevisionOf,
   type DocumentSpec,
+  type OutsidePaperSnapshot,
   type PlanDocumentOutboxRecord,
+  type PlanDocumentValidation,
+  type PlanVerifiedQuote,
   type SubmitPlanDocumentInput,
+  type ZoteroCitationSource,
 } from "./types";
 import { resolveVerifiedQuotes } from "./verifiedQuotes";
 import { ToolInputRejection } from "../tools/execution/failure";
@@ -42,9 +49,24 @@ type DocumentFinalizationContext = Pick<
   | "coverageItems"
 > & {
   spec: DocumentSpec;
-  corpus: readonly { libraryID: number; itemKey: string }[];
+  corpus: readonly DocumentCitationCorpusItem[];
   evidence: readonly DocumentCitationEvidence[];
   quoteCorpusKeys: ReadonlySet<string>;
+  /** The outside papers the citations may cite, as the run recorded them. */
+  outsidePapers?: readonly OutsidePaperSnapshot[];
+  /** The stored document this one is a new version of. */
+  revisionOf?: DocumentRevisionOf;
+  /**
+   * What a new version keeps from the stored document unchecked: its
+   * verified quotes, its grounding review, and the Zotero sources it cited.
+   * Each was validated when that document was published, against evidence
+   * the current run no longer holds.
+   */
+  carriedOver?: Readonly<{
+    verifiedQuotes: readonly PlanVerifiedQuote[];
+    groundingReviewed: PlanDocumentValidation["groundingReviewed"];
+    sources: readonly ZoteroCitationSource[];
+  }>;
   /** Source owners attest figures against their native observations or research ledger. */
   validateAssetProvenance: () => void | Promise<void>;
 };
@@ -113,8 +135,9 @@ export async function finalizeDocument(params: {
   // heading and applies no visible-document privacy check: the two ways of
   // writing the same note must not disagree about what a note may contain.
   const noteMaterial = spec.kind === "note";
-  // Plans retain their approved evidence requirements, including authored plans.
-  const requireEvidence = planned || researchGrounded;
+  // Plans retain their approved evidence requirements, including authored
+  // plans. A new version's evidence was checked when its document was.
+  const requireEvidence = !context.carriedOver && (planned || researchGrounded);
   const submittedTitle = input.title.trim();
   if (!submittedTitle)
     throw new ToolInputRejection("Document title is required");
@@ -181,10 +204,14 @@ export async function finalizeDocument(params: {
   repairs.push(...resolvedQuotes.repairs);
   if (!noteMaterial) validateVisibleDocumentPrivacy(resolvedQuotes.markdown);
   await context.validateAssetProvenance();
+  const citationClusters = [
+    ...input.citations,
+    ...resolvedQuotes.addedCitations,
+  ];
   const formatted = await formatDocumentCitations({
     gateway: params.gateway,
     draftMarkdown: resolvedQuotes.markdown,
-    clusters: [...input.citations, ...resolvedQuotes.addedCitations],
+    clusters: citationClusters,
     // A downgraded quote's paper already passed the quote corpus check.
     corpus: [
       ...context.corpus,
@@ -193,26 +220,45 @@ export async function finalizeDocument(params: {
     evidence: context.evidence,
     spec,
     requireEvidence,
+    outsidePapers: context.outsidePapers,
+    carriedSources: context.carriedOver?.sources,
   });
+  // A document citing an outside paper keeps its tokenized draft, so a later
+  // version can cite the imported items without the text being rewritten.
+  const citationDraft: DocumentCitationDraft | undefined = formatted
+    .citationBundle.outsidePapers?.length
+    ? { markdown: resolvedQuotes.markdown, clusters: citationClusters }
+    : undefined;
   repairs.push(...formatted.repairs);
   if (utf8Bytes(formatted.visibleMarkdown) > PLAN_DOCUMENT_MARKDOWN_MAX_BYTES)
     throw new ToolInputRejection("Finalized document exceeds the 2 MiB limit");
   // Check the complete visible payload before copying any assets or publishing it.
   const assets = await materializePlanDocumentAssets(input.assets);
+  const verifiedQuotes = [
+    ...(context.carriedOver?.verifiedQuotes || []),
+    ...resolvedQuotes.verifiedQuotes,
+  ];
+  // A new version carries its document's issues, which hold the repairs made
+  // then; a repair made again is not listed twice.
+  const newRepairs = context.carriedOver
+    ? repairs.filter((repair) => !input.groundingIssues.includes(repair))
+    : repairs;
   const validation: DocumentArtifactV2["validation"] = {
     integrityValidated: true,
-    groundingReviewed: requireEvidence ? input.groundingReviewed : "not_run",
-    quoteVerified: resolvedQuotes.verifiedQuotes.length
-      ? "verified"
-      : "not_applicable",
-    issues: [...input.groundingIssues, ...repairs],
+    groundingReviewed: context.carriedOver
+      ? context.carriedOver.groundingReviewed
+      : requireEvidence
+        ? input.groundingReviewed
+        : "not_run",
+    quoteVerified: verifiedQuotes.length ? "verified" : "not_applicable",
+    issues: [...input.groundingIssues, ...newRepairs],
   };
   const contentHash = `sha256:${await sha256Text(
     canonicalJson({
       title,
       markdown: formatted.visibleMarkdown,
       citations: formatted.citationBundle,
-      verifiedQuotes: resolvedQuotes.verifiedQuotes,
+      verifiedQuotes,
       assets,
       coverageItems: context.coverageItems,
       // Preserve the existing per-origin content identity for durable retries.
@@ -223,6 +269,10 @@ export async function finalizeDocument(params: {
           }
         : {}),
       validation,
+      // Present only on documents that have them, so every other
+      // document's content identity is unchanged.
+      ...(citationDraft ? { citationDraft } : {}),
+      ...(context.revisionOf ? { revisionOf: context.revisionOf } : {}),
     }),
   )}`;
   const document: DocumentArtifactV2 = {
@@ -237,13 +287,15 @@ export async function finalizeDocument(params: {
     visibleMarkdown: formatted.visibleMarkdown,
     visibleHtml: renderMarkdownForNote(formatted.visibleMarkdown),
     citationBundle: formatted.citationBundle,
-    verifiedQuotes: resolvedQuotes.verifiedQuotes,
+    verifiedQuotes,
     assets,
     coverageStatus: context.coverageStatus,
     coverageItems: context.coverageItems,
     validation,
     contentHash,
     createdAt: now,
+    ...(citationDraft ? { citationDraft } : {}),
+    ...(context.revisionOf ? { revisionOf: context.revisionOf } : {}),
   };
   return {
     document,

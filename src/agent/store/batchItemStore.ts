@@ -266,6 +266,28 @@ export async function markBatchItemFailed(
   );
 }
 
+/**
+ * Records that another batch now holds this item's note.
+ *
+ * A later batch over the same paper wrote its note, or found one already
+ * saved, so this row's work is done: left `pending`, a resume of this batch
+ * would write the paper a second time. The row's own journal action and step
+ * are kept, because they are the record of what this batch itself did.
+ */
+export async function markBatchItemSettled(
+  batchId: string,
+  itemKey: string,
+  params: { noteId: number; now?: number },
+): Promise<void> {
+  if (!hasDb()) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${BATCH_ITEMS_TABLE}
+     SET status = 'saved', note_id = ?, error = NULL, updated_at = ?
+     WHERE batch_id = ? AND item_key = ?`,
+    [params.noteId, params.now ?? Date.now(), batchId, itemKey],
+  );
+}
+
 export async function listBatchItems(
   batchId: string,
 ): Promise<BatchItemRecord[]> {

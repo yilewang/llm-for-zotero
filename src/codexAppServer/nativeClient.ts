@@ -70,6 +70,7 @@ import {
 import {
   getCodexNativeSkillModePref,
   isCodexZoteroMcpToolsEnabled,
+  readCodexPermissionStatePref,
 } from "./prefs";
 import {
   isCodexMethodNotFound,
@@ -77,19 +78,24 @@ import {
   type CodexPermissionExecution,
 } from "./permissionProfiles";
 import {
+  codexZoteroMcpWriteApprovalMode,
   deserializeCodexPermissionState,
-  serializeCodexPermissionState,
+  readCodexProviderMcpWriteApproval,
+  serializeCodexProviderPermissionRecord,
+  withReadOnlyAsking,
   type CodexPermissionState,
 } from "./permissionState";
 import { getCodexProfileSignature } from "./constants";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildCodexZoteroMcpThreadConfig,
+  buildDisabledUserLevelZoteroMcpServer,
   preflightCodexZoteroMcpServer,
   REQUIRED_CODEX_RAW_PDF_MCP_TOOL_NAMES,
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
+  buildCodexNativeSkillInstructionBlock,
   buildCodexNativeSkillRequest,
   resolveExplicitCodexNativeSkillIds,
   resolveCodexNativeSkills,
@@ -119,6 +125,10 @@ export {
   resolveCodexNativeRuntimeCwd,
 } from "./runtimeCwd";
 import { getCanonicalSkillFilePath } from "../agent/skills/nativeSkillPaths";
+import {
+  prepareCodexSkillProjections,
+  withCodexSkillDisableRules,
+} from "./skillProjection";
 import { loadLatestDocumentForRun } from "../agent/documents/store";
 import { areEquivalentLocalPaths } from "../utils/localPath";
 import {
@@ -176,6 +186,8 @@ export type CodexNativeStoreHooks = {
 type StoredCodexProviderSession = Readonly<{
   threadId: string;
   appliedPermissionState?: CodexPermissionState;
+  /** The Zotero write approval mode the stored thread was created with. */
+  appliedMcpWriteApproval: "writes" | "auto";
 }>;
 
 export function resetCodexNativePathSafetyStateForTests(
@@ -199,6 +211,8 @@ export type CodexNativeApprovalRequest = {
   signal?: AbortSignal;
   method: string;
   params: unknown;
+  /** The Zotero MCP server name of the turn that received the request. */
+  zoteroMcpServerName?: string;
 };
 
 export type CodexNativeApprovalDecision = {
@@ -724,7 +738,8 @@ function codexNativeApprovalResponseGranted(response: unknown): boolean {
   return Boolean(
     record.approved ||
     record.decision === "accept" ||
-    record.decision === "approved",
+    record.decision === "approved" ||
+    record.action === "accept",
   );
 }
 
@@ -806,6 +821,103 @@ export function buildCodexNativeApprovalPendingAction(
     fields,
     defaultActionId: "approve",
     cancelActionId: "deny",
+  };
+}
+
+/**
+ * A Codex request to run one of the plugin's own Zotero MCP tools.
+ *
+ * Codex 0.164 asks with `mcpServer/elicitation/request`, marked
+ * `_meta.codex_approval_kind: "mcp_tool_call"`, when a tool's approval mode
+ * is "writes" and the tool is not read-only (captured from the app-server on
+ * 2026-10-31). The request names the server but not the tool; the tool's
+ * name is only in Codex's message, so the card falls back to a generic name
+ * when the message changes. The user decides either way: nothing here
+ * approves on its own.
+ */
+export type ZoteroMcpToolApproval = {
+  serverName: string;
+  toolName: string;
+  toolParams: unknown;
+  message: string;
+};
+
+export function readZoteroMcpToolApproval(
+  request: CodexNativeApprovalRequest,
+): ZoteroMcpToolApproval | null {
+  if (request.method !== "mcpServer/elicitation/request") return null;
+  const params = normalizeRecord(request.params);
+  const meta = normalizeRecord(params._meta);
+  if (meta.codex_approval_kind !== "mcp_tool_call") return null;
+  const serverName = normalizeNonEmptyString(params.serverName);
+  // Only this turn's own Zotero server: another server that merely starts
+  // with the plugin's name gets no card.
+  if (!serverName || serverName !== request.zoteroMcpServerName) return null;
+  const message = normalizeNonEmptyString(params.message);
+  return {
+    serverName,
+    toolName: /\brun tool "([^"]+)"/.exec(message)?.[1] || "",
+    toolParams: meta.tool_params ?? {},
+    message,
+  };
+}
+
+/** What a Zotero MCP write does, in the card's words. */
+function describeZoteroMcpToolApproval(toolName: string): string {
+  switch (toolName) {
+    case "run_command":
+      return "Codex asks to run a command on this computer.";
+    case "file_io":
+      return "Codex asks to read or write a file on this computer.";
+    case "zotero_script":
+      return "Codex asks to run a Zotero script.";
+    case "library_update":
+    case "library_import":
+    case "library_delete":
+    case "library_settings":
+    case "note_write":
+    case "note_write_batch":
+    case "annotate_pdf":
+    case "undo":
+      return `Codex asks to change your Zotero library with ${toolName}.`;
+    default:
+      return `Codex asks to run ${toolName || "a Zotero tool"}.`;
+  }
+}
+
+export function buildZoteroMcpToolApprovalPendingAction(
+  approval: ZoteroMcpToolApproval,
+): AgentPendingAction {
+  const tool = approval.toolName || "a Zotero tool";
+  return {
+    toolName: "codex_native_approval",
+    title: `Allow Codex to run ${tool}`,
+    mode: "approval",
+    confirmLabel: "Approve once",
+    cancelLabel: "Deny",
+    description: describeZoteroMcpToolApproval(approval.toolName),
+    fields: [
+      {
+        type: "code_preview",
+        id: "arguments",
+        label: "Arguments",
+        value: prettyJson(approval.toolParams),
+        language: "json",
+      },
+    ],
+    defaultActionId: "approve",
+    cancelActionId: "deny",
+  };
+}
+
+/** Codex's own answer to a tool-approval elicitation. */
+export function zoteroMcpToolApprovalResponse(
+  resolution: AgentConfirmationResolution,
+): { action: "accept" | "decline"; content: null; _meta: null } {
+  return {
+    action: resolution.approved ? "accept" : "decline",
+    content: null,
+    _meta: null,
   };
 }
 
@@ -1687,6 +1799,8 @@ function buildCodexNativeScopedMcpScope(params: {
     executionContext:
       params.preparedRequest?.executionContext || params.executionContext,
     exhaustiveReadBackend: "codex_responses",
+    // The reader model the user picked for Codex, by entry ID or model name.
+    readerSelection: resolvedRequest.readerSelection,
     attachedConversationScope: resolvedRequest.attachedConversationScope,
     turnPaperScope: resolvedRequest.turnPaperScope,
     turnPaperScopeWarnings: resolvedRequest.turnPaperScopeWarnings,
@@ -1978,6 +2092,8 @@ async function loadStoredProviderSession(params: {
       appliedPermissionState: rawPermissionState
         ? deserializeCodexPermissionState(rawPermissionState) || undefined
         : undefined,
+      appliedMcpWriteApproval:
+        readCodexProviderMcpWriteApproval(rawPermissionState),
     };
   }
   const summary = await getCodexConversationSummary(params.conversationKey);
@@ -1987,6 +2103,9 @@ async function loadStoredProviderSession(params: {
       ? deserializeCodexPermissionState(summary.providerPermissionState) ||
         undefined
       : undefined,
+    appliedMcpWriteApproval: readCodexProviderMcpWriteApproval(
+      summary?.providerPermissionState,
+    ),
   };
 }
 
@@ -2025,13 +2144,16 @@ async function persistProviderSessionId(params: {
   model: string;
   effort?: string;
   permissionState?: CodexPermissionState | null;
+  /** The Zotero write approval mode this thread was created with. */
+  mcpWriteApproval: "writes" | "auto";
   hooks?: CodexNativeStoreHooks;
   expectedProviderSessionId?: string | null;
   expectedGeneration?: number;
 }): Promise<void> {
-  const serializedPermissionState = params.permissionState
-    ? serializeCodexPermissionState(params.permissionState)
-    : undefined;
+  const serializedPermissionState = serializeCodexProviderPermissionRecord(
+    params.permissionState,
+    params.mcpWriteApproval,
+  );
   if (params.hooks?.persistProviderSession) {
     await params.hooks.persistProviderSession({
       threadId: params.threadId,
@@ -2384,6 +2506,8 @@ async function resolveNativeThread(params: {
   hooks?: CodexNativeStoreHooks;
   storedThreadId?: string | null;
   permissionExecution: CodexPermissionExecution;
+  /** The Zotero write approval mode a thread created now is bound to. */
+  mcpWriteApproval: "writes" | "auto";
   forceReplacement?: boolean;
 }): Promise<NativeThreadResolution> {
   const expectedGeneration = getConversationWriteGeneration(
@@ -2431,6 +2555,7 @@ async function resolveNativeThread(params: {
           model: params.model,
           effort: params.effort,
           permissionState: params.permissionExecution.state,
+          mcpWriteApproval: params.mcpWriteApproval,
           hooks: params.hooks,
           expectedProviderSessionId: storedThreadId,
           expectedGeneration,
@@ -2548,6 +2673,7 @@ async function resolveNativeThread(params: {
       model: params.model,
       effort: params.effort,
       permissionState: params.permissionExecution.state,
+      mcpWriteApproval: params.mcpWriteApproval,
       hooks: params.hooks,
       expectedProviderSessionId: storedThreadId,
       expectedGeneration,
@@ -2796,8 +2922,9 @@ export async function listCodexAppServerModels(
  * source MCP server behind the preference.
  */
 export function buildForkedCodexThreadMcpConfig(
-  targetConversationKey?: number,
-  targetInstanceID?: string,
+  targetConversationKey: number | undefined,
+  targetInstanceID: string | undefined,
+  writeApprovalMode: "writes" | "auto",
 ): Record<string, unknown> | undefined {
   const conversationKey = Math.floor(Number(targetConversationKey));
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
@@ -2814,16 +2941,43 @@ export function buildForkedCodexThreadMcpConfig(
     }),
     required: mcpEnabled,
     enabled: mcpEnabled,
+    writeApprovalMode,
   }).config;
 }
 
-export async function forkCodexAppServerThread(params: {
+/**
+ * The Zotero write approval mode a fork is created with: the saved chip's,
+ * or "writes" (ask) when the saved chip cannot be read. thread/fork binds
+ * the mode of its config override (checked against Codex 0.164: a fork
+ * created with "writes" from an "auto" thread asked before the write), so
+ * the fork's stored record names it.
+ */
+export function forkedCodexThreadMcpWriteApproval(): "writes" | "auto" {
+  const saved = readCodexPermissionStatePref();
+  return saved.error
+    ? "writes"
+    : codexZoteroMcpWriteApprovalMode(withReadOnlyAsking(saved.state));
+}
+
+export type CodexForkedThread = {
+  threadId: string;
+  /**
+   * What the fork's conversation stores as its provider permission record:
+   * only the write approval mode the fork was created with, since the fork
+   * inherits the source thread's other settings and its applied permission
+   * state stays unknown, as before. With the Zotero tools off no plugin
+   * server is bound, which counts as "auto".
+   */
+  providerPermissionRecord: string;
+};
+
+export async function forkCodexAppServerThreadWithRecord(params: {
   threadId: string;
   targetConversationKey?: number;
   targetInstanceID?: string;
   codexPath?: string;
   processKey?: string;
-}): Promise<string> {
+}): Promise<CodexForkedThread> {
   const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
   const proc = await getOrCreateCodexAppServerProcess(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
@@ -2832,11 +2986,23 @@ export async function forkCodexAppServerThread(params: {
   const requestParams: Record<string, unknown> = {
     threadId: params.threadId,
   };
+  // Computed once: the config binds it and the record names it.
+  const mcpWriteApproval = forkedCodexThreadMcpWriteApproval();
   const config = buildForkedCodexThreadMcpConfig(
     params.targetConversationKey,
     params.targetInstanceID,
+    mcpWriteApproval,
   );
-  if (config) requestParams.config = config;
+  const boundMcpWriteApproval =
+    config && isCodexZoteroMcpToolsEnabled() ? mcpWriteApproval : "auto";
+  // The fork hides the canonical copies of marked skills, as a started or
+  // resumed thread does (skillProjection.ts).
+  const skillProjection = await prepareCodexSkillProjections(proc);
+  const forkConfig = withCodexSkillDisableRules(
+    config,
+    skillProjection.projections.map((entry) => entry.canonicalPath),
+  );
+  if (forkConfig) requestParams.config = forkConfig;
   const targetConversationKey = Math.floor(
     Number(params.targetConversationKey),
   );
@@ -2869,7 +3035,13 @@ export async function forkCodexAppServerThread(params: {
     if (!threadId) {
       throw new Error("Codex app-server did not return a thread ID");
     }
-    return threadId;
+    return {
+      threadId,
+      providerPermissionRecord: serializeCodexProviderPermissionRecord(
+        null,
+        boundMcpWriteApproval,
+      ),
+    };
   } finally {
     provisionalMcpScope?.clear();
   }
@@ -3175,6 +3347,9 @@ export async function runCodexAppServerNativeTurn(input: {
       const childThreadIds = new Set<string>();
       let turnStarted = Promise.resolve();
       let resolveTurnStarted: () => void = () => {};
+      // Set once this turn's MCP config names its server; requests arrive
+      // only after the turn starts.
+      let turnZoteroMcpServerName = "";
       const unregisterApprovalHandlers = registerNativeApprovalRequestHandlers({
         proc,
         onApprovalRequest: params.onApprovalRequest
@@ -3182,6 +3357,7 @@ export async function runCodexAppServerNativeTurn(input: {
               params.onApprovalRequest?.({
                 ...redactTerminalValue(request),
                 signal: request.signal,
+                zoteroMcpServerName: turnZoteroMcpServerName,
               })
           : undefined,
         redactText,
@@ -3284,6 +3460,23 @@ export async function runCodexAppServerNativeTurn(input: {
         if (scopedMcp && !scopedMcp.getState())
           throw new Error("The prepared native scope is no longer current.");
       };
+      // Codex asks before a Zotero write under the chips that ask, and runs
+      // it under the ones that do not. A thread keeps the mode it was created
+      // with (thread/resume does not rebind it), so a stored thread created
+      // under another mode is replaced below; a chip change applies from the
+      // next turn.
+      const turnMcpWriteApproval = codexZoteroMcpWriteApprovalMode(
+        permissionExecution.state,
+      );
+      // With the Zotero tools off no plugin server is bound: "auto".
+      const boundMcpWriteApproval = scopedMcp ? turnMcpWriteApproval : "auto";
+      // Legacy Read only (state null) is checked too: its mode is always
+      // "writes", so a legacy thread is replaced at most once.
+      const mcpWriteApprovalStale =
+        Boolean(storedThreadId) &&
+        Boolean(scopedMcp) &&
+        !currentTurnHasLocalPdfs &&
+        storedSession.appliedMcpWriteApproval !== turnMcpWriteApproval;
       const mcpThreadConfig = scopedMcp
         ? buildCodexZoteroMcpThreadConfig({
             profileSignature,
@@ -3291,14 +3484,32 @@ export async function runCodexAppServerNativeTurn(input: {
             required: true,
             enableShellTool: currentTurnHasLocalPdfs,
             rawPdfMode: currentTurnHasLocalPdfs,
+            writeApprovalMode: turnMcpWriteApproval,
           })
         : null;
-      const threadConfig = {
-        ...(mcpThreadConfig?.config || {}),
+      turnZoteroMcpServerName = mcpThreadConfig?.serverName || "";
+      // Before any thread request: Codex-only copies of marked skills, their
+      // folder registered on this process, and their canonical copies hidden
+      // from this thread (skillProjection.ts).
+      const skillProjection = await prepareCodexSkillProjections(proc);
+      const projectedSkills = new Map(
+        skillProjection.projections.map((entry) => [entry.skillId, entry]),
+      );
+      const baseThreadConfig: Record<string, unknown> = {
+        // With the Zotero tools off, the user-level Zotero server is off in
+        // this thread too (`buildDisabledUserLevelZoteroMcpServer`).
+        ...(mcpThreadConfig?.config || {
+          mcp_servers: buildDisabledUserLevelZoteroMcpServer(),
+        }),
         features: {
           shell_tool: currentTurnHasLocalPdfs,
         },
       };
+      const threadConfig =
+        withCodexSkillDisableRules(
+          baseThreadConfig,
+          skillProjection.projections.map((entry) => entry.canonicalPath),
+        ) || baseThreadConfig;
       const configuredCodexNativeSkillMode = getCodexNativeSkillModePref();
       const codexNativeSkillMode = currentTurnHasLocalPdfs
         ? "off"
@@ -3413,7 +3624,12 @@ export async function runCodexAppServerNativeTurn(input: {
               if (event.phase === "completed") {
                 hostReceipts.push(...(event.actionReceipts || []));
                 if (event.ok) successfulHostToolResults++;
-                if (event.ok && event.toolName === "submit_document") {
+                if (
+                  event.ok &&
+                  (event.toolName === "submit_document" ||
+                    (event.toolName === "library_import" &&
+                      event.publishedDocumentId))
+                ) {
                   submittedDocument = true;
                 }
               }
@@ -3649,16 +3865,34 @@ export async function runCodexAppServerNativeTurn(input: {
           params.executionRequest.executionContext;
         const turnSkillIds = resolvedSkills.matchedSkillIds;
         const turnSkillInstructionBlock = resolvedSkills.instructionBlock;
+        const selectedNativeSkillIds = currentTurnHasLocalPdfs
+          ? explicitPdfSkillIds
+          : turnSkillIds;
+        // A marked skill is sent as an item for its Codex-only copy, by exact
+        // path: both copies share a name in skills/list. Without the copies
+        // registered, it goes through the stripped instruction block.
+        const blockSkillIds = skillProjection.registered
+          ? []
+          : selectedNativeSkillIds.filter((id) => projectedSkills.has(id));
+        const projectedSkillPaths: Record<string, string> = {};
+        if (skillProjection.registered) {
+          for (const id of selectedNativeSkillIds) {
+            const entry = projectedSkills.get(id);
+            if (entry) projectedSkillPaths[id] = entry.projectedPath;
+          }
+        }
+        const exactNativeSkillPaths =
+          currentTurnHasLocalPdfs || Object.keys(projectedSkillPaths).length
+            ? { ...(explicitPdfSkillPaths || {}), ...projectedSkillPaths }
+            : undefined;
         const nativeSkillInputResolution = useNativeSkillInputs
           ? await resolveCodexNativeSkillInputItems({
               proc,
               cwd: codexNativeSkillLookupCwd,
-              skillIds: currentTurnHasLocalPdfs
-                ? explicitPdfSkillIds
-                : turnSkillIds,
-              exactSkillPaths: currentTurnHasLocalPdfs
-                ? explicitPdfSkillPaths
-                : undefined,
+              skillIds: selectedNativeSkillIds.filter(
+                (id) => !blockSkillIds.includes(id),
+              ),
+              exactSkillPaths: exactNativeSkillPaths,
             })
           : { skillInputs: [], fallbackSkillIds: [] };
         if (
@@ -3672,7 +3906,11 @@ export async function runCodexAppServerNativeTurn(input: {
           );
         }
         const skillInstructionBlock =
-          codexNativeSkillMode === "legacy" ? turnSkillInstructionBlock : "";
+          codexNativeSkillMode === "legacy"
+            ? turnSkillInstructionBlock
+            : useNativeSkillInputs && blockSkillIds.length
+              ? buildCodexNativeSkillInstructionBlock(blockSkillIds)
+              : "";
         const activatedSkillIds = currentTurnHasLocalPdfs
           ? explicitPdfSkillIds
           : turnSkillIds;
@@ -3771,6 +4009,7 @@ export async function runCodexAppServerNativeTurn(input: {
               hooks: params.hooks,
               storedThreadId: storedThreadId || null,
               permissionExecution,
+              mcpWriteApproval: boundMcpWriteApproval,
               forceReplacement,
             });
           });
@@ -3798,7 +4037,8 @@ export async function runCodexAppServerNativeTurn(input: {
               };
             })()
           : await resolvePersistentThread(
-              permissionExecution.requiresProviderThreadReplacement,
+              permissionExecution.requiresProviderThreadReplacement ||
+                mcpWriteApprovalStale,
             );
         if (rawPdfMode) {
           try {
@@ -3851,6 +4091,12 @@ export async function runCodexAppServerNativeTurn(input: {
               model: params.model,
               effort: reasoningParams.effort,
               permissionState: permissionExecution.state,
+              // A resumed thread keeps the mode it was created with; a
+              // thread Codex created in its place took this turn's.
+              mcpWriteApproval:
+                thread.threadId === storedThreadId
+                  ? storedSession.appliedMcpWriteApproval
+                  : boundMcpWriteApproval,
               hooks: params.hooks,
               expectedProviderSessionId: thread.threadId,
               expectedGeneration,
@@ -3923,6 +4169,7 @@ export async function runCodexAppServerNativeTurn(input: {
               model: params.model,
               effort: reasoningParams.effort,
               permissionState: permissionExecution.state,
+              mcpWriteApproval: boundMcpWriteApproval,
               hooks: params.hooks,
               expectedProviderSessionId: thread.replacedThreadId || null,
               expectedGeneration,
@@ -3967,8 +4214,9 @@ export async function runCodexAppServerNativeTurn(input: {
           candidate: CodexNativeTurnResult,
         ) =>
           candidate.turnId ? loadLatestDocumentForRun(candidate.turnId) : null;
-        // A document exists only when submit_document succeeded, keyed by
-        // the Codex turn id.
+        // A document exists only when submit_document succeeded or a
+        // library_import published a new version of one, keyed by the Codex
+        // turn id.
         const document = submittedDocument
           ? await loadSubmittedDocument(result)
           : null;

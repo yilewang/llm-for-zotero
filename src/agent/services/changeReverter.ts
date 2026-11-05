@@ -367,6 +367,51 @@ function atomizeLibraryOperations(
   return operations.flatMap(atomizeMutationOperationFromHandler);
 }
 
+/**
+ * The operations to replay for a step's library inverse.
+ *
+ * Journal rows written before metadata edits recorded only the fields they
+ * set carry a metadata inverse naming every field of the item type.
+ * Undo compares what that would restore with the edit's post-image, which
+ * holds only the fields the edit set, so such a row could never match. Trim
+ * it to the keys of the forward patch (the creators only when the patch set
+ * them), which is the inverse a current row holds.
+ */
+function replayableInverseOperations(
+  step: JournalStep,
+  operations: LibraryMutationOperation[],
+): LibraryMutationOperation[] {
+  const forward = parseJson(step.forwardJson) as {
+    type?: unknown;
+    itemId?: unknown;
+    metadata?: unknown;
+  } | null;
+  if (
+    forward?.type !== "update_metadata" ||
+    !forward.metadata ||
+    typeof forward.metadata !== "object"
+  )
+    return operations;
+  const patched = new Set(Object.keys(forward.metadata));
+  return operations.map((operation) => {
+    if (
+      operation.type !== "update_metadata" ||
+      !operation.metadata ||
+      (forward.itemId !== undefined && operation.itemId !== forward.itemId)
+    )
+      return operation;
+    const kept = Object.entries(operation.metadata).filter(([field]) =>
+      patched.has(field),
+    );
+    return kept.length === Object.keys(operation.metadata).length
+      ? operation
+      : {
+          ...operation,
+          metadata: Object.fromEntries(kept) as typeof operation.metadata,
+        };
+  });
+}
+
 type MutationStateSection = (typeof MUTATION_STATE_SECTIONS)[number];
 type MutationStateRow = Record<string, unknown>;
 
@@ -554,7 +599,9 @@ async function conflictForLibraryInverse(params: {
   service: LibraryMutationService;
   context: AgentToolContext;
 }): Promise<RevertConflict | null> {
-  for (const operation of atomizeLibraryOperations(params.inverse.operations)) {
+  for (const operation of atomizeLibraryOperations(
+    replayableInverseOperations(params.step, params.inverse.operations),
+  )) {
     const classification = await classifyLibraryInverseOperation({
       operation,
       step: params.step,
@@ -587,7 +634,9 @@ async function executeLibraryInverseWithProgress(params: {
   context: AgentToolContext;
   now: () => number;
 }): Promise<RevertedStepVerification> {
-  let remaining = atomizeLibraryOperations(params.inverse.operations);
+  let remaining = atomizeLibraryOperations(
+    replayableInverseOperations(params.step, params.inverse.operations),
+  );
   const checkpoint = async (): Promise<void> => {
     // Own transaction; see the note above revertActions.
     await inJournalTransaction(() =>

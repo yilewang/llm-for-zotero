@@ -13,6 +13,7 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Not in library": "不在文献库中",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
   "Test search (sends a public query)": "测试搜索（发送公开查询）",
@@ -109,6 +110,8 @@ const zhCN: Record<string, string> = {
   "Import cited papers into your Zotero library by DOI":
     "通过 DOI 将引用的论文导入 Zotero 文库",
   "Sort papers into folders or tags": "按分类或标签整理论文",
+  "Write a zotero_script that changes the library, including copying or moving items to another library":
+    "编写修改文库的 zotero_script，包括在文库之间复制或移动条目",
   "Compact the current Codex context.": "压缩当前 Codex 上下文。",
   "Compact the current agent context.": "压缩当前助手上下文。",
 
@@ -941,6 +944,12 @@ const zhCN: Record<string, string> = {
   "Could not load Codex models. Showing current model only.":
     "无法加载 Codex 模型。仅显示当前模型。",
   "Retry loading Codex models": "重试加载 Codex 模型",
+  Subagent: "子代理",
+  "Main Agent": "主代理",
+  "Same as main agent": "与主代理相同",
+  "Back to main agent": "返回主代理",
+  "Reads many papers in parallel for the main agent, for library-wide questions and full-paper reads. Pick a fast, low-cost model.":
+    "为主代理并行阅读多篇论文，用于全库问题和整篇精读。建议选择快速、低成本的模型。",
   "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",
@@ -1512,6 +1521,9 @@ const zhCN: Record<string, string> = {
   "{count} cited": "引用 {count}",
   "{count} read in depth": "精读 {count}",
   "{count} found": "检索到 {count}",
+  Decision: "决定",
+  Excluded: "已排除",
+  Deferred: "已搁置",
   "{count} matched": "匹配 {count}",
   "{count} read": "已读 {count}",
   "Preparing the scope…": "正在准备范围…",
@@ -1606,6 +1618,22 @@ const zhCN: Record<string, string> = {
     "分析论文的模型没有可安全使用的推理设置",
   "Too little text to analyze": "文本太少，无法分析",
   "The analysis could not be prepared": "无法准备分析",
+  "The reader could not choose the named sections":
+    "阅读模型未能选出指定的章节",
+  "No notes": "没有笔记",
+  // A scoped read that found nothing the scope names (readScope.ts).
+  "No abstract in the Zotero record or the PDF":
+    "Zotero 条目和 PDF 中都没有摘要",
+  "None of the named sections were found": "未找到指定的章节",
+  "None of the named pages have text": "指定的页面没有文本",
+  // How much of a paper a digest read (Task progress, beside its heading).
+  Full: "全文",
+  Part: "部分",
+  Sections: "章节",
+  Pages: "页面",
+  "pages {range}": "第 {range} 页",
+  "page {range}": "第 {range} 页",
+  Record: "条目",
   // The same reasons as rows saved before schema 2 name them.
   "The model did not return a usable summary": "模型未返回可用的总结",
   "The model returned an empty summary": "模型返回的总结为空",
@@ -1691,6 +1719,7 @@ const zhCN: Record<string, string> = {
   "HTML page": "HTML 页面",
   Code: "代码",
   Plan: "计划",
+  Document: "文档",
   "Paper figure": "论文图片",
   Diagram: "图表",
   HTML: "HTML",
@@ -1746,6 +1775,10 @@ const zhCN: Record<string, string> = {
     "删除所选文件夹及其中的所有文件？此操作无法撤销。",
   "Could not delete:": "无法删除：",
   "Show in chat": "在对话中显示",
+  "Smaller text": "缩小文字",
+  "Larger text": "放大文字",
+  "Open in its own window": "在单独窗口中打开",
+  "The document window could not be opened": "无法打开文档窗口",
   "The source message is not in the main chat now.":
     "来源消息当前不在主对话中。",
   "Saved as note": "已保存为笔记",

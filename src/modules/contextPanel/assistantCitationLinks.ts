@@ -11,6 +11,10 @@ import {
 import { leadingSentenceClose } from "../../services/quotes/answerSentence";
 import { appLogger } from "../../core/logging";
 import { setStatus } from "./textUtils";
+import {
+  appendQuoteCardBodyContent,
+  renderQuoteCardMarkdownInto,
+} from "./quoteCardMarkdown";
 import { sanitizeText } from "../../utils/textSanitization";
 import { quoteComparisonKey } from "../../services/quotes/quoteKey";
 import {
@@ -89,6 +93,7 @@ import {
   getSinglePdfAttachment,
   navigateReaderToPage,
   navigateToQuote,
+  openPaperForAbstractQuote,
   openReaderForItem,
   jumpedPage,
 } from "./quoteNavigator";
@@ -2519,6 +2524,23 @@ async function resolveAndNavigateAssistantCitation(params: {
       extractedCitation,
     });
     if (nonPdfCandidate) {
+      // A paper with no PDF: its abstract quote is from its Zotero record.
+      const opened =
+        quoteCitation?.sourceChunkKind === "abstract"
+          ? await openPaperForAbstractQuote(quoteCitation)
+          : "failed";
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
       if (status)
         setStatus(
           status,
@@ -2615,6 +2637,28 @@ async function resolveAndNavigateAssistantCitation(params: {
         markCitationNavigationTiming(timing, stage, details),
     });
     timingOutcome = outcome.kind === "jumped" ? outcome.tier : outcome.kind;
+    // An abstract quote may come from the Zotero record, which has no page:
+    // when no PDF page holds it, the click opens the paper instead.
+    if (
+      quoteCitation?.sourceChunkKind === "abstract" &&
+      (outcome.kind === "not-found" ||
+        outcome.kind === "unverifiable" ||
+        outcome.kind === "no-candidates")
+    ) {
+      const opened = await openPaperForAbstractQuote(quoteCitation);
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
+    }
     if (outcome.kind === "jumped") {
       updateCitationButtonPage(
         params.button,
@@ -3448,22 +3492,6 @@ function hasActiveQuoteCardTextSelection(wrapper: HTMLElement): boolean {
   return false;
 }
 
-function renderQuoteCardMarkdownInto(
-  target: HTMLElement,
-  quoteText: string,
-  ownerDoc: Document,
-  scopeSource?: Element,
-): void {
-  const safeText = sanitizeText(quoteText || "").trim();
-  if (!safeText) return;
-  const container = ownerDoc.createElement("div");
-  if (scopeSource) copyFlatContentScope(scopeSource, container);
-  renderRenderedMarkdownInto(container, safeText, ownerDoc);
-  if (!appendQuoteCardBodyContent(target, container)) {
-    target.textContent = safeText;
-  }
-}
-
 export function buildQuoteCardPreviewText(quoteText: string): string {
   // A collapsed verified card is still a quotation. Keep inline Markdown-like
   // delimiters literal because they may be source text, not presentation markup.
@@ -3479,41 +3507,6 @@ function renderQuoteCardBodyMarkdown(
   scopeSource?: Element,
 ): void {
   renderQuoteCardMarkdownInto(body, quoteText, ownerDoc, scopeSource);
-}
-
-// Markdown that sanitizes down to nothing still leaves nodes behind: the
-// renderer swaps a disallowed element for an empty text node rather than
-// dropping it. Node presence therefore proves nothing about what the reader
-// will see, so ask for text or for an element that paints on its own. A lone
-// <br> is deliberately absent — it occupies no visible space, and the caller's
-// raw-text fallback shows more than an empty card would.
-const QUOTE_CARD_SELF_RENDERING_SELECTOR = "img, svg, hr, input";
-
-function hasRenderableQuoteCardContent(source: ParentNode): boolean {
-  if ((source.textContent || "").trim()) return true;
-  return Boolean(source.querySelector?.(QUOTE_CARD_SELF_RENDERING_SELECTOR));
-}
-
-function appendQuoteCardBodyContent(
-  body: HTMLElement,
-  quoteContent: ParentNode | null | undefined,
-): boolean {
-  if (!quoteContent?.firstChild) return false;
-  const firstElement =
-    "firstElementChild" in quoteContent ? quoteContent.firstElementChild : null;
-  const hasSingleParagraph =
-    quoteContent.childNodes.length === 1 &&
-    firstElement?.tagName.toLowerCase() === "p";
-  const moveSource =
-    hasSingleParagraph && firstElement ? firstElement : quoteContent;
-  // Decide before mutating. Rolling back after the move would strand the
-  // caller's nodes and leave `quoteContent` unusable for the fallback render.
-  if (!hasRenderableQuoteCardContent(moveSource)) return false;
-  body.classList.add("llm-rendered-markdown");
-  while (moveSource.firstChild) {
-    body.appendChild(moveSource.firstChild);
-  }
-  return true;
 }
 
 export const appendQuoteCardBodyContentForTests = appendQuoteCardBodyContent;

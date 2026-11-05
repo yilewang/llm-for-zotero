@@ -79,6 +79,12 @@ export type AgentActionParameters = {
   deleteItems?: boolean;
   permanent?: boolean;
   filePath?: string;
+  /** An attached file is linked where it is rather than copied. */
+  linkFile?: boolean;
+  /** The web address an attach saves. */
+  url?: string;
+  /** The kind of PDF annotation a write creates. */
+  annotationType?: "highlight" | "underline" | "note";
   contentHash?: string;
   documentId?: string;
   /** Frozen with `documentId` and `contentHash` to name one exact material version. */
@@ -211,6 +217,16 @@ export type AgentLibraryMutationEvidence = {
    * one per note the call physically created.
    */
   noteWrites?: readonly NativeNoteWriteEvidence[];
+  /**
+   * For an operation a checkpointed batch ran one item at a time and did not
+   * finish cleanly: each one-item part and how it ended. A part that ran is
+   * judged on the states above; one that failed or never started is not.
+   */
+  checkpointParts?: ReadonlyArray<{
+    operationValue: LibraryMutationOperation;
+    outcome: "ran" | "failed" | "not_started";
+    error?: string;
+  }>;
 };
 
 /**

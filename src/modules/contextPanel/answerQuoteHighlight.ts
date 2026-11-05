@@ -36,8 +36,13 @@ const SKIPPED =
 /** Chips a sentence's light takes in when they sit inside it. */
 const CHIPS =
   ".llm-web-source-indicator, .llm-citation-row, .llm-citation-inline-wrap";
-/** Where an answer's text is drawn: its answer, or its trace's own text. */
-const ANSWERS = ".llm-assistant-answer, .llm-agent-inline-text";
+/**
+ * Where an answer's text is drawn: its answer, a document it wrote (a
+ * literature review, drawn as a card in place of the answer), or its trace's
+ * own text.
+ */
+const ANSWERS =
+  ".llm-assistant-answer, .llm-plan-document-card .llm-plan-document-content, .llm-agent-inline-text";
 
 type Piece = { node: Text; start: number; end: number };
 
@@ -86,8 +91,10 @@ export function findAnswerRoots(
             .agentRunId === runId,
       )
     : all;
-  // The answer's own words before a copy of them in its trace.
-  const isAnswer = (node: HTMLElement) => node.matches(".llm-assistant-answer");
+  // The answer's own words (or its document) before a copy of them in its
+  // trace.
+  const isAnswer = (node: HTMLElement) =>
+    node.matches(".llm-assistant-answer, .llm-plan-document-content");
   return [...own.filter(isAnswer), ...own.filter((node) => !isAnswer(node))];
 }
 

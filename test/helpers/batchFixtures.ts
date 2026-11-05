@@ -126,12 +126,17 @@ export function createBatchLibrary(
     ],
     resolveMetadataItem: (params: { itemId?: number }) =>
       params.itemId ? item(params.itemId) : null,
+    resolveMetadataWriteTarget: (params: { itemId?: number }) => {
+      const target = params.itemId ? item(params.itemId) : null;
+      return target ? { item: target } : { refusal: "No item to update" };
+    },
     getBibliographicItemTargetsByItemIds: (ids: number[]) =>
       ids.filter((id) => items.has(id)).map(target),
     getPaperTargetsByItemIds: (ids: number[]) =>
       ids.filter((id) => items.has(id)).map(target),
     getEditableArticleMetadata: (candidate: { id?: number } | null) =>
       candidate?.id ? metadataOf(candidate.id) : null,
+    metadataPatchRefusal: () => null,
     updateArticleMetadata: async (params: {
       item: { id: number };
       metadata: Record<string, unknown>;

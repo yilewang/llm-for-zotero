@@ -75,10 +75,64 @@ describe("direct Agent model tool surface", function () {
     // rule, raised it to 37,070 (+446) (2026-10-25).
     // Per-sentence citing in the citation contract raised it to 37,269
     // (+199) (2026-10-26).
-    assert.isAtMost(serializedToolCharacters, 26_127);
+    // task_update's rule that a literature review of more than four papers
+    // declares a digest part, and one of four or fewer a read part (+450), and
+    // submit_document's rule that a literature review is always a document
+    // (+130) raised both caps by 580, to 26,707 and 37,849 (2026-10-29).
+    // The outside-paper choice (literature_search's forLiteratureReview field
+    // and sentence, submit_document's citation-source, web-page and
+    // answer-in-chat sentences) raised both caps by 475, to 27,182 and 38,324
+    // (2026-10-29).
+    // library_import's kind:'document_citations' (its sentence, enum value
+    // and documentId field, +210) and the card rule widened to a literature
+    // review that needs outside papers, a mixed one included (+60), raised
+    // them to 27,392 and 38,594 (2026-10-29).
+    // record_paper_decisions, the always-listed tool that records the
+    // agent's paper decisions, raised the tool cap by 706 and the cap with
+    // the fixed prompt by 706, to 28,098 and 39,300 (2026-10-30).
+    // review_coverage reaches Codex and Claude Code over MCP only; the
+    // plugin Agent does not list it, so it adds nothing here.
+    // library_delete's groups field and its clause, so one approval merges
+    // several duplicate groups, raised both caps by 80, to 28,178 and 39,380
+    // (2026-10-30).
+    // zotero_script's pointer to the zotero-script skill raised both caps by
+    // 90, to 28,268 and 39,470 (2026-10-31).
+    // run_command's and file_io's one-sentence use and approval rules raised
+    // both caps by 352, to 28,620 and 39,822 (2026-10-31).
+    // literature_search's source and author rules, moved from never-selected
+    // guidance into its description, raised both caps by 188, to 28,808 and
+    // 40,010 (2026-10-31).
+    // "Zotero asks no approval for ..." in run_command's and file_io's rules
+    // raised both caps by 13, to 28,821 and 40,023 (2026-10-31).
+    // Merged with W2's read scope: task_update's read and overrides fields
+    // (+343) and the named override and page-range properties for Gemini
+    // (+482) raise both caps by 825, to 29,646 and 40,848 (2026-10-31).
+    // User instructions come first: task_update's sentence that a digest
+    // reads the whole text unless its read names the source the user limited
+    // it to (+186) and submit_document's "unless the user asks for a chat
+    // answer" (+32) raise the tool cap by 218, to 29,864; the fixed prompt's
+    // chat-answer and library-only clauses (+99) raise the total by 317, to
+    // 41,165 (2026-10-31).
+    // Merged with W4's loop gates: the direct workflow's tool-call limit
+    // sentence (+96) and its job-page clause (+31) raise the total by 127, to
+    // 41,292 (2026-10-31).
+    // Changed on 2026-10-31 by +96 characters: review wording fixes (skipped vs blocked, declare after library_retrieve, digest for three or more papers, limitations section).
+    // Raised on 2026-10-31 by 423 characters: W5-A reads (reader_open +283; library_search's statistics entity, sections field and year, creator and dateModified sort keys +124; library_read's relatedLinks section +16), to 30,287 and 41,811.
+    // Changed on 2026-10-31 by +201 characters: W5-A review fixes (statistics sections enum +153; reader_open's "when the user asks" and "0-based" +62; library_read's description without relatedLinks -14), to 30,488 and 42,012.
+    // Raised on 2026-10-31 by 99 characters: W5-B (library_update's itemType,
+    // note_write_batch's mode and targetNoteId), merged onto W5-A: 30,587 and 42,111.
+    // Raised on 2026-10-31 by 266 characters: W5-C (library_update's
+    // attach_file, attach_url, find_pdf and kind:'annotation' +191;
+    // annotate_pdf's annotationType +75): 30,853 and 42,377.
+    // Raised on 2026-10-31 by 34 characters: W5-D (library_update's
+    // resumeBatchId), merged onto W5-C: 30,887 and 42,411.
+    // Raised on 2026-10-31 by 116 characters: library_update's item-type
+    // route (kind:'metadata' with itemId and itemType, not inside
+    // metadata): 31,003 and 42,527.
+    assert.isAtMost(serializedToolCharacters, 31_003);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      37_269,
+      42_527,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),

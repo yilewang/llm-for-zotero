@@ -122,6 +122,10 @@ export default defineConfig({
       "layout.throttled_frame_rate": 60,
       "dom.min_background_timeout_value": 4,
       "dom.timeout.enable_budget_timer_throttling": false,
+      // A test Zotero must not download and stage an app update: the next
+      // quit would replace the Zotero the tests are pinned to.
+      "app.update.auto": false,
+      "app.update.enabled": false,
     },
     entries:
       process.env.LLM_FOR_ZOTERO_TEST_ENTRIES ||

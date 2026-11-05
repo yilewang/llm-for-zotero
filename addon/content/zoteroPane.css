@@ -8173,6 +8173,84 @@
   margin-bottom: 0;
 }
 
+/* Trace text that is the answer looks as it will in the bubble. */
+.llm-agent-activity-answer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.llm-agent-activity-answer > .llm-agent-inline-answer,
+.llm-agent-activity-list > .llm-agent-process-message.llm-agent-inline-answer {
+  font-size: var(--llm-fs-13);
+  line-height: 1.5;
+  padding-top: 0;
+  color: var(--fill-primary);
+}
+
+/* Codex agent messages stay among the steps at the answer's left edge. The
+   list drops its rail and each step draws its own piece of it, reaching half
+   way into the 10px gap on each side so neighbouring steps join. */
+.llm-agent-activity-details
+  > .llm-agent-activity-list.llm-agent-activity-list-flush {
+  padding-left: 11px;
+  border-left: 0;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-inline-answer {
+  margin-left: -11px;
+}
+
+.llm-agent-activity-list-flush > :not(.llm-agent-inline-answer) {
+  position: relative;
+}
+
+.llm-agent-activity-list-flush > :not(.llm-agent-inline-answer)::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: -5px;
+  bottom: -5px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+  pointer-events: none;
+}
+
+.llm-agent-activity-list-flush
+  > :not(.llm-agent-inline-answer):first-child::before {
+  top: 0;
+}
+
+.llm-agent-activity-list-flush
+  > :not(.llm-agent-inline-answer):last-child::before {
+  bottom: 0;
+}
+
+/* Steps with their own margins reach across them to the same rail. */
+.llm-agent-activity-list-flush > .llm-agent-reasoning::before {
+  top: -9px;
+  bottom: -7px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-reasoning:first-child::before {
+  top: -4px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-reasoning:last-child::before {
+  bottom: -2px;
+}
+
+.llm-agent-activity-list-flush > .llm-agent-image-artifacts::before {
+  left: -29px;
+  top: -3px;
+  bottom: -7px;
+}
+
+.llm-agent-inline-text.llm-plan-document-lead {
+  font-size: var(--llm-fs-13);
+  padding-top: 0;
+}
+
 .llm-agent-process-action {
   display: flex;
   flex-direction: column;
@@ -8441,7 +8519,11 @@ label.llm-search-results-item:hover {
 }
 
 .llm-at-icon-library,
-.llm-at-icon-web {
+.llm-at-icon-web,
+.llm-at-icon-file,
+.llm-at-icon-edit,
+.llm-at-icon-search,
+.llm-at-icon-code {
   flex: 0 0 var(--llm-fs-12);
   width: var(--llm-fs-12);
   height: var(--llm-fs-12);
@@ -8465,6 +8547,27 @@ label.llm-search-results-item:hover {
 .llm-at-icon-web {
   mask-image: url("icons/action-mode-global.svg");
   -webkit-mask-image: url("icons/action-mode-global.svg");
+}
+
+.llm-at-icon-file {
+  mask-image: url("icons/action-file.svg");
+  -webkit-mask-image: url("icons/action-file.svg");
+}
+
+.llm-at-icon-edit {
+  mask-image: url("icons/action-edit.svg");
+  -webkit-mask-image: url("icons/action-edit.svg");
+}
+
+/* The same lens as the History pane's "Search history" nav icon. */
+.llm-at-icon-search {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+}
+
+.llm-at-icon-code {
+  mask-image: url("icons/action-source-code.svg");
+  -webkit-mask-image: url("icons/action-source-code.svg");
 }
 
 .llm-at-text {
@@ -10515,6 +10618,31 @@ label.llm-search-results-item:hover {
   margin-bottom: 0;
 }
 
+/* A streaming answer draws each block in its own wrapper (see
+   streamingMarkdown.ts). Give the wrappers' edges the same spacing as the
+   final answer, so nothing moves when streaming ends. */
+.llm-streaming-block > h1:first-child,
+.llm-streaming-block > h2:first-child,
+.llm-streaming-block > h3:first-child,
+.llm-streaming-block > h4:first-child {
+  margin-top: 1.3em;
+}
+
+.llm-streaming-block:first-child > h1:first-child,
+.llm-streaming-block:first-child > h2:first-child,
+.llm-streaming-block:first-child > h3:first-child,
+.llm-streaming-block:first-child > h4:first-child {
+  margin-top: 0;
+}
+
+.llm-streaming-block > p:last-child {
+  margin-bottom: var(--llm-message-paragraph-spacing, 12px);
+}
+
+.llm-streaming-end > p:last-child {
+  margin-bottom: 0;
+}
+
 .llm-rendered-markdown ul,
 .llm-rendered-markdown ol {
   margin: var(--llm-message-paragraph-spacing, 12px) 0;
@@ -11420,7 +11548,8 @@ label.llm-search-results-item:hover {
   color-scheme: light;
 }
 
-/* Web page: the top of the page in a 300px frame; a pill shows all of it. */
+/* Web page: as tall as its content, right on the chat. A page taller than
+ * 420px folds there; the pill shows all of it (htmlPreviewFitFor). */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
@@ -11428,20 +11557,26 @@ label.llm-search-results-item:hover {
   position: relative;
   margin: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 75%, transparent);
-  border-radius: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-/* A page with its own fixed colours: a white card; the fold fades to white. */
+/* A page with its own fixed colours: a white card. */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
   > .llm-html-preview[data-llm-preview-surface="paper"] {
   --llm-mermaid-canvas-bg: #ffffff;
+  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 75%, transparent);
+  border-radius: 10px;
   background: #ffffff;
   color-scheme: light;
 }
 
+/* Until the page is measured (fitFrameToPage), the old 300px view. The
+ * frame takes its page's color scheme: Firefox paints a frame whose scheme
+ * differs from its page with an opaque canvas, a dark box in dark mode. */
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
@@ -11453,28 +11588,47 @@ label.llm-search-results-item:hover {
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
-  > .llm-html-preview[data-expanded="true"]
-  iframe {
-  height: 520px;
+  > .llm-html-preview
+  iframe[data-llm-preview-theme="dark"] {
+  color-scheme: dark;
 }
 
 .llm-content-flat
   .llm-copyable-flat-preview
   .llm-codeblock-flat-preview
-  > .llm-html-preview[data-expanded="false"]::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1;
-  height: 64px;
-  background: linear-gradient(
+  > .llm-html-preview
+  iframe[data-llm-preview-theme="light"] {
+  color-scheme: light;
+}
+
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview[data-llm-html-tall="true"][data-expanded="false"]
+  iframe {
+  max-height: 420px;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent);
+  -webkit-mask-image: linear-gradient(
     to bottom,
-    transparent,
-    var(--llm-mermaid-canvas-bg, #fff)
+    #000 calc(100% - 64px),
+    transparent
   );
-  pointer-events: none;
+}
+
+/* Shown in full: room under the page for "Show less". */
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview[data-llm-html-tall="true"][data-expanded="true"] {
+  padding-bottom: 40px;
+}
+
+.llm-content-flat
+  .llm-copyable-flat-preview
+  .llm-codeblock-flat-preview
+  > .llm-html-preview:not([data-llm-html-tall="true"])
+  > .llm-content-expand-btn {
+  display: none;
 }
 
 /* The source, when shown: one quiet surface under the caption. */
@@ -12089,6 +12243,13 @@ label.llm-search-results-item:hover {
 .llm-mermaid-window-root.llm-viewer-window-html {
   display: flex;
   flex-direction: column;
+  /* The page starts below the toolbar, like the picture stage, so the × and
+   * the traffic light strip never cover its top. */
+  padding-top: 56px;
+}
+
+:root[customtitlebar] .llm-mermaid-window-root.llm-viewer-window-html {
+  padding-top: 38px;
 }
 
 /* Flat style outside the chat. The side panel tab fills its width (the 520px
@@ -13473,6 +13634,11 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* " · Not in library" after an outside paper's References entry. */
+.llm-plan-document-outside-marker {
+  color: var(--fill-secondary);
 }
 
 .llm-plan-document-coverage {
@@ -17576,6 +17742,244 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   color: var(--fill-tertiary);
 }
 
+/* The composer's model menu is as wide as its longest name, and no wider.
+ * Status lines and the explanation do not count toward that width (they
+ * wrap): a passing "Loading ... models" line used to make the menu open wide
+ * and then shrink. Very long names end in an ellipsis (the full name is in
+ * the tooltip). The positioning code caps it with the space available.
+ *
+ * The menu element is only a frame. Inside it, a column of cards: a small
+ * card for the subagent on top and, 6px below, the chat model list. The
+ * subagent page is a single card. Each card has its own border, corners and
+ * shadow, so the two settings read as two objects. */
+#llm-model-menu {
+  width: max-content;
+  min-width: calc(120px * var(--llm-font-scale, 1));
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  /* The positioning code sets overflow inline; the cards scroll instead, and
+     their shadows must not be cut off. */
+  overflow: visible !important;
+}
+
+.llm-model-menu-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  max-width: calc(240px * var(--llm-font-scale, 1));
+  /* The menu's inline max-height (the space above the button). */
+  max-height: inherit;
+}
+
+.llm-model-menu-card {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+  border-radius: 12px;
+  background: var(--material-background, #fff);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+/* The chat model list (and the subagent page's list) scroll on their own. */
+.llm-model-menu-list,
+.llm-model-menu-card-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  /* Rows keep their full height when the card is shorter than its list (it
+     scrolls instead). Auto rows were squeezed, cutting off text. */
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-height: 0;
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* A card's title ("Main Agent"), in the same small grey type as the
+ * "Subagent" label, so the two cards read as a pair. It stays at the top
+ * while the list scrolls. */
+.llm-model-menu-card-title {
+  position: sticky;
+  top: -6px;
+  z-index: 1;
+  margin: -6px -6px 0;
+  padding: 13px 16px 4px;
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fill-secondary);
+  background: var(--material-background, #fff);
+  border-radius: 12px 12px 0 0;
+  user-select: none;
+}
+
+#llm-model-menu .llm-model-menu-empty,
+#llm-model-menu .llm-model-menu-explain {
+  /* Wrap to the width the names set; never widen the menu. */
+  contain: inline-size;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Card 2: the subagent. A small grey label over the current choice, with an
+ * arrow on the right. */
+.llm-model-menu-subagent-card {
+  flex: none;
+  padding: 6px;
+}
+
+/* The id outranks `.llm-actions button` (width: auto; line-height: 1). */
+#llm-model-menu .llm-model-menu-subagent-cell {
+  appearance: none;
+  -moz-appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  /* Two lines; never squeezed to one row's height. */
+  min-height: calc(38px * var(--llm-font-scale, 1));
+  margin: 0;
+  padding: 7px 10px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--fill-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#llm-model-menu .llm-model-menu-subagent-cell:hover {
+  background: var(--fill-quinary);
+}
+
+.llm-model-menu-subagent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.llm-model-menu-subagent-label {
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fill-secondary);
+}
+
+.llm-model-menu-subagent-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--llm-fs-11);
+  line-height: 1.2;
+  color: var(--fill-primary);
+}
+
+.llm-model-menu-subagent-chevron,
+.llm-model-menu-back::before {
+  flex: none;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-model-menu-subagent-chevron {
+  width: calc(9px * var(--llm-font-scale, 1));
+  height: calc(9px * var(--llm-font-scale, 1));
+  color: var(--fill-tertiary);
+  mask-image: url("icons/model-menu-chevron-right.svg");
+  -webkit-mask-image: url("icons/model-menu-chevron-right.svg");
+}
+
+/* The subagent page: one card, a shaded header strip with the back row, then
+ * the list. */
+.llm-model-menu-page {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
+.llm-model-menu-page-head {
+  flex: none;
+  padding: 6px;
+  border-bottom: 1px solid
+    color-mix(
+      in srgb,
+      var(--stroke-secondary, rgba(120, 120, 120, 0.35)) 80%,
+      transparent
+    );
+  background: color-mix(
+    in srgb,
+    var(--material-background, #fff) 97%,
+    var(--fill-primary, #000) 3%
+  );
+}
+
+#llm-model-menu .llm-model-menu-back {
+  appearance: none;
+  -moz-appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(27px * var(--llm-font-scale, 1));
+  margin: 0;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-11);
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+#llm-model-menu .llm-model-menu-back:hover {
+  background: var(--fill-quinary);
+}
+
+.llm-model-menu-back::before {
+  content: "";
+  width: calc(10px * var(--llm-font-scale, 1));
+  height: calc(10px * var(--llm-font-scale, 1));
+  color: var(--fill-secondary);
+  mask-image: url("icons/model-menu-chevron-left.svg");
+  -webkit-mask-image: url("icons/model-menu-chevron-left.svg");
+}
+
+.llm-model-menu-explain {
+  padding: 4px 10px 8px;
+  font-size: calc(9.5px * var(--llm-font-scale, 1));
+  line-height: 1.45;
+  color: var(--fill-secondary);
+  white-space: normal;
+  user-select: none;
+}
+
 .llm-model-option:hover:not(:disabled),
 .llm-reasoning-option:hover:not(:disabled) {
   background: transparent;
@@ -18483,7 +18887,9 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   height: 38px;
   min-height: 38px;
   margin: 0;
-  padding: 0 8px 0 9px;
+  /* The chevron's mark ends as far in from the card's right edge as the
+     status ring starts from its left edge (about 10px). */
+  padding: 0 6px 0 9px;
   border: 0;
   border-radius: 0;
   outline: none;
@@ -18675,7 +19081,7 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
 
 .llm-task-progress-chevron {
   display: inline-flex;
-  flex: 0 0 24px;
+  flex: 0 0 16px;
   align-items: center;
   justify-content: center;
   height: 24px;
@@ -18752,14 +19158,26 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
 /* In the standalone window the row lines up with the History pane's second
    row (Search history), as the title row does with New chat: the card's
    header sits on that row's 38px band, its border just outside. The
-   chat runs 5px up under the title row and the panel pads 5px, so the
-   card would start at the title row's lower edge; 1px more puts its
-   border 1px below that edge. */
+   shell's top depends on the chat's state:
+   - Start page: the header is hidden, so the shell starts at the panel's 5px
+     padding. 1px more puts the card's border 1px below the title row's lower
+     edge.
+   - With turns: the header shows, runs 5px up under the title row
+     (margin-top -5px) and the panel's gap under it is taken back
+     (margin-bottom -10px), so the shell starts 5px higher; 6px puts the card
+     at the same place. */
 [data-standalone="true"]
   .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="opening"],
 [data-standalone="true"]
   .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="open"] {
   margin-top: 1px;
+}
+
+.llm-panel[data-standalone="true"]:not([data-start-page-active="true"])
+  .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="opening"],
+.llm-panel[data-standalone="true"]:not([data-start-page-active="true"])
+  .llm-chat-shell.llm-task-progress-present[data-task-progress-curtain="open"] {
+  margin-top: 6px;
 }
 
 :root:not([data-llm-pane-view="stacked"])
@@ -19917,6 +20335,38 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 12H5'/%3E%3Cpath d='M12 19l-7-7 7-7'/%3E%3C/svg%3E");
 }
 
+/* A document tab's title actions: text size − and +, and its own window,
+ * drawn like the diagram and page viewers' − + ⛶ controls. */
+.llm-standalone-side-panel-icon-text-smaller::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+}
+
+.llm-standalone-side-panel-icon-text-larger::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M12 5v14'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M12 5v14'/%3E%3C/svg%3E");
+}
+
+.llm-standalone-side-panel-icon-own-window::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'/%3E%3C/svg%3E");
+}
+
+/* A document read in the side panel: one step above the chat's answer text,
+ * scaled by the tab's − and + (--llm-side-reader-text-scale). Headings are in
+ * em, so they follow. The tab scrolls; the text is never capped. */
+.llm-standalone-side-panel-item-body[data-side-reader="true"] {
+  padding: 10px 16px 24px;
+}
+
+.llm-standalone-side-panel-item-body[data-side-reader="true"]
+  > .llm-standalone-side-panel-item-rendered {
+  max-height: none;
+  overflow: visible;
+  font-size: calc(var(--llm-fs-14) * var(--llm-side-reader-text-scale, 1));
+  line-height: 1.6;
+}
+
 .llm-standalone-side-panel-icon-back::before {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E");
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E");
@@ -20322,24 +20772,22 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12H8M13 6l-6 6 6 6M3 5v14'/%3E%3C/svg%3E");
 }
 
-/* In the chat, the card spans the chat and composer's width, and its
- * chevron and →| sit in the title row's Export and Clear columns. Those
- * buttons are 24px + the chrome gap wide, half a gap apart, and end 10px
- * in from the title row's edge, 13px past the card's inner edge. */
+/* In the chat, the card spans the chat and composer's width. Its →| keeps
+ * the card's padding rule: the mark ends as far in from the right edge as
+ * the status ring starts from the left (about 10px), and the chevron sits
+ * the same distance before it as the status pill sits before the chevron. */
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked) {
   margin-inline: 0;
 }
 
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked)
   > .llm-task-progress {
-  padding-right: calc(21px + 2 * var(--llm-standalone-chrome-gap));
+  padding-right: 31px;
 }
 
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked)
   > .llm-task-progress-move {
-  right: 1px;
-  width: calc(16px + var(--llm-standalone-chrome-gap));
-  min-width: calc(16px + var(--llm-standalone-chrome-gap));
+  right: 3.5px;
 }
 
 .llm-task-progress-move:hover,
@@ -20388,8 +20836,11 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   background: transparent;
 }
 
+/* The tab's title sits on the main chat's title row ("Library chat"): the
+ * same size and weight, so the row reads as one line of titles. */
 .llm-task-progress-docked > .llm-task-progress .llm-task-progress-label {
-  font-size: var(--llm-fs-14);
+  font-size: var(--llm-standalone-ui-font-size, var(--llm-fs-12));
+  font-weight: 500;
 }
 
 .llm-task-progress-docked > .llm-task-progress > .llm-task-progress-ring,

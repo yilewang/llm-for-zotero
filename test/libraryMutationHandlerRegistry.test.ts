@@ -12,6 +12,7 @@ import { MutationStateView } from "../src/agent/services/libraryMutation/stateVi
 describe("library mutation handler registry", function () {
   const operationTypes = [
     "update_metadata",
+    "change_item_type",
     "apply_tags",
     "remove_tags",
     "move_to_collection",
@@ -37,6 +38,10 @@ describe("library mutation handler registry", function () {
     "rename_attachment",
     "relink_attachment",
     "import_local_files",
+    "attach_file",
+    "attach_url",
+    "find_pdf",
+    "update_annotation",
   ] satisfies LibraryMutationOperationType[];
 
   it("registers every operation exactly once with its safety capabilities", function () {

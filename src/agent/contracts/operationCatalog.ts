@@ -19,6 +19,10 @@ export const OPERATION_CATALOG = {
     capability: "zotero.metadata",
     proofDomain: "zotero_state",
   },
+  change_item_type: {
+    capability: "zotero.metadata",
+    proofDomain: "zotero_state",
+  },
   apply_tags: { capability: "zotero.tags", proofDomain: "zotero_state" },
   remove_tags: { capability: "zotero.tags", proofDomain: "zotero_state" },
   move_to_collection: {
@@ -92,6 +96,22 @@ export const OPERATION_CATALOG = {
     capability: "zotero.import",
     proofDomain: "zotero_state",
   },
+  attach_file: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  attach_url: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  find_pdf: {
+    capability: "zotero.attachments",
+    proofDomain: "zotero_state",
+  },
+  update_annotation: {
+    capability: "zotero.annotations",
+    proofDomain: "zotero_state",
+  },
   note_create: { capability: "zotero.notes", proofDomain: "zotero_state" },
   note_edit: { capability: "zotero.notes", proofDomain: "zotero_state" },
   note_append: { capability: "zotero.notes", proofDomain: "zotero_state" },
@@ -131,6 +151,7 @@ export const ACTION_CAPABILITIES = new Set<AgentActionCapability>(
  */
 export const OPERATION_LABELS = {
   update_metadata: "Updated metadata",
+  change_item_type: "Changed item type",
   apply_tags: "Added tags",
   remove_tags: "Removed tags",
   move_to_collection: "Moved to collection",
@@ -156,6 +177,10 @@ export const OPERATION_LABELS = {
   rename_attachment: "Renamed attachment",
   relink_attachment: "Relinked attachment",
   import_local_files: "Imported local files",
+  attach_file: "Attached file",
+  attach_url: "Saved web page",
+  find_pdf: "Searched for a PDF",
+  update_annotation: "Edited annotation",
   note_create: "Created note",
   note_edit: "Edited note",
   note_append: "Appended to note",
@@ -166,6 +191,59 @@ export const OPERATION_LABELS = {
   file_write: "Wrote file",
   command_execute: "Ran command",
   zotero_script_execute: "Ran Zotero script",
+  read_full: "Read full text",
+} as const satisfies Record<AgentActionOperation, string>;
+
+/**
+ * What each operation sets out to do, for work that has not happened.
+ *
+ * A write the user declined, or one that failed or could not be verified,
+ * did not do what the past-tense label says. Its part names the work it
+ * would do instead ("Run Zotero script", not "Ran Zotero script"); a
+ * later verified receipt switches the part to `OPERATION_LABELS`.
+ */
+export const OPERATION_INTENT_LABELS = {
+  update_metadata: "Update metadata",
+  change_item_type: "Change item type",
+  apply_tags: "Add tags",
+  remove_tags: "Remove tags",
+  move_to_collection: "Move to collection",
+  remove_from_collection: "Remove from collection",
+  create_collection: "Create collection",
+  set_item_collections: "Set collections",
+  save_notes_batch: "Save notes",
+  save_saved_search: "Save search",
+  delete_saved_search: "Delete saved search",
+  update_collection: "Update collection",
+  update_library_tag: "Update library tag",
+  set_item_tags: "Set tags",
+  create_items: "Create items",
+  reparent_items: "Reparent items",
+  relate_items: "Relate items",
+  delete_collection: "Delete collection",
+  save_note: "Save note",
+  import_identifiers: "Import identifiers",
+  trash_items: "Move to trash",
+  restore_from_trash: "Restore from trash",
+  merge_items: "Merge items",
+  delete_attachment: "Delete attachment",
+  rename_attachment: "Rename attachment",
+  relink_attachment: "Relink attachment",
+  import_local_files: "Import local files",
+  attach_file: "Attach file",
+  attach_url: "Save web page",
+  find_pdf: "Search for a PDF",
+  update_annotation: "Edit annotation",
+  note_create: "Create note",
+  note_edit: "Edit note",
+  note_append: "Append to note",
+  annotation_write: "Write annotation",
+  settings_update: "Update settings",
+  undo: "Undo change",
+  revert: "Revert change",
+  file_write: "Write file",
+  command_execute: "Run command",
+  zotero_script_execute: "Run Zotero script",
   read_full: "Read full text",
 } as const satisfies Record<AgentActionOperation, string>;
 
@@ -198,6 +276,22 @@ export function receiptOperationLabel(receipt: {
 }): string {
   if (collectionAddOnly(receipt)) return "Added to collection";
   return operationLabel(receipt.operation);
+}
+
+/**
+ * What one receipt set out to do, in the reader's words, for a receipt that
+ * did not apply (`OPERATION_INTENT_LABELS`). An operation this build does
+ * not know is spelled out as `operationLabel` spells it.
+ */
+export function receiptIntentLabel(receipt: {
+  operation: string;
+  normalizedParameters?: { sourceCollectionId?: number | "all" };
+}): string {
+  if (collectionAddOnly(receipt)) return "Add to collection";
+  const known = operationCatalogEntry(receipt.operation);
+  return known
+    ? OPERATION_INTENT_LABELS[known.operation]
+    : operationLabel(receipt.operation);
 }
 
 /** Whether a collection receipt added items without moving them. */

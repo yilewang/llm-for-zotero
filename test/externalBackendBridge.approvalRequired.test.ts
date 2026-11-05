@@ -668,6 +668,9 @@ describe("external bridge action approval handling", function () {
         capturedBody?.allowedTools,
         `mcp__${serverName}__run_command`,
       );
+      // No paper-reader subagent is registered: the skill reads every paper
+      // with the host reader.
+      assert.notProperty(capturedBody?.metadata || {}, "paperReaderTools");
       assert.equal(mcpServers?.[serverName].type, "http");
       assert.equal(
         mcpServers?.[serverName].url,

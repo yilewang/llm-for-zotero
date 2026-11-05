@@ -20,7 +20,19 @@ import {
   createHandleStorePaperDigestCache,
   createZoteroPaperDigestSources,
 } from "../src/agent/digests/digestJobHost";
-import type { HostPaperDigest } from "../src/agent/digests/paperDigestWorker";
+import {
+  digestSourceLabel,
+  type HostPaperDigest,
+} from "../src/agent/digests/paperDigestWorker";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import {
+  SECTION_PICK_TASK_LINE,
+  buildMineruSectionOutline,
+  clearSectionPickCache,
+} from "../src/agent/digests/sectionPicker";
+import { PassageCitationCollector } from "../src/agent/context/passageCitationCollector";
+import { selectUsedQuoteCitations } from "../src/services/quotes/quoteCitations";
+import type { QuoteCitation } from "../src/shared/types";
 import type { MaterialRef } from "../src/agent/documents/materialRef";
 import type { TaskPaperLedgerDelta } from "../src/agent/context/taskPaperLedger";
 import {
@@ -44,9 +56,17 @@ import {
   installMockDb,
 } from "./helpers/agentRuntimeMockDb";
 import { createSubmitDocumentTool } from "../src/agent/tools/control/submitDocument";
+import { createContextReadTool } from "../src/agent/tools/read/contextRead";
 import { initPlanDocumentStore } from "../src/agent/documents/store";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { createTestActionContractService } from "./helpers/actionContractService";
+import {
+  DISCUSSION,
+  LEAD_ABSTRACT,
+  NATURE_SHAPE_MD,
+  RESULTS_A,
+  RESULTS_B,
+} from "./helpers/unlabelledSectionsMarkdown";
 
 /**
  * A declared digest part, run by the host inside `task_update`.
@@ -420,6 +440,288 @@ describe("task_update runs a declared digest part", function () {
     assert.include(answer.digests, "Cells drift slowly.");
     assert.lengthOf(answer.digestHandles, 1);
     assert.deepEqual(answer.parts[0].done, 1);
+  });
+
+  it("gives each verified Evidence quote a Q_ id that the run collects and a chat answer cites; an evidence ref cites none", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-quotes", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    const citations = answer.quoteCitations as QuoteCitation[];
+    assert.lengthOf(citations, 2, "one per paper's verified quote");
+    const byItem = new Map(citations.map((c) => [c.itemId, c]));
+    assert.deepInclude(byItem.get(5)!, {
+      quoteText: "We recorded forty cells over ten days.",
+      citationLabel: "(Ziv, 2021)",
+      contextItemId: 105,
+      itemId: 5,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+    });
+    // A paper with no creator or year still has a canonical label.
+    assert.equal(byItem.get(6)!.citationLabel, "(Drift B, n.d.)");
+    const id5 = byItem.get(5)!.id;
+    assert.match(id5, /^Q_/);
+    assert.include(
+      answer.digests,
+      `"We recorded forty cells over ten days." (quoteCitationId: ${id5})`,
+    );
+    // The model reads each id beside its quote, never the citation records:
+    // the host keeps those for the run's collector and the panel.
+    const delivered = JSON.stringify(outcome.delivery?.content);
+    assert.include(delivered, `(quoteCitationId: ${id5})`);
+    assert.notInclude(delivered, "quoteCitations");
+    assert.notInclude(delivered, '"quoteText"');
+
+    // The runtime's collector reads the ids off the tool result event.
+    const event = harness.events.find(
+      (entry) => entry.type === "tool_result" && entry.name === "task_update",
+    );
+    assert.exists(event);
+    if (event?.type !== "tool_result") return;
+    const collector = new PassageCitationCollector();
+    collector.collect(event.content, event.artifacts);
+    assert.sameMembers(
+      collector.quoteCitations.map((c) => c.id),
+      citations.map((c) => c.id),
+    );
+    // An answer citing the id gets its citation; the final event carries
+    // what this selects.
+    assert.deepEqual(
+      selectUsedQuoteCitations({
+        text: `Place cells drift slowly [[cite:${id5}]].`,
+        quoteCitations: collector.quoteCitations,
+      }).map((c) => c.id),
+      [id5],
+    );
+    // An evidence ref is a document's source, never a chat mark.
+    assert.isEmpty(
+      selectUsedQuoteCitations({
+        text: "Place cells drift slowly [[cite:2b4cd8c1feb5:1]].",
+        quoteCitations: collector.quoteCitations,
+      }),
+    );
+  });
+
+  it("context_read shows a stored digest's quotes with their ids and keeps its citation records from the model, which the run still collects", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5],
+      (registry) => registry.register(createContextReadTool()),
+    );
+    const digestCall = await runCall(harness, "call-quotes", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = digestCall.toolResult.content as Record<string, any>;
+    const [citation] = answer.quoteCitations as QuoteCitation[];
+    const handle = answer.digestHandles[0].handle as string;
+    assert.include(
+      answer.digests,
+      `context_read source:'tool_result' handle:'${handle}'`,
+    );
+    const execution = createToolExecution(harness.deps);
+    for (const path of ["digest", "rendered"]) {
+      const read = await execution.executeToolWorkflow(
+        {
+          id: `read-${path}`,
+          name: "context_read",
+          arguments: { source: "tool_result", handle, path },
+        },
+        2,
+        { modelCallId: `read-${path}` },
+      );
+      assert.isTrue(read.toolResult.ok, path);
+      // The model sees each Evidence quote with its id, and no record.
+      const delivered = JSON.stringify(read.delivery?.content);
+      assert.include(delivered, "We recorded forty cells over ten days.", path);
+      assert.include(delivered, citation.id, path);
+      assert.notInclude(delivered, "quoteCitations", path);
+      // The full result still carries them, for the run and the panel.
+      const event = harness.events.findLast(
+        (entry) =>
+          entry.type === "tool_result" && entry.callId === `read-${path}`,
+      );
+      assert.exists(event, path);
+      if (event?.type !== "tool_result") return;
+      const collector = new PassageCitationCollector();
+      collector.collect(event.content, event.artifacts);
+      assert.deepEqual(
+        collector.quoteCitations.map((entry) => entry.id),
+        [citation.id],
+        path,
+      );
+    }
+  });
+
+  it("context_read of a task_update result the trace stored keeps its citation records from the model, which the run still collects", async function () {
+    const harness = createHarness(
+      scriptedDigests(async () => reply("Cells drift slowly.")),
+      [5],
+      (registry) => registry.register(createContextReadTool()),
+    );
+    const digestCall = await runCall(harness, "call-stored", {
+      tasks: [SUMMARIZE],
+    });
+    const answer = digestCall.toolResult.content as Record<string, any>;
+    const [citation] = answer.quoteCitations as QuoteCitation[];
+    assert.exists(citation);
+    // The trace keeps an oversized task_update result whole behind a handle.
+    const stored = createAgentToolResultHandleRecord({
+      conversationKey: harness.request.conversationKey,
+      toolName: "task_update",
+      toolCallId: "call-stored",
+      content: answer,
+      createdAt: 5,
+    })!;
+    await upsertAgentToolResultHandles([stored]);
+    harness.request.metadata = {
+      ...harness.request.metadata,
+      agentToolResultReadAvailable: true,
+    };
+    const execution = createToolExecution(harness.deps);
+    // A root read only lists the paths; a page of `digests` is what the model
+    // reads quotes from.
+    for (const path of ["digests"]) {
+      const id = `read-stored-${path}`;
+      const read = await execution.executeToolWorkflow(
+        {
+          id,
+          name: "context_read",
+          arguments: {
+            source: "tool_result",
+            handle: stored.handle,
+            path,
+          },
+        },
+        2,
+        { modelCallId: id },
+      );
+      assert.isTrue(read.toolResult.ok, id);
+      const delivered = JSON.stringify(read.delivery?.content);
+      assert.include(delivered, citation.id, id);
+      assert.notInclude(delivered, "quoteCitations", id);
+      const event = harness.events.findLast(
+        (entry) => entry.type === "tool_result" && entry.callId === id,
+      );
+      assert.exists(event, id);
+      if (event?.type !== "tool_result") return;
+      const collector = new PassageCitationCollector();
+      collector.collect(event.content, event.artifacts);
+      assert.deepEqual(
+        collector.quoteCitations.map((entry) => entry.id),
+        [citation.id],
+        id,
+      );
+    }
+  });
+
+  it("mints ids for a digest cached before digest quotes had them, the same ids, and stores the record again", async function () {
+    let calls = 0;
+    const digests = scriptedDigests(async () => {
+      calls += 1;
+      return reply("Cells drift slowly.");
+    });
+    const first = createHarness(digests, [5]);
+    const fresh = (await runCall(first, "call-fresh", { tasks: [SUMMARIZE] }))
+      .toolResult.content as Record<string, any>;
+    assert.equal(calls, 1);
+    const stored = first.handles.find(
+      (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+    )!;
+    const content = stored.content as {
+      cacheKey: string;
+      digest: HostPaperDigest;
+    };
+    // The record as v3.9.15 stored it: schema 2, no ids anywhere.
+    const { quoteCitations: _ids, ...digest } = content.digest;
+    const old = {
+      ...digest,
+      evidence: digest.evidence.map(
+        ({ quoteCitationId: _id, ...entry }) => entry,
+      ),
+    };
+    assert.notInclude(JSON.stringify(old), "Q_");
+    const second = createHarness(digests, [5]);
+    await upsertAgentToolResultHandles([
+      createAgentToolResultHandleRecord({
+        conversationKey: second.request.conversationKey,
+        toolName: PAPER_DIGEST_HANDLE_TOOL,
+        toolCallId: content.cacheKey,
+        resourceSignature: "scope-1",
+        content: {
+          cacheKey: content.cacheKey,
+          digest: old,
+          rendered: "stored without ids",
+        },
+        // Listed after the record stored again below (in 2096, after any
+        // clock this test runs under), so the newer listing cannot be what
+        // makes the minted one win.
+        createdAt: 4_000_000_000_000,
+      })!,
+    ]);
+    const reused = (
+      await runCall(second, "call-reused", { tasks: [SUMMARIZE] })
+    ).toolResult.content as Record<string, any>;
+    assert.equal(calls, 1, "the old record is reused, not read again");
+    assert.deepEqual(
+      (reused.quoteCitations as QuoteCitation[]).map((c) => c.id),
+      (fresh.quoteCitations as QuoteCitation[]).map((c) => c.id),
+    );
+    // The record is stored again with its ids, for context_read.
+    const again = second.handles.find(
+      (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+    );
+    assert.exists(again);
+    const againContent = again!.content as {
+      digest: HostPaperDigest;
+      rendered: string;
+    };
+    assert.deepEqual(
+      againContent.digest.quoteCitations,
+      content.digest.quoteCitations,
+    );
+    assert.include(againContent.rendered, "quoteCitationId: Q_");
+    assert.include(
+      reused.digests,
+      again!.handle,
+      "the result names the record that has the ids",
+    );
+
+    // A later turn is served the minted record and stores nothing again.
+    const third = createHarness(digests, [5]);
+    third.request.conversationKey = second.request.conversationKey;
+    const later = (await runCall(third, "call-later", { tasks: [SUMMARIZE] }))
+      .toolResult.content as Record<string, any>;
+    assert.equal(calls, 1);
+    assert.isEmpty(
+      third.handles.filter(
+        (record) => record.toolName === PAPER_DIGEST_HANDLE_TOOL,
+      ),
+    );
+    assert.include(later.digests, again!.handle);
+  });
+
+  it("labels a digest's quotes with the paper's canonical source label", function () {
+    const paper = (extra: Partial<PaperContextRef>): PaperContextRef => ({
+      itemId: 6,
+      contextItemId: 106,
+      title: "Drift B",
+      ...extra,
+    });
+    assert.equal(
+      digestSourceLabel(paper({ firstCreator: "Ziv", year: "2021" })),
+      "(Ziv, 2021)",
+    );
+    assert.equal(digestSourceLabel(paper({})), "(Drift B, n.d.)");
+    // An undated creator the citation contract cannot read as a source.
+    assert.equal(
+      digestSourceLabel(paper({ firstCreator: "van der Berg" })),
+      "(van der Berg, n.d.)",
+    );
   });
 
   it("never caches a failure", async function () {
@@ -1155,6 +1457,67 @@ describe("task_update runs a declared digest part", function () {
     assert.deepEqual(kept?.content, records[0].content);
   });
 
+  it("serves a digest the other scope re-minted with a handle that holds the served digest", async function () {
+    const conversation = 975_900;
+    const cacheKey = "digest:v2:relabel";
+    const minted = (id: string): HostPaperDigest =>
+      ({
+        schema: 2,
+        itemId: 5,
+        contextItemId: 105,
+        title: "Drift A",
+        answer: "Cells drift slowly.",
+        evidence: [
+          {
+            quote: "We recorded forty cells over ten days.",
+            quoteCitationId: id,
+          },
+        ],
+        facets: [],
+        gaps: [],
+        source: {
+          backend: "mineru",
+          readCharacters: 4_000,
+          totalCharacters: 4_000,
+          complete: true,
+        },
+        model: "test-model",
+        producedAt: 1,
+        cacheKey,
+        quoteCitations: [{ id }],
+      }) as unknown as HostPaperDigest;
+    const cacheIn = (resourceSignature: string, at: number) =>
+      createHandleStorePaperDigestCache({
+        conversationKey: conversation,
+        resourceSignature,
+        now: () => at,
+      });
+    // Scope S1 stores the digest under the old label's id.
+    await cacheIn("S1", 1).set(minted("Q_old"));
+    // The user fixes the year and switches to S2, which re-mints it.
+    await cacheIn("S2", 2).set(minted("Q_new"));
+    // Back in S1, the store serves the newer record.
+    const back = cacheIn("S1", 3);
+    const served = await back.get(cacheKey);
+    assert.equal(served?.evidence[0].quoteCitationId, "Q_new");
+    const handle = await back.handleOf(served!);
+    const record = await getAgentToolResultHandle({
+      conversationKey: conversation,
+      handle: handle!,
+    });
+    const content = record?.content as {
+      digest: HostPaperDigest;
+      rendered: string;
+    };
+    assert.equal(
+      content.digest.evidence[0].quoteCitationId,
+      "Q_new",
+      "the handle holds the digest the model was told about",
+    );
+    assert.include(content.rendered, "Q_new");
+    assert.notInclude(content.rendered, "Q_old");
+  });
+
   it("leaves a part of any other effect exactly as before", async function () {
     let calls = 0;
     const harness = createHarness(
@@ -1338,6 +1701,492 @@ describe("a digested paper as document evidence", function () {
     assert.isTrue(
       submitted.toolResult.ok,
       JSON.stringify(submitted.toolResult.content),
+    );
+  });
+});
+
+describe("a digest part reads what its read scope names", function () {
+  let restoreDb: () => void;
+
+  beforeEach(function () {
+    restoreDb = installMockDb();
+    clearAgentToolResultHandleStore();
+  });
+
+  afterEach(function () {
+    clearAgentToolResultHandleStore();
+    restoreDb();
+  });
+
+  const ABSTRACTS: Record<number, string> = {
+    5: "Place cells drift slowly, yet decoding of position stays above chance across days.",
+    6: "We show that drift follows a random walk in the population vector space.",
+  };
+
+  /** Scripted papers: each read for the scope the part gives it. */
+  function scopedDigests(
+    reads: Array<{ itemId: number; scope?: string }>,
+    llmCall: (chat: ChatParams) => Promise<ReturnType<typeof reply>>,
+  ): NonNullable<TaskUpdateToolDeps["digests"]> {
+    return {
+      resolvePaper: async (_request, itemId) => PAPERS[itemId] || null,
+      readText: async (paper, _maxChars, scope) => {
+        reads.push({ itemId: paper.itemId, scope: scope?.source });
+        if (scope?.source === "abstract") {
+          const abstract = ABSTRACTS[paper.itemId];
+          return abstract
+            ? {
+                backend: "text",
+                text: abstract,
+                totalCharacters: abstract.length,
+                covered: ["Abstract"],
+                bounds: "exact",
+                textSource: "Zotero abstract field",
+              }
+            : {
+                backend: "text",
+                text: "",
+                totalCharacters: 0,
+                covered: [],
+                unmatched: ["abstract"],
+              };
+        }
+        return { backend: "mineru", text: TEXT, totalCharacters: TEXT.length };
+      },
+      llmCall: llmCall as never,
+    };
+  }
+
+  it("completes an abstract part on the abstracts, with ids and no model call", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    let calls = 0;
+    const harness = createHarness(
+      scopedDigests(reads, async () => {
+        calls += 1;
+        return reply("unused");
+      }),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-abstracts", {
+      tasks: [
+        {
+          taskId: "abstracts",
+          description: "Using only the abstracts, give an overview",
+          expectedEffect: "digest",
+          scope: true,
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+    assert.equal(calls, 0, "no model reads an abstract");
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 6, scope: "abstract" },
+    ]);
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.deepEqual(answer.parts, [
+      {
+        taskId: "abstracts",
+        status: "completed",
+        done: 2,
+        total: 2,
+        scope: true,
+      },
+    ]);
+    const task = harness.request.executionCheckpoint!.tasks[0];
+    assert.deepEqual(task.readScope, { source: "abstract" });
+    assert.lengthOf(answer.quoteCitations, 2);
+    for (const citation of answer.quoteCitations as QuoteCitation[]) {
+      assert.match(citation.id, /^Q_/);
+      assert.include(answer.digests, `(quoteCitationId: ${citation.id})`);
+    }
+    assert.include(answer.digests, ABSTRACTS[5]);
+    assert.include(
+      answer.digests,
+      "text: the abstract only; read Abstract (Zotero abstract field)",
+    );
+    // The model view keeps the ids, not the citation records.
+    const modelView = createTaskUpdateTool().modelContent!(
+      answer as never,
+    ) as Record<string, unknown>;
+    assert.notProperty(modelView, "quoteCitations");
+    // The paper rows record abstracts, never a full read.
+    const rows = ledgerDeltas(harness);
+    assert.isNotEmpty(rows);
+    for (const delta of rows) {
+      assert.equal(delta.papers[0].state, "skimmed");
+      assert.notInclude(
+        delta.reads.map((read) => read.granularity),
+        "full",
+      );
+    }
+  });
+
+  it("names a paper with no abstract and reads nothing else for it", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      scopedDigests(reads, async () => reply("unused")),
+      [5, 7],
+    );
+    const outcome = await runCall(harness, "call-abstracts", {
+      tasks: [
+        {
+          taskId: "abstracts",
+          description: "Using only the abstracts, give an overview",
+          expectedEffect: "digest",
+          targetIds: ["5", "7"],
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.deepEqual(answer.digestFailures, [
+      {
+        itemId: 7,
+        title: "Drift C",
+        reason: "No abstract in the Zotero record or the PDF",
+      },
+    ]);
+    assert.include(answer.digestNote, "Nothing read for Drift C (item:7");
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 7, scope: "abstract" },
+    ]);
+  });
+
+  it("names a paper with none of the named sections, limits the read, and reads nothing else for it", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("unused")),
+        readText: async (paper, _maxChars, scope) => {
+          reads.push({ itemId: paper.itemId, scope: scope?.source });
+          return {
+            backend: "pdf",
+            text: "",
+            totalCharacters: 0,
+            covered: [],
+            unmatched: ["abstract", "results"],
+          };
+        },
+      },
+      [7],
+    );
+    const outcome = await runCall(harness, "call-sections", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["7"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    assert.equal(
+      answer.digestFailures[0]?.reason,
+      "None of the named sections were found",
+    );
+    assert.include(answer.digestNote, "Nothing read for Drift C (item:7");
+    assert.include(answer.digestNote, "abstract, results");
+    assert.include(answer.digestNote, SECTIONS_NOT_FOUND_RULE);
+    assert.deepEqual(reads, [{ itemId: 7, scope: "sections" }]);
+  });
+
+  it("states the not-found rule once for several papers that lack a named section, and not twice beside a paper with none", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("A reading of the results.")),
+        readText: async (paper, _maxChars, scope) => {
+          reads.push({ itemId: paper.itemId, scope: scope?.source });
+          if (paper.itemId === 7)
+            return {
+              backend: "pdf",
+              text: "",
+              totalCharacters: 0,
+              covered: [],
+              unmatched: ["abstract", "results"],
+            };
+          return {
+            backend: "mineru",
+            text: TEXT,
+            totalCharacters: TEXT.length,
+            covered: ["Abstract"],
+            unmatched: ["results"],
+            bounds: "exact",
+            textSource: "MinerU sections",
+          };
+        },
+      },
+      [5, 6, 7],
+    );
+    const outcome = await runCall(harness, "call-partial", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["5", "6", "7"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const answer = outcome.toolResult.content as Record<string, any>;
+    const countOf = (text: string) =>
+      text.split(SECTIONS_NOT_FOUND_RULE).length - 1;
+    // Each partial-match paper keeps its short line; the rule is not in it.
+    assert.equal(
+      (answer.digests.match(/not in this paper: results/g) || []).length,
+      2,
+    );
+    assert.equal(countOf(answer.digests), 0);
+    // A paper with none of the names and two with some: one rule.
+    assert.equal(countOf(answer.digestNote), 1);
+    // Two partial-match papers alone: one rule.
+    const partialOnly = createHarness(
+      {
+        ...scopedDigests(reads, async () => reply("A reading of the results.")),
+        readText: async () => ({
+          backend: "mineru",
+          text: TEXT,
+          totalCharacters: TEXT.length,
+          covered: ["Abstract"],
+          unmatched: ["results"],
+          bounds: "exact",
+          textSource: "MinerU sections",
+        }),
+      },
+      [5, 6],
+    );
+    const second = await runCall(partialOnly, "call-partial-only", {
+      tasks: [
+        {
+          taskId: "findings",
+          description: "Summarize the findings",
+          expectedEffect: "digest",
+          targetIds: ["5", "6"],
+          read: { source: "sections", sections: ["abstract", "results"] },
+        },
+      ],
+    });
+    const only = second.toolResult.content as Record<string, any>;
+    assert.equal(countOf(only.digestNote || ""), 1);
+    assert.equal(countOf(only.digests), 0);
+  });
+
+  // Since the reader picks named sections (sectionPicker.ts), the results
+  // of a paper that labels none are the sections the reader picks, named by
+  // their own headings; only the abstract is still found by its place.
+  it("digests a paper that labels neither its abstract nor its results from the lead and the sections the reader picks, and says so", async function () {
+    clearSectionPickCache();
+    const outline = buildMineruSectionOutline(NATURE_SHAPE_MD);
+    const idOf = (heading: string) =>
+      outline.kind === "sections"
+        ? outline.sections.find((section) => section.heading === heading)?.id
+        : undefined;
+    const globalScope = globalThis as unknown as Record<string, unknown>;
+    const hadIOUtils = "IOUtils" in globalScope;
+    const previousIOUtils = globalScope.IOUtils;
+    globalScope.IOUtils = {
+      read: async (filePath: string) => {
+        if (!filePath.includes("/cache/105"))
+          throw new Error(`no file ${filePath}`);
+        return new TextEncoder().encode(NATURE_SHAPE_MD);
+      },
+    };
+    try {
+      const sources = createZoteroPaperDigestSources({
+        zoteroGateway: {
+          resolvePaperContextTarget: ({ itemId }: { itemId?: number }) =>
+            itemId === 5 ? { ...PAPERS[5] } : null,
+          getAllChildAttachmentInfos: async () => [
+            { contextItemId: 105, mineruCacheDir: "/cache/105" },
+          ],
+          getItem: () => ({ getField: () => "" }),
+        } as never,
+        pdfService: {
+          getOverviewExcerpt: async () => {
+            throw new Error("a scoped read never reads the overview");
+          },
+          ensurePaperContext: async () => undefined,
+        } as never,
+      });
+      const prompts: string[] = [];
+      const harness = createHarness(
+        {
+          ...sources,
+          llmCall: (async (chat: ChatParams) => {
+            if (JSON.stringify(chat).includes(SECTION_PICK_TASK_LINE))
+              return {
+                text: JSON.stringify({
+                  parts: [
+                    {
+                      name: "results",
+                      sections: [
+                        idOf("Replays spread across the visual cortex"),
+                        idOf("Local silencing removes replays"),
+                      ],
+                    },
+                  ],
+                }),
+                completion: { status: "complete" as const },
+              };
+            prompts.push(JSON.stringify(chat));
+            return {
+              text: JSON.stringify({
+                answer: "Replays come before the change in responses.",
+                evidence: [
+                  {
+                    section: "Local silencing removes replays",
+                    quote: RESULTS_B,
+                  },
+                ],
+                facets: [],
+              }),
+              completion: { status: "complete" as const },
+            };
+          }) as never,
+        },
+        [5],
+      );
+      const outcome = await runCall(harness, "call-unlabelled", {
+        tasks: [
+          {
+            taskId: "findings",
+            description: "Read the abstract and results of every paper",
+            expectedEffect: "digest",
+            targetIds: ["5"],
+            read: { source: "sections", sections: ["abstract", "results"] },
+          },
+        ],
+      });
+      assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+      const answer = outcome.toolResult.content as Record<string, any>;
+      assert.isUndefined(answer.digestFailures);
+      assert.include(
+        answer.digests,
+        "read Abstract (unlabelled lead), Replays spread across the visual cortex (for: results), Local silencing removes replays (for: results) (PDF lead paragraph; MinerU sections)",
+      );
+      assert.include(
+        answer.digests,
+        "Abstract (unlabelled lead) was found by position",
+      );
+      assert.notInclude(answer.digests, "section bounds approximate");
+      assert.notInclude(answer.digests, "not in this paper");
+      assert.notInclude(
+        `${answer.digests}\n${answer.digestNote || ""}`,
+        SECTIONS_NOT_FOUND_RULE,
+      );
+      // The reader got the lead and the picked results, not the discussion.
+      assert.lengthOf(prompts, 1);
+      assert.include(prompts[0], LEAD_ABSTRACT.slice(0, 80));
+      assert.include(prompts[0], RESULTS_A);
+      assert.notInclude(prompts[0], DISCUSSION);
+    } finally {
+      if (hadIOUtils) globalScope.IOUtils = previousIOUtils;
+      else delete globalScope.IOUtils;
+    }
+  });
+
+  it("reads a paper an override names for its own scope", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    let calls = 0;
+    const harness = createHarness(
+      scopedDigests(reads, async () => {
+        calls += 1;
+        return reply("Cells drift slowly.");
+      }),
+      [5, 6],
+    );
+    const outcome = await runCall(harness, "call-mixed", {
+      tasks: [
+        {
+          taskId: "papers",
+          description: "Summarize each paper",
+          expectedEffect: "digest",
+          targetIds: ["5", "6"],
+          read: { source: "abstract" },
+          overrides: [{ itemId: "item:6", read: { source: "full" } }],
+        },
+      ],
+    });
+    assert.isTrue(outcome.toolResult.ok, JSON.stringify(outcome.toolResult));
+    assert.deepEqual(reads, [
+      { itemId: 5, scope: "abstract" },
+      { itemId: 6, scope: undefined },
+    ]);
+    assert.equal(calls, 1, "only the full read calls the model");
+    const task = harness.request.executionCheckpoint!.tasks[0];
+    assert.deepEqual(task.readOverrides, [
+      { target: "item:6", read: { source: "full" } },
+    ]);
+  });
+
+  it("refuses a read scope on a part that is not a digest, and overrides for papers it does not name", async function () {
+    const harness = createHarness(
+      scopedDigests([], async () => reply("unused")),
+      [5, 6],
+    );
+    const notDigest = await runCall(harness, "call-read", {
+      tasks: [
+        {
+          taskId: "read",
+          description: "Read the papers",
+          expectedEffect: "read",
+          targetIds: ["5"],
+          read: { source: "abstract" },
+        },
+      ],
+    });
+    assert.isFalse(notDigest.toolResult.ok);
+    assert.include(
+      JSON.stringify(notDigest.toolResult.content),
+      "expectedEffect:'digest'",
+    );
+    const outside = await runCall(harness, "call-outside", {
+      tasks: [
+        {
+          taskId: "papers",
+          description: "Summarize each paper",
+          expectedEffect: "digest",
+          targetIds: ["5"],
+          overrides: [{ itemId: 6, read: { source: "abstract" } }],
+        },
+      ],
+    });
+    assert.isFalse(outside.toolResult.ok);
+    assert.include(JSON.stringify(outside.toolResult.content), "item:6");
+  });
+
+  it("keeps a part's scope on a repeat, and a new scope on a part with progress needs a new part", async function () {
+    const reads: Array<{ itemId: number; scope?: string }> = [];
+    const harness = createHarness(
+      scopedDigests(reads, async () => reply("unused")),
+      [5, 6],
+    );
+    const declaration = {
+      taskId: "abstracts",
+      description: "Using only the abstracts, give an overview",
+      expectedEffect: "digest",
+      targetIds: ["5", "6"],
+      read: { source: "abstract" },
+    };
+    await runCall(harness, "call-1", { tasks: [declaration] });
+    const { read: _read, ...withoutRead } = declaration;
+    await runCall(harness, "call-2", { tasks: [withoutRead] });
+    assert.deepEqual(harness.request.executionCheckpoint!.tasks[0].readScope, {
+      source: "abstract",
+    });
+    const widened = await runCall(harness, "call-3", {
+      tasks: [{ ...declaration, read: { source: "full" } }],
+    });
+    assert.isFalse(widened.toolResult.ok);
+    assert.include(
+      JSON.stringify(widened.toolResult.content),
+      "Task abstracts is completed",
     );
   });
 });

@@ -59,7 +59,7 @@ describe("mapSdkMessageToProviderEvents", () => {
     });
   });
 
-  it("does not duplicate tool_call when assistant content already includes tool_use", () => {
+  it("emits tool_call once, from the assistant message that carries its arguments", () => {
     const assistantMessage = {
       type: "assistant",
       session_id: "session-1",
@@ -84,7 +84,7 @@ describe("mapSdkMessageToProviderEvents", () => {
           type: "tool_use",
           id: "call_123",
           name: "Read",
-          input: { file_path: "/tmp/a.txt" },
+          input: {},
         },
       },
     };
@@ -92,12 +92,31 @@ describe("mapSdkMessageToProviderEvents", () => {
     const assistantEvents = mapSdkMessageToProviderEvents(assistantMessage);
     const streamEvents = mapSdkMessageToProviderEvents(streamEvent);
 
-    expect(
-      assistantEvents.filter((event) => event.type === "tool_call"),
-    ).toHaveLength(0);
+    const calls = assistantEvents.filter((event) => event.type === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].payload).toMatchObject({
+      id: "call_123",
+      name: "Read",
+      input: { file_path: "/tmp/a.txt" },
+    });
     expect(
       streamEvents.filter((event) => event.type === "tool_call"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
+  });
+
+  it("keeps Claude Code's own system bookkeeping out of status lines", () => {
+    for (const subtype of [
+      "thinking_tokens",
+      "status",
+      "session_state_changed",
+    ]) {
+      const events = mapSdkMessageToProviderEvents({
+        type: "system",
+        subtype,
+        session_id: "session-1",
+      });
+      expect(events.map((event) => event.type)).toEqual(["provider_event"]);
+    }
   });
 
   it("does not duplicate tool_result when user message contains both top-level and content-block results", () => {

@@ -1,4 +1,3 @@
-import { appLogger } from "../core/logging";
 import type {
   AgentConfirmationResolution,
   AgentModelMessage,
@@ -12,14 +11,14 @@ import type {
 import { normalizeNoteSourceText } from "../services/notes/noteRendering";
 import type {
   EditableArticleMetadataPatch,
-  EditableArticleMetadataField,
+  ZoteroGateway,
 } from "./services/zoteroGateway";
-import { EDITABLE_ARTICLE_METADATA_FIELDS } from "./services/zoteroGateway";
 import type { PaperContextRef } from "../shared/types";
 import { normalizeToolPaperContext } from "./tools/shared";
 import {
-  METADATA_FIELD_DISPLAY_LABELS,
   formatCreatorsDisplay,
+  metadataFieldLabel,
+  metadataPatchFieldNames,
 } from "./tools/write/mutateLibraryShared";
 
 type LiteratureSearchMode =
@@ -525,60 +524,69 @@ function normalizeSearchReviewArgs(args: unknown): SearchReviewArgs {
   };
 }
 
+/** What the metadata cards need from Zotero: the write target and its fields. */
+export type SearchReviewMetadataGateway = Pick<
+  ZoteroGateway,
+  | "resolveMetadataWriteTarget"
+  | "getEditableArticleMetadata"
+  | "metadataPatchRefusal"
+>;
+
 /**
- * Build before/after diff rows by comparing a metadata patch against
- * the current Zotero item's fields. Only includes rows where the value
- * would actually change (new value for empty field, or different value).
+ * The item an applied metadata result writes, resolved by the write path's
+ * own strict resolver. The card reads its "before" values from this item and
+ * the apply names it by id, so the two can never disagree: a named itemId is
+ * taken exactly, and only a call that names none falls back to the paper
+ * context, the turn's paper, or the open item.
+ */
+function resolveSearchMetadataTarget(
+  args: SearchReviewArgs,
+  context: AgentToolContext,
+  zoteroGateway: SearchReviewMetadataGateway,
+): { item: Zotero.Item } | { refusal: string } {
+  return zoteroGateway.resolveMetadataWriteTarget({
+    request: context.request,
+    item: context.item,
+    itemId: args.itemId,
+    paperContext: args.paperContext || getReferencePaperContext(context),
+  });
+}
+
+/**
+ * Build before/after diff rows by comparing a metadata patch against the
+ * fields of the item the write will change. Only includes rows where the
+ * value would actually change (new value for empty field, or different value).
  */
 function buildMetadataDiffRows(
   patch: EditableArticleMetadataPatch,
-  context: AgentToolContext,
-  args: SearchReviewArgs,
-): SearchReviewMetadataRow[] {
+  target: Zotero.Item,
+  zoteroGateway: SearchReviewMetadataGateway,
+): SearchReviewMetadataRow[] | null {
+  // A patch the target's item type cannot take (a DOI on a PDF the model
+  // named by id) would be approved and then refused by the write, so it gets
+  // no rows and no card.
+  if (zoteroGateway.metadataPatchRefusal(target, patch)) return null;
   const rows: SearchReviewMetadataRow[] = [];
-  // Try to get current item snapshot for before values
-  const currentFields: Partial<Record<string, string>> = {};
-  let currentCreatorsDisplay = "";
-  const paperContext = args.paperContext || getReferencePaperContext(context);
-  const itemId =
-    args.itemId ||
-    paperContext?.itemId ||
-    readPositiveInt(context.request.activeItemId);
+  // The same snapshot the write's own readback and the update card read:
+  // every field the item's type has, base-mapped (publicationTitle is
+  // bookTitle on a book section).
+  const snapshot = zoteroGateway.getEditableArticleMetadata(target);
+  const currentFields = (snapshot?.fields || {}) as Partial<
+    Record<string, string>
+  >;
+  const currentCreatorsDisplay = snapshot
+    ? formatCreatorsDisplay(snapshot.creators)
+    : "";
 
-  // We'll try to read from the context item if available
-  if (context.item) {
-    try {
-      for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-        const val = context.item.getField?.(fieldName);
-        if (typeof val === "string" && val.trim()) {
-          currentFields[fieldName] = val.trim();
-        }
-      }
-      const creators = context.item.getCreatorsJSON?.() || [];
-      currentCreatorsDisplay = creators
-        .map((c) => {
-          const rec = c as unknown as Record<string, unknown>;
-          return rec.name
-            ? String(rec.name)
-            : [rec.firstName, rec.lastName].filter(Boolean).join(" ");
-        })
-        .filter(Boolean)
-        .join("; ");
-    } catch (err) {
-      appLogger.warn(
-        "LLM: Review card metadata patch failed (best-effort)",
-        err,
-      );
-    }
-  }
-
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(patch, fieldName)) continue;
-    const newValue = patch[fieldName as EditableArticleMetadataField] ?? "";
-    const before = currentFields[fieldName] ?? "";
+  // The fields the patch writes, not a fixed article list: a translator's
+  // book patch (edition, series) otherwise produced a card with no rows.
+  for (const fieldName of metadataPatchFieldNames(patch)) {
+    const value = (patch as Record<string, unknown>)[fieldName];
+    const newValue = value === undefined || value === null ? "" : String(value);
+    const before = (currentFields[fieldName] ?? "").trim();
     // Skip fields where value is identical
     if (before === newValue) continue;
-    const label = METADATA_FIELD_DISPLAY_LABELS[fieldName] || fieldName;
+    const label = metadataFieldLabel(fieldName);
     rows.push({
       key: fieldName,
       label,
@@ -615,12 +623,21 @@ export function createSearchLiteratureReviewAction(
   result: AgentToolResult,
   context: AgentToolContext,
   args: unknown,
+  zoteroGateway: SearchReviewMetadataGateway,
 ): AgentPendingAction | null {
   const prepared = prepareSearchReview(result);
   if (!prepared) return null;
   if (prepared.kind === "metadata") {
     const noteContent = buildMetadataNoteTemplate(context, prepared.rows);
     const normalizedArgs = normalizeSearchReviewArgs(args);
+    // No card for a write that cannot happen: the results reach the model as
+    // text, and a direct library_update names the refusal itself.
+    const target = resolveSearchMetadataTarget(
+      normalizedArgs,
+      context,
+      zoteroGateway,
+    );
+    if ("refusal" in target) return null;
     const selectedChoice = resolveMetadataChoice(
       prepared,
       undefined,
@@ -636,9 +653,10 @@ export function createSearchLiteratureReviewAction(
         // Build before/after diff rows for the fields that would change
         const diffRows = buildMetadataDiffRows(
           metadata,
-          context,
-          normalizedArgs,
+          target.item,
+          zoteroGateway,
         );
+        if (!diffRows) return null;
         return {
           toolName: "literature_search",
           mode: "review",
@@ -713,6 +731,12 @@ export function createSearchLiteratureReviewAction(
   }
 
   const normalizedArgs = normalizeSearchReviewArgs(args);
+  // A literature review's card asks whether to import the ticked papers and
+  // cite them, or to cite them without importing.
+  const forLiteratureReview =
+    (result.content as { forLiteratureReview?: unknown })
+      .forLiteratureReview === true;
+  const submitActionIds = forLiteratureReview ? ["cite", "import"] : ["import"];
   return {
     toolName: "literature_review",
     mode: "review",
@@ -731,10 +755,30 @@ export function createSearchLiteratureReviewAction(
     ]
       .filter(Boolean)
       .join("\n"),
-    confirmLabel: "Import selected",
-    selectionAction: { fieldId: "selectedPaperIds", verb: "Import" },
+    confirmLabel: forLiteratureReview
+      ? "Import and cite selected"
+      : "Import selected",
+    selectionAction: {
+      fieldId: "selectedPaperIds",
+      verb: forLiteratureReview ? "Import and cite" : "Import",
+    },
     cancelLabel: "Cancel",
-    actions: getSearchActionButtons(prepared.kind),
+    actions: forLiteratureReview
+      ? [
+          {
+            id: "cite",
+            label: "Cite {count} without importing",
+            style: "secondary" as const,
+            footer: true,
+          },
+          {
+            id: "import",
+            label: "Import and cite selected",
+            style: "primary" as const,
+          },
+          { id: "cancel", label: "Cancel", style: "secondary" as const },
+        ]
+      : getSearchActionButtons(prepared.kind),
     defaultActionId: "import",
     cancelActionId: "cancel",
     fields: [
@@ -767,8 +811,11 @@ export function createSearchLiteratureReviewAction(
           (result.content as { outcome?: string }).outcome === "search_failed"
             ? "Retry finding more"
             : `Find ${Number((result.content as { batchSize?: number }).batchSize) || 5} more`,
-        minSelectedByAction: [{ actionId: "import", min: 1 }],
-        visibleForActionIds: ["import"],
+        minSelectedByAction: submitActionIds.map((actionId) => ({
+          actionId,
+          min: 1,
+        })),
+        visibleForActionIds: submitActionIds,
       },
     ],
   };
@@ -779,6 +826,7 @@ export function resolveSearchLiteratureReview(
   result: AgentToolResult,
   resolution: AgentConfirmationResolution,
   context: AgentToolContext,
+  zoteroGateway: SearchReviewMetadataGateway,
 ): AgentToolReviewResolution {
   const prepared = prepareSearchReview(result);
   const normalizedArgs = input;
@@ -837,17 +885,22 @@ export function resolveSearchLiteratureReview(
       const metadata = bestChoice
         ? buildMetadataUpdatePatch(bestChoice.raw)
         : null;
-      const paperContext =
-        normalizedArgs.paperContext || getReferencePaperContext(context);
-      const itemId =
-        normalizedArgs.itemId ||
-        paperContext?.itemId ||
-        readPositiveInt(context.request.activeItemId);
-      if (!metadata || (!paperContext && !itemId)) {
+      if (!metadata) {
         return {
           kind: "stop",
           finalText:
             "Could not prepare metadata changes from the selected result.",
+        };
+      }
+      const target = resolveSearchMetadataTarget(
+        normalizedArgs,
+        context,
+        zoteroGateway,
+      );
+      if ("refusal" in target) {
+        return {
+          kind: "stop",
+          finalText: `Could not apply the selected metadata: ${target.refusal}.`,
         };
       }
       return {
@@ -856,7 +909,9 @@ export function resolveSearchLiteratureReview(
           name: "library_update",
           arguments: {
             kind: "metadata",
-            ...(paperContext ? { paperContext } : { itemId }),
+            // The exact item the card showed, by id: a paper context would
+            // let the write fall back to another item than the one reviewed.
+            itemId: target.item.id,
             metadata,
           },
           inheritedApproval: {
@@ -882,17 +937,22 @@ export function resolveSearchLiteratureReview(
       const metadata = selectedChoice
         ? buildMetadataUpdatePatch(selectedChoice.raw)
         : null;
-      const paperContext =
-        normalizedArgs.paperContext || getReferencePaperContext(context);
-      const itemId =
-        normalizedArgs.itemId ||
-        paperContext?.itemId ||
-        readPositiveInt(context.request.activeItemId);
-      if (!selectedChoice || !metadata || (!paperContext && !itemId)) {
+      if (!selectedChoice || !metadata) {
         return {
           kind: "stop",
           finalText:
             "Could not prepare metadata changes from the selected result.",
+        };
+      }
+      const target = resolveSearchMetadataTarget(
+        normalizedArgs,
+        context,
+        zoteroGateway,
+      );
+      if ("refusal" in target) {
+        return {
+          kind: "stop",
+          finalText: `Could not apply the selected metadata: ${target.refusal}.`,
         };
       }
       return {
@@ -901,7 +961,7 @@ export function resolveSearchLiteratureReview(
           name: "library_update",
           arguments: {
             kind: "metadata",
-            ...(paperContext ? { paperContext } : { itemId }),
+            itemId: target.item.id,
             metadata,
           },
           inheritedApproval: {

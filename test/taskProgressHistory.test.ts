@@ -319,6 +319,48 @@ describe("task progress history rebuild", function () {
     assert.equal(ledger.papers["1:1"].itemKey, "PAPER001");
   });
 
+  it("replays Claude Code's latest step snapshot with its source", function () {
+    const snapshot = (
+      seq: number,
+      steps: Array<{ content: string; status: string }>,
+    ) =>
+      record("run-1", seq, {
+        type: "codex_progress",
+        itemId: "codex-plan-checklist",
+        text: steps.map((step) => step.content).join("\n"),
+        runtime: "claude",
+        steps,
+      });
+    const history = buildTaskProgressHistory(
+      conversation().slice(0, 2),
+      new Map([
+        [
+          "run-1",
+          [
+            snapshot(1, [
+              { content: "Screen", status: "in_progress" },
+              { content: "Skim", status: "pending" },
+            ]),
+            snapshot(2, [
+              { content: "Screen", status: "completed" },
+              { content: "Skim", status: "in_progress" },
+            ]),
+          ],
+        ],
+      ]),
+      1,
+    );
+    assert.equal(history.runs[0].checklist?.source, "claude");
+    assert.deepEqual(
+      history.runs[0].checklist?.steps.map((step) => [step.label, step.status]),
+      [
+        ["Screen", "completed"],
+        ["Skim", "in_progress"],
+      ],
+    );
+    assert.equal(history.checklist, history.runs[0].checklist);
+  });
+
   it("reads exactly the stored event kinds that carry Task progress", function () {
     assert.deepEqual(
       [...TASK_PROGRESS_HISTORY_EVENT_TYPES],

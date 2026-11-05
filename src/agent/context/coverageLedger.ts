@@ -586,6 +586,14 @@ function sourceKindFromPaperBackend(value: unknown): AgentCoverageSourceKind {
   return "zotero_fulltext";
 }
 
+/** Where a whole-sections read took its text: MinerU, PDF text or the Zotero abstract field. */
+function wholeSectionsSourceKind(backend: unknown): AgentCoverageSourceKind {
+  const normalized = normalizeText(backend, 80);
+  if (normalized === "mineru") return "mineru";
+  if (normalized === "pdf") return "zotero_fulltext";
+  return "zotero_metadata";
+}
+
 function sourceKindFromFilePath(filePath: string): AgentCoverageSourceKind {
   return /mineru/i.test(filePath) ? "mineru" : "library_read";
 }
@@ -627,6 +635,9 @@ function buildPaperReadCoverageEntries(
   }
 
   if (mode === "targeted" && Array.isArray(content.papers)) {
+    // Whole named sections are section reads of the paper's own text, not
+    // ranked passages from an embedding search.
+    const wholeSections = content.read === "whole_sections";
     for (const paperRecord of content.papers) {
       const record = normalizeRecord(paperRecord);
       const paper = paperContextFromRecord(record);
@@ -638,12 +649,13 @@ function buildPaperReadCoverageEntries(
       const entry = createCoverageEntry({
         resourceKey: paperResourceKey(paper),
         resourceLabel: getPaperLabel(paper),
-        sourceKind:
-          sourceKindFromPaperBackend(record.sourceKind) === "mineru"
+        sourceKind: wholeSections
+          ? wholeSectionsSourceKind(record.backend)
+          : sourceKindFromPaperBackend(record.sourceKind) === "mineru"
             ? "mineru"
             : "embedding_retrieval",
         topic,
-        granularity: "passage",
+        granularity: wholeSections ? "section" : "passage",
         coverage: passages.length ? "targeted" : "partial",
         confidence: passages.length ? "high" : "medium",
         contentHash,

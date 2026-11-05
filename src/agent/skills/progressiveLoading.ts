@@ -1,5 +1,7 @@
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { getSkillCustomizationNotice } from "./managedBlock";
+import { skillBodyForRuntime } from "./runtimeSections";
+import type { ConversationSystem } from "../../shared/types";
 import type {
   AgentSkill,
   SkillActivationMode,
@@ -38,10 +40,15 @@ export async function fingerprintSkillInstruction(
   return `sha256:${await sha256Text(instruction)}`;
 }
 
-/** Load one installed skill without semantic routing or another model call. */
+/**
+ * Load one installed skill without semantic routing or another model call.
+ * `instructions` is the body as `runtime` reads it (runtimeSections.ts);
+ * the fingerprint stays the installed body's, whichever runtime loads it.
+ */
 export async function loadSkill(
   skill: AgentSkill,
   shippedInstruction?: string,
+  options: { runtime?: ConversationSystem } = {},
 ): Promise<LoadedSkill> {
   return {
     skill: buildSkillInventory([skill])[0],
@@ -49,7 +56,7 @@ export async function loadSkill(
       source: skill.source,
       shippedInstruction,
     }),
-    instructions: skill.instruction,
+    instructions: skillBodyForRuntime(skill.instruction, options.runtime),
     loadedSkill: {
       id: skill.id,
       version: skill.version,

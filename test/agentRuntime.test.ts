@@ -2328,11 +2328,17 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("rejects an oversized native tool step whole and retries from a semantic checkpoint", async function () {
-    const restoreDb = installMockDb();
+  it("runs the first tool calls of an oversized step, each write authorized alone, and not the rest", async function () {
+    const installed = installMockDb();
     try {
-      const registry = new AgentToolRegistry();
-      let executionCount = 0;
+      await initAgentChangeJournal();
+      // "safe": every write asks for its own card.
+      globalThis.Zotero.Prefs.set(
+        "extensions.zotero.llmforzotero.originalAgentPermissionMode",
+        "safe",
+      );
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      const ran: string[] = [];
       registry.register({
         spec: {
           name: "read_context",
@@ -2341,18 +2347,56 @@ describe("AgentRuntime", function () {
           executionClass: "read",
           requiresConfirmation: false,
         },
-        validate: () => ({ ok: true, value: {} }),
-        execute: async () => {
-          executionCount += 1;
-          return { ok: true };
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async (input: { id: string }) => {
+          ran.push(input.id);
+          return { read: input.id };
         },
-      });
-
+      } as never);
+      registry.register({
+        effectOperations: ["command_execute"],
+        spec: {
+          name: "confirmation_write",
+          description: "write",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          requiresConfirmation: true,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        describeAction: (input: { id: string }) =>
+          commandActionDescriptor(`command_execute:${input.id}`),
+        planInvocation: () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test confirmed write.",
+          }),
+        createPendingAction: (input: { id: string }) => ({
+          toolName: "confirmation_write",
+          title: `Write ${input.id}`,
+          confirmLabel: "Apply",
+          cancelLabel: "Cancel",
+          fields: [],
+        }),
+        execute: async (input: { id: string }) => {
+          ran.push(input.id);
+          return {
+            content: { status: "saved", id: input.id },
+            effect: "applied",
+          };
+        },
+      } as never);
+      // Nine calls: writes at the second, fifth and ninth place.
+      const writes = new Set([1, 4, 8]);
+      const calls = Array.from(
+        { length: MAX_AGENT_TOOL_CALLS_PER_ROUND + 1 },
+        (_unused, index) => ({
+          id: `call-${index}`,
+          name: writes.has(index) ? "confirmation_write" : "read_context",
+          arguments: { id: `${writes.has(index) ? "w" : "r"}${index}` },
+        }),
+      );
       let modelStep = 0;
-      let resetCount = 0;
-      let sawBoundedFollowup = false;
-      let initialMessages: AgentModelMessage[] = [];
-      const overLimitCallCount = MAX_AGENT_TOOL_CALLS_PER_ROUND + 1;
+      let notRun = "";
       const runtime = new AgentRuntime({
         registry,
         adapterFactory: () => ({
@@ -2362,21 +2406,9 @@ describe("AgentRuntime", function () {
             multimodal: false,
           }),
           supportsTools: () => true,
-          resetState: () => {
-            resetCount += 1;
-          },
           async runStep(params: AgentStepParams): Promise<AgentModelStep> {
             modelStep += 1;
-            if (modelStep === 1) {
-              initialMessages = structuredClone(params.messages);
-              const calls = Array.from(
-                { length: overLimitCallCount },
-                (_unused, index) => ({
-                  id: `call-${index + 1}`,
-                  name: "read_context",
-                  arguments: {},
-                }),
-              );
+            if (modelStep === 1)
               return {
                 kind: "tool_calls",
                 calls,
@@ -2386,95 +2418,52 @@ describe("AgentRuntime", function () {
                   tool_calls: calls,
                 },
               };
-            }
-            if (modelStep === 2) {
-              const restartedMessages = structuredClone(params.messages);
-              assert.isTrue(
-                restartedMessages.every(
-                  (message) =>
-                    message.role === "system" || message.role === "user",
-                ),
-              );
-              assert.deepEqual(
-                restartedMessages.slice(0, -1),
-                initialMessages,
-                "the frozen system/current-turn envelope must be unchanged",
-              );
-              assert.equal(restartedMessages.at(-1)?.role, "user");
-              assert.include(
-                JSON.stringify(restartedMessages.at(-1)),
-                "Agent semantic continuation checkpoint",
-              );
-              assert.equal(
-                restartedMessages.filter((message) =>
-                  JSON.stringify(message).includes(
-                    "Agent semantic continuation checkpoint",
-                  ),
-                ).length,
-                1,
-              );
-              assert.include(
-                restartedMessages
-                  .map((message) =>
-                    typeof message.content === "string" ? message.content : "",
-                  )
-                  .join("\n"),
-                `at most ${MAX_AGENT_TOOL_CALLS_PER_ROUND} tool calls`,
-              );
-              const call = {
-                id: "bounded-call",
-                name: "read_context",
-                arguments: {},
-              };
-              return {
-                kind: "tool_calls",
-                calls: [call],
-                assistantMessage: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [call],
-                },
-              };
-            }
-            const toolMessages = params.messages.filter(
-              (message) => message.role === "tool",
+            notRun = String(
+              params.messages.find(
+                (message) =>
+                  message.role === "tool" && message.tool_call_id === "call-8",
+              )?.content ?? "",
             );
-            sawBoundedFollowup =
-              toolMessages.length === 1 &&
-              toolMessages[0].tool_call_id === "bounded-call";
             return {
               kind: "final",
-              text: sawBoundedFollowup ? "Done." : "Inconsistent.",
-              assistantMessage: {
-                role: "assistant",
-                content: sawBoundedFollowup ? "Done." : "Inconsistent.",
-              },
+              text: "Done.",
+              assistantMessage: { role: "assistant", content: "Done." },
             };
           },
         }),
       });
-
+      const cards: string[] = [];
       const outcome = await runtime.runTurn({
         request: {
-          conversationKey: 1,
+          conversationKey: 705,
           mode: "agent",
-          userText: "summarize the paper",
-          systemPrompt: "SYSTEM_RESTART_SENTINEL",
-          customInstructions: "CUSTOM_RESTART_SENTINEL",
+          libraryID: 1,
+          userText: "read and write everything at once",
           model: "gpt-4o-mini",
           apiBase: "https://api.openai.com/v1/chat/completions",
           apiKey: "test",
         },
+        onEvent: (event) => {
+          if (event.type === "confirmation_required") {
+            cards.push(String(event.action.title));
+            // The card is shown while the write before it has run.
+            runtime.resolveConfirmation(event.requestId, true);
+          }
+        },
       });
 
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Done.");
-      assert.isTrue(sawBoundedFollowup);
-      assert.equal(executionCount, 1);
-      assert.equal(resetCount, 1);
+      assert.equal(outcome.kind, "completed", failedMessage(outcome));
+      assert.equal(modelStep, 2);
+      assert.deepEqual(cards, ["Write w1", "Write w4"]);
+      assert.deepEqual(ran, ["r0", "w1", "r2", "r3", "w4", "r5", "r6", "r7"]);
+      assert.equal(
+        notRun,
+        JSON.stringify({
+          error: `Not run: this step allows ${MAX_AGENT_TOOL_CALLS_PER_ROUND} tool calls; call it again in the next step.`,
+        }),
+      );
     } finally {
-      restoreDb();
+      installed();
     }
   });
 
@@ -2514,23 +2503,9 @@ describe("AgentRuntime", function () {
           async runStep(): Promise<AgentModelStep> {
             modelStep += 1;
             installed.setTranscriptWriteFailure(true);
-            const calls = Array.from(
-              { length: MAX_AGENT_TOOL_CALLS_PER_ROUND + 1 },
-              (_unused, index) => ({
-                id: `rejected-${index}`,
-                name: "read_context",
-                arguments: {},
-              }),
-            );
-            return {
-              kind: "tool_calls",
-              calls,
-              assistantMessage: {
-                role: "assistant",
-                content: "",
-                tool_calls: calls,
-              },
-            };
+            // A prompt the provider calls too long restarts from a
+            // semantic checkpoint, which cannot be stored.
+            throw new Error("prompt is too long");
           },
         }),
       });
@@ -3896,13 +3871,15 @@ describe("AgentRuntime", function () {
       const restoreDb = installMockDb();
       try {
         let restartedInput = "";
-        const calls = Array.from({ length: 9 }, (_, index) =>
-          readCall(`call-${index}`),
-        );
         const runtime = scriptedRuntime([
           async (params) => {
             await params.onTextDelta?.(SUMMARIES);
-            return toolStep(SUMMARIES, calls);
+            return toolStep(SUMMARIES);
+          },
+          // A prompt the provider calls too long restarts the model from a
+          // semantic checkpoint.
+          async () => {
+            throw new Error("prompt is too long");
           },
           async (params) => {
             restartedInput = JSON.stringify(params.messages);
@@ -11146,7 +11123,7 @@ describe("run event payloads", function () {
     }
   });
 
-  it("a targeted artifact part finished by an answer citing two of three papers covers those two", async function () {
+  it("a targeted artifact part answered in chat is asked for its document up to the limit, then stays not done", async function () {
     const restoreDb = installMockDb();
     try {
       const events: AgentEvent[] = [];
@@ -11170,7 +11147,11 @@ describe("run event payloads", function () {
           },
           { id: "read-1", name: "paper_read", arguments: {} },
         ]),
-        // The answer delivers the open part itself: no correction.
+        // The answer in chat delivers no artifact part: each answer is
+        // corrected, up to the limit, and the last one is accepted.
+        finalStep(answer),
+        finalStep(answer),
+        finalStep(answer),
         finalStep(answer),
       ]);
       const outcome = await runtime.runTurn({
@@ -11192,11 +11173,9 @@ describe("run event payloads", function () {
         task.taskId.endsWith(":task:summaries"),
       );
       assert.exists(part);
-      assert.equal(part!.status, "completed");
-      assert.deepEqual(part!.doneTargets, ["item:101", "item:102"]);
-      assert.deepEqual(part!.exceptions, [
-        { targets: ["item:103"], reason: OUTCOME_REASONS.notCovered },
-      ]);
+      assert.equal(part!.status, "skipped");
+      assert.equal(part!.reason, OUTCOME_REASONS.notDone);
+      assert.notProperty(part!, "doneTargets");
       assert.deepEqual(ledger!.end, { state: "completed_with_exceptions" });
     } finally {
       restoreDb();
@@ -11239,7 +11218,8 @@ describe("run event payloads", function () {
                 {
                   taskId: "summaries",
                   description: "Write a summary of each paper",
-                  expectedEffect: "artifact",
+                  // A reasoning part: the accepted answer completes it.
+                  expectedEffect: "reasoning",
                   targetIds: ["101", "102"],
                 },
               ],

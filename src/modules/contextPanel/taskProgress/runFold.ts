@@ -18,7 +18,7 @@ import type {
 } from "../../../agent/context/taskPaperLedger";
 import type { AgentEvent } from "../../../agent/types";
 import { readCodexPlanChecklist } from "./codexPlan";
-import type { TaskProgressStep } from "./store";
+import type { TaskProgressStep, TaskProgressStepsRuntime } from "./store";
 
 export type TaskProgressEffect =
   /** Reads landed: the run's paper ledger delta. */
@@ -30,8 +30,12 @@ export type TaskProgressEffect =
     }
   /** The run's outcome ledger moved; fold it with `ExecutionCheckpointFold`. */
   | { kind: "outcomes"; event: ExecutionCheckpointEvent }
-  /** Codex's own plan. */
-  | { kind: "codex_checklist"; steps: TaskProgressStep[] }
+  /** The plan Codex keeps, or the steps Claude Code keeps. */
+  | {
+      kind: "codex_checklist";
+      steps: TaskProgressStep[];
+      source: TaskProgressStepsRuntime;
+    }
   /** A plan ran (plan mode is retired; its stored events still say so). */
   | { kind: "plan_seen" }
   /** The answer started streaming. */
@@ -85,7 +89,13 @@ export function taskProgressEffect(
       return { kind: "outcomes", event };
     case "codex_progress": {
       const steps = readCodexPlanChecklist(event);
-      return steps ? { kind: "codex_checklist", steps } : null;
+      return steps
+        ? {
+            kind: "codex_checklist",
+            steps,
+            source: event.runtime === "claude" ? "claude" : "codex",
+          }
+        : null;
     }
     case "message_delta":
       return { kind: "answering" };

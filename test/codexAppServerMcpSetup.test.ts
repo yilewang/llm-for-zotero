@@ -11,10 +11,24 @@ import {
 } from "../src/codexAppServer/mcpSetup";
 import {
   getZoteroMcpAllowedToolNames,
+  getZoteroMcpDirectPdfToolNames,
   registerMcpServer,
   registerScopedZoteroMcpScope,
   unregisterMcpServer,
+  ZOTERO_MCP_PLAN_TOOL_NAMES,
+  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+  ZOTERO_MCP_WRITE_TOOL_NAMES,
 } from "../src/agent/mcp/server";
+import {
+  CODEX_APPROVE_PERMISSION_STATE,
+  CODEX_ASK_PERMISSION_STATE,
+  CODEX_CUSTOM_PERMISSION_STATE,
+  CODEX_FULL_PERMISSION_STATE,
+  codexZoteroMcpWriteApprovalMode,
+  readCodexProviderMcpWriteApproval,
+  serializeCodexProviderPermissionRecord,
+  type CodexPermissionState,
+} from "../src/codexAppServer/permissionState";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import type { AgentToolDefinition } from "../src/agent/types";
 import type { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
@@ -170,12 +184,17 @@ describe("Codex app-server MCP setup", function () {
         config?: { mcp_servers?: Record<string, { required?: boolean }> };
       }
     ).config?.mcp_servers;
-    assert.lengthOf(Object.keys(probeServers || {}), 1);
-    assert.match(
-      Object.keys(probeServers || {})[0] || "",
-      /^llm_for_zotero_connection_probe_/,
-    );
-    assert.isTrue(Object.values(probeServers || {})[0]?.required);
+    // The probe's own server, and the user-level entry turned off.
+    const probeNames = Object.keys(probeServers || {});
+    assert.lengthOf(probeNames, 2);
+    const probeName =
+      probeNames.find((name) => name !== "llm_for_zotero") || "";
+    assert.match(probeName, /^llm_for_zotero_connection_probe_/);
+    assert.isTrue(probeServers?.[probeName]?.required);
+    assert.deepEqual(probeServers?.llm_for_zotero, {
+      url: "http://127.0.0.1:24680/llm-for-zotero/mcp",
+      enabled: false,
+    });
     assert.deepInclude(
       calls.find((call) => call.method === "thread/archive")?.params as Record<
         string,
@@ -271,7 +290,8 @@ describe("Codex app-server MCP setup", function () {
     assert.notProperty(startParams, "model");
     assert.isTrue(startParams.ephemeral);
     const servers = startParams.config?.mcp_servers || {};
-    const serverName = Object.keys(servers)[0] || "";
+    const serverName =
+      Object.keys(servers).find((name) => name !== "llm_for_zotero") || "";
     assert.match(serverName, /^llm_for_zotero_connection_probe_/);
     assert.isTrue(servers[serverName]?.required);
     assert.deepEqual(calls[1]?.params, {
@@ -603,7 +623,7 @@ describe("Codex app-server MCP setup", function () {
     const prefix = "mcp__llm_for_zotero_profile_claude_raw__";
 
     assert.include(config.allowedTools, `${prefix}library_search`);
-    assert.include(config.allowedTools, `${prefix}note_write`);
+    assert.notInclude(config.allowedTools, `${prefix}note_write`);
     assert.include(config.allowedTools, `${prefix}paper_read`);
     assert.include(config.allowedTools, `${prefix}library_read`);
     assert.include(config.allowedTools, `${prefix}library_retrieve`);
@@ -612,6 +632,37 @@ describe("Codex app-server MCP setup", function () {
     assert.notInclude(config.allowedTools, `${prefix}run_command`);
     assert.notInclude(config.allowedTools, `${prefix}file_io`);
     assert.notInclude(config.allowedTools, `${prefix}zotero_script`);
+  });
+
+  it("pre-approves only reads in Claude raw-PDF turns, as in turns without a PDF", function () {
+    const qualify = (prefix: string, names: readonly string[]) =>
+      names.map((name) => `${prefix}${name}`);
+    const raw = buildClaudeZoteroMcpServerConfig({
+      profileSignature: "profile-claude-raw",
+      rawPdfMode: true,
+    });
+    const rawPrefix = "mcp__llm_for_zotero_profile_claude_raw__";
+    for (const name of qualify(rawPrefix, ZOTERO_MCP_WRITE_TOOL_NAMES))
+      assert.notInclude(raw.allowedTools, name);
+    for (const name of qualify(rawPrefix, ZOTERO_MCP_PLAN_TOOL_NAMES))
+      assert.notInclude(raw.allowedTools, name);
+    // Every read the raw-PDF surface exposes stays pre-approved.
+    const exposedReads = ZOTERO_MCP_SAFE_READ_TOOL_NAMES.filter((name) =>
+      getZoteroMcpDirectPdfToolNames().includes(name),
+    );
+    assert.include(exposedReads, "paper_read");
+    assert.sameMembers(raw.allowedTools, qualify(rawPrefix, exposedReads));
+
+    const plain = buildClaudeZoteroMcpServerConfig({
+      profileSignature: "profile-claude-plain",
+    });
+    assert.deepEqual(
+      plain.allowedTools,
+      qualify(
+        "mcp__llm_for_zotero_profile_claude_plain__",
+        ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+      ),
+    );
   });
 
   it("enables the native shell only when a local PDF turn requests it", function () {
@@ -681,4 +732,133 @@ describe("Codex app-server MCP setup", function () {
       /missing required tools: paper_read/,
     );
   });
+});
+
+describe("Codex asks before Zotero writes under the chips that ask", function () {
+  const originalZotero = globalThis.Zotero;
+  beforeEach(function () {
+    const prefs = new Map<string, unknown>();
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      Prefs: {
+        get: (key: string) =>
+          key === "httpServer.port" ? 24680 : prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+      },
+    } as unknown as typeof Zotero;
+  });
+  afterEach(function () {
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero =
+      originalZotero;
+  });
+
+  const profile = (
+    profileId: string,
+    approvalOverride: CodexPermissionState["approvalOverride"],
+  ): CodexPermissionState => ({
+    boundary: { kind: "profile", profileId },
+    approvalOverride,
+  });
+
+  it("maps each chip to Codex's approval mode for Zotero writes", function () {
+    const cases: Array<[string, CodexPermissionState | null, string]> = [
+      ["Ask for approval", CODEX_ASK_PERMISSION_STATE, "writes"],
+      ["Approve for me", CODEX_APPROVE_PERMISSION_STATE, "auto"],
+      ["Full access", CODEX_FULL_PERMISSION_STATE, "auto"],
+      ["Custom (config.toml)", CODEX_CUSTOM_PERMISSION_STATE, "auto"],
+      ["Read only (legacy)", null, "writes"],
+      [
+        "read only, asking",
+        profile(":read-only", { policy: "on-request", reviewer: "user" }),
+        "writes",
+      ],
+      [
+        "read only, after Approve for me",
+        profile(":read-only", {
+          policy: "on-request",
+          reviewer: "auto_review",
+        }),
+        "writes",
+      ],
+      [
+        "read only, after Full access",
+        profile(":read-only", { policy: "never", reviewer: "user" }),
+        "writes",
+      ],
+    ];
+    for (const [chip, state, mode] of cases) {
+      assert.equal(codexZoteroMcpWriteApprovalMode(state), mode, chip);
+    }
+  });
+
+  it("stores the thread's write approval mode beside its permission state", function () {
+    const record = serializeCodexProviderPermissionRecord(
+      CODEX_ASK_PERMISSION_STATE,
+      "writes",
+    );
+    assert.deepEqual(JSON.parse(record), {
+      ...CODEX_ASK_PERMISSION_STATE,
+      mcpWriteApproval: "writes",
+    });
+    assert.equal(readCodexProviderMcpWriteApproval(record), "writes");
+    assert.deepEqual(
+      JSON.parse(serializeCodexProviderPermissionRecord(null, "auto")),
+      { mcpWriteApproval: "auto" },
+    );
+    // A record from before the mode was stored was created under "auto".
+    for (const old of [
+      undefined,
+      "",
+      JSON.stringify(CODEX_ASK_PERMISSION_STATE),
+      "{not json",
+    ])
+      assert.equal(readCodexProviderMcpWriteApproval(old), "auto");
+  });
+
+  it("turns the user-level Zotero server off in a plugin thread, with a transport Codex accepts", function () {
+    const scoped = buildCodexZoteroMcpThreadConfig({
+      profileSignature: "profile_dev",
+      scopeToken: "scope-token",
+      required: true,
+      writeApprovalMode: "writes",
+    });
+    const servers = scoped.config.mcp_servers as Record<string, any>;
+    assert.deepEqual(Object.keys(servers).sort(), [
+      "llm_for_zotero",
+      scoped.serverName,
+    ]);
+    assert.deepEqual(servers.llm_for_zotero, {
+      url: "http://127.0.0.1:24680/llm-for-zotero/mcp",
+      enabled: false,
+    });
+    // Without a profile the thread's server is the user-level name itself,
+    // which its own entry replaces.
+    const unscoped = buildCodexZoteroMcpThreadConfig({
+      scopeToken: "scope-token",
+      writeApprovalMode: "writes",
+    });
+    assert.equal(unscoped.serverName, "llm_for_zotero");
+    const own = (unscoped.config.mcp_servers as Record<string, any>)
+      .llm_for_zotero;
+    assert.notEqual(own.enabled, false);
+    assert.equal(own.default_tools_approval_mode, "writes");
+  });
+
+  for (const mode of ["writes", "auto"] as const) {
+    it(`puts ${mode} on the server and on every write tool, never on reads or plan tools`, function () {
+      const { serverName, config } = buildCodexZoteroMcpThreadConfig({
+        scopeToken: "scope-token",
+        required: true,
+        writeApprovalMode: mode,
+      });
+      const server = (config.mcp_servers as Record<string, any>)[serverName];
+      assert.equal(server.default_tools_approval_mode, mode);
+      const tools = server.tools as Record<string, { approval_mode: string }>;
+      for (const name of ZOTERO_MCP_WRITE_TOOL_NAMES)
+        assert.equal(tools[name]?.approval_mode, mode, name);
+      for (const name of ZOTERO_MCP_SAFE_READ_TOOL_NAMES)
+        assert.equal(tools[name]?.approval_mode, "approve", name);
+      for (const name of ZOTERO_MCP_PLAN_TOOL_NAMES)
+        assert.equal(tools[name]?.approval_mode, "auto", name);
+    });
+  }
 });

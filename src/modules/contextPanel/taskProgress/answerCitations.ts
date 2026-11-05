@@ -9,6 +9,7 @@
  */
 import { indexAnswerCitations } from "../../../services/quotes/paragraphCitations";
 import { normalizeQuoteCitations } from "../../../services/quotes/quoteCitations";
+import { findMathSpans } from "../../../services/quotes/sentenceSplit";
 import type { QuoteCitation } from "../../../shared/types";
 import {
   buildQuoteRenderPlan,
@@ -43,9 +44,36 @@ export type TaskAnswerCitation = {
   kind: "cite" | "quote";
 };
 
+/** The fewest characters a cut moved back to a math span's start may keep. */
+const MIN_CLIPPED_CHARS = 20;
+
+/** `text` on one line, cut to `max` characters with an ellipsis. A cut that
+ * would fall inside a math span moves to the span's start, so the passage
+ * renders no half formula; when that would leave next to nothing (the span
+ * opens the passage), the cut stays where it was. */
 function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+  if (flat.length <= max) return flat;
+  const limit = max - 1;
+  let cut = limit;
+  for (const span of findMathSpans(flat)) {
+    if (span.start >= cut) break;
+    if (span.end > cut) {
+      if (span.start >= MIN_CLIPPED_CHARS) cut = span.start;
+      break;
+    }
+  }
+  return `${flat.slice(0, cut).trimEnd()}…`;
+}
+
+/**
+ * A cited passage as the list renders it: a Markdown heading marker at its
+ * start (a quote saved before minted quotes skipped headings) is dropped, so
+ * the passage is not drawn as a heading. The entry's own `quote` stays raw
+ * for "Source" and matching.
+ */
+export function taskAnswerCitationDisplayQuote(quote: string): string {
+  return quote.replace(/^\s*#{1,6}\s+/, "");
 }
 
 function entryOf(

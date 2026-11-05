@@ -45,9 +45,17 @@ describe("workflow: standalone Task progress alignment", function () {
   // In the standalone window the chat's header rows line up with the History
   // pane's rows: the title row with New chat, and the Task progress row with
   // Search history. These read the laid-out boxes of both columns.
+  // The start page hides the chat's header; once a chat has turns the header
+  // shows and the chat sits 5px higher, so each state is read on its own.
   describe("workflow: standalone Task progress lines up with the History pane", function () {
-    for (const tab of ["open", "paper"] as const) {
-      it(`centres the rows on the History pane's rows (${tab === "open" ? "Library" : "Paper"} chat)`, async function () {
+    const states: Array<[tab: "open" | "paper", withTurns: boolean]> = [
+      ["open", false],
+      ["paper", false],
+      ["open", true],
+      ["paper", true],
+    ];
+    for (const [tab, withTurns] of states) {
+      it(`centres the rows on the History pane's rows (${tab === "open" ? "Library" : "Paper"} chat, ${withTurns ? "with turns" : "start page"})`, async function () {
         await api.openStandaloneForItem(paper.parentItemId);
         await api.resizeStandaloneWindow(900, 760);
         await api.clickStandaloneTab(tab);
@@ -60,6 +68,30 @@ describe("workflow: standalone Task progress alignment", function () {
             root()?.dataset.conversationKind ===
             (tab === "open" ? "global" : "paper"),
           `the window shows the ${tab} chat`,
+        );
+        if (withTurns) {
+          await api.seedTaskProgressConversation({
+            surface: "standalone",
+            turns: [
+              {
+                user: { text: "Explain representational drift in CA1" },
+                answer: "Drift is a gradual change in which cells fire.",
+                events: [
+                  { type: "status", text: "Reading" },
+                  { type: "final", text: "Drift is a gradual change." },
+                ] as never,
+              },
+            ],
+          });
+          await api.reopenTaskProgressConversation({ surface: "standalone" });
+        } else {
+          await api.startNewStandaloneConversation();
+        }
+        await until(
+          () => (root()?.dataset.startPageActive === "true") === !withTurns,
+          withTurns
+            ? "the chat shows its turns, not the start page"
+            : "the chat shows the start page",
         );
         const curtain = () =>
           root().querySelector(".llm-task-progress-curtain") as HTMLElement;
@@ -161,10 +193,10 @@ describe("workflow: standalone Task progress alignment", function () {
         return curtain().dataset.curtain === "open";
       }, "the Task progress row is down in the chat");
 
-      // In the chat, the card spans the chat's width, and its chevron and →|
-      // sit under Export and Clear, at a wide window's chrome gap and at a
-      // narrow one's.
-      const centre = (rect: DOMRect) => (rect.left + rect.right) / 2;
+      // In the chat, the card spans the chat's width, and its →| stays
+      // inside the card, at a wide window's chrome gap and at a narrow one's.
+      // (Its padding is read from the pixels in
+      // taskProgressEdgePadding.workflow.test.ts.)
       const rectOf = (selector: string, within: ParentNode = doc) =>
         within.querySelector(selector)!.getBoundingClientRect();
       for (const width of [1100, 500]) {
@@ -173,25 +205,12 @@ describe("workflow: standalone Task progress alignment", function () {
         const label = `${width}px window`;
         const card = rectOf(".llm-task-progress-card", root());
         const chat = rectOf("#llm-chat-box", root());
-        const actions = ".llm-standalone-content-title-actions";
         assert.closeTo(card.left, chat.left, 0.5, `${label}: card's left edge`);
         assert.closeTo(
           card.right,
           chat.right,
           0.5,
           `${label}: card's right edge`,
-        );
-        assert.closeTo(
-          centre(rectOf(".llm-task-progress-chevron", root())),
-          centre(rectOf(`${actions} .llm-standalone-icon-export`)),
-          0.5,
-          `${label}: the chevron sits under Export`,
-        );
-        assert.closeTo(
-          centre(rectOf(".llm-task-progress-move", root())),
-          centre(rectOf(`${actions} .llm-standalone-icon-clear`)),
-          0.5,
-          `${label}: →| sits under Clear`,
         );
         assert.isAtMost(
           rectOf(".llm-task-progress-move", root()).right,

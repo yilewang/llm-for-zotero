@@ -72,7 +72,14 @@ import { getPanelHandle } from "./panelHandle";
 import { clearPanelHostBinding, markSidePanelBody } from "./panelHostOwnership";
 import { mountPanelShell } from "./panelMount";
 import { createGlobalPortalItem, createPaperPortalItem } from "./portalScope";
-import { applyPanelFontScale } from "./prefHelpers";
+import {
+  applyPanelFontScale,
+  getSideReaderTextSizePref,
+  setSideReaderTextSizePref,
+  SIDE_READER_TEXT_SIZE_MAX_PERCENT,
+  SIDE_READER_TEXT_SIZE_MIN_PERCENT,
+  SIDE_READER_TEXT_SIZE_STEP_PERCENT,
+} from "./prefHelpers";
 import { disposeSetupHandlers } from "./setupHandlers";
 import { formatPaperContextChipLabel } from "./setupHandlers/controllers/composeContextController";
 import {
@@ -362,6 +369,8 @@ type ItemTabView = TabViewBase & {
   /** The main chat and message the item came from (messageIndex -1: unknown). */
   conversationKey: number;
   messageIndex: number;
+  /** A document tab's text size buttons, kept in step with the others. */
+  syncReaderSize?: () => void;
 };
 
 type MiscTabView = TabViewBase & {
@@ -1906,12 +1915,35 @@ export function createStandaloneSidePanel(
     svg: "Figure",
     html: "HTML",
     code: "Code",
-    plan: "Plan",
+    // An agent-written document (a literature review, a report), whatever
+    // the internal kind is called.
+    plan: "Document",
     figure: "Paper figure",
     file: "File",
   };
   const HTML_SAFE_BOX_NOTE =
     "Runs in a safe box: no internet, no access to Zotero";
+
+  // A document's text size in its tab: one size for every document tab,
+  // remembered across restarts.
+  const READER_TEXT_SIZE_VARIABLE = "--llm-side-reader-text-scale";
+  const readerSizeSyncs = new Set<() => void>();
+  const applyReaderTextSize = (target: HTMLElement) => {
+    target.style.setProperty(
+      READER_TEXT_SIZE_VARIABLE,
+      String(getSideReaderTextSizePref() / 100),
+    );
+  };
+  const setReaderTextSize = (percent: number) => {
+    setSideReaderTextSizePref(percent);
+    for (const target of Array.from(
+      doc.querySelectorAll(
+        '.llm-standalone-side-panel-item-body[data-side-reader="true"]',
+      ),
+    ) as HTMLElement[])
+      applyReaderTextSize(target);
+    for (const sync of readerSizeSyncs) sync();
+  };
 
   const buildItemView = (
     id: string,
@@ -2022,14 +2054,52 @@ export function createStandaloneSidePanel(
       button.addEventListener("click", run);
       return button;
     };
-    actions.appendChild(
-      makeAction("copy", t("Copy"), () => {
-        void copyTextToClipboard(mainBody, request.source)
-          .then(() => showFeedback(t("Copied")))
-          .catch((err) => appLogger.warn("LLM: side panel copy failed", err));
-      }),
-    );
-    if (canSaveItemAsNote(kind) && request.saveAsNote) {
+    // A document is read here: text size − and +, and its own window, like
+    // the diagram and page viewers' controls. Copy and Save as note stay on
+    // the card in the chat and in the document's own window.
+    const reader = kind === "plan";
+    let syncReaderSize: (() => void) | undefined;
+    if (reader) {
+      body.dataset.sideReader = "true";
+      const smaller = makeAction("text-smaller", t("Smaller text"), () =>
+        setReaderTextSize(
+          getSideReaderTextSizePref() - SIDE_READER_TEXT_SIZE_STEP_PERCENT,
+        ),
+      );
+      const larger = makeAction("text-larger", t("Larger text"), () =>
+        setReaderTextSize(
+          getSideReaderTextSizePref() + SIDE_READER_TEXT_SIZE_STEP_PERCENT,
+        ),
+      );
+      const syncSizeButtons = () => {
+        const size = getSideReaderTextSizePref();
+        smaller.disabled = size <= SIDE_READER_TEXT_SIZE_MIN_PERCENT;
+        larger.disabled = size >= SIDE_READER_TEXT_SIZE_MAX_PERCENT;
+      };
+      readerSizeSyncs.add(syncSizeButtons);
+      syncReaderSize = syncSizeButtons;
+      applyReaderTextSize(body);
+      syncSizeButtons();
+      actions.append(smaller, larger);
+      const openOwnWindow = request.openOwnWindow;
+      if (openOwnWindow) {
+        actions.appendChild(
+          makeAction("own-window", t("Open in its own window"), () => {
+            if (!openOwnWindow())
+              showFeedback(t("The document window could not be opened"));
+          }),
+        );
+      }
+    }
+    if (!reader)
+      actions.appendChild(
+        makeAction("copy", t("Copy"), () => {
+          void copyTextToClipboard(mainBody, request.source)
+            .then(() => showFeedback(t("Copied")))
+            .catch((err) => appLogger.warn("LLM: side panel copy failed", err));
+        }),
+      );
+    if (!reader && canSaveItemAsNote(kind) && request.saveAsNote) {
       const save = request.saveAsNote;
       const button = makeAction("note", t("Save as note"), () => {
         button.disabled = true;
@@ -2065,7 +2135,7 @@ export function createStandaloneSidePanel(
         ),
       );
     }
-    if (messageIndex >= 0) {
+    if (!reader && messageIndex >= 0) {
       actions.appendChild(
         makeAction("show-in-chat", t("Show in chat"), () => showInChat(view)),
       );
@@ -2092,6 +2162,7 @@ export function createStandaloneSidePanel(
       disposed: false,
       conversationKey,
       messageIndex,
+      syncReaderSize,
     };
     return view;
   };
@@ -2118,6 +2189,7 @@ export function createStandaloneSidePanel(
   const disposeItemView = (view: ItemTabView) => {
     if (view.disposed) return;
     view.disposed = true;
+    if (view.syncReaderSize) readerSizeSyncs.delete(view.syncReaderSize);
     view.root.remove();
     view.tab.remove();
   };

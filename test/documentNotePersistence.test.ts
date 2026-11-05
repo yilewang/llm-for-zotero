@@ -103,7 +103,15 @@ describe("durable document note association", function () {
       deleted = false;
       html = "";
       stored = "";
+      collections: number[] = [];
       dateAdded = "2026-09-07 00:00:00";
+      addToCollection(collectionId: number) {
+        if (!this.collections.includes(collectionId))
+          this.collections.push(collectionId);
+      }
+      getCollections() {
+        return [...this.collections];
+      }
       isNote() {
         return true;
       }
@@ -167,6 +175,12 @@ describe("durable document note association", function () {
       Utilities: { generateObjectKey: () => `NOTE${nextId}` },
       Item: Note,
       Libraries: { userLibraryID: 1 },
+      Collections: {
+        get: (id: number) =>
+          id === 7 || id === 8
+            ? { id, libraryID: 1, deleted: false, name: `Folder ${id}` }
+            : false,
+      },
       Items: {
         get: (id: number) => (id === 42 ? parent : notes.get(id)),
         getByLibraryAndKey: (_lib: number, key: string) =>
@@ -868,6 +882,127 @@ describe("durable document note association", function () {
       /no longer matches this exact document/,
     );
     assert.isUndefined(state?.savedNote);
+  });
+  it("saves a finalized document as a standalone note filed in collections, and its retry finds the same note", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7, 8],
+    };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    const note = notes.get(saved.itemId);
+    assert.isTrue(saved.created);
+    assert.isUndefined(note.parentID);
+    assert.deepEqual(note.getCollections(), [7, 8]);
+    assert.equal(note.getNote(), document.visibleHtml);
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.equal(notes.size, 1);
+  });
+  it("finds the same standalone note when its association failed after the save", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7],
+    };
+    failAssociation = true;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /Association storage/,
+    );
+    const reservedKey = state.pendingNote.itemKey;
+    assert.isUndefined(state.pendingNote.parentItemId);
+    failAssociation = false;
+    state = JSON.parse(JSON.stringify(state));
+    const recovered = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(recovered.created);
+    assert.equal(recovered.itemKey, reservedKey);
+    assert.equal(notes.size, 1);
+    assert.equal(state.savedNote.itemKey, reservedKey);
+  });
+  it("refuses a standalone save into a collection that does not exist, reserving nothing", async function () {
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, {
+        standalone: true,
+        libraryID: 1,
+        collectionIds: [99],
+      }),
+      /Collection 99/,
+    );
+    assert.equal(notes.size, 0);
+    assert.isUndefined(state?.pendingNote);
+  });
+  it("refuses a standalone retry of a document already saved under a parent", async function () {
+    await savePlanDocumentAsNote(document.documentId, {
+      parentItemId: 42,
+      libraryID: 1,
+    });
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, {
+        standalone: true,
+        libraryID: 1,
+      }),
+      /different parent/,
+    );
+    assert.equal(notes.size, 1);
+  });
+  it("refuses a retry whose saved note left a requested collection", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7],
+    };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    notes.get(saved.itemId).collections = [];
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /no longer matches this exact document/,
+    );
+    assert.equal(notes.size, 1);
+  });
+  it("saves a finalized document through note_write as a standalone note in a collection", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createNoteWriteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      target: "standalone",
+      collections: [7],
+    });
+    assert.isTrue(input.ok, input.ok ? "" : input.error);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+    assert.deepEqual(proposals[0].destinationCollectionIds, [7]);
+    const result: any = await tool.execute(input.value, context);
+    assert.equal(result.effect, "applied");
+    const saved: any = innermostToolResult(result.content);
+    const note = notes.get(saved.noteId);
+    assert.isUndefined(note.parentID);
+    assert.deepEqual(note.getCollections(), [7]);
+    const verification = await verifyNoteWriteTarget(
+      proposals[0],
+      result.content,
+      gateway,
+    );
+    assert.isNotNull(verification.targets, verification.reason);
+  });
+  it("refuses a finalized document create that names both a parent and collections", function () {
+    const tool = createNoteWriteTool({} as any);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+      collections: [7],
+    });
+    assert.isFalse(input.ok);
   });
   it("binds a requested parent even when the summary contains no citation cluster", async function () {
     const saved = await savePlanDocumentAsNote(document.documentId, {

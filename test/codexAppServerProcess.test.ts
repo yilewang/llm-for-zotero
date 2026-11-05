@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  CODEX_APP_SERVER_CHILD_TURN_GRACE_MS,
   CodexAppServerProcess,
   CodexAppServerProcessRetiredError,
   destroyCachedCodexAppServerProcess,
@@ -1164,8 +1165,9 @@ describe("codexAppServerProcess", function () {
           settled,
           "the parent must wait for its child's decision",
         );
+        // Complete the turn in the same tick as the decision: a yield here
+        // lets a late event loop fire the 30 ms idle timer first.
         approve({ decision: "accept" });
-        await tick();
         proc.handleMessage({
           method: "turn/completed",
           params: {
@@ -1182,6 +1184,313 @@ describe("codexAppServerProcess", function () {
         dispose();
         proc.destroy();
       }
+    });
+
+    describe("child turns at the parent's turn/completed", function () {
+      const spawnChild = (proc: TestProcess, childThreadId: string) =>
+        proc.handleMessage({
+          method: "item/completed",
+          params: {
+            threadId: "thread-A",
+            turnId: "turn-A",
+            item: {
+              id: `spawn-${childThreadId}`,
+              type: "collabAgentToolCall",
+              receiverThreadIds: [childThreadId],
+            },
+          },
+        });
+      const turnBoundary = (
+        proc: TestProcess,
+        method: "turn/started" | "turn/completed",
+        threadId: string,
+        turnId: string,
+        completedStatus = "completed",
+      ) =>
+        proc.handleMessage({
+          method,
+          params: {
+            threadId,
+            turn: {
+              id: turnId,
+              status:
+                method === "turn/started" ? "inProgress" : completedStatus,
+            },
+          },
+        });
+      const finishParent = (proc: TestProcess, text = "parent answer") => {
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: { threadId: "thread-A", turnId: "turn-A", delta: text },
+        });
+        turnBoundary(proc, "turn/completed", "thread-A", "turn-A");
+      };
+      function startParent(
+        proc: TestProcess,
+        options: {
+          childTurnGraceMs?: number;
+          timeoutMs?: number;
+          signal?: AbortSignal;
+        } = {},
+      ) {
+        const childThreadIds = new Set<string>();
+        let settledAt = 0;
+        const result = waitForCodexAppServerTurnCompletion({
+          proc,
+          threadId: "thread-A",
+          turnId: "turn-A",
+          childThreadIds,
+          cacheKey: "child-grace-missing-entry",
+          interruptOnAbort: true,
+          timeoutMs: options.timeoutMs ?? 5000,
+          childTurnGraceMs: options.childTurnGraceMs ?? 1000,
+          signal: options.signal,
+        }).then(
+          (text) => {
+            settledAt = Date.now();
+            return { text } as { text?: string; error?: unknown };
+          },
+          (error) => {
+            settledAt = Date.now();
+            return { error } as { text?: string; error?: unknown };
+          },
+        );
+        return { result, childThreadIds, settledAt: () => settledAt };
+      }
+      const interrupts = (writes: Array<Record<string, any>>) =>
+        writes
+          .filter((write) => write.method === "turn/interrupt")
+          .map((write) => write.params);
+      const answerInterrupts = (
+        proc: TestProcess,
+        writes: Array<Record<string, any>>,
+      ) => {
+        for (const write of writes) {
+          if (write.method === "turn/interrupt") {
+            proc.handleMessage({ id: write.id, result: {} });
+          }
+        }
+      };
+
+      it("waits 15 s by default", function () {
+        assert.equal(CODEX_APP_SERVER_CHILD_TURN_GRACE_MS, 15_000);
+      });
+
+      it("settles at once with no child turns, as before", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("does not wait for a child whose turn completed before the parent", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("settles after a running child turn completes, with the parent's text", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assert.equal(turn.settledAt(), 0, "the parent waits for its child");
+        assert.isTrue(
+          turn.childThreadIds.has("child-1"),
+          "the child stays tracked while the parent waits",
+        );
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "child-1",
+            turnId: "child-turn-1",
+            delta: "child report",
+          },
+        });
+        const childCompletedAt = Date.now();
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isAtLeast(turn.settledAt(), childCompletedAt);
+        assert.isBelow(turn.settledAt() - childCompletedAt, 100);
+        assert.isEmpty([...turn.childThreadIds]);
+        proc.destroy();
+      });
+
+      it("settles at the grace bound when a child turn never completes", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        // An idle timeout shorter than the grace must not fail the finished turn.
+        const turn = startParent(proc, {
+          childTurnGraceMs: 120,
+          timeoutMs: 30,
+        });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.isUndefined(outcome.error);
+        assert.equal(outcome.text, "parent answer");
+        assert.isAtLeast(turn.settledAt() - completedAt, 110);
+        assert.isBelow(turn.settledAt() - completedAt, 400);
+        proc.destroy();
+      });
+
+      it("tracks a child turn that started before the spawn named the child", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        spawnChild(proc, "child-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        assert.equal(turn.settledAt(), 0);
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        assert.equal((await turn.result).text, "parent answer");
+        proc.destroy();
+      });
+
+      it("does not wait for another conversation's running turn", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        turnBoundary(proc, "turn/started", "thread-B", "turn-B");
+        const completedAt = Date.now();
+        finishParent(proc);
+        assert.equal((await turn.result).text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("interrupts the parent and each running child turn on Stop", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const controller = new AbortController();
+        const turn = startParent(proc, { signal: controller.signal });
+        spawnChild(proc, "child-1");
+        spawnChild(proc, "child-2");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        turnBoundary(proc, "turn/started", "child-2", "child-turn-2");
+        turnBoundary(proc, "turn/completed", "child-2", "child-turn-2");
+        controller.abort();
+        const outcome = await turn.result;
+        assert.equal((outcome.error as Error)?.name, "AbortError");
+        assert.sameDeepMembers(interrupts(writes), [
+          { threadId: "thread-A", turnId: "turn-A" },
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
+
+      for (const status of ["interrupted", "failed"]) {
+        it(`settles at once and interrupts a running child when the parent is ${status}`, async function () {
+          const writes: Array<Record<string, any>> = [];
+          const proc = createConcurrentProcess({
+            userAgent: CURRENT_USER_AGENT,
+            writes,
+          });
+          const turn = startParent(proc, { childTurnGraceMs: 2000 });
+          spawnChild(proc, "child-1");
+          turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+          const completedAt = Date.now();
+          turnBoundary(proc, "turn/completed", "thread-A", "turn-A", status);
+          const outcome = await turn.result;
+          assert.isBelow(turn.settledAt() - completedAt, 200);
+          if (status === "interrupted") {
+            assert.equal((outcome.error as Error)?.name, "AbortError");
+          } else {
+            assert.match(String((outcome.error as Error)?.message), /failed/);
+          }
+          assert.deepEqual(interrupts(writes), [
+            { threadId: "child-1", turnId: "child-turn-1" },
+          ]);
+          answerInterrupts(proc, writes);
+          proc.destroy();
+        });
+      }
+
+      it("starts one grace when the parent's turn/completed arrives twice", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 150 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        // A second completion must not restart the 150 ms bound.
+        turnBoundary(proc, "turn/completed", "thread-A", "turn-A");
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 260);
+        proc.destroy();
+      });
+
+      it("interrupts a child still running when the grace ends", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const turn = startParent(proc, { childTurnGraceMs: 80 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.deepEqual(
+          interrupts(writes),
+          [],
+          "no interrupt inside the grace",
+        );
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.deepEqual(interrupts(writes), [
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
+
+      it("on Stop during the grace, interrupts the children and keeps the parent's answer", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const controller = new AbortController();
+        const turn = startParent(proc, {
+          signal: controller.signal,
+          childTurnGraceMs: 2000,
+        });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(turn.settledAt(), 0);
+        controller.abort();
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.deepEqual(interrupts(writes), [
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
     });
 
     it("still destroys the process when a lone turn times out", async function () {

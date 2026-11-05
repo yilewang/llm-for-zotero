@@ -92,6 +92,14 @@ describe("claimAnchoring", function () {
     assert.equal(map.get("q2"), "Later the animals stayed at 85%.");
   });
 
+  it("keeps two sentences with prices apart, one claim per token", function () {
+    const map = extractClaimSentences(
+      "The fee was $5. [[quote:q1]] It rose to $10 later. [[quote:q2]]",
+    );
+    assert.equal(map.get("q1"), "The fee was $5.");
+    assert.equal(map.get("q2"), "It rose to $10 later.");
+  });
+
   it("moves the anchor to the passage sentence that matches the claim", function () {
     const original = citation(
       "q1",
@@ -383,6 +391,31 @@ describe("claimAnchoring", function () {
     );
   });
 
+  it("never re-anchors a claim onto a heading or into the middle of a formula", function () {
+    const original = citation(
+      "q1",
+      "Mice were then placed in a stereotaxic frame and kept warm on a heating pad.",
+    );
+    const mathSentence =
+      "Mice were anesthetized with isoflurane $1 \\% - 3 \\%$ , plus oxygen at $1 { - } 1 . 5 \\ V \\mathrm { m i n } )$ ) anesthesia during surgery.";
+    const { quoteCitations, decisions } = reanchorQuoteCitationsToClaims({
+      text: "Mice were anesthetized with isoflurane plus oxygen during surgery [[quote:q1]].",
+      quoteCitations: [original],
+      passageTextByCitationId: new Map([
+        [
+          "q1",
+          [
+            "# Mice anesthetized with isoflurane plus oxygen during surgery",
+            "",
+            `${mathSentence} Mice were then placed in a stereotaxic frame and kept warm on a heating pad.`,
+          ].join("\n"),
+        ],
+      ]),
+    });
+    assert.equal(decisions[0].match, "claim");
+    assert.equal(quoteCitations[0].quoteText, mathSentence);
+  });
+
   it("marks a token that no claim sentence can hold as passage-anchored", function () {
     const inHeading = citation(
       "q1",
@@ -411,5 +444,29 @@ describe("claimAnchoring", function () {
       quoteCitations[1].anchorMatch,
       "a citation the answer never cites makes no anchoring claim",
     );
+  });
+
+  it("never joins the text on both sides of a heading inside a block", function () {
+    const original = citation(
+      "q1",
+      "Spiny neurons fired in bursts during movement onset in all mice.",
+    );
+    const passageText = [
+      "[chunk 7]",
+      "Neurons fired.",
+      "# Results",
+      "Spiny neurons fired in bursts during movement onset in all mice.",
+    ].join("\n");
+    const { quoteCitations } = reanchorQuoteCitationsToClaims({
+      text: "Spiny neurons fired in bursts at movement onset [[quote:q1]].",
+      quoteCitations: [original],
+      passageTextByCitationId: new Map([["q1", passageText]]),
+    });
+    const quote = quoteCitations[0].quoteText;
+    assert.equal(
+      quote,
+      "Spiny neurons fired in bursts during movement onset in all mice.",
+    );
+    assert.include(passageText.replace(/\s+/g, " "), quote);
   });
 });

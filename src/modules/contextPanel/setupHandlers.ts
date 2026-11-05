@@ -41,6 +41,7 @@ import { t } from "../../utils/i18n";
 import { observeHistoryActivity } from "./historyActivity";
 import { isLivePanelBody } from "./panelLiveness";
 import { revealLocalPath } from "../../utils/revealLocalPath";
+import { isReaderApiEntry } from "../../agent/reader/readerChoiceFromSelection";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
@@ -474,6 +475,12 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  createReaderMenuController,
+  describeReaderSelection,
+  formatReaderTooltipLine,
+} from "./setupHandlers/controllers/readerMenuController";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import {
   MENUS_CLOSED_BY_MODEL_MENU,
   MENUS_CLOSED_BY_REASONING_MENU,
@@ -5755,10 +5762,27 @@ export function setupHandlers(
     const { choices, currentModel, currentModelDisplay, currentModelHint } =
       getSelectedModelInfo();
     const modelLabel = `${currentModelDisplay || currentModel || "default"}`;
-    const modelHint =
+    const readerRuntime = readerRuntimeKeyForSystem(getConversationSystem());
+    // Only the tooltip names the reader; the button shows the main model.
+    const readerLine = formatReaderTooltipLine(
+      describeReaderSelection({
+        runtime: readerRuntime,
+        selection: panelChoices.getReaderSelection(readerRuntime),
+        lookupEntry: getModelEntryById,
+        runtimeEntries: isClaudeConversationSystem()
+          ? getClaudeRuntimeModelEntries()
+          : isCodexConversationSystem()
+            ? getCodexRuntimeModelEntries()
+            : [],
+      }),
+    );
+    const mainModelHint =
       choices.length > 1
         ? currentModelHint
         : currentModelHint || "Only one model is configured";
+    const modelHint = readerLine
+      ? `${mainModelHint}\n${readerLine}`
+      : mainModelHint;
     // A model can keep its name while its image-input capability changes in
     // settings. Keep that real change eligible for the preview refresh too.
     const { screenshotUnsupported } = getSelectedScreenshotSupport();
@@ -5874,6 +5898,10 @@ export function setupHandlers(
     onRetry: (event: Event) => void;
   }): boolean => {
     if (params.status === "loading") {
+      // A refresh of a list the menu already shows stays quiet: the menu
+      // updates in place when the new list lands. A status row here made the
+      // menu open with one size and jump to another a moment later.
+      if (params.modelCount > 0) return false;
       appendModelMenuEmptyState(params.menu, params.loadingMessage);
       return true;
     }
@@ -5970,28 +5998,88 @@ export function setupHandlers(
       .join("\n");
   };
 
+  /** The subagent card and page of the model menu. */
+  const readerMenu = createReaderMenuController({
+    doc: body.ownerDocument as Document,
+    getRuntime: () => readerRuntimeKeyForSystem(getConversationSystem()),
+    getSelection: (runtime) => panelChoices.getReaderSelection(runtime),
+    setSelection: (runtime, selection) =>
+      panelChoices.setReaderSelection(runtime, selection),
+    getApiEntries: () => getAvailableModelEntries().filter(isReaderApiEntry),
+    getRuntimeEntries: () =>
+      isClaudeConversationSystem()
+        ? getClaudeRuntimeModelEntries()
+        : isCodexConversationSystem()
+          ? getCodexRuntimeModelEntries()
+          : [],
+    lookupEntry: getModelEntryById,
+    appendRuntimeCatalogStatus: (menu) => {
+      appendClaudeModelCatalogStatus(menu);
+      appendCodexModelCatalogStatus(menu);
+    },
+    appendProviderSection: appendModelProviderSection,
+    optionTitle: (entry, own) =>
+      own
+        ? getModelOptionTitle(entry)
+        : `${entry.providerLabel} · ${entry.model}`,
+    isPrimaryPointerEvent,
+    onPageChange: () => {
+      if (!modelMenu || !modelBtn) return;
+      // The menu fits its names, and the two pages list different names.
+      // Keep the wider of the two widths while the menu is open, so turning
+      // the page never makes it jump narrower.
+      const widthBefore = modelMenu.getBoundingClientRect().width;
+      modelMenu.style.width = "";
+      rebuildModelMenu();
+      positionComposerMenu(body, modelMenu, modelBtn);
+      if (widthBefore > modelMenu.getBoundingClientRect().width) {
+        modelMenu.style.width = `${widthBefore}px`;
+        positionComposerMenu(body, modelMenu, modelBtn);
+      }
+    },
+    onPick: () => {
+      updateModelButton();
+    },
+  });
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
     // No catalog refresh here: a refresh notifies capability listeners, which
     // rebuild an open menu. openModelMenu starts the refresh once per open.
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
+    // The menu itself is only a frame; its cards sit in one column inside it.
     modelMenu.innerHTML = "";
-    appendClaudeModelCatalogStatus(modelMenu);
-    appendCodexModelCatalogStatus(modelMenu);
+    const stack = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-model-menu-stack",
+    ) as HTMLDivElement;
+    modelMenu.appendChild(stack);
+    if (readerMenu.getPage() === "subagent") {
+      readerMenu.appendReaderList(stack);
+      return;
+    }
+    // Card 1: the subagent, small, on top. Card 2: the chat models.
+    readerMenu.appendSubagentCard(stack);
+    const list = readerMenu.createCard("llm-model-menu-list");
+    stack.appendChild(list);
+    readerMenu.appendCardTitle(list, t("Main Agent"));
+    appendClaudeModelCatalogStatus(list);
+    appendCodexModelCatalogStatus(list);
     codexDirectController?.appendCatalogStatus({
-      menu: modelMenu,
+      menu: list,
       renderStatus: appendModelCatalogStatus,
       appendEmptyState: appendModelMenuEmptyState,
       isPrimaryPointerEvent,
     });
     if (!groupedChoices.length) {
-      appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
+      appendModelMenuEmptyState(list, t("No models configured yet."));
       return;
     }
 
     for (const group of groupedChoices) {
-      appendModelProviderSection(modelMenu, group.providerLabel);
+      appendModelProviderSection(list, group.providerLabel);
       for (const entry of group.entries) {
         const isSelected = entry.entryId === selectedEntryId;
         const option = createElement(
@@ -6202,7 +6290,7 @@ export function setupHandlers(
         };
         option.addEventListener("pointerdown", applyModelSelection);
         option.addEventListener("click", applyModelSelection);
-        modelMenu.appendChild(option);
+        list.appendChild(option);
       }
     }
   };
@@ -8968,6 +9056,9 @@ export function setupHandlers(
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
+    // The menu always opens on the chat model page, at its own width.
+    readerMenu.resetPage();
+    modelMenu.style.width = "";
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();

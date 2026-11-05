@@ -11,6 +11,7 @@ export type AgentEventType =
   | "message_rollback"
   | "usage"
   | "context_compacted"
+  | "codex_progress"
   | "final"
   | "fallback";
 

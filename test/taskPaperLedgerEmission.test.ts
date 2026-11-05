@@ -227,7 +227,7 @@ describe("task paper ledger emission", function () {
     );
     assert.deepEqual(
       updates[1].delta.reads.map((read) => [read.granularity, read.label]),
-      [["section", "Results"]],
+      [["passage", "Results"]],
     );
 
     // Stage ordering is untouched: each call still closes its stage before

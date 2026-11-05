@@ -14,6 +14,7 @@ const SUPPORTED_TYPES = new Set([
   "message_rollback",
   "usage",
   "context_compacted",
+  "codex_progress",
   "final",
 ]);
 

@@ -14,6 +14,7 @@ import {
   parseSkill,
 } from "../src/agent/skills/skillLoader";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { REORGANIZE_LIBRARY_PARTS_GUIDANCE } from "../src/agent/tools/control/taskUpdate";
 
 type Schema = {
   properties?: Record<string, Schema>;
@@ -40,7 +41,7 @@ describe("reorganize-library skill", function () {
   it("ships as an automatic skill for paper sets and library scopes", function () {
     assert.isString(raw, "bundled as reorganize-library.md");
     assert.equal(skill.id, "reorganize-library");
-    assert.equal(skill.version, 1);
+    assert.equal(skill.version, 3);
     assert.deepEqual(skill.contexts, ["paper-set", "library-corpus"]);
     assert.equal(skill.activation, "auto");
     assert.deepEqual(getSkillRoutingDiagnostics(skill), []);
@@ -58,8 +59,10 @@ describe("reorganize-library skill", function () {
     for (const phrase of [
       "Place each paper from its metadata first",
       "Read further only for a paper its metadata cannot place",
-      "targeted `paper_read`, not its full text",
-      "never read every paper by default",
+      "with a targeted `paper_read`",
+      // A full text, or every paper, only when the user asks (user
+      // instructions come first, 2026-10-31).
+      "read a full text, or every paper, only when the user asks",
       "Do not list them with a `zotero_script`",
     ])
       assert.include(skill.instruction, phrase);
@@ -78,13 +81,14 @@ describe("reorganize-library skill", function () {
   });
 
   it("declares the moves as one part over the papers, and no read part for the survey", function () {
-    assert.include(skill.instruction, "`scope:true`");
-    assert.include(skill.instruction, "`targetIds`");
-    assert.include(
-      skill.instruction,
-      "`expectedCapability:'zotero.collections'`",
-    );
-    assert.include(skill.instruction, "Declare no read part for the survey");
+    // MCP hides task_update, so the part lives in its guidance (#541).
+    assert.notInclude(raw, "task_update");
+    const guidance = REORGANIZE_LIBRARY_PARTS_GUIDANCE.instruction;
+    assert.include(guidance, "`task_update` as one part");
+    assert.include(guidance, "`scope:true`");
+    assert.include(guidance, "`targetIds`");
+    assert.include(guidance, "`expectedCapability:'zotero.collections'`");
+    assert.include(guidance, "Declare no read part for the survey");
     const task = schemaOf("task_update").properties!.tasks.items!.properties!;
     assert.containsAllKeys(task, [
       "scope",
@@ -117,8 +121,11 @@ describe("reorganize-library skill", function () {
   });
 
   it("tags papers in the same batches, with per-paper tag assignments", function () {
-    for (const phrase of [
+    assert.include(
+      REORGANIZE_LIBRARY_PARTS_GUIDANCE.instruction,
       "`'zotero.tags'`",
+    );
+    for (const phrase of [
       "`kind:'tags'`",
       "one `assignments` entry (`itemId`, `tags`) per paper",
     ])

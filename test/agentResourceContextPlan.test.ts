@@ -311,7 +311,7 @@ describe("agent resource context plan", function () {
     for (const scope of ["collection", "tag"]) {
       assert.include(
         text,
-        `When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole ${scope}, or targetIds for chosen papers) whose description states that per-paper result;`,
+        `When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole ${scope}, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read;`,
         scope,
       );
       assert.include(
@@ -320,6 +320,23 @@ describe("agent resource context plan", function () {
         scope,
       );
     }
+    // A chat answer cites a digest's quotes by their ids; the evidence refs
+    // are a document's (since v3.9.10 answers cited refs and lost every mark).
+    assert.equal(
+      text.split(
+        "the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only.",
+      ).length - 1,
+      2,
+    );
+    assert.notInclude(text, "with the evidence refs to cite");
+    // A matching skill sets the parts, so it is loaded before any is
+    // declared (eval b4v6, run 2: a read part declared before load_skill).
+    assert.equal(
+      text.split(
+        "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
+      ).length - 1,
+      2,
+    );
     // A digest is no longer reserved for a request that names every paper.
     assert.notInclude(text, "every paper");
     assert.notInclude(text, "explicitly asks to read, summarize or analyze");

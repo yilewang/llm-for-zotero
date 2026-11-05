@@ -128,6 +128,7 @@ import {
   openDeclaredOutcomes,
   reconcileJournaledReceipts,
   resumesOnContinue,
+  settleDeclinedOutcomes,
   settleOutcomes,
   type OutcomeEvidence,
 } from "./loop/outcomes";
@@ -212,6 +213,10 @@ import { createAgentExecutionContext } from "./execution/context";
 import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import { journaledNoteReceipts } from "./execution/journalReceipts";
 import {
+  buildCarriedSkillsMessage,
+  buildScopeItemKeysMessage,
+} from "./context/restartCarry";
+import {
   createToolExecution,
   type ToolExecutionRecord,
 } from "./execution/toolExecution";
@@ -249,6 +254,7 @@ import type {
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
+  AgentToolCall,
   AgentToolContext,
   AgentToolMessage,
   AgentUserMessage,
@@ -1004,16 +1010,24 @@ export class AgentRuntime {
       await runEvents?.flush();
       if (recordsOutcomes()) {
         try {
-          const end = decideRunEnd(request.executionCheckpoint, {
-            status,
-            stopRule,
-          });
+          // A run that answered settles the user's declines as skipped
+          // first, and its end state is decided from that checkpoint.
+          const now = this.now();
+          const settleDeclines = (checkpoint: ExecutionCheckpoint) =>
+            status === "completed"
+              ? settleDeclinedOutcomes(checkpoint, now)
+              : checkpoint;
+          const end = decideRunEnd(
+            request.executionCheckpoint &&
+              settleDeclines(request.executionCheckpoint),
+            { status, stopRule },
+          );
           if (
             request.executionCheckpoint?.tasks.length ||
             END_STATES_RECORDED_WITHOUT_OUTCOMES.has(end)
           ) {
             await updateExecutionCheckpoint((checkpoint) =>
-              settleOutcomes(checkpoint, end, this.now()),
+              settleOutcomes(settleDeclines(checkpoint), end, now),
             );
           }
         } catch (error) {
@@ -2039,6 +2053,14 @@ export class AgentRuntime {
               ...[
                 conversationReferenceMessage,
                 buildRetainedActionMessage(transcriptSegment.messages),
+                // What the dropped tool results gave the model mid-turn:
+                // the skills it loaded and the scope's item keys.
+                buildCarriedSkillsMessage(toolExecutionRecords, matchedSkills),
+                buildScopeItemKeysMessage(
+                  request.turnScopePapers,
+                  request.turnPaperScope.libraryID || request.libraryID,
+                  request.executionCheckpoint,
+                ),
                 longJobMessage,
               ].filter((message): message is AgentUserMessage =>
                 Boolean(message),
@@ -2397,6 +2419,9 @@ export class AgentRuntime {
       // A final-only step that wrote no visible text is asked once more; a
       // fatal failure of that request ends the turn with the host's answer.
       let finalOnlyEmptyAnswerReasked = false;
+      // An ordinary step's empty answer is asked once more per turn; a
+      // second empty answer fails the run with its reason.
+      let emptyAnswerReasked = false;
       const attemptModelStep = async (
         round: number,
         statusText: string,
@@ -3239,7 +3264,11 @@ export class AgentRuntime {
        * had streamed, then why it stopped and what it did.
        */
       const stoppedTurnText = (
-        rule: "budget_reached" | "connection_lost" | "prompt_budget_exceeded",
+        rule:
+          | "budget_reached"
+          | "connection_lost"
+          | "prompt_budget_exceeded"
+          | "empty_answer",
         detail?: string,
       ): string => {
         const streamed = uncommittedAnswerText().trim();
@@ -3553,6 +3582,36 @@ export class AgentRuntime {
             await persistTranscriptCheckpoint();
             continue;
           }
+          // An ordinary step that returned no answer text and no tool call
+          // is asked once more; a second time, the run fails with the
+          // reason. A placeholder is never saved as the answer.
+          if (
+            step.kind === "final" &&
+            !(step.text || "").trim() &&
+            !stepStreamedText.trim() &&
+            !keptAnswerModelText.trim() &&
+            !committedAnswerText.trim()
+          ) {
+            if (emptyAnswerReasked) {
+              // A resumable stop: a long job's open page keeps its results.
+              await keepUnfinishedPage();
+              return await completeRun(
+                stoppedTurnText("empty_answer"),
+                "failed",
+                "empty_answer",
+              );
+            }
+            emptyAnswerReasked = true;
+            // As above: no empty assistant message is kept.
+            continuationSession.appendHostMessage({
+              role: "user",
+              transient: true,
+              content:
+                "Your last reply had no answer text and no tool call. Continue the user's request: call the next tool you need, or write the answer.",
+            });
+            await persistTranscriptCheckpoint();
+            continue;
+          }
           if (step.kind === "final") {
             const returnedText = step.text || "";
             const streamedTextOffset = stepStreamedText
@@ -3687,32 +3746,22 @@ export class AgentRuntime {
                 maxToolCallsPerRound,
               )
             : maxToolCallsPerRound;
-          if (step.calls.length > stepToolCallLimit) {
-            const overflowMessage = `The model returned ${step.calls.length} tool calls in one step, exceeding the safe limit of ${stepToolCallLimit}. None of those calls were executed.`;
-            if (turnBoundary.toolCallOverflow(segmentRound) === "stop") {
-              return await completeRun(
-                `${overflowMessage} Please narrow the request and try again.`,
-                "failed",
-                "tool_call_overflow",
-              );
-            }
-            await restartFromSemanticCheckpoint({
-              sourceMessages: messages,
-              retryInstruction: `${overflowMessage} Retry with a complete new step containing at most ${stepToolCallLimit} tool calls. Do not assume that any result exists for the rejected calls.`,
-            });
+          // A step with more calls than its limit runs the first ones, in
+          // order, as any step does; every call past the limit gets a result
+          // saying it did not run, and the next step can make it.
+          const calls = step.calls.slice(0, stepToolCallLimit);
+          const callsNotRun = step.calls.slice(stepToolCallLimit);
+          if (callsNotRun.length) {
             await emit({
               type: "provider_event",
               providerType: "agent_tool_call_overflow",
               payload: {
-                action: "checkpoint_and_retry",
+                action: "run_first",
                 returnedToolCalls: step.calls.length,
                 maxToolCallsPerRound: stepToolCallLimit,
               },
             });
-            continue;
           }
-
-          const calls = step.calls;
           const assistantToolMessage: AgentAssistantMessage =
             step.assistantMessage;
           if (!calls.length) {
@@ -3739,6 +3788,15 @@ export class AgentRuntime {
           newTranscriptMessages.push(assistantToolMessage);
           const roundToolMessages: AgentToolMessage[] = [];
           const roundFollowupMessages: AgentModelMessage[] = [];
+          // The result of a call of this step that did not run: every call
+          // the model made gets one, so none is left without a result.
+          const pushNotRunMessage = (call: AgentToolCall, reason: string) =>
+            roundToolMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.name,
+              content: JSON.stringify({ error: `Not run: ${reason}` }),
+            });
           const appendRoundContinuation = () => {
             const delta = continuationSession.completeToolStep({
               toolMessages: roundToolMessages,
@@ -3767,7 +3825,8 @@ export class AgentRuntime {
               round,
               {
                 modelCallId: call.id,
-                followingCallCount: calls.length - index - 1,
+                // Calls past the limit count: they are still to run.
+                followingCallCount: step.calls.length - index - 1,
               },
             );
             if (outcome.toolResult.ok) roundHadSuccessfulToolResult = true;
@@ -3807,6 +3866,8 @@ export class AgentRuntime {
               }
             }
             if (outcome.stopRun) {
+              for (const notRun of [...calls.slice(index + 1), ...callsNotRun])
+                pushNotRunMessage(notRun, "the run ended before this call.");
               appendRoundContinuation();
               const stopFinalText =
                 outcome.finalText || uncommittedAnswerText();
@@ -3836,6 +3897,11 @@ export class AgentRuntime {
               );
             }
           }
+          for (const call of callsNotRun)
+            pushNotRunMessage(
+              call,
+              `this step allows ${stepToolCallLimit} tool calls; call it again in the next step.`,
+            );
           appendRoundContinuation();
           // Sibling calls are one attempt: deliver every result before judging
           // repeated failure, so the next model round can repair their inputs.

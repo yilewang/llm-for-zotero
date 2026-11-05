@@ -71,6 +71,7 @@ export function buildEvidenceCacheKey(params: {
   queryKey: string;
   perPaperTopK: number;
   sectionIds: readonly string[];
+  chunkIndexes?: readonly number[];
   source: Awaited<ReturnType<PdfService["ensurePaperContext"]>>;
   embeddingKey: string;
   quotePolicy?: string;
@@ -94,6 +95,9 @@ export function buildEvidenceCacheKey(params: {
     params.queryKey,
     params.perPaperTopK,
     [...params.sectionIds].sort(),
+    ...(params.chunkIndexes?.length
+      ? [[...params.chunkIndexes].sort((a, b) => a - b)]
+      : []),
     params.embeddingKey,
     params.quotePolicy,
     fingerprints.length
@@ -175,6 +179,8 @@ export class RetrievalService {
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
     sectionIdsByPaper?: ReadonlyMap<number, readonly string[]>;
+    /** Also in scope per paper: these chunks (text with no section ids). */
+    chunkIndexesByPaper?: ReadonlyMap<number, readonly number[]>;
   }): Promise<RetrievalResult[]> {
     const papers = dedupePaperContexts(params.papers);
     if (!papers.length) return [];
@@ -247,6 +253,9 @@ export class RetrievalService {
           params.sectionIds ??
           []),
       ].filter(Boolean),
+      chunkIndexes: [
+        ...(params.chunkIndexesByPaper?.get(paperContext.contextItemId) ?? []),
+      ],
     }));
     const results = await retrievePerPaper({
       targets,
@@ -258,6 +267,7 @@ export class RetrievalService {
             queryKey: queryCacheKey,
             perPaperTopK,
             sectionIds: target.sectionIds,
+            chunkIndexes: target.chunkIndexes,
             source: target.pdfContext,
             embeddingKey,
             quotePolicy: queryPlan.quoteAnchorPolicy,
@@ -274,13 +284,17 @@ export class RetrievalService {
               .then((values) => values[0])
               .catch(() => undefined)
           : Promise.resolve(undefined),
-      builderArguments: ({ sectionIds }, precomputedQueryEmbedding) => ({
+      builderArguments: (
+        { sectionIds, chunkIndexes },
+        precomputedQueryEmbedding,
+      ) => ({
         apiOverrides: {
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
+          ...(chunkIndexes.length ? { chunkIndexes } : {}),
         },
         options: {
           topK: perPaperTopK,
@@ -288,6 +302,7 @@ export class RetrievalService {
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
+          ...(chunkIndexes.length ? { chunkIndexes } : {}),
         },
       }),
       project: ({ paperContext }, candidates): RetrievalResult[] =>

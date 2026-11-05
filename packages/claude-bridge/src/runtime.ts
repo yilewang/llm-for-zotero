@@ -13,6 +13,7 @@ export type ProviderEventType =
   | "message_rollback"
   | "usage"
   | "context_compacted"
+  | "codex_progress"
   | "final"
   | "unknown";
 
@@ -106,7 +107,33 @@ export type StructuredCompletionRequest = {
   timeoutMs: number;
   signal?: AbortSignal;
 };
-export type StructuredCompletionResult = { text: string };
+/** Token counts the SDK reported for one structured completion. */
+export type StructuredCompletionUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  model?: string;
+};
+export type StructuredCompletionResult = {
+  text: string;
+  /** Present only when the SDK reported token counts. */
+  usage?: StructuredCompletionUsage;
+};
+
+/**
+ * A structured completion that failed with an HTTP-style status the caller
+ * can act on (429 = the provider rate-limited the request). The HTTP bridge
+ * answers with this status instead of a generic 500.
+ */
+export class StructuredCompletionError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "StructuredCompletionError";
+    this.status = status;
+  }
+}
 
 export interface ClaudeCodeRuntimeClient {
   getAccountQuota?(

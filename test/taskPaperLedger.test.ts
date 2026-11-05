@@ -2,21 +2,26 @@ import { assert } from "chai";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  TASK_PAPER_DECISION_MAX_SUBQUESTIONS,
+  TASK_PAPER_DECISION_REASON_MAX_CHARS,
   TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS,
   TASK_PAPER_LEDGER_TOOL_NAMES,
   TASK_PAPER_MAX_CITATIONS_PER_TURN,
   TASK_PAPER_MAX_PAPERS,
   TASK_PAPER_MAX_READS_PER_TURN,
+  TASK_PAPER_READ_GRANULARITY_RANK,
   TASK_PAPER_DIGEST_NO_TEXT_REASON,
   TASK_PAPER_SNIPPET_MAX_CHARS,
   applyDocumentCitations,
   applyFinalCitations,
   applyTaskPaperLedgerDelta,
+  buildDecisionLedgerDelta,
   buildDigestFailureLedgerDelta,
   buildDigestLedgerDelta,
   createTaskPaperLedger,
   deriveTaskPaperLedgerDelta,
   firstBodyParagraph,
+  latestTaskPaperDecision,
   taskPaperDigestPartLabel,
   taskPaperReadDepths,
   type TaskPaperLedgerDelta,
@@ -166,6 +171,182 @@ function libraryRetrieveFixture() {
 
 describe("taskPaperLedger", function () {
   describe("deriveTaskPaperLedgerDelta", function () {
+    it("gives one read per part the user asked for, however many runs found it", function () {
+      const paper = { itemId: 7, contextItemId: 107, title: "Plain" };
+      const run = (section: string, complete = true) => ({
+        section,
+        for: ["results"],
+        complete,
+        characters: 100,
+      });
+      const derivePicked = (
+        sections: Record<string, unknown>[],
+        passages: Record<string, unknown>[],
+      ) =>
+        derive(
+          "paper_read",
+          { mode: "targeted", sections: ["results"] },
+          {
+            read: "whole_sections",
+            papers: [
+              { paperContext: paper, backend: "pdf", sections, passages },
+            ],
+          },
+        ).reads.map((read) => [read.label, read.granularity, read.snippet]);
+      // Two runs with several chunks each: the read shows the first run's
+      // first paragraph, never a later run's.
+      assert.deepEqual(
+        derivePicked(
+          [run("pages 3–4"), run("page 7")],
+          [
+            { sectionLabel: "Results", text: "Run A chunk 4." },
+            { sectionLabel: "Results", text: "Run A chunk 5." },
+            { sectionLabel: "Results", text: "Run B chunk 9." },
+          ],
+        ),
+        [["Results", "section", "Run A chunk 4."]],
+      );
+      // One whole run and one cut run are one passage read.
+      assert.deepEqual(
+        derivePicked(
+          [run("pages 3–4"), run("page 7", false)],
+          [
+            { sectionLabel: "Results", text: "Run A chunk 4." },
+            { sectionLabel: "Results", text: "Run B chunk 9." },
+          ],
+        ),
+        [["Results", "passage", "Run A chunk 4."]],
+      );
+    });
+
+    it("gives one read per part when one run was picked for two parts", function () {
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["abstract", "results"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: { itemId: 9, contextItemId: 109, title: "Plain" },
+              backend: "pdf",
+              sections: [
+                {
+                  section: "pages 1–3",
+                  for: ["abstract", "results"],
+                  complete: true,
+                  characters: 200,
+                },
+              ],
+              passages: [
+                {
+                  sectionLabel: "Abstract, Results",
+                  text: "Lead paragraph.",
+                },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity]),
+        [
+          ["Abstract", "abstract"],
+          ["Results", "section"],
+        ],
+      );
+      // The one passage speaks for the first part only.
+      assert.deepEqual(
+        delta.reads.map((read) => read.snippet),
+        ["Lead paragraph.", undefined],
+      );
+    });
+
+    it("reads a MinerU pick of 结果 and the abstract as two parts with their paragraphs", function () {
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["结果", "abstract"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: { itemId: 10, contextItemId: 110, title: "Zh" },
+              backend: "mineru",
+              sections: [
+                {
+                  section: "Abstract",
+                  complete: true,
+                  characters: 50,
+                },
+                {
+                  section: "三、实验结果",
+                  for: ["结果"],
+                  complete: true,
+                  characters: 80,
+                },
+              ],
+              passages: [
+                { sectionLabel: "Abstract", text: "The abstract text." },
+                { sectionLabel: "三、实验结果", text: "实验结果如下。" },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity, read.snippet]),
+        [
+          ["Abstract", "abstract", "The abstract text."],
+          ["结果", "section", "实验结果如下。"],
+        ],
+      );
+    });
+
+    it("shows a read's internal places as the plain parts the user reads", function () {
+      const paper = { itemId: 8, contextItemId: 108, title: "Nature shape" };
+      const delta = derive(
+        "paper_read",
+        { mode: "targeted", sections: ["abstract", "results"] },
+        {
+          read: "whole_sections",
+          papers: [
+            {
+              paperContext: paper,
+              backend: "mineru",
+              sections: [
+                {
+                  section: "Abstract (unlabelled lead)",
+                  complete: true,
+                  characters: 50,
+                },
+                {
+                  section: "Results (unlabelled sections)",
+                  complete: true,
+                  characters: 50,
+                },
+              ],
+              passages: [
+                {
+                  sectionLabel: "Abstract",
+                  text: "The lead paragraph.",
+                },
+                {
+                  sectionLabel: "Results",
+                  text: "The first result.",
+                },
+              ],
+            },
+          ],
+        },
+      );
+      assert.deepEqual(
+        delta.reads.map((read) => [read.label, read.granularity, read.snippet]),
+        [
+          ["Abstract", "abstract", "The lead paragraph."],
+          ["Results", "section", "The first result."],
+        ],
+      );
+    });
+
     it("maps library_retrieve rows to matched, skimmed and read", function () {
       const delta = derive(
         "library_retrieve",
@@ -212,7 +393,7 @@ describe("taskPaperLedger", function () {
         reads101.map((read) => [read.granularity, read.method, read.label]),
         [
           ["metadata", "bm25", undefined],
-          ["section", "bm25", "Methods §2.3"],
+          ["passage", "bm25", "Methods §2.3"],
         ],
         "a paperMatch for a known candidate adds no second metadata read",
       );
@@ -401,6 +582,37 @@ describe("taskPaperLedger", function () {
       assert.equal(readsFor(library, "1:10")[0].snippet, GRID_ABSTRACT);
     });
 
+    it("records a paper's notes as notes, never as its full text", function () {
+      const notes = derive(
+        "library_read",
+        {},
+        {
+          results: [
+            {
+              itemId: 10,
+              title: "Grid",
+              notes: [{ noteId: 1, title: "Mine", noteText: "Grid cells." }],
+            },
+          ],
+        },
+      );
+      assert.equal(readsFor(notes, "1:10")[0].granularity, "notes");
+      // Notes are not the paper's text: the paper is skimmed, and counts
+      // as a shallow read.
+      assert.equal(notes.papers[0].state, "skimmed");
+      assert.deepEqual(taskPaperReadDepths(notes), {
+        text: [],
+        shallow: [10],
+        noText: [],
+      });
+      const content = derive(
+        "library_read",
+        {},
+        { results: [{ itemId: 10, title: "Grid", content: GRID_TEXT }] },
+      );
+      assert.equal(readsFor(content, "1:10")[0].granularity, "full");
+    });
+
     it("takes a Chinese abstract with a few Latin words and numbers over the title", function () {
       const abstract =
         "摘要：本研究使用 fMRI 和 EEG 技术记录了 32 名受试者在空间导航任务中的海马体活动，并利用深度学习模型解码其位置信息。结果表明模型解码准确率显著高于基线。";
@@ -474,7 +686,7 @@ describe("taskPaperLedger", function () {
       assert.deepEqual(
         readsFor(delta, "1:10").map((read) => [read.granularity, read.label]),
         [
-          ["section", "Methods"],
+          ["passage", "Methods"],
           ["passage", undefined],
           ["page", "Page 5"],
         ],
@@ -535,9 +747,58 @@ describe("taskPaperLedger", function () {
           ],
         },
       );
-      assert.equal(readsFor(full, "1:10")[0].granularity, "full");
+      // 30 of 32 chunks with no status: a stopped read is a skim, not full.
+      assert.equal(readsFor(full, "1:10")[0].granularity, "digest");
+      assert.equal(paperState(full, "1:10"), "skimmed");
       assert.equal(readsFor(full, "1:10")[0].label, "30/32 chunks");
       assert.isUndefined(paperState(full, "1:11"));
+
+      const fullRows = derive(
+        "paper_read",
+        { mode: "full" },
+        {
+          mode: "full",
+          papers: [
+            {
+              paperContext: { itemId: 10, contextItemId: 20 },
+              status: "complete",
+              processedChunks: 32,
+              totalChunks: 32,
+            },
+            {
+              paperContext: { itemId: 11, contextItemId: 21 },
+              status: "partial",
+              processedChunks: 31,
+              totalChunks: 32,
+            },
+            {
+              paperContext: { itemId: 12, contextItemId: 22 },
+              processedChunks: 5,
+              totalChunks: 5,
+            },
+          ],
+        },
+      );
+      assert.equal(readsFor(fullRows, "1:10")[0].granularity, "full");
+      assert.equal(
+        TASK_PAPER_READ_GRANULARITY_RANK[
+          readsFor(fullRows, "1:10")[0].granularity
+        ],
+        TASK_PAPER_READ_GRANULARITY_RANK.full,
+      );
+      assert.equal(paperState(fullRows, "1:10"), "read");
+      assert.equal(readsFor(fullRows, "1:11")[0].granularity, "digest");
+      assert.equal(
+        TASK_PAPER_READ_GRANULARITY_RANK[
+          readsFor(fullRows, "1:11")[0].granularity
+        ],
+        TASK_PAPER_READ_GRANULARITY_RANK.digest,
+      );
+      assert.equal(paperState(fullRows, "1:11"), "skimmed");
+      assert.equal(readsFor(fullRows, "1:11")[0].label, "31/32 chunks");
+      // Without a status, every chunk processed is complete.
+      assert.equal(readsFor(fullRows, "1:12")[0].granularity, "full");
+      assert.equal(paperState(fullRows, "1:12"), "read");
 
       const figures = derive(
         "paper_read",
@@ -955,6 +1216,289 @@ describe("taskPaperLedger", function () {
     });
   });
 
+  describe("paper decisions", function () {
+    const paper = { libraryID: 1, itemId: 10, title: "Drift" };
+    const decide = (
+      decisions: Parameters<typeof buildDecisionLedgerDelta>[0]["decisions"],
+      extra: { runId?: string; callId?: string } = {},
+    ) => {
+      const delta = buildDecisionLedgerDelta({
+        callId: extra.callId || "decide-1",
+        runId: extra.runId,
+        toolName: "record_paper_decisions",
+        decisions,
+      });
+      assert.isNotNull(delta);
+      return delta!;
+    };
+    const readDelta = (runId: string, callId = "read-1") =>
+      derive(
+        "paper_read",
+        { mode: "targeted" },
+        {
+          papers: [
+            {
+              paperContext: { itemId: 10, contextItemId: 20 },
+              passages: [{ text: "a passage" }],
+            },
+          ],
+        },
+        { runId, callId },
+      );
+
+    it("builds one delta whose papers stay listed and carry bounded decisions", function () {
+      const delta = decide(
+        [
+          {
+            paper,
+            value: "include",
+            relevance: "high",
+            subquestions: [
+              ...Array.from({ length: 12 }, (_, index) => `  sub ${index} `),
+              "sub 0",
+            ],
+            reason: `  ${"long ".repeat(100)} `,
+          },
+          { paper: { libraryID: 1, itemId: 11 }, value: "defer", reason: "x" },
+          // Invalid rows are dropped, not guessed.
+          {
+            paper: { libraryID: 1, itemId: 12 },
+            value: "maybe" as never,
+            reason: "y",
+          },
+          {
+            paper: { libraryID: 1, itemId: 13 },
+            value: "exclude",
+            reason: " ",
+          },
+          {
+            paper: { libraryID: 0, itemId: 14 },
+            value: "exclude",
+            reason: "z",
+          },
+        ],
+        { runId: "run-1" },
+      );
+      assert.equal(delta.version, 1);
+      assert.equal(delta.runId, "run-1");
+      assert.equal(delta.toolName, "record_paper_decisions");
+      assert.isEmpty(delta.reads);
+      assert.deepEqual(
+        delta.papers.map((row) => row.key),
+        ["1:10", "1:11"],
+      );
+      assert.isTrue(delta.papers.every((row) => row.state === "listed"));
+      const first = delta.papers[0].decision!;
+      assert.equal(first.value, "include");
+      assert.equal(first.relevance, "high");
+      assert.equal(first.origin, "agent");
+      assert.lengthOf(
+        first.subquestions!,
+        TASK_PAPER_DECISION_MAX_SUBQUESTIONS,
+      );
+      assert.equal(first.subquestions![0], "sub 0");
+      assert.isAtMost(
+        first.reason.length,
+        TASK_PAPER_DECISION_REASON_MAX_CHARS,
+      );
+      assert.match(first.reason, /^long .*…$/);
+      assert.equal(delta.papers[0].title, "Drift");
+      assert.deepEqual(delta.papers[1].decision, {
+        value: "defer",
+        reason: "x",
+        origin: "agent",
+      });
+      assert.isNull(
+        buildDecisionLedgerDelta({
+          callId: "none",
+          toolName: "record_paper_decisions",
+          decisions: [],
+        }),
+      );
+    });
+
+    it("applies a decision without raising or lowering state", function () {
+      const ledger = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(ledger, readDelta("run-1"), 1);
+      const entry = ledger.papers["1:10"];
+      const stateBefore = entry.state;
+      const turnStateBefore = entry.turns[1].state;
+      assert.equal(stateBefore, "read");
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "exclude", reason: "off topic" }], {
+          runId: "run-1",
+        }),
+        1,
+      );
+      assert.equal(entry.state, stateBefore);
+      assert.equal(entry.turns[1].state, turnStateBefore);
+      assert.equal(entry.turns[1].readState, "read");
+      assert.lengthOf(entry.turns[1].reads, 1, "reads are kept apart");
+      assert.deepInclude(entry.turns[1].decision!, {
+        value: "exclude",
+        reason: "off topic",
+        origin: "agent",
+        callId: "decide-1",
+        runId: "run-1",
+        turnIndex: 1,
+      });
+      assert.equal(latestTaskPaperDecision(entry)?.value, "exclude");
+
+      // A decision on a paper no read named lists it, and only lists it.
+      const fresh = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(
+        fresh,
+        decide([{ paper, value: "include", reason: "core" }]),
+        1,
+      );
+      assert.equal(fresh.papers["1:10"].state, "listed");
+      assert.isEmpty(fresh.papers["1:10"].turns[1].reads);
+      assert.equal(
+        latestTaskPaperDecision(fresh.papers["1:10"])?.value,
+        "include",
+      );
+    });
+
+    it("keeps the latest decision within a run and ignores a replayed call", function () {
+      const ledger = createTaskPaperLedger();
+      const first = decide([{ paper, value: "defer", reason: "unsure" }], {
+        runId: "run-1",
+        callId: "decide-1",
+      });
+      const second = decide([{ paper, value: "include", reason: "central" }], {
+        runId: "run-1",
+        callId: "decide-2",
+      });
+      applyTaskPaperLedgerDelta(ledger, first, 1);
+      applyTaskPaperLedgerDelta(ledger, second, 1);
+      const snapshot = JSON.stringify(ledger);
+      applyTaskPaperLedgerDelta(ledger, first, 1);
+      applyTaskPaperLedgerDelta(ledger, second, 1);
+      assert.equal(JSON.stringify(ledger), snapshot, "replay is a no-op");
+      const decision = latestTaskPaperDecision(ledger.papers["1:10"]);
+      assert.equal(decision?.value, "include");
+      assert.equal(decision?.callId, "decide-2");
+    });
+
+    it("lets a re-run of the question replace the earlier run's decisions, as reads are", function () {
+      const ledger = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(ledger, readDelta("run-1"), 1);
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "include", reason: "first run" }], {
+          runId: "run-1",
+        }),
+        1,
+      );
+      // The re-run's first call is a read: it clears both.
+      applyTaskPaperLedgerDelta(ledger, readDelta("run-2"), 1);
+      const turn = ledger.papers["1:10"].turns[1];
+      assert.isUndefined(turn.decision);
+      assert.deepEqual(turn.supersededRunIds, ["run-1"]);
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "exclude", reason: "second run" }], {
+          runId: "run-2",
+        }),
+        1,
+      );
+      // A late decision of the replaced run never takes the question back.
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "defer", reason: "late" }], {
+          runId: "run-1",
+          callId: "decide-late",
+        }),
+        1,
+      );
+      assert.equal(turn.decision?.value, "exclude");
+      assert.equal(turn.decision?.runId, "run-2");
+
+      // History replayed after the session ran the retry keeps the retry's.
+      const replay = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(
+        replay,
+        decide([{ paper, value: "exclude", reason: "second run" }], {
+          runId: "run-2",
+        }),
+        1,
+      );
+      applyTaskPaperLedgerDelta(
+        replay,
+        decide([{ paper, value: "include", reason: "first run" }], {
+          runId: "run-1",
+        }),
+        1,
+        { newerRunIds: ["run-2"] },
+      );
+      assert.equal(
+        latestTaskPaperDecision(replay.papers["1:10"])?.value,
+        "exclude",
+      );
+    });
+
+    it("keeps another question's decision and exposes the latest one", function () {
+      const ledger = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "include", reason: "q1" }], { runId: "run-1" }),
+        1,
+      );
+      applyTaskPaperLedgerDelta(
+        ledger,
+        decide([{ paper, value: "exclude", reason: "q2" }], { runId: "run-2" }),
+        2,
+      );
+      const entry = ledger.papers["1:10"];
+      assert.equal(entry.turns[1].decision?.value, "include");
+      assert.equal(entry.turns[2].decision?.value, "exclude");
+      assert.equal(latestTaskPaperDecision(entry)?.reason, "q2");
+    });
+
+    it("folds an event without a decision exactly as before, and ignores a malformed one", function () {
+      const stored = JSON.parse(JSON.stringify(readDelta("run-1")));
+      const ledger = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(ledger, stored, 1);
+      const turn = ledger.papers["1:10"].turns[1];
+      assert.notProperty(turn, "decision");
+      assert.deepEqual(Object.keys(turn).sort(), [
+        "citations",
+        "droppedCitations",
+        "droppedReads",
+        "readState",
+        "reads",
+        "readsRunId",
+        "state",
+      ]);
+      assert.isUndefined(latestTaskPaperDecision(ledger.papers["1:10"]));
+
+      const malformed = createTaskPaperLedger();
+      applyTaskPaperLedgerDelta(
+        malformed,
+        {
+          version: 1,
+          callId: "bad",
+          runId: "run-1",
+          toolName: "record_paper_decisions",
+          papers: [
+            {
+              key: "1:10",
+              libraryID: 1,
+              itemId: 10,
+              state: "listed",
+              decision: { value: "keep", reason: "?" } as never,
+            },
+          ],
+          reads: [],
+        },
+        1,
+      );
+      assert.notProperty(malformed.papers["1:10"].turns[1], "decision");
+      assert.notProperty(malformed.papers["1:10"].turns[1], "readsRunId");
+    });
+  });
+
   describe("host paper digests", function () {
     function digest(
       itemId: number,
@@ -1069,6 +1613,73 @@ describe("taskPaperLedger", function () {
         "no undefined keys: the live and replayed deltas are equal",
       );
       assert.deepEqual(taskPaperReadDepths(delta).text, [1]);
+    });
+
+    it("marks the digest read complete only when the digest read the whole text, and keeps its granularity", function () {
+      const whole = buildDigestLedgerDelta({
+        callId: "call-8",
+        toolName: "task_update",
+        digest: digest(3),
+        paper: paper(3),
+      });
+      assert.equal(whole.reads[0].granularity, "digest");
+      assert.isTrue(whole.reads[0].complete);
+      // Only the digest read carries the flag; its evidence passages do not.
+      assert.notProperty(whole.reads[1], "complete");
+      const part = buildDigestLedgerDelta({
+        callId: "call-8",
+        toolName: "task_update",
+        digest: digest(4, {
+          source: {
+            backend: "pdf",
+            readCharacters: 1000,
+            totalCharacters: 4000,
+            complete: false,
+          },
+        }),
+        paper: paper(4),
+      });
+      assert.equal(part.reads[0].granularity, "digest");
+      assert.isFalse(part.reads[0].complete);
+    });
+
+    it("records a digest that read only part of the text as a skim, in both runtimes' ledgers", function () {
+      // A book cut at the digest text limit: 250,000 of 450,000 characters.
+      const partial = {
+        backend: "mineru" as const,
+        readCharacters: 250_000,
+        totalCharacters: 450_000,
+        complete: false,
+      };
+      const plugin = buildDigestLedgerDelta({
+        callId: "call-9",
+        toolName: "task_update",
+        digest: digest(5, { source: partial }),
+        paper: paper(5),
+      });
+      assert.equal(paperState(plugin, "1:5"), "skimmed");
+      assert.isFalse(plugin.reads[0].complete);
+      const whole = buildDigestLedgerDelta({
+        callId: "call-9",
+        toolName: "task_update",
+        digest: digest(6),
+        paper: paper(6),
+      });
+      assert.equal(paperState(whole, "1:6"), "read");
+      // paper_digest rows over MCP: the same rule.
+      const mcp = derive(
+        "paper_digest",
+        { targets: ["item:5", "item:6"], instruction: "Summarize each paper" },
+        {
+          label: "Summarize each paper",
+          papers: [
+            { ...digest(5, { source: partial }), status: "digested" },
+            { ...digest(6), status: "digested" },
+          ],
+        },
+      );
+      assert.equal(paperState(mcp, "1:5"), "skimmed");
+      assert.equal(paperState(mcp, "1:6"), "read");
     });
 
     it("keeps an answer whole up to its own cap, evidence at the snippet cap, and caps the reads per paper", function () {

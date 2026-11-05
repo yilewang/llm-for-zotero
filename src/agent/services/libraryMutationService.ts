@@ -13,6 +13,10 @@ import type {
   LibraryMutationPlan,
   LibraryMutationState,
 } from "./libraryMutation/contracts";
+import {
+  describeLibraryMutation,
+  gatewayMutationLabels,
+} from "./libraryMutation/describe";
 import { MutationStateReader } from "./libraryMutation/stateReader";
 
 export * from "./libraryMutation/contracts";
@@ -49,7 +53,10 @@ export class LibraryMutationService {
     context: AgentToolContext,
   ): Promise<LibraryMutationPlan> {
     const precondition = await this.captureOperationState(operation, context);
-    const description = `Apply ${operation.type}`;
+    const description = describeLibraryMutation(
+      operation,
+      gatewayMutationLabels(this.zoteroGateway),
+    );
 
     if (mutationUsesDeferredInverse(operation)) {
       return {

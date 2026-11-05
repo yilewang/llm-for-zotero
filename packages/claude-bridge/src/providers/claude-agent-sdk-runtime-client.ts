@@ -19,8 +19,11 @@ import type {
   RuntimePermissionModeCatalog,
   RuntimeTurnRequest,
   RuntimeTurnStream,
+  StructuredCompletionUsage,
 } from "../runtime.js";
+import { StructuredCompletionError } from "../runtime.js";
 import { mapSdkMessageToProviderEvents } from "../event-mapper/map-sdk-message.js";
+import { createClaudeStepTracker } from "../event-mapper/claude-step-tracker.js";
 import { globalPermissionStore } from "../permissions/permission-store.js";
 import type { PermissionResult } from "../permissions/permission-store.js";
 import {
@@ -104,6 +107,39 @@ function toFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
+}
+
+/**
+ * Token counts from a structured completion's result message. Undefined when
+ * the SDK reported no usable number, so the caller can tell "none" from zero.
+ */
+function readStructuredCompletionUsage(
+  usage: Record<string, unknown> | undefined,
+  modelUsage?: Record<string, unknown>,
+): StructuredCompletionUsage | undefined {
+  if (!usage) return undefined;
+  const input = toFiniteNumber(usage.input_tokens);
+  const output = toFiniteNumber(usage.output_tokens);
+  const cacheCreation = toFiniteNumber(usage.cache_creation_input_tokens);
+  const cacheRead = toFiniteNumber(usage.cache_read_input_tokens);
+  if (
+    input === undefined &&
+    output === undefined &&
+    cacheCreation === undefined &&
+    cacheRead === undefined
+  ) {
+    return undefined;
+  }
+  const modelNames = modelUsage ? Object.keys(modelUsage) : [];
+  return {
+    inputTokens: input ?? 0,
+    outputTokens: output ?? 0,
+    cacheCreationInputTokens: cacheCreation ?? 0,
+    cacheReadInputTokens: cacheRead ?? 0,
+    ...(modelNames.length === 1 && modelNames[0]
+      ? { model: modelNames[0] }
+      : {}),
+  };
 }
 
 function normalizeSdkContextUsage(
@@ -234,6 +270,7 @@ type RuntimeRequestShape = {
   userText?: unknown;
   selectedTextContexts?: unknown;
   selectedTexts?: unknown;
+  selectedTextContexts?: unknown;
   selectedPaperContexts?: unknown;
   paperContexts?: unknown;
   fullTextPaperContexts?: unknown;
@@ -281,6 +318,8 @@ const DEFAULT_BLOCKED_METADATA_KEYS = new Set<string>([
   "model",
   "mcpServers",
   "effort",
+  // Retired: an older plugin may still send it; it must not reach the SDK.
+  "paperReaderTools",
 ]);
 const IMAGE_MIME_BY_KIND: Record<
   string,
@@ -701,6 +740,34 @@ function formatFallbackHistory(
     "Use this transcript only to restore conversation context for the current answer.",
   ];
 }
+function collectSelectedSnippets(
+  runtimeRequest: RuntimeRequestShape,
+): Array<{ text: string; question: string }> {
+  const contexts = Array.isArray(runtimeRequest.selectedTextContexts)
+    ? runtimeRequest.selectedTextContexts
+    : [];
+  const questionAt = (index: number): string => {
+    const context = contexts[index];
+    if (!context || typeof context !== "object") return "";
+    const query = (context as { userQuery?: unknown }).userQuery;
+    return typeof query === "string" ? query.trim() : "";
+  };
+  const textAt = (value: unknown): string =>
+    typeof value === "string" ? value.trim() : "";
+  const rawTexts = Array.isArray(runtimeRequest.selectedTexts)
+    ? runtimeRequest.selectedTexts
+    : [];
+  const sources = rawTexts.length
+    ? rawTexts.map((entry) => textAt(entry))
+    : contexts.map((context) =>
+        context && typeof context === "object"
+          ? textAt((context as { text?: unknown }).text)
+          : "",
+      );
+  return sources
+    .map((text, index) => ({ text, question: questionAt(index) }))
+    .filter((entry) => entry.text);
+}
 function buildPromptText(
   userMessage: string,
   runtimeRequest: RuntimeRequestShape | undefined,
@@ -722,34 +789,16 @@ function buildPromptText(
   if (includeFallbackHistory) {
     lines.push(...formatFallbackHistory(runtimeRequest));
   }
-  const selectedContexts = Array.isArray(runtimeRequest.selectedTextContexts)
-    ? runtimeRequest.selectedTextContexts.flatMap((entry) => {
-        const context = asRecord(entry);
-        const text =
-          typeof context?.text === "string" ? context.text.trim() : "";
-        if (!text) return [];
-        const question =
-          typeof context?.userQuery === "string"
-            ? context.userQuery.trim()
-            : "";
-        return [{ text, question }];
-      })
-    : [];
-  const selectedTexts = Array.isArray(runtimeRequest.selectedTexts)
-    ? runtimeRequest.selectedTexts
-        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-        .filter(Boolean)
-    : [];
-  const snippets = selectedContexts.length
-    ? selectedContexts
-    : selectedTexts.map((text) => ({ text, question: "" }));
-  if (snippets.length) {
+  const selectedSnippets = collectSelectedSnippets(runtimeRequest);
+  if (selectedSnippets.length) {
     lines.push(
       "Selected snippets:",
-      ...snippets.map(
-        ({ text, question }, index) =>
-          `${index + 1}. ${text}${question ? `\nQuestion about this text:\n${question}` : ""}`,
-      ),
+      ...selectedSnippets.map(({ text, question }, index) => {
+        const entry = `${index + 1}. ${text}`;
+        return question
+          ? `${entry}\n   Question: ${question.replace(/\r?\n/g, "\n   ")}`
+          : entry;
+      }),
     );
   }
   const selectedCollections = collectCollectionScopeEntries(
@@ -998,6 +1047,46 @@ function buildLocalPdfReadHooks(
     ],
   };
 }
+// Claude Code names its subagent tool "Agent"; older builds named it "Task".
+const SUBAGENT_TOOL_NAMES = ["Agent", "Task"];
+
+/**
+ * The SDK runs a subagent in the background by default and the report comes
+ * in a later turn. By then the bridge has closed the turn and the Zotero MCP
+ * scope, so the subagent's reads would fail or land in the next turn. Force
+ * each subagent call to run in the foreground so it ends inside the turn.
+ */
+function buildSubagentForegroundHooks(): {
+  PreToolUse: HookCallbackMatcher[];
+} {
+  return {
+    PreToolUse: [
+      {
+        matcher: SUBAGENT_TOOL_NAMES.join("|"),
+        hooks: [
+          async (input) => {
+            if (
+              input.hook_event_name !== "PreToolUse" ||
+              !SUBAGENT_TOOL_NAMES.includes(input.tool_name)
+            ) {
+              return { continue: true };
+            }
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                updatedInput: {
+                  ...asRecord(input.tool_input),
+                  run_in_background: false,
+                },
+              },
+            };
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function isRuntimeEffortLevel(value: unknown): value is RuntimeEffortLevel {
   return (
     value === "low" ||
@@ -1160,6 +1249,7 @@ function buildHotRuntimeSignature(
         : null,
     mcpServers: normalizeMcpServers(queryOptions.mcpServers) ?? null,
     allowedTools: toStableStringList(queryOptions.allowedTools, true),
+    agents: queryOptions.agents ?? null,
     configSourceMode:
       typeof metadata.claudeConfigSource === "string" &&
       metadata.claudeConfigSource.trim()
@@ -1469,13 +1559,54 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
               }),
             },
           }) as Query;
+          let assistantError: string | undefined;
+          let rateLimited = false;
           for await (const message of stream) {
-            if (message.type === "result") {
-              if (message.subtype !== "success" || message.is_error)
-                throw new Error("Semantic completion failed");
+            if (message.type === "assistant" && message.error) {
+              assistantError = message.error;
+            } else if (
+              message.type === "rate_limit_event" &&
+              message.rate_limit_info?.status === "rejected"
+            ) {
+              rateLimited = true;
+            } else if (message.type === "result") {
+              if (message.subtype !== "success" || message.is_error) {
+                const apiStatus =
+                  message.subtype === "success"
+                    ? message.api_error_status
+                    : undefined;
+                const detail = (
+                  message.subtype === "success"
+                    ? message.result
+                    : message.errors?.join("; ")
+                )
+                  ?.trim()
+                  .slice(0, 500);
+                if (
+                  apiStatus === 429 ||
+                  assistantError === "rate_limit" ||
+                  rateLimited
+                ) {
+                  throw new StructuredCompletionError(
+                    detail || "The Claude rate limit was reached",
+                    429,
+                  );
+                }
+                throw new Error(
+                  detail
+                    ? `Semantic completion failed: ${detail}`
+                    : "Semantic completion failed",
+                );
+              }
               if (!message.result?.trim())
                 throw new Error("Semantic completion was empty");
-              return { text: message.result };
+              const usage = readStructuredCompletionUsage(
+                message.usage as unknown as Record<string, unknown>,
+                message.modelUsage,
+              );
+              return usage
+                ? { text: message.result, usage }
+                : { text: message.result };
             }
           }
           throw new Error("Semantic completion did not finish");
@@ -1748,6 +1879,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
     const runId = randomUUID();
     const turn = createHotRuntimeTurn(runId);
     entry.currentTurn = turn;
+    entry.stepTracker?.beginTurn();
     const providerSessionId =
       request.providerSessionId || entry.providerSessionId;
     const shouldInjectCompact = options?.autoCompactNeeded === true;
@@ -1980,11 +2112,16 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
         : undefined;
     let sawSdkInit = false;
     let sawModelOutput = false;
+    // Claude's steps outlive a turn, so the tracker watches every message,
+    // including those that arrive between turns.
+    const stepTracker = createClaudeStepTracker();
+    entry.stepTracker = stepTracker;
     try {
       for await (const raw of query) {
+        const stepEvents = stepTracker.observe(raw);
         const currentTurn = entry.currentTurn;
         if (!currentTurn) continue;
-        const mapped = mapSdkMessageToProviderEvents(raw);
+        const mapped = [...mapSdkMessageToProviderEvents(raw), ...stepEvents];
         for (const event of mapped) {
           if (event.type === "provider_event") {
             const payload = event.payload as Record<string, unknown>;
@@ -2342,6 +2479,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
             sdkStream = sdkStream ?? (await createSdkStream(queryOptions));
             const sdkIterator = sdkStream[Symbol.asyncIterator]();
             let sdkNext = sdkIterator.next();
+            const stepTracker = createClaudeStepTracker();
             let permissionNext = permissionEvents.next();
             for (;;) {
               const next = await Promise.race([
@@ -2368,7 +2506,10 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
                 break;
               }
               sdkNext = sdkIterator.next();
-              const mapped = mapSdkMessageToProviderEvents(next.result.value);
+              const mapped = [
+                ...mapSdkMessageToProviderEvents(next.result.value),
+                ...stepTracker.observe(next.result.value),
+              ];
               for (const event of mapped) {
                 if (event.type === "provider_event") {
                   const payload = event.payload as Record<string, unknown>;
@@ -2864,6 +3005,14 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
     const localPdfs = collectLocalPdfs(runtimeRequest);
     const localDocumentDirectories = localPdfDirectories(localPdfs);
     const localPdfReadHooks = buildLocalPdfReadHooks(localPdfs);
+    const baseHooks = localPdfReadHooks ?? asRecord(metadata.hooks) ?? {};
+    const hooks = {
+      ...baseHooks,
+      PreToolUse: [
+        ...((baseHooks.PreToolUse as HookCallbackMatcher[] | undefined) ?? []),
+        ...buildSubagentForegroundHooks().PreToolUse,
+      ],
+    };
     const configuredAdditionalDirectories = (
       this.options.additionalDirectories || []
     )
@@ -2985,13 +3134,24 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
           ? additionalDirectories
           : undefined,
         allowedTools: allowedTools?.length ? allowedTools : undefined,
-        hooks: localPdfReadHooks ?? metadata.hooks,
+        hooks,
         mcpServers,
         settingSources: effectiveSettingSources,
         permissionMode: effectivePermissionMode,
         allowDangerouslySkipPermissions:
           effectivePermissionMode === "bypassPermissions" ? true : undefined,
         includePartialMessages: this.options.includePartialMessages,
+        // Ask for a summary of Claude's thinking. Without it new models send
+        // only a running token count, and the trace has nothing to show.
+        // Passed as the CLI flag, so each model keeps its own thinking mode.
+        extraArgs: {
+          ...(metadata.extraArgs &&
+          typeof metadata.extraArgs === "object" &&
+          !Array.isArray(metadata.extraArgs)
+            ? (metadata.extraArgs as Record<string, string | null>)
+            : {}),
+          "thinking-display": "summarized",
+        },
         maxTurns: this.options.maxTurns,
         continue: localPdfs.length ? false : this.options.continue,
         persistSession: localPdfs.length ? false : undefined,

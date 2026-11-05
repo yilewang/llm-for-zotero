@@ -19,6 +19,7 @@ export type LibraryPaperTarget = {
   firstCreator?: string;
   year?: string;
   dateAdded?: string;
+  dateModified?: string;
   attachments: LibraryPaperTargetAttachment[];
   tags: string[];
   collectionIds: number[];
@@ -50,6 +51,7 @@ export type LibraryItemTarget = {
   firstCreator?: string;
   year?: string;
   dateAdded?: string;
+  dateModified?: string;
   attachments: LibraryItemTargetAttachment[];
   tags: string[];
   collectionIds: number[];

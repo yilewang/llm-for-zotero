@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import {
   BUILTIN_SKILL_FILES,
@@ -278,6 +279,8 @@ describe("semantic tool surface", function () {
       "past_chat_read",
       "past_chat_search",
       "read_attachment",
+      "reader_open",
+      "record_paper_decisions",
       "request_user_input",
       "run_command",
       "submit_document",
@@ -285,6 +288,34 @@ describe("semantic tool surface", function () {
       "workflow_script",
       "zotero_script",
     ]);
+    // review_coverage serves Codex and Claude Code over MCP only: the plugin
+    // Agent does not list it, an external runtime does.
+    const requestAs = (
+      permissionOwner: "original_agent" | "external_runtime",
+    ) => ({
+      ...baseContext.request,
+      executionContext: {
+        version: 1 as const,
+        executionId: "execution-1",
+        conversationKey: 1,
+        conversationGeneration: 0,
+        permissionOwner,
+        workspaceSnapshot: { selectedPapers: [], selectedCollections: [] },
+        configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+      },
+    });
+    assert.notInclude(
+      registry
+        .listToolsForRequest(requestAs("original_agent"))
+        .map((tool) => tool.name),
+      "review_coverage",
+    );
+    assert.include(
+      registry
+        .listToolsForRequest(requestAs("external_runtime"))
+        .map((tool) => tool.name),
+      "review_coverage",
+    );
     const literatureSearch = tools.find(
       (tool) => tool.name === "literature_search",
     );
@@ -2645,6 +2676,106 @@ describe("semantic tool surface", function () {
       [...seen].sort((a, b) => a - b),
       [0, 1, 2, 3, 4, 5],
     );
+  });
+
+  it("paper_read full sizes batches from the reader window, capped at 32,000 tokens, and leaves the synthesis size alone", async function () {
+    const paperContext = {
+      itemId: 61,
+      contextItemId: 62,
+      title: "Large Full Read Paper",
+      libraryID: 1,
+    };
+    const chunks = Array.from(
+      { length: 40 },
+      (_, index) => `Chunk ${index} ${"word ".repeat(1600)}`,
+    );
+    const chunkTokens = estimateTextTokens(chunks[0]);
+    const readBatches = async (
+      request: Partial<AgentToolContext["request"]>,
+      digestChars = 20,
+    ) => {
+      const batches: Array<{ chunks: number; tokens: number }> = [];
+      const tool = createPaperReadTool(
+        {
+          ensurePaperContext: async () => ({
+            title: paperContext.title,
+            chunks,
+            chunkMeta: chunks.map((text, chunkIndex) => ({
+              chunkIndex,
+              text,
+              normalizedText: text,
+              chunkKind: "body",
+            })),
+            chunkStats: [],
+            docFreq: {},
+            avgChunkLength: 0,
+            fullLength: chunks.join("\n\n").length,
+          }),
+        } as never,
+        {} as never,
+        {} as never,
+        {
+          resolvePaperContextTarget: () => paperContext,
+          listPaperContexts: () => [paperContext],
+        } as never,
+        undefined,
+        async (batch) => {
+          batches.push({
+            chunks: batch.chunks.length,
+            tokens: batch.chunks.reduce(
+              (sum, chunk) => sum + estimateTextTokens(chunk.text),
+              0,
+            ),
+          });
+          return { digest: "d".repeat(digestChars), relevantChunkIds: [] };
+        },
+      );
+      const validated = tool.validate({
+        mode: "full",
+        target: { itemId: 61, contextItemId: 62 },
+        query: "Read the complete text.",
+      });
+      assert.equal(validated.ok, true);
+      if (!validated.ok) throw new Error("invalid");
+      const output = (await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          userText: "Read the complete text.",
+          activeItemId: paperContext.itemId,
+          ...request,
+        },
+      })) as { status: string; synthesisContext: string };
+      assert.equal(output.status, "complete");
+      return { batches, output };
+    };
+
+    // A 1M-token window: batches fill the 32,000-token ceiling.
+    const large = await readBatches({ model: "deepseek-flash" });
+    const perLarge = Math.floor(32_000 / chunkTokens);
+    assert.equal(large.batches[0].chunks, perLarge);
+    assert.isAtMost(Math.max(...large.batches.map((b) => b.tokens)), 32_000);
+    assert.isAbove(large.batches[0].tokens, 32_000 - chunkTokens);
+
+    // A small window: half of it.
+    const small = await readBatches({
+      model: "deepseek-flash",
+      advanced: { profileOverride: { limits: { inputTokens: 20_000 } } },
+    } as never);
+    assert.equal(small.batches[0].chunks, Math.floor(10_000 / chunkTokens));
+
+    // An advanced input cap wins over the model's window.
+    const capped = await readBatches({
+      model: "deepseek-flash",
+      advanced: { inputTokenCap: 24_000 },
+    } as never);
+    assert.equal(capped.batches[0].chunks, Math.floor(12_000 / chunkTokens));
+
+    // What returns to the agent stays at 0.45 of the agent's 12,000 default,
+    // however large the reader window.
+    const heavy = await readBatches({ model: "deepseek-flash" }, 30_000);
+    assert.isAtMost(estimateTextTokens(heavy.output.synthesisContext), 5400);
+    assert.isAbove(estimateTextTokens(heavy.output.synthesisContext), 3000);
   });
 
   it("paper_read full uses a tool-free native Codex completion in the production registry", async function () {

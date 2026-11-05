@@ -114,7 +114,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   workflow_script:
     "Compose tool loops or conditions; each call keeps its permission and receipt boundary.",
   library_search:
-    "Find or count Zotero items, collections, notes, tags, searches, or libraries. Look a named paper up by title or author first.",
+    "Find or count Zotero items, collections, notes, tags, searches, libraries, or statistics. Look a named paper up by title or author first.",
   library_read:
     "Read Zotero metadata, notes, annotations, attachments, or memberships.",
   library_retrieve:
@@ -122,7 +122,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   paper_read:
     "Read or search the turn's papers; mode:targeted with query finds passages. For figure crops use mode:figures and figureLabels (e.g. ['Figure 1']); extracts from the source PDF without requiring MinerU. Preserve the active attachment; a sibling PDF's cache is not the same source.",
   library_update:
-    "Change tags, metadata, memberships, parents, or Related links; kind:'collection' creates, renames, moves, or deletes a collection, kind:'attachment' renames, relinks, or deletes one, kind:'savedSearch' saves or deletes one. A membership move removes its named source.",
+    "Change tags, metadata, memberships, parents, or Related links; kind:'collection' creates, renames, moves, or deletes a collection, kind:'attachment' renames, relinks, or deletes one, kind:'savedSearch' saves or deletes one. A membership move removes its named source. kind:'metadata' with itemId and itemType (not inside metadata) changes the item type; the card names the fields it drops.",
   context_read:
     "Read stored context. source:'conversation': omit messageId to list chat messages, set it to read one. source:'tool_result': read a trh_ handle; omit path for metadata. Continue with offset or textOffset=nextTextOffset.",
   past_chat_read:
@@ -139,21 +139,24 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Format Zotero CSL citations or bibliographies, or export with a translator.",
   library_settings: "Read or change supported Zotero settings and sync state.",
   library_import:
-    "Add items by DOI, ISBN, arXiv ID, PMID, or ADS bibcode, from local files, or from manual metadata.",
+    "Add items by DOI, ISBN, arXiv ID, PMID, or ADS bibcode, from local files, or from manual metadata. kind:'document_citations' with a documentId imports the outside papers that document cites, then publishes a new version of it that cites the imported items.",
   library_delete:
     "Trash or restore Zotero objects, or merge duplicates into a named master.",
   undo: "Undo the latest reversible action in this chat; count or actionIds revert several, dryRun lists them with conflicts.",
   annotate_pdf:
     "Highlight a quoted PDF passage with an optional comment; Zotero computes the placement.",
-  file_io: "Read or write local files, including partial text and images.",
-  run_command: "Run a host shell command and return its output and status.",
-  zotero_script: "Run Zotero JavaScript with declared access and effect.",
+  file_io:
+    "Read or write local files, including partial text and images, for data, scripts and exports; read papers with paper_read. Zotero asks no approval for reads; a write can be undone and goes through the caller's approval rules.",
+  run_command:
+    "Run a host shell command and return its output and status, for scripts, conversions and CLI tools; read papers and the library with Zotero tools. Zotero asks no approval for a command that only reads; any other command goes through the caller's approval rules.",
+  zotero_script:
+    "Run Zotero JavaScript with declared access and effect. Before writing a write script, load the zotero-script skill: load_skill('zotero-script').",
   load_skill:
     "Load an installed skill's exact instructions; grants no authority.",
   request_user_input:
     "Ask up to three questions when required input cannot be found.",
   submit_document:
-    "Persist validated Markdown and evidence as a versioned material reference.",
+    "Persist validated Markdown and evidence as a versioned material reference. A literature review is delivered with this tool unless the user asks for a chat answer; other answers stay in chat unless the user asks for a document or a file. A citation source is a Zotero item (libraryID, itemKey) or the paperId of an outside paper literature_search or literature_read returned in this run; web pages are never cited. If it is unclear whether the answer is a literature review, answer in chat.",
 };
 
 function modelToolSpec(spec: ToolSpec): ToolSpec {

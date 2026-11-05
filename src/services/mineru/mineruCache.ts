@@ -1337,8 +1337,12 @@ export type ManifestTable = {
   page?: number;
 };
 
-/** Manifests built before this version only knew `#` headings. */
-export const MANIFEST_STRUCTURE_VERSION = 2;
+/**
+ * Manifests built before version 2 only knew `#` headings; before version
+ * 3 they dropped two-character CJK headings ("结果"). An older manifest is
+ * rebuilt on first use (`ensureManifest`).
+ */
+export const MANIFEST_STRUCTURE_VERSION = 3;
 
 export type ManifestSectionLevel = 1 | 2 | 3;
 
@@ -1415,13 +1419,51 @@ const NOISE_HEADING_BLOCKLIST = new Set([
   "funding information",
 ]);
 
+/** A Chinese, Japanese or Korean character: one carries a word's meaning. */
+const CJK_CHARACTER_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/** A CJK figure or table label ("图1", "表 2", "圖4a"), not a section name. */
+const CJK_FIGURE_LABEL_PATTERN =
+  /^(?:图|圖|図|表|그림|표)\s*\d+(?:[.．-]\d+)?[a-z]?[.．:：]?$/i;
+
 function isNoiseHeading(text: string): boolean {
   const trimmed = text.trim();
-  if (trimmed.length < 3) return true;
+  if (CJK_FIGURE_LABEL_PATTERN.test(trimmed)) return true;
+  // Latin text under three characters is a fragment ("a", "1."). Chinese,
+  // Japanese and Korean section names are two characters ("结果", "方法",
+  // "結果", "결과"); a lone character is still an OCR fragment ("图").
+  if (CJK_CHARACTER_PATTERN.test(trimmed)) {
+    if (trimmed.replace(/\s+/g, "").length < 2) return true;
+  } else if (trimmed.length < 3) return true;
   if (NOISE_HEADING_BLOCKLIST.has(trimmed.toLowerCase())) return true;
   // Unicode garbage from OCR artifacts (e.g. \uf0da sequences)
   if (/^[\uf000-\uf0ff\s]+$/.test(trimmed)) return true;
   return false;
+}
+
+/**
+ * The noise rule before structure version 3: under three characters in any
+ * script, so a two-character CJK section name ("结果") was dropped and a
+ * three-character figure label ("图12") was kept.
+ */
+function previousIsNoiseHeading(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 3) return true;
+  if (NOISE_HEADING_BLOCKLIST.has(trimmed.toLowerCase())) return true;
+  return /^[\uf000-\uf0ff\s]+$/.test(trimmed);
+}
+
+/**
+ * Whether structure version 3 classifies this heading differently from the
+ * rule before it: a short CJK section name ("结果") is a section now, and a
+ * figure or table label of any length ("图12") is noise now. A MinerU paper
+ * with such a heading has different sections today, so its chunks and
+ * labels differ from the ones built before (the library text index
+ * re-indexes it); every other paper's do not.
+ */
+export function isHeadingClassifiedDifferentlySinceV3(text: string): boolean {
+  return previousIsNoiseHeading(text) !== isNoiseHeading(text);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { getAgentRuntime } from "../../../agent";
 import type { AgentToolPresentation } from "../../../agent/types";
+import { resolveClaudeCodeToolPresentation } from "./claudeCodeToolPresentation";
 
 /**
  * How the trace asks a tool how to present itself.
@@ -9,9 +10,10 @@ import type { AgentToolPresentation } from "../../../agent/types";
  * means. Everything a row says comes either from the event that produced it
  * or from the hooks this returns, which the tool that ran wrote itself.
  *
- * A name the registry does not know -- a tool since renamed or removed, or a
- * connected client's own built-in -- resolves to nothing, and every caller
- * falls back to what the event alone says.
+ * A name the registry does not know falls back to Claude Code's own
+ * built-ins (Bash, Read, Edit...), which describe themselves from their
+ * arguments. Anything else -- a tool since renamed or removed -- resolves to
+ * nothing, and every caller falls back to what the event alone says.
  */
 export type AgentToolPresentationResolver = (
   name: string,
@@ -23,11 +25,13 @@ export function resolveAgentToolPresentation(
   name: string,
 ): AgentToolPresentation | undefined {
   if (resolverOverride) return resolverOverride(name);
+  let registered: AgentToolPresentation | undefined;
   try {
-    return getAgentRuntime().getToolDefinition(name)?.presentation;
+    registered = getAgentRuntime().getToolDefinition(name)?.presentation;
   } catch {
-    return undefined;
+    registered = undefined;
   }
+  return registered || resolveClaudeCodeToolPresentation(name);
 }
 
 /**

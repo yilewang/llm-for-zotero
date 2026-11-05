@@ -42,17 +42,21 @@
  */
 import {
   TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
+  latestTaskPaperDecision,
+  type TaskPaperDecision,
   type TaskPaperLedgerEntry,
   type TaskPaperReadEvent,
   type TaskPaperState,
   type TaskPaperTextSource,
 } from "../../../agent/context/taskPaperLedger";
+import { requestedPartNames } from "../../../agent/digests/readScope";
 import type { TaskPaperScopeEntry } from "../../../agent/context/taskPaperScopeListing";
 import type { RunEndState } from "../../../agent/execution/types";
 import { t } from "../../../utils/i18n";
 import {
   canOpenTaskPaperPassage,
   taskPaperPassagePageLabel,
+  taskPaperReadReach,
   type TaskPaperPassageTarget,
 } from "./passageSource";
 import { renderChecklistSteps, resolveTaskPaperLabel } from "./planSteps";
@@ -78,6 +82,7 @@ import {
   findNamedInAnswer,
   formatTaskCitedLabel,
   formatTaskGroupCounts,
+  formatTaskPaperReach,
   hasTaskCitedContent,
   isTaskPaperHeadingOnlyRead,
   patchTaskCard,
@@ -256,11 +261,15 @@ export function paperStateForTurn(
   return entry.turns[turn]?.state || "listed";
 }
 
-/** Whether question `turn` read, cited or found the paper. */
+/** Whether question `turn` read, cited, found or decided on the paper. */
 function touchedInTurn(entry: TaskPaperLedgerEntry, turn: number): boolean {
   const own = entry.turns[turn];
   return Boolean(
-    own && (own.state !== "listed" || own.reads.length || own.citations.length),
+    own &&
+    (own.state !== "listed" ||
+      own.reads.length ||
+      own.citations.length ||
+      own.decision),
   );
 }
 
@@ -358,7 +367,21 @@ export type TaskProgressCounts = {
   cited: number;
   /** Papers whose text a read took in (`isInDepthRead`), of `matched`. */
   inDepth: number;
+  /** Papers the agent decided to exclude in the latest question. */
+  excluded: number;
 };
+
+/**
+ * The paper's decision in question `turn`, or its latest one over every
+ * question before any (`turn` 0): the scope its read state uses.
+ */
+function decisionForTurn(
+  entry: TaskPaperLedgerEntry | undefined,
+  turn: number,
+): TaskPaperDecision | undefined {
+  if (!entry) return undefined;
+  return turn ? entry.turns[turn]?.decision : latestTaskPaperDecision(entry);
+}
 
 const STATE_RANK: Record<TaskPaperState, number> = {
   listed: 0,
@@ -393,8 +416,11 @@ export function countTaskProgress(
     read: 0,
     cited: 0,
     inDepth: 0,
+    excluded: 0,
   };
   for (const row of rows) {
+    if (decisionForTurn(row.entry, turn)?.value === "exclude")
+      counts.excluded += 1;
     const rank = STATE_RANK[row.turnState];
     if (rank >= STATE_RANK.matched) counts.matched += 1;
     if (rank >= STATE_RANK.skimmed) counts.read += 1;
@@ -500,7 +526,12 @@ export function answeredWithoutReads(
     return false;
   // A scholarly paper or web page it opened or found is a new read.
   if (countTaskOutside(record, record.turnIndex).total) return false;
-  return counts.total > 0 && counts.matched === 0;
+  if (counts.total <= 0 || counts.matched !== 0) return false;
+  // A question that only screened papers did work: it decided them.
+  const turn = summaryTurn(record);
+  return !buildTaskProgressPaperRows(record).some((row) =>
+    decisionForTurn(row.entry, turn),
+  );
 }
 
 /**
@@ -509,7 +540,8 @@ export function answeredWithoutReads(
  * so this names the scope the part froze: "2/4 steps · 212 papers in scope".
  * With nothing attached, the papers read in depth and those only found are
  * counted apart, a zero left out: "2/2 steps · 3 read in depth · 15 found ·
- * 2 cited".
+ * 2 cited". The papers the agent decided to exclude close the line, a zero
+ * left out: "... · 290 excluded".
  */
 export function formatTaskProgressCount(
   record: TaskProgressRecord | null,
@@ -536,6 +568,8 @@ export function formatTaskProgressCount(
     const parts = state === "answering" ? [t("Answering…")] : [];
     if (stepsText) parts.push(stepsText);
     parts.push(papersInScopeText(scopePapers));
+    if (counts.excluded)
+      parts.push(format("{count} excluded", { count: counts.excluded }));
     return parts.join(" · ");
   }
   // The question's scholarly papers and web pages count with its papers.
@@ -581,11 +615,14 @@ export function formatTaskProgressCount(
   }
   const cited = counts.cited + outside.cited;
   if (cited) parts.push(format("{count} cited", { count: cited }));
+  if (counts.excluded)
+    parts.push(format("{count} excluded", { count: counts.excluded }));
   return parts.join(" · ");
 }
 
 const GRANULARITY_LABELS: Record<TaskPaperReadEvent["granularity"], string> = {
   metadata: "Title/abstract match",
+  notes: "Notes",
   abstract: "Abstract",
   outline: "Outline",
   section: "Passage",
@@ -612,6 +649,9 @@ export function formatTaskPaperPassageLabel(
   read: TaskPaperReadEvent,
   paperTitle = "",
 ): string {
+  // A paper_read of the paper as a whole says how far it went, not "Full text".
+  const reach = taskPaperReadReach(read);
+  if (reach) return formatTaskPaperReach(reach);
   const kind = t(GRANULARITY_LABELS[read.granularity] || "Passage");
   const label = (read.label || "").trim();
   const title = looseText(paperTitle);
@@ -625,6 +665,85 @@ export function formatTaskPaperPassageLabel(
   if (!label || repeatsTitle || read.granularity === "full") return kind;
   if (read.granularity === "outline") return `${kind}: ${label}`;
   return label;
+}
+
+/** A scoped digest's depth, for one saved before its scope was named. */
+const SCOPED_DIGEST_DEPTH_LABELS: Partial<
+  Record<TaskPaperReadEvent["granularity"], string>
+> = {
+  abstract: "Abstract",
+  section: "Sections",
+  page: "Pages",
+  notes: "Notes",
+  metadata: "Record",
+  full: "Full",
+};
+
+/** The covered names that are depths, shown in the plugin's language. */
+const SCOPE_TOKEN_LABELS: Record<string, string> = {
+  abstract: "Abstract",
+  notes: "Notes",
+  metadata: "Record",
+};
+
+/** A pages read's covered name: "pages 3–5" (`selectPageScope`). */
+const PAGES_TOKEN = /^(pages?) (\S+)$/i;
+
+/** The labels of a scope, split at ", " outside parentheses. */
+function splitScopeLabel(scopeLabel: string): string[] {
+  const tokens: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let at = 0; at < scopeLabel.length; at += 1) {
+    const char = scopeLabel[at];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth = Math.max(0, depth - 1);
+    else if (char === "," && depth === 0 && scopeLabel[at + 1] === " ") {
+      tokens.push(scopeLabel.slice(start, at));
+      start = at + 2;
+    }
+  }
+  tokens.push(scopeLabel.slice(start));
+  return tokens;
+}
+
+/**
+ * A scope as the user reads it: the parts they asked for ("Abstract,
+ * Results"), not the headings, pages or places found for them. A scope saved
+ * with "(for: name)" suffixes is reduced to those names here; a pages read's
+ * range stays, in the plugin's language.
+ */
+function translateScopeLabel(scopeLabel: string): string {
+  return requestedPartNames(splitScopeLabel(scopeLabel))
+    .map((token) => {
+      const label = SCOPE_TOKEN_LABELS[token.trim().toLowerCase()];
+      if (label) return t(label);
+      const pages = PAGES_TOKEN.exec(token.trim());
+      return pages
+        ? t(
+            pages[1].toLowerCase() === "page"
+              ? "page {range}"
+              : "pages {range}",
+          ).replace("{range}", pages[2])
+        : token;
+    })
+    .join(", ");
+}
+
+/**
+ * How much of the paper a digest read, beside its heading: "Full" when the
+ * reader read every character of its text, "Part" when it read less of
+ * it, and what it read for a read of named parts ("Abstract, Results"),
+ * never "Full". Empty for a failed digest and a read saved before it was
+ * recorded.
+ */
+export function formatTaskPaperDigestDepth(read: TaskPaperReadEvent): string {
+  if (read.granularity !== "digest" || !read.snippet) return "";
+  if (read.scopeLabel) return translateScopeLabel(read.scopeLabel);
+  if (read.depth) return t(SCOPED_DIGEST_DEPTH_LABELS[read.depth] || "Part");
+  if (read.complete === true) return t("Full");
+  if (read.complete === false) return t("Part");
+  return "";
 }
 
 /**
@@ -655,6 +774,15 @@ export function cleanTaskPaperSnippet(snippet: string): string {
 }
 
 /**
+ * A host digest of the paper: a `digest` read of the digest worker, not a
+ * full paper_read that stopped short (which records its reach the same
+ * way).
+ */
+function isHostDigestRead(read: TaskPaperReadEvent): boolean {
+  return read.granularity === "digest" && read.toolName !== "paper_read";
+}
+
+/**
  * The reads worth listing: what was actually read, once each, and not a
  * bare heading. A host digest shows in its part's own block
  * (`paperDigests`), not as a read.
@@ -662,8 +790,7 @@ export function cleanTaskPaperSnippet(snippet: string): string {
 function visibleReads(reads: readonly TaskPaperReadEvent[]) {
   const seen = new Set<string>();
   return reads.filter((read) => {
-    if (read.granularity === "metadata" || read.granularity === "digest")
-      return false;
+    if (read.granularity === "metadata" || isHostDigestRead(read)) return false;
     if (isTaskPaperHeadingOnlyRead(read)) return false;
     const key = `${read.granularity}\u0000${read.label || ""}\u0000${read.snippet || ""}`;
     if (seen.has(key)) return false;
@@ -701,7 +828,7 @@ function paperDigest(
   let failed: TaskPaperReadEvent | null = null;
   let done: TaskPaperReadEvent | null = null;
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     if (read.snippet) done = read;
     else failed = read;
   }
@@ -719,7 +846,7 @@ function paperDigests(
 ): TaskPaperReadEvent[] {
   const parts = new Map<string, TaskPaperReadEvent[]>();
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     const part = parts.get(read.partId || "");
     if (part) part.push(read);
     else parts.set(read.partId || "", [read]);
@@ -1064,6 +1191,26 @@ export function formatTaskQuestionCounts(
     );
   }
   return parts.join(" · ");
+}
+
+/**
+ * The decision words: the row's tag and the opened row's line. Both name only
+ * a paper left out or put off; an included paper shows neither.
+ */
+const DECISION_WORDS: Record<
+  Exclude<TaskPaperDecision["value"], "include">,
+  string
+> = {
+  exclude: "Excluded",
+  defer: "Deferred",
+};
+
+/** The row's decision tag: "Excluded" or "Deferred", none for "include". */
+function decisionTag(row: TaskProgressPaperRow): string {
+  const value = latestTaskPaperDecision(row.entry)?.value;
+  return value === "exclude" || value === "defer"
+    ? t(DECISION_WORDS[value])
+    : "";
 }
 
 const STATE_LABELS: Record<TaskPaperState, string> = {
@@ -2147,7 +2294,8 @@ export function mountTaskProgressView(params: {
     cleanedSnippet: read.snippet ? cleanTaskPaperSnippet(read.snippet) : "",
     label: read.label || "",
     ...(read.pageIndex !== undefined ? { pageIndex: read.pageIndex } : {}),
-    granularity: read.granularity,
+    // A read of the paper as a whole, even a partial one, opens the paper.
+    granularity: taskPaperReadReach(read) ? "full" : read.granularity,
   });
 
   /**
@@ -2339,11 +2487,14 @@ export function mountTaskProgressView(params: {
         : "";
       // A row saved before parts were recorded keeps its "Summary" heading,
       // and its failure says why under it, as it did.
-      const heading = !label
+      const title = !label
         ? t("Summary")
         : digest.snippet
           ? label
           : digestFailedText(digest);
+      // "Full" only when the reader read every character of the text.
+      const depth = formatTaskPaperDigestDepth(digest);
+      const heading = depth ? `${title} · ${depth}` : title;
       block.append(el(doc, "div", "llm-task-paper-turn", heading));
       for (const line of [
         digestJudgmentText(
@@ -2457,6 +2608,21 @@ export function mountTaskProgressView(params: {
         ),
       );
     }
+    const decision = latestTaskPaperDecision(model.entry);
+    if (decision && decision.value !== "include") {
+      // The agent's claim, kept apart from the reads above.
+      const block = el(doc, "div", "llm-task-paper-read");
+      block.append(
+        el(doc, "div", "llm-task-paper-turn", t("Decision")),
+        el(
+          doc,
+          "div",
+          "llm-task-paper-how",
+          digestJudgmentText(DECISION_WORDS[decision.value], decision.reason),
+        ),
+      );
+      children.push(block);
+    }
     if (documentSections.length) {
       const citedIn = el(doc, "div", "llm-task-paper-cited");
       citedIn.append(
@@ -2484,7 +2650,11 @@ export function mountTaskProgressView(params: {
     const tail = formatTaskPaperTail(model);
     if (refs.tail.textContent !== tail) refs.tail.textContent = tail;
     const tag =
-      model.state === "cited" ? t("Cited") : model.named ? t("Named") : "";
+      model.state === "cited"
+        ? t("Cited")
+        : model.named
+          ? t("Named")
+          : decisionTag(model);
     if (refs.cite.hidden !== !tag) refs.cite.hidden = !tag;
     if (tag && refs.cite.textContent !== tag) refs.cite.textContent = tag;
     refs.cite.classList.toggle(

@@ -41,8 +41,9 @@ function fakeItem(id: number, stored: Record<string, string>): FakeItem {
 
 /**
  * The gateway surface the metadata write and its receipt use, resolving
- * targets the way ItemCapability.resolveMetadataItem does (named item, then
- * the paper context, then the active item) and reading fields back formatted.
+ * targets the way ItemCapability.resolveMetadataWriteTarget does (a named
+ * item exactly, else the paper context, then the active item) and reading
+ * fields back formatted.
  */
 function gatewayFor(
   items: FakeItem[],
@@ -58,14 +59,17 @@ function gatewayFor(
       getItem: get,
       resolveLibraryID: () => 1,
       resolveRegularItem: (item: FakeItem | null) => item,
-      resolveMetadataItem: (params: {
+      resolveMetadataWriteTarget: (params: {
         itemId?: number;
         paperContext?: { itemId?: number } | null;
         request?: { activeItemId?: number };
-      }) =>
-        get(params.itemId) ||
-        get(params.paperContext?.itemId) ||
-        get(params.request?.activeItemId),
+      }) => {
+        const target = params.itemId
+          ? get(params.itemId)
+          : get(params.paperContext?.itemId) ||
+            get(params.request?.activeItemId);
+        return target ? { item: target } : { refusal: "No item to update" };
+      },
       getEditableArticleMetadata: (item: FakeItem | null) =>
         item
           ? {

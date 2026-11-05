@@ -17,6 +17,9 @@ const TITLE =
 const FIRST =
   "Give a concise narrative overview of the paper in 1-2 short paragraphs, covering the research question, approach, main findings, and significance.";
 const SECOND = "Describe the methodology used in the paper.";
+/** A cited passage with inline math, as MinerU writes it. */
+const MATH_QUOTE =
+  "Tuning drifted by $1 \\% - 3 \\%$ per day across all recorded sessions.";
 
 describe("workflow: task progress in the main window", function () {
   this.timeout(120000);
@@ -148,6 +151,7 @@ describe("workflow: task progress in the main window", function () {
       pages: [
         `${TITLE}. Abstract. Population tuning drifts over days.`,
         "Results. Tuning stability correlates with pairwise redundancy.",
+        `Drift. ${MATH_QUOTE}`,
       ],
     });
     other = await api.createPaperWithPdfFixture({
@@ -205,6 +209,18 @@ describe("workflow: task progress in the main window", function () {
         itemId: fixture.parentItemId,
         contextItemId: fixture.pdfAttachmentId,
       })!;
+      const mathCite = buildQuoteCitation({
+        quoteText: MATH_QUOTE,
+        citationLabel: "(Kendrick et al., 2026)",
+        sourceMatchText: MATH_QUOTE,
+        sourceMatchKind: "exact",
+        sourceMatchSource: "context-text",
+        itemId: fixture.parentItemId,
+        contextItemId: fixture.pdfAttachmentId,
+      })!;
+      const firstAnswer =
+        `Kendrick et al. ask why drift varies [[quote:${titleCite.id}]].\n\n` +
+        `Drift is slow [[quote:${mathCite.id}]].`;
       const scope = {
         selectedCollectionContexts: [
           { collectionId: collection.id, name: collection.name, libraryID },
@@ -218,8 +234,8 @@ describe("workflow: task progress in the main window", function () {
           {
             runId: first,
             user: { text: FIRST, ...scope },
-            answer: `Kendrick et al. ask why drift varies [[quote:${titleCite.id}]].`,
-            quoteCitations: [titleCite],
+            answer: firstAnswer,
+            quoteCitations: [titleCite, mathCite],
             events: [
               {
                 type: "paper_ledger_update",
@@ -228,7 +244,7 @@ describe("workflow: task progress in the main window", function () {
               },
               {
                 type: "final",
-                text: `Kendrick et al. ask why drift varies [[quote:${titleCite.id}]].`,
+                text: firstAnswer,
               },
             ],
           },
@@ -350,6 +366,32 @@ describe("workflow: task progress in the main window", function () {
         ),
         "the chat's own paper is not a row of In your library",
       );
+      // A cited passage with math renders it, as the answer's quote card
+      // does: no TeX source shows as text outside the rendered formula.
+      const mathPassage = (
+        Array.from(
+          citedCard()!.querySelectorAll(
+            ".llm-task-cited-item .llm-task-paper-snippet",
+          ),
+        ) as HTMLElement[]
+      ).find((node) => (node.textContent || "").includes("per day across"));
+      assert.isOk(
+        mathPassage,
+        `the passage with math is listed: ${citedCard()!.textContent}`,
+      );
+      assert.isOk(
+        mathPassage!.querySelector(".katex .katex-html"),
+        "its math renders with KaTeX",
+      );
+      const proseText: string[] = [];
+      const walker = win.document.createTreeWalker(mathPassage!, 4);
+      for (let node = walker.nextNode(); node; node = walker.nextNode())
+        if (!(node.parentElement as HTMLElement | null)?.closest(".katex"))
+          proseText.push(node.textContent || "");
+      report.mathPassageProse = proseText.join("");
+      assert.notInclude(proseText.join(""), "\\%", "no literal TeX shows");
+      assert.notInclude(proseText.join(""), "$", "no math delimiter shows");
+      assert.include(proseText.join(""), "Tuning drifted by");
       // The paper's reads fade in over 300ms (later lines 180ms after).
       await Zotero.Promise.delay(600);
       await capture(panel.panelId, "tp-main-window-cited.png");

@@ -97,7 +97,7 @@ describe("mapSdkMessageToProviderEvents", () => {
     ]);
   });
 
-  it("maps stream_event tool_use block start to tool_call", () => {
+  it("leaves a streamed tool_use block start to the assistant message", () => {
     const events = mapSdkMessageToProviderEvents({
       type: "stream_event",
       session_id: "sess-5",
@@ -120,15 +120,6 @@ describe("mapSdkMessageToProviderEvents", () => {
           providerType: "stream_event",
           sessionId: "sess-5",
         }),
-      },
-      {
-        type: "tool_call",
-        payload: {
-          id: "tool_abc",
-          name: "Bash",
-          input: {},
-          sessionId: "sess-5",
-        },
       },
     ]);
   });

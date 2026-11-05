@@ -48,6 +48,15 @@ export type Llm4ZoteroAgentEvent =
       model?: string;
     }
   | { type: "context_compacted"; automatic?: boolean }
+  | {
+      // The run's step list, whole: the plugin shows it in Task progress.
+      type: "codex_progress";
+      itemId: string;
+      text: string;
+      status?: "running" | "completed";
+      steps: Array<{ content: string; status?: string }>;
+      runtime?: "codex" | "claude";
+    }
   | { type: "fallback"; reason: string }
   | { type: "final"; text: string };
 

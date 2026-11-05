@@ -1459,7 +1459,8 @@ describe("workflow: task progress", function () {
       assert.isOk(block, "a Summary block");
       assert.equal(
         block.querySelector(".llm-task-paper-turn")!.textContent,
-        "Summary",
+        // The reader read every character of this paper's text.
+        "Summary · Full",
       );
       assert.equal(
         block.querySelector(".llm-task-paper-snippet")!.textContent,
@@ -1730,9 +1731,10 @@ describe("workflow: task progress", function () {
         ).map((line) => line.textContent),
         textOf(block, ".llm-task-paper-snippet"),
       ]);
+      // Each reader read every character of the paper's text.
       assert.deepEqual(blocks, [
-        [BRIEF, [], briefText],
-        [DRIFT, [`Directly relevant — ${relevanceWhy}`], driftText],
+        [`${BRIEF} · Full`, [], briefText],
+        [`${DRIFT} · Full`, [`Directly relevant — ${relevanceWhy}`], driftText],
       ]);
       assert.notInclude(details.textContent!, "Summary");
       view.row.click();

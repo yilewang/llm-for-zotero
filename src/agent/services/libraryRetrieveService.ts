@@ -57,6 +57,12 @@ import {
   buildQuoteCitation,
   mergeQuoteCitations,
 } from "../../services/quotes/quoteCitations";
+import {
+  flattenText,
+  hasHeadingLine,
+  windowBodyRanges,
+  type TextRange,
+} from "../../services/quotes/sentenceSplit";
 import type {
   EditableArticleCreator,
   EditableArticleMetadataSnapshot,
@@ -252,6 +258,12 @@ export type LibraryRetrieveSnippet = {
   charEnd?: number;
   quoteCitationId?: string;
   snippet: string;
+  /**
+   * The text the snippet's window was cut from, so its quote can skip
+   * headings and cut formulas. Internal: removed before the result leaves
+   * the service.
+   */
+  quoteSource?: string;
   surroundingText?: string;
   score: number;
   whyMatched: string;
@@ -358,16 +370,66 @@ function buildSnippetQuoteCitation(
     return undefined;
   }
   const citationLabel = snippet.sourceLabel || snippet.citationLabel;
-  return buildQuoteCitation({
-    quoteText: snippet.snippet,
-    citationLabel,
-    sourceMatchKind: snippet.matchMethod === "exact" ? "exact" : "trusted",
-    sourceMatchSource: "context-text",
-    sourceSectionLabel: snippet.sectionLabel,
-    sourceChunkKind: snippet.chunkKind,
-    contextItemId,
-    itemId,
-  });
+  for (const quoteText of snippetQuoteTexts(
+    snippet.snippet,
+    snippet.quoteSource ?? snippet.snippet,
+  )) {
+    const citation = buildQuoteCitation({
+      quoteText,
+      citationLabel,
+      sourceMatchKind: snippet.matchMethod === "exact" ? "exact" : "trusted",
+      sourceMatchSource: "context-text",
+      sourceSectionLabel: snippet.sectionLabel,
+      sourceChunkKind: snippet.chunkKind,
+      contextItemId,
+      itemId,
+    });
+    if (citation) return citation;
+  }
+  return undefined;
+}
+
+const SNIPPET_ELLIPSIS = "...";
+
+/**
+ * The texts a snippet's quote may be cut from, in text order; each is a
+ * substring of the snippet. `source` is the text its window was cut from.
+ * The quote is the window's body text (the shared window rule: never a
+ * heading, never a cut formula); a window that keeps all of it quotes the
+ * snippet itself.
+ */
+function snippetQuoteTexts(snippet: string, source: string): string[] {
+  const flatSource = flattenText(source);
+  const window = locateSnippetWindow(snippet, flatSource);
+  if (!window) return hasHeadingLine(source) ? [] : [snippet];
+  return windowBodyRanges(source, window).map((range) =>
+    range.start === window.start && range.end === window.end
+      ? snippet
+      : flatSource.slice(range.start, range.end).trim(),
+  );
+}
+
+/** Where the snippet's text, without its "..." cut marks, sits in the
+ * flattened source. */
+function locateSnippetWindow(
+  snippet: string,
+  flatSource: string,
+): TextRange | undefined {
+  const flat = flattenText(snippet);
+  const cutHead = flat.startsWith(SNIPPET_ELLIPSIS);
+  const cutTail = flat.endsWith(SNIPPET_ELLIPSIS);
+  const bodies = [flat];
+  if (cutHead) bodies.push(flat.slice(SNIPPET_ELLIPSIS.length));
+  if (cutTail) bodies.push(flat.slice(0, -SNIPPET_ELLIPSIS.length));
+  if (cutHead && cutTail) {
+    bodies.push(flat.slice(SNIPPET_ELLIPSIS.length, -SNIPPET_ELLIPSIS.length));
+  }
+  for (const candidate of bodies) {
+    const body = candidate.trim();
+    const start = body ? flatSource.indexOf(body) : -1;
+    if (start >= 0) return { start, end: start + body.length };
+  }
+  return undefined;
 }
 
 function attachQuoteCitationsToSnippets(
@@ -380,8 +442,13 @@ function attachQuoteCitationsToSnippets(
   if (!options.includeQuoteAnchors) {
     return {
       snippets: snippets.map((snippet) => {
-        const { quoteCitationId: _quoteCitationId, ...rest } = snippet;
+        const {
+          quoteCitationId: _quoteCitationId,
+          quoteSource: _quoteSource,
+          ...rest
+        } = snippet;
         void _quoteCitationId;
+        void _quoteSource;
         return rest;
       }),
       quoteCitations: [],
@@ -390,10 +457,12 @@ function attachQuoteCitationsToSnippets(
   const quoteCitations: QuoteCitation[] = [];
   const pairedSnippets = snippets.map((snippet) => {
     const citation = buildSnippetQuoteCitation(snippet);
-    if (!citation) return snippet;
+    const { quoteSource: _quoteSource, ...rest } = snippet;
+    void _quoteSource;
+    if (!citation) return rest;
     quoteCitations.push(citation);
     return {
-      ...snippet,
+      ...rest,
       quoteCitationId: citation.id,
     };
   });
@@ -2905,6 +2974,7 @@ export class LibraryRetrieveService {
           hit.text,
           hit.matchedTerms.length ? hit.matchedTerms : params.fallbackTerms,
         ),
+        quoteSource: hit.text,
         surroundingText: truncateText(hit.text, 1200),
         score: Number(
           (params.record.score + hit.evidenceScore * 10).toFixed(3),
@@ -3445,6 +3515,7 @@ export class LibraryRetrieveService {
           ),
           chunkKind: candidate.chunkKind,
           snippet: truncateText(candidate.chunkText, 900),
+          quoteSource: candidate.chunkText,
           surroundingText: truncateText(candidate.chunkText, 1200),
           score: Number(
             (params.record.score + candidate.evidenceScore * 10).toFixed(3),
@@ -3538,6 +3609,7 @@ export class LibraryRetrieveService {
         charStart: match.start,
         charEnd: match.end,
         snippet: snippetTextAround(chunk, match.start, match.end),
+        quoteSource: chunk,
         surroundingText: truncateText(chunk, 1200),
         score: Number((params.record.score + match.score).toFixed(3)),
         whyMatched: match.reason,

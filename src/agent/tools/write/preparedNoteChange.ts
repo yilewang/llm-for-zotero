@@ -48,6 +48,23 @@ type PreparedNoteChange = {
 
 const pending = new Map<number, Promise<unknown>>();
 
+/**
+ * The note after an append: the new part joins the note's root, and the works
+ * its new chips cite are registered in that root.
+ */
+export function composeNoteAppend(
+  base: string,
+  next: string,
+  citationItems: readonly NoteCitationItem[] = [],
+): string {
+  return mergeNoteCitationItems(
+    appendNoteHtml(base, next),
+    citationItems.filter((item) =>
+      item.uris.some((uri) => next.includes(encodeURIComponent(uri))),
+    ),
+  );
+}
+
 /** Serialize the complete read/prepare/write/verify interval for this native note. */
 export async function executePreparedNoteChange(params: {
   context: AgentToolContext;
@@ -77,12 +94,7 @@ async function execute(
   const { note, context, mode, html } = params;
   const compose = (base: string, next: string) =>
     mode === "append"
-      ? mergeNoteCitationItems(
-          appendNoteHtml(base, next),
-          (params.citationItems || []).filter((item) =>
-            item.uris.some((uri) => next.includes(encodeURIComponent(uri))),
-          ),
-        )
+      ? composeNoteAppend(base, next, params.citationItems)
       : next;
   if (
     !note.id ||

@@ -8,6 +8,7 @@ import {
   type NoteCitationItem,
 } from "../../utils/noteCitations";
 import { collectNoteEmbeds, type NoteEmbed } from "../../utils/noteEmbeds";
+import { stripNoteHtml } from "../../utils/noteText";
 
 /** Find the Zotero item a `{{cite item=…}}` names: an item id or item key. */
 export type CitationItemLookup = (
@@ -111,4 +112,64 @@ export function expandNewCitationTokens(
   if (problems.length)
     throw new Error(`${problems.join(" ")} No content was changed.`);
   return { text: expanded, registry, citationItems };
+}
+
+/** The items and locators one chip cites, as a comparable string. */
+function citationSignature(
+  citation: {
+    citationItems?: Array<{ uris?: string[]; locator?: string }>;
+  } | null,
+): string {
+  return JSON.stringify(
+    (citation?.citationItems || []).map((item) => [
+      item.uris || [],
+      item.locator || "",
+    ]),
+  );
+}
+
+/** What each chip in the HTML cites: its item URIs and locators, in order. */
+export function citationSignatures(html: string): string[] {
+  const signatures: string[] = [];
+  for (const match of html.matchAll(
+    /\bdata-citation=(?:"([^"]*)"|'([^']*)')/g,
+  )) {
+    try {
+      signatures.push(
+        citationSignature(
+          JSON.parse(decodeURIComponent(match[1] ?? match[2] ?? "")),
+        ),
+      );
+    } catch {
+      signatures.push("");
+    }
+  }
+  return signatures;
+}
+
+/**
+ * What a note holds for a body that has `{{cite …}}` requests: the text it
+ * shows, with each request replaced by the text of the chip it becomes, and
+ * the items and locators those chips cite. A stored note holds the chips and
+ * not the requests, so it is compared with this. Two works can share a
+ * label, so the cited items are compared as well as the text. A request that
+ * cannot be expanded throws, as it does when the note is built.
+ */
+export function newCitationRequestsExpected(
+  text: string,
+  lookup: CitationItemLookup,
+): { text: string; citations: string[] } {
+  if (!hasNewCitationTokens(text)) return { text, citations: [] };
+  const expanded = expandNewCitationTokens(text, lookup);
+  const citations: string[] = [];
+  const shown = expanded.text.replace(
+    /\{\{citation:([0-9a-f]{6,8})\}\}/g,
+    (token, id) => {
+      const chip = expanded.registry.get(id);
+      if (!chip) return token;
+      citations.push(...citationSignatures(chip.html));
+      return stripNoteHtml(chip.html);
+    },
+  );
+  return { text: shown, citations };
 }

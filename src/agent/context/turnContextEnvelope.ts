@@ -448,7 +448,7 @@ export function renderTurnContextEnvelopeForModel(
  * contract's rule (SEARCH_ROUTING_CONTRACT), not this line's.
  */
 export const WHOLE_LIBRARY_SCOPE_RULE =
-  "Nothing is attached, so the turn's scope is the whole library and you choose its papers: when the request needs them, search with library_retrieve first and choose the ones that bear on the question from its results, without opening candidates with paper_read; to read the chosen papers in depth, declare a digest part with their targetIds, not in your first step, and the host reads them. Only a write part may use scope:true here; only when the user explicitly asks for every paper in the library, list their ids with library_search.";
+  "Nothing is attached, so the turn's scope is the whole library and you choose its papers: when the request needs them, search with library_retrieve first and choose the ones that bear on the question from its results, without opening candidates with paper_read unless the user named a paper and how to read it; to read the chosen papers in depth, declare a digest part with their targetIds, not in your first step, and the host reads them. Only a write part may use scope:true here; only when the user explicitly asks for every paper in the library, list their ids with library_search.";
 
 /**
  * "Paper scope: Drift — 212 papers, 180 with full text": how large the

@@ -1214,9 +1214,14 @@ const INHERITED_SECTION_KINDS = new Set<PdfChunkKind>([
   "conclusion",
 ]);
 
-/** Back matter ends the standard section before it: nothing after inherits. */
+/**
+ * Back matter ends the standard section before it: nothing after inherits.
+ * "Online content" (the whole heading, never "Online content moderation")
+ * is Nature's heading over the methods pointer that runs into the
+ * reference list.
+ */
 const BACK_MATTER_HEADING_PATTERN =
-  /^(?:references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
+  /^(?:online content(?=[:.\s-]*$)|references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
 
 function stripHeadingEnumerator(heading: string): string {
   return normalizeEvidenceText(heading)
@@ -1225,7 +1230,8 @@ function stripHeadingEnumerator(heading: string): string {
     .trim();
 }
 
-function isBackMatterHeading(heading: string): boolean {
+/** Whether a heading opens back matter (references, funding, ...). */
+export function isBackMatterHeading(heading: string): boolean {
   return BACK_MATTER_HEADING_PATTERN.test(stripHeadingEnumerator(heading));
 }
 
@@ -1258,7 +1264,7 @@ function matchBackMatterHeading(
  * structure; when the markdown does nest its headings, a heading no deeper
  * than the standard one is a sibling, not a subsection, and ends it too.
  */
-function enclosingStandardSections(
+export function enclosingStandardSections(
   sections: ManifestSection[],
 ): Array<string | undefined> {
   const nested = new Set(sections.map((section) => section.level)).size > 1;
@@ -2411,19 +2417,18 @@ export function selectStructuredCandidates(params: {
   queryTerms: string[];
   sections: ReadonlyArray<RetrievalSectionSummary>;
   sectionIds?: string[];
+  /** Chunks in scope besides those sections (text with no section ids). */
+  chunkIndexes?: number[];
   hasSignal: boolean;
 }): PaperContextCandidate[] {
   const topK = Math.max(1, Math.floor(params.topK));
   const requestedSectionIds = (params.sectionIds || []).filter(Boolean);
   let pool = params.ranked;
-  if (requestedSectionIds.length) {
-    const wanted = new Set(requestedSectionIds);
+  if (requestedSectionIds.length || params.chunkIndexes?.length) {
     // Same rule as the ranking stage: a requested scope that matches nothing
     // returns nothing rather than widening to the whole document.
-    pool = params.ranked.filter(
-      (candidate) =>
-        candidate.sectionIndex !== undefined &&
-        wanted.has(sectionIdForIndex(candidate.sectionIndex)),
+    pool = params.ranked.filter((candidate) =>
+      inRequestedScope(candidate, requestedSectionIds, params.chunkIndexes),
     );
   }
   if (!pool.length) return [];
@@ -2597,6 +2602,19 @@ function selectSectionDiverseFallback(
   return selected;
 }
 
+/** Whether a candidate is in a requested scope of sections or chunks. */
+function inRequestedScope(
+  candidate: Pick<PaperContextCandidate, "chunkIndex" | "sectionIndex">,
+  sectionIds: readonly string[] = [],
+  chunkIndexes: readonly number[] = [],
+): boolean {
+  return (
+    chunkIndexes.includes(candidate.chunkIndex) ||
+    (candidate.sectionIndex !== undefined &&
+      sectionIds.includes(sectionIdForIndex(candidate.sectionIndex)))
+  );
+}
+
 /** Sections of a document, derived from the chunk metadata. */
 function buildSectionSummaries(
   chunkMeta: PdfChunkMeta[],
@@ -2684,6 +2702,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
   compatibilityOptions?: {
     topK?: number;
@@ -2698,6 +2718,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
@@ -2708,7 +2730,8 @@ export async function buildPaperRetrievalCandidates(
     "precomputedQueryEmbedding" in (apiOverridesOrOptions || {}) ||
     "queryPlan" in (apiOverridesOrOptions || {}) ||
     "preferredChunkIndexes" in (apiOverridesOrOptions || {}) ||
-    "sectionIds" in (apiOverridesOrOptions || {})
+    "sectionIds" in (apiOverridesOrOptions || {}) ||
+    "chunkIndexes" in (apiOverridesOrOptions || {})
       ? apiOverridesOrOptions
       : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
@@ -2907,18 +2930,17 @@ export async function buildPaperRetrievalCandidates(
     (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
     (fusedRank.get(a) || 0) - (fusedRank.get(b) || 0);
   const allRanked = [...candidates].sort(byAdjustedRank);
-  const requestedSections = new Set(options?.sectionIds || []);
-  const restricted = requestedSections.size
-    ? allRanked.filter(
-        (candidate) =>
-          candidate.sectionIndex !== undefined &&
-          requestedSections.has(sectionIdForIndex(candidate.sectionIndex)),
-      )
-    : [];
+  const scoped = Boolean(
+    options?.sectionIds?.length || options?.chunkIndexes?.length,
+  );
   // Every later reservation and fallback must obey the same valid scope.
   // A requested scope that matches nothing returns nothing: falling back to
   // the whole document would deliver out-of-scope passages without a warning.
-  const ranked = requestedSections.size ? restricted : allRanked;
+  const ranked = scoped
+    ? allRanked.filter((candidate) =>
+        inRequestedScope(candidate, options?.sectionIds, options?.chunkIndexes),
+      )
+    : allRanked;
 
   // Stage 2 — structure.
   const selected = selectStructuredCandidates({
@@ -2927,6 +2949,7 @@ export async function buildPaperRetrievalCandidates(
     queryTerms: terms,
     sections: buildSectionSummaries(chunkMeta),
     sectionIds: options?.sectionIds,
+    chunkIndexes: options?.chunkIndexes,
     hasSignal: bm25Scores.some((score) => score > 0) || embedRank !== null,
   });
   const selectionOrder = new Map(

@@ -34,6 +34,8 @@ npm run test:behavior -- --select figures --model deepseek-flash
 `--model`, `--reasoning`, and `--timeout` are explicit overrides.
 The defaults are `deepseek-v4-flash`, `high`, and a six-hour overall deadline.
 Ordinary Agent turns have a twelve-minute cancellation deadline.
+The runner ends the run as BLOCKED if Zotero quits or stops writing its heartbeat for two minutes.
+It also ends the run as BLOCKED if Zotero does not start the suite within ten minutes.
 Do not edit/rebuild the plugin or launch another suite while a run is active.
 The development launcher watches source changes, and a reload would invalidate the running test.
 An already-started request is never silently replayed after a reload.
@@ -46,13 +48,15 @@ It does not test Claude Code, Codex or WebChat.
 
 ## What the catalog covers
 
-| Journey                                  | Main mode                       | Observable acceptance                                                                                                                                                      |
-| ---------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Paper conversation and research material | Auto                            | Six visible composer turns; one durable child note; a filed standalone note; targeted editing; Obsidian Markdown; real cropped figures where a suitable paper is available |
-| Library curation                         | YOLO, with an Auto merge canary | Exact tags; add versus move; collection union without paper loss; metadata; Related links; trash/restore; five real imports                                                |
-| Mode conformance                         | Safe / Auto / YOLO              | Read, note, metadata, file, explicit no-write and related-paper review behavior                                                                                            |
-| Recovery                                 | Safe / Auto                     | Cancellation without mutations; honest handling of a missing figure                                                                                                        |
-| Figure extraction                        | Auto / YOLO                     | Semantic skills before work; real bundled Python crops from the active PDF; native embedded images; crop-only note content; no confirmations or script detours             |
+| Journey                                  | Main mode                       | Observable acceptance                                                                                                                                                                                                                                                    |
+| ---------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Paper conversation and research material | Auto                            | Six visible composer turns; one durable child note; a filed standalone note; targeted editing; Obsidian Markdown; real cropped figures where a suitable paper is available                                                                                               |
+| Library curation                         | YOLO, with an Auto merge canary | Exact tags; add versus move; collection union without paper loss; metadata; Related links; trash/restore; five real imports                                                                                                                                              |
+| Mode conformance                         | Safe / Auto / YOLO              | Read, note, metadata, file, explicit no-write and related-paper review behavior                                                                                                                                                                                          |
+| Recovery                                 | Safe / Auto                     | Cancellation without mutations; honest handling of a missing figure                                                                                                                                                                                                      |
+| Figure extraction                        | Auto / YOLO                     | Semantic skills before work; real bundled Python crops from the active PDF; native embedded images; crop-only note content; no confirmations or script detours                                                                                                           |
+| Skills                                   | Auto                            | A literature review of a six-paper collection, scoped as a collection and not as selected papers, declares a digest part, finishes the digests, and submits one cited document                                                                                           |
+| Literature review with outside papers    | Auto / Safe                     | The paper selection card is answered with Cite without importing (paperId citations, outside papers in the document) or Import and cite (Zotero items only); a later turn imports a document's papers into version 2 after Safe approval; a plain question stays in chat |
 
 `catalog.ts` is the authoritative list of stable check IDs, dependencies, acceptance statements and evidence types.
 `--list` shows the complete selected list and expected mode.

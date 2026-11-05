@@ -1,6 +1,5 @@
 import { assert } from "chai";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../src/agent/model/agentPersona";
-import { LITERATURE_SEARCH_GUIDANCE } from "../src/agent/tools/read/literatureSearch";
 import { buildInstructionInventory } from "../src/agent/model/instructionInventory";
 import {
   AGENT_ACTION_CONTRACT,
@@ -12,6 +11,7 @@ import {
 } from "../src/shared/instructionContracts";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/utils/llmDefaults";
 import { estimateTextTokens } from "../src/utils/modelInputCap";
+import { skillBodyForRuntime } from "../src/agent/skills/runtimeSections";
 import {
   BUILTIN_SKILL_FILES,
   getAllSkills,
@@ -42,19 +42,8 @@ describe("instruction harness inventory", function () {
       assert.include(prompt, "labeling a guess does not supply evidence");
     }
   });
-  it("keeps discovery selection distinct from explicit imports in literature_search guidance", function () {
+  it("keeps literature_review and import routing out of the persona", function () {
     const persona = AGENT_PERSONA_INSTRUCTIONS.join("\n");
-    const guidance = LITERATURE_SEARCH_GUIDANCE.instruction;
-    assert.include(guidance, "then call literature_review");
-    assert.include(guidance, "discovery never imports silently");
-    assert.include(
-      guidance,
-      "Do not substitute a discovery card for an explicit import",
-    );
-    assert.include(
-      guidance,
-      "call library_import for exactly the requested number",
-    );
     assert.notInclude(persona, "literature_review");
     assert.notInclude(persona, "only for imports, note saving");
     assert.include(persona, SEARCH_ROUTING_CONTRACT);
@@ -115,9 +104,32 @@ describe("instruction harness inventory", function () {
       (raw) => parseSkill(raw).instruction,
     );
     const previousBodyTokens = 10355;
+    // Raised on 2026-10-31 by the zotero-script skill (2,064 tokens), which
+    // took over zotero_script's never-selected tool guidance and adds the
+    // copy-or-move recipe: the bodies then total 6,519 tokens, 1,342 over
+    // the earlier cap, so the cap grows by those 1,342 tokens.
+    // Raised on 2026-10-31 by 235 tokens (to 1,577) for the recipe's review
+    // fixes: a move trashes only when nothing was skipped, lost annotations
+    // are listed, and a failed or unrun item is reported (bodies total 6,754).
+    // Raised on 2026-10-31 by 27 tokens (to 1,604): a rerun first trashes the
+    // partial copy, so the target gets no duplicate (bodies total 6,781).
+    const zoteroScriptSkillTokens = 1604;
+    // Raised on 2026-10-31 by 63 tokens when W2's read scope merged in: the
+    // literature-review skill v18 coverage rule ("Full" only when the reader
+    // read every character) brings the bodies to 6,844 tokens.
+    const literatureReviewV18Tokens = 63;
+    // Raised on 2026-10-31 by 142 tokens: user instructions come first, so
+    // literature-review v18, compare-papers v13 and reorganize-library v3
+    // read only what the user asked to read, use only the papers the user
+    // named, answer in chat when asked, and search outside only when the user
+    // did not limit the review to the library (bodies total 6,986).
+    const userInstructionFirstTokens = 142;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),
-      previousBodyTokens / 2,
+      previousBodyTokens / 2 +
+        zoteroScriptSkillTokens +
+        literatureReviewV18Tokens +
+        userInstructionFirstTokens,
     );
   });
 
@@ -153,8 +165,9 @@ describe("instruction harness inventory", function () {
         );
         const text = messages.map((message) => message.content).join("\n");
         for (const skill of skills) {
+          // The plugin's own Agent reads the body without runtime sections.
           assert.equal(
-            text.includes(skill.instruction),
+            text.includes(skillBodyForRuntime(skill.instruction)),
             ids.includes(skill.id),
             skill.id,
           );

@@ -1,6 +1,7 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import { settleExternalTurn } from "./execution/externalTurnSettlement";
+import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -108,6 +109,7 @@ import {
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import { loadLatestDocumentForRun } from "./documents/store";
+import { rememberOutsidePapers } from "./context/outsidePaperRecords";
 import { resolveAgentPromptBudgetLimits } from "./context/promptBudget";
 import {
   renderAgentPastChatMessageText,
@@ -1506,6 +1508,8 @@ function buildClaudeZoteroMcpScope(
     clarificationHistory: request.clarificationHistory,
     documentReadObservations: request.documentReadObservations,
     documentArtifactObservations: request.documentArtifactObservations,
+    outsidePaperRecords: request.outsidePaperRecords,
+    outsidePaperSelection: request.outsidePaperSelection,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
@@ -1524,7 +1528,13 @@ function buildClaudeZoteroMcpScope(
     libraryName: resolveLibraryName(libraryID),
     title: selectedPaper?.title,
     userText: request.userText,
-    exhaustiveReadBackend: "unavailable",
+    // The chat's own model and reasoning, as the Codex scope carries them:
+    // paper_read's full mode reads with this model through the bridge.
+    model: resolveClaudeBridgeModelForMetadata(request.model),
+    reasoning: request.reasoning,
+    exhaustiveReadBackend: "claude_bridge",
+    // The reader model the user picked for Claude Code, by entry ID or name.
+    readerSelection: request.readerSelection,
     attachedConversationScope: request.attachedConversationScope,
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
@@ -1542,15 +1552,47 @@ export function buildClaudeZoteroMcpScopeForTests(
 }
 
 /**
+ * Copies what a successful Zotero MCP call Claude made attested back into the
+ * run's request: its read observations and the outside papers it returned.
+ */
+export function copyMcpCallEvidenceToRequest(
+  request: AgentRuntimeRequest,
+  event: ZoteroMcpToolActivityEvent,
+): void {
+  if (event.phase !== "completed" || !event.ok) return;
+  if (event.readObservations?.length) {
+    const merged = new Map(
+      (request.documentReadObservations || []).map((entry) => [
+        entry.observationId,
+        entry,
+      ]),
+    );
+    for (const observation of event.readObservations) {
+      merged.set(observation.observationId, observation);
+    }
+    request.documentReadObservations = [...merged.values()];
+  }
+  rememberOutsidePapers(request, event.outsidePapers || []);
+}
+
+/**
  * The trace row for a Zotero MCP call Claude made.
  *
  * The receipts travel with the row: they are what the verification chip reads,
  * so a write the connected client ran over MCP would otherwise reach the trace
  * with no verdict at all — indistinguishable from one nobody verified.
+ *
+ * A completed call's passage citations travel with it too, so the panel adds
+ * them to the answer's citations as the Codex panel does, whatever text the
+ * client relays as the tool's result.
  */
 export function buildClaudeMcpToolActivityEvent(
   event: ZoteroMcpToolActivityEvent,
 ): AgentEvent {
+  const quoteCitations =
+    event.phase === "completed" && event.ok && event.quoteCitations?.length
+      ? event.quoteCitations
+      : undefined;
   return {
     type: "codex_tool_activity",
     itemId: `mcp:${event.requestId || `${event.toolName}:${event.timestamp}`}`,
@@ -1565,6 +1607,7 @@ export function buildClaudeMcpToolActivityEvent(
     actionReceipts: event.actionReceipts,
     workCategory: event.workCategory,
     mutability: event.mutability,
+    ...(quoteCitations ? { quoteCitations } : {}),
   };
 }
 
@@ -3362,10 +3405,13 @@ export function createExternalBackendBridgeRuntime(options: {
             );
           },
         );
+        const stageTurnEvent = createClaudeTurnStageTracker();
         const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
-          for (const redactedEvent of eventStreamRedactor.process(event)) {
-            await appendPersistedEvent(redactedEvent);
-            await notifyIfLive(redactedEvent);
+          for (const staged of stageTurnEvent(event)) {
+            for (const redactedEvent of eventStreamRedactor.process(staged)) {
+              await appendPersistedEvent(redactedEvent);
+              await notifyIfLive(redactedEvent);
+            }
           }
         };
         const pendingMcpActivity: Promise<void>[] = [];
@@ -3438,23 +3484,7 @@ export function createExternalBackendBridgeRuntime(options: {
                   return;
                 if (event.phase === "completed")
                   hostReceipts.push(...(event.actionReceipts || []));
-                if (
-                  event.phase === "completed" &&
-                  event.ok &&
-                  event.readObservations?.length
-                ) {
-                  const merged = new Map(
-                    (params.request.documentReadObservations || []).map(
-                      (entry) => [entry.observationId, entry],
-                    ),
-                  );
-                  for (const observation of event.readObservations) {
-                    merged.set(observation.observationId, observation);
-                  }
-                  params.request.documentReadObservations = [
-                    ...merged.values(),
-                  ];
-                }
+                copyMcpCallEvidenceToRequest(params.request, event);
                 const pending = (async () => {
                   await emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
                   // What the read read from each paper, persisted right after

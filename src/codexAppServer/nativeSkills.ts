@@ -20,6 +20,7 @@ import {
   loadSkill,
 } from "../agent/skills";
 import { getSkillCustomizationNotice } from "../agent/skills/managedBlock";
+import { skillBodyForRuntime } from "../agent/skills/runtimeSections";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "../agent/context/rawPdfTransportPolicy";
 
 export type CodexNativeSkillScope = {
@@ -182,7 +183,7 @@ export function buildCodexNativeSkillInstructionBlock(
       [
         `Skill: ${skill.id}`,
         getSkillCustomizationNotice(skill.instruction) || "",
-        skill.instruction.trim(),
+        skillBodyForRuntime(skill.instruction, "codex").trim(),
       ]
         .filter(Boolean)
         .join("\n"),

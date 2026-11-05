@@ -22,9 +22,11 @@ import {
   type AgentTurnMemory,
 } from "../store/conversationMemory";
 import { buildSkillInventory, getAllSkills } from "../skills";
+import { toolGuidanceItems } from "../tools/guidance";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
+import { skillBodyForRuntime } from "../skills/runtimeSections";
 import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import {
   SIDE_CHAT_READ_ONLY_INSTRUCTION,
@@ -60,6 +62,7 @@ import {
   getSelectedPassagePaper,
 } from "../context/turnPaperScope";
 import { renderLongJobResume } from "../loop/longJob";
+import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
 import {
   hasAgentContentInputs,
@@ -543,11 +546,11 @@ function collectMatchingToolGuidance(
     ...guidanceContext
   } = request;
   for (const tool of tools) {
-    const guidance = tool.guidance;
-    if (!guidance) continue;
-    if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
-    const instruction = guidance.instruction.trim();
-    if (instruction) instructions.add(instruction);
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
+      const instruction = guidance.instruction.trim();
+      if (instruction) instructions.add(instruction);
+    }
   }
   return [...instructions];
 }
@@ -571,7 +574,8 @@ function formatSkillGuidanceBlock(
     `Description: ${skill.description || "No description provided."}`,
     `Activation: ${activationSource}`,
     "Instructions:",
-    skill.instruction.trim(),
+    // The plugin's own Agent reads no runtime section (runtimeSections.ts).
+    skillBodyForRuntime(skill.instruction).trim(),
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -586,7 +590,7 @@ function collectSkillGuidanceInstructions(
   for (const skill of getAllSkills()) {
     if (!activeSkillIds.has(skill.id)) continue;
     if (isSkillWithheldForEphemeralRequest(skill.id, request)) continue;
-    const instruction = skill.instruction.trim();
+    const instruction = skillBodyForRuntime(skill.instruction).trim();
     if (!instruction) continue;
     blocks.push(
       formatSkillGuidanceBlock(
@@ -692,7 +696,12 @@ export async function renderAgentPromptEnvelope(
           "## Direct agent workflow",
           "Understand the current request yourself and choose the lightest useful sequence of reads, searches, questions, document finalization, and concrete actions.",
           "Use actual tools for requested effects. Inspect results and continue until the requested outcome is complete, reviewed, or has a concrete error.",
-          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.",
+          // The runtime's per-step limit (runtime.ts runs the first calls).
+          `One step runs at most ${
+            resolveAgentLimits(request.metadata?.hostRecordedBatchJob === true)
+              .maxToolCallsPerRound
+          } tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`,
+          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update before reading, together with that step's first tool calls; with nothing attached, declare them after library_retrieve has chosen the papers. The host marks each part done from the tools' results; never mark one done yourself.",
           "When the work needs one result for each of several papers (a summary, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part whose description states that per-paper result; the host runs it on each paper and returns the results.",
           "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.",
           "Natural-language restrictions in the current request and clarifications remain binding. Tool calls do not grant their own permission; the host validates each concrete proposal, applies permission policy, journals effects, and verifies native state.",

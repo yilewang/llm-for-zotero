@@ -11,6 +11,7 @@ import { getRecentRetrievalTimings } from "../../services/retrieval/retrievalTim
 import type { ZoteroGateway } from "../../agent/services/zoteroGateway";
 import { createAgentModelAdapter } from "../../agent/model/factory";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
+import { latestTaskPaperDecision } from "../../agent/context/taskPaperLedger";
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
@@ -56,6 +57,10 @@ import {
   exerciseLongJobReplay,
 } from "./longJobReplay";
 import { exerciseAgentStopRules } from "./stopRulesReplay";
+import {
+  callScopedMcpToolForConversation,
+  exercisePaperDecisionsTurn,
+} from "./paperDecisionsReplay";
 import { mountPanelShell } from "./panelMount";
 import { getAgentRuntime } from "../../agent";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
@@ -9594,24 +9599,31 @@ export function installWorkflowTestHarness(targetAddon: {
           checklistSource: taskQuestionChecklist(record, question)?.source,
         })),
         paperRows: Object.fromEntries(
-          Object.values(record.ledger.papers).map((entry) => [
-            entry.key,
-            {
-              state: entry.state,
-              title: entry.title,
-              reads: Object.values(entry.turns).flatMap((turn) =>
-                turn.reads.map((read) => ({
-                  turnIndex: read.turnIndex,
-                  toolName: read.toolName,
-                  granularity: read.granularity,
-                  method: read.method,
-                  label: read.label,
-                  snippet: read.snippet,
-                  whyMatched: read.whyMatched,
-                })),
-              ),
-            },
-          ]),
+          Object.values(record.ledger.papers).map((entry) => {
+            const decision = latestTaskPaperDecision(entry);
+            return [
+              entry.key,
+              {
+                state: entry.state,
+                title: entry.title,
+                reads: Object.values(entry.turns).flatMap((turn) =>
+                  turn.reads.map((read) => ({
+                    turnIndex: read.turnIndex,
+                    toolName: read.toolName,
+                    granularity: read.granularity,
+                    method: read.method,
+                    label: read.label,
+                    snippet: read.snippet,
+                    whyMatched: read.whyMatched,
+                  })),
+                ),
+                ...(decision ? { decision: { ...decision } } : {}),
+                decisions: Object.values(entry.turns).flatMap((turn) =>
+                  turn.decision ? [{ ...turn.decision }] : [],
+                ),
+              },
+            ];
+          }),
         ),
       };
     },
@@ -9633,6 +9645,16 @@ export function installWorkflowTestHarness(targetAddon: {
         inputTokenCap: input.inputTokenCap,
         stopAfterNotes: input.stopAfterNotes,
       }),
+    exercisePaperDecisionsTurn: async ({ panelId, ...input }) =>
+      exercisePaperDecisionsTurn(
+        await resolveTaskProgressPanel({ panelId }),
+        input,
+      ),
+    callScopedMcpToolForConversation: async ({ panelId, ...input }) =>
+      callScopedMcpToolForConversation(
+        await resolveTaskProgressPanel({ panelId }),
+        input,
+      ),
     exerciseAgentStopRules: (input) =>
       exerciseAgentStopRules(getPanel(input.panelId), {
         scenario: input.scenario,

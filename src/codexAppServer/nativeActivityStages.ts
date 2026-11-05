@@ -248,6 +248,102 @@ function readCodexNativeWebSearchArgs(item: CodexNativeActivityItem): {
     : null;
 }
 
+/**
+ * A command as the person would have typed it, for a row.
+ *
+ * Codex runs each command inside a login shell (`/bin/zsh -lc '…'`); the
+ * wrapper says nothing about what ran, so the row shows what is inside it.
+ * The full command, wrapper included, stays in the row's code block.
+ */
+function readableCodexNativeCommand(command: string): string {
+  const clean = sanitizeText(command).trim();
+  const wrapped = clean.match(
+    /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/,
+  );
+  const inner = (wrapped ? wrapped[2] : clean).replace(/\s+/g, " ").trim();
+  return inner.length > 80 ? `${inner.slice(0, 79).trimEnd()}…` : inner;
+}
+
+function readableCodexNativeHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * What a file-change item changed, as far as one row can say it.
+ *
+ * The protocol reports changes either as a list of `{ path, kind }` or as a
+ * map from path to `{ type }`; both say which files and whether each was
+ * added, deleted or updated.
+ */
+function readCodexNativeFileChanges(changes: unknown): Array<{
+  path: string;
+  type: string;
+}> {
+  const read = (path: unknown, kind: unknown) => {
+    const record =
+      kind && typeof kind === "object" && !Array.isArray(kind)
+        ? (kind as Record<string, unknown>)
+        : null;
+    return {
+      path: typeof path === "string" ? sanitizeText(path).trim() : "",
+      type: sanitizeText(
+        String(record?.type ?? (typeof kind === "string" ? kind : "")),
+      )
+        .trim()
+        .toLowerCase(),
+    };
+  };
+  if (Array.isArray(changes)) {
+    return changes
+      .map((change) =>
+        change && typeof change === "object"
+          ? read(
+              (change as Record<string, unknown>).path,
+              (change as Record<string, unknown>).kind,
+            )
+          : read(undefined, undefined),
+      )
+      .filter((change) => change.path);
+  }
+  if (changes && typeof changes === "object") {
+    return Object.entries(changes as Record<string, unknown>)
+      .map(([path, kind]) => read(path, kind))
+      .filter((change) => change.path);
+  }
+  return [];
+}
+
+function describeCodexNativeFileChanges(
+  changes: unknown,
+  phase: CodexNativeActivityPhase,
+): string | null {
+  const files = readCodexNativeFileChanges(changes);
+  if (!files.length) return null;
+  const done = phase === "completed";
+  if (files.length > 1) {
+    return `${done ? "Edited" : "Editing"} ${files.length} files`;
+  }
+  const [file] = files;
+  const name = compactCodexNativePathBasename(file.path);
+  const verb =
+    file.type === "add"
+      ? done
+        ? "Created"
+        : "Creating"
+      : file.type === "delete"
+        ? done
+          ? "Deleted"
+          : "Deleting"
+        : done
+          ? "Edited"
+          : "Editing";
+  return `${verb} ${name}`;
+}
+
 function resolveCodexNativeStructuredOperation(
   item: CodexNativeActivityItem,
   phase: CodexNativeActivityPhase,
@@ -256,21 +352,34 @@ function resolveCodexNativeStructuredOperation(
   if (isCodexNativeItemType(item, ["websearch", "websearchcall"])) {
     const webSearch = readCodexNativeWebSearchArgs(item);
     const actionType = normalizeCodexNativeItemTypeKey(webSearch?.actionType);
-    const verb =
-      actionType === "openpage"
-        ? phase === "completed"
-          ? "Opened web page"
-          : "Opening web page"
-        : actionType === "findinpage"
-          ? phase === "completed"
-            ? "Searched within page"
-            : "Searching within page"
-          : phase === "completed"
-            ? "Searched web"
-            : "Searching web";
     const query =
       sanitizeText(item.query || "").trim() ||
       getCodexNativeRawString(item, ["query"], 1000);
+    const done = phase === "completed";
+    const searched = webSearch?.args?.query || query;
+    const opened = webSearch?.args?.url;
+    // The row says what was searched or which site was opened, as the
+    // Codex app does; the arguments stay in the row's details.
+    const verb =
+      actionType === "openpage"
+        ? opened
+          ? `${done ? "Opened" : "Opening"} ${readableCodexNativeHost(opened)}`
+          : done
+            ? "Opened web page"
+            : "Opening web page"
+        : actionType === "findinpage"
+          ? done
+            ? "Searched within page"
+            : "Searching within page"
+          : searched
+            ? `${done ? "Searched" : "Searching"} the web for "${
+                searched.length > 60
+                  ? `${searched.slice(0, 59).trimEnd()}…`
+                  : searched
+              }"`
+            : done
+              ? "Searched web"
+              : "Searching web";
     return {
       kind: "web_search",
       toolName: "codex_web_search",
@@ -340,12 +449,15 @@ function resolveCodexNativeStructuredOperation(
         ...(cwd ? { cwd } : {}),
         ...(typeof exitCode === "number" ? { status: `exit ${exitCode}` } : {}),
       },
-      text:
-        phase === "completed"
-          ? failed || (typeof exitCode === "number" && exitCode !== 0)
-            ? "Command failed"
-            : "Ran command"
-          : "Running command",
+      text: (() => {
+        // The row names the command, as the Codex app does.
+        const shown = command ? readableCodexNativeCommand(command) : "";
+        if (phase !== "completed")
+          return shown ? `Running ${shown}` : "Running command";
+        if (failed || (typeof exitCode === "number" && exitCode !== 0))
+          return shown ? `Command failed: ${shown}` : "Command failed";
+        return shown ? `Ran ${shown}` : "Ran command";
+      })(),
       codeBlock: command || undefined,
     };
   }
@@ -360,11 +472,10 @@ function resolveCodexNativeStructuredOperation(
       toolLabel: "File changes",
       args: item.changes,
       text:
-        phase === "completed"
-          ? failed
-            ? "File changes failed"
-            : "Updated files"
-          : "Updating files",
+        phase === "completed" && failed
+          ? "File changes failed"
+          : describeCodexNativeFileChanges(item.changes, phase) ||
+            (phase === "completed" ? "Updated files" : "Updating files"),
     };
   }
 

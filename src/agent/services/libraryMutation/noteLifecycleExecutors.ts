@@ -1,11 +1,18 @@
 import { executeNoteCreation } from "../noteCreation";
+import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
+import { verifyNativeNoteHtml } from "../../../services/notePersistence";
+import { canonicalNoteHtml } from "../../../utils/noteHtml";
+import { sha256Text } from "../../store/journalRecoveryBlobStore";
+import { executePreparedNoteChange } from "../../tools/write/preparedNoteChange";
+import type { AgentToolContext } from "../../types";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import type { NativeNoteWriteEvidence } from "./contracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 import type { AgentBatchBinding } from "../../types";
 import { loadPlanDocument } from "../../documents/store";
-import { documentNoteHtml } from "../../documents/actions";
+import { documentNoteParts } from "../../documents/actions";
+import { mergeNoteCitationItems } from "../../../utils/noteCitations";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
 import { advanceBatchJob } from "../../store/batchJobStore";
 import {
@@ -32,8 +39,22 @@ async function noteHtmlForBatchItem(params: {
   content: string;
   libraryID: number;
 }): Promise<string> {
+  const parts = await noteBodyPartsForBatchItem(params);
+  return mergeNoteCitationItems(parts.html, parts.citationItems);
+}
+
+/**
+ * The same body with its cited works kept apart from a root, for an append.
+ * The works are registered in the target note's own root, so the note keeps
+ * one root; see `documentNoteParts`.
+ */
+async function noteBodyPartsForBatchItem(params: {
+  bound?: AgentBatchBinding["items"][number];
+  content: string;
+  libraryID: number;
+}): Promise<ReturnType<typeof documentNoteParts>> {
   if (!params.bound)
-    return documentNoteHtml(
+    return documentNoteParts(
       renderRawNoteHtml(params.content),
       params.libraryID,
     );
@@ -48,7 +69,57 @@ async function noteHtmlForBatchItem(params: {
       `The finalized note material ${params.bound.material.documentId} is no longer stored`,
     );
   assertMaterialRefMatches(document, params.bound.material);
-  return documentNoteHtml(document.visibleHtml, params.libraryID);
+  return documentNoteParts(document.visibleHtml, params.libraryID);
+}
+
+/**
+ * Append one batch item's body to its note, once.
+ *
+ * The note's checksum is read first. The after-checksum frozen before the
+ * batch means an earlier attempt's append landed and only its checkpoint
+ * was lost, so nothing is written again. Any value other than the
+ * before-checksum means someone changed the note since the user approved
+ * the batch, and the item fails without a write.
+ */
+async function appendBatchNote(params: {
+  note: Zotero.Item;
+  bound?: AgentBatchBinding["items"][number];
+  content: string;
+  context: AgentToolContext;
+}) {
+  const { note, bound, context } = params;
+  if (!note.isNote?.() || note.deleted)
+    throw new Error(`Item ${note.id} is not a live note to append to`);
+  const body = await noteBodyPartsForBatchItem({
+    bound,
+    content: params.content,
+    libraryID: note.libraryID,
+  });
+  const current = await verifyNativeNoteHtml(note, note.getNote());
+  const checksum = await sha256Text(canonicalNoteHtml(current.html));
+  if (bound?.append) {
+    if (checksum === bound.append.afterChecksum)
+      return { alreadyApplied: true as const };
+    if (checksum !== bound.append.beforeChecksum)
+      throw new MutationNoEffectError(
+        `Note ${note.id} changed after the batch was approved; nothing was appended to it`,
+      );
+  }
+  const execution = await executePreparedNoteChange({
+    context,
+    note,
+    mode: "append",
+    html: body.html,
+    expectedOriginalHtml: current.html,
+    // The cited works are registered in the target note's root; a root in the
+    // appended body would be a second one inside the note.
+    citationItems: body.citationItems,
+  });
+  return {
+    alreadyApplied: false as const,
+    verification: execution.content.noteVerification,
+    journalStep: execution.journalStep,
+  };
 }
 
 /**
@@ -90,7 +161,7 @@ export const noteLifecycleExecutors = {
       noteId?: number;
       actionId?: string;
       title: string;
-      status: "created" | "already_saved" | "error";
+      status: "created" | "appended" | "already_saved" | "error";
       reason?: string;
     }> = [];
     // The read-back each creation already forced, kept for the receipt owner.
@@ -202,6 +273,53 @@ export const noteLifecycleExecutors = {
         });
         continue;
       }
+      if (operation.mode === "append") {
+        try {
+          const appended = await appendBatchNote({
+            note: target,
+            bound,
+            content: entry.content,
+            context,
+          });
+          rows.push({
+            targetItemId: entry.targetItemId,
+            itemKey: bound?.itemKey,
+            noteId: target.id,
+            title,
+            status: appended.alreadyApplied ? "already_saved" : "appended",
+          });
+          if (!appended.alreadyApplied)
+            noteWrites.push({
+              noteId: target.id,
+              mode: "append",
+              verification: appended.verification,
+            });
+          // A landed append whose row still reads pending is saved now.
+          await recordProgress({
+            itemKey: bound?.itemKey,
+            position,
+            journalStep: appended.alreadyApplied
+              ? undefined
+              : appended.journalStep,
+            noteId: target.id,
+          });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          rows.push({
+            targetItemId: entry.targetItemId,
+            itemKey: bound?.itemKey,
+            title,
+            status: "error",
+            reason,
+          });
+          await recordProgress({
+            itemKey: bound?.itemKey,
+            position,
+            error: reason,
+          });
+        }
+        continue;
+      }
       try {
         const execution = await executeNoteCreation({
           context,
@@ -275,6 +393,12 @@ export const noteLifecycleExecutors = {
         operationId: operation.id,
         result: {
           createdCount: rows.filter((row) => row.status === "created").length,
+          ...(operation.mode === "append"
+            ? {
+                appendedCount: rows.filter((row) => row.status === "appended")
+                  .length,
+              }
+            : {}),
           alreadySavedCount: rows.filter(
             (row) => row.status === "already_saved",
           ).length,
@@ -477,6 +601,11 @@ export const noteLifecycleExecutors = {
     };
   },
   merge_items: async (operation, context, zoteroGateway) => {
+    // Re-checked at the group's own turn: in a batch of groups an earlier
+    // merge, or the user, may have trashed or erased one of these items since
+    // the card. Nothing has been written, so the refusal is proof of no effect.
+    const refusal = zoteroGateway.mergeRefusal([operation]);
+    if (refusal) throw new MutationNoEffectError(refusal);
     const result = await zoteroGateway.mergeItems({
       masterItemId: operation.masterItemId,
       otherItemIds: operation.otherItemIds,

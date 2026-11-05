@@ -224,9 +224,11 @@ import {
   type TornSurface,
 } from "./conversationSelection";
 import {
+  getReaderSelectionForSurface,
   getSelectedModelEntryForSurface,
   surfaceChoices,
 } from "./surfaceChoices";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -6706,6 +6708,11 @@ export async function retryLatestAssistantResponse(
     return;
   }
 
+  // A retry streams a new answer into this panel's latest turn; follow it
+  // like a send does.
+  if (ui.chatBox) {
+    setFollowBottomChatScrollSnapshot(conversationKey, ui.chatBox);
+  }
   refreshChatSafely();
   // Local usage ledger for this retry. A retry's tokens are real and are
   // recorded, but the question was already counted when it was first asked.
@@ -8395,6 +8402,18 @@ async function buildAgentRuntimeRequest(
             | "max")
         : undefined,
     advanced: params.effectiveRequestConfig.advanced,
+    // The reader model picked for this runtime in the composer's model menu.
+    readerSelection:
+      getReaderSelectionForSurface(
+        readerRuntimeKeyForSystem(
+          params.effectiveRequestConfig.authMode === "codex_app_server"
+            ? "codex"
+            : params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
+              ? "claude_code"
+              : "upstream",
+        ),
+        params.surface || resolveSurfaceForMountedItem(params.item),
+      ) || undefined,
     history: params.history,
     item: params.item,
     systemPrompt: getStringPref("systemPrompt") || undefined,
@@ -8730,6 +8749,12 @@ async function retryLatestAgentResponse(
   if (!retryIsActive()) return true;
   await initAgentSubsystem();
   if (!retryIsActive()) return true;
+  // A retry streams a new answer into this panel's latest turn; follow it
+  // like a send does.
+  const retryChatBox = getPanelRequestUI(body).chatBox;
+  if (agentRetryConversationKey && retryChatBox) {
+    setFollowBottomChatScrollSnapshot(agentRetryConversationKey, retryChatBox);
+  }
   await retryAgentTurn(
     body,
     item,
@@ -9101,6 +9126,12 @@ export async function sendQuestion(
   };
   if (!reuseAgentFallbackPlaceholder) {
     provisionalHistory.push(optimisticUserMessage, optimisticAssistantMessage);
+    // A send moves this panel to the new turn; a panel left in manual mode
+    // would otherwise draw it below the fold. Other surfaces keep their own
+    // position, and the reader can still scroll away while the answer streams.
+    if (ui.chatBox) {
+      setFollowBottomChatScrollSnapshot(provisionalConversationKey, ui.chatBox);
+    }
   }
   const optimisticHelpers = createPanelUpdateHelpers(
     body,

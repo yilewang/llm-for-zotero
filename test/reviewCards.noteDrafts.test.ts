@@ -25,6 +25,14 @@ const baseContext: AgentToolContext = {
   modelName: "gpt-5.4",
 };
 
+/** The write target a metadata card resolves: the named id, else item 55. */
+const targetGateway = {
+  resolveMetadataWriteTarget: (params: { itemId?: number }) => ({
+    item: { id: params.itemId || 55 },
+  }),
+  getEditableArticleMetadata: () => null,
+} as never;
+
 describe("reviewCards note drafts", function () {
   it("adds a diff preview for metadata note drafts", function () {
     const result: AgentToolResult = {
@@ -45,7 +53,12 @@ describe("reviewCards note drafts", function () {
       },
     };
 
-    const action = createSearchLiteratureReviewAction(result, baseContext, {});
+    const action = createSearchLiteratureReviewAction(
+      result,
+      baseContext,
+      {},
+      targetGateway,
+    );
     assert.exists(action);
     assert.deepEqual(
       action?.fields.map((field) => field.type),
@@ -78,7 +91,12 @@ describe("reviewCards note drafts", function () {
       },
     };
 
-    const action = createSearchLiteratureReviewAction(result, baseContext, {});
+    const action = createSearchLiteratureReviewAction(
+      result,
+      baseContext,
+      {},
+      targetGateway,
+    );
     assert.exists(action);
     assert.deepEqual(
       action?.fields.map((field) => field.type),
@@ -121,6 +139,7 @@ describe("reviewCards note drafts", function () {
       result,
       resolution,
       baseContext,
+      targetGateway,
     );
 
     assert.equal(next.kind, "invoke_tool");
@@ -187,6 +206,7 @@ describe("reviewCards note drafts", function () {
         },
       },
       baseContext,
+      targetGateway,
     );
 
     assert.equal(next.kind, "invoke_tool");

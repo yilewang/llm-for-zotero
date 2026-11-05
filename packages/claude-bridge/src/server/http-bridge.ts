@@ -5,6 +5,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { Llm4ZoteroAgentBackendAdapter } from "../bridge/llm4zotero-agent-backend-adapter.js";
+import { StructuredCompletionError } from "../runtime.js";
 import type {
   Llm4ZoteroAgentEvent,
   Llm4ZoteroRunActionRequest,
@@ -457,6 +458,17 @@ export async function startHttpBridgeServer(
             signal: controller.signal,
           });
           sendJson(res, 200, result);
+        } catch (error) {
+          // A provider rate limit keeps its status so the caller can back off;
+          // every other failure stays a generic 500.
+          if (
+            error instanceof StructuredCompletionError &&
+            error.status === 429
+          ) {
+            sendJson(res, 429, { error: error.message });
+            return;
+          }
+          throw error;
         } finally {
           res.off("close", cancel);
         }

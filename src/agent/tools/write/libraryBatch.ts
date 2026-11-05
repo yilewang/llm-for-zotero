@@ -297,7 +297,7 @@ export function createLibraryBatchTool(deps: {
               runId: context.runId || prepared.jobId,
               conversationKey: context.request.conversationKey,
               toolName: context.journalToolName || "library_batch",
-              description: `${prepared.resumed ? "Resume" : "Run"} ${prepared.job} batch job`,
+              description: `${prepared.resumed ? "Resume" : "Run"} the ${quoteJobName(prepared.job)} batch job`,
               effect: "write",
               reversibility: "partial",
               recovery:
@@ -561,6 +561,11 @@ async function prepareBatchRun(params: {
     totalCount: record.totalCount,
     resumed: true,
   };
+}
+
+/** A job's registry name in words: organize_unfiled -> "organize unfiled". */
+function quoteJobName(job: string): string {
+  return `"${job.replace(/[_-]+/gu, " ").trim()}"`;
 }
 
 function availableJobNames(deps: { actionRegistry: ActionRegistry }): string {

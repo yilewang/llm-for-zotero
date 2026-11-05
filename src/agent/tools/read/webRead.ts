@@ -24,6 +24,7 @@ import {
   webPageOutline,
 } from "../../../webAccess/webPageStore";
 import { fail, ok, validateObject } from "../shared";
+import { skillGuidance } from "../guidance";
 import {
   createConfiguredWebAccessProvider,
   isWebAccessToolAvailable,
@@ -329,6 +330,15 @@ function pageNote(
   return undefined;
 }
 
+/**
+ * The import skill's page step. MCP hides web_read, so the skill body says
+ * only "open the page" and the tool name lives here (#541).
+ */
+export const IMPORT_TO_LIBRARY_PAGE_GUIDANCE = skillGuidance(
+  "import-to-library",
+  "Import references: never pass a page URL to `library_import`: open the page with `web_read` if needed, take its DOI or arXiv ID, and import that identifier.",
+);
+
 export function createWebReadTool(
   providerFactory: WebAccessProviderFactory = createConfiguredWebAccessProvider,
 ): AgentToolDefinition<WebReadInput, WebReadToolResult> {
@@ -468,6 +478,7 @@ export function createWebReadTool(
       localAgentOnly: true,
     },
     isAvailable: isWebAccessToolAvailable,
+    guidance: [IMPORT_TO_LIBRARY_PAGE_GUIDANCE],
     presentation: {
       label: "Read Web Pages",
       traceIcon: "web",

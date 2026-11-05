@@ -43,6 +43,7 @@
  */
 
 import { libraryIndexService } from "../../services/libraryIndexService";
+import type { LibrarySortKey, LibrarySortOrder } from "./librarySortKeys";
 import { resolvePaperScope } from "../../services/libraryIndex/paperScope";
 import type { NoteImageImportInput } from "../../services/notes/noteImages";
 import {
@@ -63,6 +64,8 @@ import type {
   EditableArticleMetadataField,
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
+  ItemTypeChangePlan,
+  ItemTypeRecord,
 } from "./libraryMutation/valueTypes";
 export type {
   BatchTagAssignment,
@@ -116,7 +119,12 @@ import {
   type DuplicateGroup,
   type RelatedPaperResult,
 } from "./zotero/itemCapability";
-import { SettingsCapability } from "./zotero/settingsCapability";
+import {
+  SettingsCapability,
+  type OutsideCslItem,
+  type StructuredBibliographyEntry,
+  type StructuredCitationItem,
+} from "./zotero/settingsCapability";
 import { TagCapability, type BatchTagItemResult } from "./zotero/tagCapability";
 
 /**
@@ -146,6 +154,11 @@ export type {
   SaveAnswerToNoteResult,
 } from "./zotero/noteCapability";
 export type { BatchTagItemResult } from "./zotero/tagCapability";
+export type {
+  OutsideCslItem,
+  StructuredBibliographyEntry,
+  StructuredCitationItem,
+} from "./zotero/settingsCapability";
 export type {
   DuplicateGroup,
   RelatedPaperResult,
@@ -428,6 +441,16 @@ export class ZoteroGateway {
     return this.itemCapability.resolveMetadataItem(params);
   }
 
+  /** See `ItemCapability.resolveMetadataWriteTarget`. */
+  resolveMetadataWriteTarget(params: {
+    request?: AgentRuntimeRequest;
+    item?: Zotero.Item | null;
+    itemId?: number;
+    paperContext?: PaperContextRef | null;
+  }): { item: Zotero.Item } | { refusal: string } {
+    return this.itemCapability.resolveMetadataWriteTarget(params);
+  }
+
   getActiveContextItem(
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null {
@@ -498,6 +521,14 @@ export class ZoteroGateway {
     item: Zotero.Item | null | undefined,
   ): EditableArticleMetadataSnapshot | null {
     return this.itemCapability.getEditableArticleMetadata(item);
+  }
+
+  /** See `ItemCapability.metadataPatchRefusal`. */
+  metadataPatchRefusal(
+    item: Zotero.Item,
+    patch: EditableArticleMetadataPatch,
+  ): string | null {
+    return this.itemCapability.metadataPatchRefusal(item, patch);
   }
 
   /** See `ItemCapability.isEditableArticleMetadataFieldSupported`. */
@@ -650,6 +681,7 @@ export class ZoteroGateway {
     joinMode?: "all" | "any";
     resolveToParents?: boolean;
     includeTrashed?: boolean;
+    filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
   }): Promise<{
@@ -730,14 +762,21 @@ export class ZoteroGateway {
     return this.itemCapability.relateItems(params);
   }
 
+  /** See `ItemCapability.getRelatedItemLinks`. */
+  getRelatedItemLinks(
+    itemId: number,
+  ): ReturnType<ItemCapability["getRelatedItemLinks"]> {
+    return this.itemCapability.getRelatedItemLinks(itemId);
+  }
+
   /** See `ItemCapability.listItemsByFilters`. */
   async listItemsByFilters(params: {
     libraryID: number;
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.listItemsByFilters(params);
   }
@@ -747,6 +786,7 @@ export class ZoteroGateway {
     libraryID: number;
     collectionId?: number;
     limit?: number;
+    offset?: number;
   }): Promise<{ notes: LibraryItemTarget[]; totalCount: number }> {
     return this.noteCapability.listStandaloneNotes(params);
   }
@@ -776,21 +816,43 @@ export class ZoteroGateway {
     filters?: AgentLibraryFilters;
     allowedItemIds?: number[];
     limit?: number;
+    offset?: number;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.searchAllLibraryItems(params);
   }
 
-  /** See `NoteCapability.searchAllNotes`. */
+  /**
+   * See `NoteCapability.searchAllNotes`. Returns the page as a plain array, as
+   * this public method always has; `searchAllNotesPage` also reports the true
+   * total.
+   */
   async searchAllNotes(params: {
     libraryID: number;
     collectionId?: number;
     query: string;
     limit?: number;
+    offset?: number;
   }): Promise<
     Array<
       LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
     >
   > {
+    return (await this.noteCapability.searchAllNotes(params)).notes;
+  }
+
+  /** See `NoteCapability.searchAllNotes`: the page and every match's count. */
+  async searchAllNotesPage(params: {
+    libraryID: number;
+    collectionId?: number;
+    query: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{
+    notes: Array<
+      LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }
+    >;
+    totalCount: number;
+  }> {
     return this.noteCapability.searchAllNotes(params);
   }
 
@@ -803,12 +865,32 @@ export class ZoteroGateway {
     return this.attachmentCapability.indexPdfAttachment(params);
   }
 
-  /** See `TagCapability.listLibraryTags`. */
+  /**
+   * See `TagCapability.listLibraryTags`. Returns the page as a plain array, as
+   * this public method always has; `listLibraryTagsPage` also reports the true
+   * total.
+   */
   async listLibraryTags(params: {
     libraryID: number;
     query?: string;
     limit?: number;
+    offset?: number;
   }): Promise<{ name: string; type: number }[]> {
+    return (await this.tagCapability.listLibraryTags(params)).tags;
+  }
+
+  /** See `TagCapability.listLibraryTags`: the page and every match's count. */
+  async listLibraryTagsPage(params: {
+    libraryID: number;
+    query?: string;
+    limit?: number;
+    offset?: number;
+    withCounts?: boolean;
+    collectionId?: number;
+  }): Promise<{
+    tags: { name: string; type: number; itemCount?: number }[];
+    totalCount: number;
+  }> {
     return this.tagCapability.listLibraryTags(params);
   }
 
@@ -1089,8 +1171,9 @@ export class ZoteroGateway {
   formatStructuredCitations(params: {
     clusters: Array<{
       citationId: string;
-      items: Array<{ itemId: number; pageIndex?: number }>;
+      items: StructuredCitationItem[];
     }>;
+    outsideItems?: readonly OutsideCslItem[];
     styleId?: string;
     locale?: string;
   }): {
@@ -1098,11 +1181,7 @@ export class ZoteroGateway {
     styleTitle: string;
     locale: string;
     clusters: Array<{ citationId: string; text: string; html: string }>;
-    bibliographyEntries: Array<{
-      itemId: number;
-      text: string;
-      html: string;
-    }>;
+    bibliographyEntries: StructuredBibliographyEntry[];
   } {
     return this.settingsCapability.formatStructuredCitations(params);
   }
@@ -1160,11 +1239,41 @@ export class ZoteroGateway {
   async detectDuplicatesInLibrary(params: {
     libraryID: number;
     limit?: number;
+    offset?: number;
   }): Promise<{
     totalGroups: number;
     groups: DuplicateGroup[];
   }> {
     return this.itemCapability.detectDuplicatesInLibrary(params);
+  }
+
+  /** See `ItemCapability.readItemTypeRecord`. */
+  readItemTypeRecord(item: Zotero.Item): ItemTypeRecord {
+    return this.itemCapability.readItemTypeRecord(item);
+  }
+
+  /** See `ItemCapability.planItemTypeChange`. */
+  planItemTypeChange(
+    item: Zotero.Item | null | undefined,
+    itemType: string,
+  ): ItemTypeChangePlan | { refusal: string } {
+    return this.itemCapability.planItemTypeChange(item, itemType);
+  }
+
+  /** See `ItemCapability.changeItemType`. */
+  async changeItemType(params: {
+    item: Zotero.Item;
+    itemType: string;
+  }): Promise<void> {
+    return this.itemCapability.changeItemType(params);
+  }
+
+  /** See `ItemCapability.restoreItemTypeRecord`. */
+  async restoreItemTypeRecord(params: {
+    item: Zotero.Item;
+    record: ItemTypeRecord;
+  }): Promise<void> {
+    return this.itemCapability.restoreItemTypeRecord(params);
   }
 
   /** See `ItemCapability.updateArticleMetadata`. */
@@ -1205,6 +1314,13 @@ export class ZoteroGateway {
     savedSearchIds: number[];
   }): Promise<{ restoredCount: number; savedSearchIds: number[] }> {
     return this.collectionCapability.restoreSavedSearches(params);
+  }
+
+  /** See `ItemCapability.mergeRefusal`. */
+  mergeRefusal(
+    groups: ReadonlyArray<{ masterItemId: number; otherItemIds: number[] }>,
+  ): string | null {
+    return this.itemCapability.mergeRefusal(groups);
   }
 
   /** See `ItemCapability.mergeItems`. */
@@ -1268,6 +1384,38 @@ export class ZoteroGateway {
   }> {
     return this.attachmentCapability.relinkAttachment(params);
   }
+  /** See `AttachmentCapability.attachFile`. */
+  async attachFile(params: {
+    parentItemId: number;
+    filePath: string;
+    link?: boolean;
+  }): ReturnType<AttachmentCapability["attachFile"]> {
+    return this.attachmentCapability.attachFile(params);
+  }
+
+  /** See `AttachmentCapability.attachUrl`. */
+  async attachUrl(params: {
+    parentItemId: number;
+    libraryID: number;
+    url: string;
+  }): ReturnType<AttachmentCapability["attachUrl"]> {
+    return this.attachmentCapability.attachUrl(params);
+  }
+
+  /** See `AttachmentCapability.findAvailablePdf`. */
+  async findAvailablePdf(
+    item: Zotero.Item,
+  ): ReturnType<AttachmentCapability["findAvailablePdf"]> {
+    return this.attachmentCapability.findAvailablePdf(item);
+  }
+
+  /** See `AttachmentCapability.updateAnnotation`. */
+  async updateAnnotation(
+    params: Parameters<AttachmentCapability["updateAnnotation"]>[0],
+  ): ReturnType<AttachmentCapability["updateAnnotation"]> {
+    return this.attachmentCapability.updateAnnotation(params);
+  }
+
   // ── Embed image in note ──────────────────────────────────────────
 
   /**

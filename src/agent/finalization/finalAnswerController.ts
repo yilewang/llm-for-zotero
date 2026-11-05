@@ -2,6 +2,7 @@ import type {
   AgentActionReceipt,
   AgentRuntimeRequest,
   AgentToolEffect,
+  ExecutionCheckpointTask,
 } from "../types";
 import {
   assessWebAttribution,
@@ -50,7 +51,20 @@ const DISCOVERY_CARD_STEPS =
  * The correction for prose after a first batch's paper-finding search: the
  * model, which read the user's request, chooses the card or its answer.
  */
-const DISCOVERY_CHOICE = `Your answer was not shown: this turn ran a paper-finding search (workflow:'review'), which leads to the selection card. If the user asked for papers themselves (find, recommend, suggest or list papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it), show them on the card: ${DISCOVERY_CARD_STEPS} Otherwise, do not call literature_review: give your answer again as the final answer; the paper-finding search then closes without a card.`;
+const DISCOVERY_CHOICE = `Your answer was not shown: this turn ran a paper-finding search (workflow:'review'), which leads to the selection card. If the user asked for papers themselves (find, recommend or suggest papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it) and not for a list in chat, show them on the card: ${DISCOVERY_CARD_STEPS} Otherwise, do not call literature_review: give your answer again as the final answer; the paper-finding search then closes without a card.`;
+
+/**
+ * How an open artifact part is delivered, for the outcome correction: a
+ * document, or a saved note when the user asked for one. Empty for other
+ * parts. One wording for every artifact part, so a description that only
+ * mentions notes ("from my notes") never picks the wrong tool.
+ */
+const ARTIFACT_DELIVERY =
+  " (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it)";
+
+function deliveryOf(task: ExecutionCheckpointTask): string {
+  return task.effect === "artifact" ? ARTIFACT_DELIVERY : "";
+}
 
 /**
  * Applies every runtime-owned final-answer gate through one typed decision.
@@ -183,9 +197,12 @@ export class AgentFinalAnswerController {
   /**
    * The correction that sends an ordinary turn back to the parts the model
    * declared and has not finished: reads, writes and digests, which only
-   * tools deliver. A pending artifact part is not one of them: the answer
-   * itself delivers it (`applyAnswer`), as it does an answer part. It is
-   * given again only after new evidence moved the ledger since the last one.
+   * tools deliver, and artifacts, which only a `submit_document` document or
+   * a saved note delivers (`applyAnswer` leaves them open). It is given again
+   * only after new evidence moved the ledger since the last one, except while
+   * an artifact part is open: an answer in chat never moves that part, so the
+   * correction is given each time, up to OPEN_PARTS_REASK_LIMIT. After that
+   * the answer is accepted and the part stays open, for the run end to report.
    */
   private openOutcomeCorrection(canCorrect: boolean): string | undefined {
     const checkpoint = this.request.executionCheckpoint;
@@ -196,15 +213,19 @@ export class AgentFinalAnswerController {
     }
     if (!canCorrect || this.outcomeCorrections >= OPEN_PARTS_REASK_LIMIT)
       return undefined;
-    const open = openDeclaredOutcomes(checkpoint).filter(
-      (task) => task.effect !== "artifact",
-    );
+    const open = openDeclaredOutcomes(checkpoint);
     if (!open.length) return undefined;
     const signature = outcomeProgressSignature(checkpoint);
-    if (signature === this.outcomeCorrectionSignature) return undefined;
+    if (
+      signature === this.outcomeCorrectionSignature &&
+      !open.some((task) => task.effect === "artifact")
+    )
+      return undefined;
     this.outcomeCorrectionSignature = signature;
     this.outcomeCorrections += 1;
-    const parts = open.map((task) => `“${task.description}”`).join("; ");
-    return `Before answering, finish the parts of this request you declared that are still open: ${parts}. Do them now with the tools. If one cannot be done, list it under task_update's skipped or blocked with the reason, then answer.`;
+    const parts = open
+      .map((task) => `“${task.description}”${deliveryOf(task)}`)
+      .join("; ");
+    return `Before answering, finish the parts of this request you declared that are still open: ${parts}. Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.`;
   }
 }

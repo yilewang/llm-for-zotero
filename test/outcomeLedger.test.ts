@@ -13,6 +13,7 @@ import {
   outcomeProgressSignature,
   papersAlreadyWritten,
   resumesOnContinue,
+  settleDeclinedOutcomes,
   settleOutcomes,
   type OutcomeDeclaration,
   type OutcomeEvidence,
@@ -1292,27 +1293,25 @@ describe("outcome ledger: host evidence binding", function () {
       effect: "artifact",
       targets: ["item:1", "item:2"],
     });
-    for (const evidence of [
-      { kind: "answer" },
-      { kind: "material", materialRef: material },
-    ] as OutcomeEvidence[]) {
-      const task = find(apply(ledger, evidence).checkpoint, "summaries");
-      assert.equal(task.status, "completed", evidence.kind);
-      assert.isUndefined(task.exceptions, evidence.kind);
-    }
-    for (const evidence of [
-      { kind: "answer", citedTargets: [] },
-      { kind: "material", materialRef: material, citedTargets: [] },
-    ] as OutcomeEvidence[]) {
-      const task = find(apply(ledger, evidence).checkpoint, "summaries");
-      assert.equal(task.status, "completed", evidence.kind);
-      assert.deepEqual(task.doneTargets, [], evidence.kind);
-      assert.deepEqual(
-        task.exceptions,
-        [{ targets: ["item:1", "item:2"], reason: OUTCOME_REASONS.notCovered }],
-        evidence.kind,
-      );
-    }
+    const whole = find(
+      apply(ledger, { kind: "material", materialRef: material }).checkpoint,
+      "summaries",
+    );
+    assert.equal(whole.status, "completed");
+    assert.isUndefined(whole.exceptions);
+    const none = find(
+      apply(ledger, {
+        kind: "material",
+        materialRef: material,
+        citedTargets: [],
+      }).checkpoint,
+      "summaries",
+    );
+    assert.equal(none.status, "completed");
+    assert.deepEqual(none.doneTargets, []);
+    assert.deepEqual(none.exceptions, [
+      { targets: ["item:1", "item:2"], reason: OUTCOME_REASONS.notCovered },
+    ]);
   });
 
   it("material: a targeted part the document cites only partly completes with an exception for the rest", function () {
@@ -1343,22 +1342,29 @@ describe("outcome ledger: host evidence binding", function () {
     );
   });
 
-  it("answer: a targeted artifact part completes per cited target, the rest excepted", function () {
-    const ledger = ledgerWith({
-      taskId: "summaries",
-      description: "Summaries",
-      effect: "artifact",
-      targets: ["item:1", "item:2"],
-    });
-    const { checkpoint } = apply(ledger, {
-      kind: "answer",
-      citedTargets: ["item:2"],
-    });
-    assert.equal(find(checkpoint, "summaries").status, "completed");
-    assert.deepEqual(find(checkpoint, "summaries").doneTargets, ["item:2"]);
-    assert.deepEqual(find(checkpoint, "summaries").exceptions, [
-      { targets: ["item:1"], reason: OUTCOME_REASONS.notCovered },
-    ]);
+  it("answer: an artifact part is delivered only as a document or a note, never by the answer", function () {
+    for (const declaration of [
+      {
+        taskId: "summaries",
+        description: "Summaries",
+        effect: "artifact",
+        targets: ["item:1", "item:2"],
+      },
+      { taskId: "summaries", description: "Summaries", effect: "artifact" },
+    ] as OutcomeDeclaration[]) {
+      const ledger = ledgerWith(declaration);
+      for (const evidence of [
+        { kind: "answer" },
+        { kind: "answer", citedTargets: ["item:2"] },
+        { kind: "answer", citedTargets: [] },
+      ] as OutcomeEvidence[]) {
+        const result = apply(ledger, evidence);
+        assert.isFalse(result.changed);
+        assert.strictEqual(result.checkpoint, ledger);
+        assert.equal(find(result.checkpoint, "summaries").status, "pending");
+      }
+      assert.lengthOf(openDeclaredOutcomes(ledger), 1);
+    }
     const untargeted = ledgerWith({
       taskId: "answer",
       description: "Answer",
@@ -1430,6 +1436,40 @@ describe("outcome ledger: host evidence binding", function () {
         [taskId("review")],
         reason,
       );
+    }
+  });
+
+  it("mark: accepts a skip whose reason is the user's own instruction", function () {
+    // User instructions come first (2026-10-31): the open-parts correction
+    // sends a part the user's instruction rules out to skipped, so a chat
+    // answer or a source limit is a reason, not a delivery claim.
+    for (const [part, reason] of [
+      [
+        {
+          taskId: "review",
+          description: "Review",
+          effect: "artifact" as const,
+        },
+        "The user asked for an answer in chat, not a document",
+      ],
+      [
+        {
+          taskId: "summaries",
+          description: "Summarize each paper",
+          effect: "digest" as const,
+          targets: ["item:1"],
+        },
+        "The user asked for the abstracts only",
+      ],
+    ] as const) {
+      const ledger = ledgerWith(part);
+      const result = markOutcomes(
+        ledger,
+        [{ taskId: taskId(part.taskId), status: "skipped", reason }],
+        30,
+      );
+      assert.lengthOf(result.refused, 0, reason);
+      assert.equal(find(result.checkpoint, part.taskId).status, "skipped");
     }
   });
 
@@ -1561,7 +1601,8 @@ describe("outcome ledger: host evidence binding", function () {
     assert.isTrue(first.changed);
     assert.deepEqual(first.checkpoint.tasks[0], {
       taskId: taskId("host-declined-1"),
-      description: "Added tags",
+      // Nothing was added: the label names the work, not a result.
+      description: "Add tags",
       dependencies: [],
       status: "blocked",
       journalActionIds: [],
@@ -1590,11 +1631,55 @@ describe("outcome ledger: host evidence binding", function () {
     assert.deepEqual(
       second.checkpoint.tasks.map((task) => [task.taskId, task.description]),
       [
-        [taskId("host-declined-1"), "Added tags"],
-        [taskId("host-declined-2"), "Saved note"],
+        [taskId("host-declined-1"), "Add tags"],
+        [taskId("host-declined-2"), "Save note"],
       ],
     );
     assert.notProperty(second.checkpoint.tasks[1], "targets");
+  });
+
+  it("declined: a later verified receipt for the declined write turns the label to the past tense", function () {
+    const declinedOnce = apply(
+      emptyLedger(),
+      declined("call-script", {
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        requestedTargets: [],
+      }),
+    ).checkpoint;
+    assert.equal(declinedOnce.tasks[0].description, "Run Zotero script");
+    const ran = apply(declinedOnce, {
+      kind: "receipt",
+      receipt: receipt({
+        id: "script-receipt",
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        proofDomain: "execution",
+        verification: "verified",
+        status: "applied",
+        requestedTargets: [],
+        appliedTargets: [],
+      }),
+    }).checkpoint;
+    assert.lengthOf(ran.tasks, 1);
+    assert.equal(ran.tasks[0].status, "completed");
+    assert.equal(ran.tasks[0].description, "Ran Zotero script");
+  });
+
+  it("receipt: a write that did not apply names the intended work until a verified receipt", function () {
+    const failed = apply(emptyLedger(), {
+      kind: "receipt",
+      receipt: failedWrite("note-failed", ["Zotero refused the note."]),
+    }).checkpoint;
+    assert.equal(failed.tasks[0].description, "Create note");
+    assert.notEqual(failed.tasks[0].status, "completed");
+    const saved = apply(failed, {
+      kind: "receipt",
+      receipt: receipt({ id: "note-saved" }),
+    }).checkpoint;
+    assert.lengthOf(saved.tasks, 1);
+    assert.equal(saved.tasks[0].status, "completed");
+    assert.equal(saved.tasks[0].description, "Created note");
   });
 
   it("declined: the same call declined again changes nothing", function () {
@@ -1745,10 +1830,17 @@ describe("outcome ledger: run end state", function () {
   });
 
   it("any blocked outcome ends the run blocked", function () {
-    const blocked = apply(
-      ledgerWith(saveNote),
-      declineNote("call-note"),
-    ).checkpoint;
+    // A write that ran and could not be verified: the user must check it.
+    const blocked = apply(ledgerWith(saveNote), {
+      kind: "receipt",
+      receipt: receipt({
+        id: "note-unverified",
+        verification: "unverified",
+        status: "unverified",
+      }),
+    }).checkpoint;
+    assert.equal(find(blocked, "save").status, "blocked");
+    assert.equal(find(blocked, "save").reason, OUTCOME_REASONS.unverified);
     assert.equal(
       decideRunEnd(blocked, { status: "completed", stopRule: "final_answer" }),
       "blocked",
@@ -1760,6 +1852,37 @@ describe("outcome ledger: run end state", function () {
       }),
       "blocked",
     );
+  });
+
+  it("a completed run settles a declined write as skipped and ends completed with exceptions", function () {
+    const blocked = apply(
+      ledgerWith(saveNote),
+      declineNote("call-note"),
+    ).checkpoint;
+    assert.equal(find(blocked, "save").status, "blocked");
+    const settled = settleDeclinedOutcomes(blocked, 50);
+    const save = find(settled, "save");
+    assert.equal(save.status, "skipped");
+    assert.equal(save.reason, DECLINED);
+    assert.equal(save.updatedAt, 50);
+    assert.equal(
+      decideRunEnd(settled, { status: "completed", stopRule: "final_answer" }),
+      "completed_with_exceptions",
+    );
+    assert.equal(
+      settleOutcomes(settled, "completed_with_exceptions", 60).tasks[0].status,
+      "skipped",
+    );
+    // A blocked part for another reason keeps holding the run.
+    const unverified = apply(ledgerWith(saveNote), {
+      kind: "receipt",
+      receipt: receipt({
+        id: "note-unverified",
+        verification: "unverified",
+        status: "unverified",
+      }),
+    }).checkpoint;
+    assert.strictEqual(settleDeclinedOutcomes(unverified, 50), unverified);
   });
 
   it("a failed run that made progress under an interrupting rule ends interrupted and keeps its open outcomes pending", function () {
@@ -1808,6 +1931,7 @@ describe("outcome ledger: run end state", function () {
       "budget_reached",
       "connection_lost",
       "prompt_budget_exceeded",
+      "empty_answer",
     ] as RunStopRule[]) {
       assert.equal(
         decideRunEnd(undefined, { status: "failed", stopRule }),
@@ -2205,7 +2329,7 @@ describe("outcome ledger: how models declare saves (live run, 2026-09-30)", func
     ]);
   });
 
-  it("leaves an artifact part to a write part that takes the note receipt, and closes it with the answer", function () {
+  it("closes an artifact part with the saved note a write part takes, not with the answer", function () {
     const ledger = ledgerWith(
       {
         taskId: "summary",
@@ -2214,16 +2338,36 @@ describe("outcome ledger: how models declare saves (live run, 2026-09-30)", func
       },
       { taskId: "save", description: "Save it", effect: "mutation" },
     );
+    assert.isFalse(apply(ledger, { kind: "answer" }).changed);
     const saved = apply(ledger, { kind: "receipt", receipt: receipt() });
     assert.deepEqual(
       saved.checkpoint.tasks.map((task) => task.status),
-      ["pending", "completed"],
-    );
-    const answered = apply(saved.checkpoint, { kind: "answer" });
-    assert.deepEqual(
-      answered.checkpoint.tasks.map((task) => task.status),
       ["completed", "completed"],
     );
+    assert.deepEqual(find(saved.checkpoint, "summary").verifiedReceiptIds, [
+      "receipt-1",
+    ]);
+  });
+
+  it("does not close a targeted artifact part with a saved note on only some of its papers", function () {
+    const ledger = ledgerWith(
+      {
+        taskId: "review",
+        description: "Write the review",
+        effect: "artifact",
+        targets: ["item:1", "item:2"],
+      },
+      {
+        taskId: "notes",
+        description: "Save a note on each paper",
+        effect: "mutation",
+        capability: "zotero.notes",
+        targets: ["item:1", "item:2"],
+      },
+    );
+    const saved = apply(ledger, { kind: "receipt", receipt: receipt() });
+    assert.equal(find(saved.checkpoint, "review").status, "pending");
+    assert.deepEqual(find(saved.checkpoint, "notes").doneTargets, ["item:1"]);
   });
 
   it("does not close an artifact part with a write that is not note content", function () {

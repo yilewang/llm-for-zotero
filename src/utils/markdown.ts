@@ -791,12 +791,18 @@ function findTopLevelEqualsIndex(text: string): number {
   return -1;
 }
 
+function readLatexCommandName(text: string, slashIndex: number): string {
+  const match = /^[A-Za-z]+/.exec(text.slice(slashIndex + 1));
+  return match ? match[0] : "";
+}
+
 function splitTopLevelAdditiveTerms(text: string): string[] {
   const terms: string[] = [];
   let start = 0;
   let braceDepth = 0;
   let bracketDepth = 0;
   let parenDepth = 0;
+  let leftRightDepth = 0;
 
   const isBinaryAdditiveOperator = (index: number): boolean => {
     const ch = text[index];
@@ -812,7 +818,14 @@ function splitTopLevelAdditiveTerms(text: string): string[] {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === "\\") {
-      i++;
+      // \left ... \right must stay on one line, so treat the pair as a
+      // group. The delimiter after them (e.g. \| or \{) is skipped too.
+      const command = readLatexCommandName(text, i);
+      if (command === "left") leftRightDepth += 1;
+      else if (command === "right") {
+        leftRightDepth = Math.max(0, leftRightDepth - 1);
+      }
+      i += command ? command.length : 1;
       continue;
     }
     if (ch === "{") braceDepth += 1;
@@ -826,6 +839,7 @@ function splitTopLevelAdditiveTerms(text: string): string[] {
       braceDepth === 0 &&
       bracketDepth === 0 &&
       parenDepth === 0 &&
+      leftRightDepth === 0 &&
       isBinaryAdditiveOperator(i)
     ) {
       const term = text.slice(start, i).trim();
@@ -875,7 +889,12 @@ function renderDisplayLatex(latex: string): string {
   const wrapped = buildWrappedDisplayMath(latex);
   if (wrapped) {
     const wrappedHtml = renderLatex(wrapped, true);
-    if (!wrappedHtml.includes('class="math-error"')) {
+    // KaTeX reports errors as "katex-error" (throwOnError is off), so check
+    // both labels before trusting the split version.
+    if (
+      !wrappedHtml.includes('class="math-error"') &&
+      !wrappedHtml.includes('class="katex-error"')
+    ) {
       return wrappedHtml;
     }
   }

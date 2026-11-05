@@ -183,11 +183,9 @@ const MATRIX: Record<LibraryObjectKind, Row> = {
   annotation: {
     create: A,
     read: A,
-    // Tagging an annotation goes through library_update, so `update` is
-    // genuinely implemented. Editing an annotation's own comment, colour or
-    // position is not exposed by any tool yet -- that is tracked in the
-    // capability census, not here, because this matrix is per-kind rather
-    // than per-field.
+    // library_update kind:'annotation' edits an annotation's comment and
+    // colour, and kind:'tags' tags it. Its position is not editable by any
+    // tool; this matrix is per-kind rather than per-field.
     update: A,
     trash: A,
     restore: A,
@@ -309,7 +307,9 @@ export const IMPLEMENTED_BY: Partial<
   "standaloneAttachment:relate": "library_update",
   "standaloneAttachment:reparent": "library_update",
 
-  "childAttachment:create": "library_import",
+  // library_update kind:'attachment' attaches a file or a web page to an
+  // item, or finds its PDF; library_import creates top-level items only.
+  "childAttachment:create": "library_update",
   "childAttachment:read": "library_read",
   "childAttachment:update": "library_update",
   "childAttachment:trash": "library_delete",

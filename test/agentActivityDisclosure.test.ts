@@ -24,11 +24,23 @@ describe("agent activity disclosure completion", function () {
         eventType: "codex_progress",
         payload: {
           type: "codex_progress",
+          itemId: "note",
+          text: "Checking the library first.",
+          status: "running",
+        },
+        createdAt: 1_000,
+      },
+      {
+        runId: "activity-completion",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
           itemId: "answer",
           text: "The answer is ready.",
           status: "running",
         },
-        createdAt: 1_000,
+        createdAt: 1_500,
       },
     ];
     const trace = renderAgentTrace({ doc: fakeDocument, message, events })!;
@@ -40,7 +52,7 @@ describe("agent activity disclosure completion", function () {
       message.text = "The answer is ready.";
       events.push({
         runId: "activity-completion",
-        seq: 2,
+        seq: 3,
         eventType: "final",
         payload: { type: "final", text: message.text },
         createdAt: 2_000,
@@ -181,7 +193,7 @@ describe("agent activity disclosure completion", function () {
           .findAllByClass("llm-agent-process-message")
           .map((node) => node.textContent + node.innerHTML)
           .join("\n"),
-        "The answer is ready.",
+        "Checking the library first.",
         "completion keeps the recorded activity available to reopen",
       );
       disposeAgentTrace(trace);

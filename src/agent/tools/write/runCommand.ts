@@ -11,7 +11,6 @@ import type {
   AgentWriteToolDefinition,
 } from "../../types";
 import { getRuntimePlatformInfo } from "../../../utils/runtimePlatform";
-import { neverSelected } from "../guidance";
 import { ok, fail, validateObject } from "../shared";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { sha256Bytes } from "../../store/journalRecoveryBlobStore";
@@ -287,18 +286,9 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       workCategory: "external_system",
     },
 
-    guidance: {
-      matches: neverSelected,
-      instruction:
-        "Use run_command to execute shell commands for data analysis, running scripts, or invoking external tools. " +
-        "Do not use run_command for ordinary Zotero paper/library reading when semantic Zotero tools can answer. " +
-        "Use native shell syntax for the current OS: for example `dir %USERPROFILE%\\\\Desktop` on Windows or `ls ~/Desktop` on macOS/Linux. " +
-        "Pass the complete command as a single string — pipes, redirects, globbing, and all shell features work. " +
-        "Do NOT split the command into separate command/args fields.",
-    },
-
     presentation: {
       label: "Run Command",
+      traceIcon: "code",
       // The command itself is the row's content, so the row shows the tool's
       // label and the block carries the text rather than saying it twice.
       buildTraceCodeBlock: ({ args }) => {

@@ -8,12 +8,15 @@
  * ## Upgrade mechanism
  *
  * We track a body hash for each skill file we write. On startup:
- *   1. If on-disk body hash == stored hash → user didn't touch it → safe to
- *      replace with latest shipped version.
- *   2. If hashes differ → user customized → leave it alone.
- *   3. If no stored hash (first run with hash tracking), only auto-upgrade
- *      or auto-delete files whose raw content matches a known shipped
- *      fingerprint from an older version.
+ *   1. If on-disk body hash == stored hash and the stored hash is a body we
+ *      shipped → user didn't touch it → safe to replace with latest shipped
+ *      version.
+ *   2. If hashes differ, or the stored hash is no shipped body (a copy the
+ *      first run tracked as it found it) → user customized → leave it alone.
+ *   3. If no stored hash (first run with hash tracking, or a skills folder
+ *      new at this start), only auto-upgrade or auto-delete files whose raw
+ *      content or body matches a known shipped fingerprint from an older
+ *      version.
  */
 import { getSkillRoutingDiagnostics, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
@@ -28,6 +31,10 @@ import {
   hashBody,
   hashSkillForUpgrade,
 } from "./managedBlock";
+import {
+  BUILTIN_BOOTSTRAP_BODY_HASHES,
+  BUILTIN_BOOTSTRAP_RAW_HASHES,
+} from "./builtinSkillHashes";
 import { joinLocalPath } from "../../utils/localPath";
 import { patchSkillFrontmatter } from "./frontmatterPatcher";
 import { appLogger } from "../../core/logging";
@@ -183,180 +190,6 @@ const RETIRED_SKILL_IDS_KEPT_AS_PERSONAL = new Set(["simple-paper-qa"]);
 
 /** Obsolete IDs already reported by loadUserSkills; each is logged once. */
 const loggedObsoleteSkillIds = new Set<string>();
-
-// Exact raw-content hashes for prior shipped versions of built-ins whose
-// version increased in this release. On the first run with hash tracking, we
-// only auto-upgrade when the on-disk raw file still matches a known shipped
-// version; edited copies are preserved and surfaced as customized instead.
-const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
-  Record<string, ReadonlyArray<string>>
-> = {
-  "library-analysis.md": [
-    "ftq8b2",
-    "qttubn",
-    "i2f8xa",
-    // Released texts the list missed, from each release tag's copy
-    // (v3.7.12, v3.8.5, v3.8.6, v3.8.11 and v3.8.24).
-    "1gboxxt",
-    "1dibsu3",
-    "1fmb4jm",
-    "19974y5",
-    "1c3awl3",
-    // v4, which named the synthesis digest the sized views omit (v5).
-    "1fqhql1",
-  ],
-  "compare-papers.md": [
-    "i0j6yq",
-    "1yreksb",
-    "7os2qk",
-    "1frgnyh",
-    "1jvl4lu",
-    "cp9zod",
-    "w9wsrp",
-    "1w3ytrp",
-    "1krlubq",
-    "6upxur",
-    "qs8z4b",
-    "ulypcf",
-    // Both parallel v8 texts (main and the tool-consolidation branch).
-    "jch7ho",
-    "11c76b5",
-    // v9, the text v10's digest part extends, as shipped and as the
-    // canonical copy carrying its native `name:` line.
-    "l93iop",
-    "jop719",
-    // v10, the text v11's dimension-named digest replaces, as shipped and
-    // as the canonical copy carrying its native `name:` line.
-    "1mp6wjc",
-    "1a6j60s",
-  ],
-  "analyze-figures.md": [
-    "msvqtf",
-    "17o1bpl",
-    "gdr4uu",
-    "1kjl8up",
-    "e0ebpu",
-    "z5uzar",
-    "1u0n8ze",
-  ],
-  "evidence-based-qa.md": [
-    "en0khz",
-    "vyeyap",
-    "1vhakii",
-    "dxw5b3",
-    "11cbpv7",
-    "1er2ubr",
-    "13esvqx",
-    "1k39b46",
-    "1xglfq0",
-    "qdqcm0",
-    "90zxig",
-    "5iibf",
-    "1qkh4mt",
-    "14eowou",
-    "1l2klni",
-    "37vjex",
-    // v12, the text v13's lookup-first route and absence distinction
-    // replace, as shipped and as the canonical copy carrying its native
-    // `name:` line.
-    "mlbz5s",
-    "1psjdpv",
-  ],
-  "write-note.md": [
-    "172xn8t",
-    "nvca0f",
-    "17lvl1z",
-    "u1ej3e",
-    "1c1s5yg",
-    "1cfk2wb",
-    "3m65z4",
-  ],
-  "literature-review.md": [
-    "kbrknh",
-    "nxpr5d",
-    "1cnjf9i",
-    "3tk61l",
-    "1ptwzpw",
-    "pefrjt",
-    "fptven",
-    "10fqwsh",
-    // Released texts the list missed, from each release tag's copy
-    // (v3.7.18 to v3.9.5).
-    "1gbl57m",
-    "n96aqu",
-    "w18p0a",
-    "1dbaw6y",
-    "1ymizha",
-    "1mwckog",
-    "au1hm1",
-    "y7vpt5",
-    "q3t63g",
-    "fjgktb",
-    // v10, the investigation-loop text the ordinary v11 replaces.
-    "liv5sv",
-    // v11, the text v12's digest parts replace, as shipped and as the
-    // canonical copy carrying its native `name:` line.
-    "1hrhlxd",
-    "3mijhi",
-    // v12, the text v13's question-led digest and Select step replace, as
-    // shipped and as the canonical copy carrying its native `name:` line.
-    "mujbgx",
-    "18cssl2",
-    // v13 (v3.9.10 to v3.9.12), the text v14's nothing-relevant rule (find
-    // papers through the selection card, never review outside abstracts)
-    // extends, as shipped and as the canonical copy carrying its native
-    // `name:` line.
-    "15xumq",
-    "1rape47",
-  ],
-  "import-cited-reference.md": [
-    "19bomz1",
-    "e9tjej",
-    "145es7h",
-    "1j1qzbc",
-    "1sx03p9",
-    "1mtgn5u",
-  ],
-};
-
-const BUILTIN_BOOTSTRAP_BODY_HASHES: Partial<
-  Record<string, ReadonlyArray<string>>
-> = {
-  "compare-papers.md": [
-    "x00ci1",
-    "1au58pu",
-    "13ppssj",
-    "19kyxys",
-    "spgyhq",
-    "17c7wx5",
-    "6r67g8",
-    "1j5fq18",
-    "1t8gyg9",
-    "7cp6rj",
-    // Both parallel v8 bodies (main and the tool-consolidation branch).
-    "1eveisf",
-    "8zlow4",
-    // v9, the body v10's digest part extends.
-    "1s8bw97",
-    // v10, the body v11's dimension-named digest replaces.
-    "dds2si",
-  ],
-  "evidence-based-qa.md": [
-    "41yh3d",
-    "1aby95d",
-    "1g0a76y",
-    "4gj0dx",
-    "12qgkrq",
-    "bgr2hf",
-    "zjwar9",
-    "49orr",
-    "13yvvl6",
-    "1l4p1x2",
-    "u49rr3",
-    // v12, the body v13's lookup-first route replaces.
-    "7fiyr0",
-  ],
-};
 
 const BUILTIN_FRONTMATTER_PATCH_OPTIONS: Partial<
   Record<string, Parameters<typeof patchSkillFrontmatter>[2]>
@@ -586,6 +419,30 @@ function setSeededSkills(seeded: Set<string>): void {
   }
 }
 
+// The canonical skills folder whose start last finished. The seeded record,
+// the stored hashes and the finished legacy migration belong to this folder
+// only. Unset in profiles from before the pref existed; `pending:<dir>` while
+// a first start in <dir> runs, so an interrupted one is redone.
+const SEEDED_DIR_PREF_KEY = "extensions.zotero.llmForZotero.seededSkillsDir";
+
+function getSeededSkillsDir(): string | undefined {
+  try {
+    const raw = Zotero.Prefs?.get(SEEDED_DIR_PREF_KEY, true);
+    if (typeof raw === "string") return raw;
+  } catch {
+    /* */
+  }
+  return undefined;
+}
+
+function setSeededSkillsDir(value: string): void {
+  try {
+    Zotero.Prefs?.set(SEEDED_DIR_PREF_KEY, value, true);
+  } catch {
+    /* */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // File I/O helper
 // ---------------------------------------------------------------------------
@@ -620,6 +477,89 @@ function matchesKnownHash(
   return Boolean(hash && hashes?.includes(hash));
 }
 
+/** Line index of the frontmatter's closing `---`, as parseSkill reads it. */
+function frontmatterEndLine(lines: ReadonlyArray<string>): number {
+  const start = lines.findIndex((line) => line.trim() === "---");
+  if (start < 0) return -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return i;
+  }
+  return -1;
+}
+
+/**
+ * The upgraded text of a copy whose body (managed block, else instruction)
+ * is a shipped one. Only text the plugin owns is replaced:
+ * - a copy that is a shipped file exactly becomes the current shipped file;
+ * - a copy with a managed block gets the shipped block, and everything
+ *   around it (frontmatter included) stays;
+ * - otherwise the copy keeps its own frontmatter (the user's `match:`,
+ *   `activation:` or other keys) above the shipped body. Step 3 then
+ *   updates the plugin-owned `description:` and `version:` lines.
+ */
+function upgradeKnownCopy(
+  onDiskContent: string,
+  shippedContent: string,
+  rawKnown: boolean,
+): string {
+  if (rawKnown) return shippedContent;
+  const shippedManaged = extractManagedBlock(shippedContent).block;
+  if (
+    shippedManaged !== null &&
+    extractManagedBlock(onDiskContent).block !== null
+  ) {
+    const spliced = spliceManagedBlock(onDiskContent, shippedManaged);
+    if (spliced !== null) return spliced;
+  }
+  const onDiskLines = onDiskContent.split("\n");
+  const shippedLines = shippedContent.split("\n");
+  const onDiskEnd = frontmatterEndLine(onDiskLines);
+  const shippedEnd = frontmatterEndLine(shippedLines);
+  if (onDiskEnd < 0 || shippedEnd < 0) return shippedContent;
+  return [
+    ...onDiskLines.slice(0, onDiskEnd + 1),
+    ...shippedLines.slice(shippedEnd + 1),
+  ].join("\n");
+}
+
+/**
+ * Ids of the skills that another profile folder under the same data
+ * directory (`agent-runtime/profile-*`, a profile's earlier path) holds as
+ * `.agents/skills/<id>/SKILL.md`.
+ */
+async function skillIdsInOtherProfileFolders(
+  io: IOUtilsLike,
+  skillIds: ReadonlyArray<string>,
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (!io.exists || !io.getChildren) return found;
+  const currentRoot = getZoteroAgentRuntimeRootDir();
+  let children: string[];
+  try {
+    children = await io.getChildren(dirname(currentRoot));
+  } catch {
+    return found;
+  }
+  for (const child of children) {
+    const name = basename(child);
+    if (!name.startsWith("profile-") || name === basename(currentRoot)) {
+      continue;
+    }
+    for (const id of skillIds) {
+      if (found.has(id)) continue;
+      const skillFile = joinLocalPath(
+        child,
+        ".agents",
+        "skills",
+        id,
+        NATIVE_SKILL_FILE_NAME,
+      );
+      if (await io.exists(skillFile).catch(() => false)) found.add(id);
+    }
+  }
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
@@ -633,8 +573,21 @@ export async function initUserSkills(): Promise<void> {
   if (!io?.exists || !io?.write || !io?.makeDirectory) return;
 
   const dir = getUserSkillsDir();
+  // The skills folder lives under the profile's path signature, so a profile
+  // copied, restored or moved to another path starts with a new, empty folder
+  // while the profile-wide records (seeded built-ins, stored hashes) still
+  // describe the folder used before. They apply only to a known folder: the
+  // one whose start last finished, or, in a profile from before that record,
+  // a folder that already existed. Decide before anything is written.
+  const seededDir = getSeededSkillsDir();
+  let folderKnown: boolean;
   try {
-    if (!(await io.exists(dir))) {
+    const dirExisted = await io.exists(dir);
+    folderKnown = seededDir === dir || (seededDir === undefined && dirExisted);
+    // Mark the first start in this folder until it finishes, so a start
+    // interrupted after it made the folder runs again in full.
+    if (!folderKnown) setSeededSkillsDir(`pending:${dir}`);
+    if (!dirExisted) {
       await io.makeDirectory(dir, {
         createAncestors: true,
         ignoreExisting: true,
@@ -645,10 +598,36 @@ export async function initUserSkills(): Promise<void> {
   }
 
   const seeded = getSeededSkills();
-  const bodyHashes = getBodyHashes();
+  // A new folder's files (the migrated legacy copies) start untracked, so
+  // only a known shipped text upgrades and anything else stays the user's.
+  const bodyHashes = folderKnown ? getBodyHashes() : {};
   const encoder = new TextEncoder();
 
-  await migrateLegacyFlatSkills(io, seeded);
+  // Copy the legacy flat folder in once, into a folder that is not yet
+  // known. Every later start leaves it alone, so a skill the user deletes
+  // from a known folder stays deleted although its legacy copy remains.
+  if (!folderKnown) await migrateLegacyFlatSkills(io, seeded);
+
+  // A profile from before the folder record may already have lost built-ins
+  // to the old profile-wide record: a profile that moved got a new folder in
+  // which every recorded built-in counted as deleted. Another profile folder
+  // that holds the skill is the evidence of that move, so only then is an
+  // absent recorded built-in written again; with no such folder, the
+  // absence is the user's deletion and stays.
+  const movedProfileSkillIds =
+    folderKnown && seededDir === undefined
+      ? await skillIdsInOtherProfileFolders(
+          io,
+          Object.values(BUILTIN_SKILL_FILES).map(
+            (content) => parseSkill(content).id,
+          ),
+        )
+      : new Set<string>();
+  // The first start in a folder (not yet known, or known only because it
+  // existed) records the folder only if every built-in it had to write was
+  // written; otherwise the next start tries again.
+  const firstStartHere = !folderKnown || seededDir === undefined;
+  let unwrittenBuiltins = 0;
 
   // ── Step 1: Remove obsolete canonical skill files ───────────────────────
   // Old note skills were consolidated into write-note.md and simple-paper-qa
@@ -726,14 +705,25 @@ export async function initUserSkills(): Promise<void> {
       shippedContent,
       shippedSkill.instruction,
     );
-    const shippedManaged = extractManagedBlock(shippedContent).block;
-
+    let writingAbsentFile = false;
     try {
       const fileExists = await io.exists(filePath);
 
       if (!fileExists) {
-        if (seeded.has(filename)) continue; // User deleted it — respect that
+        // The user deleted it from this folder — respect that. A folder not
+        // yet known holds no deletion, so every absent built-in is written
+        // after the legacy migration. A built-in deleted only from the
+        // legacy flat folder therefore comes back in a new canonical folder;
+        // that is accepted.
+        if (
+          folderKnown &&
+          seeded.has(filename) &&
+          !movedProfileSkillIds.has(shippedSkill.id)
+        ) {
+          continue;
+        }
 
+        writingAbsentFile = true;
         await io.makeDirectory(getCanonicalSkillDir(shippedSkill.id), {
           createAncestors: true,
           ignoreExisting: true,
@@ -761,8 +751,6 @@ export async function initUserSkills(): Promise<void> {
         onDiskContent,
         onDiskSkill.instruction,
       );
-      const onDiskManaged = extractManagedBlock(onDiskContent).block;
-
       if (onDiskHash === shippedHash) {
         // Already up to date (managed block or whole body matches)
         bodyHashes[filename] = shippedHash;
@@ -774,10 +762,12 @@ export async function initUserSkills(): Promise<void> {
       const storedHash = bodyHashes[filename];
 
       const knownHistoricalBodyHashes = BUILTIN_BOOTSTRAP_BODY_HASHES[filename];
+      // An untouched copy whose stored hash is no shipped body was tracked by
+      // the bootstrap branch below as the user's own text. It stays the
+      // user's, for every built-in, even one without a body list.
       const trackedCustomizedBody =
         storedHash &&
         onDiskHash === storedHash &&
-        knownHistoricalBodyHashes?.length &&
         !matchesKnownHash(storedHash, knownHistoricalBodyHashes);
 
       if (trackedCustomizedBody) {
@@ -788,34 +778,48 @@ export async function initUserSkills(): Promise<void> {
       } else if (storedHash && onDiskHash === storedHash) {
         // Hash matches what we last wrote → user didn't modify the managed
         // section/body. Safe to upgrade while preserving content outside any
-        // managed block.
-        if (shippedManaged !== null && onDiskManaged !== null) {
-          const spliced = spliceManagedBlock(onDiskContent, shippedManaged);
-          if (spliced !== null) {
-            await io.write(filePath, encoder.encode(spliced));
-            bodyHashes[filename] = shippedHash;
-            appLogger.info(
-              `[llm-for-zotero] Refreshed managed block: ${filename}`,
-            );
-            seeded.add(filename);
-            continue;
-          }
-        }
-        await io.write(filePath, encoder.encode(shippedContent));
+        // managed block, and the frontmatter.
+        const rawKnown = matchesKnownRawHash(
+          onDiskContent,
+          BUILTIN_BOOTSTRAP_RAW_HASHES[filename],
+        );
+        await io.write(
+          filePath,
+          encoder.encode(
+            upgradeKnownCopy(onDiskContent, shippedContent, rawKnown),
+          ),
+        );
         bodyHashes[filename] = shippedHash;
         appLogger.info(`[llm-for-zotero] Upgraded skill: ${filename}`);
       } else if (!storedHash) {
         // Bootstrap: no hash record (pre-hash installation). Only upgrade if
-        // the raw file still matches a known shipped version for this built-in;
-        // otherwise treat it as customized and start tracking its current hash.
+        // the raw file, or its body (the managed block when it has one),
+        // still matches a known shipped version for this built-in; otherwise
+        // treat it as customized and start tracking its current hash.
+        const rawKnown = matchesKnownRawHash(
+          onDiskContent,
+          BUILTIN_BOOTSTRAP_RAW_HASHES[filename],
+        );
+        const bodyKnown = matchesKnownHash(
+          onDiskHash,
+          knownHistoricalBodyHashes,
+        );
+        // A listed body is an earlier shipped text whatever its `version:`
+        // line says (an earlier start may have raised it), as on the tracked
+        // branch; a raw match still needs the older version.
         if (
-          onDiskSkill.version < shippedSkill.version &&
-          matchesKnownRawHash(
-            onDiskContent,
-            BUILTIN_BOOTSTRAP_RAW_HASHES[filename],
-          )
+          bodyKnown ||
+          (rawKnown && onDiskSkill.version < shippedSkill.version)
         ) {
-          await io.write(filePath, encoder.encode(shippedContent));
+          // A known body may sit among the user's own text (around a managed
+          // block, or as frontmatter): replace only the plugin's text, as the
+          // tracked branch does.
+          await io.write(
+            filePath,
+            encoder.encode(
+              upgradeKnownCopy(onDiskContent, shippedContent, rawKnown),
+            ),
+          );
           bodyHashes[filename] = shippedHash;
           appLogger.info(
             `[llm-for-zotero] Bootstrap-upgraded skill: ${filename} (v${onDiskSkill.version} → v${shippedSkill.version})`,
@@ -837,6 +841,9 @@ export async function initUserSkills(): Promise<void> {
 
       seeded.add(filename);
     } catch (err) {
+      // Only an absent built-in that could not be written keeps the folder
+      // unrecorded; a failed upgrade of an existing copy does not.
+      if (writingAbsentFile) unwrittenBuiltins++;
       appLogger.warn(
         `[llm-for-zotero] Skill processing error for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -880,7 +887,17 @@ export async function initUserSkills(): Promise<void> {
     }
   }
 
-  await normalizeCanonicalSkillFrontmatter(io);
+  try {
+    await normalizeCanonicalSkillFrontmatter(io);
+  } catch (err) {
+    appLogger.warn(
+      `[llm-for-zotero] Skill name normalization warning: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  // This folder's start finished: its records now describe it. A first start
+  // with a failed built-in leaves the folder pending (or unrecorded) instead.
+  if (firstStartHere && unwrittenBuiltins > 0) return;
+  setSeededSkillsDir(dir);
 }
 
 // ---------------------------------------------------------------------------

@@ -19,15 +19,17 @@ import {
   loadPlanDocument,
   updateDocumentActionState,
 } from "./store";
-import type {
-  DocumentActionState,
-  DocumentNoteBinding,
-  PlanDocument,
+import {
+  isOutsideCitationSource,
+  type DocumentActionState,
+  type DocumentNoteBinding,
+  type PlanDocument,
 } from "./types";
 import { expandNewCitationTokens } from "../../services/notes/noteCitations";
 import {
   hasNewCitationTokens,
   mergeNoteCitationItems,
+  type NoteCitationItem,
 } from "../../utils/noteCitations";
 import { restoreNoteEmbedTokensInHtml } from "../../utils/noteEmbeds";
 
@@ -39,7 +41,21 @@ import { restoreNoteEmbedTokensInHtml } from "../../utils/noteEmbeds";
  * before anything is written.
  */
 export function documentNoteHtml(html: string, libraryID: number): string {
-  if (!hasNewCitationTokens(html)) return html;
+  const parts = documentNoteParts(html, libraryID);
+  return mergeNoteCitationItems(parts.html, parts.citationItems);
+}
+
+/**
+ * The same note HTML, with the cited works kept apart instead of registered in
+ * a root. An append needs this form: a root added to the body would land as a
+ * second root inside the target note, so the works are registered in the
+ * target note's own root when the append is composed.
+ */
+export function documentNoteParts(
+  html: string,
+  libraryID: number,
+): { html: string; citationItems: NoteCitationItem[] } {
+  if (!hasNewCitationTokens(html)) return { html, citationItems: [] };
   const expanded = expandNewCitationTokens(html, (itemRef) =>
     /^\d+$/.test(itemRef)
       ? Zotero.Items.get(Number(itemRef)) || null
@@ -50,7 +66,7 @@ export function documentNoteHtml(html: string, libraryID: number): string {
     expanded.text,
     expanded.registry,
   );
-  return mergeNoteCitationItems(restored.html, expanded.citationItems);
+  return { html: restored.html, citationItems: expanded.citationItems };
 }
 
 /** Embed the finalized document's assets for both new and existing notes. */
@@ -95,7 +111,11 @@ function resolveItemByKey(
   return Zotero.Items.getByLibraryAndKey(libraryID, itemKey) || null;
 }
 
-function citedItems(document: PlanDocument): Array<{
+/**
+ * The Zotero items a document cites, once each, in citation order: the
+ * candidates for its saved note's parent.
+ */
+export function documentCitedItems(document: PlanDocument): Array<{
   libraryID: number;
   itemKey: string;
 }> {
@@ -103,6 +123,8 @@ function citedItems(document: PlanDocument): Array<{
   const out: Array<{ libraryID: number; itemKey: string }> = [];
   for (const cluster of document.citationBundle.clusters) {
     for (const source of cluster.sources) {
+      // An outside paper has no Zotero item to be a note's parent.
+      if (isOutsideCitationSource(source)) continue;
       const key = `${source.libraryID}:${source.itemKey}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -112,7 +134,33 @@ function citedItems(document: PlanDocument): Array<{
   return out;
 }
 
-export type DocumentNoteTarget = { parentItemId: number; libraryID: number };
+/** A note on a parent item, or a standalone note filed in collections. */
+export type DocumentNoteTarget =
+  | { parentItemId: number; libraryID: number }
+  | { standalone: true; libraryID: number; collectionIds?: number[] };
+
+function targetParentId(target: DocumentNoteTarget): number | undefined {
+  return "parentItemId" in target ? target.parentItemId : undefined;
+}
+
+function targetCollectionIds(target: DocumentNoteTarget | undefined): number[] {
+  return target && "standalone" in target
+    ? [...new Set(target.collectionIds || [])]
+    : [];
+}
+
+/** Whether a native note sits where the target puts it. */
+function noteMatchesTarget(
+  note: Zotero.Item,
+  target: DocumentNoteTarget,
+): boolean {
+  const collections = note.getCollections?.() || [];
+  return (
+    (note.parentID || undefined) === targetParentId(target) &&
+    note.libraryID === target.libraryID &&
+    targetCollectionIds(target).every((id) => collections.includes(id))
+  );
+}
 
 const pendingDocumentSaves = new Map<string, Promise<unknown>>();
 
@@ -207,7 +255,7 @@ async function saveDocumentNote(
   if (binding) {
     if (
       (target &&
-        (binding.parentItemId !== target.parentItemId ||
+        (binding.parentItemId !== targetParentId(target) ||
           binding.libraryID !== target.libraryID)) ||
       (binding.contentHash && binding.contentHash !== document.contentHash) ||
       (binding.documentVersion &&
@@ -226,9 +274,7 @@ async function saveDocumentNote(
         (await noteContentHash(document.visibleHtml, 1));
       const readBack = existing.getNote();
       if (
-        (target &&
-          (existing.parentID !== target.parentItemId ||
-            existing.libraryID !== target.libraryID)) ||
+        (target && !noteMatchesTarget(existing, target)) ||
         (binding.documentVersion !== undefined &&
           ((existing.parentID || undefined) !== binding.parentItemId ||
             existing.libraryID !== binding.libraryID)) ||
@@ -279,24 +325,42 @@ async function saveDocumentNote(
       );
   }
 
-  const cited = citedItems(document);
+  const cited = documentCitedItems(document);
+  const requestedParentId = target ? targetParentId(target) : undefined;
   const singleParent = target
-    ? Zotero.Items.get(target.parentItemId)
+    ? requestedParentId
+      ? Zotero.Items.get(requestedParentId)
+      : null
     : cited.length === 1
       ? resolveItemByKey(cited[0].libraryID, cited[0].itemKey)
       : null;
   if (
-    target &&
+    requestedParentId &&
     (!singleParent ||
       singleParent.deleted ||
       !singleParent.isRegularItem() ||
-      singleParent.libraryID !== target.libraryID)
+      singleParent.libraryID !== target!.libraryID)
   ) {
     throw new Error(
       "The requested summary-note parent is unavailable in the frozen library.",
     );
   }
+  // Checked before anything is reserved: Zotero does not check a collection
+  // id when it is added, and a missing one fails the note's own save.
+  const collectionIds = targetCollectionIds(target);
+  for (const collectionId of collectionIds) {
+    const collection = Zotero.Collections.get(collectionId);
+    if (
+      !collection ||
+      collection.deleted ||
+      collection.libraryID !== target!.libraryID
+    )
+      throw new Error(
+        `Collection ${collectionId} is unavailable in the frozen library; the note was not created.`,
+      );
+  }
   const libraryID =
+    target?.libraryID ||
     singleParent?.libraryID ||
     cited[0]?.libraryID ||
     Zotero.Libraries.userLibraryID;
@@ -313,6 +377,7 @@ async function saveDocumentNote(
   if (singleParent && !singleParent.deleted) {
     note.parentID = singleParent.id;
   }
+  for (const collectionId of collectionIds) note.addToCollection(collectionId);
   let pendingNote: NonNullable<DocumentActionState["pendingNote"]> = {
     libraryID,
     itemKey: note.key,
@@ -369,10 +434,11 @@ async function saveDocumentNote(
     )) !== pendingNote.nativeContentHash ||
     created.key !== pendingNote.itemKey ||
     created.libraryID !== pendingNote.libraryID ||
-    (created.parentID || undefined) !== pendingNote.parentItemId
+    (created.parentID || undefined) !== pendingNote.parentItemId ||
+    (target && !noteMatchesTarget(created, target))
   )
     throw new Error(
-      "The note was preserved but its requested content or assets are incomplete, or its parent changed.",
+      "The note was preserved but its requested content or assets are incomplete, or its parent or collections changed.",
     );
   const noteVerification = await verifyNativeNoteHtml(created, persisted.html);
   // The forced read-back is the only proof the write reached the database.

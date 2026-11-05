@@ -23,7 +23,6 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../../services/paperContent/paperAttribution";
-import { neverSelected } from "../guidance";
 import { ok, fail, validateObject } from "../shared";
 import { getLocalParentPath } from "../../../utils/localPath";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
@@ -747,19 +746,9 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       workCategory: "external_system",
     },
 
-    guidance: {
-      matches: neverSelected,
-      instruction:
-        "Use file_io to read or write files on the user's filesystem. " +
-        "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read instead of direct MinerU cache reads. " +
-        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. " +
-        "Common uses: write a Python/R script before running it with run_command, read a CSV/JSON data file, " +
-        "save analysis results to the user's Desktop, export formatted bibliographies. " +
-        "Always use absolute paths.",
-    },
-
     presentation: {
       label: "File I/O",
+      traceIcon: "file",
       buildTraceArgDetails: ({ args }) => buildFileIOTraceArgDetails(args),
       buildTraceCodeBlock: ({ args }) => buildFileIOTraceCodeBlock(args),
       summaries: {

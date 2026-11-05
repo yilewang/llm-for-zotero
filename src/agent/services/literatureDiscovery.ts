@@ -13,6 +13,12 @@ import {
 import { isConversationKeyRetiredInMemory } from "../../shared/conversationKeyLedger";
 import { normalizeArxivId, normalizeDoi } from "./paperWorkIdentity";
 import { OUTSIDE_SEARCH_STOP_NOTE } from "../tools/read/outsideSearchNeed";
+import {
+  findOutsidePaperRecord,
+  outsidePaperRecordsFromToolResult,
+  rememberOutsidePapers,
+  setOutsidePaperSelection,
+} from "../context/outsidePaperRecords";
 
 export type LiteratureDiscoveryRequest = {
   batchSize: number;
@@ -57,6 +63,14 @@ export type LiteratureDiscoverySession = {
    * this discovery an import may take.
    */
   approvedIds?: string[];
+  /**
+   * Set when a search of this discovery said its papers are candidates for
+   * a literature review the Agent will write: the card then asks whether to
+   * import and cite them or to cite them without importing.
+   */
+  forLiteratureReview?: boolean;
+  /** The papers the user chose with the card's Cite without importing. */
+  citedIds?: string[];
   targetCollectionId?: number;
   destinationLabel?: string;
   shortfallReason?: string;
@@ -270,6 +284,19 @@ export async function discoveryImportRefusal(
     );
   });
   if (!unchosen.length) return null;
+  const cited = new Set(
+    session.papers
+      .filter((paper) =>
+        (session.citedIds || []).includes(String(paper.discoveryPaperId)),
+      )
+      .flatMap(candidateIdentities),
+  );
+  if (
+    unchosen.every((identifier) =>
+      importIdentities(identifier).some((key) => cited.has(key)),
+    )
+  )
+    return `Nothing was imported: the user chose to cite ${unchosen.join(", ")} without importing on the paper selection card. Cite ${unchosen.length === 1 ? "it" : "them"} by paperId; import ${unchosen.length === 1 ? "it" : "them"} later, when the user asks.`;
   const named = `${unchosen.join(", ")} ${unchosen.length === 1 ? "is a paper" : "are papers"} this turn's discovery found`;
   return session.phase === "closed"
     ? `Nothing was imported: ${named}, and the user did not choose ${unchosen.length === 1 ? "it" : "them"} on its paper selection card. Discovered papers are imported only after the user selects them there.`
@@ -289,6 +316,7 @@ export function discoveryContent(record: AgentToolResultHandleRecord) {
       checked: session.selectedIds.includes(String(p.discoveryPaperId)),
     })),
     reviewRequired: true,
+    ...(session.forLiteratureReview ? { forLiteratureReview: true } : {}),
     libraryID: session.libraryID,
     targetCollectionId: session.targetCollectionId,
     destinationLabel: session.destinationLabel,
@@ -305,6 +333,8 @@ export async function identifyLiteratureCandidates(
   count?: number,
   /** The closing note: the turn's outside-search ledger and stop note. */
   closingNote: string = OUTSIDE_SEARCH_STOP_NOTE,
+  /** The papers are candidates for a literature review the Agent will write. */
+  forLiteratureReview = false,
 ): Promise<Record<string, unknown>> {
   const results = Array.isArray(content.results) ? content.results : [];
   const discovery = reviewRequired
@@ -341,6 +371,8 @@ export async function identifyLiteratureCandidates(
         ...discovery.session.request,
         batchSize: count,
       };
+    // One search for a review marks the whole discovery, Find more included.
+    if (forLiteratureReview) discovery.session.forLiteratureReview = true;
     await save(discovery.record, context);
   }
   return {
@@ -388,7 +420,7 @@ function discoveryInstruction(record: AgentToolResultHandleRecord): string {
   const s = record.content as LiteratureDiscoverySession;
   const select = `titles and abstracts and select ${s.request.batchSize} ${s.papers.length ? "additional " : ""}genuinely relevant papers in ranked order${s.papers.length ? "" : " (pass the number the user asked for as count when it differs)"}. Respect the user's topic and these constraints: ${JSON.stringify(s.request)}. Assess unused saved candidates first; search further if needed. A further search uses workflow:'review'. To expand a provider list, increase its retrieval limit rather than repeating the same bounded request.`;
   const review = `literature_review with sessionId '${record.handle}', revision ${s.revision}, NEW candidateSetId/candidateIndex selections and evidence-based relevance reasons. Do not repeat displayed papers or dump the raw pool. If fewer qualify, explain shortfallReason; use outcome 'no_more' when no further relevant matches were found, or 'search_failed' for a retrieval failure. Empty selections with an explanation are allowed.`;
-  return `Assess ${select} Call ${review} ${s.revision ? "Never import during discovery or finish with prose instead of the card." : "Never import during discovery. If the user asked for papers themselves, finish with the card, not prose; otherwise answer without it."}`;
+  return `Assess ${select} Call ${review} ${s.revision ? "Never import during discovery or finish with prose instead of the card." : "Never import during discovery. If the user asked for papers themselves and not for a list in chat, finish with the card, not prose; otherwise answer without it."}`;
 }
 
 export async function prepareLiteratureDiscoveryReview(
@@ -534,11 +566,53 @@ export async function resolveLiteratureDiscoveryReview(
       session.approvedIds = Array.isArray(selectedIds)
         ? [...session.selectedIds]
         : [];
+    // Cite without importing approves no import; a selection the card did
+    // not send chooses nothing.
+    if (actionId === "cite")
+      session.citedIds = Array.isArray(selectedIds)
+        ? [...session.selectedIds]
+        : [];
   }
   await save(record, context);
   return {
     ...discoveryContent(record),
     candidateSetIds: session.candidateSetIds,
     nextStep: discoveryInstruction(record),
+  };
+}
+
+/**
+ * The card's Cite without importing: the papers the user ticked become the
+ * run's only citable outside papers, cited by paperId and never imported.
+ * They join the run's record of outside papers here, so a paper Find more
+ * showed is citable too, whichever search returned it.
+ */
+export function citeDiscoveredPapers(
+  papers: readonly Record<string, unknown>[],
+  context: AgentToolContext,
+): Record<string, unknown> {
+  const records = outsidePaperRecordsFromToolResult("literature_search", {
+    mode: "search",
+    results: papers,
+  });
+  rememberOutsidePapers(context.request, records);
+  // The run may know a paper under an earlier id, which the selection holds.
+  const ids = records.map(
+    (record) =>
+      findOutsidePaperRecord(context.request, record.paperId)?.paperId ||
+      record.paperId,
+  );
+  setOutsidePaperSelection(context.request, ids);
+  return {
+    choice: "cite_without_importing",
+    papers: records.map((record, index) => ({
+      paperId: ids[index],
+      ...(record.title ? { title: record.title } : {}),
+      ...(record.year !== undefined ? { year: record.year } : {}),
+      ...(record.doi ? { doi: record.doi } : {}),
+    })),
+    nextStep: records.length
+      ? "The user chose to cite these papers without importing them. Read each with literature_read, then cite it in submit_document by its paperId; do not import them, and cite no other outside paper."
+      : "The user chose no paper to cite; cite no outside paper.",
   };
 }

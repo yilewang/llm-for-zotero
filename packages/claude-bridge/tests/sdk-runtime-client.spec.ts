@@ -455,6 +455,201 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(stream.providerSessionId).toBeUndefined();
   });
 
+  describe("subagents stay inside the turn", () => {
+    type HookFn = (
+      input: unknown,
+      toolUseId: string | undefined,
+      options: unknown,
+    ) => Promise<any>;
+    type Matcher = { matcher?: string; hooks?: HookFn[] };
+
+    async function runTurn(
+      request: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> {
+      let seenOptions: Record<string, unknown> = {};
+      const runtime = new ClaudeAgentSdkRuntimeClient({
+        queryImpl(args) {
+          seenOptions = args.options;
+          return makeStream([
+            {
+              type: "result",
+              session_id: "session-sub",
+              result: "ok",
+              is_error: false,
+            },
+          ]);
+        },
+      });
+      const stream = await runtime.startTurn({
+        conversationKey: "conv-sub",
+        userMessage: "review",
+        ...request,
+      } as any);
+      for await (const _event of stream.events) void _event;
+      return seenOptions;
+    }
+
+    function agentHook(options: Record<string, unknown>): HookFn {
+      const hooks = options.hooks as { PreToolUse?: Matcher[] };
+      const matcher = hooks.PreToolUse?.find((entry) =>
+        entry.matcher?.split("|").includes("Agent"),
+      );
+      expect(matcher).toBeDefined();
+      return matcher!.hooks![0]!;
+    }
+
+    function preToolUse(toolName: string, toolInput: unknown) {
+      return {
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_use_id: "toolu-1",
+      };
+    }
+
+    it("turns a background or unset subagent call into a foreground one", async () => {
+      const hook = agentHook(await runTurn({}));
+      const base = {
+        description: "Skim batch",
+        prompt: "Read these papers",
+        subagent_type: "paper-reader",
+        name: "batch-1",
+      };
+      for (const toolName of ["Agent", "Task"]) {
+        for (const input of [
+          { ...base, run_in_background: true },
+          { ...base },
+          { ...base, run_in_background: false },
+        ]) {
+          await expect(
+            hook(preToolUse(toolName, input), "toolu-1", {}),
+          ).resolves.toEqual({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              updatedInput: { ...base, run_in_background: false },
+            },
+          });
+        }
+      }
+    });
+
+    it("ignores other tools", async () => {
+      const hook = agentHook(await runTurn({}));
+      await expect(
+        hook(
+          preToolUse("TaskCreate", { subject: "x", run_in_background: true }),
+          "toolu-1",
+          {},
+        ),
+      ).resolves.toEqual({ continue: true });
+      await expect(
+        hook(
+          { hook_event_name: "PostToolUse", tool_name: "Agent" },
+          "toolu-1",
+          {},
+        ),
+      ).resolves.toEqual({ continue: true });
+    });
+
+    it("keeps the Read hook next to the subagent hook on a PDF turn", async () => {
+      const pdfPath = await createPdfFile();
+      const options = await runTurn({
+        runtimeRequest: {
+          localDocuments: [
+            {
+              kind: "local_pdf",
+              sourceKey: "zotero-pdf:10:20",
+              itemId: 10,
+              contextItemId: 20,
+              title: "Paper",
+              name: "paper.pdf",
+              mimeType: "application/pdf",
+              absolutePath: pdfPath,
+            },
+          ],
+        },
+      });
+      const matchers = (options.hooks as { PreToolUse: Matcher[] }).PreToolUse;
+      expect(matchers.map((entry) => entry.matcher)).toEqual([
+        "Read",
+        "Agent|Task",
+      ]);
+      expect(typeof agentHook(options)).toBe("function");
+    });
+
+    it("registers no paper-reader subagent, even when an older plugin names its tools", async () => {
+      const readTools = [
+        "mcp__llm_for_zotero__library_search",
+        "mcp__llm_for_zotero__paper_read",
+      ];
+      const options = await runTurn({
+        allowedTools: readTools,
+        metadata: { paperReaderTools: readTools },
+      });
+      expect(options.agents).toBeUndefined();
+      expect(options.paperReaderTools).toBeUndefined();
+      expect(typeof agentHook(options)).toBe("function");
+    });
+
+    it("defines no agent when the plugin names no read tools", async () => {
+      const options = await runTurn({});
+      expect(options.agents).toBeUndefined();
+    });
+  });
+
+  it("emits Claude's steps as a codex_progress snapshot on the turn", async () => {
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl() {
+        return makeStream([
+          { type: "system", session_id: "session-steps", subtype: "init" },
+          {
+            type: "assistant",
+            session_id: "session-steps",
+            parent_tool_use_id: null,
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "todo-1",
+                  name: "TodoWrite",
+                  input: {
+                    todos: [
+                      {
+                        content: "Screen papers",
+                        status: "in_progress",
+                        activeForm: "Screening papers",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+          {
+            type: "result",
+            session_id: "session-steps",
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-steps",
+      userMessage: "review",
+    });
+    const progress: any[] = [];
+    for await (const event of stream.events) {
+      if (event.type === "codex_progress") progress.push(event);
+    }
+    expect(progress).toHaveLength(1);
+    expect(progress[0].payload).toMatchObject({
+      itemId: "codex-plan-checklist",
+      runtime: "claude",
+      steps: [{ content: "Screen papers", status: "in_progress" }],
+    });
+  });
+
   it("keeps an explicitly invoked skill on a PDF turn", async () => {
     const pdfPath = await createPdfFile();
     let seenPrompt = "";
@@ -840,6 +1035,89 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       "dontAsk",
       "bypassPermissions",
     ]);
+  });
+
+  it("resolves the same permission mode and callback with and without a local PDF", async () => {
+    const pdfPath = await createPdfFile();
+    const seen: Array<{
+      permissionMode: unknown;
+      hasCanUseTool: boolean;
+      allowedTools: unknown;
+      additionalDirectories: unknown;
+    }> = [];
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        seen.push({
+          permissionMode: args.options.permissionMode,
+          hasCanUseTool: typeof args.options.canUseTool === "function",
+          allowedTools: args.options.allowedTools,
+          additionalDirectories: args.options.additionalDirectories,
+        });
+        return makeStream([
+          {
+            type: "result",
+            session_id: "session-pdf-mode",
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const allowedTools = ["mcp__zotero__paper_read"];
+
+    for (const permissionMode of ["default", "auto", "bypassPermissions"]) {
+      for (const withPdf of [false, true]) {
+        const stream = await runtime.startTurn({
+          conversationKey: `conv-pdf-mode-${permissionMode}-${withPdf}`,
+          userMessage: "edit the note",
+          allowedTools,
+          metadata: { permissionMode },
+          runtimeRequest: withPdf
+            ? {
+                localDocuments: [
+                  {
+                    kind: "local_pdf",
+                    sourceKey: "zotero-pdf:10:20",
+                    itemId: 10,
+                    contextItemId: 20,
+                    title: "Paper A",
+                    name: "paper.pdf",
+                    mimeType: "application/pdf",
+                    absolutePath: pdfPath,
+                  },
+                ],
+              }
+            : {},
+        });
+        for await (const _event of stream.events) {
+          void _event;
+        }
+      }
+    }
+
+    // The PDF turn reads from the PDF's folder; the plain turn has none.
+    const pdfDirectories = [dirname(pdfPath)];
+    expect(seen).toEqual(
+      [
+        ["default", true],
+        ["auto", true],
+        ["bypassPermissions", false],
+      ].flatMap(([permissionMode, hasCanUseTool]) => [
+        {
+          permissionMode,
+          hasCanUseTool,
+          allowedTools,
+          additionalDirectories: undefined,
+        },
+        {
+          permissionMode,
+          hasCanUseTool,
+          allowedTools,
+          additionalDirectories: pdfDirectories,
+        },
+      ]),
+    );
+    expect(globalPermissionStore.pendingCount()).toBe(0);
   });
 
   it("reports administrative availability from effective Claude settings", async () => {
@@ -1873,6 +2151,70 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       "Local Zotero conversation history",
     );
     expect(String(normalPrompt)).not.toContain("old answer");
+  });
+
+  describe("per-snippet questions", () => {
+    async function promptFor(runtimeRequest: Record<string, unknown>) {
+      let prompt: unknown;
+      const runtime = new ClaudeAgentSdkRuntimeClient({
+        queryImpl(args) {
+          prompt = args.prompt;
+          return makeStream([
+            {
+              type: "result",
+              session_id: "session-snippet",
+              result: "ok",
+              is_error: false,
+            },
+          ]);
+        },
+      });
+      await runtime.startTurn({
+        conversationKey: "conv-snippet-questions",
+        userMessage: "hello",
+        runtimeRequest,
+      });
+      return String(prompt);
+    }
+
+    it("includes the question under its snippet", async () => {
+      const prompt = await promptFor({
+        selectedTexts: ["alpha text"],
+        selectedTextContexts: [
+          { text: "alpha text", userQuery: "What is alpha?" },
+        ],
+      });
+      expect(prompt).toContain(
+        "Selected snippets:\n\n1. alpha text\n   Question: What is alpha?",
+      );
+    });
+
+    it("pairs questions by snippet index", async () => {
+      const prompt = await promptFor({
+        selectedTexts: ["one", "two", "three"],
+        selectedTextContexts: [
+          { text: "one", userQuery: "Q1" },
+          { text: "two" },
+          { text: "three", userQuery: "Q3\nline2" },
+        ],
+      });
+      expect(prompt).toContain(
+        "1. one\n   Question: Q1\n\n2. two\n\n3. three\n   Question: Q3\n   line2",
+      );
+    });
+
+    it("leaves snippets without contexts unchanged", async () => {
+      const prompt = await promptFor({ selectedTexts: ["solo"] });
+      expect(prompt).toContain("Selected snippets:\n\n1. solo");
+      expect(prompt).not.toContain("Question:");
+    });
+
+    it("uses context text when selectedTexts is empty", async () => {
+      const prompt = await promptFor({
+        selectedTextContexts: [{ text: "ctx only", userQuery: "Why?" }],
+      });
+      expect(prompt).toContain("1. ctx only\n   Question: Why?");
+    });
   });
 
   it("preserves history-gap continuity across compact and skill commands", async () => {

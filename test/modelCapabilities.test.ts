@@ -251,7 +251,10 @@ describe("model capability service", function () {
       protocol: "anthropic_messages",
     });
     assert.equal(haiku55.sampling.temperature, "unsupported");
-    assert.equal(haiku55.limits.contextWindowTokens, 1_000_000);
+    // 200k, not the API's 1M: tool views are sized from this limit, and a
+    // 1M limit pushed library-wide views past Haiku's 100k-token price tier.
+    assert.equal(haiku55.limits.contextWindowTokens, 200_000);
+    assert.equal(haiku55.limits.inputTokens, 200_000);
     assert.equal(haiku55.limits.outputTokens, 128_000);
     // Sampling data must not displace the hand-maintained reasoning profile.
     assert.equal(haiku55.provenance.reasoning, "legacy");
@@ -282,6 +285,7 @@ describe("model capability service", function () {
     for (const model of [
       "claude-haiku-5-5@20261001",
       "claude-haiku-5-5-20261001",
+      "anthropic/claude-haiku-5-5",
     ]) {
       const dated = getModelCapabilities({
         provider: "anthropic",
@@ -290,7 +294,7 @@ describe("model capability service", function () {
         protocol: "anthropic_messages",
       });
       assert.equal(dated.sampling.temperature, "unsupported", model);
-      assert.equal(dated.limits.contextWindowTokens, 1_000_000, model);
+      assert.equal(dated.limits.contextWindowTokens, 200_000, model);
     }
   });
 

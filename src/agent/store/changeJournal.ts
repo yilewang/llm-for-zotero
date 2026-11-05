@@ -816,6 +816,63 @@ export async function registerJournalRecoveryPayloads(input: {
   }
 }
 
+/** The payload kind of a checkpointed batch's frozen per-item operations. */
+const FROZEN_OPERATIONS_KIND = "frozen_operations";
+
+/**
+ * Freeze the per-item operations a checkpointed batch will run, once, at
+ * prepare time. A resume is this list minus the steps already done, so it
+ * never asks the model which items were left. Call it in the transaction
+ * that prepares the action, so the action never exists without its list.
+ */
+export async function freezeJournalActionOperations(input: {
+  actionId: string;
+  operations: readonly unknown[];
+  now?: number;
+}): Promise<void> {
+  const db = getDb();
+  if (!db) throw new Error("The durable change journal is unavailable");
+  const json = JSON.stringify({ version: 1, operations: input.operations });
+  await db.queryAsync(
+    `INSERT INTO ${JOURNAL_PAYLOADS_TABLE}
+      (payload_id, action_id, step_id, kind, storage_kind, inline_json,
+       blob_path, checksum, size_bytes, created_at)
+     VALUES (?, ?, NULL, ?, 'inline', ?, NULL, NULL, ?, ?)`,
+    [
+      `${input.actionId}:${FROZEN_OPERATIONS_KIND}`,
+      input.actionId,
+      FROZEN_OPERATIONS_KIND,
+      json,
+      json.length,
+      input.now ?? Date.now(),
+    ],
+  );
+}
+
+/**
+ * The operations a checkpointed batch froze, or null for every other action,
+ * including every action journalled before batches were checkpointed.
+ */
+export async function readFrozenJournalActionOperations(
+  actionId: string,
+): Promise<unknown[] | null> {
+  const db = getDb();
+  if (!db || !actionId) return null;
+  const rows = (await db.queryAsync(
+    `SELECT inline_json FROM ${JOURNAL_PAYLOADS_TABLE}
+     WHERE action_id = ? AND kind = ? AND storage_kind = 'inline'`,
+    [actionId, FROZEN_OPERATIONS_KIND],
+  )) as Array<Record<string, unknown>> | null;
+  const json = Array.isArray(rows) ? rows[0]?.inline_json : undefined;
+  if (typeof json !== "string") return null;
+  try {
+    const parsed = JSON.parse(json) as { operations?: unknown };
+    return Array.isArray(parsed?.operations) ? parsed.operations : null;
+  } catch {
+    return null;
+  }
+}
+
 async function removeRecoveryBlobPaths(paths: string[]): Promise<void> {
   const io = (globalThis as { IOUtils?: any }).IOUtils;
   if (typeof io?.remove !== "function") return;
@@ -980,16 +1037,31 @@ async function retireTerminalJournalRecoveryPayloads(): Promise<void> {
            OR s.status IN ('failed','no_effect','irreversible'))`,
       [now],
     );
+    // A step of a live checkpointed batch keeps its forward payload: the
+    // batch's remaining work is its frozen list minus the steps whose forward
+    // matches an item, so a wiped no-effect step would be run again.
+    const liveBatchActions = `SELECT a.action_id FROM ${JOURNAL_ACTIONS_TABLE} a
+           WHERE a.status NOT IN ('failed','no_effect','irreversible')
+             AND EXISTS (
+               SELECT 1 FROM ${JOURNAL_PAYLOADS_TABLE} p
+               WHERE p.action_id = a.action_id
+                 AND p.kind = '${FROZEN_OPERATIONS_KIND}'
+             )`;
     await db.queryAsync(
       `UPDATE ${JOURNAL_STEPS_TABLE}
-       SET forward_json = '{}', inverse_json = NULL,
+       SET forward_json = CASE
+             WHEN action_id IN (${liveBatchActions}) THEN forward_json
+             ELSE '{}' END,
+           inverse_json = NULL,
            precondition_json = NULL, expected_postcondition_json = NULL,
            result_json = NULL
        WHERE (status IN ('failed','no_effect','irreversible')
          OR action_id IN (
            SELECT action_id FROM ${JOURNAL_ACTIONS_TABLE}
            WHERE status IN ('failed','no_effect','irreversible')
-         )) AND (forward_json <> '{}' OR inverse_json IS NOT NULL
+         )) AND ((forward_json <> '{}'
+           AND action_id NOT IN (${liveBatchActions}))
+         OR inverse_json IS NOT NULL
          OR precondition_json IS NOT NULL
          OR expected_postcondition_json IS NOT NULL
          OR result_json IS NOT NULL)`,

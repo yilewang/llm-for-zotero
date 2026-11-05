@@ -27,6 +27,8 @@ export function createNativeLifecycleTestProcess(params: {
   onResume?: (threadId: string) => string | void;
   /** Rejects thread/resume with an ordinary provider error. */
   resumeError?: string;
+  /** Rejects skills/extraRoots/set as an older app-server would. */
+  extraRootsSetUnsupported?: boolean;
 }): CodexAppServerProcess {
   let turnNumber = 0;
   const threadIds = [...params.newThreadIds];
@@ -92,6 +94,32 @@ export function createNativeLifecycleTestProcess(params: {
                 result: {
                   data: [{ name: "guardian_approval", enabled: true }],
                 },
+              }),
+            0,
+          );
+          return;
+        }
+        if (request.method === "skills/extraRoots/set") {
+          setTimeout(
+            () =>
+              handleMessage(
+                params.extraRootsSetUnsupported
+                  ? {
+                      id: request.id,
+                      error: { code: -32601, message: "Method not found" },
+                    }
+                  : { id: request.id, result: {} },
+              ),
+            0,
+          );
+          return;
+        }
+        if (request.method === "thread/fork") {
+          setTimeout(
+            () =>
+              handleMessage({
+                id: request.id,
+                result: { thread: { id: "thread-forked" } },
               }),
             0,
           );

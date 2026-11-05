@@ -21,12 +21,14 @@ import {
   claimJournalAction,
   claimJournalStep,
   createJournalId,
+  freezeJournalActionOperations,
   inJournalTransaction,
   isAgentChangeJournalAvailable,
   listJournalActions,
   listJournalSteps,
   prepareJournalAction,
   prepareJournalStep,
+  readFrozenJournalActionOperations,
   registerJournalRecoveryPayloads,
   updateJournalAction,
   updateJournalStep,
@@ -38,7 +40,22 @@ import type {
   LibraryMutationOperation,
   LibraryMutationService,
 } from "./libraryMutationService";
-import { mutationPostconditionIsSatisfied } from "./libraryMutation/handlerOperations";
+import {
+  isRegisteredLibraryMutationOperation,
+  mutationPostconditionIsSatisfied,
+  targetItemIdsForLibraryMutation,
+} from "./libraryMutation/handlerOperations";
+import type { LibraryMutationState } from "./libraryMutation/contracts";
+import { canonicalJson } from "./libraryMutation/canonicalJson";
+import { withMoreChanges } from "./libraryMutation/describe";
+import {
+  checkpointedParts,
+  mergeMutationStates,
+  readCheckpointedBatch,
+  remainingOperations,
+  type CheckpointPart,
+  type CheckpointedBatchReport,
+} from "./checkpointedBatch";
 
 export type CoordinatedMutationResult = {
   actionId?: string;
@@ -46,6 +63,19 @@ export type CoordinatedMutationResult = {
   affectedCount: number;
   results: LibraryMutationExecutionResult[];
   actionEvidence: AgentActionEvidence[];
+  /**
+   * The operation that stopped the action, when the caller asked for the
+   * outcome instead of a throw. `results` and `actionEvidence` then hold the
+   * operations before it, which stay applied; the ones after it never ran.
+   */
+  failure?: {
+    index: number;
+    message: string;
+    /** The operation had started, so it may have applied. */
+    uncertain: boolean;
+  };
+  /** Set when the call ran as a checkpointed batch, one step per item. */
+  checkpoint?: CheckpointedBatchReport;
 };
 
 function inversePayload(operations: LibraryMutationOperation[] | undefined) {
@@ -178,6 +208,8 @@ async function resumedActionSummary(params: {
 async function reopenJournalAction(params: {
   actionId: string;
   conversationKey: number;
+  /** The states it may be reopened from; applied work by default. */
+  from?: JournalStatus[];
 }): Promise<{
   actionId: string;
   /** Highest sequence already used, so resumed steps do not collide. */
@@ -189,15 +221,16 @@ async function reopenJournalAction(params: {
     actionId: params.actionId,
     limit: 1,
   });
+  const from = params.from || ["applied", "partially_applied"];
   if (
     !action ||
     action.conversationKey !== params.conversationKey ||
-    (action.status !== "applied" && action.status !== "partially_applied")
+    !from.includes(action.status)
   )
     return null;
   const claimed = await claimJournalAction({
     actionId: action.actionId,
-    from: ["applied", "partially_applied"],
+    from,
     to: "applying",
   });
   if (!claimed) return null;
@@ -389,6 +422,529 @@ async function executeOne(params: {
   });
 }
 
+function isMutationState(value: unknown): value is LibraryMutationState {
+  return Boolean(value && typeof value === "object");
+}
+
+/** Why a part that ran did not land, from its own result rows. */
+function partFailureReason(result: unknown): string | undefined {
+  const reasons: string[] = [];
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 6 || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.reason === "string" &&
+      ["missing", "refused", "error", "failed", "not_found"].includes(
+        String(record.status),
+      )
+    )
+      reasons.push(record.reason);
+    for (const nested of Object.values(record)) visit(nested, depth + 1);
+  };
+  visit(result, 0);
+  return reasons[0];
+}
+
+/** What a receipt needs of an item that was written. */
+type CheckpointPartRun = Pick<
+  Awaited<ReturnType<typeof executeOne>>,
+  "effect" | "precondition" | "expectedPostcondition" | "journalStepId"
+>;
+
+type CheckpointPartOutcome =
+  | {
+      kind: "ran" | "failed";
+      error?: string;
+      executed?: CheckpointPartRun;
+    }
+  | { kind: "not_started" };
+
+/**
+ * An item an interrupted attempt wrote and the journal left `uncertain`,
+ * which native state showed to be there. It is recorded as done, not run.
+ */
+type SettledStep = CheckpointPartRun;
+
+/** A part of the batch to run now, or one an earlier attempt settled. */
+type ResumePart = CheckpointPart & { settled?: SettledStep };
+
+/** Step states whose item was written, so the action has something to undo. */
+const WRITTEN_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
+  "applied",
+  "irreversible",
+  "partially_applied",
+]);
+
+/**
+ * The items the action holds written, from its steps. An item written again
+ * (its change was not shown, so every resume wrote it once more) counts once,
+ * up to as many times as the frozen list names it.
+ */
+function writtenItemCount(
+  frozen: readonly LibraryMutationOperation[],
+  steps: ReadonlyArray<{ status: JournalStatus; forwardJson: string }>,
+): number {
+  const allowed = new Map<string, number>();
+  for (const operation of frozen) {
+    const key = canonicalJson(operation);
+    allowed.set(key, (allowed.get(key) || 0) + 1);
+  }
+  const written = new Map<string, number>();
+  let unmatched = 0;
+  for (const step of steps) {
+    if (!WRITTEN_STEP_STATUSES.has(step.status)) continue;
+    const forward = parseJsonText(step.forwardJson);
+    const key = forward === undefined ? "" : canonicalJson(forward);
+    if (!allowed.has(key)) unmatched += 1;
+    else written.set(key, (written.get(key) || 0) + 1);
+  }
+  let total = unmatched;
+  for (const [key, count] of written)
+    total += Math.min(count, allowed.get(key) || 0);
+  return total;
+}
+
+function parseJsonText(text: string | undefined): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Settle the steps an interrupted attempt left `uncertain`, by what Zotero
+ * shows now, before their items are run again.
+ *
+ * A step whose postcondition already holds did its write: it becomes
+ * `applied` (or `no_effect` when the item satisfied it before), keeping the
+ * inverse planned from the pre-state, with the current state as its
+ * post-image. Running the item again instead would snapshot the edited value
+ * and leave this step as a conflict at undo. One that does not hold never
+ * landed and becomes `failed`.
+ */
+async function settleUncertainSteps(params: {
+  service: LibraryMutationService;
+  context: AgentToolContext;
+  actionId: string;
+}): Promise<Map<string, SettledStep[]>> {
+  const settled = new Map<string, SettledStep[]>();
+  for (const step of await listJournalSteps(params.actionId)) {
+    if (step.status !== "uncertain") continue;
+    const forward = parseJsonText(step.forwardJson);
+    if (!isRegisteredLibraryMutationOperation(forward)) continue;
+    let current: unknown;
+    try {
+      current = await params.service.captureOperationState(
+        forward,
+        params.context,
+        { reconciliation: true },
+      );
+    } catch {
+      continue;
+    }
+    if (!isMutationState(current)) continue;
+    if (!mutationPostconditionIsSatisfied(forward, current)) {
+      await inJournalTransaction(() =>
+        updateJournalStep({
+          stepId: step.stepId,
+          status: "failed",
+          reversibility: "full",
+          error: "Interrupted before the change landed.",
+        }),
+      );
+      continue;
+    }
+    const precondition = parseJsonText(step.preconditionJson);
+    let alreadyHeld = false;
+    try {
+      alreadyHeld =
+        isMutationState(precondition) &&
+        mutationPostconditionIsSatisfied(forward, precondition);
+    } catch {
+      alreadyHeld = false;
+    }
+    await inJournalTransaction(() =>
+      updateJournalStep({
+        stepId: step.stepId,
+        status: alreadyHeld
+          ? "no_effect"
+          : step.reversibility === "none"
+            ? "irreversible"
+            : "applied",
+        expectedPostcondition: current,
+        reversibility: alreadyHeld ? "full" : step.reversibility,
+        error: step.error,
+      }),
+    );
+    const key = canonicalJson(forward);
+    settled.set(key, [
+      ...(settled.get(key) || []),
+      {
+        effect: alreadyHeld ? "none" : "applied",
+        precondition,
+        expectedPostcondition: current,
+        journalStepId: step.stepId,
+      },
+    ]);
+  }
+  return settled;
+}
+
+/**
+ * Continue a checkpointed batch under the action that froze it, so one undo
+ * still reverts every item. Only operations the batch still owes run: an
+ * item a done step already accounts for is never written again.
+ */
+async function resumeCheckpointedAction(params: {
+  service: LibraryMutationService;
+  operations: LibraryMutationOperation[];
+  context: AgentToolContext;
+  journalToolName: string;
+  actionId: string;
+}): Promise<CoordinatedMutationResult> {
+  const { context } = params;
+  const batch = await readCheckpointedBatch({
+    actionId: params.actionId,
+    conversationKey: context.request.conversationKey,
+  });
+  const owedBefore = new Map<string, number>();
+  for (const operation of batch.remaining) {
+    const key = canonicalJson(operation);
+    owedBefore.set(key, (owedBefore.get(key) || 0) + 1);
+  }
+  const requested = params.operations.filter((operation) => {
+    const key = canonicalJson(operation);
+    const count = owedBefore.get(key) || 0;
+    if (!count) return false;
+    owedBefore.set(key, count - 1);
+    return true;
+  });
+  if (!requested.length) {
+    return {
+      actionId: batch.actionId,
+      effect: "none",
+      affectedCount: 0,
+      results: [],
+      actionEvidence: [],
+    };
+  }
+  // A crash between items leaves the action uncertain; its items are
+  // one-item state edits, so the owed ones can safely run again.
+  const reopened = await reopenJournalAction({
+    actionId: batch.actionId,
+    conversationKey: context.request.conversationKey,
+    from: ["applied", "partially_applied", "uncertain"],
+  });
+  if (!reopened)
+    throw new Error(
+      `Batch ${batch.actionId} cannot be continued: it is ${batch.status}.`,
+    );
+  const operations: LibraryMutationOperation[] = [];
+  const parts: ResumePart[] = [];
+  try {
+    // Only the call that holds the claim may settle the steps of an
+    // interrupted attempt: a second resume must not rewrite the steps of a
+    // run that is still going. An item that attempt wrote is settled from
+    // native state before anything runs, so it is neither written twice nor
+    // left outside the undo.
+    const settled = await settleUncertainSteps({
+      service: params.service,
+      context,
+      actionId: batch.actionId,
+    });
+    const owed = new Map<string, number>();
+    for (const operation of remainingOperations(
+      batch.frozen,
+      await listJournalSteps(batch.actionId),
+    )) {
+      const key = canonicalJson(operation);
+      owed.set(key, (owed.get(key) || 0) + 1);
+    }
+    for (const operation of requested) {
+      const key = canonicalJson(operation);
+      const count = owed.get(key) || 0;
+      const earlier = settled.get(key);
+      if (count) {
+        owed.set(key, count - 1);
+        parts.push({ source: operations.length, operation });
+      } else if (earlier?.length) {
+        parts.push({
+          source: operations.length,
+          operation,
+          settled: earlier.shift(),
+        });
+      } else continue;
+      operations.push(operation);
+    }
+  } catch (error) {
+    // The claim moved the action to applying; give it back its status.
+    await inJournalTransaction(() =>
+      updateJournalAction({ actionId: batch.actionId, status: batch.status }),
+    ).catch(() => undefined);
+    throw error;
+  }
+  return executeCheckpointedAction({
+    service: params.service,
+    operations,
+    parts,
+    frozen: batch.frozen,
+    context,
+    journalToolName: params.journalToolName,
+    reopened,
+  });
+}
+
+/**
+ * Run a bulk edit as one durable step per item under one action.
+ *
+ * The per-item list is frozen with the action before the first write, so a
+ * call the user stops, or a Zotero that quits midway, leaves exactly what
+ * remains on record. Stop takes effect between items; an item that fails is
+ * reported and the others still run.
+ */
+async function executeCheckpointedAction(params: {
+  service: LibraryMutationService;
+  /** The call's operations, which its proposals and receipts name. */
+  operations: LibraryMutationOperation[];
+  /** The one-item parts to run now, each pointing at its operation. */
+  parts: ResumePart[];
+  /** Every part of the batch, as frozen when it was prepared. */
+  frozen: LibraryMutationOperation[];
+  context: AgentToolContext;
+  journalToolName: string;
+  reopened?: NonNullable<Awaited<ReturnType<typeof reopenJournalAction>>>;
+}): Promise<CoordinatedMutationResult> {
+  const { service, operations, parts, context, reopened } = params;
+  const actionId = reopened?.actionId || createJournalId("action");
+  let sequence = reopened?.lastSequence || 0;
+  if (!reopened) {
+    const first = await stepPlanFor(service, parts[0].operation, context);
+    // Its own transaction: the action never exists without its frozen list.
+    await inJournalTransaction(async () => {
+      await prepareJournalAction({
+        actionId,
+        runId: runIdFor(context),
+        conversationKey: context.request.conversationKey,
+        toolName: params.journalToolName,
+        description: withMoreChanges(first.description, parts.length),
+        effect: "write",
+        reversibility: first.reversibility,
+        recovery: first.reason,
+      });
+      await freezeJournalActionOperations({
+        actionId,
+        operations: params.frozen,
+      });
+    });
+  }
+
+  const outcomes: CheckpointPartOutcome[] = [];
+  const results: LibraryMutationExecutionResult[] = [];
+  let changed = 0;
+  let affectedCount = 0;
+  let stopped = false;
+  let remaining = params.frozen.length;
+  // Items the action holds written, counted from its durable steps.
+  let total = 0;
+  try {
+    for (const part of parts) {
+      if (part.settled) {
+        // Written by an interrupted attempt; the journal now says so.
+        outcomes.push({ kind: "ran", executed: part.settled });
+        if (part.settled.effect !== "none") {
+          changed += 1;
+          affectedCount += 1;
+        }
+        continue;
+      }
+      if (stopped || context.signal?.aborted) {
+        stopped = true;
+        outcomes.push({ kind: "not_started" });
+        continue;
+      }
+      try {
+        const executed = await executeOne({
+          service,
+          operation: part.operation,
+          context,
+          actionId,
+          sequence: (sequence += 1),
+        });
+        results.push(executed.result);
+        if (executed.effect !== "none") {
+          changed += 1;
+          affectedCount += executed.affectedCount;
+        }
+        const post = executed.expectedPostcondition;
+        if (
+          isMutationState(post) &&
+          mutationPostconditionIsSatisfied(part.operation, post)
+        ) {
+          outcomes.push({ kind: "ran", executed });
+          continue;
+        }
+        const error =
+          partFailureReason(executed.result) ||
+          "Zotero does not show this change.";
+        // It changed nothing it was asked to, so the batch still owes it.
+        if (executed.effect === "none" && executed.journalStepId)
+          await inJournalTransaction(() =>
+            updateJournalStep({
+              stepId: executed.journalStepId!,
+              status: "failed",
+              reversibility: "full",
+              error,
+            }),
+          );
+        outcomes.push({ kind: "failed", error, executed });
+      } catch (error) {
+        // The step's own journal row already records how it ended.
+        outcomes.push({
+          kind: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  } finally {
+    // What the action holds altogether, from every step it owns: the items
+    // this call ran and the ones earlier attempts did.
+    // The steps are the only complete record: a process that died midway
+    // never wrote the action's own count, so a resume cannot rely on it.
+    const steps = await listJournalSteps(actionId);
+    remaining = remainingOperations(params.frozen, steps).length;
+    total = writtenItemCount(params.frozen, steps);
+    const reversibility = combineReversibility(
+      steps
+        .filter(
+          (step) => step.status !== "no_effect" && step.status !== "failed",
+        )
+        .map((step) => step.reversibility),
+    );
+    await inJournalTransaction(() =>
+      updateJournalAction({
+        actionId,
+        status: total
+          ? remaining
+            ? "partially_applied"
+            : reversibility === "none"
+              ? "irreversible"
+              : "applied"
+          : remaining
+            ? "failed"
+            : "no_effect",
+        reversibility,
+        affectedCount: total,
+        ...(remaining ? { recovery: `${remaining} item changes remain.` } : {}),
+      }),
+    ).catch(() => undefined);
+  }
+
+  const failed = parts.flatMap((part, index) => {
+    const outcome = outcomes[index];
+    return outcome?.kind === "failed"
+      ? [
+          {
+            itemIds: targetItemIdsForLibraryMutation(part.operation),
+            error: outcome.error || "The change failed.",
+          },
+        ]
+      : [];
+  });
+  const notStarted = outcomes.filter(
+    (outcome) => outcome.kind === "not_started",
+  ).length;
+  // A resume that tried items and finished none failed on them again, and
+  // asking for it again would only add another step per item. An item that
+  // wrote something Zotero does not show counts as failed here, not as
+  // progress: it is written again on every resume and never lands.
+  const verified = outcomes.filter((outcome) => outcome.kind === "ran").length;
+  const stalled =
+    Boolean(reopened) && verified === 0 && failed.length > 0 && !stopped;
+  const resumable = total > 0 && remaining > 0 && !stalled;
+
+  // Grouped once: a scan of every part per operation is quadratic.
+  const partsBySource = new Map<
+    number,
+    Array<{ part: ResumePart; outcome: CheckpointPartOutcome }>
+  >();
+  parts.forEach((part, index) => {
+    const group = partsBySource.get(part.source);
+    const entry = { part, outcome: outcomes[index] };
+    if (group) group.push(entry);
+    else partsBySource.set(part.source, [entry]);
+  });
+
+  const actionEvidence: AgentActionEvidence[] = operations.map(
+    (operation, source) => {
+      const mine = partsBySource.get(source) || [];
+      const ran = mine.flatMap(({ outcome }) =>
+        outcome.kind !== "not_started" && outcome.executed
+          ? [outcome.executed]
+          : [],
+      );
+      const clean = mine.every(({ outcome }) => outcome.kind === "ran");
+      return {
+        version: 1,
+        source: "library_mutation",
+        proofDomain: "zotero_state",
+        operationValue: operation,
+        preState: mergeMutationStates(
+          operation.type,
+          ran.map((executed) => executed.precondition).filter(isMutationState),
+        ),
+        postState: mergeMutationStates(
+          operation.type,
+          ran
+            .map((executed) => executed.expectedPostcondition)
+            .filter(isMutationState),
+        ),
+        journalStepId: ran[0]?.journalStepId,
+        effect: combineEffects(ran.map((executed) => executed.effect)),
+        ...(clean
+          ? {}
+          : {
+              checkpointParts: mine.map(({ part, outcome }) => ({
+                operationValue: part.operation,
+                outcome: outcome.kind,
+                ...(outcome.kind === "failed" && outcome.error
+                  ? { error: outcome.error }
+                  : {}),
+              })),
+            }),
+      } satisfies AgentLibraryMutationEvidence;
+    },
+  );
+
+  return {
+    actionId,
+    effect: changed
+      ? failed.length || notStarted
+        ? "partial"
+        : "applied"
+      : "none",
+    affectedCount,
+    results,
+    actionEvidence,
+    checkpoint: {
+      batchId: actionId,
+      total: params.frozen.length,
+      done: params.frozen.length - remaining,
+      changed,
+      failed,
+      notStarted,
+      stopped,
+      resumable,
+      ...(stalled ? { stalled } : {}),
+    },
+  };
+}
+
 /**
  * Execute one user-visible action with one or more durable ordered steps.
  */
@@ -397,6 +953,12 @@ export async function executeLibraryMutationAction(params: {
   operations: LibraryMutationOperation[];
   context: AgentToolContext;
   facadeToolName: string;
+  /**
+   * Return a failed operation as `failure`, with the results and evidence of
+   * the operations already applied, rather than throwing them away. The
+   * journal records the action exactly as it does for a throw.
+   */
+  reportFailure?: boolean;
 }): Promise<CoordinatedMutationResult> {
   const { service, operations, context, facadeToolName } = params;
   const journalToolName = context.journalToolName || facadeToolName;
@@ -415,6 +977,29 @@ export async function executeLibraryMutationAction(params: {
     throw new Error(
       "The durable change journal is unavailable. This write requires explicit fallback confirmation.",
     );
+  }
+  // A bulk edit runs one checkpointed step per item; so does the rest of a
+  // batch that froze its items. Everything else runs as it always has.
+  if (journalAvailable && !parentScope) {
+    const resumeId = context.resumeJournalAction?.actionId;
+    if (resumeId && (await readFrozenJournalActionOperations(resumeId)))
+      return resumeCheckpointedAction({
+        service,
+        operations,
+        context,
+        journalToolName,
+        actionId: resumeId,
+      });
+    const parts = resumeId ? null : checkpointedParts(operations);
+    if (parts)
+      return executeCheckpointedAction({
+        service,
+        operations,
+        parts,
+        frozen: parts.map((part) => part.operation),
+        context,
+        journalToolName,
+      });
   }
   const resumed =
     journalAvailable && !parentScope && context.resumeJournalAction
@@ -457,10 +1042,7 @@ export async function executeLibraryMutationAction(params: {
               runId: runIdFor(context),
               conversationKey: context.request.conversationKey,
               toolName: journalToolName,
-              description:
-                operations.length === 1
-                  ? plan.description
-                  : `${journalToolName}: ${operations.length} planned changes`,
+              description: withMoreChanges(plan.description, operations.length),
               reversibility: plan.reversibility,
               recovery: plan.reason,
             })
@@ -609,6 +1191,16 @@ export async function executeLibraryMutationAction(params: {
       ).catch(() => undefined);
     }
     const message = error instanceof Error ? error.message : String(error);
+    if (params.reportFailure) {
+      return {
+        actionId: actionId || undefined,
+        effect: changedOutcomes.length ? "partial" : "none",
+        affectedCount,
+        results,
+        actionEvidence,
+        failure: { index: results.length, message, uncertain },
+      };
+    }
     if (changedOutcomes.length) throw new Error(`${message} (${recovery})`);
     if (uncertain) throw new Error(`${message} (${recovery})`);
     throw error;

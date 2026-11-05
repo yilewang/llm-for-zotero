@@ -27,6 +27,9 @@ import {
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { getCodexProfileSignature } from "../src/codexAppServer/constants";
@@ -94,8 +97,12 @@ type SettlementRun = {
  */
 async function runSettlementTurn(params: {
   conversationKey: number;
-  calls: Array<"submit_document" | "run_command" | "library_read">;
+  calls: Array<
+    "submit_document" | "run_command" | "library_read" | "library_import"
+  >;
   documentStored: boolean;
+  /** What a library_import call returns; a documentId means it published one. */
+  libraryImportContent?: Record<string, unknown>;
 }): Promise<SettlementRun> {
   const restorePrefs = installDirectPathTestPrefs();
   const originalSpawn = CodexAppServerProcess.spawn;
@@ -126,6 +133,40 @@ async function runSettlementTurn(params: {
     },
     validate: (args) => ({ ok: true, value: args ?? {} }),
     execute: async () => ({ content: { documentId: "codex-document-1" } }),
+  } as never);
+  registry.register({
+    describeAction: () => [
+      {
+        id: "settings:library_import",
+        proofDomain: "zotero_state",
+        capability: "zotero.settings",
+        operation: "settings_update",
+        source: "zotero_native",
+        requestedTargets: [],
+        destinationCollectionIds: [],
+      },
+    ],
+    effectOperations: ["settings_update"],
+    spec: {
+      name: "library_import",
+      description: "Import fixture",
+      inputSchema: { type: "object", additionalProperties: true },
+      executionClass: "external_effect",
+      workCategory: "zotero_action",
+      requiresConfirmation: false,
+    },
+    validate: (args) => ({ ok: true, value: args ?? {} }),
+    planInvocation: async () =>
+      stateChangeInvocationPlan({
+        domains: ["zotero_library"],
+        effects: ["modify"],
+        reversibility: "full",
+        reason: "The import fixture mutates Zotero state.",
+      }),
+    execute: async () => ({
+      content: params.libraryImportContent ?? { importedCount: 0 },
+      effect: "applied",
+    }),
   } as never);
   // Registered for MCP readiness only; no turn here calls it.
   registry.register(createFileIOTool());
@@ -158,12 +199,16 @@ async function runSettlementTurn(params: {
     },
   } as never);
   const documentLookups: unknown[] = [];
+  const journalDb = new ChangeJournalTestDb();
   (globalThis as never as { Zotero: any }).Zotero = {
     ...originalZotero,
     Server: { Endpoints: {} },
     Libraries: { userLibraryID: 1 },
     Items: { get: () => null },
     DB: {
+      // The durable change journal an external effect needs.
+      executeTransaction: (task: () => Promise<void>) =>
+        journalDb.executeTransaction(task),
       queryAsync: async (sql: string, args: unknown[] = []) => {
         if (/WHERE run_id = \? ORDER BY created_at DESC/.test(sql)) {
           documentLookups.push(args[0]);
@@ -189,7 +234,7 @@ async function runSettlementTurn(params: {
             },
           ];
         }
-        return [];
+        return journalDb.queryAsync(sql, args);
       },
     },
     Prefs: {
@@ -201,6 +246,7 @@ async function runSettlementTurn(params: {
       },
     },
   };
+  await initAgentChangeJournal();
   registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
   const scopeToken = resolveConversationScopeToken({
     profileSignature: getCodexProfileSignature(),
@@ -331,6 +377,36 @@ describe("Codex native turn settlement", function () {
     assert.deepEqual(run.finished, [
       { status: "completed", text: DOCUMENT_MARKDOWN },
     ]);
+  });
+
+  it("speaks the document version a library_import published, loaded by the Codex turn id", async function () {
+    const run = await runSettlementTurn({
+      conversationKey: 6_000_000_906,
+      calls: ["library_import"],
+      documentStored: true,
+      libraryImportContent: { documentId: "codex-document-1" },
+    });
+    assert.deepEqual(run.documentLookups, ["turn-lifecycle-1"]);
+    assert.equal(run.result.text, DOCUMENT_MARKDOWN);
+    assert.equal(run.result.documentId, "codex-document-1");
+    assert.deepEqual(run.finished, [
+      { status: "completed", text: DOCUMENT_MARKDOWN },
+    ]);
+  });
+
+  it("loads no document after a library_import that published none", async function () {
+    const run = await runSettlementTurn({
+      conversationKey: 6_000_000_907,
+      calls: ["library_import"],
+      documentStored: true,
+      libraryImportContent: {
+        sourceDocumentId: "codex-document-1",
+        note: "the new version could not be published",
+      },
+    });
+    assert.isEmpty(run.documentLookups);
+    assert.equal(run.result.text, RAW_ANSWER);
+    assert.isUndefined(run.result.documentId);
   });
 
   it("keeps the provider's text when the submitted document is not stored", async function () {

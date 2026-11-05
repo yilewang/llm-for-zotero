@@ -36,6 +36,7 @@ const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
   library_retrieve: "retrieval",
   library_cite: "retrieval",
   paper_read: "retrieval",
+  paper_digest: "retrieval",
   read_attachment: "retrieval",
   literature_search: "retrieval",
   literature_read: "retrieval",
@@ -48,10 +49,16 @@ const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
   // Adds a found chat to the user's message (plugin state, no library
   // change) and returns its text: it brings context in.
   past_chat_attach: "retrieval",
+  // Opens a PDF in the reader for the user; no library change.
+  reader_open: "retrieval",
   load_skill: "retrieval",
+  // Reads this conversation's stored reads and decisions so far.
+  review_coverage: "retrieval",
   // Task bookkeeping.
   task_update: "planning",
   request_user_input: "planning",
+  // The agent's decisions about papers: claims about the task, not reads.
+  record_paper_decisions: "planning",
   // Authored deliverables.
   submit_document: "generation",
   // Zotero library changes.

@@ -138,7 +138,7 @@ export function buildTaskProgressHistory(
           break;
         case "codex_checklist":
           planSeen = true;
-          checklist = { source: "codex", runId, steps: effect.steps };
+          checklist = { source: effect.source, runId, steps: effect.steps };
           break;
         default:
           // Live-only effects (answering, waiting, final) are not replayed.
