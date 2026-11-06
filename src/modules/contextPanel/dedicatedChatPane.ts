@@ -3,6 +3,7 @@ import {
   syncSidebarSectionLayout,
 } from "./sidebarLayout";
 import { installPersistentLibraryChatPane } from "./persistentLibraryChatPane";
+import { installLibraryHeaderRowAlignment } from "./libraryHeaderRowAlignment";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { appLogger } from "../../core/logging";
 
@@ -61,6 +62,7 @@ export function installDedicatedChatPane(
   root.setAttribute("data-llm-pane-view", "details");
   const disposeLayout = installSidebarLayoutPreference(doc);
   const libraryPane = installPersistentLibraryChatPane(doc);
+  const disposeHeaderRows = installLibraryHeaderRowAlignment(doc);
   type ChatSidenav = Element & {
     _collapsed: boolean;
     container?: { getPane: (id: string) => Element | null };
@@ -131,6 +133,7 @@ export function installDedicatedChatPane(
     "llm-dedicated-chat-pane",
   );
   return () => {
+    disposeHeaderRows();
     libraryPane.dispose();
     disposeLayout();
     if (observerID) notifier?.unregisterObserver(observerID);

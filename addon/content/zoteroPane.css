@@ -437,6 +437,32 @@
   padding-inline: 10px;
 }
 
+/*
+ * Library tab, Independent pane: the toggle row centres on the items toolbar
+ * and the action row on the item list's column headers.
+ * libraryHeaderRowAlignment.ts measures both native rows and sets the three
+ * sizes; without them the rows keep the padding above. A toggle taller than
+ * its row (a large plugin font) overflows evenly and stays centred.
+ */
+:root[data-llm-library-header-aligned][data-llm-sidebar-layout="independent"]
+  #zotero-item-pane
+  .llm-dedicated-chat-pane
+  .llm-header-toggle-row {
+  box-sizing: border-box;
+  height: var(--llm-library-toggle-row-height);
+  padding-block: 0;
+}
+
+:root[data-llm-library-header-aligned][data-llm-sidebar-layout="independent"]
+  #zotero-item-pane
+  .llm-dedicated-chat-pane
+  .llm-header-nav-row {
+  box-sizing: border-box;
+  height: var(--llm-library-action-row-height);
+  margin-top: var(--llm-library-header-row-gap);
+  padding-block: 0;
+}
+
 .llm-header-info {
   flex: 1;
   display: flex;
