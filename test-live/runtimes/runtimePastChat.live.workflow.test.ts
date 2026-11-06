@@ -143,197 +143,191 @@ function panelDisclosures(panelId: string): string[] {
   return [];
 }
 
-(enabled ? describe : describe.skip)(
-  "live R3: attached past chats in Claude Code and Codex",
-  function () {
-    this.timeout(900_000);
+describe("live R3: attached past chats in Claude Code and Codex", function () {
+  this.timeout(900_000);
 
-    // Codex and Claude Code call this instance's MCP endpoint over HTTP.
-    before(async function () {
-      await ensureOwnZoteroHttpServer();
-    });
+  // Codex and Claude Code call this instance's MCP endpoint over HTTP.
+  before(async function () {
+    if (!enabled) this.skip();
+    await ensureOwnZoteroHttpServer();
+  });
 
-    const systems = selectedSystems().filter(
-      (system) => system === "claude_code" || system === "codex",
-    );
+  const systems = selectedSystems().filter(
+    (system) => system === "claude_code" || system === "codex",
+  );
 
-    for (const system of systems) {
-      it(`${system} library: answers from an attached past chat and refuses a chat that was not attached`, async function () {
-        const credentials = await resolveLiveAgentCredentials();
-        assert.isOk(
-          credentials,
-          "Configure LLM_FOR_ZOTERO_LIVE_MODEL in LLM_FOR_ZOTERO_LIVE_PROFILE_PATH; this test must not skip",
+  for (const system of systems) {
+    it(`${system} library: answers from an attached past chat and refuses a chat that was not attached`, async function () {
+      const credentials = await resolveLiveAgentCredentials();
+      assert.isOk(
+        credentials,
+        "Configure LLM_FOR_ZOTERO_LIVE_MODEL in LLM_FOR_ZOTERO_LIVE_PROFILE_PATH; this test must not skip",
+      );
+      const api = workflowApi();
+      await api.reset();
+      let fixture: Awaited<
+        ReturnType<typeof api.createPaperWithPdfFixture>
+      > | null = null;
+      const turns: TurnRecord[] = [];
+      const notes: string[] = [];
+      const step = { name: "setup" };
+      // The Claude Code bridge keeps a conversation's session hot, and a
+      // reset DB hands the next run the same conversation key. A run that
+      // fails before its delete step must delete the conversation through
+      // the plugin, which also invalidates the bridge session.
+      const leftover: { keys: number[]; deleted: boolean } = {
+        keys: [],
+        deleted: false,
+      };
+      try {
+        await withPrefs(liveRuntimePrefs(system, credentials!), async () => {
+          fixture = await api.createPaperWithPdfFixture({
+            title: `Live runtime past chat ${system}`,
+            pdfTitle: `live-runtime-pastchat-${system}.pdf`,
+            pages: [
+              "This synthetic page exists only so the panel has a paper to open.",
+            ],
+          });
+          const panel = await api.renderPanelForItem(fixture.parentItemId);
+          let diag = await api.getDiagnostics(panel.panelId);
+          assert.equal(diag.conversationSystem, system, "panel system");
+          diag = await switchPanelToLibraryChat(panel.panelId);
+          assert.equal(diag.conversationKind, "global", "panel kind");
+
+          step.name = "seed past chat";
+          const tag = `PASTCHAT-${shortSystemName(system)}`;
+          await api.seedPanelStoredUserMessage(
+            panel.panelId,
+            `${tag} lab animals in Dr. Okonkwo-Lindqvist's lab`,
+          );
+          await api.seedPanelStoredTurn(
+            panel.panelId,
+            "What was the rat in Dr. Okonkwo-Lindqvist's lab called?",
+            `The rat in Dr. Okonkwo-Lindqvist's lab was named ${SHORT_FACT}.`,
+          );
+          const seededKey = Number(
+            (await api.getDiagnostics(panel.panelId)).conversationKey,
+          );
+          assert.isAbove(seededKey, 0, "the seeded chat has a key");
+          leftover.keys.push(seededKey);
+
+          step.name = "attach";
+          await api.startNewPanelConversation(panel.panelId);
+          const picked = await api.pickPastConversationInPanel(panel.panelId, {
+            title: tag,
+          });
+          assert.isTrue(picked.picked, JSON.stringify(picked));
+
+          async function turn(
+            label: string,
+            userText: string,
+          ): Promise<TurnRecord> {
+            const started = Date.now();
+            const result = await api.sendLiveChatTurn(
+              panel.panelId,
+              userText,
+              300_000,
+            );
+            const elapsedMs = Date.now() - started;
+            const key = Number(
+              (await api.getDiagnostics(panel.panelId)).conversationKey,
+            );
+            if (key > 0 && !leftover.keys.includes(key)) {
+              leftover.keys.push(key);
+            }
+            const record: TurnRecord = {
+              system,
+              label,
+              userText,
+              answerText: result.answerText,
+              elapsedMs,
+              disclosures: panelDisclosures(panel.panelId),
+              runEvents: await readPastChatEvents(key),
+            };
+            turns.push(record);
+            return record;
+          }
+
+          step.name = "turn a: attached chat";
+          const first = await turn("a-attached", SHORT_QUESTION);
+          assert.include(
+            first.answerText.toLowerCase(),
+            SHORT_FACT.toLowerCase(),
+            `the answer states the fact from the attached chat: ${JSON.stringify(first)}`,
+          );
+
+          step.name = "turn b: chat that was not attached";
+          const second = await turn("b-not-attached", REFUSED_QUESTION);
+          assert.notInclude(
+            second.answerText.toLowerCase(),
+            SHORT_FACT.toLowerCase(),
+            "the answer must not borrow another chat's content",
+          );
+          assert.match(
+            second.answerText,
+            REFUSAL_QUOTE,
+            `the answer quotes the tool's refusal: ${JSON.stringify(second.answerText)}`,
+          );
+          // Tool-call visibility: the run journal, when the runtime writes
+          // one for this turn. Without it the text assertion decides.
+          const journal = second.runEvents.filter(
+            (event) => event.type !== "query_error",
+          );
+          if (journal.length) {
+            assert.isTrue(
+              journal.some((event) => event.text.includes(REFUSAL_TEXT)),
+              `a past_chat_read result must say "${REFUSAL_TEXT}": ${JSON.stringify(journal)}`,
+            );
+          } else {
+            notes.push(
+              "No past_chat_read event in the run journal for turn b; only the answer text was asserted.",
+            );
+          }
+
+          step.name = "delete";
+          const turnKey = Number(
+            (await api.getDiagnostics(panel.panelId)).conversationKey,
+          );
+          await api.startNewPanelConversation(panel.panelId);
+          for (const key of new Set([turnKey, ...leftover.keys])) {
+            if (key > 0) {
+              await api.deletePanelHistoryConversation(panel.panelId, key);
+            }
+          }
+          await api.sweepPendingDeletionsAsRestart();
+          leftover.deleted = true;
+        });
+      } catch (error) {
+        assert.fail(
+          `${system} failed at ${step.name}: ${describeError(error)}`,
         );
-        const api = workflowApi();
-        await api.reset();
-        let fixture: Awaited<
-          ReturnType<typeof api.createPaperWithPdfFixture>
-        > | null = null;
-        const turns: TurnRecord[] = [];
-        const notes: string[] = [];
-        const step = { name: "setup" };
-        // The Claude Code bridge keeps a conversation's session hot, and a
-        // reset DB hands the next run the same conversation key. A run that
-        // fails before its delete step must delete the conversation through
-        // the plugin, which also invalidates the bridge session.
-        const leftover: { keys: number[]; deleted: boolean } = {
-          keys: [],
-          deleted: false,
-        };
-        try {
+      } finally {
+        if (leftover.keys.length && !leftover.deleted && fixture) {
+          const paperItemId = (fixture as { parentItemId: number })
+            .parentItemId;
           await withPrefs(liveRuntimePrefs(system, credentials!), async () => {
-            fixture = await api.createPaperWithPdfFixture({
-              title: `Live runtime past chat ${system}`,
-              pdfTitle: `live-runtime-pastchat-${system}.pdf`,
-              pages: [
-                "This synthetic page exists only so the panel has a paper to open.",
-              ],
-            });
-            const panel = await api.renderPanelForItem(fixture.parentItemId);
-            let diag = await api.getDiagnostics(panel.panelId);
-            assert.equal(diag.conversationSystem, system, "panel system");
-            diag = await switchPanelToLibraryChat(panel.panelId);
-            assert.equal(diag.conversationKind, "global", "panel kind");
-
-            step.name = "seed past chat";
-            const tag = `PASTCHAT-${shortSystemName(system)}`;
-            await api.seedPanelStoredUserMessage(
-              panel.panelId,
-              `${tag} lab animals in Dr. Okonkwo-Lindqvist's lab`,
-            );
-            await api.seedPanelStoredTurn(
-              panel.panelId,
-              "What was the rat in Dr. Okonkwo-Lindqvist's lab called?",
-              `The rat in Dr. Okonkwo-Lindqvist's lab was named ${SHORT_FACT}.`,
-            );
-            const seededKey = Number(
-              (await api.getDiagnostics(panel.panelId)).conversationKey,
-            );
-            assert.isAbove(seededKey, 0, "the seeded chat has a key");
-            leftover.keys.push(seededKey);
-
-            step.name = "attach";
+            const panel = await api.renderPanelForItem(paperItemId);
+            await switchPanelToLibraryChat(panel.panelId);
             await api.startNewPanelConversation(panel.panelId);
-            const picked = await api.pickPastConversationInPanel(
-              panel.panelId,
-              { title: tag },
-            );
-            assert.isTrue(picked.picked, JSON.stringify(picked));
-
-            async function turn(
-              label: string,
-              userText: string,
-            ): Promise<TurnRecord> {
-              const started = Date.now();
-              const result = await api.sendLiveChatTurn(
-                panel.panelId,
-                userText,
-                300_000,
-              );
-              const elapsedMs = Date.now() - started;
-              const key = Number(
-                (await api.getDiagnostics(panel.panelId)).conversationKey,
-              );
-              if (key > 0 && !leftover.keys.includes(key)) {
-                leftover.keys.push(key);
-              }
-              const record: TurnRecord = {
-                system,
-                label,
-                userText,
-                answerText: result.answerText,
-                elapsedMs,
-                disclosures: panelDisclosures(panel.panelId),
-                runEvents: await readPastChatEvents(key),
-              };
-              turns.push(record);
-              return record;
-            }
-
-            step.name = "turn a: attached chat";
-            const first = await turn("a-attached", SHORT_QUESTION);
-            assert.include(
-              first.answerText.toLowerCase(),
-              SHORT_FACT.toLowerCase(),
-              `the answer states the fact from the attached chat: ${JSON.stringify(first)}`,
-            );
-
-            step.name = "turn b: chat that was not attached";
-            const second = await turn("b-not-attached", REFUSED_QUESTION);
-            assert.notInclude(
-              second.answerText.toLowerCase(),
-              SHORT_FACT.toLowerCase(),
-              "the answer must not borrow another chat's content",
-            );
-            assert.match(
-              second.answerText,
-              REFUSAL_QUOTE,
-              `the answer quotes the tool's refusal: ${JSON.stringify(second.answerText)}`,
-            );
-            // Tool-call visibility: the run journal, when the runtime writes
-            // one for this turn. Without it the text assertion decides.
-            const journal = second.runEvents.filter(
-              (event) => event.type !== "query_error",
-            );
-            if (journal.length) {
-              assert.isTrue(
-                journal.some((event) => event.text.includes(REFUSAL_TEXT)),
-                `a past_chat_read result must say "${REFUSAL_TEXT}": ${JSON.stringify(journal)}`,
-              );
-            } else {
-              notes.push(
-                "No past_chat_read event in the run journal for turn b; only the answer text was asserted.",
-              );
-            }
-
-            step.name = "delete";
-            const turnKey = Number(
-              (await api.getDiagnostics(panel.panelId)).conversationKey,
-            );
-            await api.startNewPanelConversation(panel.panelId);
-            for (const key of new Set([turnKey, ...leftover.keys])) {
-              if (key > 0) {
-                await api.deletePanelHistoryConversation(panel.panelId, key);
-              }
+            for (const key of leftover.keys) {
+              await api
+                .deletePanelHistoryConversation(panel.panelId, key)
+                .catch(() => undefined);
             }
             await api.sweepPendingDeletionsAsRestart();
-            leftover.deleted = true;
-          });
-        } catch (error) {
-          assert.fail(
-            `${system} failed at ${step.name}: ${describeError(error)}`,
-          );
-        } finally {
-          if (leftover.keys.length && !leftover.deleted && fixture) {
-            const paperItemId = (fixture as { parentItemId: number })
-              .parentItemId;
-            await withPrefs(
-              liveRuntimePrefs(system, credentials!),
-              async () => {
-                const panel = await api.renderPanelForItem(paperItemId);
-                await switchPanelToLibraryChat(panel.panelId);
-                await api.startNewPanelConversation(panel.panelId);
-                for (const key of leftover.keys) {
-                  await api
-                    .deletePanelHistoryConversation(panel.panelId, key)
-                    .catch(() => undefined);
-                }
-                await api.sweepPendingDeletionsAsRestart();
-              },
-            ).catch(() => undefined); // cleanup only; the failure is reported
-          }
-          reportEntries.push({ system, notes, turns });
-          await Zotero.File.putContentsAsync(
-            `${Zotero.DataDirectory.dir}/${REPORT_NAME}`,
-            JSON.stringify({ systems: reportEntries }, null, 2),
-          ).catch(() => undefined);
-          await api.reset();
-          if (fixture) await api.cleanupFixture(fixture);
+          }).catch(() => undefined); // cleanup only; the failure is reported
         }
-      });
-    }
-  },
-);
+        reportEntries.push({ system, notes, turns });
+        await Zotero.File.putContentsAsync(
+          `${Zotero.DataDirectory.dir}/${REPORT_NAME}`,
+          JSON.stringify({ systems: reportEntries }, null, 2),
+        ).catch(() => undefined);
+        await api.reset();
+        if (fixture) await api.cleanupFixture(fixture);
+      }
+    });
+  }
+});
 
 (findEnabled ? describe : describe.skip)(
   "live: Claude Code and Codex find and add an earlier chat",
