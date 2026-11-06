@@ -22083,3 +22083,169 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   background: color-mix(in srgb, var(--llm-diff-add-fg) 24%, transparent);
   color: inherit;
 }
+
+/* Optional reading palettes. Scope Zotero's semantic tokens to the plugin
+ * panel, so the PDF and neighboring native item sections keep their themes.
+ * Removing the document attribute restores Zotero's original cascade. */
+:root[data-llm-sidebar-theme] #llm-main.llm-panel {
+  color-scheme: light;
+  --llm-codeblock-bg: color-mix(
+    in srgb,
+    var(--material-background, #ffffff) 92%,
+    var(--fill-primary, #111827) 8%
+  );
+  --llm-codeblock-border: color-mix(
+    in srgb,
+    var(--stroke-secondary, rgba(120, 120, 120, 0.3)) 86%,
+    transparent
+  );
+  --llm-flat-surface: color-mix(in srgb, #000 3.5%, transparent);
+  --llm-codeblock-header-text: var(--fill-secondary, #4b5563);
+  --llm-codeblock-copy: var(--fill-secondary, #4b5563);
+  --llm-codeblock-copy-hover: var(--fill-primary, #111827);
+  --llm-codeblock-text: var(--fill-primary, #1f2937);
+  --llm-codeblock-comment: color-mix(
+    in srgb,
+    var(--fill-secondary, #64748b) 88%,
+    transparent
+  );
+  --llm-codeblock-keyword: color-mix(
+    in srgb,
+    #8b5cf6 78%,
+    var(--fill-primary, #111827) 22%
+  );
+  --llm-codeblock-title: color-mix(
+    in srgb,
+    #0ea5e9 78%,
+    var(--fill-primary, #111827) 22%
+  );
+  --llm-codeblock-string: color-mix(
+    in srgb,
+    #10b981 78%,
+    var(--fill-primary, #111827) 22%
+  );
+  --llm-codeblock-number: color-mix(
+    in srgb,
+    #f59e0b 78%,
+    var(--fill-primary, #111827) 22%
+  );
+  --llm-codeblock-meta: color-mix(
+    in srgb,
+    #f43f5e 78%,
+    var(--fill-primary, #111827) 22%
+  );
+  --llm-mermaid-canvas-bg: var(--material-background, #ffffff);
+  --llm-mermaid-canvas-border: color-mix(
+    in srgb,
+    var(--stroke-secondary, rgba(120, 120, 120, 0.28)) 80%,
+    transparent
+  );
+  --llm-mermaid-button-bg: transparent;
+  --llm-mermaid-button-text: var(--fill-secondary, #4b5563);
+  --llm-mermaid-button-border: transparent;
+  --llm-mermaid-button-hover-bg: color-mix(
+    in srgb,
+    var(--fill-secondary, #4b5563) 12%,
+    transparent
+  );
+  --llm-mermaid-button-hover-border: transparent;
+  --llm-mermaid-viewer-backdrop: rgba(15, 23, 42, 0.64);
+  --llm-mermaid-viewer-panel-bg: var(--llm-mermaid-canvas-bg);
+  --llm-mermaid-viewer-toolbar-bg: transparent;
+  --llm-mermaid-viewer-toolbar-border: transparent;
+  --llm-mermaid-viewer-zoom-text: var(--fill-secondary, #4b5563);
+  --material-background: var(--llm-reading-background);
+  --material-sidepane: var(--llm-reading-background);
+  --fill-primary: var(--llm-reading-text);
+  --fill-secondary: color-mix(
+    in srgb,
+    var(--fill-primary) 78%,
+    var(--material-background)
+  );
+  --fill-tertiary: color-mix(
+    in srgb,
+    var(--fill-primary) 62%,
+    var(--material-background)
+  );
+  --fill-quaternary: color-mix(in srgb, var(--fill-primary) 14%, transparent);
+  --fill-quarternary: var(--fill-quaternary);
+  --fill-quinary: color-mix(in srgb, var(--fill-primary) 7%, transparent);
+  --stroke-primary: color-mix(in srgb, var(--fill-primary) 35%, transparent);
+  --stroke-secondary: color-mix(in srgb, var(--fill-primary) 20%, transparent);
+  --material-panedivider: 1px solid var(--stroke-secondary);
+  --color-accent: #245ea8;
+  --color-primary: var(--fill-primary);
+  --color-border: var(--stroke-secondary);
+  --llm-diff-add-bg: #edf8f0;
+  --llm-diff-add-strong: #bfe9cb;
+  --llm-diff-add-fg: #1f7340;
+  --llm-diff-remove-bg: #fbeeee;
+  --llm-diff-remove-strong: #f3c9c9;
+  --llm-diff-remove-fg: #b23535;
+  --llm-history-paper-chip-text: #1d4ed8;
+  --llm-history-library-chip-text: #92400e;
+  --llm-history-orphan-chip-text: #b91c1c;
+  --llm-task-progress-shadow: none;
+}
+
+:root[data-llm-sidebar-theme="green"] #llm-main.llm-panel {
+  --llm-reading-background: #e8ede4;
+  --llm-reading-text: #26382b;
+}
+
+:root[data-llm-sidebar-theme="sepia"] #llm-main.llm-panel {
+  --llm-reading-background: #ede9e1;
+  --llm-reading-text: #40362b;
+}
+
+:root[data-llm-sidebar-theme="dark"] #llm-main.llm-panel,
+:root[data-llm-sidebar-theme="custom-dark"] #llm-main.llm-panel {
+  color-scheme: dark;
+  --llm-codeblock-comment: #a1a1aa;
+  --llm-codeblock-keyword: #f0abfc;
+  --llm-codeblock-title: #67e8f9;
+  --llm-codeblock-string: #86efac;
+  --llm-codeblock-number: #fde68a;
+  --llm-codeblock-meta: #fda4af;
+  --llm-reading-background: #1e2023;
+  --llm-reading-text: #e5e7eb;
+  --color-accent: #8ab4f8;
+  --llm-diff-add-bg: #24392b;
+  --llm-diff-add-strong: #31533c;
+  --llm-diff-add-fg: #7bdda0;
+  --llm-diff-remove-bg: #422a2d;
+  --llm-diff-remove-strong: #62373c;
+  --llm-diff-remove-fg: #ff9c9c;
+  --llm-history-paper-chip-text: #93baff;
+  --llm-history-library-chip-text: #ffc27d;
+  --llm-history-orphan-chip-text: #ff9c9c;
+}
+
+:root[data-llm-sidebar-theme] #llm-main.llm-panel .llm-rose-loader-inline {
+  color: var(--fill-primary) !important;
+}
+
+:root[data-llm-sidebar-theme="beanGreen"] #llm-main.llm-panel {
+  --llm-reading-background: #c8edcc;
+  --llm-reading-text: #26382b;
+}
+
+:root[data-llm-sidebar-theme="skyBlue"] #llm-main.llm-panel {
+  --llm-reading-background: #dbe2f2;
+  --llm-reading-text: #293447;
+}
+
+:root[data-llm-sidebar-theme="grassGreen"] #llm-main.llm-panel {
+  --llm-reading-background: #e2eccd;
+  --llm-reading-text: #303b24;
+}
+
+:root[data-llm-sidebar-theme="custom-light"] #llm-main.llm-panel,
+:root[data-llm-sidebar-theme="custom-dark"] #llm-main.llm-panel {
+  --llm-reading-background: var(--llm-custom-background);
+  --llm-reading-text: #000000;
+}
+
+:root[data-llm-sidebar-theme="custom-dark"] #llm-main.llm-panel {
+  --llm-reading-text: #ffffff;
+}

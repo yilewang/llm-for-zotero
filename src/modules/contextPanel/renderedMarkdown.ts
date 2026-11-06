@@ -515,6 +515,7 @@ function ensureMermaidThemeWatcher(doc: Document, root?: ParentNode): void {
         "style",
         "lwtheme-brighttext",
         STANDALONE_THEME_ATTRIBUTE,
+        "data-llm-sidebar-theme",
       ],
     });
     watcher.observations.push({ target: element, observer });

@@ -13,6 +13,22 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Custom color": "自定义颜色",
+  "Background hex color": "背景色号",
+  "Enter 3 or 6 hex digits, for example #c8edcc. Text color adjusts automatically.":
+    "输入 3 位或 6 位十六进制色号，例如 #c8edcc。文字颜色自动调整。",
+  "Invalid hex color. The last valid color is kept.":
+    "色号格式无效，继续使用上一次有效颜色。",
+  "Sidebar color theme": "侧边栏配色",
+  "Default (follow Zotero)": "默认（跟随 Zotero）",
+  Dark: "深色",
+  "Soft green": "绿色",
+  "Bean green": "豆沙绿",
+  "Sky blue": "海天蓝",
+  "Grass green": "青草绿",
+  Sepia: "米色",
+  "Change the chat sidebar colors. Applies immediately and is saved for future sessions.":
+    "更改聊天侧边栏的配色。立即生效，并在下次使用时保留。",
   "Not in library": "不在文献库中",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",

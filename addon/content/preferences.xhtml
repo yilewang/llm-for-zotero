@@ -439,6 +439,59 @@
       >
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
+            for="__addonRef__-sidebar-theme"
+            style="font-weight: 600; font-size: 12px"
+            >Sidebar color theme</html:label
+          >
+          <html:select
+            id="__addonRef__-sidebar-theme"
+            style="
+              width: 220px;
+              padding: 4px 8px;
+              font-size: 12px;
+              border-radius: 6px;
+            "
+          >
+            <html:option value="default">Default (follow Zotero)</html:option>
+            <html:option value="dark">Dark</html:option>
+            <html:option value="green">Soft green</html:option>
+            <html:option value="sepia">Sepia</html:option>
+            <html:option value="beanGreen">Bean green</html:option>
+            <html:option value="skyBlue">Sky blue</html:option>
+            <html:option value="grassGreen">Grass green</html:option>
+            <html:option value="custom">Custom color</html:option>
+          </html:select>
+          <html:div
+            id="__addonRef__-sidebar-custom-color-row"
+            style="display: none"
+          >
+            <html:label for="__addonRef__-sidebar-custom-color"
+              >Background hex color</html:label
+            >
+            <html:input
+              id="__addonRef__-sidebar-custom-color"
+              type="text"
+              placeholder="#c8edcc"
+              maxlength="7"
+              spellcheck="false"
+              aria-describedby="__addonRef__-sidebar-custom-color-status"
+              style="width: 120px"
+            />
+            <html:span
+              id="__addonRef__-sidebar-custom-color-status"
+              role="status"
+              aria-live="polite"
+            ></html:span>
+          </html:div>
+          <html:span
+            id="__addonRef__-sidebar-theme-hint"
+            style="font-size: 11px; color: var(--fill-secondary, #888)"
+            >Change the chat sidebar colors. Applies immediately and is saved
+            for future sessions.</html:span
+          >
+        </html:div>
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
             for="__addonRef__-sidebar-layout"
             style="font-weight: 600; font-size: 12px"
             >Sidebar layout</html:label

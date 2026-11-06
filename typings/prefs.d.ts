@@ -10,6 +10,8 @@ declare namespace _ZoteroTypes {
       "enable": boolean;
       "logLevel": string;
       "sidebarLayout": string;
+      "sidebarTheme": string;
+      "sidebarCustomColor": string;
       "standaloneSidebarWidth": number;
       "standalonePinnedPapers": string;
       "standaloneSidebarSectionOptions": string;

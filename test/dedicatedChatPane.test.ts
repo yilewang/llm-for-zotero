@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { FakeElement } from "./helpers/fakeDom";
 import { installDedicatedChatPane } from "../src/modules/contextPanel/dedicatedChatPane";
 
 function harness() {
@@ -10,6 +11,7 @@ function harness() {
   let notify: ((event: string) => void) | undefined;
   let subscribed = false;
   const root = {
+    style: new FakeElement().style,
     getAttribute: (key: string) => attributes.get(key),
     setAttribute: (key: string, value: string) => attributes.set(key, value),
     removeAttribute: (key: string) => attributes.delete(key),

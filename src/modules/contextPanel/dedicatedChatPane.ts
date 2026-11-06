@@ -2,6 +2,7 @@ import {
   installSidebarLayoutPreference,
   syncSidebarSectionLayout,
 } from "./sidebarLayout";
+import { installSidebarThemePreference } from "./sidebarTheme";
 import { installPersistentLibraryChatPane } from "./persistentLibraryChatPane";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { appLogger } from "../../core/logging";
@@ -60,6 +61,7 @@ export function installDedicatedChatPane(
   };
   root.setAttribute("data-llm-pane-view", "details");
   const disposeLayout = installSidebarLayoutPreference(doc);
+  const disposeTheme = installSidebarThemePreference(doc);
   const libraryPane = installPersistentLibraryChatPane(doc);
   type ChatSidenav = Element & {
     _collapsed: boolean;
@@ -133,6 +135,7 @@ export function installDedicatedChatPane(
   return () => {
     libraryPane.dispose();
     disposeLayout();
+    disposeTheme();
     if (observerID) notifier?.unregisterObserver(observerID);
     if (refreshTimer !== undefined) win?.clearTimeout(refreshTimer);
     doc.removeEventListener("click", onClick, true);
