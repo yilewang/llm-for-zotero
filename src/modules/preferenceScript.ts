@@ -5,6 +5,15 @@ import {
   getSidebarLayout,
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
+import {
+  getSidebarCustomColor,
+  normalizeSidebarCustomColor,
+  SIDEBAR_CUSTOM_COLOR_PREF,
+  getSidebarTheme,
+  normalizeSidebarTheme,
+  SIDEBAR_THEME_PREF,
+  SIDEBAR_THEMES,
+} from "./contextPanel/sidebarTheme";
 import { config } from "../../package.json";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
@@ -3315,6 +3324,77 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     _window.addEventListener("unload", libraryTextIndexSettings.dispose, {
       once: true,
     });
+  }
+
+  const sidebarThemeSelect = doc.querySelector(
+    `#${config.addonRef}-sidebar-theme`,
+  ) as HTMLSelectElement | null;
+  if (sidebarThemeSelect) {
+    const label = doc.querySelector(
+      `label[for="${config.addonRef}-sidebar-theme"]`,
+    );
+    if (label) label.textContent = t("Sidebar color theme");
+    const hint = doc.getElementById(`${config.addonRef}-sidebar-theme-hint`);
+    if (hint)
+      hint.textContent = t(
+        "Change the chat sidebar colors. Applies immediately and is saved for future sessions.",
+      );
+    for (const option of Array.from(sidebarThemeSelect.options)) {
+      option.textContent = t(
+        SIDEBAR_THEMES[normalizeSidebarTheme(option.getAttribute("value"))],
+      );
+    }
+    const customRow = doc.getElementById(
+      `${config.addonRef}-sidebar-custom-color-row`,
+    );
+    const customInput = doc.getElementById(
+      `${config.addonRef}-sidebar-custom-color`,
+    ) as HTMLInputElement | null;
+    const customStatus = doc.getElementById(
+      `${config.addonRef}-sidebar-custom-color-status`,
+    );
+    const customLabel = doc.querySelector(
+      `label[for="${config.addonRef}-sidebar-custom-color"]`,
+    );
+    if (customLabel) customLabel.textContent = t("Background hex color");
+    const updateCustomVisibility = () => {
+      if (customRow)
+        customRow.style.display =
+          sidebarThemeSelect.value === "custom" ? "" : "none";
+    };
+    if (customInput) {
+      customInput.value = getSidebarCustomColor();
+      if (customStatus)
+        customStatus.textContent = t(
+          "Enter 3 or 6 hex digits, for example #c8edcc. Text color adjusts automatically.",
+        );
+      customInput.addEventListener("input", () => {
+        const color = normalizeSidebarCustomColor(customInput.value);
+        customInput.setAttribute("aria-invalid", color ? "false" : "true");
+        if (customStatus)
+          customStatus.textContent = t(
+            color
+              ? "Enter 3 or 6 hex digits, for example #c8edcc. Text color adjusts automatically."
+              : "Invalid hex color. The last valid color is kept.",
+          );
+        if (color) Zotero.Prefs.set(SIDEBAR_CUSTOM_COLOR_PREF, color, true);
+      });
+      customInput.addEventListener("change", () => {
+        const color = normalizeSidebarCustomColor(customInput.value);
+        if (color) customInput.value = color;
+      });
+    }
+    sidebarThemeSelect.value = getSidebarTheme();
+    updateCustomVisibility();
+    sidebarThemeSelect.addEventListener("change", () => {
+      updateCustomVisibility();
+      Zotero.Prefs.set(
+        SIDEBAR_THEME_PREF,
+        normalizeSidebarTheme(sidebarThemeSelect.value),
+        true,
+      );
+    });
+    sidebarThemeSelect.dataset.preferenceBound = "true";
   }
 
   const sidebarLayoutSelect = doc.querySelector(

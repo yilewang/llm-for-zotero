@@ -1,6 +1,8 @@
 pref("enable", true);
 pref("logLevel", "warn");
 pref("sidebarLayout", "stacked");
+pref("sidebarTheme", "default");
+pref("sidebarCustomColor", "#c8edcc");
 pref("standaloneSidebarWidth", 220);
 pref("standalonePinnedPapers", "");
 pref("standaloneSidebarSectionOptions", "");
