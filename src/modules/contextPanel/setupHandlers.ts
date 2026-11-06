@@ -5884,6 +5884,7 @@ export function setupHandlers(
     action.addEventListener("pointerdown", onActivate);
     action.addEventListener("click", onActivate);
     menu.appendChild(action);
+    return action;
   };
 
   const appendModelCatalogStatus = (params: {
@@ -5911,7 +5912,11 @@ export function setupHandlers(
         params.errorMessage,
       );
       if (params.errorTitle) message.title = params.errorTitle;
-      appendModelMenuAction(params.menu, params.retryLabel, params.onRetry);
+      appendModelMenuAction(
+        params.menu,
+        params.retryLabel,
+        params.onRetry,
+      ).dataset.modelMenuAction = "retry";
       return true;
     }
     if (params.status === "ready" && params.modelCount === 0) {
