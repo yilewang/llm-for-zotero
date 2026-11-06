@@ -37,7 +37,10 @@ describe("workflow: Task progress row padding", function () {
   }
 
   /** Pixels of a window rectangle, at the screen's own resolution. */
-  function pixels(win: any, rect: { left: number; top: number; width: number; height: number }) {
+  function pixels(
+    win: any,
+    rect: { left: number; top: number; width: number; height: number },
+  ) {
     const scale = win.devicePixelRatio || 1;
     const canvas = win.document.createElementNS(
       "http://www.w3.org/1999/xhtml",
@@ -47,7 +50,14 @@ describe("workflow: Task progress row padding", function () {
     canvas.height = Math.round(rect.height * scale);
     const context = canvas.getContext("2d");
     context.scale(scale, scale);
-    context.drawWindow(win, rect.left, rect.top, rect.width, rect.height, "#ff00ff");
+    context.drawWindow(
+      win,
+      rect.left,
+      rect.top,
+      rect.width,
+      rect.height,
+      "#ff00ff",
+    );
     return {
       scale,
       width: canvas.width,
@@ -193,7 +203,11 @@ describe("workflow: Task progress row padding", function () {
           width: c.width + 24,
           height: c.bottom - t.top + 12,
         });
-        await save(win, shot.canvas, `tp-edge-standalone-${width}-${theme}.png`);
+        await save(
+          win,
+          shot.canvas,
+          `tp-edge-standalone-${width}-${theme}.png`,
+        );
       }
       // Moved to the side panel: a picture of the whole window, for a
       // person to check the side panel's title row by eye.
