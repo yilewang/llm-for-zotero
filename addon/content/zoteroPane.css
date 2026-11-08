@@ -743,8 +743,7 @@
  * Independent keeps the toggle row above the actions row; Stacked drops it
  * and shows the chip in the divider's place. The standalone window hides
  * this header altogether. */
-:root[data-llm-sidebar-layout="stacked"] .llm-header-toggle-row,
-:root[data-llm-sidebar-layout="stacked"] .llm-header-runtime-divider {
+:root[data-llm-sidebar-layout="stacked"] .llm-header-toggle-row {
   display: none;
 }
 
@@ -1376,6 +1375,58 @@
   pointer-events: none;
 }
 
+/*
+ * The More button (Stacked header only): hidden everywhere until the Stacked
+ * row folds Settings, Export and Delete into it (see the capsule header
+ * block below; the tight stage folds Task progress and Open in window into
+ * it as well). It sits after .llm-btn-icon so its display wins.
+ */
+.llm-header-more-btn {
+  position: relative;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  font-size: 0;
+  line-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.llm-header-more-btn::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-image: url("icons/action-more.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-more.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-header-more-btn[aria-expanded="true"] {
+  opacity: 1;
+  background: var(--fill-quinary);
+}
+
+.llm-header-more-menu .llm-standalone-skill-ctx-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.llm-header-more-menu .llm-standalone-skill-ctx-item:disabled:hover {
+  background: transparent;
+}
+
 /* Runtime spacing stays unchanged until the header actually runs out of room. */
 .llm-header-runtime-controls {
   gap: calc(4px * (1 - var(--llm-runtime-compression, 0)));
@@ -1407,12 +1458,6 @@
     gap: 0;
   }
 
-  /* The Stacked header's single row has no room for a fifth action here;
-   * above this width the button shows. */
-  :root[data-llm-sidebar-layout="stacked"] .llm-task-progress-btn {
-    display: none;
-  }
-
   .llm-header-actions .llm-btn-icon {
     width: 24px;
     min-width: 24px;
@@ -1442,6 +1487,226 @@
   .llm-mode-switch {
     margin-inline-start: 4px;
   }
+}
+
+/*
+ * Stacked capsule header. Three blocks on one row: new chat and history on
+ * the left, the mode chip and runtime toggles in a capsule that sits in the
+ * free space between, panel actions on the right. headerSpacing.ts picks
+ * `data-fit` on the row from arithmetic on these sizes (keep them in step):
+ *   full     28px boxes, 10px least between blocks, every action shown
+ *   menu     as full, with Settings, Export and Delete folded into More
+ *   compact  as menu, with 24px boxes and 8px least between blocks
+ *   tight    as compact, with Task progress and Open in window folded too,
+ *            so the right block is the More button alone
+ * The chip uses a fixed 12px font here (the base rule scales it with the
+ * plugin font), so the capsule is one width at every font scale and the
+ * stage does not depend on it. Every box is 28px with a 16px glyph at rest opacity 0.72; the row keeps its
+ * height in every stage. Independent keeps the @container rules above.
+ */
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row {
+  --llm-header-box: 28px;
+  --llm-header-gap-min: 10px;
+  column-gap: var(--llm-header-gap-min);
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"] {
+  --llm-header-box: 24px;
+  --llm-header-gap-min: 8px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row[data-fit="tight"] {
+  --llm-header-box: 24px;
+  --llm-header-gap-min: 8px;
+}
+
+/* The history bar takes the room left of the actions; the capsule's auto
+ * margins then split what is free after the new chat and history buttons, so
+ * the gaps either side of it are equal and at least the stage's minimum. */
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-bar {
+  flex: 1 1 0%;
+  gap: 0;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions {
+  gap: 2px;
+  min-height: 28px;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle {
+  margin-inline: 2px var(--llm-header-gap-min);
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-runtime-controls {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 2px;
+  gap: 2px;
+  margin-inline: auto;
+  border-radius: 13px;
+  background: var(--fill-quinary);
+}
+
+/* The runtime toggles are 22px circles inside the capsule. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-controls {
+  --llm-runtime-button-width: 22px;
+  --llm-runtime-gap: 2px;
+  order: 2;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-toggle {
+  height: 22px;
+  border-radius: 11px;
+}
+
+/* The capsule is filled with quinary, so its toggles hover one step darker. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-toggle:hover:not(:disabled) {
+  background: var(--fill-quarternary);
+}
+
+/* The Independent divider is the capsule's separator here; setupHandlers
+ * hides it while no runtime toggle shows. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-runtime-divider {
+  display: block;
+  order: 1;
+  height: 12px;
+  margin-inline: 2px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-mode-switch {
+  margin: 0;
+}
+
+/* Fixed size: the capsule must not grow with the plugin font scale. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-mode-switch-sizer
+  > span,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-mode-switch-option {
+  font-size: 12px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-new,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon {
+  box-sizing: border-box;
+  width: var(--llm-header-box);
+  min-width: var(--llm-header-box);
+  height: var(--llm-header-box);
+  min-height: var(--llm-header-box);
+  padding: 0;
+  border-radius: 6px;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-new,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon {
+  margin: 0;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-new:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon:not(:disabled):not([aria-pressed="true"]):not(
+    [aria-expanded="true"]
+  ) {
+  opacity: 0.72;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-new:hover:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle:hover:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon:hover:not(:disabled) {
+  color: var(--fill-primary);
+  background: var(--fill-quinary);
+  opacity: 1;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-settings-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-export-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-clear-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"]
+  .llm-settings-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"]
+  .llm-export-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"]
+  .llm-clear-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-settings-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-export-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-clear-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-task-progress-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-popout-btn {
+  display: none;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-header-more-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"]
+  .llm-header-more-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-header-more-btn {
+  display: inline-flex;
 }
 
 .llm-panel[data-webchat-mode="true"] .llm-clear-btn {

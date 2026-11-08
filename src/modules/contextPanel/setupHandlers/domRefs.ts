@@ -18,6 +18,9 @@ export type PanelDomRefs = {
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
+  /** The Stacked header's More button and its menu. */
+  headerMoreBtn: HTMLButtonElement | null;
+  headerMoreMenu: HTMLDivElement | null;
   titleStatic: HTMLDivElement | null;
   historyBar: HTMLDivElement | null;
   historyNewBtn: HTMLButtonElement | null;
@@ -141,6 +144,12 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
+    headerMoreBtn: body.querySelector(
+      "#llm-header-more",
+    ) as HTMLButtonElement | null,
+    headerMoreMenu: body.querySelector(
+      "#llm-header-more-menu",
+    ) as HTMLDivElement | null,
     titleStatic: body.querySelector(
       "#llm-title-static",
     ) as HTMLDivElement | null,

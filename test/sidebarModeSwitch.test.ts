@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
@@ -73,6 +76,49 @@ describe("sidebar mode switch (the Stacked mode chip)", function () {
     assert.equal(library.tabIndex, -1);
     assert.isFalse(paper.disabled);
     assert.isFalse(library.disabled);
+  });
+
+  it("stays a plain chip inside the header capsule, with no caret", function () {
+    const capsule = build();
+    // The capsule header wraps this element as it is: hover opens the switch,
+    // and the sizer keeps the chip one width. No caret marks it as a menu.
+    assert.isOk(capsule.findByClass("llm-mode-switch-sizer"));
+    assert.isUndefined(
+      capsule.findByClass("llm-mode-switch-caret") ?? undefined,
+    );
+    assert.notInclude(
+      collectFakeText(capsule as never),
+      "\u25be",
+      "no caret glyph in the chip",
+    );
+  });
+
+  it("uses a fixed 12px label in the Stacked header and the scaled one elsewhere", function () {
+    const css = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../addon/content/zoteroPane.css",
+      ),
+      "utf8",
+    ).replace(/\s+/g, " ");
+    // The declarations of the rule whose selector list ends with `selector`.
+    const body = (selector: string) =>
+      Array.from(css.matchAll(/(?:^|[}/]) ?([^{}/]*)\{([^}]*)\}/g))
+        .filter((match) =>
+          match[1].split(",").some((part) => part.trim() === selector),
+        )
+        .map((match) => match[2])
+        .join(" ");
+    const nav = ':root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row';
+    assert.include(
+      body(".llm-mode-switch-option"),
+      "font-size: var(--llm-fs-12)",
+    );
+    assert.include(body(`${nav} .llm-mode-switch-option`), "font-size: 12px");
+    assert.include(
+      body(`${nav} .llm-mode-switch-sizer > span`),
+      "font-size: 12px",
+    );
   });
 
   it("sizes the chip to every label its paper slot can show", function () {

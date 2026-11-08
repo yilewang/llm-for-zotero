@@ -166,6 +166,7 @@ const zhCN: Record<string, string> = {
   Settings: "设置",
   "Open plugin settings": "打开插件设置",
   Export: "导出",
+  "Open in Window": "在窗口中打开",
   Clear: "清除",
   "Clear all": "全部清除",
   "Context cleared": "上下文已清除",

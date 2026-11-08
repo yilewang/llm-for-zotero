@@ -36,6 +36,23 @@ const HEADER_BUTTONS = [
   "#llm-clear",
 ];
 
+/** The buttons the Stacked row folds into More when the pane is narrow. */
+const FOLDABLE_BUTTONS = ["#llm-settings", "#llm-export", "#llm-clear"];
+
+/** The buttons only the Stacked row's tight stage folds into More. */
+const TIGHT_FOLDED_BUTTONS = ["#llm-task-progress-toggle", "#llm-popout"];
+
+/** True when the Stacked row has folded this button away into More. */
+function foldedAway(section: HTMLElement, selector: string): boolean {
+  const fit = section.querySelector<HTMLElement>(".llm-header-nav-row")?.dataset
+    .fit;
+  return Boolean(
+    fit &&
+    ((fit !== "full" && FOLDABLE_BUTTONS.includes(selector)) ||
+      (fit === "tight" && TIGHT_FOLDED_BUTTONS.includes(selector))),
+  );
+}
+
 function getWorkflowTestApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
   assert.isOk(api, "workflow test API should be installed");
@@ -455,23 +472,29 @@ describe("workflow: sidebar chat mode toggle", function () {
       const chipRect = capsule.getBoundingClientRect();
       assert.isAbove(chipRect.width, 0, "Stacked shows the chip");
       assert.closeTo(chipRect.height, 22, 0.5);
-      assert.equal(
-        section
-          .querySelector(".llm-header-runtime-divider")!
-          .getBoundingClientRect().width,
-        0,
-        "the chip takes the divider's place",
-      );
+      // The divider is the capsule's separator here: a thin rule between
+      // the chip and the runtime toggles.
+      const separator = section
+        .querySelector(".llm-header-runtime-divider")!
+        .getBoundingClientRect();
+      assert.closeTo(separator.width, 1, 0.5, "the capsule has a separator");
+      assert.closeTo(separator.height, 12, 0.5);
+      const capsuleRect = section
+        .querySelector(".llm-header-runtime-controls")!
+        .getBoundingClientRect();
+      assert.closeTo(capsuleRect.height, 26, 0.5, "the capsule is 26px high");
       const order = [
         "#llm-history-new",
         "#llm-history-toggle",
         "#llm-mode-capsule",
         "#llm-codex-system-toggle",
         "#llm-claude-system-toggle",
-        "#llm-popout",
-        "#llm-settings",
-        "#llm-export",
-        "#llm-clear",
+        // The tight stage folds Open in window into More too.
+        ...(navRow.dataset.fit === "tight" ? [] : ["#llm-popout"]),
+        // Narrow panes fold these three into More.
+        ...(navRow.dataset.fit && navRow.dataset.fit !== "full"
+          ? ["#llm-header-more"]
+          : FOLDABLE_BUTTONS),
       ].map((selector) => {
         const element = navRow.querySelector<HTMLElement>(selector);
         assert.isOk(element, `${selector} sits in the one header row`);
@@ -493,15 +516,20 @@ describe("workflow: sidebar chat mode toggle", function () {
           `${order[index].selector} shares the row's line`,
         );
       }
-      // 4px between history and the chip, and between the chip and Codex.
+      // The chip sits inside the capsule: 2px of padding, then 2px gaps and
+      // the 1px separator with 2px either side. The capsule keeps at least
+      // 10px (8px compact or tight) from history.
       const [, history, chip, codex] = order.map((entry) => entry.rect);
-      assert.closeTo(chip.left - history.right, 4, 0.6, "history to chip");
-      const compression = Number(
-        navRow.style.getPropertyValue("--llm-runtime-compression") || 0,
+      const leastGap = ["compact", "tight"].includes(navRow.dataset.fit || "")
+        ? 8
+        : 10;
+      assert.isAtLeast(
+        capsuleRect.left - history.right,
+        leastGap - 0.6,
+        "history to capsule",
       );
-      if (compression === 0) {
-        assert.closeTo(codex.left - chip.right, 4, 0.6, "chip to Codex");
-      }
+      assert.closeTo(chip.left - capsuleRect.left, 2, 0.6, "capsule padding");
+      assert.closeTo(codex.left - chip.right, 9, 0.6, "chip to Codex");
       for (const selector of HEADER_BUTTONS) {
         const rect = section.querySelector(selector)!.getBoundingClientRect();
         assert.isFalse(
@@ -538,6 +566,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         .getBoundingClientRect();
       assert.isAbove(track.bottom, navRow.bottom, "it reaches over the chat");
       for (const selector of HEADER_BUTTONS) {
+        if (foldedAway(section, selector)) continue;
         const rect = section.querySelector(selector)!.getBoundingClientRect();
         assert.isAbove(rect.width, 0, `${selector} is visible`);
         assert.isFalse(
