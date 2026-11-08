@@ -8,6 +8,8 @@ export type LiveAgentCredentials = {
   apiKey: string;
   providerProtocol: string;
   reasoningLevel?: string;
+  /** Codex Direct signs in through ~/.codex/auth.json and has no API key. */
+  authMode?: "codex_auth";
 };
 
 function environmentValue(key: string): string {
@@ -55,28 +57,34 @@ function credentialsFromProviderGroups(
     const groups = JSON.parse(serialized) as Array<{
       apiBase?: unknown;
       apiKey?: unknown;
+      authMode?: unknown;
       providerProtocol?: unknown;
       models?: Array<{ model?: unknown }>;
     }>;
-    for (const group of groups) {
-      const model = group.models?.find(
+    const candidates = groups.filter((group) => {
+      const listed = group.models?.some(
         (entry) => String(entry.model || "") === requestedModel,
       );
-      const apiBase = String(group.apiBase || "").trim();
-      const apiKey = String(group.apiKey || "").trim();
-      const providerProtocol = String(group.providerProtocol || "").trim();
-      if (model && apiBase && apiKey && providerProtocol) {
-        const reasoningLevel = environmentValue(
-          "LLM_FOR_ZOTERO_LIVE_REASONING",
-        );
-        return {
-          model: requestedModel,
-          apiBase,
-          apiKey,
-          providerProtocol,
-          ...(reasoningLevel ? { reasoningLevel } : {}),
-        };
-      }
+      return (
+        listed &&
+        String(group.apiBase || "").trim() &&
+        String(group.providerProtocol || "").trim()
+      );
+    });
+    const keyed = candidates.find((group) => String(group.apiKey || "").trim());
+    const group =
+      keyed ?? candidates.find((entry) => entry.authMode === "codex_auth");
+    if (group) {
+      const codexAuth = !keyed;
+      const reasoningLevel = environmentValue("LLM_FOR_ZOTERO_LIVE_REASONING");
+      return {
+        model: requestedModel,
+        apiBase: String(group.apiBase || "").trim(),
+        apiKey: String(group.apiKey || "").trim(),
+        providerProtocol: String(group.providerProtocol || "").trim(),
+        ...(codexAuth ? { authMode: "codex_auth" as const } : {}),
+        ...(reasoningLevel ? { reasoningLevel } : {}),
+      };
     }
   } catch {
     return null;
